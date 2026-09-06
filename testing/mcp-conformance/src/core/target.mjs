@@ -39,6 +39,26 @@ export class Target {
   get hasClientRole() { return Boolean(this.clientLaunch); }
 
   /**
+   * The SEAM role's arming, which is NOT the server role's.
+   *
+   * The seam is observed through the server direction, so it was derived from `hasServerRole` --
+   * but a server launch is not what arms it. `seam.mjs:startSeam()` does not spawn `serverLaunch`;
+   * it REPLACES it with `MCP_SUBJECT_UPSTREAM_CONFIG_CMD`, the launcher that boots the subject with
+   * a hostile peer mounted as an upstream, and skips every SEAM.* scenario when that is empty.
+   *
+   * Deriving it from the wrong variable made the arm audit report something untrue: with a server
+   * launch and no upstream-config command, the verdict printed `roles run: ... seam` and no
+   * `roles NOT run` line, while not one seam scenario had a peer to observe. The failures that
+   * followed read as DEFECTS IN THE SUBJECT rather than as an unarmed leg -- the same
+   * misattribution class the differential's exit-2 path exists to prevent, and worse than a plain
+   * false green because it accuses.
+   *
+   * Read from the environment rather than from `cfg`, because that is where the launcher is
+   * declared and where `startSeam` reads it: one source, so the audit cannot disagree with the run.
+   */
+  get hasSeamRole() { return Boolean(process.env.MCP_SUBJECT_UPSTREAM_CONFIG_CMD); }
+
+  /**
    * Spawn the subject in its MCP SERVER role and return a raw stdio driver.
    *
    * `extraEnv` is merged over the target's own environment for THIS spawn only, and it is what the
