@@ -2053,6 +2053,102 @@ def rule_no_test_doubles_in_production(tree, cfg):
             "the reviewed stand-ins that are doubles rather than real values only shrink",
             listed_detail, len(doubles), c["max_doubles"], c["why"], doubles),
     ]
+# ── 31. rule-census: the owed id set is DECLARED, not read back off the answer ────────────────────
+#
+# `--expected` used to be written from the rows this same run had just produced, so "a rule that did
+# not run is RED" could never fire: whatever ran was, by definition, everything owed. Deleting a
+# plane crate took the owed count from 107 to 104 and the gate stayed green. The owed set is now
+# built from qa/construction.toml alone (rules x declared subjects), so a subject that vanished
+# leaves its row missing and the verdict says "did not run". `rule-census` closes the other
+# direction: a subject present on disk but absent from the declaration.
+
+# Every row id that is ONE row per rule, with no declared subject list behind it. Order matches
+# evaluate() so the owed list reads like the run.
+SINGLETON_IDS = (
+    "one-attempt-seam", "request-path-fn-size", "no-uninstalled-seam", "neutral-no-dialect",
+    "single-terminal", "duplicate-dispatch", "token-sealed", "token-sealed:kernel-seal",
+    "token-sealed:admit-token-mint", "teller-step-order", "one-teller-loop",
+    "one-teller-loop:run_gauntlet", "no-response-escapes-audit", "terminal-doors-in-audit-step",
+    "one-pick-site", "loc-ceilings:kernel", "loc-ceilings:caps-contract", "loc-ceilings:unit-total",
+    "loc-ceilings:unit-verbs", "loc-ceilings:union", "lean-core", "no-default-bodies",
+    "sealed-unit-traits", "hold-discipline:no-early-exit", "hold-discipline:no-catch-unwind-capture",
+    "hold-discipline:no-join-abort", "hold-discipline:no-forget-or-drop",
+    "hold-discipline:cancellation-before-await", "hold-escapes", "seal-sites", "kernel-seal-impls",
+    "secret-carrier-debug", "no-escaped-newline-doc-comment", "unit-no-wall-clock",
+    "unit-no-finding-ids", "plane-no-money", "one-pricing-site", "one-pricing-site:fee-fields",
+    "no-test-doubles-in-production", "no-test-doubles-in-production:doubles",
+    "rule-census",
+)
+
+# The kind list rule_manifest_allowlist walks, in its order.
+MANIFEST_KINDS = ("plane", "store", "pure_auth", "hook", "export", "secret", "egress_auth")
+
+
+def _census(cfg, kinds):
+    """The declared crates of each kind, in kind order then declaration order, de-duplicated."""
+    declared = cfg["gate"].get("expected_kind_crates", {})
+    out = []
+    for kind in kinds:
+        for crate in declared.get(kind, []):
+            if crate not in out:
+                out.append(crate)
+    return out
+
+
+def expected_ids(cfg):
+    """The row ids this run OWES, derived from the config alone — never from the rows produced."""
+    ids = list(SINGLETON_IDS)
+    for crate in cfg["gate"]["plane_crates"]:
+        ids += [f"ports-only:{crate}", f"ports-only-tests:{crate}"]
+    for key in cfg["rules"]["loc-ceilings"]["kernel_files"]:
+        ids.append(f"loc-ceilings:kernel:{key}")
+    for crate in _census(cfg, MANIFEST_KINDS):
+        ids.append(f"manifest-allowlist:{crate}")
+    for crate in _census(cfg, cfg["rules"]["source-denylist"]["kinds"]):
+        ids.append(f"source-denylist:{crate}")
+    for crate in _census(cfg, cfg["rules"]["forbid-unsafe"]["forbid_kinds"]):
+        ids.append(f"forbid-unsafe:{crate}")
+    for crate in _census(cfg, cfg["rules"]["forbid-unsafe"]["deny_kinds"]):
+        ids.append(f"forbid-unsafe-deny:{crate}")
+    for key in cfg["rules"]["legacy-reach"]["prefixes"]:
+        ids.append(f"legacy-reach:{key}")
+    return ids
+
+
+def rule_census(tree, cfg):
+    """Every crate the plugin-kind globs find on disk is named in gate.expected_kind_crates.
+
+    The declaration is what the owed id set is built from, so a crate the globs match but the
+    declaration does not know about would be measured and reported while owing nothing — and a crate
+    the declaration knows about that disappeared would owe a row nobody notices is missing. This row
+    is the first half; the verdict's did-not-run check is the second."""
+    declared = cfg["gate"].get("expected_kind_crates")
+    if declared is None:
+        return [row("rule-census", False, "every plugin-kind crate on disk is declared in the census",
+                    "UNPROVEN: qa/construction.toml has no [gate.expected_kind_crates] table, so the "
+                    "owed id set cannot be derived from the config and a rule that did not run "
+                    "cannot be detected", 1, 0, "", ["[gate.expected_kind_crates] is missing"])]
+    offenders = []
+    for kind in cfg["gate"]["plugin_kinds"]:
+        found = {_crate_name(d) for d in _kind_crate_dirs(tree.root, cfg, kind)}
+        want = set(declared.get(kind, []))
+        for crate in sorted(found - want):
+            offenders.append(f"{kind}: `{crate}` exists on disk but is not in "
+                             f"gate.expected_kind_crates.{kind}")
+        for crate in sorted(want - found):
+            offenders.append(f"{kind}: `{crate}` is declared but no directory matches "
+                             f"{cfg['gate']['plugin_kinds'][kind]}")
+    current = len(offenders)
+    detail = (f"{current} census mismatch(es) between gate.plugin_kinds on disk and "
+              "gate.expected_kind_crates (ceiling 0): "
+              + ("; ".join(offenders[:8]) if offenders else "the census matches the tree"))
+    return [row("rule-census", current == 0,
+                "every plugin-kind crate on disk is declared in the census",
+                detail, current, 0,
+                "The owed id set is derived from gate.expected_kind_crates, so an undeclared crate "
+                "is a row nobody owes and a declared-but-absent crate is a row nobody notices is "
+                "missing. Adding or deleting a plugin-kind crate is a census edit in the same "
+                "commit.", offenders)]
 
 
 def evaluate(tree, cfg, hits_path):
@@ -2089,6 +2185,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_one_pricing_site(tree, cfg)
     rows += rule_legacy_reach(tree, cfg)
     rows += rule_no_test_doubles_in_production(tree, cfg)
+    rows += rule_census(tree, cfg)
     return rows
 
 
@@ -2240,8 +2337,10 @@ def main():
     if a.rows:
         write_rows(rows, a.rows)
     if a.expected:
+        # FROM THE CONFIG, NOT FROM `rows`. See rule_census: an owed list read back off the answer
+        # is not a check, and the gate stayed green through a deleted plane crate because of it.
         with open(a.expected, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(r["id"] for r in rows) + "\n")
+            fh.write("\n".join(expected_ids(cfg)) + "\n")
     if a.report:
         write_report(rows, cfg, a.report, a.root)
     if a.summary:
