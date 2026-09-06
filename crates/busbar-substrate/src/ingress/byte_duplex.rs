@@ -124,18 +124,37 @@ impl DuplexHandle {
     /// The caller mints `call` with [`mint`](Self::mint) and embeds it into `frame` however its wire
     /// spells a correlation id; the registration happens BEFORE the frame is written, so a reply
     /// that races back cannot find an empty table.
+    ///
+    /// The registration is owned by THIS future for as long as it lives: dropping the future — the
+    /// ordinary end of a caller that wrapped the await in a `tokio::time::timeout`, or of any
+    /// `select!` losing arm — takes the entry back out. Nothing else can: only a routed reply or the
+    /// caller itself ever knows the call is over, so a cancelled await that left its entry in place
+    /// would strand one dead sender per abandoned call for the life of the channel.
     pub async fn issue(&self, call: CallRef, frame: Vec<u8>) -> Option<Vec<u8>> {
         let (tx, rx) = oneshot::channel();
         self.shared.pending.lock().unwrap().insert(call.0, tx);
+        let _registration = PendingCall {
+            shared: self.shared.clone(),
+            call: call.0,
+        };
         self.emit(frame).await;
-        match rx.await {
-            Ok(reply) => Some(reply),
-            Err(_) => {
-                // The channel closed (EOF dropped the sender) before an answer arrived.
-                self.shared.pending.lock().unwrap().remove(&call.0);
-                None
-            }
-        }
+        // `Err` is the channel closing (EOF dropped the sender) before an answer arrived; either way
+        // the guard clears the entry as this frame unwinds.
+        rx.await.ok()
+    }
+}
+
+/// The lifetime of ONE call's registration in the correlation table, tied to the [`DuplexHandle::issue`]
+/// future's own frame. On drop it removes the entry — whether the call was answered, the channel
+/// closed under it, or the awaiting future was cancelled.
+struct PendingCall {
+    shared: Arc<Shared>,
+    call: u64,
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        self.shared.pending.lock().unwrap().remove(&self.call);
     }
 }
 

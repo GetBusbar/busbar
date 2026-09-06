@@ -123,6 +123,36 @@ async fn mint_is_monotonic_and_never_none() {
     assert!(CallRef::NONE.is_none());
 }
 
+/// An `issue` that is ABANDONED — cancelled at its await, as any caller wrapping it in a
+/// `tokio::time::timeout` does — must leave the correlation table exactly as it found it. Its
+/// registration goes in before the frame is written, so nothing but the dropped future itself can
+/// take it back out, and a channel that outlives many abandoned calls would otherwise carry one dead
+/// entry per call for the life of the session.
+#[tokio::test]
+async fn an_abandoned_issue_leaves_no_registration_behind() {
+    let (_near, far) = tokio::io::duplex(64);
+    let (_r, w) = tokio::io::split(far);
+    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let handle = DuplexHandle {
+        shared: shared.clone(),
+    };
+
+    let call = handle.mint();
+    let abandoned = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        handle.issue(call, b"never answered".to_vec()),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "no answer arrives, so the call times out"
+    );
+    assert!(
+        shared.pending.lock().unwrap().is_empty(),
+        "the abandoned call took its registration with it"
+    );
+}
+
 /// Drive the pump over an in-memory MESSAGE duplex (each channel item is one frame, no newline
 /// convention — the shape an already-upgraded WebSocket presents): frames sent to the near end come
 /// back echoed verbatim as whole messages, and the stream ending (close) ends the loop. Mirrors
