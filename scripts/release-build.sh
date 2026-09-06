@@ -93,24 +93,15 @@ ARCHIVE="busbar-${TARGET}.${SPEC_ARCHIVE}"
 # to `None` when the variable is absent. There is no build error, no warning, and no runtime
 # complaint until an operator installs a signed plugin and is told the binary "embeds no busbar
 # release key". Refusing to start the build is the only moment at which that is loud.
-if ! printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
-  cat >&2 <<EOF
-[release-build] ############################################################
-[release-build] # REFUSING TO BUILD $TARGET WITHOUT BUSBAR_RELEASE_PUBKEY.
-[release-build] #
-[release-build] # It must be 64 hex characters (the ed25519 PUBLIC half; the private half is the
-[release-build] # BUSBAR_SIGN_KEY secret each plugin repo signs with). Got: '${BUSBAR_RELEASE_PUBKEY:-<unset>}'
-[release-build] #
-[release-build] # Without it this artifact would compile, link, pass its tests and ship, and every
-[release-build] # correctly-signed first-party plugin would be refused on this platform with
-[release-build] # "this build embeds no busbar release key". That is exactly what
-[release-build] # busbar-aarch64-unknown-linux-gnu did in 1.5.1, 1.5.2 and 1.5.3.
-[release-build] #
-[release-build] # In CI the value is the org variable BUSBAR_RELEASE_PUBKEY (visibility: all).
-[release-build] ############################################################
-EOF
-  exit 1
-fi
+#
+# ONE IMPLEMENTATION, NOT A COPY OF ONE. This used to be an inline re-implementation of exactly
+# what scripts/release-key-guard.sh's `require` half does, while the guard itself had ZERO callers
+# anywhere in scripts/ or .github/ - a named guard nobody ran, next to a copy nobody knew was a
+# copy. Two copies of a shape check drift, and the half that drifts is the one that is never
+# exercised. The guard is the implementation now; its `assert-embedded` half is the output side,
+# re-asserted against the shipped bytes by the `release_pubkey` row of .github/artifact-contract.json.
+echo "[release-build] asserting the release key before compiling $TARGET"
+scripts/release-key-guard.sh require
 echo "[release-build] target=$TARGET triple=$SPEC_TRIPLE pgo=$SPEC_PGO baseline=$SPEC_BASELINE archive=$SPEC_ARCHIVE key=${BUSBAR_RELEASE_PUBKEY:0:12}…"
 
 # THE BASELINE SWITCH, EXPORTED ONCE, HERE, FOR BOTH ARMS. scripts/pgo-build.sh reads it (and the

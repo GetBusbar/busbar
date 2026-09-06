@@ -53,6 +53,19 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
+# ── THE RELEASE KEY, BEFORE ANY PHASE COMPILES ANYTHING ─────────────────────────────────────────
+# This script is a producer of SHIPPED BYTES on two paths: scripts/release-build.sh drives it for
+# every PGO target, and .github/workflows/docker.yml drives it DIRECTLY for both image legs, with
+# BUSBAR_RELEASE_PUBKEY on the step's own env: block. Both optimized builds bake the key in through
+# plugin-sign's `option_env!`, a compile-time read that is silently `None` when the variable is
+# absent - which is how images shipped that could not verify any first-party plugin (2026-08-02).
+# The direct docker.yml path had no input-side assertion at all, so it gets the same one the
+# release path uses, from the same file. No second copy: scripts/release-key-guard.sh is the
+# implementation for both. A local profiling run is not special-cased (an opt-out is how the
+# assertion stops being asserted); export a dummy 64-hex BUSBAR_RELEASE_PUBKEY for one:
+#   BUSBAR_RELEASE_PUBKEY=$(printf '0%.0s' {1..64}) scripts/pgo-build.sh
+scripts/release-key-guard.sh require || exit 1
+
 REQS="${PGO_REQS:-2000}"
 STREAMS="${PGO_STREAMS:-200}"
 CONC="${PGO_CONC:-32}"
