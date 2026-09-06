@@ -17,7 +17,8 @@ use busbar_caps::{
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::slice::{group_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
 use busbar_kernel::teller::{
-    exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run,
+    exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, FinishClass, Kernel, Run,
+    StatusAt, StatusClass,
 };
 
 use common::{cell, ctx, principal, Door, NeverRoutes, TestDoor, TestUnits};
@@ -484,6 +485,149 @@ fn early_returns(source: &str) -> Vec<(usize, &str)> {
         })
         .map(|(i, line)| (i + 1, line.trim()))
         .collect()
+}
+
+/// The evidence a fee-eligible client unit that reached an upstream arrives at the exit with.
+///
+/// Every other cell in this battery runs on `Evidence::default()`, which is the shape where the fee
+/// is zero and the request slot is zero for reasons that have nothing to do with the code that
+/// decides them: `client_open_or_one_shot` is false, so `fee_count` short-circuits at its first arm
+/// and returns `(0, NONE)` whatever the rest of it says; `upstream_candidate` is false, so
+/// `requests_drawn` returns 0 and `requests_settled` has nothing to pass through. A loop that
+/// stopped counting fees and a loop that stopped counting request slots both settled every cell in
+/// this file green. Non-default evidence is what makes those two figures observable.
+fn earning() -> Evidence {
+    Evidence {
+        accrued_floor: 250,
+        upstream_candidate: true,
+        fee: busbar_kernel::teller::FeeEvidence {
+            client_open_or_one_shot: true,
+            selected_upstream: true,
+            relayed_first_response_frame: true,
+            status_at: Some(StatusAt::FirstFrame),
+            status: Some(StatusClass::Success),
+            finish: Some(FinishClass::Complete),
+        },
+        ..Evidence::default()
+    }
+}
+
+fn earning_units() -> TestUnits {
+    TestUnits {
+        evidence: earning(),
+        ..TestUnits::passing()
+    }
+}
+
+/// THE FEE AND THE REQUEST SLOT REACH THE POSTING.
+///
+/// A client unit that opened, selected an upstream, saw its first response frame and finished
+/// cleanly posts one flat fee and settles the one request slot it drew at the door. Both figures
+/// leave the loop on the settled end beside the posting; both were, until this cell, decided by
+/// code no test in this file could distinguish from code that returned zero.
+#[test]
+fn a_unit_that_earned_a_fee_and_a_request_slot_settles_both() {
+    let kernel = Kernel::new();
+    let units = earning_units();
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    match run(&units, &kernel, &cell, &canary) {
+        Ended::Settled { end, requests, fee } => {
+            assert_eq!(end.outcome(), Outcome::Completed);
+            assert_eq!(fee, 1, "a clean client answer posts one flat fee");
+            assert_eq!(
+                requests, 1,
+                "the unit drew a request slot at the door and settles it"
+            );
+            assert!(
+                !end.posted()
+                    .expect("the unit posts")
+                    .flags()
+                    .contains(PostingFlags::METER_DISPUTED),
+                "the transport and the plane agreed"
+            );
+        }
+        other => panic!("expected a settled unit, got {other:?}"),
+    }
+}
+
+/// THE SAME EVIDENCE, THE OTHER WAY UP.
+///
+/// A unit refused before the door never reached Admit, so it settles no request slot however many
+/// its verified set entitled it to draw. This is the arm `requests_settled` exists for, and it is a
+/// different arm from "the evidence named nothing" — the evidence here names an upstream candidate,
+/// exactly as the settled cell above does, and the figure is zero because of where the unit ended
+/// rather than because of what it carried. No response frame was relayed, so no fee is due either.
+#[test]
+fn a_unit_refused_before_the_door_settles_neither_fee_nor_slot() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        evidence: Evidence {
+            fee: busbar_kernel::teller::FeeEvidence {
+                // Nothing reached the client: the unit was refused three steps before Route.
+                relayed_first_response_frame: false,
+                status_at: None,
+                status: None,
+                finish: None,
+                ..earning().fee
+            },
+            ..earning()
+        },
+        refuse_at: Some((StepName::Approve, ReasonCode::ScopeDenied)),
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    match run(&units, &kernel, &cell, &canary) {
+        Ended::Settled { end, requests, fee } => {
+            assert_eq!(
+                end.outcome(),
+                Outcome::Refused(StepName::Approve, ReasonCode::ScopeDenied)
+            );
+            assert_eq!(
+                requests, 0,
+                "a unit that never reached the door settles no slot"
+            );
+            assert_eq!(fee, 0, "and nothing was relayed to charge a fee for");
+        }
+        other => panic!("expected a settled refusal, got {other:?}"),
+    }
+}
+
+/// TWO SOURCES THAT DISAGREE POST THE LOWER COUNT AND SAY SO.
+///
+/// The transport reports where its status lives and then never reports one; the plane says the
+/// answer was whole. That is the dispute arm of `fee_count`, and it reaches the posting as a flag —
+/// the one path where the fee's own evidence changes what the settlement says about itself.
+#[test]
+fn a_fee_its_two_sources_disagree_about_posts_nothing_and_is_flagged() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        evidence: Evidence {
+            fee: busbar_kernel::teller::FeeEvidence {
+                status: None,
+                ..earning().fee
+            },
+            ..earning()
+        },
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    match run(&units, &kernel, &cell, &canary) {
+        Ended::Settled { end, requests, fee } => {
+            assert_eq!(fee, 0, "the lower of the two counts");
+            assert_eq!(requests, 1, "the slot it drew is settled either way");
+            assert!(
+                end.posted()
+                    .expect("the unit posts")
+                    .flags()
+                    .contains(PostingFlags::METER_DISPUTED),
+                "a fee decided from sources that disagree is a disputed posting"
+            );
+        }
+        other => panic!("expected a settled unit, got {other:?}"),
+    }
 }
 
 /// The loop's shape is part of its contract: no `?`, and no unnamed early `return` inside it.
