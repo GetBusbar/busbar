@@ -425,7 +425,11 @@ fn test_validate_bounds_the_credential_file_it_reads() {
     let small = dir.join("small.cred");
     std::fs::write(&small, b"no-colon-in-here").unwrap();
     let huge = dir.join("huge.cred");
-    std::fs::write(&huge, vec![b'x'; super::VALIDATE_SECRET_MAX_BYTES as usize + 1]).unwrap();
+    std::fs::write(
+        &huge,
+        vec![b'x'; super::VALIDATE_SECRET_MAX_BYTES as usize + 1],
+    )
+    .unwrap();
 
     let build = |path: &std::path::Path| -> Vec<String> {
         let mut providers = HashMap::new();

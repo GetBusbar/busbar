@@ -1204,8 +1204,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         if any_passthrough {
             for (provider_name, provider_cfg) in &cfg.providers {
                 let resolved_key =
-                    resolve_validate_time_secret(&provider_cfg.api_key)
-                        .unwrap_or_default();
+                    resolve_validate_time_secret(&provider_cfg.api_key).unwrap_or_default();
                 if !resolved_key.trim().is_empty() {
                     diag_warn!(
                         CONFIG_PASSTHROUGH_UNUSED_APIKEY,
@@ -2164,8 +2163,7 @@ fn validate_providers_with(
             // colon-split lives only in `build()`, which `--validate` never reaches, so a malformed
             // credential otherwise passes validate and fails at boot/apply. Check it here when the env var
             // resolves (an unset var can't be validated — caught at boot).
-            let cred = resolve_validate_time_secret(&provider_cfg.api_key)
-                .unwrap_or_default();
+            let cred = resolve_validate_time_secret(&provider_cfg.api_key).unwrap_or_default();
             if !cred.trim().is_empty() {
                 if let Err(e) =
                     crate::egress_auth::oauth_client_credentials::validate_credential(&cred)
@@ -2186,8 +2184,7 @@ fn validate_providers_with(
             provider_cfg.auth,
             Some(crate::config::ProviderAuth::JwtBearer)
         ) {
-            let cred = resolve_validate_time_secret(&provider_cfg.api_key)
-                .unwrap_or_default();
+            let cred = resolve_validate_time_secret(&provider_cfg.api_key).unwrap_or_default();
             if !cred.trim().is_empty() {
                 // Pass the SAME operator metadata posture the boot path threads into jwt_bearer::build,
                 // so the token_uri SSRF check is identical at validate and apply time.
