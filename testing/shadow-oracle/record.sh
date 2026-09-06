@@ -516,7 +516,23 @@ subst_placeholders() {  # <cell-json> -> cell-json
 }
 mkdir -p "$WORK/tmp"
 # a plugin tarball as base64 is ~1.5 MB: far past the argv limit, so it rides in as a --rawfile
-base64 <"$(bash "${here}/fetch-plugin.sh" webrequest-hook)" | tr -d '\n' >"$WORK/tmp/webrequest.b64"
+#
+# AN EMPTY FILE HERE IS AN EMPTY TARBALL IN EVERY CELL THAT UPLOADS ONE. `base64 <"$(fetch-plugin.sh
+# …)"` was unchecked from end to end: a fetch that failed printed its reason on stderr and NOTHING on
+# stdout, so the redirect was from the empty filename, base64 read nothing, and webrequest.b64 was
+# written EMPTY — every `{TARBALL_B64:webrequest-hook}` cell then POSTed a zero-byte tarball and
+# recorded busbar's answer to THAT as the plugin-install contract. Both binaries would agree, and
+# the golden would freeze "busbar rejects an empty upload" in place of "busbar installs a published
+# plugin". A plugin the recorder could not fetch is a setup failure, not a cell.
+_webrequest_tarball="$(bash "${here}/fetch-plugin.sh" webrequest-hook)" \
+  || fail_setup "the published webrequest-hook plugin could not be fetched" \
+       "every {TARBALL_B64:webrequest-hook} cell would upload an empty tarball and record the refusal as the contract"
+[ -n "$_webrequest_tarball" ] && [ -s "$_webrequest_tarball" ] \
+  || fail_setup "fetch-plugin.sh named no webrequest-hook tarball (or an empty one): '${_webrequest_tarball}'" \
+       "refusing to record an empty upload as the plugin-install contract"
+base64 <"$_webrequest_tarball" | tr -d '\n' >"$WORK/tmp/webrequest.b64"
+[ -s "$WORK/tmp/webrequest.b64" ] \
+  || fail_setup "the webrequest-hook tarball encoded to nothing" "base64 of ${_webrequest_tarball} produced an empty file"
 case "$(uname -sm)" in "Darwin arm64") ORACLE_TRIPLE=aarch64-apple-darwin ;; "Darwin x86_64") ORACLE_TRIPLE=x86_64-apple-darwin ;; "Linux aarch64"|"Linux arm64") ORACLE_TRIPLE=aarch64-unknown-linux-gnu ;; *) ORACLE_TRIPLE=x86_64-unknown-linux-gnu ;; esac
 
 run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> — unrecorded setup call
