@@ -80,7 +80,7 @@ pub fn build_once(
     // Test-only direct call: there is no outer admin transaction / persist step here, so firing any
     // resolved governance-credential rotation immediately is correct
     // and keeps this helper's callers (which assert on rotation taking effect) unchanged.
-    let (app, gov_rotate) = crate::build_app_from_config(
+    let (app, gov_rotate, limits) = crate::build_app_from_config(
         cfg,
         crate::config::PluginsCfg::default(),
         None,
@@ -89,6 +89,9 @@ pub fn build_once(
         (None, None),
         prior,
     )?;
+    // Same reasoning for the limits: no persist step follows, so this build IS the live generation
+    // and its limits stay installed — the behaviour every caller of this helper has always had.
+    limits.keep();
     if let Some(rotate) = gov_rotate {
         rotate();
     }

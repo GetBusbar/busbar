@@ -10452,6 +10452,111 @@ async fn test_admin_v1_config_settings_reset_refuses_when_overlay_is_too_new() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The SAME promise as the rotation test below, for the OTHER process-wide object a build touches:
+/// the resolved operational LIMITS. `build_app_from_config` installs the candidate limits at the top
+/// (the build reads them) behind a guard that rolls them back on any failure — but the persist step
+/// runs AFTER the build returns, so committing the guard inside the build left a REJECTED config's
+/// limits installed process-wide while the handler told the operator "nothing was changed" and the
+/// old `App` kept serving. Forces the persist failure the same deterministic way its sibling does (a
+/// corrupt overlay `load_for_rmw` refuses to read-modify-write) and asserts the live cap afterwards.
+#[tokio::test]
+async fn test_admin_v1_config_settings_persist_failure_does_not_install_limits() {
+    crate::metrics::init();
+    // The installed limits are a PROCESS-GLOBAL slot; hold the lock every mutating test holds so a
+    // sibling's install cannot land mid-assertion here.
+    let _limits_lock = crate::limits::LIMITS_TEST_LOCK.lock().await;
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-settings-limits-persist-fail-{}-{}",
+        std::process::id(),
+        crate::store::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let providers_path = dir.join("providers.yaml");
+    let config_path = dir.join("config.yaml");
+    std::fs::write(
+        &providers_path,
+        "test-provider:
+  protocol: anthropic
+  base_url: http://127.0.0.1:1/
+",
+    )
+    .unwrap();
+    std::fs::write(
+        &config_path,
+        "listen: 127.0.0.1:0
+providers:
+  test-provider:
+    api_key: { env: BUSBAR_TEST_LIMITS_PERSIST_FAIL_KEY }
+models:
+  m0:
+    provider: test-provider
+    max_concurrent: 4
+pools:
+  p:
+    members:
+      - model: m0
+",
+    )
+    .unwrap();
+    let overlay = dir.join("overlay.json");
+    // Corrupt from the start, so the apply's persist step fails deterministically every time.
+    std::fs::write(&overlay, b"{ not json").unwrap();
+
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let mut app = TestApp::new()
+        .governance(gov)
+        .overlay_path(overlay.clone())
+        .build();
+    {
+        let inner = Arc::get_mut(&mut app).expect("sole owner");
+        inner.config_path = Some(config_path.clone());
+        inner.providers_path = Some(providers_path.clone());
+    }
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+    let before = busbar_substrate::config::limits::installed();
+    // A cap nothing else in this binary uses, so its presence afterwards can only come from THIS
+    // rejected apply.
+    let rejected_cap: usize = 7_654_321;
+    let put = reqwest::Client::new()
+        .put(format!("http://{addr}/api/v1/admin/config/settings"))
+        .header("x-admin-token", "admintok")
+        .header("content-type", "application/json")
+        .body(
+            serde_json::json!({ "limits": { "request_body_max_bytes": rejected_cap } }).to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        put.status().as_u16(),
+        400,
+        "the corrupt overlay must fail the persist step: {:?}",
+        put.text().await
+    );
+
+    let after = busbar_substrate::config::limits::installed();
+    assert_ne!(
+        after.as_ref().map(|l| l.request_body_max_bytes),
+        Some(rejected_cap),
+        "a persist failure must leave the REJECTED config's limits uninstalled — the response just \
+         claimed nothing was changed, and these are process-wide values the old (still-serving) App \
+         reads through"
+    );
+    assert_eq!(
+        after.map(|l| l.request_body_max_bytes),
+        before.map(|l| l.request_body_max_bytes),
+        "the limits installed before the rejected apply are the ones still installed after it"
+    );
+
+    handle.abort();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// `PUT /config/settings` re-resolves `auth.admin_auth`'s admin-token
 /// secret ref on every apply and, when it changed, swaps the new digest into the shared,
 /// process-lifetime `GovState` — the SAME `GovState` the OLD (still-serving) `App` snapshot also

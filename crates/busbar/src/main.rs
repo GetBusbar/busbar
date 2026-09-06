@@ -1558,7 +1558,7 @@ async fn run(data_workers: usize) {
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
     // the comment block that starts it and no further, so the voice-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
-    let (boot_app, _boot_gov_rotate) = build_app_from_config(
+    let (boot_app, _boot_gov_rotate, boot_limits) = build_app_from_config(
         cfg,
         plugins_cfg,
         overlay_path,
@@ -1568,6 +1568,11 @@ async fn run(data_workers: usize) {
         None,
     )
     .unwrap_or_else(|e| die(e));
+    // BOOT KEEPS THEM IMMEDIATELY. The admin applies defer this to after their persist-and-swap,
+    // because a rejected apply must leave the still-serving generation's limits alone. Boot has no
+    // such caller: the config file IS the durable state, this build IS the first generation, and a
+    // build that failed already `die`d above.
+    boot_limits.keep();
     let app = Arc::new(boot_app);
 
     // COMPOSE the voice plane's realtime provider: hand the plane the origin + the secret reference

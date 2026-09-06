@@ -334,7 +334,7 @@ pub(crate) async fn reload_plugins(
                 let view = AdminService::new(snapshot).reload_store_plugins()?;
                 return Ok(Outcome::Value((None, Ok(view))));
             }
-            let (next, gov_rotate) =
+            let (next, gov_rotate, limits) =
                 rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             let installed = Arc::new(next);
             // Project the inventory of the snapshot about to go live (the reconciled, loaded set).
@@ -349,6 +349,10 @@ pub(crate) async fn reload_plugins(
                 installed.clone(),
                 || Ok(()),
                 move || {
+                    // Past the swap: the process-wide limits this build installed are the LIVE
+                    // ones, so keep them. Dropped instead — on any path that never reaches here —
+                    // they roll back to the generation still serving.
+                    limits.keep();
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -495,7 +499,7 @@ pub(crate) async fn rollback_plugin(
                      was changed (the running engine still serves the current plugin)"
                 )));
             }
-            let (next, gov_rotate) = match rebuild_app_from_disk(&snapshot) {
+            let (next, gov_rotate, limits) = match rebuild_app_from_disk(&snapshot) {
                 Ok(pair) => pair,
                 Err(e) => {
                     // The rebuild failed AFTER persisting the pin — the live snapshot is unchanged
@@ -529,6 +533,9 @@ pub(crate) async fn rollback_plugin(
             // `build_app_from_config`'s doc comment) — the SAME mechanism every rotation-possible
             // site uses, not a hand-rolled "already persisted so it's fine" special case.
             Ok(Outcome::commit_then(installed.clone(), || Ok(()), move || {
+                // Past the swap: keep the limits this build installed (dropped unkept everywhere
+                // else, including the pin-revert path above).
+                limits.keep();
                 if let Some(rotate) = gov_rotate {
                     rotate();
                 }
@@ -1681,7 +1688,7 @@ pub(crate) async fn reset_overlay_section(
                 )
             })
             .map_err(AdminError::Validation)?;
-            let (built, gov_rotate) = built;
+            let (built, gov_rotate, limits) = built;
             let installed = Arc::new(built);
             // PERSIST-THEN-SWAP (fail-closed), matching plugins/rollback's durability ordering:
             // write the section-cleared overlay to disk BEFORE swapping the live App. A prior
@@ -1713,6 +1720,8 @@ pub(crate) async fn reset_overlay_section(
                     )
                 },
                 move || {
+                    // Past persist AND swap: keep the limits this build installed.
+                    limits.keep();
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2331,7 +2340,14 @@ pub(crate) async fn flush_credential_cache(
 #[inline(never)]
 pub(crate) fn rebuild_app_from_disk(
     current: &Arc<crate::state::App>,
-) -> Result<(crate::state::App, Option<crate::GovCredentialRotation>), String> {
+) -> Result<
+    (
+        crate::state::App,
+        Option<crate::GovCredentialRotation>,
+        crate::InstalledLimits,
+    ),
+    String,
+> {
     let (Some(config_path), Some(providers_path)) =
         (current.config_path.clone(), current.providers_path.clone())
     else {
@@ -2393,7 +2409,7 @@ pub(crate) async fn reload_config(
     let out = config_transaction(&handle, |txn| {
         let snapshot = txn.app().clone();
         Ok(txn.read_store(move || {
-            let (next, gov_rotate) =
+            let (next, gov_rotate, limits) =
                 rebuild_app_from_disk(&snapshot).map_err(AdminError::Validation)?;
             // LIVE-only, exactly as before: a reload IS disk truth, so there is nothing to persist.
             let installed = Arc::new(next);
@@ -2404,6 +2420,8 @@ pub(crate) async fn reload_config(
                 installed.clone(),
                 || Ok(()),
                 move || {
+                    // Past the swap: keep the limits this build installed.
+                    limits.keep();
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -2628,7 +2646,7 @@ pub(crate) async fn apply_config(
                     )
                 })
                 .map_err(AdminError::Validation)?;
-            let (next, gov_rotate) = next;
+            let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
             // LIVE-only (the response `note` says so): an applied config is not written to disk.
             // `commit_then` still defers the rotation to AFTER `commit_and_swap` returns `Ok` —
@@ -2639,6 +2657,8 @@ pub(crate) async fn apply_config(
                 installed.clone(),
                 || Ok(()),
                 move || {
+                    // Past the swap: keep the limits this build installed.
+                    limits.keep();
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
@@ -3158,7 +3178,7 @@ pub(crate) async fn put_config_settings(
                 )
             })
             .map_err(AdminError::Validation)?;
-            let (next, gov_rotate) = next;
+            let (next, gov_rotate, limits) = next;
             let installed = Arc::new(next);
             // PERSIST-then-SWAP, fail-closed. Persist the merged root section (the sibling
             // hooks/groups sections are preserved verbatim by the read-modify-write).
@@ -3181,6 +3201,11 @@ pub(crate) async fn put_config_settings(
                         })
                 },
                 move || {
+                    // Past persist AND swap: keep the limits this build installed. `PUT
+                    // /config/settings` is the site where this matters most — the root section it
+                    // merges CARRIES `limits:`, so a rejected settings apply is precisely a
+                    // rejected set of process-wide caps.
+                    limits.keep();
                     if let Some(rotate) = gov_rotate {
                         rotate();
                     }
