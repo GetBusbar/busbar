@@ -45,7 +45,6 @@ command -v jq >/dev/null || { echo "record.sh needs jq" >&2; exit 2; }
 case "$PLANE" in llm|core|all) ;; *) echo "record.sh: planes recorded natively: llm, core (cli/config/scrape/crosscut/admin/boot), all; mcp/a2a go through the conformance rigs" >&2; exit 2 ;; esac
 
 LISTEN_PORT="${ORACLE_LISTEN_PORT:-48811}" ADMIN_PORT="${ORACLE_ADMIN_PORT:-48812}" MOCK_PORT="${ORACLE_MOCK_PORT:-48781}"
-assert_port_free "$LISTEN_PORT"; assert_port_free "$ADMIN_PORT"; assert_port_free "$MOCK_PORT"
 
 mkdir -p "$OUT/cells" "$OUT/raw"
 LEDGER="$OUT/ledger.tsv"; : >"$LEDGER"; export LEDGER
@@ -57,13 +56,52 @@ CONTROL="$WORK/mock.control"
 
 fail_setup() { record "setup" FAIL "$1" "${2:-}"; exit 1; }
 
+# ── port ownership: the ONLY evidence that what answers is what we started ───────────────────────
+# This script has no `set -e`, so an unchecked `assert_port_free` is a no-op — and every readiness
+# probe below is a bare HTTP answer, which a stale busbar or a parallel recording on the same port
+# gives just as cheerfully as ours. A recording made against someone else's process is not a
+# recording of the binary under test; it is a green that hides whatever the binary actually does.
+# So: prove the port free BEFORE the spawn, and prove the listener afterwards is OUR pid.
+port_owner_pid() {  # <port> -> the pid listening on <port>, or nothing if it cannot be determined
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1
+  elif command -v ss >/dev/null 2>&1; then
+    ss -lntpH "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1
+  fi
+}
+assert_port_is_ours() {  # <port> <pid> — 0 iff <pid> is alive and owns the listener on <port>
+  local port="$1" pid="$2" owner
+  [ -n "$pid" ] || return 1
+  # a dead pid can never be the owner, whatever is answering on the port
+  kill -0 "$pid" 2>/dev/null || return 1
+  owner="$(port_owner_pid "$port")"
+  # No inspector on this host (no lsof, no ss): fall back to `kill -0` plus the fact that the port
+  # was PROVEN FREE immediately before the spawn — every caller below establishes that first.
+  [ -n "$owner" ] || return 0
+  [ "$owner" = "$pid" ]
+}
+assert_ports_free_or_fail() {  # <port>... — a busy port is a setup failure, never a recording
+  local p
+  for p in "$@"; do
+    assert_port_free "$p" || fail_setup "port ${p} is already in use" \
+      "another recording, a stale busbar or a foreign service is listening on 127.0.0.1:${p}; adopting it would record that process instead of ${BIN} — choose free ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT/ORACLE_MOCK_PORT"
+  done
+}
+assert_ports_free_or_fail "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT"
+
 # ── mock upstream (all six dialects, byte-deterministic) ────────────────────────────────────────
 mkdir -p "$WORK/egress"
 # the mock records every request it receives (path, method, headers, body) so the EGRESS side of a
 # cell is judged too, not only what came back
 ORACLE_MOCK_CAPTURE_DIR="$WORK/egress" python3 "${here}/mock-upstream.py" "$MOCK_PORT" oracle-marker "$CONTROL" >"$WORK/mock.log" 2>&1 &
-track_pid $!
+MOCK_PID=$!
+track_pid "$MOCK_PID"
 wait_for_http "http://127.0.0.1:${MOCK_PORT}/" 8 || fail_setup "mock upstream did not come up" "$(tail -c 300 "$WORK/mock.log")"
+# a FOREIGN mock answering here would take every egress request and ignore $CONTROL — which this run
+# cannot write into its work dir — so `upstream_down` cells would record a healthy upstream.
+assert_port_is_ours "$MOCK_PORT" "$MOCK_PID" \
+  || fail_setup "the process answering on mock port ${MOCK_PORT} is not the mock this run started" \
+                "expected pid ${MOCK_PID}, port owned by '$(port_owner_pid "$MOCK_PORT")'; its control file (${CONTROL}) would be ignored"
 
 # ── busbar under the oracle config ──────────────────────────────────────────────────────────────
 oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
@@ -84,6 +122,11 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     ORACLE_VARIANT="$variant" oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || return 3
     CUR_VARIANT="$variant"
   fi
+  # PROVE THE PORTS FREE IMMEDIATELY BEFORE THE SPAWN. Without this the /healthz poll below adopts
+  # whatever answers first — including a busbar left behind by a crashed run — and every cell after
+  # it is recorded against a process this script never started and cannot configure.
+  assert_port_free "$LISTEN_PORT" || return 4
+  assert_port_free "$ADMIN_PORT" || return 4
   BUSBAR_PID="$(oracle_spawn "$WORK/busbar.log" "$BIN")"; track_pid "$BUSBAR_PID"
   # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second).
   # The bound is 60 s, not 20: a hooks-variant boot loads the published plugins, and on a machine
@@ -94,6 +137,9 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
     sleep 0.025; w=$((w+1))
   done
   [ $w -lt 2400 ] || return 1
+  # /healthz answered — but by WHOM. Both listeners must be held by the pid we just spawned.
+  assert_port_is_ours "$LISTEN_PORT" "$BUSBAR_PID" || return 4
+  assert_port_is_ours "$ADMIN_PORT" "$BUSBAR_PID" || return 4
   oracle_mint_keys "$ADMIN_PORT" || return 2
   # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
@@ -109,7 +155,13 @@ stop_busbar() {  # stop the current busbar and wait until the listen port is fre
   assert_port_free "$LISTEN_PORT" || { echo "record.sh: port ${LISTEN_PORT} still answers after stopping busbar ${BUSBAR_PID:-?}; refusing to record against a stale process" >&2; exit 1; }
 }
 boot_busbar; rc=$?
-[ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)"; fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log"; }
+case "$rc" in
+  0) ;;
+  1) fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)" ;;
+  4) fail_setup "the listeners on ${LISTEN_PORT}/${ADMIN_PORT} are not the busbar this run spawned" \
+       "pid ${BUSBAR_PID:-?} vs port owners '$(port_owner_pid "$LISTEN_PORT")'/'$(port_owner_pid "$ADMIN_PORT")'; refusing to record a foreign process as ${BIN}" ;;
+  *) fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log" ;;
+esac
 
 # ── effect snapshots ────────────────────────────────────────────────────────────────────────────
 snapshot() {  # snapshot <dir> <key-id>
