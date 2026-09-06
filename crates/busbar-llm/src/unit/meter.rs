@@ -785,4 +785,153 @@ mod tests {
     fn the_step_has_the_meters_shape() {
         let _: MeterStep = meter;
     }
+
+    /// The two token figures the priced accrual is pinned on, chosen so no arithmetic over them
+    /// coincides with their sum: a hundred in and fifty out.
+    const PRICED_INPUT: u64 = 100;
+    const PRICED_OUTPUT: u64 = 50;
+
+    /// The card the accrual is priced against, keyed by the SERVING lane's config name — the only
+    /// key space a rate card is allowed to use, and the same key the metering row attributes to.
+    ///
+    /// Two micro-units per input token and six per output token, which the one config-to-integer
+    /// projection turns into 2_000 and 6_000 nano-units per token. The two tiers are priced
+    /// DIFFERENTLY on purpose: a card that priced them alike could not tell a money figure from a
+    /// token count, which is the whole thing under test.
+    fn priced_card() -> busbar_core::cost::CostModel {
+        busbar_core::cost::CostModel::resolve_parts(
+            Some(&std::collections::BTreeMap::from([(
+                "m0".to_string(),
+                busbar_core::config::RateEntryCfg {
+                    input_utok: 2.0,
+                    output_utok: 6.0,
+                    cache_read_utok: 0.0,
+                    cache_write_utok: 0.0,
+                },
+            )])),
+            0,
+            &Default::default(),
+        )
+    }
+
+    /// What that card prices this usage at: 100 × 2_000 + 50 × 6_000 nano-units.
+    const PRICED_NANOS: u64 = 500_000;
+
+    /// A rig whose deployment carries [`priced_card`], one lane named for it, and governance — so
+    /// the sink the door pins carries a card that actually prices something. No upstream is dialled
+    /// here: this test drives the step directly over a usage report the reader already produced.
+    fn priced_rig() -> (
+        std::sync::Arc<busbar_core::state::App>,
+        std::sync::Arc<busbar_api::VirtualKey>,
+    ) {
+        crate::testkit::install_test_seams();
+        let store: std::sync::Arc<dyn busbar_api::Store> =
+            std::sync::Arc::new(busbar_store_memory::MemoryStore::new());
+        let gov_kit = crate::test_support::engine_kit::CORE_ENGINE_KIT
+            .governance(store, None, None)
+            .expect("governance");
+        let (key, _) = gov_kit
+            .create_key(
+                busbar_substrate::governance::NewKeySpec {
+                    name: "priced".to_string(),
+                    allowed_pools: None,
+                    group: None,
+                    labels: Default::default(),
+                    ..Default::default()
+                },
+                1_700_000_000,
+            )
+            .expect("create key");
+        let mut builder = TestApp::new()
+            .lane(
+                LaneSpec::new("m0", crate::proto_codec::PROTO_OPENAI, "http://127.0.0.1:9")
+                    .provider("zai"),
+            )
+            .pool("p", &[(0, 1)])
+            .cost(priced_card());
+        TestAppKit::set_governance(&mut builder, gov_kit);
+        (builder.build(), std::sync::Arc::new(key))
+    }
+
+    /// THE ACCRUAL IS MONEY. What the step spends against the unit's reservation is the PRICED
+    /// total of the usage, in the nano-units the reservation is in — never the sum of the token
+    /// counts, which is a figure in no unit at all.
+    ///
+    /// A reservation is nano-units. A usage report carries one quantity per meter class, each in
+    /// that class's own unit, and adding them across classes gives a number that is not comparable
+    /// with the reservation it is subtracted from. So a step that accrued the sum would leave the
+    /// residual the exit releases, the overdraft it carries out and every legacy row derived from
+    /// the pair wrong by whatever the classes happened to be — and here it would be wrong by a
+    /// factor of more than three thousand in the cheap direction.
+    ///
+    /// The literals: 100 input tokens and 50 output tokens priced at 2_000 and 6_000 nano-units
+    /// each is 500_000 nano-units of value delivered. Today the step accrues 150.
+    #[test]
+    fn the_accrual_against_the_reservation_is_the_priced_total_not_the_token_count() {
+        use busbar_caps::{step::Admit as AdmitStep, AdmitToken, KernelSeal, PrincipalId};
+
+        let (app, key) = priced_rig();
+        let (host, rt) = crate::engine::test_host_rt(&app);
+        let reported = busbar_substrate::billing::TokenUsage {
+            input: PRICED_INPUT,
+            output: PRICED_OUTPUT,
+            ..Default::default()
+        };
+        let sink = sink(&host, &key, busbar_substrate::store::now());
+        let tables = crate::engine::EngineTables::new(&rt);
+        let lane = &tables.lanes()[0];
+        let ctx = MeterCtx::new(
+            &host,
+            Some(&sink),
+            Some(lane),
+            Some(&reported),
+            200,
+            true,
+            true,
+            false,
+        );
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let unit_token = UnitToken::<Meter>::mint(&seal);
+        let usage_token = UsageToken::mint(&seal);
+        // A reservation wide enough that the priced spend fits inside it, so the figure under test
+        // is the accrual itself and not a top-up or an overdraft reacting to it.
+        let hold = busbar_caps::Hold::open(
+            &AdmitToken::<AdmitStep>::mint(&seal),
+            PrincipalId::new(&key.id),
+            1_000_000,
+        );
+        let metered = meter(
+            &unit_token,
+            &usage_token,
+            &ctx,
+            Some(hold),
+            &Outcome::Completed,
+        );
+
+        let hold = metered.hold.expect("the hold rides back out to the exit");
+        assert_eq!(
+            hold.accrued(),
+            PRICED_NANOS,
+            "the step spends the card's price for the usage, not the sum of the token counts"
+        );
+        assert_eq!(
+            hold.remaining(),
+            1_000_000 - PRICED_NANOS,
+            "and what the exit releases is the reservation less that same money figure"
+        );
+
+        // The report is untouched by the pricing: it still carries one line per non-zero tier, in
+        // the classes' own units, because the lines are what the posting is evidence FOR.
+        let usage = metered
+            .decision
+            .into_result(&seal)
+            .expect("a delivered response proceeds");
+        assert_eq!(usage.lines().len(), 2, "two tiers reported, two lines");
+        assert_eq!(
+            usage.total(),
+            PRICED_INPUT + PRICED_OUTPUT,
+            "the quantity sum is still there to be read; it is simply not the money"
+        );
+    }
 }
