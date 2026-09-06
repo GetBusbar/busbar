@@ -221,54 +221,6 @@ impl AdminDispatch for RefusingDispatch {
     }
 }
 
-/// The store a node has before one is configured.
-///
-/// Every method answers that there is nothing there, which is what an unconfigured store IS. It is
-/// not the production default — that is the loader's ABI-2 adapter over the configured store, and
-/// the in-tree memory store when a config names none — it is what the composition holds until the
-/// configured one is built.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RefusingStore;
-
-impl busbar_unit_verbs::store::Store for RefusingStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
-    }
-
-    fn store_restore(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
-    }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Ok(())
-    }
-}
-
 // ── the ledger's read-only views ────────────────────────────────────────────────────────────────
 
 /// The figures the five ledger views read.
@@ -2743,7 +2695,7 @@ mod tests {
             let token: UnitToken<Route> = UnitToken::mint(&seal);
             let outcome = route(
                 &binding,
-                Arc::new(RefusingStore),
+                Arc::new(crate::root::kernel::RefusingStore),
                 &admin,
                 &token,
                 &ctx,
@@ -4308,7 +4260,7 @@ mod tests {
                     *verb,
                     a_ledger_request("/api/v1/admin/ledger/totals"),
                 ),
-                RefusingStore,
+                crate::root::kernel::RefusingStore,
                 ArrivalNonce(1),
                 PackedReplay,
                 CONFIG_CLASS_RULES,
@@ -4349,7 +4301,7 @@ mod tests {
                 KernelVerb::Adjust,
                 a_ledger_request("/api/v1/admin/adjust"),
             ),
-            RefusingStore,
+            crate::root::kernel::RefusingStore,
             ArrivalNonce(1),
             PackedReplay,
             CONFIG_CLASS_RULES,
