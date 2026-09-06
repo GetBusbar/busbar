@@ -193,6 +193,7 @@ run_selftest() {
   # 3. Plant each violation and require exactly one FAIL row, naming the rule.
   local rule rc
   for rule in one-attempt-seam request-path-fn-size ports-only:busbar-voice ports-only-tests:busbar-voice \
+              ports-only:busbar-llm \
               no-uninstalled-seam neutral-no-dialect single-terminal \
               token-sealed teller-step-order one-teller-loop one-teller-loop:run_gauntlet \
               no-response-escapes-audit terminal-doors-in-audit-step one-pick-site \

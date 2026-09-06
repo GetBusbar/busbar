@@ -383,9 +383,13 @@ def rule_ports_only(tree, cfg):
     prod = cfg["rules"]["ports-only"]
     test = cfg["rules"]["ports-only-tests"]
     needle = re.escape(prod["needle"])
+    codecs = cfg["gate"].get("plane_codec_crates", {})
     rows = []
     for crate in cfg["gate"]["plane_crates"]:
-        files = [rel for rel in tree.files if rel.startswith(os.path.join("crates", crate) + os.sep)]
+        # A plane is BOTH halves: the crate under its own name and the pure `-codec` crate it shed.
+        # One row per plane, over both, so the split moved files without moving them out of view.
+        prefixes = tuple(os.path.join("crates", c) + os.sep for c in [crate] + list(codecs.get(crate, [])))
+        files = [rel for rel in tree.files if rel.startswith(prefixes)]
         per_file_prod, per_file_test = {}, {}
         for rel in files:
             for l in tree.files[rel]:

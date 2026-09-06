@@ -13,8 +13,8 @@
 # Where Rust source is scanned. Globs relative to the repo root; the composition-root bin
 # (crates/busbar) is included on purpose because production installers live there.
 scan_roots = ["crates/*/src"]
-# The plane crates (the plugin side). Mirrors scripts/plane-keys.sh, spelled out here so each
-# crate can carry its own ceiling below.
+# The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
+# below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
 plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
@@ -36,6 +36,22 @@ export = ["crates/export-*"]
 transport = ["crates/busbar-transport-*"]
 loader = ["crates/plugin-loader"]
 abi = ["crates/busbar-contract"]
+
+# The OTHER half of each plane's sources. Every plane kept its I/O half under its own name and shed
+# its pure half — the codecs, the record vocabularies, the duplex IR, the dialect grammars — into a
+# `-codec` crate; scripts/plane-keys.sh's `plane_src_roots` names both halves for exactly that
+# reason. A gate that scans sources rather than manifests and knows only the first half stops
+# watching the bulk of the plane on the day of the split and still prints a green row, so the second
+# half is named here and folded into its plane's ports-only rows.
+#
+# This is deliberately NOT `plane_crates`. That list also decides which dependency is a
+# plane-names-another-plane RED in manifest-allowlist, and a plane naming its own pure codec half is
+# the intended shape, already on that rule's reviewed list.
+[gate.plane_codec_crates]
+busbar-llm = ["busbar-llm-codec"]
+busbar-mcp = ["busbar-mcp-codec"]
+busbar-a2a = ["busbar-a2a-codec"]
+busbar-voice = ["busbar-voice-codec"]
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]

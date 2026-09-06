@@ -33,6 +33,7 @@ TOUCHED = [
     "crates/busbar-llm/src/native_ingress.rs",
     "crates/busbar-llm/src/unit/route.rs",
     "crates/busbar-voice/src/lib.rs",
+    "crates/busbar-llm-codec/src/planted_codec_reach.rs",
     "crates/busbar-substrate/src/lib.rs",
     "crates/busbar-substrate/src/plane_host/mod.rs",
     "crates/busbar-substrate/src/teller/run.rs",
@@ -88,6 +89,15 @@ def plant(rule, pristine, scratch, cfg, baseline):
         append(scratch, "crates/busbar-llm/src/arrival.rs", f"fn planted_giant() {{\n{body}\n}}")
     elif rule == "ports-only:busbar-voice":
         append(scratch, "crates/busbar-voice/src/lib.rs",
+               "fn planted_reach() { let _ = busbar_core::planted::Thing; }")
+    elif rule == "ports-only:busbar-llm":
+        # The reach is planted in the plane's OTHER half -- the pure codec crate the LLM plane shed.
+        # Nothing under crates/busbar-llm/ is touched, so this only goes red if the plane's row
+        # covers both halves; a scanner that knows only the engine crate stays green here.
+        codec = os.path.join(scratch, "crates/busbar-llm-codec/src")
+        if not os.path.isdir(codec):
+            nothing_to_plant("crates/busbar-llm-codec/src does not exist yet")
+        append(scratch, "crates/busbar-llm-codec/src/planted_codec_reach.rs",
                "fn planted_reach() { let _ = busbar_core::planted::Thing; }")
     elif rule == "ports-only-tests:busbar-voice":
         append(scratch, "crates/busbar-voice/src/lib.rs",
