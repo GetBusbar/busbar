@@ -16,6 +16,11 @@
 //! `client_identity_ref`; they get their own ref. A host-wide set would trust one registration's CA on
 //! every hop — precisely the blast radius a per-registration ref avoids.
 //!
+//! REGISTRATION IS GENERATION-SCOPED, exactly as it is for a client identity: the ref belongs to a
+//! [`TrustAnchorGeneration`] its installer OWNS, and dropping that generation retires every ref it
+//! minted (`resolve` then adds no extra roots — fail-closed). See
+//! [`identity`](super::identity) for why the lifetime is the owner's and not a global "newest wins".
+//!
 //! Registered ONCE, at boot (a config generation), not per hop — a re-parse of the same PEM on every
 //! tick is wasted work and a needless allocation. The map is process-wide because the ref the plane
 //! holds is minted from a process atomic (the same discipline the egress, credential and identity
@@ -37,23 +42,83 @@ use std::sync::{LazyLock, Mutex};
 static REGISTRY: LazyLock<Mutex<HashMap<u64, Vec<CertificateDer<'static>>>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// The next trust-anchor ref. `0` is the reserved "none" ref (a hop adding no extra roots), so refs
-/// start at `1`.
-static NEXT_REF: AtomicU64 = AtomicU64::new(1);
+/// The next GENERATION number — the high half of every ref, so a ref a retired generation minted can
+/// never be re-minted by a later one.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// The next per-generation slot. `0` is the reserved "none" ref (a hop adding no extra roots), and a
+/// ref carries a nonzero generation in its high half, so no live ref is ever `0`.
+static NEXT_SLOT: AtomicU64 = AtomicU64::new(1);
 
 fn registry() -> std::sync::MutexGuard<'static, HashMap<u64, Vec<CertificateDer<'static>>>> {
     REGISTRY.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Register a set of parsed extra-root `roots`, returning the opaque `trust_anchor_ref` the plane
-/// carries on its [`EgressDesc`](busbar_plugin::hot::EgressDesc). The ONLY thing about the anchors that
-/// crosses the seam is this `u64`; the parsed certificates stay host-side in the registry. Registering
-/// an EMPTY set still mints a live (nonzero) ref — it simply resolves to no extra roots.
-#[must_use]
-pub fn register(roots: Vec<CertificateDer<'static>>) -> u64 {
-    let trust_anchor_ref = NEXT_REF.fetch_add(1, Ordering::Relaxed);
-    registry().insert(trust_anchor_ref, roots);
-    trust_anchor_ref
+/// The generation half of a ref — what [`TrustAnchorGeneration::drop`] retires by.
+const fn generation_of(trust_anchor_ref: u64) -> u64 {
+    trust_anchor_ref >> 32
+}
+
+/// ONE GENERATION OF REGISTERED ANCHORS — the lifetime of the roots registered through it, and the
+/// same lifecycle [`IdentityGeneration`](super::identity::IdentityGeneration) gives a generation of
+/// client identities.
+///
+/// A registry with no removal widens nothing by itself (these are public certificates, not keys), but
+/// it does keep every root a re-registration superseded resolvable through any ref that was handed
+/// out — so an anchor set the operator narrowed still has a live ref naming the wider one. Retiring
+/// on drop makes a superseded anchor set unreachable at the moment its owner lets go, and keeps the
+/// registry's population the number of anchor sets actually in use.
+pub struct TrustAnchorGeneration {
+    generation: u64,
+}
+
+impl TrustAnchorGeneration {
+    /// Open a fresh generation. Retires nothing by itself — a previous generation goes when its own
+    /// handle is dropped.
+    #[must_use]
+    pub fn install() -> Self {
+        TrustAnchorGeneration {
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
+        }
+    }
+
+    /// Register a set of parsed extra-root `roots` IN THIS GENERATION, returning the opaque
+    /// `trust_anchor_ref` the plane carries on its [`EgressDesc`](busbar_plugin::hot::EgressDesc). The
+    /// ONLY thing about the anchors that crosses the seam is this `u64`; the parsed certificates stay
+    /// host-side in the registry, and only as long as this generation does. Registering an EMPTY set
+    /// still mints a live (nonzero) ref — it simply resolves to no extra roots.
+    #[must_use]
+    pub fn register(&self, roots: Vec<CertificateDer<'static>>) -> u64 {
+        let slot = NEXT_SLOT.fetch_add(1, Ordering::Relaxed) & 0xffff_ffff;
+        let trust_anchor_ref = (self.generation << 32) | slot;
+        registry().insert(trust_anchor_ref, roots);
+        trust_anchor_ref
+    }
+
+    /// How many anchor SETS this generation is holding — generation-scoped for the same reason
+    /// [`IdentityGeneration::len`](super::identity::IdentityGeneration::len) is.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        registry()
+            .keys()
+            .filter(|r| generation_of(**r) == self.generation)
+            .count()
+    }
+
+    /// Whether this generation registered no anchor set at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+impl Drop for TrustAnchorGeneration {
+    /// RETIRE the generation: drop every anchor set it minted. A hop still carrying one of those refs
+    /// resolves to NO extra roots — fail-closed, trusting only the platform roots, exactly as a hop
+    /// that named no anchor at all.
+    fn drop(&mut self) {
+        registry().retain(|r, _| generation_of(*r) != self.generation);
+    }
 }
 
 /// Resolve `trust_anchor_ref` to its parsed extra roots, or an EMPTY vec when the ref is `0` (add no

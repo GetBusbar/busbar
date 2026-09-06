@@ -245,7 +245,17 @@ pub(crate) struct ReqwestTransport {
     /// `CertificateRequest` asks. `0` where the operator named none — the honest mTLS outcome, the peer
     /// closes the handshake itself rather than busbar forging an identity. The private key never crosses
     /// the seam. There is no fallback identity and no plane-wide one.
+    ///
+    /// The ref lives exactly as long as the identity GENERATION it was registered in — held by the
+    /// bundle that built this transport ([`LiveCardFetch::identities`]) — so the apply that releases
+    /// the bundle is the apply that takes the key out of the host registry.
     client_identity_ref: u64,
+    /// TEST-ONLY: the trust-anchor generation the accumulated [`Self::extra_roots`] are registered in.
+    /// Held so that the ref stays live for this transport's hops and is RETIRED when the transport is
+    /// dropped (and when a second `trusting_root` supersedes it), instead of every re-registration
+    /// leaving its predecessor resident for the life of the process.
+    #[cfg(all(test, feature = "test-support"))]
+    trust_roots: Option<busbar_substrate::plane_host::trust_anchor::TrustAnchorGeneration>,
 }
 
 impl ReqwestTransport {
@@ -261,6 +271,8 @@ impl ReqwestTransport {
             extra_roots: Vec::new(),
             trust_anchor_ref: 0,
             client_identity_ref: 0,
+            #[cfg(all(test, feature = "test-support"))]
+            trust_roots: None,
         }
     }
 
@@ -271,11 +283,16 @@ impl ReqwestTransport {
     /// that could be attached after the fact is an identity that could be attached to the transport
     /// a different agent is being fetched with. The parsed key is handed to the host registry ONCE
     /// here (at boot), not per hop — this transport keeps only the opaque ref.
+    ///
+    /// REGISTERED IN `generation`, which the caller owns and outlives this transport by construction
+    /// (the bundle holds both). When that generation is retired the ref stops resolving and the key
+    /// is wiped, so a config apply's identities do not outlive the apply that resolved them.
     pub(crate) fn presenting(
         mut self,
+        generation: &busbar_substrate::plane_host::identity::IdentityGeneration,
         identity: busbar_substrate::egress::engine::ClientIdentity,
     ) -> Self {
-        self.client_identity_ref = busbar_substrate::plane_host::identity::register(identity);
+        self.client_identity_ref = generation.register(identity);
         self
     }
 
@@ -289,10 +306,13 @@ impl ReqwestTransport {
                     .expect("a PEM certificate"),
             );
         }
-        // Re-register the FULL accumulated set (a fresh ref each time), so the desc's one ref resolves
-        // to every root this transport was told to trust — the host owns the parsed certificates.
-        self.trust_anchor_ref =
-            busbar_substrate::plane_host::trust_anchor::register(self.extra_roots.clone());
+        // Re-register the FULL accumulated set in a FRESH generation, so the desc's one ref resolves
+        // to every root this transport was told to trust — and assigning the new generation over the
+        // old one retires the ref this call superseded rather than leaving it resident.
+        let generation =
+            busbar_substrate::plane_host::trust_anchor::TrustAnchorGeneration::install();
+        self.trust_anchor_ref = generation.register(self.extra_roots.clone());
+        self.trust_roots = Some(generation);
         self
     }
 }
@@ -524,6 +544,19 @@ pub(crate) struct LiveCardFetch {
     /// resolved at boot; a registration absent from here gets `transport` above.
     per_agent: BTreeMap<String, ReqwestTransport>,
     policy: FetchPolicy,
+    /// THE HOST-SIDE IDENTITY GENERATION THIS BUNDLE'S REFS BELONG TO — and, because the handle is
+    /// owned here, the LIFETIME OF THE PRIVATE KEYS behind them.
+    ///
+    /// Every config apply resolves the operator's client certificates again and builds a new bundle;
+    /// without an owner for the registrations, each apply left another N parsed private keys resident
+    /// for the life of the process, still resolvable through any ref already handed out. Holding the
+    /// generation here makes releasing the bundle — which is what an apply does to the one it
+    /// replaces, and to the one it built if the plane is already carrying a bundle — the act that
+    /// retires those refs and wipes the keys. A hop still carrying a retired ref presents no
+    /// certificate at all (fail-closed), never a retired one.
+    ///
+    /// Never read; it is held for its `Drop`.
+    _identities: busbar_substrate::plane_host::identity::IdentityGeneration,
 }
 
 impl LiveCardFetch {
@@ -537,12 +570,16 @@ impl LiveCardFetch {
     /// parsed key that several transports may need over a process lifetime and the caller resolved
     /// them once.
     pub(crate) fn presenting(policy: FetchPolicy, identities: &ClientIdentities) -> Self {
+        // ONE GENERATION PER APPLY. The bundle owns it, so the keys registered below live exactly as
+        // long as the bundle that presents them: the apply that releases a bundle retires its
+        // generation, and no apply leaves a previous one's keys behind.
+        let generation = busbar_substrate::plane_host::identity::IdentityGeneration::install();
         let per_agent = identities
             .iter()
             .map(|(agent_id, identity)| {
                 (
                     agent_id.clone(),
-                    ReqwestTransport::new(&policy).presenting(identity.clone()),
+                    ReqwestTransport::new(&policy).presenting(&generation, identity.clone()),
                 )
             })
             .collect();
@@ -551,6 +588,7 @@ impl LiveCardFetch {
             transport: ReqwestTransport::new(&policy),
             per_agent,
             policy,
+            _identities: generation,
         }
     }
 
@@ -568,6 +606,7 @@ impl LiveCardFetch {
             transport,
             per_agent,
             policy,
+            _identities,
         } = self;
         Self {
             resolver,
@@ -577,6 +616,9 @@ impl LiveCardFetch {
                 .map(|(id, t)| (id, t.trusting_root(pem)))
                 .collect(),
             policy,
+            // The SAME generation moves with the bundle: adding a root does not re-register, and must
+            // not retire, the identities the transports above are still carrying refs to.
+            _identities,
         }
     }
 

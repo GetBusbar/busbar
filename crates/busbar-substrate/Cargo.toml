@@ -113,6 +113,10 @@ rcgen = { workspace = true, optional = true }
 # `CertificateDer`/`PrivateKeyDer` and `from_pem` rides the same `rustls-pki-types` PEM walk
 # `reqwest::Identity::from_pem` uses — which is the R4 verdict-parity argument made structural.
 rustls-pki-types = { workspace = true }
+# WIPING A RETIRED PRIVATE KEY. `rustls-pki-types` implements `Zeroize` for `PrivateKeyDer` but NOT
+# `ZeroizeOnDrop`, so the host-side identity registry has to ask for the wipe explicitly when a
+# generation of client identities is retired (`ClientIdentity::zeroize_key`).
+zeroize = { workspace = true }
 # THE EGRESS ENGINE (`egress::engine`, relocated verbatim from busbar-core's
 # `proxy::egress_client`): hyper_util's legacy pool client over a rustls/webpki connector plus the
 # owned scheme-scoped CONNECT tunnel. The engine is the ONE outbound stack every plane builds its
