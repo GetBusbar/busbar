@@ -83,6 +83,20 @@ pub struct ConfigKeys {
     pub groups: Vec<String>,
     /// Every window name a configured group bucket is declared over.
     pub bucket_windows: Vec<String>,
+    /// Every meter class a configured bucket declares a cap or a price over.
+    ///
+    /// A meter class is open vocabulary in the strictest sense: the four token classes are the
+    /// previous release's whole set and a migrated plane's classes are whatever its own configuration
+    /// names. The unit counts them under a `&'static str`, so a class discovered at a rate lookup
+    /// would be a leak per priced line rather than per boot.
+    pub meter_classes: Vec<String>,
+    /// Every meter class sealed as one this deployment prices at zero.
+    ///
+    /// The migration's own list, and a separate field rather than a subset of the one above because
+    /// it is separately sourced: the classes the previous release never priced are sealed at the
+    /// opening, not read off a bucket. A class in both is one leak, which is what the interner is
+    /// idempotent for.
+    pub unpriced_classes: Vec<String>,
 }
 
 impl ConfigKeys {
@@ -105,6 +119,8 @@ impl ConfigKeys {
             .chain(&self.slot_fingerprints)
             .chain(&self.groups)
             .chain(&self.bucket_windows)
+            .chain(&self.meter_classes)
+            .chain(&self.unpriced_classes)
             .map(String::as_str)
     }
 }
@@ -244,6 +260,8 @@ mod tests {
             slot_fingerprints: vec!["fingerprint-0".into()],
             groups: vec!["tenant-acme".into(), "team-platform".into()],
             bucket_windows: vec!["60s".into()],
+            meter_classes: vec!["input".into(), "output".into(), "session_seconds".into()],
+            unpriced_classes: vec!["session_seconds".into()],
         }
     }
 
@@ -256,7 +274,7 @@ mod tests {
         let interned = vocabulary.intern_all(&keys);
 
         assert_eq!(interned.len(), keys.all().count());
-        assert_eq!(vocabulary.len(), 19);
+        assert_eq!(vocabulary.len(), 22);
         for (name, value) in interned.iter().zip(keys.all()) {
             assert_eq!(*name, value);
         }
@@ -346,7 +364,7 @@ mod tests {
         let second: Vec<&str> = keys.all().collect();
         assert_eq!(first, second);
         assert_eq!(first[0], "lane-primary");
-        assert_eq!(first[first.len() - 1], "60s");
+        assert_eq!(first[first.len() - 1], "session_seconds");
     }
 
     /// A key that appears in two sections — a pool and a lane sharing a name, which configuration
