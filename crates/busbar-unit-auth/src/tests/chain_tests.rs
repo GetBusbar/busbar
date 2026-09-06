@@ -191,6 +191,43 @@ fn test_1_5_2_keys_arm_is_cache_exempt() {
     );
 }
 
+/// A boxed module's buffered `Pass` is real re-verification work already paid for. The rule that
+/// commits it on the chain's `Identified` return does not care which member produced that
+/// return — the keys arm identifying counts exactly the same as a boxed module identifying, so the
+/// earlier module's buffered verdict must land in the cache and be re-used on the next request
+/// instead of being re-verified for no reason.
+#[test]
+fn test_pending_pass_is_committed_when_the_keys_arm_identifies() {
+    let cache = CredentialCache::new(super::test_digest);
+    let verifier = OneKey {
+        token: "vk-token",
+        aud: None,
+    };
+    let passer = Canned::cacheable("passer", AuthOutcome::Pass);
+    let calls = passer.calls.clone();
+    let c = chain(vec![entry("passer", Box::new(passer))], true);
+
+    assert!(matches!(
+        c.run_chain_cached(Some("vk-token"), Some(&cache), Some(&verifier), 1000, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert!(
+        !cache.is_empty(),
+        "the buffered Pass must be committed once the chain identifies, keys arm included"
+    );
+
+    assert!(matches!(
+        c.run_chain_cached(Some("vk-token"), Some(&cache), Some(&verifier), 1000, None),
+        ChainVerdict::Identified { .. }
+    ));
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "the second run hits the cached Pass rather than re-verifying the module"
+    );
+}
+
 #[test]
 fn test_cacheable_defaults_to_false() {
     let cache = CredentialCache::new(super::test_digest);
