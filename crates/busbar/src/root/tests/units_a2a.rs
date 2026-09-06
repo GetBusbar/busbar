@@ -1449,9 +1449,10 @@ fn a_callback_token_past_its_deadline_is_refused() {
 /// default — which is the posture every deployment whose store predates this verb runs on. For a
 /// read, "this store remembers nothing" and "there is nothing to remember" are the same answer;
 /// for a capability check they are opposites, and this asserts which one the default takes. The
-/// sibling `redeem_plane_token` default is deliberately `Ok(true)` and stays that way — a store
-/// that keeps no ledger genuinely has spent nothing — so the two are asserted apart here rather
-/// than assumed to agree.
+/// sibling `redeem_plane_token` default fails CLOSED for the same reason from the other side: its
+/// `true` is not a receipt but the assertion that this redemption is the FIRST one, and a store
+/// keeping no ledger cannot assert that — so it errors rather than confirming. The two are
+/// asserted together here rather than assumed to agree.
 #[test]
 fn the_default_liveness_answer_is_a_refusal() {
     use busbar_api::Store as _;
@@ -1464,12 +1465,12 @@ fn the_default_liveness_answer_is_a_refusal() {
         "the default answered LIVE for a store that keeps no capability rows at all; every \
          deployment on an older store would accept a replayed callback"
     );
+    let err = store
+        .redeem_plane_token("ask", "n-1", u64::MAX, 0)
+        .expect_err("a store with no ledger cannot say this redemption is the first one");
     assert!(
-        store
-            .redeem_plane_token("ask", "n-1", u64::MAX, 0)
-            .expect("the default answers"),
-        "the single-use redeem's default is the opposite one on purpose, and moving it would \
-         break approvals rather than fix a replay"
+        format!("{err:?}").contains("single-use-token ledger"),
+        "the single-use redeem's default names the ledger it does not keep: {err:?}"
     );
 }
 

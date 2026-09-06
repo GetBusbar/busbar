@@ -687,7 +687,9 @@ fn an_explicit_empty_scope_list_denies_every_pool() {
 
 /// A call names both resource kinds; everything else names only the server.
 ///
-/// The coarse grant never stands in for the fine one, which is the whole reason there are two.
+/// The coarse grant never stands in for the fine one, which is the whole reason there are two —
+/// and the fine one is only fine if it carries the TOOL's name. Two tools on one registration
+/// have to reach two different scopes, or a grant for the reader is a grant for the deleter.
 #[test]
 fn a_call_names_the_tool_as_well_as_the_server() {
     static SERVERS: &[Server] = &[Server {
@@ -698,12 +700,23 @@ fn a_call_names_the_tool_as_well_as_the_server() {
     }];
     let plane = McpPlane::new(SERVERS);
 
-    let call = resources(&plane, ops::OP_TOOL_CALL);
+    let call = resources(&plane, ops::OP_TOOL_CALL, Some("read_file"));
     assert_eq!(call.len(), 2);
     assert_eq!(call[0].kind, SCOPE_KIND_SERVER);
+    assert_eq!(call[0].name, "fs");
     assert_eq!(call[1].kind, SCOPE_KIND_TOOL);
+    assert_eq!(call[1].name, "read_file");
 
-    let listing = resources(&plane, ops::OP_TOOLS_LIST);
+    // The two tools of one registration do not collapse onto one scope.
+    let destructive = resources(&plane, ops::OP_TOOL_CALL, Some("delete_file"));
+    assert_eq!(destructive[1].name, "delete_file");
+    assert_ne!(call[1], destructive[1]);
+
+    // A call that named no tool names no resource at all, which is a refusal rather than a pass.
+    assert!(resources(&plane, ops::OP_TOOL_CALL, None).is_empty());
+    assert!(resources(&plane, ops::OP_TOOL_CALL, Some("")).is_empty());
+
+    let listing = resources(&plane, ops::OP_TOOLS_LIST, None);
     assert_eq!(listing.len(), 1);
     assert_eq!(listing[0].kind, SCOPE_KIND_SERVER);
 }
@@ -719,6 +732,7 @@ fn nothing_registered_is_a_refusal_and_not_a_pass() {
     let refusal = approve(
         &McpPlane::EMPTY,
         ops::OP_TOOL_CALL,
+        Some("read_file"),
         Grants::of(Scope::Full),
         &policy,
     )
@@ -740,8 +754,14 @@ fn silence_is_a_refusal() {
     }];
     let plane = McpPlane::new(SERVERS);
     let silent = crate::root::policy::ScopePolicy::new();
-    let refusal = approve(&plane, ops::OP_TOOL_CALL, Grants::of(Scope::Full), &silent)
-        .expect_err("an unwritten policy entry authorizes nothing");
+    let refusal = approve(
+        &plane,
+        ops::OP_TOOL_CALL,
+        Some("read_file"),
+        Grants::of(Scope::Full),
+        &silent,
+    )
+    .expect_err("an unwritten policy entry authorizes nothing");
     assert_eq!(refusal, ApproveRefusal::NoPolicyEntry);
 }
 
@@ -763,6 +783,7 @@ fn a_read_only_grant_lists_and_does_not_call() {
     assert!(approve(
         &plane,
         ops::OP_TOOLS_LIST,
+        None,
         Grants::of(Scope::ReadOnly),
         &policy
     )
@@ -771,6 +792,7 @@ fn a_read_only_grant_lists_and_does_not_call() {
     let refusal = approve(
         &plane,
         ops::OP_TOOL_CALL,
+        Some("read_file"),
         Grants::of(Scope::ReadOnly),
         &policy,
     )
