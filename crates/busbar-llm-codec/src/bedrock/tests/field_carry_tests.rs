@@ -637,7 +637,9 @@ fn bedrock_carry_response_output_and_stop_reason() {
 /// `bedrock/response/usage.{inputTokens,outputTokens,totalTokens,cacheReadInputTokens,
 /// cacheWriteInputTokens}` — the whole token-usage vector, including Bedrock's ADDITIVE cache
 /// buckets, must reach `IrUsage` (billing-reconcilable) and re-emit natively. `totalTokens` is
-/// re-derived by the writer.
+/// re-derived by the writer as AWS defines it: input + output + both cache buckets (AWS's own
+/// caching example totals 16 + 4 + 695 as 715), so the fixture's wire total is that same sum and
+/// the re-emission is a faithful carry rather than a smaller derived number.
 #[test]
 fn bedrock_carry_response_usage() {
     let reader = BedrockReader;
@@ -648,7 +650,7 @@ fn bedrock_carry_response_usage() {
         "usage": {
             "inputTokens": 100,
             "outputTokens": 25,
-            "totalTokens": 125,
+            "totalTokens": 175,
             "cacheReadInputTokens": 40,
             "cacheWriteInputTokens": 10
         }
@@ -684,10 +686,10 @@ fn bedrock_carry_response_usage() {
         Some(25),
         "usage.outputTokens must re-emit; got {out}"
     );
-    // totalTokens is re-derived by the writer (input + output).
+    // totalTokens is re-derived by the writer (input + output + cacheRead + cacheWrite).
     assert_eq!(
         out.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
-        Some(125),
+        Some(175),
         "usage.totalTokens must re-emit; got {out}"
     );
     assert_eq!(

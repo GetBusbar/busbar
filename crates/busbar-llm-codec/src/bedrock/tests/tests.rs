@@ -3663,7 +3663,10 @@ fn test_write_response_emits_cache_tokens_roundtrip() {
         "usage": {
             "inputTokens": 10,
             "outputTokens": 5,
-            "totalTokens": 15,
+            // AWS's cache-INCLUSIVE total: 10 + 5 + 64 + 128. A fixture whose total omitted the
+            // cache buckets could only "round-trip" against a writer making the same omission;
+            // this pins the round-trip against a body an AWS backend would actually send.
+            "totalTokens": 207,
             "cacheReadInputTokens": 64,
             "cacheWriteInputTokens": 128
         }
@@ -3765,11 +3768,13 @@ fn test_write_stream_metadata_emits_cache_tokens() {
             .and_then(|v| v.as_u64()),
         Some(11)
     );
+    // AWS's cache-inclusive total: 11 + 7 + 20 + 40. The cache buckets are emitted as ADDITIVE
+    // siblings, so a total that excluded them would be smaller than the parts beside it.
     assert_eq!(
         payload
             .pointer("/usage/totalTokens")
             .and_then(|v| v.as_u64()),
-        Some(18)
+        Some(78)
     );
 }
 
@@ -6047,6 +6052,77 @@ fn bedrock_input_tier_excludes_cache_at_billing_boundary() {
         u(busbar_api::UNIT_INPUT),
         10 + 1000 + 200,
         "inputTokens must never be treated as cache-INCLUSIVE for Bedrock (additive convention)"
+    );
+}
+
+/// AWS Converse's `usage.totalTokens` is the TOTAL of every token the call consumed, cache tokens
+/// INCLUDED. AWS's own prompt-caching example is unambiguous: `inputTokens: 16, outputTokens: 4,
+/// cacheWriteInputTokens: 695, totalTokens: 715` — 16 + 4 + 695. `inputTokens` under caching counts
+/// only the NON-cached input, and AWS documents the full input as
+/// `inputTokens + cacheReadInputTokens + cacheWriteInputTokens`.
+///
+/// The writer emitted `totalTokens = inputTokens + outputTokens` while emitting the two cache
+/// counts as additive siblings, so the parts summed PAST the stated total: a native AWS SDK client
+/// (or any accounting consumer reading `totalTokens`, the field AWS points billing consumers at)
+/// silently lost every cache token. Pins both emission sites — the buffered Converse body and the
+/// streamed `metadata` frame — to the AWS arithmetic, and pins the same-protocol round-trip that
+/// the buffered writer's own comment promises is byte-identical.
+#[test]
+fn total_tokens_includes_cache_tokens_on_both_write_paths() {
+    let wire_total = 10u64 + 5 + 1000 + 200;
+    let body = serde_json::json!({
+        "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+        "stopReason": "end_turn",
+        "usage": {
+            "inputTokens": 10,
+            "outputTokens": 5,
+            "totalTokens": wire_total,
+            "cacheReadInputTokens": 1000,
+            "cacheWriteInputTokens": 200
+        }
+    });
+    let resp = BedrockReader.read_response(&body).expect("read_response");
+
+    // Buffered Converse body: a Bedrock→Bedrock round-trip must reproduce the upstream total.
+    let out = BedrockWriter.write_response(&resp);
+    assert_eq!(
+        out.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
+        Some(wire_total),
+        "buffered totalTokens must be inputTokens + outputTokens + cacheRead + cacheWrite, the \
+         AWS arithmetic — a round-trip that drops the cache tokens under-reports the call"
+    );
+    // The parts must reconcile against the stated total, not overshoot it.
+    let part = |k: &str| {
+        out.pointer(&format!("/usage/{k}"))
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+    };
+    assert_eq!(
+        part("inputTokens")
+            + part("outputTokens")
+            + part("cacheReadInputTokens")
+            + part("cacheWriteInputTokens"),
+        part("totalTokens"),
+        "the emitted parts must sum to the emitted totalTokens"
+    );
+
+    // Streamed `metadata` frame: the same usage object, so the same arithmetic.
+    let usage_only = IrStreamEvent::MessageDelta {
+        stop_reason: None,
+        stop_sequence: None,
+        usage: resp.usage.clone(),
+    };
+    let (et, payload) = BedrockWriter
+        .write_response_event(&usage_only)
+        .expect("usage-only delta must emit a frame");
+    assert_eq!(et, "metadata");
+    assert_eq!(
+        payload
+            .pointer("/usage/totalTokens")
+            .and_then(|v| v.as_u64()),
+        Some(wire_total),
+        "the streamed metadata frame must report the same total as the buffered body for the \
+         same usage — a stream/buffered split is a second, disagreeing answer"
     );
 }
 
