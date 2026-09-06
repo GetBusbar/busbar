@@ -4137,6 +4137,80 @@ async fn test_admin_v1_config_validate_dry_run() {
     handle.abort();
 }
 
+/// `POST /api/v1/admin/config/validate` must read the request's `config:` through the SAME document
+/// pre-pass boot and `--validate` read it through. The pre-pass lifts the 1.6.0-additive top-level
+/// sections off the document BEFORE the frozen 1.5.5-shaped struct parses it; an endpoint that hands
+/// the body straight to the derived `Deserialize` never runs that lift, so a document carrying a
+/// plane section is refused as malformed here while the CLI and boot accept it — and the SAME
+/// document with the section deleted comes back `ok: true` for a section that was never validated.
+///
+/// Asserts BOTH halves of the parity: the document the endpoint is handed is one the pre-pass (the
+/// CLI's own entry point) accepts, and the endpoint's verdict for it is byte-identical to its verdict
+/// for the same document without the section.
+#[tokio::test]
+async fn test_admin_v1_config_validate_reads_a_plane_section_like_the_cli() {
+    crate::metrics::init();
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let app = TestApp::new().governance(gov).build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = reqwest::Client::new();
+    let url = format!("http://{addr}/api/v1/admin/config/validate");
+
+    // A config document with NO plane section, and the SAME document carrying one. `tools:` is one
+    // of the top-level keys the pre-pass lifts; the frozen struct denies unknown fields, so without
+    // the lift the second document cannot parse at all.
+    let base = serde_json::json!({
+        "providers": { "openai": { "api_key": { "env": "OPENAI_KEY" } } },
+        "models": {}
+    });
+    let mut with_plane = base.clone();
+    with_plane["tools"] = serde_json::json!({});
+
+    // THE CLI's OWN ENTRY POINT accepts the document with the plane section — this is the verdict
+    // the endpoint has to agree with.
+    let as_yaml: serde_yaml::Value =
+        serde_yaml::to_value(&with_plane).expect("the proposed config re-serializes as a document");
+    crate::config::deploy_from_yaml_value(as_yaml)
+        .expect("the pre-pass (boot / --validate) accepts a document carrying a plane section");
+
+    let verdict = |cfg: serde_json::Value| {
+        let client = client.clone();
+        let url = url.clone();
+        async move {
+            let resp = client
+                .post(&url)
+                .header("x-admin-token", "admintok")
+                .header("content-type", "application/json")
+                .body(serde_json::json!({ "config": cfg, "providers": {} }).to_string())
+                .send()
+                .await
+                .unwrap();
+            let status = resp.status().as_u16();
+            let body: serde_json::Value = resp.json().await.unwrap();
+            (status, body)
+        }
+    };
+
+    let (plain_status, plain_body) = verdict(base).await;
+    assert_eq!(plain_status, 200, "{plain_body}");
+    let (plane_status, plane_body) = verdict(with_plane).await;
+    assert_eq!(
+        plane_status, 200,
+        "a document the CLI accepts must not be a malformed body here: {plane_body}"
+    );
+    assert_eq!(
+        plane_body, plain_body,
+        "the plane section is lifted off the document, so the verdict is the one the same config \
+         without it gets"
+    );
+
+    handle.abort();
+}
+
 /// `GET /api/v1/admin/config` composes the effective-config snapshot (auth + pools/models/providers +
 /// hooks + global_hooks) from the redacted reads. Asserts the shape and that no secret-bearing
 /// field (client tokens, provider keys) appears anywhere in the serialized body.
