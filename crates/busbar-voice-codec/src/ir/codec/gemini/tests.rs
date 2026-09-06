@@ -471,7 +471,7 @@ fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
     // downlink is set does not change what the client's own audio is labelled.
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
-    st.set_output_format(AudioFormat::Pcm16);
+    st.set_input_format(AudioFormat::Pcm16);
     let w = codec
         .write_up(
             IrClientEvent::AudioFrame(IrAudioFrame {
@@ -1104,6 +1104,40 @@ fn a_gemini_turn_that_reports_only_totals_is_still_metered() {
         billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
         Some(50)
     );
+}
+
+#[test]
+fn every_row_of_a_modality_is_counted_not_just_the_first() {
+    // A breakdown may state a modality across SEVERAL rows (Gemini emits one per content part). The
+    // first row is not the modality's cost — it is one part of it — and stopping there meters the
+    // rest of the turn's audio at zero, which is the charge this plane is mostly made of.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "usageMetadata": {
+            "promptTokenCount": 95,
+            "responseTokenCount": 60,
+            "promptTokensDetails": [
+                { "modality": "AUDIO", "tokenCount": 50 },
+                { "modality": "TEXT", "tokenCount": 15 },
+                { "modality": "AUDIO", "tokenCount": 30 }
+            ],
+            "responseTokensDetails": [
+                { "modality": "AUDIO", "tokenCount": 40 },
+                { "modality": "audio", "tokenCount": 10 },
+                { "modality": "TEXT", "tokenCount": 5 },
+                { "modality": "TEXT", "tokenCount": 5 }
+            ]
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage");
+    };
+    assert_eq!(u.audio_in, 80, "50 + 30, both AUDIO rows");
+    assert_eq!(u.text_in, 15);
+    assert_eq!(u.audio_out, 50, "40 + 10, the case-insensitive rows too");
+    assert_eq!(u.text_out, 10);
 }
 
 #[test]
