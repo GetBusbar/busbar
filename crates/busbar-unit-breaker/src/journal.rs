@@ -2,7 +2,7 @@
 //! probe-worthy state transition to be journaled; 1.5.5 had no such journal (a probe's outcome was
 //! observable only via the in-memory FSM and `/stats`), so this is new surface area for the
 //! breaker unit, not a port — it is deliberately a trait, not a concrete writer, so the unit that
-//! owns the real journal (`busbar-unit-wal` / the audit unit, per §4.1) can implement it without
+//! owns the real journal (`busbar-unit-wal` / the audit unit) can implement it without
 //! this crate depending on that unit's I/O, serialization, or journal-record framing.
 //!
 //! The destination on an event is the contract crate's own pool-member locator, so a journal

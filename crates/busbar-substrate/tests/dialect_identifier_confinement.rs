@@ -8,7 +8,7 @@
 //! `busbar-substrate`'s production source for any `<dialect>_<snake>` identifier and fails RED unless
 //! it is in the ALLOWLIST of the currently-tracked residue.
 //!
-//! The allowlist is the LLM-ABI purity §3E tracked debt: a small bank of OpenAI-family error/prose
+//! The allowlist is the currently-tracked LLM-ABI purity debt: a small bank of OpenAI-family error/prose
 //! helpers that still live here and are slated to relocate into `busbar-llm` (the LLM-seal). Until that
 //! money-path-adjacent relocation lands, this gate PINS the residue so it cannot GROW — a NEW
 //! dialect-prefixed identifier in the neutral crate reds the build, named. When the seal lands, the
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 /// The LLM dialect prefixes a neutral-crate identifier must never carry (snake_case form).
 const DIALECT_PREFIXES: &[&str] = &["openai_", "bedrock_", "gemini_", "cohere_", "anthropic_"];
 
-/// The CURRENTLY-TRACKED residue (LLM-ABI §3E) — OpenAI-family helpers awaiting relocation into
+/// The CURRENTLY-TRACKED LLM-ABI purity residue — OpenAI-family helpers awaiting relocation into
 /// `busbar-llm`. This allowlist may only SHRINK. A dialect-prefixed identifier NOT listed here is a
 /// NEW leak and reds the gate.
 const TRACKED_RESIDUE: &[&str] = &["openai_context_length_prose_scan", "openai_classify"];

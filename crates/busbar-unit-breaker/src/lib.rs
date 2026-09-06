@@ -22,9 +22,9 @@
 //! ## What's new here, not ported
 //!
 //! - [`journal`]: a `JournalSink` trait for probe lifecycle events. 1.5.5 had no probe journal;
-//!   the architecture's ledger (§4.1) requires one, so this crate defines the seam without owning
+//!   the architecture's ledger requires one, so this crate defines the seam without owning
 //!   the actual journal writer.
-//! - The sealed [`Breaker`] trait itself (`observe`/`state`, per §3.1's unit-trait shape). 1.5.5
+//! - The sealed [`Breaker`] trait itself (`observe`/`state`, in the unit-trait shape). 1.5.5
 //!   exposed the FSM through a much larger `LaneRuntime` trait (concurrency, SWRR, `/stats`, health
 //!   snapshots — all egress/observability concerns); this crate exposes only the breaker's own two
 //!   verbs, sealed so no plugin can implement it.

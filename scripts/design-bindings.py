@@ -879,15 +879,14 @@ def public_surface(text: str) -> str:
 # PREFIX is checkable — scripts/inventory-ref-lint.py says so in terms and deliberately resolves
 # nothing finer, because section numbers and row ids are renumbered by every refactor and Appendix
 # B's formatting for them is not consistent enough to parse without false positives. So the finer
-# anchors buy a public reader nothing: a `§2.4` or a `CONF-227` in a file anyone can fetch resolves
-# only inside a document they are not reading. They are dropped HERE, at the point the row becomes
-# a public artifact, rather than in ARCHITECTURE.md — the design doc is exactly where an author
+# anchors buy a public reader nothing: a section number or a row id in a file anyone can fetch
+# resolves only inside a document they are not reading. They are dropped HERE, at the point the row
+# becomes a public artifact, rather than in ARCHITECTURE.md — that file is exactly where an author
 # should keep writing the precise anchor, and qa/design-bindings.json is its public projection.
 #
-# What is dropped:
-#   `§2.4`, `§3.6.1–3.6.2`, `§2.1(a)`  — a section reference, alone or as a run
-#   `7.4.1`, `4.5.10`                  — the same thing written without the sign
-#   `CONF-227`, `BOOT-172/173`, `SEC-001..020`, `ADM-*`, `C3`, `O1`, `W34` — a row or matrix id
+# What is dropped: a section reference, with or without its sign, alone or as a comma- or
+# slash-joined run, and with or without a lettered sub-part; and a row id or coverage-matrix id of
+# any family other than the parity bindings themselves.
 # What stays: the file-prefix word, any backticked source path, and a bare `:1055-1082`, which is a
 # SOURCE line span rather than a document anchor — it points into the shipped tree, which the
 # reader has. `PB-N` also stays: it names a row of Appendix B, which is the artifact this file IS,

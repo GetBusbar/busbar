@@ -54,7 +54,7 @@
   {
    "id": "PB-0",
    "surface": "master rule",
-   "binding": "EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in §1–§9 needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for §1–§9 is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?",
+   "binding": "EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in the body needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for the body is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?",
    "inventory": "every row of every inventory file under docs/design/inventory/",
    "status": "mapped",
    "checks": [
@@ -735,7 +735,7 @@
   {
    "id": "PB-14",
    "surface": "store outage, peerless node",
-   "binding": "serve-through: cells stay authoritative, admission never blocks or fails on the store, deltas retried each tick, reconcile when it returns; `/usage` returns `AdminError::Internal` (500) while the store is down; boot fails closed on a store error at hydrate; no drain, no `outage_grace`, no `StaleSlice`, no new-draw refusal — the fleet branches of §2.3/§4.6 apply only when `peers:` is written",
+   "binding": "serve-through: cells stay authoritative, admission never blocks or fails on the store, deltas retried each tick, reconcile when it returns; `/usage` returns `AdminError::Internal` (500) while the store is down; boot fails closed on a store error at hydrate; no drain, no `outage_grace`, no `StaleSlice`, no new-draw refusal — the fleet branches of the governance inventory apply only when `peers:` is written",
    "inventory": "governance",
    "status": "mapped",
    "checks": [
@@ -775,7 +775,7 @@
   {
    "id": "PB-16",
    "surface": "`/usage` and every legacy admin response",
-   "binding": "byte-identical; NO additive lines — every alarm or delta named \"on the ledger endpoint (PB-16)\" in §4.2/§4.7/Appendix A lives on the 1.6.0 ledger endpoints (`/api/v1/admin/ledger/*`); a legacy metering row (`requests`, `spend_micros`, tokens) is written ONLY by the delivered-response tap — an admitted-but-undelivered unit (pool-empty 503, deadline 503, rewrite 500) writes no row and its fee is refunded on the non-2xx status; a terminal-error stream (delivered on 2xx headers) writes no token line and no legacy metering row but KEEPS the flat fee",
+   "binding": "byte-identical; NO additive lines — every alarm or delta named \"on the ledger endpoint (PB-16)\" in the governance inventory and Appendix A lives on the 1.6.0 ledger endpoints (`/api/v1/admin/ledger/*`); a legacy metering row (`requests`, `spend_micros`, tokens) is written ONLY by the delivered-response tap — an admitted-but-undelivered unit (pool-empty 503, deadline 503, rewrite 500) writes no row and its fee is refunded on the non-2xx status; a terminal-error stream (delivered on 2xx headers) writes no token line and no legacy metering row but KEEPS the flat fee",
    "inventory": "governance (`proxy/usage.rs:57-107`), routes-admin",
    "status": "mapped",
    "checks": [
@@ -835,7 +835,7 @@
   {
    "id": "PB-18",
    "surface": "arrival budgets",
-   "binding": "`spill_budget` = `max_inbound_concurrent × request_body_max_bytes`; cursor and credential budgets = `max_inbound_concurrent × 64 KiB`; `max_inbound_concurrent: 0` ⇒ every derived budget UNBOUNDED (1.5.5: no layer is added, BOOT-089e); the per-unit arena holds only per-frame transform output — relay and egress bodies live in the connection slab / spill — so neither the arena nor any budget refuses a request 1.5.5 accepted; the tighter RSS bound is the §10 gate, not a refusal",
+   "binding": "`spill_budget` = `max_inbound_concurrent × request_body_max_bytes`; cursor and credential budgets = `max_inbound_concurrent × 64 KiB`; `max_inbound_concurrent: 0` ⇒ every derived budget UNBOUNDED (1.5.5: no layer is added, BOOT-089e); the per-unit arena holds only per-frame transform output — relay and egress bodies live in the connection slab / spill — so neither the arena nor any budget refuses a request 1.5.5 accepted; the tighter RSS bound is the footprint gate, not a refusal",
    "inventory": "config (:267)",
    "status": "mapped",
    "checks": [
@@ -2439,7 +2439,7 @@
   {
    "id": "PB-54",
    "surface": "CLI / env / signals / spans cells",
-   "binding": "§8.1 and `xtask gate` carry cells for every 1.5.5 CLI flag and exit code, env var, SIGHUP-not-handled, the 25 startup steps, the seven `#[instrument]` spans and the request-log record, diffed against the 1.5.5 binary — the 25 `run()` steps are an EXACT ORDERED sequence whose observable output is byte-identical (`busbar starting` stays the first log line; `Bootstrap` / `Migration` / `Policy` / keyset lines are DEBUG-level, never interleaved at INFO on a 1.5.5 config); the pre-runtime phase (CLI flags before any env/file access, the jemalloc purge enable with its two `[warn]` stderr lines, the `busbar-idle-purge` fallback thread) and `BUSBAR_PROFILE`'s 13 named stages verbatim; flags and exit codes as a SUBSET invariant: every 1.5.5 argument behaves identically; `--help` gains lines for the 1.6.0 subcommands (`--data-dir`, `operator keygen`, `keyset import`, `keyset recipient-keygen`, `policy sign`) and those arguments no longer exit 2 — the one additive CLI difference, stated",
+   "binding": "the ops inventory's CLI cross-check and `xtask gate` carry cells for every 1.5.5 CLI flag and exit code, env var, SIGHUP-not-handled, the 25 startup steps, the seven `#[instrument]` spans and the request-log record, diffed against the 1.5.5 binary — the 25 `run()` steps are an EXACT ORDERED sequence whose observable output is byte-identical (`busbar starting` stays the first log line; `Bootstrap` / `Migration` / `Policy` / keyset lines are DEBUG-level, never interleaved at INFO on a 1.5.5 config); the pre-runtime phase (CLI flags before any env/file access, the jemalloc purge enable with its two `[warn]` stderr lines, the `busbar-idle-purge` fallback thread) and `BUSBAR_PROFILE`'s 13 named stages verbatim; flags and exit codes as a SUBSET invariant: every 1.5.5 argument behaves identically; `--help` gains lines for the 1.6.0 subcommands (`--data-dir`, `operator keygen`, `keyset import`, `keyset recipient-keygen`, `policy sign`) and those arguments no longer exit 2 — the one additive CLI difference, stated",
    "inventory": "ops",
    "status": "mapped",
    "checks": [
@@ -3152,7 +3152,7 @@
   {
    "id": "PB-71",
    "surface": "documented behaviour",
-   "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one §8.1 cell family (`documented-vs-actual`)",
+   "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one cell family (`documented-vs-actual`)",
    "inventory": "ops",
    "status": "mapped",
    "checks": [
@@ -3593,7 +3593,7 @@
   {
    "id": "PB-82",
    "surface": "usage extraction",
-   "binding": "1.5.5's §5.1 read contract is the locator: the cached count is SUBTRACTED from the wire prompt total on openai / responses / gemini (never billed twice); gemini `tokens_out` = `candidatesTokenCount + thoughtsTokenCount`; the forced upstream `stream_options.include_usage` and its two same-protocol hide-back seams (`suppress_same_proto_frame`, `strip_same_proto_usage`) reproduced, so no extra `{choices:[],usage}` chunk reaches an OpenAI client that did not opt in",
+   "binding": "1.5.5's usage read contract is the locator: the cached count is SUBTRACTED from the wire prompt total on openai / responses / gemini (never billed twice); gemini `tokens_out` = `candidatesTokenCount + thoughtsTokenCount`; the forced upstream `stream_options.include_usage` and its two same-protocol hide-back seams (`suppress_same_proto_frame`, `strip_same_proto_usage`) reproduced, so no extra `{choices:[],usage}` chunk reaches an OpenAI client that did not opt in",
    "inventory": "dialects (:706-718), (:780-794)",
    "status": "mapped",
    "checks": [
@@ -3770,7 +3770,7 @@
   {
    "id": "PB-86",
    "surface": "usage locators are plane-normalized",
-   "binding": "the four token classes are read through the plane's §5.1 normalization, not a raw pointer (PB-82); the kernel never re-derives a class from the wire",
+   "binding": "the four token classes are read through the plane's usage normalization, not a raw pointer (PB-82); the kernel never re-derives a class from the wire",
    "inventory": "dialects",
    "status": "mapped",
    "checks": [
@@ -3808,7 +3808,7 @@
   {
    "id": "PB-88",
    "surface": "dialect pairs never refuse",
-   "binding": "all 36 ingress×egress pairs are supported with NO pair-level refusal; the 60 bullet-level drop / clamp sites of §3.4 (39 with literal warns) plus the 10 universal `prepare_for_egress` steps of :366-381 (`n > 1 → 1` + warn, reasoning / prompt-cache gates, `cache_control` cap, hosted-tool drop, gemini `thoughtSignature` fill, `extra.clear()` — the mechanism behind the `service_tier` trap) degrade-with-warn exactly as at the tag; a plane may not refuse at the PAIR level; untranslatable CONTENT still renders 1.5.5's 400 `invalid_request_error` \"We could not process the content of your request.\" (dialects :969)",
+   "binding": "all 36 ingress×egress pairs are supported with NO pair-level refusal; the 60 bullet-level drop / clamp sites of the dialects inventory (39 with literal warns) plus the 10 universal `prepare_for_egress` steps of :366-381 (`n > 1 → 1` + warn, reasoning / prompt-cache gates, `cache_control` cap, hosted-tool drop, gemini `thoughtSignature` fill, `extra.clear()` — the mechanism behind the `service_tier` trap) degrade-with-warn exactly as at the tag; a plane may not refuse at the PAIR level; untranslatable CONTENT still renders 1.5.5's 400 `invalid_request_error` \"We could not process the content of your request.\" (dialects :969)",
    "inventory": "dialects (:342), (:407-485)",
    "status": "mapped",
    "checks": [
@@ -3859,7 +3859,7 @@
   {
    "id": "PB-90",
    "surface": "unmapped 1.5.5 config keys",
-   "binding": "`advanced.response_headers.*` (PB-73), `limits.max_keys_per_principal`, `auth.key_ttl`, `limits.reasoning_effort_budgets.*`, `limits.max_honored_retry_after_secs`, `limits.hard_down_cooldown_secs` (PB-80), `public_url`, `providers_file`, `identity-providers:`, `pools.<p>.affinity.*` (PB-5), `secrets:` — each lands on its 1.5.5 handler unchanged; §10's landing map is complete only with this row",
+   "binding": "`advanced.response_headers.*` (PB-73), `limits.max_keys_per_principal`, `auth.key_ttl`, `limits.reasoning_effort_budgets.*`, `limits.max_honored_retry_after_secs`, `limits.hard_down_cooldown_secs` (PB-80), `public_url`, `providers_file`, `identity-providers:`, `pools.<p>.affinity.*` (PB-5), `secrets:` — each lands on its 1.5.5 handler unchanged; the landing map is complete only with this row",
    "inventory": "config (the ≈ 12 keys with no other mention)",
    "status": "mapped",
    "checks": [
@@ -4022,7 +4022,7 @@
   {
    "id": "PB-96",
    "surface": "streaming byte layout (the terminal-usage settle guarantee)",
-   "binding": "the `StreamFraming` vtable verbatim: per-dialect framing and event sequences; bedrock streams `application/vnd.amazon.eventstream` binary frames and gemini without `alt=sse` streams a JSON array (both produced by the `llm` plane's `sse` writer family, declared in §5); the terminal-usage fold / un-fold; the bedrock two-frame split with its exactly-one-`metadata` invariant; the post-stop ordering guard; INV-A open-block drain; multi-citation fan-out; `[DONE]` only for an openai ingress; the anthropic cross-protocol `ping`; a SAME-PROTOCOL response re-emits the original frame bytes (bedrock binary frames never re-encoded — a recomputed CRC is undecodable); the A-tap merges usage PER FIELD, non-zero overrides, anthropic latching `message_start` usage and backfilling the terminal delta; a same-proto non-stream body over the usage-tap cap bills from the buffered prefix (`BILLING_TRUNCATED_TOTAL` +1); the six IR→wire usage WRITE maps (openai re-adds cache into `prompt_tokens`, responses `reasoning_tokens = 0`, bedrock `totalTokens` excludes cache, cohere no `billed_units`, …); the stop-reason matrix incl. lossy rows, `id = None` / `created = now_epoch` synthesis; tool-ID remap `<prefix>bb1<hex>` with per-dialect prefixes, even-length reverse decode, gemini SipHash ids",
+   "binding": "the `StreamFraming` vtable verbatim: per-dialect framing and event sequences; bedrock streams `application/vnd.amazon.eventstream` binary frames and gemini without `alt=sse` streams a JSON array (both produced by the `llm` plane's `sse` writer family, declared in the dialects inventory); the terminal-usage fold / un-fold; the bedrock two-frame split with its exactly-one-`metadata` invariant; the post-stop ordering guard; INV-A open-block drain; multi-citation fan-out; `[DONE]` only for an openai ingress; the anthropic cross-protocol `ping`; a SAME-PROTOCOL response re-emits the original frame bytes (bedrock binary frames never re-encoded — a recomputed CRC is undecodable); the A-tap merges usage PER FIELD, non-zero overrides, anthropic latching `message_start` usage and backfilling the terminal delta; a same-proto non-stream body over the usage-tap cap bills from the buffered prefix (`BILLING_TRUNCATED_TOTAL` +1); the six IR→wire usage WRITE maps (openai re-adds cache into `prompt_tokens`, responses `reasoning_tokens = 0`, bedrock `totalTokens` excludes cache, cohere no `billed_units`, …); the stop-reason matrix incl. lossy rows, `id = None` / `created = now_epoch` synthesis; tool-ID remap `<prefix>bb1<hex>` with per-dialect prefixes, even-length reverse decode, gemini SipHash ids",
    "inventory": "dialects :283-296, :348-364, :503-539, :553-618, :631-641, :654-729, :813-822; proxy-hooks :317, :438",
    "status": "mapped",
    "checks": [
@@ -4497,7 +4497,7 @@
   {
    "id": "PB-102",
    "surface": "alarms and the disputes report",
-   "binding": "an alarm and a disputes-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (ops §5.3's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this",
+   "binding": "an alarm and a disputes-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (the ops inventory's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this",
    "inventory": "ops",
    "status": "mapped",
    "checks": [

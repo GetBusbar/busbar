@@ -6,7 +6,7 @@
 # provider wire pointer.
 #
 # The four token classes (tokens_in, tokens_out, cache_read, cache_write) are read through the
-# plane's own §5.1 normalization (busbar-llm's dialect layer), never by the kernel reaching past
+# plane's own usage normalization (busbar-llm's dialect layer), never by the kernel reaching past
 # that seam into a provider's raw response shape. This lint is the negative-space proof: it scans
 # busbar-kernel's PRODUCTION source (comments, doc-comments and test code excluded, same
 # discipline as scripts/plane-purity-lint.sh) for the raw wire field names each of the six
