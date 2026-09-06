@@ -19,10 +19,17 @@ license = "Apache-2.0"
 # `futures` is here for exactly one item: the `Stream` trait in the transport frame pump. The
 # standard library has no stable stream trait, and inventing a private one would mean every in-tree
 # transport re-implements the adapter the ecosystem already has.
-# `busbar-grammar` is the closed JSON span grammar and is the one busbar crate this one names. It
-# is not an exception to the rule above: it sits BELOW the contract, names nothing itself, and is
-# re-exported here as `busbar_contract::spans` so that a plane resolving a declared pointer and the
-# kernel resolving the same pointer are one reading of one grammar rather than two.
+# Two busbar crates are named below, and neither is an exception to the rule above: both sit BELOW
+# the contract and neither names anything of busbar's itself.
+#
+# `busbar-grammar` is the closed JSON span grammar, re-exported here as `busbar_contract::spans` so
+# that a plane resolving a declared pointer and the kernel resolving the same pointer are one
+# reading of one grammar rather than two.
+#
+# `busbar-contract-transport` is the transport-facing half of this contract, split out so that the
+# vocabulary only a transport author reads is not counted against a plugin author's budget. The
+# handful of names a plane still touches are re-exported here, so `busbar_contract::wire` means
+# what it always meant.
 [dependencies]
 busbar-contract-transport = { path = "../busbar-contract-transport" }
 busbar-grammar = { path = "../busbar-grammar" }

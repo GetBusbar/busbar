@@ -526,12 +526,11 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
 /// Whether a pattern matches a concrete path.
 fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
     let mut segs = segments(path);
-    for (i, seg) in pattern.iter().enumerate() {
+    for seg in pattern {
         match seg {
             PathSeg::Tail => {
                 // A tail is the last segment of a pattern and swallows whatever remains,
                 // including nothing.
-                let _ = i;
                 return true;
             }
             PathSeg::Lit(lit) => match segs.next() {

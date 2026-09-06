@@ -203,7 +203,10 @@ pub struct Refusal<'u> {
 /// How a unit ended, as a plugin sees it.
 ///
 /// The capability crate carries what a settlement *is*; this is the shape a plane is handed so it
-/// can render an ending. A plane cannot construct one, because a plane does not decide endings.
+/// can render an ending. Nothing stops a plane from building one — the variants are public, and a
+/// plane's own tests need to build one to exercise its ending encoder — but a value a plane built
+/// is not an ending: the kernel decides how a unit ended and hands the plane the result, and no
+/// method on the plane trait takes one back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
 pub enum UnitEnd<'u> {
     /// The unit ran the whole loop.
