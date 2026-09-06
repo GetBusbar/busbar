@@ -4021,7 +4021,7 @@
   },
   {
    "id": "PB-96",
-   "surface": "streaming byte layout (D2)",
+   "surface": "streaming byte layout (the terminal-usage settle guarantee)",
    "binding": "the `StreamFraming` vtable verbatim: per-dialect framing and event sequences; bedrock streams `application/vnd.amazon.eventstream` binary frames and gemini without `alt=sse` streams a JSON array (both produced by the `llm` plane's `sse` writer family, declared in §5); the terminal-usage fold / un-fold; the bedrock two-frame split with its exactly-one-`metadata` invariant; the post-stop ordering guard; INV-A open-block drain; multi-citation fan-out; `[DONE]` only for an openai ingress; the anthropic cross-protocol `ping`; a SAME-PROTOCOL response re-emits the original frame bytes (bedrock binary frames never re-encoded — a recomputed CRC is undecodable); the A-tap merges usage PER FIELD, non-zero overrides, anthropic latching `message_start` usage and backfilling the terminal delta; a same-proto non-stream body over the usage-tap cap bills from the buffered prefix (`BILLING_TRUNCATED_TOTAL` +1); the six IR→wire usage WRITE maps (openai re-adds cache into `prompt_tokens`, responses `reasoning_tokens = 0`, bedrock `totalTokens` excludes cache, cohere no `billed_units`, …); the stop-reason matrix incl. lossy rows, `id = None` / `created = now_epoch` synthesis; tool-ID remap `<prefix>bb1<hex>` with per-dialect prefixes, even-length reverse decode, gemini SipHash ids",
    "inventory": "dialects :283-296, :348-364, :503-539, :553-618, :631-641, :654-729, :813-822; proxy-hooks :317, :438",
    "status": "mapped",

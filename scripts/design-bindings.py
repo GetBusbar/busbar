@@ -854,6 +854,22 @@ def derive_oracle_checks(pb: str, cited: dict[str, list[dict]], all_cells: list[
     return checks
 
 
+# Non-`PB-N` audit-shorthand ids that Appendix B's free-text `surface`/`binding` columns still carry
+# from the round that found them. `PB-N` tokens are load-bearing (cited_cells() below scans cells.json
+# verbatim for `PB-\d+` to derive a binding's proof checks) and must never be touched here; these are
+# not, so they are named in words before the row reaches qa/design-bindings.json.
+PUBLIC_WORDED = {
+    "D2": "the terminal-usage settle guarantee",
+}
+_BARE_AUDIT_ID = re.compile(r"\(([A-Za-z]{1,3}\d{1,3})\)")
+
+
+def public_surface(text: str) -> str:
+    def repl(m: re.Match) -> str:
+        return "(" + PUBLIC_WORDED.get(m.group(1), m.group(1)) + ")"
+    return _BARE_AUDIT_ID.sub(repl, text) if text else text
+
+
 def merge_checks(*lists: list[dict]) -> list[dict]:
     seen: set[tuple[str, str]] = set()
     out: list[dict] = []
@@ -886,6 +902,7 @@ def build(arch_text: str, cells_doc: dict, existing: dict | None) -> dict:
             c.setdefault("source", "hand")
         checks = merge_checks(derive_oracle_checks(pb, cited, all_cells), seed, hand)
         entry = dict(b)
+        entry["surface"] = public_surface(entry.get("surface", ""))
         if pb in NOTES:
             entry["note"] = NOTES[pb]
         if checks:
