@@ -356,7 +356,19 @@ pub fn meter(
                 posted = true;
             }
             row = Some(metering_row(sink, lane, reported));
-            priced_nanos = price_against(ctx.host, &sink.cost, lane, &tier);
+            // THE MONEY. Priced against the card the SINK carries — the one resolved when this
+            // unit's hold opened at the door — and keyed by the serving lane's config name, which
+            // is the key space a rate card is written in and the same key the metering row above
+            // attributes to. Pricing against the deployment's card as it is now would reprice a
+            // request that opened before a reload on rates it never agreed to.
+            //
+            // `None` is a present card that does not know this model, and the Verify step's pricing
+            // guard has already turned that unit away before it could reach here; there is no
+            // figure to invent at this point, so nothing is spent.
+            priced_nanos = ctx
+                .host
+                .cost_price_usage(&sink.cost, &lane.model, &tier)
+                .unwrap_or(0);
         }
     }
 
@@ -416,30 +428,6 @@ pub fn meter(
         refund: ctx.charged && !delivered,
         posted,
     }
-}
-
-/// THE MONEY — one expression, and the only one on this plane that turns a response into an amount.
-///
-/// Priced against the card the SINK carries — the one resolved when this unit's hold opened at the
-/// door — and keyed by the serving lane's config name, which is the key space a rate card is written
-/// in and the same key the metering row attributes to. Pricing against the deployment's card as it
-/// is now would reprice a request that opened before a reload on rates it never agreed to.
-///
-/// `None` is a present card that does not know this model, and the Verify step's pricing guard has
-/// already turned that unit away before it could reach here; there is no figure to invent at this
-/// point, so nothing is spent.
-///
-/// It is a function rather than four lines inside the step because the step is not the only place
-/// the figure is needed. A response whose usage arrives only when its BODY drains is priced after
-/// the step has run, and a second spelling of this arithmetic there is how one unit ends up settling
-/// two amounts on two books. One expression, called twice, cannot.
-pub(crate) fn price_against(
-    host: &Arc<dyn EngineHost>,
-    card: &busbar_substrate::plane_host::CostHandle,
-    lane: &crate::engine::Lane,
-    tier: &busbar_substrate::billing::Usage,
-) -> u128 {
-    host.cost_price_usage(card, &lane.model, tier).unwrap_or(0)
 }
 
 /// One line, if the tier carries anything. A zero-quantity line is not a fact about anything.

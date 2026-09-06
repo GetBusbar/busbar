@@ -173,6 +173,25 @@ impl Kernel {
         busbar_caps::LedgerToken::mint(&self.seal)
     }
 
+    /// The usage record's token, as the composition root lends it to a report assembled after the exit.
+    ///
+    /// The fifth token minted outside the loop, and it travels with the fourth. A late accrual is a
+    /// spend the node learned about after its terminal, and pricing one means holding what the unit
+    /// CONSUMED — a usage record — beside the card that says what those quantities are worth. Inside
+    /// the loop that record is built at the Meter step against the step's own token; a report that
+    /// arrives after the terminal has no step left to be built at.
+    ///
+    /// It mints nothing a step could not: a usage record is evidence and moves no balance on its own.
+    /// What the token is for is the same thing every token here is for — a record cannot be conjured
+    /// by anything the kernel did not hand one to, and without this a root assembling one had to reach
+    /// for the seal, which is the one symbol that must not be spelled outside this crate.
+    ///
+    /// Kept beside the other four and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn usage_token(&self) -> UsageToken {
+        UsageToken::mint(&self.seal)
+    }
+
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
     /// module, which materialises a hold from a journal record, and the node's sweep, which is the
     /// second and last holder of an exit token.

@@ -93,16 +93,6 @@ struct Carry {
     facts: Option<MeterFacts>,
     /// The meter half the walk handed back unspent.
     meter_sink: Option<crate::engine::UsageSink>,
-    /// THE CARD THIS UNIT WAS ADMITTED UNDER, kept for a reading taken after the unit has ended.
-    ///
-    /// The sink itself cannot be kept. It carries the admission's in-flight grant, whose `Drop` on
-    /// the LAST clone is what releases the `concurrent` gauges — so a clone held for the length of
-    /// the response body would hold a deployment's concurrency leases open past the moment the
-    /// previous release releases them, which is an observable change and not one this seam is
-    /// allowed to make. The card is the one thing off the sink a late pricing needs, it is an opaque
-    /// handle with no drop of its own, and it is the SAME card: pinned when the hold opened at the
-    /// door, so a request that opened before a reload is still priced on the rates it agreed to.
-    card: Option<busbar_substrate::plane_host::CostHandle>,
     /// Whether the Meter step made the accrual itself rather than sealing the walk's.
     posted_here: bool,
     /// What the Meter step said about the fee and the refund.
@@ -116,22 +106,32 @@ struct Carry {
 ///
 /// Opaque on purpose: what is inside is the engine's own cell and naming it would be a root that had
 /// learned how this plane forwards. What a holder can do with it is the one thing a holder needs —
-/// hand it back to [`Walk::priced_after_terminal`] once the body it belongs to has drained.
+/// hand it back to [`Walk::reported_after_terminal`] once the body it belongs to has drained.
 ///
 /// Cheap to hold and safe to hold for as long as the body lives: it is a refcount on a cell that is
 /// written exactly once and never rewritten.
 #[derive(Clone, Debug)]
 pub struct Tap(crate::engine::TapCell);
 
-/// WHAT THE RESPONSE WAS WORTH, read after its body drained.
+/// WHAT THE RESPONSE CONSUMED, read after its body drained.
 ///
-/// The three facts a second book needs about a spend that arrived after the terminal, and no more:
-/// the amount, and the two names the row it belongs to is keyed by. Whether that amount is a
-/// posting, and what flags it carries, is the ledger's decision and not this plane's.
+/// A REPORT, not an amount, and the distinction is the whole shape of this seam. A plane says what a
+/// unit did — the quantities it consumed, by class; whether the unit is one the flat per-request fee
+/// is charged on; and the two names the row it belongs to is keyed by. What any of that is WORTH is
+/// the card's answer, and the card belongs to whoever keeps the books. So there is no money figure
+/// on this type and no rate anywhere behind it: the holder prices this report against the card the
+/// door pinned, and the fee lands as a line of that pricing rather than as a number this plane
+/// invented.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LateFigure {
-    /// The amount, in the nano-units a reservation is in.
-    pub priced_nanos: u128,
+pub struct LateReport {
+    /// The tier split the tap reported, by neutral unit class — the same counts the governance
+    /// ledger accrued when the cell filled. Empty for a response that billed nothing.
+    pub usage: busbar_substrate::billing::Usage,
+    /// How many billable requests this unit is: one for a delivered client request that reached an
+    /// upstream, zero otherwise. It is the Meter step's own count, on the same base the previous
+    /// release charges the flat fee on, and it is carried rather than re-decided so the two cannot
+    /// come to different answers about the same unit.
+    pub fee_count: u32,
     /// The SERVING lane's config name — the lane that actually answered, after any failover, which
     /// is the key a rate card is written against and the key the legacy row carries.
     pub lane: String,
@@ -335,9 +335,6 @@ impl Walk {
         carry.charged = admitted.charged;
         carry.effective = admitted.effective_pool;
         carry.upstream_candidate = admitted.upstream_candidate;
-        // The card, off the sink and before the walk takes it — see `Carry::card` for why the sink
-        // itself cannot be the thing that is kept.
-        carry.card = admitted.sink.as_ref().map(|s| s.cost.clone());
         carry.sink = admitted.sink;
         if let Some(resp) = admitted.refusal {
             carry.pending = Some(Served::of(resp));
@@ -426,41 +423,39 @@ impl Walk {
             .map(Tap)
     }
 
-    /// WHAT THE TAP REPORTED, PRICED — the reading that does not exist until the body has drained.
+    /// WHAT THE TAP REPORTED — the reading that does not exist until the body has drained.
     ///
-    /// The Meter step ran while this cell was empty, so the amount it priced was zero: on this plane
-    /// there is no earlier moment at which a streamed answer's money is a fact. This is that moment.
-    /// The figure is the SAME expression the step would have run had it been able to — the tier split
-    /// the tap read, priced against the card the sink pinned at the door, keyed by the lane that
-    /// actually answered — because it is literally that function, called here instead of there.
+    /// The Meter step ran while this cell was empty: on this plane there is no earlier moment at
+    /// which a streamed answer's consumption is a fact. This is that moment, and what comes out of it
+    /// is a REPORT — the tier split the tap read, the billable count the Meter step decided, and the
+    /// lane that actually answered. No money. This plane does not hold a rate card and does not want
+    /// one; the holder of the books prices this against the card the door pinned, and the flat fee
+    /// joins as a line of that pricing.
     ///
     /// It ACCRUES NOTHING. The tap already put this response on the governance ledger when it filled
     /// the cell, which is what the previous release bills and what `/usage` reports; calling the
     /// accrual seam again here would bill the same tokens twice. What this produces is a reading, for
     /// a second book to post onto.
     ///
-    /// The card is the one the admission pinned at the door and NOT the sink, which by this point no
-    /// longer exists on this side: the walk takes the sink and its taps are where the accrual is
-    /// made, so a reading that waited for the sink to come back would wait forever on every routed
-    /// unit — which is exactly what the metering step's own zero was.
-    ///
-    /// `None` where there is nothing to post: the cell is still empty, the Route step never ran, no
-    /// lane answered, or the unit was admitted under no card at all. A response the tap marked as
-    /// billing failed prices at zero, which is what the plane bills for it — the figures seen before
-    /// a terminal error are evidence and not a charge.
+    /// `None` where there is nothing to report: the cell is still empty, the Route step never ran, or
+    /// no lane answered. A response the tap marked as billing failed reports an EMPTY tier rather
+    /// than nothing at all — the unit reached a lane and consumed nothing the node will charge for,
+    /// which is a different statement from "no reading could be taken", and it still carries the fee
+    /// count the previous release charges on it.
     #[must_use]
-    pub fn priced_after_terminal(&self, tap: &Tap) -> Option<LateFigure> {
+    pub fn reported_after_terminal(&self, tap: &Tap) -> Option<LateReport> {
         let report = tap.0.get()?;
         let carry = self.lock();
         let mut facts = carry.facts.clone()?;
         facts.fold(report);
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i))?;
-        let card = carry.card.as_ref()?;
-        // A terminal error, an abort or a cut transfer bills ZERO and the tier is empty, so the
-        // reading is zero rather than absent: this response reached a lane and consumed nothing the
-        // node will charge for, which is a different statement from "no reading could be taken".
-        let tier = if facts.billing_failed {
+        // A terminal error, an abort or a cut transfer bills ZERO tokens, so the tier is empty. The
+        // FEE is not gated on it: a stream whose end carried a terminal error was still answered 2xx
+        // at the frame that decided the fee, and the previous release keeps that request in its
+        // billable count and does not refund it. The count is the Meter step's own, on the same base
+        // the legacy accounting charges on, and it is read here rather than decided a second time.
+        let usage = if facts.billing_failed {
             busbar_substrate::billing::Usage::default()
         } else {
             facts
@@ -469,8 +464,9 @@ impl Walk {
                 .map(crate::engine::usage::tier_usage)
                 .unwrap_or_default()
         };
-        Some(LateFigure {
-            priced_nanos: crate::unit::meter::price_against(&self.host, card, lane, &tier),
+        Some(LateReport {
+            usage,
+            fee_count: carry.fee_count,
             lane: lane.model.clone(),
             provider: lane.provider.clone(),
         })

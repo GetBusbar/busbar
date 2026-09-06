@@ -1269,6 +1269,14 @@ async fn run(data_workers: usize) {
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH, captured here — before `cfg` moves into the
+    // router builder below — for the same reason the voice credential a few lines down is. These two
+    // are the whole of what a card is: the per-model rates and the flat per-request fee, exactly the
+    // pair the usage projection derives a row's spend from.
+    #[cfg(feature = "root-llm")]
+    let llm_rate_card = cfg.rate_card.clone();
+    #[cfg(feature = "root-llm")]
+    let llm_per_request_fee = cfg.per_request_fee;
     // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
     // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
     // for another few hundred lines. The transports it composes are built from THESE limits — the
@@ -1426,6 +1434,20 @@ async fn run(data_workers: usize) {
     // arm settles nothing, which is the honest answer for a build with no root ledger in it.
     #[cfg(feature = "root-llm")]
     root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
+
+    // AND TO THE CARD IT PRICES AGAINST. The plane reports what a unit consumed; what that is worth
+    // is read here, off the same configured `rate_card:` and `per_request_fee:` the usage projection
+    // derives its spend from. One configuration, two readings — which is what makes the node's books
+    // and the previous release's rows the same money rather than two numbers that agree by habit.
+    #[cfg(feature = "root-llm")]
+    root::units_llm::bind_card(
+        llm_rate_card
+            .iter()
+            .flat_map(|c| c.iter())
+            .map(|(lane, entry)| (lane.as_str(), entry.raw_tier_rates())),
+        llm_per_request_fee,
+        llm_rate_card.is_some(),
+    );
 
     #[cfg(feature = "root-admin")]
     let admin_router = root::units_admin::mount(

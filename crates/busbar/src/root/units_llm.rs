@@ -201,6 +201,29 @@ pub struct LlmNode {
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
     durability_token: busbar_caps::DurabilityToken,
+    /// THE CARD THIS NODE PRICES AGAINST, once the composition root has bound one. See [`bind_card`].
+    ///
+    /// The cost unit's own card, and it belongs HERE rather than on the plane. The plane reports what
+    /// a unit consumed; what those quantities are worth is a question about the deployment's rates,
+    /// and the rates are the root's to hold — so a plane that priced its own traffic would be a second
+    /// place a rate lives, and two places a rate lives is two answers to what one request cost.
+    ///
+    /// It is also what carries the FLAT PER-REQUEST FEE onto the books. The card holds the configured
+    /// fee beside the per-token rates, and the cost unit's pricing puts it on the posting as a line of
+    /// its own — so a node that prices through the card cannot post the tokens and forget the fee.
+    ///
+    /// A cell for the same reason the book is one: the node is reached through a `static`, so it
+    /// exists before the boot that reads the configuration has finished.
+    ///
+    /// [`bind_card`]: LlmNode::bind_card
+    card: std::sync::OnceLock<Arc<busbar_unit_cost::RateCard>>,
+    /// The usage record's token, minted from this node's own kernel at construction and lent to the
+    /// exit arm for the length of one pricing.
+    ///
+    /// Minted outside the loop for the same reason the journal's and the ledger's are: the report a
+    /// late accrual prices arrives after the exit sealed the end, so there is no step of the unit
+    /// whose token could stand in.
+    usage_token: busbar_caps::UsageToken,
 }
 
 impl std::fmt::Debug for LlmNode {
@@ -223,7 +246,9 @@ impl LlmNode {
         let kernel = crate::root::kernel::new_kernel();
         LlmNode {
             durability_token: kernel.durability_token(),
+            usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
+            card: std::sync::OnceLock::new(),
             kernel,
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where this deployment's admission-to-the-node decision is made and has always
@@ -265,6 +290,20 @@ impl LlmNode {
     /// honest answer for a build with no root ledger in it, not a settlement quietly dropped.
     pub fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
         let _ = self.book.set(book);
+    }
+
+    /// Bind this node's exit arm to the card the process prices against.
+    ///
+    /// Built by the composition root from the SAME configured figures the previous release's usage
+    /// projection derives its spend from — the per-model rates and the flat per-request fee — so the
+    /// two sides of the reconciliation are two readings of one configuration rather than two
+    /// configurations that happen to agree.
+    ///
+    /// Unbound, a report is not priced and nothing is posted. That is the honest answer for a build
+    /// with no card in it: a node that fell back to a card of its own would post figures no operator
+    /// configured, and they would look exactly like figures somebody did.
+    pub fn bind_card(&self, card: Arc<busbar_unit_cost::RateCard>) {
+        let _ = self.card.set(card);
     }
 
     /// Put what the loop posted onto the book, if this node has one.
@@ -446,17 +485,25 @@ impl LlmNode {
         let Some(book) = self.book.get() else {
             return response;
         };
+        // No card bound is the third: a report nothing can price is a report nothing can post, and
+        // wrapping the body to discover that when it drains would be a wrapper that only ever drops
+        // empty.
+        let Some(card) = self.card.get() else {
+            return response;
+        };
         let Some(tap) = Walk::tap_of(&response) else {
             return response;
         };
         let arm = LateAccrual {
             book: Arc::clone(book),
+            card: Arc::clone(card),
             // MINTED FOR THIS ONE POSTING and dropped with it. A token is neither `Clone` nor `Copy`
             // and the node's own is lent by reference for the length of a call, which is exactly what
             // this is not: the posting outlives every call on this path. So the pair is minted where
             // the unit is and travels with the body it is a posting OF.
             durability_token: self.kernel.durability_token(),
             ledger_token: self.kernel.ledger_token(),
+            usage_token: self.kernel.usage_token(),
             principal: principal.clone(),
             // The unit's PINNED arrival epoch, not a clock read at drain time. The late posting lands
             // on the same balance and in the same window the terminal settled in, which is the whole
@@ -475,6 +522,53 @@ impl LlmNode {
 // The late accrual
 // ---------------------------------------------------------------------------------------------
 
+/// The plane's neutral consumption report, in the record the cost unit prices.
+///
+/// A lift and nothing more: one line per reported class, at the quantity the tap read, counted rather
+/// than estimated because the figures came off the destination's own response. The class names are
+/// the neutral reserved-unit spellings — the same names the plane's own metering step reports its
+/// lines under and the same names a card entry is written against — so no name is translated on the
+/// way. A rename here would be this root deciding what a lane's rates apply to.
+///
+/// The four reserved tiers are walked in the canonical order rather than the report's map order,
+/// which is what makes the line sequence a property of this function rather than of a `BTreeMap`'s
+/// collation. An OPEN unit a report carries prices at nothing on this path and is left off: the card
+/// this node binds names the reserved four, so a line for a class it cannot price would be a zero
+/// line claiming to be a priced one.
+///
+/// The flat fee is NOT a line built here. It is the card's, added by the pricing as a line of its own
+/// from the billable count the report carries, which is what keeps one configured fee to one place.
+fn usage_record(
+    token: &busbar_caps::UsageToken,
+    usage: &busbar_substrate::billing::Usage,
+) -> busbar_caps::Usage {
+    let lines = [
+        busbar_api::UNIT_INPUT,
+        busbar_api::UNIT_OUTPUT,
+        busbar_api::UNIT_CACHE_READ,
+        busbar_api::UNIT_CACHE_WRITE,
+    ]
+    .into_iter()
+    .filter_map(|class| {
+        // A zero-quantity line is not a fact about anything, and the plane's own metering step drops
+        // them for the same reason. Kept out here too so the two reports have the same shape.
+        let quantity = usage.usage_units.get(class).copied().unwrap_or(0);
+        (quantity > 0).then(|| busbar_caps::UsageLine {
+            class: busbar_caps::MeterClassId::new(class),
+            quantity,
+            source: busbar_caps::QuantitySource::Count,
+            estimated: false,
+        })
+    })
+    .collect();
+    // A report wider than the record holds is not a reason to post nothing: the record's own limit is
+    // a bound on lines, and the four tiers this plane reports are far inside it. An empty record is
+    // the honest fallback — it prices the fee and no tokens, which is what a response that reported
+    // nothing costs.
+    busbar_caps::Usage::report(token, lines)
+        .unwrap_or_else(|_| busbar_caps::Usage::report(token, Vec::new()).expect("no lines fit"))
+}
+
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
 /// drained.
 ///
@@ -490,12 +584,16 @@ impl LlmNode {
 /// it, which is the honest description of a spend the node learned about after it had let go.
 struct LateAccrual {
     book: Arc<Mutex<crate::root::durability::Durability>>,
+    /// The card the report is priced against — the deployment's configured rates and its flat
+    /// per-request fee, in the cost unit's own terms.
+    card: Arc<busbar_unit_cost::RateCard>,
     durability_token: busbar_caps::DurabilityToken,
     ledger_token: busbar_caps::LedgerToken,
+    usage_token: busbar_caps::UsageToken,
     principal: PrincipalId,
     charged_at: u64,
-    /// The unit's carry, kept alive for exactly as long as the body is: the pricing reads the sink
-    /// the door pinned and the lane table the walk resolved, and both live here.
+    /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
+    /// table the walk resolved and the facts the Route and Meter steps left, and both live here.
     walk: Walk,
     /// The cell the body fills. Held rather than looked up again, because by the time it is read the
     /// response it rode on no longer exists.
@@ -507,17 +605,40 @@ impl LateAccrual {
     fn post(self) {
         let LateAccrual {
             book,
+            card,
             durability_token,
             ledger_token,
+            usage_token,
             principal,
             charged_at,
             walk,
             tap,
         } = self;
-        let Some(figure) = walk.priced_after_terminal(&tap) else {
+        let Some(report) = walk.reported_after_terminal(&tap) else {
             return;
         };
-        // THE ROW THIS LANDS ON. `figure` names the serving lane and its provider — the two names the
+        // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
+        // consumed — quantities, by class — and how many billable requests it is. What that is worth
+        // is the card's answer, and this is the only side that holds a card.
+        //
+        // The FEE comes with it, and it comes for free. The cost unit's pricing puts the flat
+        // per-request charge on the posting as a line of its own, at the card's configured fee times
+        // the count the plane reported, and sums it in with the token lines before the single tier
+        // divide. So one call produces token lines AND a fee line, and there is no arm anywhere that
+        // could post the tokens and forget the fee.
+        //
+        // That is what makes the identity exact rather than approximate. The previous release's
+        // projection reprices a row's token counts and adds the same configured fee at read time; a
+        // node that posted only the tokens was out by the fee on every billable request, and the
+        // identity had to name the difference as its own term instead of checking it.
+        let posting = busbar_unit_cost::price(
+            &card.pin(),
+            &report.lane,
+            &usage_record(&usage_token, &report.usage),
+            u64::from(report.fee_count),
+            busbar_unit_cost::STANDARD_TIER_BP,
+        );
+        // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
         // legacy row is keyed by — and the balance below is keyed by principal and window. Those are
         // the same row: the node's books retain no lane and no provider, so both the ledger's side and
         // the legacy side of the reconciliation are read at the width the node keeps, with the two
@@ -526,13 +647,13 @@ impl LateAccrual {
         // the books grow one.
         //
         // A ZERO IS NOT A ROW, and posting one would say the node had settled something. A unit that
-        // reached a lane and billed nothing — a terminal error, a cut before any usage was reported,
-        // an unpriced card — is already fully described by the settlement the exit made.
+        // reached a lane and priced at nothing — no tokens, no fee, or a lane the card does not name —
+        // is already fully described by the settlement the exit made.
         //
         // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
         // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
         // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = u64::try_from(figure.priced_nanos).unwrap_or(u64::MAX);
+        let amount = u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX);
         if amount == 0 {
             return;
         }
@@ -1252,6 +1373,57 @@ static NODE: LazyLock<LlmNode> = LazyLock::new(LlmNode::new);
 /// node that has posted nothing rather than as a node whose postings had nowhere to go.
 pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     NODE.bind_book(book);
+}
+
+/// Bind the process's one node to the card it prices against, built from the configured rates.
+///
+/// `rates` is the deployment's `rate_card:` as the neutral per-lane raw view, and `fee_cents` is its
+/// flat per-request fee — the SAME two configured figures the previous release's usage projection
+/// derives a row's spend from. Read once at boot, in the composition root, because that is the one
+/// place entitled to hold a configuration; the plane below never sees a rate.
+///
+/// A deployment with no `rate_card:` binds an ABSENT card rather than no card at all, and the
+/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
+/// exactly what the previous release bills for that deployment. Skipping the binding instead would
+/// post nothing for a node that charges a fee.
+pub fn bind_card<'r>(
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    fee_cents: i64,
+    present: bool,
+) {
+    NODE.bind_card(Arc::new(card_from_config(rates, fee_cents, present)));
+}
+
+/// The configured rates, in the cost unit's own card.
+///
+/// The version is a constant name rather than a hash of the configuration, and that is a stated
+/// limit rather than an oversight: the postings this card prices are read back at the width the node
+/// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
+/// day the books grow that column, this is the one line that fills it.
+fn card_from_config<'r>(
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    fee_cents: i64,
+    present: bool,
+) -> busbar_unit_cost::RateCard {
+    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
+    if !present {
+        return busbar_unit_cost::RateCard::absent(version, fee_cents);
+    }
+    // One entry per (lane, class), in the neutral reserved-unit spellings the plane's own metering
+    // step reports its lines under — so a line the plane reports and the card entry that prices it
+    // are keyed by the same name, with no translation between them.
+    let mut entries = Vec::new();
+    for (lane, raw) in rates {
+        for (class, micro) in [
+            (busbar_api::UNIT_INPUT, raw.input),
+            (busbar_api::UNIT_OUTPUT, raw.output),
+            (busbar_api::UNIT_CACHE_READ, raw.cache_read),
+            (busbar_api::UNIT_CACHE_WRITE, raw.cache_write),
+        ] {
+            entries.push((busbar_unit_cost::LaneClass::new(lane, class), micro));
+        }
+    }
+    busbar_unit_cost::RateCard::from_micro_rates(version, entries, fee_cents)
 }
 
 /// One body-model arrival, driven through the loop.
