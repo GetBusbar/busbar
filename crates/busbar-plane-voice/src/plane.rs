@@ -217,8 +217,14 @@ impl Plane for VoicePlane {
         let client_event = match client_dialect {
             Dialect::TwilioMediaStreams => {
                 // The documented seam: the µ-law -> PCM16 transform happens HERE, never at decode.
-                let event =
-                    twilio::decode(f.bytes.as_slice()).map_err(|_| Encode::Unrepresentable)?;
+                let event = match twilio::decode(f.bytes.as_slice()) {
+                    Ok(event) => event,
+                    // The same forward-compatibility rule the decode step takes: an event this
+                    // reader does not model carries no audio to relay, and is not a reason to end
+                    // the call.
+                    Err(twilio::TwilioError::UnknownEvent(_)) => return Ok(None),
+                    Err(_) => return Err(Encode::Unrepresentable),
+                };
                 match event {
                     twilio::TwilioEvent::Media { payload, .. } => {
                         // Priced from the raw carrier payload, before the transform below widens
@@ -781,7 +787,20 @@ fn decode_twilio_frame<'u>(
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let frame = frames.next_frame().ok_or(Decode::Malformed)?;
-    let event = twilio::decode(frame.bytes.as_slice()).map_err(|_| Decode::Malformed)?;
+    let event = match twilio::decode(frame.bytes.as_slice()) {
+        Ok(event) => event,
+        // An event name this reader does not model is not a broken frame: this carrier adds events
+        // over time and tells its clients to ignore the ones they do not know, and the WS transport
+        // under this session already discards what it cannot place. Refusing the session over one
+        // would drop a live call the day the carrier ships a new lifecycle event. A frame that is
+        // not this carrier's JSON at all is still a refusal.
+        Err(twilio::TwilioError::UnknownEvent(_)) => {
+            return Ok(Ingress::Discard {
+                reason: DiscardCode::Unsupported,
+            })
+        }
+        Err(_) => return Err(Decode::Malformed),
+    };
     match event {
         // Lifecycle events with no audio and nothing left to bind: consumed, no unit, no state
         // change beyond what `Start` below records.

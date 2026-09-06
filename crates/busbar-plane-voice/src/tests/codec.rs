@@ -674,8 +674,15 @@ fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
     ));
 }
 
+/// An event this carrier adds tomorrow is dropped, and the frame that is not this carrier's shape
+/// at all is still refused.
+///
+/// The carrier publishes new event names over the life of the protocol and tells its clients to
+/// ignore the ones they do not recognise; the transport under this session already discards what it
+/// cannot place. Refusing the frame ended a live call on the day a new lifecycle event shipped —
+/// for a message that carries no audio and asks for nothing.
 #[test]
-fn twilio_unknown_event_fails_closed() {
+fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
@@ -698,9 +705,23 @@ fn twilio_unknown_event_fails_closed() {
     .unwrap();
     let frames = [frame(&unknown)];
     let mut cursor = FrameCursor::new(&frames);
-    assert!(plane
+    let ingress = plane
         .decode_ingress(&mut cursor, Some(&mut state), &c)
-        .is_err());
+        .expect("an event this reader does not model is dropped, not refused");
+    assert!(matches!(
+        ingress,
+        Ingress::Discard {
+            reason: busbar_contract::wire::DiscardCode::Unsupported
+        }
+    ));
+
+    // The line the discard does not cross: bytes that are not this carrier's JSON at all.
+    let garbage = [frame(b"not a carrier frame at all")];
+    let mut cursor = FrameCursor::new(&garbage);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor, Some(&mut state), &c),
+        Err(busbar_contract::wire::Decode::Malformed)
+    );
 }
 
 /// A turn the upstream ends with an error consumed exactly as much of the caller's time and ran
