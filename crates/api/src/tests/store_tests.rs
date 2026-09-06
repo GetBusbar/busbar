@@ -901,3 +901,47 @@ fn apply_model_delta_folds_usage_units_flooring_at_zero() {
     ledger.apply_model_delta(&d2);
     assert_eq!(ledger.models[0].usage_units.get("search"), Some(&0));
 }
+
+/// A store that implements only the REQUIRED verbs cannot answer "has this token already been
+/// spent", and the trait default must therefore REFUSE the redemption rather than confirm it.
+/// Confirming (`Ok(true)`) would read a store with no ledger as saying "never seen" on every call,
+/// which is confirm-once / execute-many replay for as long as that store is mounted.
+#[test]
+fn default_redeem_plane_token_refuses_rather_than_confirming() {
+    struct Bare;
+    impl Store for Bare {
+        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+            Ok(None)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            Ok(Vec::new())
+        }
+        fn delete_key(&self, _: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+            Ok(UsageLedger::default())
+        }
+        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+            Ok(())
+        }
+        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+            Ok(Vec::new())
+        }
+    }
+    let out = Bare.redeem_plane_token("ask", "nonce-1", 2_000, 1_000);
+    assert!(
+        out.is_err(),
+        "a store with no single-use ledger must refuse, never answer fresh; got {out:?}"
+    );
+    // And it refuses the SAME way the second time — no hidden state that flips it to a confirm.
+    assert!(Bare
+        .redeem_plane_token("ask", "nonce-1", 2_000, 1_000)
+        .is_err());
+}

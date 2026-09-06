@@ -1557,10 +1557,16 @@ mod tests {
 
     /// A store that keeps nothing.
     ///
-    /// Every record operation the published protocol declares carries a default that accepts and
-    /// keeps nothing, which is exactly the shape a backend with no durable rows has. That makes it
-    /// the right double here: these tests are about which call the root makes for which leg, and a
-    /// store that answered from real rows would be testing the store instead.
+    /// Almost every record operation the published protocol declares carries a default that accepts
+    /// and keeps nothing, which is exactly the shape a backend with no durable rows has. That makes
+    /// it the right double here: these tests are about which call the root makes for which leg, and
+    /// a store that answered from real rows would be testing the store instead.
+    ///
+    /// The single-use redemption is the one verb with no such default — a store that keeps no ledger
+    /// REFUSES rather than confirming, because confirming on its behalf would be confirm-once /
+    /// execute-many replay. That refusal is right for a real deployment and wrong for this double,
+    /// whose whole job is to answer every leg so the test can see WHICH leg was taken, so it is
+    /// spelled out here: this store keeps nothing, so it has seen nothing, so every token is fresh.
     struct SilentStore;
 
     impl AbiStore for SilentStore {
@@ -1606,6 +1612,16 @@ mod tests {
             _bucket: u64,
         ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
             Ok(Vec::new())
+        }
+
+        fn redeem_plane_token(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> busbar_api::StoreResult<bool> {
+            Ok(true)
         }
     }
 

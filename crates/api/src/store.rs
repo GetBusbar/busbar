@@ -1338,8 +1338,21 @@ pub trait Store: Send + Sync + 'static {
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
     /// was the first redemption — the neutral `redeem_ask_state` (kind `ask`). `now` lets a backend
-    /// drop lapsed rows in the same call. DEFAULTED to `Ok(true)` ("this store keeps no ledger"),
-    /// matching [`Store::redeem_ask_state`].
+    /// drop lapsed rows in the same call.
+    ///
+    /// DEFAULTED to a loud error, for the reason [`Store::add_denylist`] and
+    /// [`Store::revoke_credential`] default the same way: the neutral answer here is not a neutral
+    /// answer. This is the ONE record verb whose safe default is FAIL-CLOSED. The plane-record reads
+    /// can hand a store that predates them an empty result and lose nothing; anti-replay is the
+    /// opposite. A store that keeps no ledger cannot say whether a token was already spent, and
+    /// answering `Ok(true)` on its behalf reads that silence as "never seen" — on EVERY redemption
+    /// of EVERY approval, which is confirm-once / execute-many replay for as long as that store is
+    /// mounted. Refusing instead costs an operator a boot-visible error naming the gap; confirming
+    /// costs them the gate.
+    ///
+    /// The refusal is what the approvals gate is built to read: `plane::approvals::spend` turns an
+    /// `Err` here into a REFUSED redemption, never into a spend. A backend that keeps the ledger
+    /// overrides this.
     fn redeem_plane_token(
         &self,
         _kind: &str,
@@ -1347,7 +1360,11 @@ pub trait Store: Send + Sync + 'static {
         _expires_at: u64,
         _now: u64,
     ) -> StoreResult<bool> {
-        Ok(true)
+        Err(StoreError(
+            "this Store does not support redeem_plane_token (single-use anti-replay); refusing to \
+             fail open"
+                .to_string(),
+        ))
     }
 }
 
