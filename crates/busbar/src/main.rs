@@ -1269,14 +1269,12 @@ async fn run(data_workers: usize) {
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH, captured here — before `cfg` moves into the
-    // router builder below — for the same reason the voice credential a few lines down is. These two
-    // are the whole of what a card is: the per-model rates and the flat per-request fee, exactly the
-    // pair the usage projection derives a row's spend from.
-    #[cfg(feature = "root-llm")]
-    let llm_rate_card = cfg.rate_card.clone();
-    #[cfg(feature = "root-llm")]
-    let llm_per_request_fee = cfg.per_request_fee;
+    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH is not captured here and handed over once. It
+    // arrives through the engine's rate-apply seam, installed a few lines down and raised by the ONE
+    // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
+    // reading taken here instead would be the boot's rates forever: the usage projection would
+    // reprice on an apply and this node's ledger would not, and the identity that says the two are
+    // one money would hold only until the operator changed a fee.
     // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
     // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
     // for another few hundred lines. The transports it composes are built from THESE limits — the
@@ -1299,6 +1297,14 @@ async fn run(data_workers: usize) {
         .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
         .and_then(|provider| cfg.providers.get(&provider))
         .map(|p| (p.base_url.clone(), p.api_key.clone()));
+
+    // THE RELOAD HOOK, installed BEFORE the first app build below so the boot's own rate resolution
+    // is the card's first apply and nothing has to read the configuration twice. From here on the
+    // root's card is whatever the last resolution said, and each unit prices against the one it
+    // pinned at admission. Off, no holder is installed and the seam is silent, which is the honest
+    // answer for a binary with no root ledger in it.
+    #[cfg(feature = "root-llm")]
+    root::kernel::install_card_repricer();
 
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
@@ -1435,19 +1441,11 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
 
-    // AND TO THE CARD IT PRICES AGAINST. The plane reports what a unit consumed; what that is worth
-    // is read here, off the same configured `rate_card:` and `per_request_fee:` the usage projection
-    // derives its spend from. One configuration, two readings — which is what makes the node's books
-    // and the previous release's rows the same money rather than two numbers that agree by habit.
-    #[cfg(feature = "root-llm")]
-    root::units_llm::bind_card(
-        llm_rate_card
-            .iter()
-            .flat_map(|c| c.iter())
-            .map(|(lane, entry)| (lane.as_str(), entry.raw_tier_rates())),
-        llm_per_request_fee,
-        llm_rate_card.is_some(),
-    );
+    // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
+    // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
+    // same configured `rate_card:` and `per_request_fee:` the usage projection derives its spend
+    // from. One configuration, two readings — and the next apply moves both, which is what makes the
+    // node's books and the projection's rows the same money rather than two numbers that agreed once.
 
     #[cfg(feature = "root-admin")]
     let admin_router = root::units_admin::mount(

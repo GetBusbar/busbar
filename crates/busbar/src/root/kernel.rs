@@ -53,7 +53,7 @@
 // name every call site uses.
 pub use super::auth_bindings;
 
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use busbar_caps::{
     Admit, AdmitToken, Approve, Arrival, Audit, Authenticate, Decision, Decode, Encode, Hold,
@@ -89,6 +89,90 @@ pub fn new_kernel() -> busbar_kernel::teller::Kernel {
 #[must_use]
 pub fn new_registration() -> busbar_contract::Registration {
     busbar_contract::Registration::new()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The card the root prices against
+// ---------------------------------------------------------------------------------------------
+
+/// THE PROCESS'S ONE CARD, and it lives in the root because a rate is a statement about a deployment
+/// rather than about a plane. A plane reports what a unit consumed; what those quantities are worth
+/// is read here, off the same configured figures the engine's own spend projection derives from.
+///
+/// SWAPPABLE, not bound-once. The engine rebuilds its projection's rates on every config apply and
+/// reload, so a card fixed at boot would go on pricing this node's ledger against rates the operator
+/// has already replaced — the projection would move and the ledger would not, and the identity that
+/// says the two are one money would hold only until the first apply. The holder swaps instead, and
+/// the swap is a single atomic store: a reader either sees the old card whole or the new card whole,
+/// never a card half-written.
+///
+/// PINNED BY THE READER, not read twice. A unit takes its `Arc` at ADMISSION and prices its whole
+/// life against that one, including the accrual that lands after its body has drained. That is what
+/// makes the pricing a promise rather than a race: a request that opened before an apply is billed on
+/// the rates it was admitted under, and an apply landing mid-body cannot reprice a request halfway
+/// through. The next admission takes the new card.
+#[derive(Default)]
+pub struct RootCard {
+    /// `None` until the boot resolution raises the rate-apply seam. Absent, a report is not priced
+    /// and nothing is posted — the honest answer for a build that has read no configuration yet,
+    /// rather than a fallback card whose figures no operator wrote.
+    card: arc_swap::ArcSwapOption<busbar_unit_cost::RateCard>,
+}
+
+impl std::fmt::Debug for RootCard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RootCard").finish_non_exhaustive()
+    }
+}
+
+impl RootCard {
+    /// The card as it stands, pinned for the caller's whole life.
+    ///
+    /// The returned `Arc` is the reader's to keep: a swap after this call replaces what the NEXT
+    /// caller sees and leaves this one holding the card it was admitted under.
+    #[must_use]
+    pub fn pin(&self) -> Option<Arc<busbar_unit_cost::RateCard>> {
+        self.card.load_full()
+    }
+
+    /// Put `card` in place of whatever is there, atomically.
+    ///
+    /// Called on the boot resolution and again on every apply/reload, always with a card built from
+    /// the configuration the engine just resolved its own rates from.
+    pub fn apply(&self, card: Arc<busbar_unit_cost::RateCard>) {
+        self.card.store(Some(card));
+    }
+}
+
+/// The process's card holder, reached by the root's units and by nothing below them.
+///
+/// A `static` for the same reason the LLM node is one: the seam a unit is driven through is a bare
+/// `fn` and a bare `fn` cannot capture, so the holder has to be reachable by name. It exists before
+/// the boot that reads the configuration finishes, holding no card, which is exactly the state a
+/// report arriving that early should be priced in — it isn't.
+pub static ROOT_CARD: LazyLock<RootCard> = LazyLock::new(RootCard::default);
+
+/// The root, answering the engine's rate-apply seam.
+///
+/// The whole of the wiring: the engine resolved the deployment's rates — at boot or on a live apply —
+/// and the root rebuilds its card from the SAME two configured figures and swaps it in. One
+/// configuration, two readings, and the apply moves both or neither.
+#[derive(Debug, Clone, Copy)]
+pub struct CardRepricer;
+
+impl busbar_substrate::rate_apply::RateApply for CardRepricer {
+    fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
+        ROOT_CARD.apply(Arc::new(crate::root::units_llm::card_from_config(
+            rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
+            rates.fee_cents,
+            rates.present,
+        )));
+    }
+}
+
+/// Install the root as the process's rate holder. Boot only, once.
+pub fn install_card_repricer() {
+    busbar_substrate::rate_apply::install_rate_apply(&CardRepricer);
 }
 
 /// The admission unit, standing at the in-flight table's arrival door.

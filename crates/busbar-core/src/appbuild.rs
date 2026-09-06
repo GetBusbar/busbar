@@ -590,6 +590,23 @@ pub fn build_app_from_config(
         cfg.per_request_fee,
         &cfg.groups,
     ));
+    // AND TELL WHOEVER ELSE PRICES AGAINST THESE FIGURES. The resolution above is what reprices the
+    // engine's own derived spend on the next read; a holder outside the engine that read the same
+    // two configured figures ONCE, at boot, would keep pricing on rates this apply has replaced —
+    // one request, two numbers, and only one of them the operator's configuration. So the one place
+    // rates are resolved raises the one seam that says so, and it says it on the boot resolution and
+    // on every apply/reload alike, because this function is both. Nothing is installed in a build
+    // with no such holder and the call is a no-op there.
+    busbar_substrate::rate_apply::rates_applied(&busbar_substrate::rate_apply::RawRates {
+        lanes: &cfg
+            .rate_card
+            .iter()
+            .flat_map(|card| card.iter())
+            .map(|(lane, entry)| (lane.clone(), entry.raw_tier_rates()))
+            .collect::<Vec<_>>(),
+        fee_cents: cfg.per_request_fee,
+        present: cfg.rate_card.is_some(),
+    });
 
     let mut sorted_models: Vec<_> = cfg.models.into_iter().collect();
     sorted_models.sort_by(|a, b| a.0.cmp(&b.0));
