@@ -2426,4 +2426,301 @@ mod tests {
             ))
         }
     }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // The configured group reaches the door
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// A key that names no restriction, which is what the guards read as "ask me nothing".
+    ///
+    /// Every method answers, and none of them answers by accident: the admission step reads none of
+    /// this, and the value that proves it is a view whose answers cannot admit or refuse anything.
+    struct UnrestrictedKey;
+
+    impl PoolView for UnrestrictedKey {
+        fn key_scopes(&self) -> Option<&[String]> {
+            None
+        }
+        fn pool_allowed(&self, _pool: &str) -> bool {
+            true
+        }
+        fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
+            None
+        }
+        fn is_configured(&self, _name: &str) -> bool {
+            true
+        }
+        fn pricing_enabled(&self) -> bool {
+            false
+        }
+        fn is_unpriced(&self, _name: &str) -> bool {
+            false
+        }
+        fn has_key(&self) -> bool {
+            false
+        }
+    }
+
+    /// A deployment whose per-kind rules all pass, so a destination question is never the reason a
+    /// unit in these cells did not reach the door.
+    struct EveryKindPasses;
+
+    impl KindFacts for EveryKindPasses {
+        fn allow_listed(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn transport_key_resolves(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn lane_permitted_for_op_class(&self, _lane: &str) -> bool {
+            true
+        }
+        fn session_upstream_ok(&self) -> bool {
+            true
+        }
+        fn session_principal_matches(&self) -> bool {
+            true
+        }
+        fn client_selector_ok(&self) -> bool {
+            true
+        }
+        fn await_deadline_ok(&self) -> bool {
+            true
+        }
+        fn verb_scope_held(&self) -> bool {
+            true
+        }
+        fn nested_plane_ok(&self) -> bool {
+            true
+        }
+        fn plane_record_ok(&self) -> bool {
+            true
+        }
+        fn peer_lease_live(&self) -> bool {
+            true
+        }
+        fn upgrade_ok(&self) -> bool {
+            true
+        }
+    }
+
+    /// One group, one call at a time — the smallest cap an operator can write.
+    fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+        let groups = std::collections::BTreeMap::from([(
+            group.to_string(),
+            busbar_substrate::config::groups::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Concurrent,
+                    amount: 1,
+                    per: None,
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                child_default: None,
+            },
+        )]);
+        // Through the interner the root uses at boot, so the name the slot records is the same
+        // static the vocabulary holds rather than one this fixture invented.
+        let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
+        let ids = vocabulary.group_ids(&crate::root::vocabulary::ConfigKeys {
+            groups: vec![group.to_string()],
+            ..crate::root::vocabulary::ConfigKeys::default()
+        });
+        crate::root::policy::group_table(&groups, &ids)
+    }
+
+    /// Everything the node's half of one A2A unit is assembled from, held together so a cell can
+    /// borrow from it for the length of the cell.
+    struct Deployment {
+        auth: Auth,
+        auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+        trust: busbar_caps::TrustToken,
+        pools: UnrestrictedKey,
+        kinds: EveryKindPasses,
+        resolver: FixedResolver,
+        denylist: busbar_unit_trust::Denylist,
+        door: Door<busbar_unit_admission::InMemoryCells>,
+        groups: busbar_unit_admission::GroupTable,
+        pricer: Pricer,
+        records: RecordLegs,
+        meter_policy: crate::root::policy::MeterPolicyHandle,
+        scope: crate::root::policy::ScopePolicy,
+        durability: Mutex<crate::root::durability::Durability>,
+        origin: busbar_caps::Origin,
+    }
+
+    fn deployment(groups: busbar_unit_admission::GroupTable) -> Deployment {
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        Deployment {
+            auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+            trust: busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
+            pools: UnrestrictedKey,
+            kinds: EveryKindPasses,
+            resolver: FixedResolver(vec!["203.0.113.7".parse().expect("a public address")]),
+            denylist: busbar_unit_trust::Denylist::default(),
+            door: Door::new(busbar_unit_admission::InMemoryCells::new()),
+            groups,
+            pricer: Pricer::flat(0),
+            records: RecordLegs::new(Arc::new(RecordingStore::default())),
+            meter_policy: crate::root::policy::build(
+                &crate::root::policy::MeterPolicyConfig::default(),
+            ),
+            scope: scope_policy(crate::root::policy::ScopePolicy::new()),
+            durability: Mutex::new(durability),
+            origin: busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
+        }
+    }
+
+    impl Deployment {
+        /// One unit of this deployment, charging through `group`.
+        fn calling<'r>(
+            &'r self,
+            group: Option<&'r str>,
+        ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+            A2aUnits::new(
+                A2aBindings {
+                    auth: &self.auth,
+                    auth_bindings: &self.auth_bindings,
+                    trust_token: &self.trust,
+                    pools: &self.pools,
+                    kinds: &self.kinds,
+                    resolver: &self.resolver,
+                    guard: GuardPolicy::default(),
+                    denylist: &self.denylist,
+                    pinned: &[],
+                    door: &self.door,
+                    groups: &self.groups,
+                    group,
+                    pricer: &self.pricer,
+                    bytes_nanos: 0,
+                    records: &self.records,
+                    meter_policy: &self.meter_policy,
+                    scope_policy: &self.scope,
+                    durability: &self.durability,
+                    pool: "agents",
+                    now: 1_700_000_000,
+                    origin: self.origin.clone(),
+                },
+                draft(ops::OP_MESSAGE_SEND),
+                Grants::of(Scope::Full),
+            )
+        }
+    }
+
+    fn a2a_ctx() -> UnitCtx {
+        UnitCtx {
+            key: busbar_caps::UnitKey::new(1),
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        }
+    }
+
+    /// Ask the door for one call, keeping what its yes counted.
+    fn ask_the_door(
+        unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+        who: &PrincipalId,
+    ) -> (
+        Result<busbar_caps::Admission, busbar_caps::Refusal>,
+        GroupLeaseSlip,
+    ) {
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let slip = GroupLeaseSlip::new();
+        let decision = Units::admit(
+            unit,
+            &busbar_caps::UnitToken::mint(&seal),
+            &busbar_caps::AdmitToken::mint(&seal),
+            &a2a_ctx(),
+            who,
+            &[],
+            &slip,
+        );
+        (decision.into_result(&seal), slip)
+    }
+
+    /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against an A2A group gets one
+    /// agent call in the air at a time: the second is refused while the first is still running, and
+    /// it is admitted once the first has ended.
+    ///
+    /// This is the whole point of the chain being the configured one. With an empty chain the door
+    /// walks no group, raises no gauge and says yes to both — which is what a node whose operator
+    /// wrote this cap down did, silently, with nothing on any surface to say the limit was inert.
+    #[test]
+    fn an_a2a_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_first_ends() {
+        const GROUP: &str = "a2a-team";
+        let deployment = deployment(one_call_at_a_time(GROUP));
+        let who = PrincipalId::new("vk_agent");
+
+        let first = deployment.calling(Some(GROUP));
+        let (admitted, held) = ask_the_door(&first, &who);
+        assert!(admitted.is_ok(), "the first call of a group capped at one");
+        assert_eq!(
+            held.taken().len(),
+            1,
+            "and the yes names the one capped group it counted"
+        );
+        // The count itself, taken onto the slot as the loop takes it. Held for as long as the unit
+        // it admitted is running, which is what makes the next line a refusal rather than a second
+        // yes.
+        let running = held.grant_taken().expect("the yes is holding a count");
+
+        let second = deployment.calling(Some(GROUP));
+        let (refused, _) = ask_the_door(&second, &who);
+        assert_eq!(
+            refused.expect_err("the group is full").reason(),
+            ReasonCode::RateLimited,
+            "an in-flight gauge is a count cap, not a spend cap"
+        );
+
+        // The unit ends: the slot gives back what it held, and the group has room again.
+        drop(running);
+        let third = deployment.calling(Some(GROUP));
+        let (after, _) = ask_the_door(&third, &who);
+        assert!(
+            after.is_ok(),
+            "the cap is instantaneous — it gates what is running, never what has run"
+        );
+    }
+
+    /// A caller bound to no group at all is admitted and attributed, and takes no lease: the
+    /// ordinary posture for a deployment with no `groups:` section, which must not become a
+    /// refusal because the chain is now resolved.
+    #[test]
+    fn an_a2a_caller_bound_to_no_group_is_admitted_and_counted_against_nothing() {
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let who = PrincipalId::new("vk_agent");
+        for _ in 0..3 {
+            let unit = deployment.calling(None);
+            let (decision, slip) = ask_the_door(&unit, &who);
+            assert!(decision.is_ok(), "no group binding is no cap");
+            assert!(slip.taken().is_empty(), "and nothing to name on the slot");
+        }
+    }
+
+    /// A caller bound to a group this node's configuration does not have is refused, not admitted
+    /// under caps that could not be read. Fail-closed, and rendered as over-quota, which is what the
+    /// door itself answers for the same cause.
+    #[test]
+    fn an_a2a_caller_bound_to_an_unconfigured_group_is_refused() {
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let unit = deployment.calling(Some("a-group-this-node-never-had"));
+        let (decision, _) = ask_the_door(&unit, &PrincipalId::new("vk_agent"));
+        assert_eq!(
+            decision
+                .expect_err("nothing is admitted under caps that cannot be read")
+                .reason(),
+            ReasonCode::OverBudget
+        );
+    }
 }
