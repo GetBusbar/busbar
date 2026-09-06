@@ -151,6 +151,16 @@ const BILLING_PLANE_ROOT_LEGS: &[(&str, &str)] = &[
     ("busbar-voice", "units_voice.rs"),
 ];
 
+/// Legs KNOWN to be unwired right now, named by tracker row so the gap is tracked rather than a
+/// silent red. A leg listed here that still carries no `impl Units` block is reported as a named
+/// GAP and does not fail the build; a listed leg that HAS grown an `impl Units` block fails with a
+/// "stale expectation" message, because the switch-over landed and the entry is now a lie that must
+/// be deleted; a leg that is unwired but NOT listed here fails exactly as it did before this list
+/// existed. This is not an escape hatch for a plane that reaches no Meter step at all through some
+/// OTHER shape (a free `fn meter`, a `Units` impl whose `fn meter` reports nothing) — only the
+/// narrowest gap, "no `impl Units` block yet", is nameable here.
+const EXPECTED_UNWIRED: &[(&str, &str)] = &[("busbar-mcp", "D32/C2")];
+
 /// The ONE usage seam every Teller Meter step folds through, in the three spellings the tree
 /// actually uses: the usage unit's own entry point, the report constructor it returns, and the
 /// per-leg fold helper that wraps it. A leg reaching NONE of these reports no lines, and a Meter
@@ -218,6 +228,14 @@ fn units_impl_meter_step(lines: &[common::Line]) -> Option<Vec<&common::Line>> {
     Some(body)
 }
 
+/// Whether the leg carries an `impl … Units for …` block at all, independent of whether that block
+/// goes on to define a usable `fn meter`. This is the narrow question [`EXPECTED_UNWIRED`] answers:
+/// a leg with no `Units` impl is not merely missing a good Meter step, it has not joined the Teller
+/// loop yet, and that is the one gap a tracker row is allowed to name here.
+fn has_units_impl(lines: &[common::Line]) -> bool {
+    lines.iter().any(|l| l.code.contains(UNITS_IMPL_SIGNATURE))
+}
+
 /// Whether a classified production line reaches a Teller usage seam.
 fn line_reaches_usage_seam(line: &common::Line) -> bool {
     TELLER_USAGE_SEAM_TOKENS
@@ -243,6 +261,54 @@ fn usage_seam_reaches_in_plane_meter_step(crate_dir: &Path) -> Option<usize> {
     let lines = common::production_lines(&path);
     let refs: Vec<&common::Line> = lines.iter().collect();
     Some(usage_seam_reaches(&refs))
+}
+
+/// The three-way answer to "does this leg carry the Meter step the loop can call, and does
+/// [`EXPECTED_UNWIRED`] say anything about it": a named, non-failing GAP; a failing stale
+/// expectation (the tracker row claims unwired but the code disagrees, in either direction); a
+/// failing plain offender (unwired and not named); or the wired step's own body, ready for the
+/// usage-seam question.
+enum WiringArm<'a> {
+    /// A listed leg with no `impl Units` block — the gap is named, not a failure.
+    Gap(String),
+    /// An `EXPECTED_UNWIRED` entry that no longer matches reality, in either direction.
+    StaleExpectation(String),
+    /// An unlisted leg with no usable `fn meter` on an `impl Units` block.
+    Unwired(String),
+    /// A usable Meter step body, listed or not.
+    Wired(Vec<&'a common::Line>),
+}
+
+/// Classifies one leg's wiring state against [`EXPECTED_UNWIRED`]. Pure and file-free so the three
+/// arms can be driven on synthetic lines in a selftest as well as on the real legs.
+fn wiring_arm<'a>(
+    plane: &str,
+    leg: &str,
+    lines: &'a [common::Line],
+    expected_row: Option<&str>,
+) -> WiringArm<'a> {
+    match (units_impl_meter_step(lines), expected_row) {
+        (None, Some(row)) if !has_units_impl(lines) => WiringArm::Gap(format!(
+            "GAP {plane} ({row}): root leg {leg} carries no `impl Units` block yet"
+        )),
+        (None, Some(row)) => WiringArm::StaleExpectation(format!(
+            "{plane}: root leg {leg} now carries an `impl {UNITS_IMPL_SIGNATURE}…` block — the \
+             EXPECTED_UNWIRED entry ({row}) is a stale expectation: remove it and let this gate ask \
+             the real question about the wired leg's Meter step"
+        )),
+        (None, None) => WiringArm::Unwired(format!(
+            "{plane}: root leg {leg} has NO production `fn meter(&self, …)` on an `impl \
+             {UNITS_IMPL_SIGNATURE}…` block — it contributes no Meter step to the Teller loop, so \
+             nothing it serves over the root is ever priced. A free `fn meter` elsewhere in the \
+             file is not this: the loop holds the leg and calls the method on it, and it cannot \
+             call a function nothing is wired to"
+        )),
+        (Some(_), Some(row)) => WiringArm::StaleExpectation(format!(
+            "{plane}: root leg {leg} carries `impl {UNITS_IMPL_SIGNATURE}…` with a usable `fn \
+             meter` — the EXPECTED_UNWIRED entry ({row}) is a stale expectation: remove it"
+        )),
+        (Some(body), None) => WiringArm::Wired(body),
+    }
 }
 
 #[test]
@@ -272,16 +338,23 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
         //     the loop cannot call a step that is not there. Neither can it call a FREE `fn meter`
         //     that is not on the `Units` impl — that function is reachable only by a caller who
         //     names it, and an unwired leg has none. A `fn meter` that exists only inside the leg's
-        //     own `#[cfg(test)] mod` is not in the binary and does not count either.
-        let Some(body) = units_impl_meter_step(&lines) else {
-            offenders.push(format!(
-                "{plane}: root leg {leg} has NO production `fn meter(&self, …)` on an \
-                 `impl {UNITS_IMPL_SIGNATURE}…` block — it contributes no Meter step to the Teller \
-                 loop, so nothing it serves over the root is ever priced. A free `fn meter` \
-                 elsewhere in the file is not this: the loop holds the leg and calls the method on \
-                 it, and it cannot call a function nothing is wired to"
-            ));
-            continue;
+        //     own `#[cfg(test)] mod` is not in the binary and does not count either. A leg named in
+        //     [`EXPECTED_UNWIRED`] gets that one gap reported by name instead of failing red.
+        let expected_row = EXPECTED_UNWIRED
+            .iter()
+            .find(|(p, _)| p == plane)
+            .map(|(_, row)| *row);
+
+        let body = match wiring_arm(plane, leg, &lines, expected_row) {
+            WiringArm::Gap(msg) => {
+                println!("  {msg}");
+                continue;
+            }
+            WiringArm::StaleExpectation(msg) | WiringArm::Unwired(msg) => {
+                offenders.push(msg);
+                continue;
+            }
+            WiringArm::Wired(body) => body,
         };
 
         // (2) The STEP'S OWN BODY must reach the one usage seam, directly or through the single
@@ -509,5 +582,143 @@ fn selftest_the_hop_lands_on_the_meter_step_and_not_the_neighbouring_step() {
              unit tree does — the scan is reading the wrong file"
         );
         println!("  {plane:<13} usage seam: {step_only} in the Meter step, {tree_wide} tree-wide");
+    }
+}
+
+/// THE FOURTH FAILURE this gate must not reintroduce: an `EXPECTED_UNWIRED` list that either fails
+/// a leg it names, or — worse — stops failing once the leg is actually wired. Proven on synthetic
+/// source over all three arms so the discrimination does not depend on the real tree's state today.
+#[test]
+fn selftest_expected_unwired_names_the_gap_and_only_the_gap() {
+    let prod = |src: &str| -> Vec<common::Line> {
+        common::classify(src, false)
+            .into_iter()
+            .filter(|l| !l.intest)
+            .collect()
+    };
+
+    // Arm 1: no `impl Units` at all, and the leg IS listed — a named GAP, not a failure.
+    let unwired_and_listed = prod(
+        r#"
+pub fn meter(token: &UsageToken) -> Decision<Meter> {
+    fold_usage(token)
+}
+"#,
+    );
+    match wiring_arm(
+        "busbar-mcp",
+        "units_mcp.rs",
+        &unwired_and_listed,
+        Some("D32/C2"),
+    ) {
+        WiringArm::Gap(msg) => assert!(
+            msg.contains("busbar-mcp") && msg.contains("D32/C2"),
+            "the gap message must name both the plane and its tracker row: {msg}"
+        ),
+        _ => panic!("a listed leg with no `impl Units` block must report as a named GAP, not fail"),
+    }
+
+    // Arm 2a: `impl Units` WITH a usable `fn meter` now exists, but the leg is still listed as
+    // unwired — the tracker row is stale in the direction that would otherwise hide a real switch.
+    let wired_but_still_listed = prod(
+        r#"
+impl Units for Leg<'_> {
+    fn meter(&self, token: &UsageToken) -> Decision<Meter> {
+        Usage::report(usage, lines)
+    }
+}
+"#,
+    );
+    match wiring_arm(
+        "busbar-mcp",
+        "units_mcp.rs",
+        &wired_but_still_listed,
+        Some("D32/C2"),
+    ) {
+        WiringArm::StaleExpectation(msg) => assert!(
+            msg.contains("stale expectation"),
+            "a wired leg still carrying an EXPECTED_UNWIRED entry must fail as stale: {msg}"
+        ),
+        other => panic!(
+            "a wired leg that is still listed as unwired must fail as a stale expectation, not \
+             pass silently or report as an unlisted offender: arm matched {}",
+            match other {
+                WiringArm::Gap(_) => "Gap",
+                WiringArm::Unwired(_) => "Unwired",
+                WiringArm::Wired(_) => "Wired",
+                WiringArm::StaleExpectation(_) => unreachable!(),
+            }
+        ),
+    }
+
+    // Arm 2b: no `impl Units` block, but the leg is listed and the code says otherwise — same
+    // stale-expectation family, the other direction (listed unwired, `has_units_impl` says wired
+    // via SOME impl even though no usable `fn meter` sits on it — the impl block itself is present).
+    let impl_present_but_no_usable_meter = prod(
+        r#"
+impl Units for Leg<'_> {
+    fn admit(&self, token: &UsageToken) -> Decision<Admit> {
+        Decision::proceed(token, ())
+    }
+}
+"#,
+    );
+    match wiring_arm(
+        "busbar-mcp",
+        "units_mcp.rs",
+        &impl_present_but_no_usable_meter,
+        Some("D32/C2"),
+    ) {
+        WiringArm::StaleExpectation(msg) => assert!(
+            msg.contains("now carries an `impl"),
+            "an `impl Units` block appearing at all — even one whose `fn meter` is not yet a real \
+             Meter step — is the switch-over starting, so the plain-unwired GAP is no longer \
+             honest and the entry must be flagged for a human to reconcile: {msg}"
+        ),
+        other => panic!(
+            "a leg that has grown an `impl Units` block must stop being reported as a clean GAP: \
+             arm matched {}",
+            match other {
+                WiringArm::Gap(_) => "Gap",
+                WiringArm::Unwired(_) => "Unwired",
+                WiringArm::Wired(_) => "Wired",
+                WiringArm::StaleExpectation(_) => unreachable!(),
+            }
+        ),
+    }
+
+    // Arm 3: unlisted and unwired — fails exactly as it always has, by name, with no GAP language.
+    match wiring_arm("busbar-mcp", "units_mcp.rs", &unwired_and_listed, None) {
+        WiringArm::Unwired(msg) => assert!(
+            !msg.contains("GAP") && !msg.contains("stale expectation"),
+            "an unlisted unwired leg must fail as a plain offender, not read like a tracked gap or \
+             a stale expectation: {msg}"
+        ),
+        other => panic!(
+            "an unlisted leg with no `impl Units` block must fail as Unwired: arm matched {}",
+            match other {
+                WiringArm::Gap(_) => "Gap",
+                WiringArm::StaleExpectation(_) => "StaleExpectation",
+                WiringArm::Wired(_) => "Wired",
+                WiringArm::Unwired(_) => unreachable!(),
+            }
+        ),
+    }
+
+    // Control: unlisted and wired — reaches the real Wired arm with the step's body handed back.
+    match wiring_arm("busbar-mcp", "units_mcp.rs", &wired_but_still_listed, None) {
+        WiringArm::Wired(body) => assert!(
+            usage_seam_reaches(&body) > 0,
+            "the wired arm must hand back the step's own body, not swallow it"
+        ),
+        other => panic!(
+            "an unlisted, wired leg must pass through to Wired: arm matched {}",
+            match other {
+                WiringArm::Gap(_) => "Gap",
+                WiringArm::StaleExpectation(_) => "StaleExpectation",
+                WiringArm::Unwired(_) => "Unwired",
+                WiringArm::Wired(_) => unreachable!(),
+            }
+        ),
     }
 }
