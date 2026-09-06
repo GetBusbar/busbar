@@ -467,10 +467,37 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
     }
 }
 
-/// The loop's shape is part of its contract: no `?`, and no early `return` inside it.
+/// Every `return` in the file, by line, whatever punctuation follows it.
+///
+/// The scan this replaces looked for the eight characters `return ` — with a trailing SPACE — so
+/// `return;`, the bare early exit, was the one form of the thing it was looking for that it could
+/// not see. A scan that cannot see the shape it forbids is a scan that reports the absence of what
+/// it never looked for.
+fn early_returns(source: &str) -> Vec<(usize, &str)> {
+    source
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim_start().starts_with("//"))
+        .filter(|(_, line)| {
+            line.split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .any(|word| word == "return")
+        })
+        .map(|(i, line)| (i + 1, line.trim()))
+        .collect()
+}
+
+/// The loop's shape is part of its contract: no `?`, and no unnamed early `return` inside it.
 ///
 /// A `?` in a function that is holding a reservation is a path where the hold is dropped instead of
 /// settled. This reads the source and says so.
+///
+/// THE ONE NAMED EXIT. `draw_lease`'s guard is a `return;` and it is not the defect this scan is
+/// for. It stands BEFORE the function takes anything: an origin the design exempts from the
+/// concurrency lease — a handshake, a tick, a kernel-verb unit — draws no lease, so there is nothing
+/// held on that path for the exit to drop. The rule the scan enforces is "no return between taking a
+/// thing and settling it", and a guard that runs before the taking is on the far side of it. It is
+/// named here, by function and by reason, because an exemption that is not written down is
+/// indistinguishable from a scan that missed something.
 #[test]
 fn the_loop_has_no_early_exits() {
     let source = include_str!("../src/teller.rs");
@@ -483,9 +510,22 @@ fn the_loop_has_no_early_exits() {
         !body.contains("?;"),
         "the loop uses the question mark operator"
     );
+
+    // The guard at the top of `draw_lease`, and nothing else. Named by the line it stands on so a
+    // second `return;` arriving anywhere in the file is the one this reports.
+    let named = ["return;"];
+    let unnamed: Vec<_> = early_returns(source)
+        .into_iter()
+        .filter(|(_, line)| !named.contains(line))
+        .collect();
     assert!(
-        !body.contains("return "),
-        "the loop returns early from somewhere"
+        unnamed.is_empty(),
+        "the loop returns early from somewhere unnamed: {unnamed:?}"
+    );
+    assert_eq!(
+        early_returns(source).len(),
+        1,
+        "the file has exactly one early exit, `draw_lease`'s exempt-origin guard"
     );
 }
 
