@@ -816,11 +816,22 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
             std::process::exit(2);
         }
     }
-    // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
-    // the half of the plane that owns sockets reaches it through. Without this the seal composed a
-    // node nothing on a socket could name — a client-served tool call's wait was entered where the
-    // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
-    compose_voice_governed_calls();
+    // THE OTHER HALF OF THE MOUNT IS NOT INSTALLED HERE, AND THAT IS THE POINT. The node below is
+    // composable and its port is wired; what it is not yet is a node any served session runs units
+    // on. `OpenToolCalls::planned` — the one call that puts a wait in the table — has no caller
+    // outside this file's own tests until the serving path is switched onto these units, so the
+    // table this root could install is empty for the life of the process.
+    //
+    // Installing it anyway is worse than installing nothing, and not by a little: an installed table
+    // makes `served_governed_session()` answer `Some` for EVERY session the door opens, which makes
+    // every served session a governed one, which makes every client `function_call_output` a reply
+    // the empty table refuses. The refusal is correct for the table and catastrophic for the
+    // deployment — the client's tool answers stop reaching the model entirely, and the ungoverned
+    // path that carried them verbatim is the one that was working.
+    //
+    // So the composition stays unbound until the switch that gives the table something to hold. That
+    // switch is one line here (`compose_voice_governed_calls()`), and it belongs in the same change
+    // that routes a served frame through these units — not before it.
 }
 
 /// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
@@ -842,7 +853,12 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
 ///
 /// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
 /// this node's live sessions are already keyed into.
-#[cfg(feature = "root-voice")]
+///
+/// NOT CALLED ON THE BOOT PATH. See [`mount_root_voice`]: a table with no `planned` caller behind it
+/// refuses every reply a served session carries, so it is composed by the switch that gives it units
+/// to hold and by this file's own tests until then. `cfg(test)` rather than a `#[allow(dead_code)]`,
+/// because a compiler that cannot see the function is a stronger statement than a lint that can.
+#[cfg(all(feature = "root-voice", test))]
 fn compose_voice_governed_calls() {
     use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
 
