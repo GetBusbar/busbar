@@ -355,6 +355,17 @@
         "body"
       ],
       "rationale": "AWS Converse reports inputTokens as the NON-cached input only and documents the full input as inputTokens + cacheReadInputTokens + cacheWriteInputTokens (its worked caching example totals 16 input + 4 output + 695 cache-write as totalTokens 715). 1.5.5's Bedrock writer derived totalTokens = inputTokens + outputTokens while emitting the two cache counts beside it as ADDITIVE siblings, so on a cache-bearing response the published parts summed PAST the published total and a consumer reading totalTokens -- the field AWS points accounting consumers at -- lost every cache token. Both write sites (the buffered Converse body and the streamed metadata frame) now publish the AWS sum. The component fields are untouched, a response with no cache activity is byte-identical to 1.5.5 (the omitted cache buckets add zero), and this is a Bedrock-INGRESS body shape only: nothing Busbar ledgers reads totalTokens, since the Bedrock reader never parses it. The oracle's mock reports no cache tokens, so no recorded cell moves today."
+    },
+    {
+      "id": "A17 Anthropic billing_error names its own error type",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-05 oracle Phase 0 group-budget-total cell",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|over_budget_total$",
+      "classes": [
+        "body"
+      ],
+      "rationale": "1.5.5 answers the group's own BUDGET-total exhaustion (metric: budget, not the requests-cap `over_budget` arm) with error.type \"insufficient_quota\" — OpenAI's vocabulary, outside the nine types the published Anthropic error envelope declares. 1.6.0 answers the identical 429 with error.type \"billing_error\", the Anthropic-native member for a billing/quota refusal. Status (429), message text, and every other field are byte-identical on both sides; only /error/type differs: \"insufficient_quota\" (1.5.5) -> \"billing_error\" (1.6.0).",
+      "changelog": "An Anthropic-dialect error names an Anthropic error type. Busbar's quota and context-overflow refusals reached an Anthropic client as `insufficient_quota` and `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error` and `invalid_request_error`. The status, message and every other error type are unchanged."
     }
   ]
 }
