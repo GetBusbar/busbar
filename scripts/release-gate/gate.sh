@@ -18,6 +18,7 @@
 #     and even those print a ::warning:: and are named in the summary as NOT VERIFIED.
 #
 # Usage: LEDGER_DIR=<dir of *.tsv ledgers> scripts/release-gate/gate.sh <version>
+#        scripts/release-gate/gate.sh --selftest   # prove the gate's own floors, offline
 set -uo pipefail
 # `|| exit` and not a bare cd: every path below is repo-relative, so a failed cd would run the
 # whole check suite against whatever directory the caller happened to be in and report confident
@@ -25,6 +26,101 @@ set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 # shellcheck source=scripts/release-gate/lib.sh
 . scripts/release-gate/lib.sh
+
+# ── --selftest ──────────────────────────────────────────────────────────────────────────────────
+#
+# The gate's own machinery, exercised offline. Every case here is one that the code as it stood
+# BEFORE the case existed got WRONG in the green direction — that is the entrance requirement, and
+# it is why these are not "does expected-ids still print things" smoke tests. No network, no
+# release, no runner: each case stages a contract or a ledger and reads the verdict.
+selftest() {
+  local rc_bad=0 tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/relgate-selftest-XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+  local repo; repo="$PWD"
+
+  ok()  { printf '  [ok]     %s\n' "$1"; }
+  nope() { printf '  [FAILED] %s\n' "$1"; rc_bad=1; }
+
+  echo "release-gate selftest"
+
+  # ── CASE 1: a contract jq cannot read must not yield a SHORT list and exit 0 ──────────────────
+  # Was: `done < <(published_targets)`. A process substitution's status is not the loop's and
+  # `set -e` never sees it, so a failed jq dropped all 36 per-target ids and the script exited 0
+  # with a well-formed 24-line answer. gate.sh checked only that exit code.
+  printf 'this is not json\n' > "$tmp/broken.json"
+  if CONTRACT="$tmp/broken.json" scripts/release-gate/expected-ids.sh >"$tmp/broken.out" 2>"$tmp/broken.err"; then
+    nope "expected-ids EXITED 0 on an unparseable contract (printed $(awk 'END{print NR+0}' "$tmp/broken.out") ids) — a short list un-owes every check it dropped"
+  else
+    ok "expected-ids refuses an unparseable contract instead of printing a short list"
+  fi
+
+  # ── CASE 2: a contract that lost platforms trips the target floor ─────────────────────────────
+  # The v1.5.3 defect in contract form: five assets where seven were owed. A count of targets that
+  # quietly shrinks makes the gate owe fewer rows and go green having checked fewer platforms.
+  jq '.targets = [(.targets[] | select(.published == true))][0:1]' .github/release-targets.json \
+    > "$tmp/thin.json" 2>/dev/null || printf '{"targets":[]}\n' > "$tmp/thin.json"
+  if CONTRACT="$tmp/thin.json" scripts/release-gate/expected-ids.sh >"$tmp/thin.out" 2>/dev/null; then
+    nope "expected-ids accepted a contract with ONE published target — the other platforms are owed by nobody"
+  else
+    ok "expected-ids refuses a contract that collapsed to one published target"
+  fi
+
+  # ── CASE 3: the real contract still clears both floors and names every target ─────────────────
+  # The floors must not be tripwires that only ever fire; this is the other half.
+  if scripts/release-gate/expected-ids.sh > "$tmp/real.out" 2>/dev/null; then
+    local n; n="$(awk 'NF{c++} END{print c+0}' "$tmp/real.out")"
+    local ntgt; ntgt="$(grep -c '^plugin:' "$tmp/real.out" || true)"
+    if [ "$n" -ge "$GATE_EXPECTED_FLOOR_DEFAULT" ] && [ "$ntgt" -ge 5 ]; then
+      ok "the real contract yields ${n} ids over ${ntgt} published targets, clearing both floors"
+    else
+      nope "the real contract yields only ${n} ids over ${ntgt} targets — floors are set above reality"
+    fi
+  else
+    nope "expected-ids FAILED on the real contract"
+  fi
+
+  # ── CASE 4: gate.sh floors the expected list on its own side ──────────────────────────────────
+  # Staged with a stub expected-ids that exits 0 and prints three ids, which is precisely what a
+  # jq failure used to look like from here. Before the floor, three passing ledger rows against a
+  # three-id list printed "GREEN. Every one of the 3 contracted checks ran and passed."
+  mkdir -p "$tmp/fake/scripts/release-gate" "$tmp/fake/ledgers"
+  cp "$repo/scripts/release-gate/gate.sh" "$repo/scripts/release-gate/lib.sh" "$tmp/fake/scripts/release-gate/"
+  cat > "$tmp/fake/scripts/release-gate/expected-ids.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'release:exists\tthe release exists\n'
+printf 'meta:openapi\tthe openapi asset is there\n'
+printf 'docker:label\tthe label matches\n'
+exit 0
+STUB
+  chmod +x "$tmp/fake/scripts/release-gate/expected-ids.sh"
+  {
+    printf 'release:exists\tPASS\tok\t\n'
+    printf 'meta:openapi\tPASS\tok\t\n'
+    printf 'docker:label\tPASS\tok\t\n'
+  } > "$tmp/fake/ledgers/leg.tsv"
+  if LEDGER_DIR="$tmp/fake/ledgers" RUNNER_TEMP="$tmp/fake" GITHUB_STEP_SUMMARY=/dev/null \
+     "$tmp/fake/scripts/release-gate/gate.sh" 9.9.9 >"$tmp/fake/out" 2>&1; then
+    nope "gate.sh printed GREEN against a three-id expected list — a collapsed contract passes the gate"
+  else
+    if grep -q 'expected-check list came back with only 3' "$tmp/fake/out"; then
+      ok "gate.sh goes RED, by name, when the expected-check list collapses"
+    else
+      nope "gate.sh went red against a three-id list but not for the short-list reason: $(tr '\n' ' ' < "$tmp/fake/out" | cut -c1-200)"
+    fi
+  fi
+
+  echo
+  if [ "$rc_bad" = 0 ]; then echo "release-gate selftest: the gate's floors and the plugin matcher all hold"; return 0; fi
+  echo "release-gate selftest: FAILED"; return 1
+}
+
+# The floor the selftest measures the real contract against. Named separately from the runtime
+# default below so raising one cannot silently un-check the other.
+GATE_EXPECTED_FLOOR_DEFAULT=50
+
+if [ "${1:-}" = "--selftest" ]; then selftest; exit $?; fi
 
 VERSION="${1:-${BUSBAR_GATE_VERSION:-}}"
 LEDGER_DIR="${LEDGER_DIR:-${RUNNER_TEMP:-/tmp}/release-gate-ledgers}"
@@ -75,6 +171,25 @@ fi
 EXPECTED="${RUNNER_TEMP:-/tmp}/release-gate-expected.tsv"
 if ! scripts/release-gate/expected-ids.sh --describe > "$EXPECTED"; then
   echo "::error title=release gate::could not derive the expected check list from ${CONTRACT}. Every 'did not run' verdict below would be vacuous, so this is RED rather than a pass. Fix: validate ${CONTRACT} parses as JSON and carries a non-empty .targets[]."
+  exit 1
+fi
+
+# THE EXIT CODE IS NOT THE WHOLE STORY, AND USED NOT TO BE ANY OF IT. expected-ids.sh derived its
+# per-target ids inside `while read; done < <(published_targets)`, whose process-substitution status
+# `set -e` never sees — so a failed jq dropped all 36 per-target ids and the script still exited 0.
+# The check above accepted that, and a gate that is owed fewer checks passes having verified fewer
+# things while printing the same shape of green. expected-ids.sh now refuses to print a short list;
+# this is the independent floor on the consuming side, because "the producer promises" is exactly
+# the assumption the six-day defect was built on.
+: "${GATE_EXPECTED_FLOOR:=50}"
+expected_n="$(awk 'NF{n++} END{print n+0}' "$EXPECTED")"
+if [ "$expected_n" -lt "$GATE_EXPECTED_FLOOR" ]; then
+  echo "::error title=release gate::the expected-check list came back with only ${expected_n} ids (floor ${GATE_EXPECTED_FLOOR}). A short list means whole classes of check are owed by nobody, so their silence would read as green. RED by construction. Fix: run scripts/release-gate/expected-ids.sh --describe by hand and see what it stopped deriving from ${CONTRACT}."
+  {
+    echo "## Release gate: RED — the expected-check list is short"
+    echo
+    echo "Only \`${expected_n}\` ids were owed (floor \`${GATE_EXPECTED_FLOOR}\`)."
+  } >> "$SUMMARY"
   exit 1
 fi
 
