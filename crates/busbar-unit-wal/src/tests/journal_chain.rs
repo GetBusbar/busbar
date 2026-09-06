@@ -426,10 +426,7 @@ fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
         1,
         "an oversized batch reaches the bound on its own"
     );
-    assert_eq!(
-        overflows[0].dropped, 0,
-        "nothing was buffered yet to evict"
-    );
+    assert_eq!(overflows[0].dropped, 0, "nothing was buffered yet to evict");
 
     let on_the_medium =
         decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
