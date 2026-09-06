@@ -1731,12 +1731,8 @@ async fn a_close_ends_a_pump_parked_on_a_body_the_peer_never_finishes() {
     assert!(ended, "a closed connection yields no further frames");
 }
 
-/// One read buffer per ingress connection, not a fresh `READ_CHUNK_BYTES` one per read syscall.
+/// A Unit 0 refusal whose bytes never left is not a refusal that was delivered.
 ///
-/// The ingress reader takes as many reads as the message arrives in — the header, then each piece of
-/// the body — and a buffer allocated inside that loop is an allocation and a 64 KiB zero-fill on the
-/// frame path for every one of them. The buffer belongs to the connection, behind the same lock as
-/// the read half, which is what makes reusing it sound: one pump reads a connection at a time.
 /// The refusal is the client-visible answer to an authentication failure, so "delivered" has to
 /// mean the bytes left. `write_all` only proves they reached the writer's own buffer; the flush is
 /// the evidence, and swallowing its failure reports a refusal nobody ever received. The sibling
