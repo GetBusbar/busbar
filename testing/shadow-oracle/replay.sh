@@ -58,23 +58,60 @@ command -v python3 >/dev/null || { echo "replay.sh needs python3" >&2; exit 2; }
 # diff-cells.py already refuses a pair of recordings that did not come from the same HARNESS
 # revision. The other half of "this diff is about busbar" is that the golden came from the binary we
 # still believe is the golden binary: meta.json records the sha256 of the file record.sh executed,
-# and fetch-golden.sh --check-golden re-hashes the cached release artifact against it. Skipped only
-# when the golden names no binary (the tracked selftest fixtures) or this host has no cached golden
-# binary at all (exit 5) — replaying two recordings does not require the release on disk. A real
+# and fetch-golden.sh --check-golden re-hashes the cached release artifact against it. Softened only
+# when this host has no cached golden binary at all (exit 5) — replaying two recordings does not
+# require the release on disk — and skipped only on an EXPLICIT --no-check-golden. A real
 # MISMATCH is fatal: the golden was made by some other build that happens to share a version string.
-if [ "$CHECK_GOLDEN" = 1 ] && [ -s "${GOLDEN}/meta.json" ]; then
-  gver="$(python3 -c 'import json,sys; print((json.load(open(sys.argv[1])).get("version") or "").replace("busbar ","").strip())' "${GOLDEN}/meta.json" 2>/dev/null || true)"
-  gbin="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_sha256") or "")' "${GOLDEN}/meta.json" 2>/dev/null || true)"
-  if [ -n "$gver" ] && [ -n "$gbin" ]; then
-    cg_out="$(bash "${here}/fetch-golden.sh" --version "$gver" --check-golden "$GOLDEN" 2>&1)"; cg_rc=$?
-    case "$cg_rc" in
-      0) echo "$cg_out" ;;
-      5) echo "replay: golden binary provenance NOT CHECKED on this host (no cached ${gver} binary); comparing anyway" >&2 ;;
-      *) echo "$cg_out" >&2
-         echo "replay: refusing to compare — the golden on disk was not proven to come from the pinned ${gver} binary. Re-run testing/shadow-oracle/fetch-golden.sh, or pass --no-check-golden if you know why." >&2
-         exit 2 ;;
-    esac
-  fi
+#
+# AN ABSENT OR MALFORMED `binary_sha256` IS FATAL TOO, AND USED NOT TO BE. The two extractions above
+# were `python3 -c … 2>/dev/null || true`, so a meta.json that did not parse, or that carried no
+# `binary_sha256`, or carried it as null / a number / a truncated digest, produced an EMPTY string —
+# and the `[ -n "$gbin" ]` guard then read that emptiness as "this golden names no binary" and
+# skipped the whole check. Every failure mode of the field looked exactly like the one case the skip
+# was written for. That is the wrong default for a provenance check: the reason to skip has to be
+# stated, not inferred from a swallowed error. A golden that does not say which binary made it
+# cannot be proven to have come from the pinned release, so the run stops and says which field is
+# wrong; a caller that genuinely has no binary to check against (the tracked selftest fixtures, a
+# recording pair made by hand) passes `--no-check-golden` and says so out loud.
+if [ "$CHECK_GOLDEN" = 1 ]; then
+  [ -s "${GOLDEN}/meta.json" ] || {
+    echo "replay: refusing to compare — ${GOLDEN}/meta.json is missing or empty, so the golden names no binary and no version. Re-record it, or pass --no-check-golden and say why." >&2
+    exit 2; }
+  # 2>&1: python's sys.exit(<str>) writes the reason to STDERR, and the reason is the whole point of
+  # this check — captured here so the refusal below can name the field rather than print an empty one.
+  gprov="$(python3 - "${GOLDEN}/meta.json" 2>&1 <<'PY'
+import json, re, sys
+p = sys.argv[1]
+try:
+    with open(p, encoding="utf-8") as f:
+        m = json.load(f)
+except Exception as e:
+    sys.exit(f"{p} is not readable JSON: {e}")
+if not isinstance(m, dict):
+    sys.exit(f"{p} is not a JSON object")
+sha = m.get("binary_sha256")
+if sha is None:
+    sys.exit(f"{p} carries no `binary_sha256`: this golden does not say which binary produced it")
+if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+    sys.exit(f"{p} has a malformed `binary_sha256` ({sha!r}): expected 64 lowercase hex characters")
+ver = (m.get("version") or "").replace("busbar ", "").strip()
+if not ver:
+    sys.exit(f"{p} carries no `version`, so there is no release to check {sha[:12]}… against")
+print(ver)
+PY
+)" || {
+    echo "replay: refusing to compare — $gprov" >&2
+    echo "replay:       the golden's provenance is the only thing that makes this diff about busbar rather than about two unrelated recordings. Fix meta.json, or pass --no-check-golden if you know why it has none." >&2
+    exit 2; }
+  gver="$gprov"
+  cg_out="$(bash "${here}/fetch-golden.sh" --version "$gver" --check-golden "$GOLDEN" 2>&1)"; cg_rc=$?
+  case "$cg_rc" in
+    0) echo "$cg_out" ;;
+    5) echo "replay: golden binary provenance NOT CHECKED on this host (no cached ${gver} binary); comparing anyway" >&2 ;;
+    *) echo "$cg_out" >&2
+       echo "replay: refusing to compare — the golden on disk was not proven to come from the pinned ${gver} binary. Re-run testing/shadow-oracle/fetch-golden.sh, or pass --no-check-golden if you know why." >&2
+       exit 2 ;;
+  esac
 fi
 
 mkdir -p "$OUT"
