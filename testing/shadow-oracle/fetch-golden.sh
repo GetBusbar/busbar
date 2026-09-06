@@ -133,6 +133,12 @@ if verify_cached 2>/dev/null; then
   echo "cached  ${BIN}  binary $(sha256_of "$BIN" | cut -c1-12)  asset ${ASSET} ${WANT:0:12}"
   exit 0
 fi
+if [ -e "$CACHE" ]; then
+  # A cache that does not match its pin is not a cache to repair in place: something already put
+  # bytes here that nobody vouches for. Delete it and re-download under the archive digest below.
+  echo "fetch-golden: discarding ${CACHE} — the cached binary no longer verifies against its pin" >&2
+  rm -rf "$CACHE"
+fi
 
 mkdir -p "$CACHE"
 DL="$(mktemp -d "${TMPDIR:-/tmp}/busbar-golden-dl.XXXXXX")"
