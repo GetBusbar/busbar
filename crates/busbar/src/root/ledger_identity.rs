@@ -492,15 +492,18 @@ mod tests {
             assert_eq!(posting.bucket, settlement.bucket, "posting {i}: bucket");
             assert_eq!(posting.window_start, DAY, "posting {i}: window");
             assert_eq!(posting.reserved, reserved, "posting {i}: reservation");
+            // What was posted is MONEY: the priced total of the usage the report carried, in the
+            // nano-units the hold reserved in. A usage report is not money, so the quantity it
+            // said was used is what the posting must NOT read as.
             assert_eq!(
-                posting.settled,
-                settlement.input + settlement.output,
-                "posting {i}: what the usage report said was used"
+                posting.settled, reserved,
+                "posting {i}: the money the usage priced at"
             );
             assert_ne!(
-                posting.settled, posting.reserved,
+                posting.settled,
+                settlement.input + settlement.output,
                 "posting {i}: the fixture must price a unit at something other than its own \
-                 quantity, or the two fields could be transposed and nothing would notice"
+                 quantity, or a quantity written where the money goes would reconcile"
             );
             assert_eq!(posting.overdraft, 0, "posting {i}: overdraft");
 
