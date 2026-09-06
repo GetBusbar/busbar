@@ -192,7 +192,7 @@ rm -rf "$PROF_DIR"; mkdir -p "$PROF_DIR"
 # statement about a different binary.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
 RUSTFLAGS="-Cprofile-generate=$PROF_DIR${LSE_FLAG:+ $LSE_FLAG}" \
-  cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo-gen \
+  cargo build --release --locked -p busbar $TARGET_FLAG --target-dir target/pgo-gen \
   || pgo_fail "instrumented build failed"
 INSTRUMENTED="target/pgo-gen/${TARGET_SEG}release/busbar"
 [ -x "$INSTRUMENTED" ] || pgo_fail "instrumented binary missing at $INSTRUMENTED"
@@ -543,7 +543,7 @@ MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 # here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
 BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" \
-  cargo build --release -p busbar $TARGET_FLAG --target-dir target/pgo \
+  cargo build --release --locked -p busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"
 

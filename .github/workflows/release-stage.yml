@@ -459,6 +459,20 @@ jobs:
           components: rustfmt, clippy
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      # THE LOCKFILE IS THE BUILD'S INPUT, SO SAY SO OUT LOUD AND EARLY. Every build in this
+      # workflow now passes --locked, including the ones that produce the shipped binaries
+      # (scripts/release-build.sh, scripts/pgo-build.sh), so a lockfile that does not satisfy the
+      # manifests refuses on the artifact runner - after the matrix has spun up. This says it in
+      # seconds, in the cheapest job, with a message that names the fix. `cargo metadata --locked`
+      # resolves the graph and refuses to update the lockfile; the git check catches the other
+      # direction, a lockfile edited but not committed on the sha being staged.
+      - name: Cargo.lock must be current (every release build runs --locked)
+        run: |
+          set -euo pipefail
+          cargo metadata --locked --format-version 1 > /dev/null \
+            || { echo "::error::Cargo.lock does not satisfy the manifests on this sha, so every --locked build in this release would refuse. Fix: run 'cargo update -w' (or 'cargo check') on dev, commit Cargo.lock, and promote again."; exit 1; }
+          git diff --exit-code --quiet -- Cargo.lock \
+            || { echo "::error::Cargo.lock is modified in the working tree of the staged sha. The release must build from the lockfile that is committed."; exit 1; }
       - name: Format check
         run: cargo fmt --all -- --check
       - name: Clippy
