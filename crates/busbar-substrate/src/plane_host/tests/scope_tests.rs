@@ -232,6 +232,59 @@ fn dispatch_to_durable_handoff_preserves_id_and_relifetimes() {
     assert_eq!(settled.load(Ordering::SeqCst), 0);
 }
 
+/// Two dispatch arenas mint from independent counters, so the same raw id can arrive twice at one
+/// durable scope. The second adoption must NOT sit under an id a live entry already answers to:
+/// every lookup resolves an id to the first entry carrying it, so a duplicate would settle the
+/// first probe when the second was named, and strand the other until drop. The adopter mints fresh
+/// and the caller consumes the returned id.
+#[test]
+fn a_second_adoption_under_a_live_id_mints_a_fresh_one_and_settles_its_own_probe() {
+    let first_settled = Arc::new(AtomicUsize::new(0));
+    let second_settled = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new(AtomicUsize::new(0));
+    let sig = ok_signal();
+    let dur = DurableScope::new();
+
+    let disp_a = DispatchScope::new();
+    let a = disp_a.register_settling_admission(Box::new(TestSettling {
+        settled: first_settled.clone(),
+        released: released.clone(),
+        done: false,
+    }));
+    let a = disp_a.handoff_settling_to(a, &dur).expect("first handoff");
+
+    // A SECOND arena, whose counter starts over, mints the very same raw id.
+    let disp_b = DispatchScope::new();
+    let b = disp_b.register_settling_admission(Box::new(TestSettling {
+        settled: second_settled.clone(),
+        released: released.clone(),
+        done: false,
+    }));
+    assert_eq!(b, a, "the two arenas minted the same raw id");
+    let b = disp_b.handoff_settling_to(b, &dur).expect("second handoff");
+
+    assert_ne!(b, a, "the colliding adoption answers to a fresh id");
+    assert_eq!(dur.registered(), 2, "both probes are durably held");
+
+    // Each id settles ITS OWN probe.
+    assert_eq!(dur.settle(b, &sig), Some(StatusClass::Ok));
+    assert_eq!(second_settled.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        first_settled.load(Ordering::SeqCst),
+        0,
+        "settling the second probe did not record against the first"
+    );
+    assert_eq!(dur.settle(a, &sig), Some(StatusClass::Ok));
+    assert_eq!(first_settled.load(Ordering::SeqCst), 1);
+
+    drop(dur);
+    assert_eq!(
+        released.load(Ordering::SeqCst),
+        0,
+        "both probes were settled, so neither released unsettled"
+    );
+}
+
 #[test]
 fn handle_ids_are_nonzero_and_monotonic() {
     let scope = DispatchScope::new();
