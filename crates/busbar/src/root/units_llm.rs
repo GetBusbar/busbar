@@ -1249,6 +1249,9 @@ impl Units for LlmUnit<'_> {
             admit_token,
             &admit::AdmitCtx {
                 host: self.walk.host(),
+                // The deployment the door reads its accrual scope off, through the plane's own
+                // neutral view — the root names the trait and never the runtime behind it.
+                cells: self.walk.cells(),
                 gov: self.walk.gov(),
                 proto: self.walk.proto(),
                 destination: &model,
