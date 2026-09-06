@@ -512,6 +512,19 @@
         "headers"
       ],
       "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "K-1 rotate refuses an overlong key id like its siblings",
+      "kind": "breaking",
+      "changelog": "1.6.0 Improvements: rotate refuses an overlong key id like its siblings.",
+      "by": "owner (Matthew Jackson), 2026-09-06 oracle overlong-id coverage",
+      "cells": "^admin\\.ops\\|PostKeysIdRotate\\|overlong-id$",
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "`reject_overlong_id` is a per-handler call, and `POST /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never made it: read/patch/delete/usage/revoke all answer 400 `invalid_request` / \"id must be <= 64 characters\", rotate fell through to 404 `not_found` / \"key not found\". Rotate is also the handler where an unbounded id costs the most -- it is the only one that keys a process-global idempotency cache on the caller's bytes (`rotate:{id}:{k}`), retaining an entry sized by the request for the entry's full TTL -- so the guard sits ahead of the idempotency block rather than beside the governance check. 1.5.5's own contract omitted `Validation / Overlong` from this endpoint's declared error set; declaring it regenerates openapi.json purely additively. REGISTERED `breaking`, NOT `improvement`, because the differ permits only a `breaking` entry with a changelog line to accept the `status` class (diff-cells.py MONEY_CLASSES) -- 404 -> 400 is a status change on a refusal path, and the register's own rule is that no `improvement` may forgive one. In substance this is an improvement: a request that was refused is still refused, with the siblings' code and message instead of a misleading not-found. SCOPE: exactly one cell id. Every other `/keys/{id}` overlong-id cell must stay byte-identical to 1.5.5 -- five handlers that already have the bound may not move, and this entry cannot forgive them if they do."
     }
   ]
 }
