@@ -138,12 +138,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly three entries of kind `breaking`:
+The accepted-differences register for this release has exactly four entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
-both), and one confined to Cohere backends that report `usage.billed_units`. Everything else that
-touches a 1.5.5 config, request or plugin is named above as an improvement or does not exist: a
-config written for 1.5.5 boots, validates and migrates identically, and every 1.5.5 key and minted
-secret carries over.
+both), one confined to Cohere backends that report `usage.billed_units`, and one field removed
+from the hook view. Everything else that touches a 1.5.5 config, request or plugin is named above
+as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
+identically, and every 1.5.5 key and minted secret carries over.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
@@ -171,6 +171,14 @@ secret carries over.
   fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
   Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
   token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
+- 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
+  you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
+  follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
+  and no longer carries `at`, which was always `null` in 1.5.5 and told a caller nothing.
+  **Migration:** `busbar --migrate-config` rewrites the single-stage tap `at: <stage>` config key
+  for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
+  `at` field off a hook view must read `fires_at` instead. See
+  [the 1.6.0 migration guide](docs/migration-1.6.md).
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
