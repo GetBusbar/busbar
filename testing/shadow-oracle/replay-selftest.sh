@@ -37,6 +37,9 @@
 #   (r) diff-cells.py --strict --id-filter used directly as a subset gate (land.sh's shape):
 #       a filter that selects a diverging cell exits 1, and a filter that selects NOTHING also
 #       exits 1 — a subset gate that compared zero cells has proven nothing
+#   (w) normalize.py's `eventstream.frames` rule on REAL encoded Bedrock frames: a latencyMs-only
+#       difference normalizes EQUAL, a real payload difference stays UNEQUAL, and a corrupted CRC
+#       records `eventstream.undecodable` instead of decoding cleanly
 # The tracked fixture recording under fixtures/selftest-recording is used read-only: every case
 # below works on a `cp -R` of it, never the tracked copy itself.
 set -uo pipefail
@@ -835,6 +838,81 @@ grep -q "expected_cells=1" "$W/out-bb3.log" && msg_ok=1 || msg_ok=0
 [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
   && say PASS "a transform entry is held to its expected_cells too" \
   || say FAIL "a widened transform was accepted (rc=$rc msg_ok=$msg_ok, see $W/out-bb3.log)"
+# (cc) normalize.py's `eventstream.frames` rule, on REAL `application/vnd.amazon.eventstream` bytes.
+# The frames below are built by a real encoder — big-endian prelude, a header block in AWS's own
+# name/type/length encoding, and both CRC32s computed over the actual bytes — so this exercises the
+# decoder against the wire format, not against a mock of itself. Three things are proved:
+#   1. a per-run MEASUREMENT inside a frame is normalized away: two streams identical but for the
+#      metadata frame's `metrics.latencyMs` (0 vs 2) are BYTE-DIFFERENT before and EQUAL after.
+#      Before this rule the body was `.decode("utf-8","replace")`d, so the literal latency sat in
+#      the golden and the cell diverged on how fast the machine was — the reason S-1 existed.
+#   2. a real CONTENT difference inside a frame is still caught: changing the contentBlockDelta's
+#      text is UNEQUAL after. A rule that made (1) pass by flattening the body would fail here.
+#   3. a corrupted stream does not decode into a clean-looking list: flipping one bit of the last
+#      message CRC yields `eventstream.undecodable`, never `eventstream.frames`. Because the applied
+#      set is the `norm.rules` diff class, that swap is red on its own.
+esgen="$W/es-frames.py"
+cat >"$esgen" <<'PYES'
+import base64, json, struct, sys, zlib
+def frame(event_type, payload):
+    hb = b""
+    for n, v in ((":event-type", event_type), (":content-type", "application/json"), (":message-type", "event")):
+        nb, vb = n.encode(), v.encode()
+        hb += bytes([len(nb)]) + nb + b"\x07" + struct.pack(">H", len(vb)) + vb   # 0x07 = STRING
+    pb = json.dumps(payload, separators=(",", ":")).encode()
+    pre = struct.pack(">II", 16 + len(hb) + len(pb), len(hb))
+    pre += struct.pack(">I", zlib.crc32(pre) & 0xFFFFFFFF)          # prelude CRC32
+    msg = pre + hb + pb
+    return msg + struct.pack(">I", zlib.crc32(msg) & 0xFFFFFFFF)    # message CRC32
+def stream(latency_ms, text):
+    return (frame("messageStart", {"role": "assistant"})
+            + frame("contentBlockStart", {"contentBlockIndex": 0, "start": {}})
+            + frame("contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": text}})
+            + frame("contentBlockStop", {"contentBlockIndex": 0})
+            + frame("messageStop", {"stopReason": "end_turn"})
+            + frame("metadata", {"metrics": {"latencyMs": latency_ms},
+                                 "usage": {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18}}))
+which = sys.argv[1]
+body = stream(0, "oracle-marker") if which in ("lat0", "corrupt") else \
+       stream(2, "oracle-marker") if which == "lat2" else stream(0, "DIFFERENT-TEXT")
+if which == "corrupt":
+    b = bytearray(body); b[-1] ^= 0xFF; body = bytes(b)
+print(json.dumps({"status": 200,
+                  "headers": {"content-type": "application/vnd.amazon.eventstream",
+                              "content-length": str(len(body))},
+                  "body": "base64:" + base64.b64encode(body).decode(),
+                  "effects": {}}))
+PYES
+es_ok=1
+for w in lat0 lat2 difftext corrupt; do
+  python3 "$esgen" "$w" >"$W/es-$w.cap.json" 2>"$W/es-$w.err" || { es_ok=0; break; }
+  python3 "${here}/normalize.py" "$W/es-$w.cap.json" >"$W/es-$w.norm.json" 2>>"$W/es-$w.err" || { es_ok=0; break; }
+done
+if [ "$es_ok" != 1 ]; then
+  say FAIL "eventstream.frames: the fixture or the normalizer errored (see $W/es-*.err)"
+else
+  raw_differ=0; cmp -s "$W/es-lat0.cap.json" "$W/es-lat2.cap.json" || raw_differ=1
+  norm_equal=0; cmp -s "$W/es-lat0.norm.json" "$W/es-lat2.norm.json" && norm_equal=1
+  norm_differ=0; cmp -s "$W/es-lat0.norm.json" "$W/es-difftext.norm.json" || norm_differ=1
+  rules="$(python3 -c 'import json,sys;print(",".join(json.load(open(sys.argv[1]))["applied"]))' "$W/es-lat0.norm.json")"
+  bad_rules="$(python3 -c 'import json,sys;print(",".join(json.load(open(sys.argv[1]))["applied"]))' "$W/es-corrupt.norm.json")"
+  [ "$raw_differ" = 1 ] && [ "$norm_equal" = 1 ] \
+    && say PASS "eventstream.frames: latencyMs 0 vs 2 differ on the wire, equal after normalization" \
+    || say FAIL "eventstream.frames: latencyMs 0 vs 2 raw_differ=$raw_differ norm_equal=$norm_equal"
+  [ "$norm_differ" = 1 ] \
+    && say PASS "eventstream.frames: a real payload difference inside a frame is still UNEQUAL after" \
+    || say FAIL "eventstream.frames: a changed contentBlockDelta normalized to the same bytes — the rule is hiding content"
+  case ",$rules," in *,eventstream.frames,*) f1=1 ;; *) f1=0 ;; esac
+  case ",$rules," in *,metrics.timing,*) f2=1 ;; *) f2=0 ;; esac
+  [ "$f1" = 1 ] && [ "$f2" = 1 ] \
+    && say PASS "eventstream.frames: the rule and metrics.timing both fire (the payload went through the JSON path)" \
+    || say FAIL "eventstream.frames: applied=$rules (wanted eventstream.frames AND metrics.timing)"
+  case ",$bad_rules," in *,eventstream.undecodable,*) c1=1 ;; *) c1=0 ;; esac
+  case ",$bad_rules," in *,eventstream.frames,*) c2=1 ;; *) c2=0 ;; esac
+  [ "$c1" = 1 ] && [ "$c2" = 0 ] \
+    && say PASS "eventstream.frames: a flipped message CRC -> eventstream.undecodable, never a clean decode" \
+    || say FAIL "eventstream.frames: corrupt stream applied=$bad_rules (wanted undecodable, not frames)"
+fi
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }

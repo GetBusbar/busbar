@@ -280,6 +280,12 @@ def body_diff(g, c):
     if g == c:
         return None
     if isinstance(g, dict) and isinstance(c, dict):
+        if "eventstream" in g and "eventstream" in c:
+            # normalize.py's `eventstream.frames` representation: an ordered [[event-type, payload]]
+            # list. It diffs as JSON so the report names the frame INDEX and the path inside its
+            # payload that moved ("0.1.role"), instead of the useless "the bodies differ" a text
+            # diff over binary framing used to give.
+            return {"kind": "json", "paths": json_paths_diff(g["eventstream"], c["eventstream"])}
         if "json" in g and "json" in c:
             return {"kind": "json", "paths": json_paths_diff(g["json"], c["json"])}
         if "text" in g and "text" in c:
