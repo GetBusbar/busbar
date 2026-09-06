@@ -907,14 +907,30 @@ fn decode_twilio_frame<'u>(
                 .arena()
                 .alloc_bytes(&payload)
                 .map_err(|_| Decode::Oversize)?;
-            open_or_relay(
+            let sid = ctx
+                .arena()
+                .alloc_str(&stream_sid)
+                .map_err(|_| Decode::Oversize)?;
+            let ingress = open_or_relay(
                 state,
                 Dialect::TwilioMediaStreams,
                 arena_bytes,
                 None,
                 Some(ms),
                 ctx,
-            )
+            )?;
+            // The open PUBLISHES the identifier the carrier bound. It was bound against this, the
+            // client's, half of the session, and the downlink frames that must carry it back are
+            // rendered against an upstream's half — a session fact is what crosses between the two,
+            // and the open is the only thing this dialect produces that carries one.
+            if let Ingress::Open(mut draft) = ingress {
+                draft
+                    .facts
+                    .set(meta::FACT_TWILIO_STREAM_SID, FactValue::Str(sid))
+                    .map_err(|_| Decode::Oversize)?;
+                return Ok(Ingress::Open(draft));
+            }
+            Ok(ingress)
         }
         twilio::TwilioEvent::Mark { .. } => Ok(Ingress::Discard {
             reason: DiscardCode::Unsupported,
@@ -1156,7 +1172,15 @@ fn progress_from_server_event<'u>(
                     // Taken and handed straight back, because the identifier beside it is borrowed
                     // from the same state.
                     let mut out = core::mem::take(&mut state.render_buf);
-                    let sid = state.twilio_stream_sid.as_deref().unwrap_or_default();
+                    // The session's answer first: the identifier was bound on the CLIENT's half at
+                    // the carrier's `start`, and this renders against an upstream's, which never
+                    // saw it. An empty identifier is a frame the carrier cannot place on a stream,
+                    // which is a frame the caller never hears.
+                    let sid = ctx
+                        .session()
+                        .and_then(|s| s.session_fact(meta::FACT_TWILIO_STREAM_SID))
+                        .or(state.twilio_stream_sid.as_deref())
+                        .unwrap_or_default();
                     twilio::encode_media_into(&mut out, sid, &mulaw);
                     let bytes = ctx.arena().alloc_bytes(&out).map_err(|_| Decode::Oversize);
                     state.render_buf = out;

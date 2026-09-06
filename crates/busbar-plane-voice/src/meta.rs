@@ -220,9 +220,17 @@ pub const EGRESS_PACING_FACT_KEY: &str = "voice.pacing.played_ms";
 /// is opened on one of them. The upstream's half — the one every downlink frame is read against —
 /// has no other way to be told which turn it is answering, and a session fact is the route this
 /// plane's dialect already travels between the two.
+/// The fact key the telephony carrier's own stream identifier is published under.
+///
+/// A session fact for the same reason the turn is one: the identifier is bound against the CLIENT's
+/// half of the session, at the carrier's `start` event, and the downlink frames that must carry it
+/// back are rendered against an UPSTREAM's half, which was never told.
+pub const FACT_TWILIO_STREAM_SID: &str = "twilio_stream_sid";
+
 const SESSION_FACTS: &[&str] = &[
     FACT_DIALECT,
     crate::session::VoiceSessionState::TURN_FACT_KEY,
+    FACT_TWILIO_STREAM_SID,
 ];
 
 /// The content fact keys this plane produces.
