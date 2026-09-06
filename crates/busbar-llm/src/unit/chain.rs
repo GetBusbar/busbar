@@ -936,7 +936,9 @@ mod rehearsal {
             &Outcome::Completed,
         );
         metering.reached = true;
-        metering.posted_here = metered.row.is_some();
+        // The accrual arm's own report of itself. `row` is filled whether the step posted or only
+        // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
+        metering.posted_here = metered.posted;
         metering.fee_count = metered.fee_count;
         metering.refund = metered.refund;
         // What the step was actually BOUND to, read off the facts rather than off the response: the

@@ -23,7 +23,31 @@
 //! admission's meter half, the walk's tap IS this step's body — the same function, the same four
 //! arguments — and what this step does is SEAL what was posted rather than post it a second time.
 //! [`MeterFacts::accrued`] is Route saying which of the two happened, and it is the only thing
-//! standing between one accrual and two.
+//! standing between one accrual and two. [`Metered::posted`] is this step saying which of the two
+//! it did, and it is set inside the accrual arm: the row this step reports is filled either way, so
+//! a row cannot answer that question and a caller that read one for the answer would call every
+//! sealed unit a posting.
+//!
+//! # A STREAMED UNIT'S REPORT IS EMPTY BY CONSTRUCTION, and that is the decision
+//!
+//! The figures a stream is billed on arrive in a terminal usage frame at the END of the body. The
+//! loop hands the client its bytes at step 7. So at step 6 the frame has not arrived, and there is
+//! no shape of [`MeterFacts`], no cell and no seam a tap could post through that would put figures
+//! into a report which is sealed before those figures exist. Deferring the seal until they do would
+//! mean holding the unit open past its own terminal, which is a different loop.
+//!
+//! So this step does not pretend. For a streamed unit it reports what it honestly has — nothing —
+//! and the accrual is the tap's: `ledger_and_meter` puts the tier split onto the key's budget chain
+//! and the raw row into the metering series from inside the walk, at the one moment a streamed
+//! answer's usage is knowable. What must NOT be empty is the statement of who made that posting,
+//! because "one accrual per unit" is a property of the pair, and that is what [`Metered::posted`]
+//! carries.
+//!
+//! What this step CAN do, and does, is read as late as it is allowed to. Route folds the tap's
+//! report on the way out, which catches every end that had already finished by then; the walk folds
+//! it again out of the response's own cell just before binding this step, which catches every end
+//! that finished in between — a buffered answer, and a stream cut short before its terminal frame.
+//! Only a stream still flowing at step 6 reports empty, and for that one the tap is the posting.
 //!
 //! # Where the money is
 //!
@@ -91,9 +115,15 @@ use busbar_substrate::plane_host::EngineHost;
 /// its figures forward. So the walk's tap IS this step's body for a unit that reached it, and this
 /// step's job on that unit is to SEAL what was posted rather than to post it again. Where the walk
 /// held no sink there is nothing to seal and this step is the posting.
+///
+/// These facts are folded from the tap's report TWICE — once by Route on the way out, once by the
+/// walk just before the Meter step binds — because the cell rides on the response and may fill in
+/// between. Folding takes the whole report or none of it, so the second fold rewrites the same three
+/// figures with themselves where the first already ran.
 // Built by the Route step and read by the chain that drives the two together; both are dark until
 // the composition root installs these steps, which is what this allow covers and what retires it.
 #[allow(dead_code)]
+#[derive(Clone)]
 pub(crate) struct MeterFacts {
     /// The serving lane, as an index into the engine's lane table — the lane that actually answered
     /// after any failover. Filled from [`MeterFacts::tap`] where the tap had already finished when
@@ -245,6 +275,13 @@ pub struct Metered {
     /// Whether the Audit step must refund the fee base. True exactly when the admission charge
     /// landed and the client did not see a 2xx.
     pub refund: bool,
+    /// WHETHER THIS STEP MADE THE ACCRUAL, as opposed to sealing one the walk's tap already made.
+    ///
+    /// Set inside the accrual arm and nowhere else, so it is the arm's own report of itself rather
+    /// than a fact derived after the fact. [`Metered::row`] cannot answer this: a row is what the
+    /// response consumed and it is reported on both sides of the branch, because sealing is not a
+    /// reason to report nothing.
+    pub posted: bool,
 }
 
 impl Metered {
@@ -300,6 +337,9 @@ pub fn meter(
     // SEALS that unit: it reports the same row and the same figures, and it does not accrue them a
     // second time. Where the walk held no sink, this step is the accrual and makes the call itself.
     let mut row = None;
+    // Whether the accrual arm below was the one that ran. Reported rather than derived: `row` is
+    // filled on both sides of the branch and cannot stand in for this.
+    let mut posted = false;
     // What the response is WORTH, in the nano-units a reservation is in. Zero until a card prices
     // it, which is the honest figure for a unit that reached no lane and for one that billed none.
     let mut priced_nanos: u128 = 0;
@@ -313,6 +353,7 @@ pub fn meter(
                 .unwrap_or_default();
             if !ctx.accrued {
                 crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
+                posted = true;
             }
             row = Some(metering_row(sink, lane, reported));
             // THE MONEY. Priced against the card the SINK carries — the one resolved when this
@@ -371,6 +412,7 @@ pub fn meter(
         // The refund is owed only where a charge landed and the client did not see a 2xx — and it
         // is owed against the fee base alone.
         refund: ctx.charged && !delivered,
+        posted,
     }
 }
 
@@ -1035,7 +1077,13 @@ mod tests {
         let sealing = meter(
             &unit_token,
             &usage_token,
-            &MeterCtx::bind(&host2, Some(&sink2), Some(&tables2.lanes()[0]), &facts, true),
+            &MeterCtx::bind(
+                &host2,
+                Some(&sink2),
+                Some(&tables2.lanes()[0]),
+                &facts,
+                true,
+            ),
             None,
             &Outcome::Completed,
         );
@@ -1052,7 +1100,10 @@ mod tests {
         // Both legs report a row, because both had something to attribute — which is exactly why a
         // row cannot be the answer to "who posted".
         assert!(posting.row.is_some(), "the posting leg reports its row");
-        assert!(sealing.row.is_some(), "the sealing leg reports the same row");
+        assert!(
+            sealing.row.is_some(),
+            "the sealing leg reports the same row"
+        );
 
         // What the walk carries forward as `posted_here`.
         assert_eq!(

@@ -457,8 +457,15 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // For a BUFFERED answer the tap has already finished: the body was read whole before it was
     // translated, so the cell is filled here and the three figures below are the tap's own. For a
     // STREAMED answer the cell is still empty, because the response is served on its headers and its
-    // figures do not exist yet — so the fields stay as they were, `accrued` says the tap owns the
-    // posting, and the Meter step reads the cell later, when it has been filled.
+    // figures do not exist yet — so the fields stay as they were and `accrued` says the tap owns the
+    // posting.
+    //
+    // This fold is a snapshot of the cell at THIS instant, not a promise about a later one. The cell
+    // rides on the response, so the walk folds it once more just before the Meter step binds — which
+    // catches every end that finished in between. What NO fold can catch is a stream still flowing
+    // at step 6: its terminal usage frame arrives after the client has its bytes, so its report is
+    // empty by construction and the tap's own accrual is the unit's one accrual. See the Meter
+    // step's header.
     let mut facts = MeterFacts {
         // Empty until the tap says otherwise, which is the state a stream leaves them in.
         lane: None,

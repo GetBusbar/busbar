@@ -479,11 +479,37 @@ impl Walk {
                     .unwrap_or_else(|_| unreachable!("the empty report fits any record")),
             );
         };
+        // THE TAP CELL, READ AGAIN — as late as this unit is allowed to read it.
+        //
+        // What Route folded was the cell as it stood the instant the walk returned, which for a
+        // buffered answer is already the tap's own figures and for anything still in flight is
+        // nothing. Between that instant and this one the response may have finished: a transfer
+        // that was cut, a stream that died before its terminal frame. Sealing such a unit off the
+        // Route-time snapshot reports an empty usage for a response whose figures are sitting in
+        // the cell on the very value this carry is holding. The fold is idempotent in the only way
+        // that matters — it takes the whole report or none of it — so folding a cell Route already
+        // folded rewrites the same three figures with themselves.
+        //
+        // A stream still flowing at this step is the one case that stays empty, and it stays empty
+        // by construction: its figures do not exist yet. Its accrual is the tap's, which is what
+        // `accrued` says and what `posted` below confirms.
+        let mut facts = facts.clone();
+        if let Some(report) = carry
+            .pending
+            .as_ref()
+            .and_then(|resp| resp.extensions().get::<crate::engine::TapCell>())
+            .and_then(|cell| cell.get())
+        {
+            facts.fold(report);
+        }
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
-        let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, facts, charged);
+        let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts, charged);
         let metered = crate::unit::meter::meter(token, usage, &ctx, None, &Outcome::Completed);
-        carry.posted_here = metered.row.is_some();
+        // What the ACCRUAL ARM reported about itself. `row` is filled whether this step posted or
+        // only sealed, so reading it here called every sealed unit a posting — and this value is
+        // what the rehearsal asserts one-posting-per-unit on.
+        carry.posted_here = metered.posted;
         carry.fee_count = metered.fee_count;
         carry.refund = metered.refund;
         metered.decision
