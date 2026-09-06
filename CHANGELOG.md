@@ -105,7 +105,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   image — so busbar now emits no frame for one, and suppresses its matching `content_block_stop`
   with it rather than orphaning a close a client never saw opened. Every other dialect already did.
   See [Spec fidelity](#spec-fidelity).
-- **An Anthropic-dialect error names an Anthropic error type.** Busbar's quota and
+- An Anthropic-dialect error names an Anthropic error type. Busbar's quota and
   context-overflow refusals reached an Anthropic client as `insufficient_quota` and
   `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error
   envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error`
