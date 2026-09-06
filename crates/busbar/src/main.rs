@@ -991,7 +991,7 @@ fn provision_root_listeners(
     // dials under, through one accessor, so the transports and the engine cannot end up accepting
     // two different sets of authorities. Nothing is read through the secret source for it, so
     // nothing is journaled: a public root store is not a secret.
-    match busbar_substrate::egress::engine::webpki_client_config() {
+    match busbar_core::egress::engine::webpki_client_config() {
         Ok(cfg) => {
             root::transports::provision_dial(
                 &*sealed.transports.tls,
