@@ -123,12 +123,39 @@ fn every_seam_the_integrator_binds_says_so() {
         let at = ports
             .find(seam)
             .unwrap_or_else(|| panic!("the {seam} seam is declared"));
-        let preamble = &ports[at.saturating_sub(1200)..at];
         assert!(
-            preamble.contains("// contract:"),
+            doc_block(&ports, at).contains("// contract:"),
             "the {seam} seam does not say that the integrator binds it"
         );
     }
+}
+
+/// The comment lines that touch a declaration, which are the only ones it carries.
+///
+/// Reading a fixed window of bytes back from the declaration reads whatever the file happens to put
+/// nearby: the trait above's marker sits inside the window, so a seam that says nothing at all
+/// passes on its neighbour's word. The contiguous block stops at the first line that is not part of
+/// this declaration's own prose, so the marker has to be the seam's own.
+fn doc_block(text: &str, at: usize) -> String {
+    let head = &text[..at];
+    // Drop the partial line the declaration itself starts on, so the walk back begins on a whole
+    // line whatever the declaration is indented by.
+    let head = if head.ends_with('\n') {
+        head
+    } else {
+        &head[..head.rfind('\n').map_or(0, |i| i + 1)]
+    };
+    let mut block = String::new();
+    for line in head.lines().rev() {
+        let trimmed = line.trim_start();
+        // An attribute sits between the prose and the declaration and does not end the block.
+        if !(trimmed.starts_with("//") || trimmed.starts_with("#[")) {
+            break;
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+    block
 }
 
 fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
