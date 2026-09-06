@@ -803,6 +803,61 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
             std::process::exit(2);
         }
     }
+    // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
+    // the half of the plane that owns sockets reaches it through. Without this the seal composed a
+    // node nothing on a socket could name — a client-served tool call's wait was entered where the
+    // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
+    compose_voice_governed_calls();
+}
+
+/// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
+/// of the governed-call port, and the moment a served voice session becomes a governed one.
+///
+/// The node is built here rather than passed in because nothing about the table configuration
+/// decides: [`root::units_voice::OpenToolCalls`] is empty at boot and its whole contents are what the
+/// sessions running on this node have opened since. What the served path reaches through the port is
+/// that table and nothing else — two questions, `replied` and `expired`, neither of which reads the
+/// node's door, its pricer, its auth chain or its journal.
+///
+/// So the parts below are the ones the table's own two answers need, and the rest are the root's
+/// unbound posture: the plane with the upstream list configuration composed (none today — the
+/// `streams:` reader that fills it is the same work that switches the serving path onto these units),
+/// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
+/// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
+/// the switch that routes a frame through it is the one that has to thread the deployment's real
+/// auth, rate cards and data directory in, and it fails to compile until it does.
+///
+/// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
+/// this node's live sessions are already keyed into.
+#[cfg(feature = "root-voice")]
+fn compose_voice_governed_calls() {
+    use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
+
+    let durability = match root::durability::build(
+        &root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_unit_wal::NullShipper::new()),
+        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("busbar: the voice node's journal did not open: {e}");
+            std::process::exit(2);
+        }
+    };
+    let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
+        plane: busbar_plane_voice::VoicePlane::new(&[]),
+        pricer: busbar_unit_admission::Pricer::flat(0),
+        auth: busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
+        scope: root::units_voice::scope_policy(),
+        meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),
+        durability,
+        io: root::units_voice::VoiceIo::default(),
+        // Minted from the root's own kernel, which is the only place a sealed origin can come from:
+        // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
+        origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
+    }));
+    busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }
 
 fn main() {

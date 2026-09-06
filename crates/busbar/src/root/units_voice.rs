@@ -2420,7 +2420,20 @@ mod tests {
 
     /// Run one tool-call unit far enough to plan its leg, which is where the wait is entered.
     fn plan(kernel: &Kernel, node: &VoiceNode, key: u64, call_id: &str, now_ms: Millis) -> Ended {
-        let unit = VoiceUnit::new(node, UnitShape::ToolCall, 7, 1_700_000_000)
+        plan_on(kernel, node, 7, key, call_id, now_ms)
+    }
+
+    /// [`plan`], on a named session — the shape a cell needs when the session identifier is not this
+    /// module's to choose because the served door minted it.
+    fn plan_on(
+        kernel: &Kernel,
+        node: &VoiceNode,
+        session: u64,
+        key: u64,
+        call_id: &str,
+        now_ms: Millis,
+    ) -> Ended {
+        let unit = VoiceUnit::new(node, UnitShape::ToolCall, session, 1_700_000_000)
             .calling(call_id)
             .at_ms(now_ms);
         let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
@@ -2639,6 +2652,109 @@ mod tests {
         // And what the sweep left behind is what ends the unit — under its own deadline, not as a
         // settlement that pretends the answer arrived.
         let Ended::Settled { end, .. } = plan(&kernel, &node, 11, "call_aaa", deadline + 1) else {
+            panic!("the exit path settles an unanswered call like anything else");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
+    }
+
+    /// **THE ROOT IDENTITY: on the served composition there is no ungoverned session left to reach.**
+    ///
+    /// Two things are judged here and they are the two halves of one claim.
+    ///
+    /// The first is that the root composes at all. `mount_root_voice` seals the registry and then
+    /// writes this node's open-call table onto the served door; after it has run, the door's own
+    /// per-session binding answers with a table rather than with nothing, and it answers with a
+    /// fresh identifier each time — which is what a session is told apart by on a node where two
+    /// conversations may carry identical call identifiers. Before this the port and its implementor
+    /// both existed and no served session had ever been handed one.
+    ///
+    /// The second is what that binding is worth: a call nobody answers, ended THROUGH the served
+    /// path. The tick is the session pump's own `sweep_expired`, the table is this node's, and the
+    /// wall is the plane's declared `TOOL_REPLY_DEADLINE_SECS` read rather than restated — not one
+    /// millisecond early, and the unit that was waiting exits `Failed(Route, DeadlineExceeded)`
+    /// rather than settling as though the answer had arrived.
+    #[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+    #[test]
+    fn the_served_composition_has_no_ungoverned_session_left_in_it() {
+        use busbar_voice::runtime::{Carrier, MeteringPort, SessionCore};
+
+        // (1) THE ROOT'S OWN COMPOSITION. First writer wins on the plane's side, so this cell is the
+        // one place in the crate that writes it, and it writes it the way `main()` does.
+        crate::compose_voice_governed_calls();
+        let bound = busbar_voice::mount::served_governed_session()
+            .expect("after the root has mounted, every session the door opens is bound to a table");
+        let next = busbar_voice::mount::served_governed_session()
+            .expect("and so is the next one, on its own identifier");
+        assert_ne!(
+            bound.session, next.session,
+            "two conversations are told apart before either has a call open"
+        );
+        assert_eq!(
+            bound.calls.replied(bound.session, "call_aaa"),
+            Err(busbar_voice::runtime::ReplyRefusal::NoSuchSession),
+            "the table the door was handed is a real one, holding nothing at boot"
+        );
+
+        // (2) WHAT THE BINDING IS WORTH, through a real session pump. The node here is the cell's
+        // own, reached through the same port the door was handed, because the node `main()` composed
+        // is not a handle this cell holds.
+        let kernel = Kernel::new();
+        let node = std::sync::Arc::new(node(serviceable()));
+        let session = 4_242;
+        let _ = plan_on(&kernel, &node, session, 11, "call_aaa", 0);
+        assert!(
+            node.tool_calls.waiting(session, UnitKey::new(11)),
+            "the leg was planned, so the wait is entered"
+        );
+
+        let lease = busbar_voice::runtime::LocalMeteringPort
+            .reserve(1_000, 0, None)
+            .expect("an uncapped lease always opens");
+        let core = SessionCore::new(
+            busbar_voice::ir::codec::OpenAiRealtimeCodec,
+            lease,
+            None,
+            std::sync::Arc::new(busbar_voice::runtime::EchoToolExecutor),
+            Carrier::sideband(),
+            None,
+        )
+        .with_governed(busbar_voice::runtime::GovernedSession {
+            session,
+            calls: std::sync::Arc::new(NodeCalls::new(std::sync::Arc::clone(&node))),
+        });
+        assert_eq!(
+            core.governed_session(),
+            Some(session),
+            "the pump knows itself by the identifier the door minted"
+        );
+
+        let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+        assert_eq!(
+            core.sweep_expired(deadline - 1),
+            0,
+            "the session's own tick ends nothing one millisecond before the declared deadline"
+        );
+        assert_eq!(
+            core.sweep_expired(deadline),
+            1,
+            "and ends the unanswered call at it"
+        );
+
+        let Ended::Settled { end, .. } = plan_on(
+            &kernel,
+            &node,
+            session,
+            11,
+            "call_aaa",
+            Millis::from(deadline as u32),
+        ) else {
             panic!("the exit path settles an unanswered call like anything else");
         };
         assert!(
