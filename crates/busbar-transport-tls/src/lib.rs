@@ -548,16 +548,17 @@ impl Transport for TlsTransport {
             if inner.closed.load(Ordering::Acquire) {
                 return None;
             }
-            let result = tokio::select! {
-                () = &mut closing => return None,
-                r = async {
-                    match &mut side.half {
-                        InnerRead::Server(r) => r.read(&mut side.scratch).await,
-                        InnerRead::Client(r) => r.read(&mut side.scratch).await,
-                    }
-                } => r,
+            let reading = std::pin::pin!(async {
+                match &mut side.half {
+                    InnerRead::Server(r) => r.read(&mut side.scratch).await,
+                    InnerRead::Client(r) => r.read(&mut side.scratch).await,
+                }
+            });
+            let result = match futures::future::select(reading, closing).await {
+                futures::future::Either::Left((r, _)) => r,
+                // The close won: the read is dropped where it stood and the stream ends.
+                futures::future::Either::Right(((), _)) => return None,
             };
-            drop(closing);
             match result {
                 Ok(0) => None,
                 Ok(n) => {

@@ -371,11 +371,12 @@ impl Transport for TcpTransport {
             if inner.closed.load(Ordering::Acquire) {
                 return None;
             }
-            let result = tokio::select! {
-                () = &mut closing => return None,
-                r = side.half.read(&mut side.scratch) => r,
+            let reading = std::pin::pin!(side.half.read(&mut side.scratch));
+            let result = match futures::future::select(reading, closing).await {
+                futures::future::Either::Left((r, _)) => r,
+                // The close won: the read is dropped where it stood and the stream ends.
+                futures::future::Either::Right(((), _)) => return None,
             };
-            drop(closing);
             match result {
                 Ok(0) => None,
                 Ok(n) => {
