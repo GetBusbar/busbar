@@ -1029,11 +1029,22 @@ pub trait Store: Send + Sync + 'static {
     /// `VirtualKey::revision`'s doc, and `list_keys` is unfiltered so tombstones are always visible
     /// here) but not incremental; a backend that wants real delta-fetch efficiency overrides this
     /// with an indexed `WHERE revision > ?`-shaped query.
+    ///
+    /// The `revision == 0` arm is what makes that "correct for any backend" true rather than
+    /// aspirational. `0` means UNSTAMPED, not "revised zero times": a backend that never writes the
+    /// field leaves every row there forever. Under a bare `revision > since` such a row leaves the
+    /// delta the instant the hydrator's watermark ticks past 0 and never returns, so a key
+    /// tombstoned after boot is never observed — and the credential eviction that hangs off exactly
+    /// that observation (see [`Store::list_credentials_since`]) never fires, leaving a deleted key's
+    /// SigV4 secrets verifying out of the in-process cache for the life of the process. Reading
+    /// "this backend cannot say" as "nothing changed" is the one reading a delta consumer must not
+    /// take, so an unstamped row is always in the delta: a full scan is inefficient, and this is the
+    /// side of that trade the doc already promised.
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
             .list_keys()?
             .into_iter()
-            .filter(|k| k.revision > since)
+            .filter(|k| k.revision == 0 || k.revision > since)
             .collect())
     }
     /// The TOKEN LEDGER for one (bucket, window). `bucket_id` is a key's own budget bucket (its

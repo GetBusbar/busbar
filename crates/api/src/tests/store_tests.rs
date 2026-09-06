@@ -945,3 +945,83 @@ fn default_redeem_plane_token_refuses_rather_than_confirming() {
         .redeem_plane_token("ask", "nonce-1", 2_000, 1_000)
         .is_err());
 }
+
+/// The default `list_keys_since` must treat an UNSTAMPED row (`revision == 0`) as always-changed,
+/// which is what `VirtualKey::revision`'s own doc promises: "`0` for a row a pre-revision backend
+/// never stamped (treated as 'always changed' by a delta consumer, which is safe — a bare full-scan
+/// degrades to correct-but-inefficient, never incorrect)".
+///
+/// A plain `revision > since` filter delivers the OPPOSITE of that on any backend that does not
+/// stamp revisions: once the hydrator has ticked past 0 the delta is empty forever, so a key
+/// tombstoned after boot is never observed, and the credential eviction that hangs off that
+/// observation never fires — a deleted key's SigV4 credentials keep verifying out of the in-process
+/// cache for the life of the process.
+#[test]
+fn default_list_keys_since_treats_an_unstamped_row_as_changed() {
+    struct Unstamped(Vec<VirtualKey>);
+    impl Store for Unstamped {
+        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+            Ok(None)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            Ok(self.0.clone())
+        }
+        fn delete_key(&self, _: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+            Ok(UsageLedger::default())
+        }
+        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+            Ok(())
+        }
+        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+            Ok(Vec::new())
+        }
+    }
+
+    let mut unstamped = sample_key();
+    unstamped.id = "vk_unstamped".to_string();
+    unstamped.revision = 0;
+    // A row this backend HAS stamped, so the incremental case is still incremental.
+    let mut stamped_old = sample_key();
+    stamped_old.id = "vk_old".to_string();
+    stamped_old.revision = 3;
+    let mut stamped_new = sample_key();
+    stamped_new.id = "vk_new".to_string();
+    stamped_new.revision = 9;
+
+    let s = Unstamped(vec![
+        unstamped.clone(),
+        stamped_old.clone(),
+        stamped_new.clone(),
+    ]);
+
+    // Boot / full load: everything, as before.
+    let all = s.list_keys_since(0).unwrap();
+    assert_eq!(all.len(), 3, "since = 0 is the full load");
+
+    // A later tick: the unstamped row is still delivered, because this backend cannot say it did
+    // not change and a delta consumer must not read that silence as "unchanged".
+    let delta = s.list_keys_since(5).unwrap();
+    let ids: Vec<&str> = delta.iter().map(|k| k.id.as_str()).collect();
+    assert!(
+        ids.contains(&"vk_unstamped"),
+        "an unstamped (revision == 0) row must read as always-changed; got {ids:?}"
+    );
+    assert!(
+        ids.contains(&"vk_new"),
+        "a row stamped past `since` is still in the delta; got {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"vk_old"),
+        "a row stamped at or below `since` is still filtered out — this stays a real delta for a \
+         backend that does stamp; got {ids:?}"
+    );
+}
