@@ -1035,18 +1035,20 @@ impl Units for VoiceUnit<'_> {
     }
 
     fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
-        self.seal(token, ctx, outcome_finish(outcome))
+        self.seal(token, ctx, *outcome, outcome_finish(outcome))
     }
 
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
         ctx: &UnitCtx,
-        _refusal: &Refusal,
+        refusal: &Refusal,
     ) -> Decision<Audit> {
         // The second door: a unit that never passed the door and was charged nothing. It still gets
-        // a record, because a refusal is an event.
-        self.seal(token, ctx, busbar_contract::FinishClass::Error)
+        // a record, because a refusal is an event — and the record says which step said no and why,
+        // because a refusal nobody can name is an event with no information in it.
+        let outcome = Outcome::Refused(refusal.step(), refusal.reason());
+        self.seal(token, ctx, outcome, busbar_contract::FinishClass::Error)
     }
 
     fn encode(
@@ -1168,18 +1170,34 @@ impl VoiceUnit<'_> {
         &self,
         token: &UnitToken<Audit>,
         ctx: &UnitCtx,
+        outcome: Outcome,
         finish: busbar_contract::FinishClass,
     ) -> Decision<Audit> {
         let facts = AuditFacts {
             op_class: self.shape.op_class(),
             finish,
         };
+        let inputs = self.audit_inputs(ctx, outcome, finish);
         let mut durability = self
             .node
             .durability
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let inputs = busbar_unit_audit::record::AuditInputs {
+        let _record = busbar_unit_audit::record::Audit::seal(&mut durability.record, inputs, token);
+        Decision::proceed(token, facts)
+    }
+
+    /// What one record says, before the chain is touched.
+    ///
+    /// Separated from the sealing so the ending a record carries is a value this file computes and
+    /// can be read back, rather than a literal buried under a lock.
+    fn audit_inputs(
+        &self,
+        ctx: &UnitCtx,
+        outcome: Outcome,
+        finish: busbar_contract::FinishClass,
+    ) -> busbar_unit_audit::record::AuditInputs {
+        busbar_unit_audit::record::AuditInputs {
             subject: busbar_unit_audit::record::Subject::Arrival,
             what: busbar_unit_audit::record::What {
                 unit_key: ctx.key,
@@ -1193,8 +1211,11 @@ impl VoiceUnit<'_> {
             mono: self.node.tick(),
             origin: self.node.origin,
             outcome: busbar_unit_audit::record::OutcomeFacts {
-                unit_end: Outcome::Completed,
-                step: None,
+                // How the LOOP ended this unit, and the step it ended at. Both are carried in
+                // rather than written here: a record that says every unit completed is a record
+                // that cannot tell a turn from the refusal that replaced it.
+                unit_end: outcome,
+                step: outcome.step(),
                 finish: audit_finish(finish),
                 hook_failed: false,
                 emission_delta: 0,
@@ -1214,9 +1235,7 @@ impl VoiceUnit<'_> {
             // The label itself never reaches the chain — only its digest does — so what travels here
             // is what the chain hashes, and nothing a reader could resolve back to a conversation.
             correlation_label: None,
-        };
-        let _record = busbar_unit_audit::record::Audit::seal(&mut durability.record, inputs, token);
-        Decision::proceed(token, facts)
+        }
     }
 }
 
@@ -1650,6 +1669,30 @@ mod tests {
             .sealed();
         assert_eq!(after, before + 1, "exactly one record for one unit");
         assert_eq!(UnitShape::SessionOpen.op_class(), meta::OP_SESSION_OPEN);
+    }
+
+    /// A refused unit's record says it was refused, and names the step that refused it.
+    ///
+    /// The record is the only place a refusal survives the connection it happened on, so a chain
+    /// that spells every ending "completed" is a chain an operator cannot ask why anything stopped.
+    #[test]
+    fn a_refused_units_record_carries_the_refusal_and_its_step() {
+        let node = node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let refused = Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied);
+        let inputs = unit.audit_inputs(&ctx(1), refused, busbar_contract::FinishClass::Error);
+        assert_eq!(inputs.outcome.unit_end, refused);
+        assert_eq!(inputs.outcome.step, Some(busbar_caps::StepName::Approve));
+
+        // And a turn that ran is still recorded as one: threading the ending through did not turn
+        // every record into a refusal.
+        let done = unit.audit_inputs(
+            &ctx(1),
+            Outcome::Completed,
+            busbar_contract::FinishClass::TurnComplete,
+        );
+        assert_eq!(done.outcome.unit_end, Outcome::Completed);
+        assert_eq!(done.outcome.step, None);
     }
 
     /// The four seams refuse rather than pretend. A node whose I/O half was never installed cannot
