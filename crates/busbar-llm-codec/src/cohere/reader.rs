@@ -117,6 +117,7 @@ impl ProtocolReader for CohereReader {
                 class: StatusClass::RateLimit,
                 provider_signal: Some("429".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -125,6 +126,7 @@ impl ProtocolReader for CohereReader {
                 class: StatusClass::Auth,
                 provider_signal: Some("auth".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -133,6 +135,7 @@ impl ProtocolReader for CohereReader {
                 class: StatusClass::ServerError,
                 provider_signal: Some("5xx".to_string()),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -146,6 +149,7 @@ impl ProtocolReader for CohereReader {
                     busbar_substrate_values::proxy::PROVIDER_CODE_CONTEXT_LENGTH.to_string(),
                 ),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -154,6 +158,7 @@ impl ProtocolReader for CohereReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(format!("{}", status.as_u16())),
                 retry_after: None,
+                ..Default::default()
             };
         }
 
@@ -161,6 +166,7 @@ impl ProtocolReader for CohereReader {
             class: StatusClass::ClientError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         }
     }
 
@@ -170,6 +176,7 @@ impl ProtocolReader for CohereReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let mut extra = serde_json::Map::new();
@@ -184,6 +191,7 @@ impl ProtocolReader for CohereReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             })?;
 
             for msg_val in msgs_arr {
@@ -200,6 +208,7 @@ impl ProtocolReader for CohereReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         })
                     }
                 };
@@ -218,6 +227,7 @@ impl ProtocolReader for CohereReader {
                                 busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string(),
                             ),
                             retry_after: None,
+                            ..Default::default()
                         });
                     }
                 }
@@ -397,6 +407,7 @@ impl ProtocolReader for CohereReader {
                                                     .to_string(),
                                             ),
                                             retry_after: None,
+                                            ..Default::default()
                                         })?
                                         .to_string();
                                     let name = func_obj
@@ -549,6 +560,7 @@ impl ProtocolReader for CohereReader {
                 class: StatusClass::ClientError,
                 provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
                 retry_after: None,
+                ..Default::default()
             });
         }
 
@@ -932,6 +944,7 @@ impl ProtocolReader for CohereReader {
                             class: busbar_substrate_values::breaker::StatusClass::ServerError,
                             provider_signal: Some(raw_finish_reason.to_string()),
                             retry_after: None,
+                            ..Default::default()
                         },
                     ));
                 }
@@ -1142,11 +1155,13 @@ impl ProtocolReader for CohereReader {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
         let message_val = obj.get("message").ok_or(IrError {
             class: StatusClass::ClientError,
             provider_signal: Some(busbar_substrate_values::proto::SIGNAL_IR_PARSE.to_string()),
             retry_after: None,
+            ..Default::default()
         })?;
 
         let mut content: Vec<crate::ir::IrBlock> = Vec::new();

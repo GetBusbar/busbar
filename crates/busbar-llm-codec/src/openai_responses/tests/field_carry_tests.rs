@@ -1261,6 +1261,7 @@ fn responses_stream_failed_event_emitted() {
             class: busbar_substrate_values::breaker::StatusClass::ServerError,
             provider_signal: Some("boom".to_string()),
             retry_after: None,
+            ..Default::default()
         }),
     );
     assert!(

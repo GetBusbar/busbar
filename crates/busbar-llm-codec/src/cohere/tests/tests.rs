@@ -1356,6 +1356,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
         class: busbar_substrate_values::breaker::StatusClass::ServerError,
         provider_signal: Some("internal_server_error".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (event_type, frame) = writer
         .write_response_event(&infra)
@@ -1432,6 +1433,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
         class: busbar_substrate_values::breaker::StatusClass::ClientError,
         provider_signal: Some("content_filter_safety".to_string()),
         retry_after: None,
+        ..Default::default()
     });
     let (_, toxic_frame) = writer
         .write_response_event(&toxic)
@@ -1454,6 +1456,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
         class: busbar_substrate_values::breaker::StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     });
     let (_, bare_frame) = writer
         .write_response_event(&bare)

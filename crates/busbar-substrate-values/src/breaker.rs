@@ -18,7 +18,11 @@ const HTTP_OVERLOADED: u16 = 529;
 
 /// Protocol-neutral, dialect-normalized status class.
 /// Emitted by Stage 1 normalizer (the per-protocol classifier) in src/proto/.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `Default` exists ONLY so [`CanonicalSignal`] can be built with functional-update syntax
+/// (`..Default::default()`) for its additive members; every construction site names `class`
+/// explicitly. `ClientError` is the filler because it is the one class that penalizes nothing — a
+/// default that leaked would relay verbatim and record no lane fault, never mask an outage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StatusClass {
     /// Rate limit / slow down — transient, may recover with retry-after
     RateLimit,
@@ -35,6 +39,7 @@ pub enum StatusClass {
     /// Billing / insufficient balance — hard down, account issue
     Billing,
     /// Client error (4xx other than 401/403) — client fault, do not penalize lane
+    #[default]
     ClientError,
     /// Request exceeds this model's context window — the LANE is healthy; fail over (ideally to
     /// a larger-context model) WITHOUT penalizing the breaker.
@@ -182,6 +187,7 @@ pub fn normalize_raw_error(
                         class,
                         provider_signal: Some(code.clone()),
                         retry_after: raw.retry_after_secs,
+                        ..Default::default()
                     };
                 }
             } else {
@@ -212,6 +218,7 @@ pub fn normalize_raw_error(
                 class: StatusClass::ContextLength,
                 provider_signal: Some(code.clone()),
                 retry_after: raw.retry_after_secs,
+                ..Default::default()
             };
         }
         // Code not in map or invalid mapping — fall through to HTTP classification
@@ -242,6 +249,7 @@ pub fn normalize_raw_error(
                     class,
                     provider_signal: provider_signal.or_else(|| Some(ty.clone())),
                     retry_after: raw.retry_after_secs,
+                    ..Default::default()
                 };
             }
         }
@@ -275,16 +283,47 @@ pub fn normalize_raw_error(
         class,
         provider_signal,
         retry_after: raw.retry_after_secs,
+        ..Default::default()
     }
 }
 
 /// Canonical signal emitted by protocol normalizers.
 /// Stage 1 output → Stage 2 input.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CanonicalSignal {
     pub class: StatusClass,
     pub provider_signal: Option<String>,
     pub retry_after: Option<u64>,
+    /// The upstream's OWN error status, VERBATIM — the exact HTTP code it reported (404), the name
+    /// it reported it under (`NOT_FOUND`, `ModelStreamErrorException`) and the prose it wrote.
+    ///
+    /// [`StatusClass`] is a LOSSY projection, and it has to be: the breaker needs a handful of
+    /// dispositions, not fifty provider vocabularies. That projection is right for deciding whether
+    /// to penalize a lane and wrong for telling a client what happened. A MID-STREAM error has no
+    /// HTTP status of its own — it rides inside a 200 body — so the only status the client ever sees
+    /// is the one the ingress writer reconstructs, and reconstructing it from the class alone turned
+    /// a 404/`NOT_FOUND` into a 400/`INVALID_ARGUMENT`, a `ModelStreamErrorException` into an
+    /// `InternalServerException`, and the provider's own sentence into a bare code.
+    ///
+    /// Every writer prefers these when present and falls back to the class-derived values when they
+    /// are not, so a signal that carries nothing here behaves exactly as it did before.
+    pub detail: ProviderErrorDetail,
+}
+
+/// The upstream's own error identity, carried alongside the lossy [`StatusClass`] projection so an
+/// ingress writer can reproduce what the provider actually said. Every member is `None` when the
+/// upstream reported nothing under it; a fully-empty value is the pre-existing behaviour.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ProviderErrorDetail {
+    /// The exact HTTP status the upstream named (`error.code` in a `google.rpc.Status`,
+    /// `error.status` in an OpenAI envelope, the status the provider declares for its named
+    /// exception). NOT the status busbar answers with — the one the upstream reported.
+    pub http_status: Option<u16>,
+    /// The provider's own status/exception NAME, verbatim: `NOT_FOUND`, `RESOURCE_EXHAUSTED`,
+    /// `ModelStreamErrorException`, `model_not_found`.
+    pub status_name: Option<String>,
+    /// The provider's own human-readable message, verbatim — the sentence a client shows a user.
+    pub message: Option<String>,
 }
 
 #[cfg(test)]
