@@ -117,7 +117,7 @@ jobs:
     name: structure lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
       # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
       # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
@@ -438,15 +438,15 @@ jobs:
       # container) — see docs/plugins.md and scripts/release-check.sh's Vault phase for how the
       # monorepo now gates on that repo's own test suite via a sibling checkout instead.
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: rustfmt, clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -717,11 +717,11 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Clippy (--features openapi-schema)
         run: cargo clippy -p busbar -p busbar-core --all-targets --features openapi-schema --locked -- -D warnings
       - name: OpenAPI tests (drift guard + coverage lock)
@@ -766,13 +766,13 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Corpus is present and covers the tags
         run: |
           set -euo pipefail
@@ -793,7 +793,7 @@ jobs:
     name: config-stability gate (frozen grammar · additive-only)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # Need history so the additive check can diff against the PR base (not just the tip).
           fetch-depth: 0
@@ -830,11 +830,11 @@ jobs:
     name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # The method-inventory derivation reads the rmcp SDK's `model.rs` from the EXTRACTED registry
       # source (`registry/src/*/rmcp-<ver>/src/model.rs`) and REFUSES rather than skip when it is
       # absent — an inventory of nothing is worse than no inventory. A bare checkout never extracts a
@@ -891,7 +891,7 @@ jobs:
     name: docs hygiene (public prose describes the software, not the process)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Public-hygiene self-test (every rule proven RED, every twin proven GREEN)
         run: python3 scripts/public-hygiene-lint.py --selftest
       - name: Public-hygiene gate
@@ -921,7 +921,7 @@ jobs:
     name: service image pins (one pinned list, every workflow reads it)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Service-image lint self-test (every rule proven RED)
         run: scripts/service-images-check.sh --selftest
       - name: Service-image pin gate
@@ -958,11 +958,11 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build busbar (the validator this gate judges with)
         run: cargo build --locked --bin busbar
       - name: Executable-config gate self-test (RED/GREEN before the verdict is trusted)
@@ -992,11 +992,11 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Clippy (no-default-features)
         run: cargo clippy --no-default-features --locked -- -D warnings
       - name: Build (no-default-features)
@@ -1077,9 +1077,9 @@ jobs:
           - name: all planes off (core serves no protocols)
             features: ""
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build neutral crates — ${{ matrix.name }}
         # The three NEUTRAL crates only, no default features, with just the kept plane(s). cargo
         # applies `--features` to the packages that declare it (busbar-core / busbar-substrate);
@@ -1122,9 +1122,9 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: No-plugins gate SELF-TEST (prove RED/GREEN before trusting the verdict)
         run: scripts/no-plugins-gate.sh --selftest
       - name: No-plugins gate (axis 1 compiled out · axis 2 not installed)
@@ -1142,9 +1142,9 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Transaction compile fence (must fail to compile)
         run: scripts/txn-fence.sh
       - name: Loom model of the swap invariant
@@ -1161,9 +1161,9 @@ jobs:
     # request, on dev/qa/main, and on workflow_dispatch. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Hot-path timing gate
         run: |
           set -euo pipefail
@@ -1218,11 +1218,11 @@ jobs:
       WINDOWS_MIN_TESTS: "5620"
       WINDOWS_EXPECTED_TESTS: "5686"
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Build
         run: cargo build --workspace --verbose
       # CLIPPY ON WINDOWS, which `build` above does not subsume in either direction. `cargo build`
@@ -1351,15 +1351,15 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: llvm-tools-preview
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-llvm-cov
-        uses: taiki-e/install-action@cargo-llvm-cov
+        uses: taiki-e/install-action@b3c2424e62a3f08fd88bf434799847a4d0da36c8 # cargo-llvm-cov
       - name: Collect coverage (workspace, live-DB tests wired)
         env:
           BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
@@ -1379,7 +1379,7 @@ jobs:
       # look up the tag's commit (`gh api repos/codecov/codecov-action/git/ref/tags/v5.x.y`) and
       # replace both the sha and the version comment together.
       - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
           # "Token required because branch is protected". This org-level secret authenticates
@@ -1417,11 +1417,11 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
       # (same discipline as structure-lint.sh et al).
@@ -1525,12 +1525,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
       # The publication branch is checked out into RUNNER_TEMP as its OWN clone, so nothing here can
@@ -1588,7 +1588,7 @@ jobs:
       # available to any consumer without a git write. This upload happens whether or not the commit
       # below does anything, so the manifest for a run always exists somewhere.
       - name: Upload the manifest as a workflow artifact (keyed by source branch)
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: proof-manifest-${{ github.ref_name }}
           path: |
@@ -1597,7 +1597,7 @@ jobs:
           if-no-files-found: error
       - name: Upload hit-list evidence as a PRIVATE CI artifact (contains source; never committed)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: proof-hits-${{ github.ref_name }}
           path: ${{ runner.temp }}/proof-hits
@@ -1659,11 +1659,11 @@ jobs:
     env:
       BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. The oracle binds a fixed band
       # (48781 mock, 48811/48812 data+admin, 48821/48822 the boot probe, 48851+ the selftest), and on
       # Linux that band sits INSIDE the default ephemeral range, `net.ipv4.ip_local_port_range`
@@ -1700,7 +1700,7 @@ jobs:
           # harness into this key would only throw away a correct download on every harness edit.
           echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
       - name: Cache the pinned 1.5.5 artifacts
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/busbar-oracle
           key: ${{ steps.rev.outputs.key }}
@@ -1758,7 +1758,7 @@ jobs:
         run: bash testing/shadow-oracle/replay.sh --golden target/oracle/recordings/golden --candidate target/oracle/recordings/candidate --out target/oracle/reports/ci
       - name: Upload the report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shadow-oracle-report
           path: |
@@ -1792,7 +1792,7 @@ jobs:
       # admin-plane cell, stays on the runner.
       - name: Upload the candidate recording (consumed by llm-conformance)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: shadow-oracle-candidate-recording
           path: |
@@ -1831,9 +1831,9 @@ jobs:
     # download step below fails and names the missing artifact — a red with a reason, not a skip.
     if: ${{ !cancelled() }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Download the candidate recording (made by shadow-oracle on this commit)
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: shadow-oracle-candidate-recording
           path: target/oracle/recordings/candidate
@@ -1844,7 +1844,7 @@ jobs:
           [ -s "$led" ] || { echo "::error::no candidate ledger at $led — the shadow-oracle job did not record HEAD"; exit 1; }
           echo "candidate recording: $(wc -l <"$led" | tr -d ' ') ledger rows"
       - name: Cache the provider specs (by pinned digest; a re-pin is the only invalidation)
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/busbar-llm-specs
           key: llm-specs-${{ hashFiles('testing/llm-conformance/spec-digests.tsv') }}
@@ -1859,7 +1859,7 @@ jobs:
         run: bash testing/llm-conformance/run.sh --recording target/oracle/recordings/candidate
       - name: Upload the conformance report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: llm-conformance-report
           path: target/llm-conformance/
@@ -1904,11 +1904,11 @@ jobs:
     # dev/qa/main and on workflow_dispatch, not on every branch push. See the tier note at the top.
     if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Teller-steps self-test (a lying matrix is refused)
         run: python3 scripts/teller-steps-check.py --selftest
       - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)
@@ -1924,7 +1924,7 @@ jobs:
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Construction gate self-test (every rule proves it sees its planted violation)
         run: scripts/construction-gate.sh --selftest
       - name: Construction gate (RED by design today; see the job comment for the flip)
@@ -1949,7 +1949,7 @@ jobs:
           fi
       - name: Upload the construction report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: construction-report
           path: target/construction/report.md
@@ -1972,7 +1972,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Design bindings self-test (the gate proves itself before it judges the tree)
         run: scripts/design-bindings.sh --selftest
       - name: Design bindings check (existence; unmapped bindings listed as named gaps)
