@@ -70,16 +70,50 @@ pub fn find_frame_terminator_from(buf: &[u8], start: usize) -> (Option<(usize, u
     (found, scanned)
 }
 
+/// Split `buf` into lines on the same grammar [`terminator_len`] recognises — CRLF, a lone LF, or
+/// a lone CR — rather than `str::lines`'s LF-only rule. Unlike the streaming scan above, a frame
+/// handed here is already complete (its own trailing blank line was stripped when it was carved
+/// out of the buffer), so a CR at the very end IS a terminator, not a "wait for more" ambiguity;
+/// this never yields the empty final line a trailing terminator would otherwise leave behind.
+fn split_frame_lines(buf: &[u8]) -> Vec<&[u8]> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    while i < buf.len() {
+        match buf[i] {
+            b'\r' => {
+                lines.push(&buf[start..i]);
+                i += if buf.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+                start = i;
+            }
+            b'\n' => {
+                lines.push(&buf[start..i]);
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    if start < buf.len() {
+        lines.push(&buf[start..]);
+    }
+    lines
+}
+
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
 /// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a frame
 /// with only an `event:` line) or is invalid UTF-8.
 #[must_use]
 pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
-    let text = std::str::from_utf8(frame).ok()?;
+    // UTF-8 is validated once, over the whole frame; every split point below lands on a `\r` or
+    // `\n` byte, both single-byte ASCII, which can only ever be a boundary in valid UTF-8 (a
+    // continuation byte's top bit is always set), so each piece stays valid UTF-8 on its own.
+    std::str::from_utf8(frame).ok()?;
     let mut event_type = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
-    for line in text.lines() {
+    for line in split_frame_lines(frame) {
+        let line = std::str::from_utf8(line).expect("ascii-boundary split of valid utf-8");
         if let Some(rest) = line.strip_prefix("event:") {
             event_type = rest.trim().to_string();
         } else if let Some(rest) = line.strip_prefix("data:") {
@@ -140,6 +174,28 @@ mod tests {
         assert_eq!(
             parse_sse_frame(b"data: line1\ndata: line2"),
             Some((String::new(), "line1\nline2".to_string()))
+        );
+    }
+
+    /// A bare CR is a legal line ending per the event-stream grammar, same as CRLF and LF. A
+    /// scanner that only recognised `\n` (as `str::lines` does) drops a CR-only frame's data lines
+    /// entirely, silently, at whatever reads the frame's return value.
+    #[test]
+    fn parses_a_cr_only_frame() {
+        assert_eq!(
+            parse_sse_frame(b"event: message\rdata: {\"a\":1}\r\r"),
+            Some(("message".to_string(), "{\"a\":1}".to_string()))
+        );
+    }
+
+    /// A frame whose lines end on different terminators must not have them fused into one
+    /// corrupted payload: each `data:` line is its own line, joined afterwards with `\n`, exactly
+    /// as the all-LF and all-CRLF cells above are.
+    #[test]
+    fn a_mixed_terminator_frame_does_not_corrupt_the_payload() {
+        assert_eq!(
+            parse_sse_frame(b"data: a\rdata: b\n"),
+            Some((String::new(), "a\nb".to_string()))
         );
     }
 }
