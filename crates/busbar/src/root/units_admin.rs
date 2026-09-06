@@ -2294,7 +2294,7 @@ struct ExitPath {
 #[cfg(feature = "root-admin")]
 impl Drop for ExitPath {
     fn drop(&mut self) {
-        busbar_core::admin::restart::release_asked_drain(self.unit);
+        busbar_core::admin::restart::UnitDrain::of_unit(self.unit).release();
     }
 }
 
@@ -2533,8 +2533,9 @@ impl RouterDispatch {
                     // handler, which knows nothing about the composition it is answering under —
                     // so the composition says, here, which unit the handler's ask belongs to.
                     let unit = request.unit;
-                    let answer =
-                        busbar_core::admin::restart::as_unit(unit, call(inner, &request)).await;
+                    let answer = busbar_core::admin::restart::UnitDrain::of_unit(unit)
+                        .scoping(call(inner, &request))
+                        .await;
                     let _ = reply.send(answer);
                 });
             }
@@ -2927,17 +2928,18 @@ mod tests {
         busbar_core::admin::restart::drain_released_at_exit();
         let unit = a_fresh_unit();
         // The operation's body asks, from inside its own unit, exactly as the restart handler does.
-        busbar_core::admin::restart::as_unit(unit, async {
-            busbar_core::admin::restart::begin_drain();
-        })
-        .await;
+        busbar_core::admin::restart::UnitDrain::of_unit(unit)
+            .scoping(async {
+                busbar_core::admin::restart::begin_drain();
+            })
+            .await;
 
         // The future carrying the guard is dropped before anything is written back.
         let exit = ExitPath { unit };
         drop(exit);
 
         assert!(
-            !busbar_core::admin::restart::release_asked_drain(unit),
+            !busbar_core::admin::restart::UnitDrain::of_unit(unit).release(),
             "the drop released the ask, so there is nothing left for a later exit to release — \
              which is the leak: without the guard this would still be standing"
         );

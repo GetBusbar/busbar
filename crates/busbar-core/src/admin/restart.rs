@@ -73,11 +73,45 @@ tokio::task_local! {
 /// The composition that walks operations through a loop wraps the body's execution in this. Nothing
 /// else has to change: the handler still calls [`begin_drain`] knowing nothing about which
 /// composition it is answering under, and the attribution is read from where it is running.
-pub async fn as_unit<F>(unit: u64, f: F) -> F::Output
+async fn as_unit<F>(unit: u64, f: F) -> F::Output
 where
     F: std::future::Future,
 {
     ASKING_UNIT.scope(unit, f).await
+}
+
+/// ONE UNIT'S DRAIN, from the ask to the release: the whole of this seam, keyed.
+///
+/// The two halves reached the composition root as two free functions it named separately, and they
+/// are not two things. The scope is what makes an ask THIS unit's; the release is what makes that
+/// ask fire under THIS unit's own response. A caller able to reach either one alone can scope an ask
+/// nothing releases, or release against a key nothing ever scoped — and the drain is a process
+/// shutdown, so both of those are live faults rather than untidiness. One handle, taken for one
+/// unit, is what makes the pairing this type's obligation instead of the caller's memory. It is also
+/// one name for the retirement of this module to move rather than two.
+pub struct UnitDrain {
+    unit: u64,
+}
+
+impl UnitDrain {
+    /// Take the handle for one unit's drain.
+    #[must_use]
+    pub fn of_unit(unit: u64) -> Self {
+        UnitDrain { unit }
+    }
+
+    /// Run this unit's work with its key ambient, so a drain the work asks for is attributed to it.
+    pub async fn scoping<F>(&self, f: F) -> F::Output
+    where
+        F: std::future::Future,
+    {
+        as_unit(self.unit, f).await
+    }
+
+    /// Release a drain this unit asked for, if it asked for one. Answers whether one fired.
+    pub fn release(&self) -> bool {
+        release_asked_drain(self.unit)
+    }
 }
 
 /// The unit whose work is running here, or the unkeyed marker outside any such scope.
@@ -104,7 +138,9 @@ pub fn drain_released_at_exit() {
 /// between. A request that asked for no drain releases none, which is every request but one — and a
 /// request that asked for none can no longer release one somebody else asked for, because the cell
 /// is taken only by the unit named in it.
-pub fn release_asked_drain(unit: u64) -> bool {
+///
+/// Reached from outside through [`UnitDrain`], which is the half of the seam a composition holds.
+fn release_asked_drain(unit: u64) -> bool {
     if DRAIN_ASKED
         .compare_exchange(unit, NO_UNIT, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
