@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::wire::{StatusClass, TransportError};
+use busbar_contract_transport::wire::{StatusClass, TransportError, WireStatus};
 
 use crate::GrpcTransport;
 
@@ -120,6 +120,46 @@ async fn unary_shaped_round_trip() {
 
 #[tokio::test]
 async fn terminal_status_is_read_from_the_grpc_status_trailer() {
+    let client_t = client_transport();
+    let keys = test_key_handle();
+    let addr = trailers_only_peer(tonic::Code::PermissionDenied).await;
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+
+    let mut client_frames = client_t.frames(client_conn.clone());
+    // The write itself still reports the refusal to its caller.
+    let wrote = client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"hello"))
+        .await;
+    assert!(wrote.is_err(), "a refused call is not a delivered write");
+
+    let (_s, terminal) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+        .await
+        .expect("a trailers-only refusal must produce a terminal frame, not silence")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        terminal.bytes.len(),
+        0,
+        "the terminal frame carries no body"
+    );
+    assert_eq!(
+        terminal.meta.status,
+        Some(StatusClass::ClientError),
+        "PERMISSION_DENIED is the upstream blaming the request"
+    );
+    assert_eq!(
+        terminal.meta.status_code,
+        Some(WireStatus::Grpc(tonic::Code::PermissionDenied as i32 as u8)),
+        "the exact grpc-status number the upstream sent, not just its class"
+    );
+}
+
+/// The other end of the same rule: a call the upstream answers and ends with an OK `grpc-status`
+/// trailer at the end of a real body posts `Success` on its terminal frame.
+#[tokio::test]
+async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     let server_t = std::sync::Arc::new(server_transport());
     let client_t = client_transport();
     let cfg = BindTo("127.0.0.1:0".to_string());
@@ -162,6 +202,11 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
         Some(StatusClass::Success),
         "STATUS_CLASS at Terminal: an OK grpc-status is honestly Success, not merely present"
     );
+    assert_eq!(
+        terminal.meta.status_code,
+        Some(WireStatus::Grpc(tonic::Code::Ok as i32 as u8)),
+        "the number the upstream sent, which for an untroubled call is zero"
+    );
 }
 
 /// [`crate::server::map_status`] directly, one row per `grpc-status` code family: `Ok` is a
@@ -183,6 +228,96 @@ fn map_status_reads_the_grpc_status_trailer_honestly() {
             "tonic::Code::{code:?} maps to {expected:?}"
         );
     }
+}
+
+/// The terminal frame names gRPC's NUMBERING alongside gRPC's number, for every code the protocol
+/// defines.
+///
+/// The trailers-only `UNAVAILABLE` row is the one that cost money. Handed up bare, `14` reached the
+/// breaker's classifier as if it were an HTTP status, matched no HTTP band, and came back as the
+/// caller's fault — so a destination that had just declared itself unavailable got no breaker
+/// record and the walk never failed over, even though the class on the very same frame said
+/// `ServerError`.
+#[test]
+fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
+    for code in [
+        tonic::Code::Ok,
+        tonic::Code::Cancelled,
+        tonic::Code::Unknown,
+        tonic::Code::InvalidArgument,
+        tonic::Code::DeadlineExceeded,
+        tonic::Code::NotFound,
+        tonic::Code::AlreadyExists,
+        tonic::Code::PermissionDenied,
+        tonic::Code::ResourceExhausted,
+        tonic::Code::FailedPrecondition,
+        tonic::Code::Aborted,
+        tonic::Code::OutOfRange,
+        tonic::Code::Unimplemented,
+        tonic::Code::Internal,
+        tonic::Code::Unavailable,
+        tonic::Code::DataLoss,
+        tonic::Code::Unauthenticated,
+    ] {
+        let status = tonic::Status::new(code, "fixture");
+        let frame = crate::server::terminal_frame(StreamId(1), Some(&status));
+        assert_eq!(
+            frame.meta.status_code,
+            Some(WireStatus::Grpc(code as i32 as u8)),
+            "tonic::Code::{code:?} rides the frame as gRPC's own number, never as a bare one"
+        );
+    }
+    let unavailable = tonic::Status::new(tonic::Code::Unavailable, "gone");
+    let frame = crate::server::terminal_frame(StreamId(1), Some(&unavailable));
+    assert_eq!(frame.meta.status, Some(StatusClass::ServerError));
+    assert_eq!(frame.meta.status_code, Some(WireStatus::Grpc(14)));
+    assert_eq!(
+        frame.meta.status_code.and_then(WireStatus::http),
+        None,
+        "and nothing can read it as an HTTP status, which is what made 14 mean nothing"
+    );
+}
+
+/// The HTTP/2 driver under a dialled connection FAILING is not the peer finishing.
+///
+/// The driver holds the socket, and its outcome was thrown away: every way a connection can break —
+/// a framing the peer got wrong, a socket that died mid-call — reached the reader as the same clean
+/// end-of-stream a finished peer produces, so an aborted answer read as a complete one. The peer
+/// here commits a protocol error (a PING on a non-zero stream), which is the deterministic way to
+/// make the driver fail rather than finish.
+#[tokio::test]
+async fn a_dialled_connection_whose_driver_fails_ends_with_an_error_not_a_clean_end() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut scratch = [0_u8; 4096];
+        // The client's preface and SETTINGS.
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut scratch).await;
+        // A well-formed SETTINGS of our own, then a PING carrying a stream id — which RFC 9113
+        // makes a connection error, so the peer's driver ends failing rather than finishing.
+        let mut out = vec![0, 0, 0, 4, 0, 0, 0, 0, 0];
+        out.extend_from_slice(&[0, 0, 8, 6, 0, 0, 0, 0, 1]);
+        out.extend_from_slice(&[0; 8]);
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut sock, &out).await;
+        futures::future::pending::<()>().await;
+    });
+
+    let client_t = client_transport();
+    let keys = test_key_handle();
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+
+    let mut frames = client_t.frames(client_conn);
+    let item = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a broken driver must answer, not park")
+        .expect("a driver that FAILED is not a clean end of stream");
+    assert_eq!(
+        item.expect_err("the failure is the stream's last word"),
+        TransportError::Reset
+    );
 }
 
 #[tokio::test]

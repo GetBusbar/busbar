@@ -31,6 +31,7 @@ use busbar_contract::{SlabBytes, StreamId};
 use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::FrameMeta;
 use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::WireStatus;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -203,6 +204,42 @@ pub(crate) async fn forward_inbound(
         let _ = state.send_inbound(Ok((stream_id, frame))).await;
     } else if final_status.is_some() {
         let _ = state.send_inbound(Err(TransportError::Reset)).await;
+    }
+}
+
+/// The zero-length, status-bearing frame that ends one call — the transport's honest reading of
+/// the `grpc-status` the upstream put on its answer, whether that answer ended a body with a
+/// trailer or was the whole answer (a trailers-only refusal, which never opens a body at all).
+///
+/// `None` means the stream ended with no failure, which on the gRPC wire is `grpc-status: 0`, so
+/// the number goes on the frame too: gRPC always puts a number on an answer, and a reader that has
+/// to tell a withdrawn credential from a bad argument cannot do it from the class alone.
+pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Frame {
+    let code = status.map_or(tonic::Code::Ok, Status::code);
+    let meta = FrameMeta {
+        bytes: 0,
+        transport_units: None,
+        status: Some(status.map_or(
+            busbar_contract_transport::wire::StatusClass::Success,
+            map_status,
+        )),
+        // `as i32` is `grpc-status`'s own wire spelling, and every code it names is small and
+        // non-negative, so the narrowing below loses nothing.
+        //
+        // Named as gRPC's number, not left bare. The HTTP exchange under a gRPC answer succeeded
+        // (a trailers-only refusal is still a `200` on the HEADERS frame), so the HTTP status says
+        // nothing about what happened and the trailer says everything — but only a reader told
+        // WHICH numbering this is can read it. Handing `14` up unnamed had it matched against
+        // HTTP's bands, where it falls in none, so an `UNAVAILABLE` upstream was read as the
+        // caller's fault: no breaker record, no failover.
+        status_code: u8::try_from(code as i32).ok().map(WireStatus::Grpc),
+        retry_after_secs: None,
+    };
+    Frame {
+        direction: Direction::Inbound,
+        stream: stream_id,
+        bytes: SlabBytes::new(Arc::from([])),
+        meta,
     }
 }
 

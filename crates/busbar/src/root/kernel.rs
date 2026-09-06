@@ -863,7 +863,7 @@ mod tests {
             &units.breaker,
             destination,
             busbar_unit_egress::ports::UpstreamStatus {
-                code: Some(503),
+                code: Some(busbar_contract::WireStatus::Http(503)),
                 class: None,
                 retry_after: None,
             },

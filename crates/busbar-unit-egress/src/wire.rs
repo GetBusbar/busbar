@@ -190,7 +190,8 @@ pub struct Delivered {
     /// Whether the answer came off a degraded path (a spill, a queued permit, or the one
     /// documented breaker bypass) rather than the ordered walk.
     pub degraded: bool,
-    /// The upstream's own refusal, relayed as-is. Only a degraded caller asks for this; the walk
-    /// fails over instead.
-    pub relayed_error: Option<u16>,
+    /// The upstream's own refusal, relayed as-is — the number AND the numbering that spelled it,
+    /// because a relayed `14` that does not say it is gRPC's is a number a reader can only guess
+    /// at. Only a degraded caller asks for this; the walk fails over instead.
+    pub relayed_error: Option<busbar_contract_transport::wire::WireStatus>,
 }

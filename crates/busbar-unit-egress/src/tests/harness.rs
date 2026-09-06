@@ -33,6 +33,11 @@ use busbar_contract_transport::wire::Encode;
 use busbar_contract_transport::wire::FrameMeta;
 use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::WireStatus;
+use busbar_unit_breaker::classify::{
+    GRPC_ABORTED, GRPC_DATA_LOSS, GRPC_DEADLINE_EXCEEDED, GRPC_INTERNAL, GRPC_PERMISSION_DENIED,
+    GRPC_RESOURCE_EXHAUSTED, GRPC_UNAUTHENTICATED, GRPC_UNAVAILABLE, GRPC_UNKNOWN,
+};
 
 use crate::ports::{
     disposition, Admit, BoxFut, Breaker, Capacity, Classified, Clock, DestinationId, Dispatched,
@@ -154,7 +159,7 @@ pub enum Recorded {
 pub struct TestBreaker {
     health: Mutex<HashMap<DestinationId, Health>>,
     /// What the classifier answers, by upstream status class.
-    verdicts: Mutex<HashMap<u16, Classified>>,
+    verdicts: Mutex<HashMap<WireStatus, Classified>>,
     pub log: Mutex<Vec<Recorded>>,
     /// Cells that were admitted, in order, so a test can read the pick order off the breaker.
     pub admitted: Mutex<Vec<(String, DestinationId)>>,
@@ -175,7 +180,7 @@ impl TestBreaker {
             .insert(destination, health);
     }
 
-    pub fn set_verdict(&self, code: u16, verdict: Classified) {
+    pub fn set_verdict(&self, code: WireStatus, verdict: Classified) {
         self.verdicts
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -325,9 +330,10 @@ impl Breaker for TestBreaker {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push(status);
-        // A test states a verdict per numeric code; a frame with no numeric status on it reports
-        // none, so a verdict set under zero stands for "whatever this upstream answered".
-        let key = status.code.unwrap_or(0);
+        // A test states a verdict per NAMESPACED code; a frame with no numeric status on it
+        // reports none, so a verdict set under HTTP zero stands for "whatever this upstream
+        // answered".
+        let key = status.code.unwrap_or(WireStatus::Http(0));
         if let Some(v) = self
             .verdicts
             .lock()
@@ -341,20 +347,41 @@ impl Breaker for TestBreaker {
         // are not the caller's fault, and folding them in with the rest of the 4xx would let this
         // fixture agree with a walk that dropped the number on the floor. Only a frame carrying no
         // number at all falls through to the coarse class below.
+        // Each numbering against its own table, exactly as the real adapter does it: a gRPC code
+        // never meets HTTP's bands here either, or this fixture would agree with the very fold the
+        // walk must not make.
         match (status.code, status.class) {
-            (Some(401 | 403), _) => Classified {
-                disposition: Disposition::HardDown,
-                outcome: Outcome::HardDown,
-                label: disposition::HARD_DOWN,
-            },
-            (Some(408 | 429), _) | (Some(500..=599), _) => Classified {
+            (Some(WireStatus::Http(401 | 403)), _)
+            | (Some(WireStatus::Grpc(GRPC_PERMISSION_DENIED | GRPC_UNAUTHENTICATED)), _) => {
+                Classified {
+                    disposition: Disposition::HardDown,
+                    outcome: Outcome::HardDown,
+                    label: disposition::HARD_DOWN,
+                }
+            }
+            (Some(WireStatus::Http(408 | 429)), _)
+            | (Some(WireStatus::Http(500..=599)), _)
+            | (
+                Some(WireStatus::Grpc(
+                    GRPC_UNKNOWN
+                    | GRPC_DEADLINE_EXCEEDED
+                    | GRPC_RESOURCE_EXHAUSTED
+                    | GRPC_ABORTED
+                    | GRPC_INTERNAL
+                    | GRPC_UNAVAILABLE
+                    | GRPC_DATA_LOSS,
+                )),
+                _,
+            ) => Classified {
                 disposition: Disposition::TransientUpstream,
                 outcome: Outcome::Transient {
                     retry_after: status.retry_after,
                 },
                 label: disposition::TRANSIENT,
             },
-            (Some(400..=499), _) | (None, Some(StatusClass::ClientError)) => Classified {
+            (Some(WireStatus::Http(400..=499)), _)
+            | (Some(WireStatus::Grpc(_)), _)
+            | (None, Some(StatusClass::ClientError)) => Classified {
                 disposition: Disposition::ClientFault,
                 outcome: Outcome::RecordNothing,
                 label: disposition::TRANSIENT,
@@ -669,7 +696,7 @@ pub fn frame(status: Option<StatusClass>, body: &str) -> Frame {
 /// class, the exact number the upstream put on it, and the wait it asked for.
 pub fn frame_with_upstream(
     status: Option<StatusClass>,
-    status_code: Option<u16>,
+    status_code: Option<WireStatus>,
     retry_after_secs: Option<u64>,
     body: &str,
 ) -> Frame {
