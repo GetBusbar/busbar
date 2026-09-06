@@ -1067,10 +1067,15 @@ def _xtask_denylist_hits(root):
     direct dependency list says nothing about what THAT crate pulls in). Returns {} when this tree
     is not a real cargo workspace with an xtask/ member (in particular: always {} under
     --selftest's stripped tree copy, which carries neither) so this stays additive, never
-    load-bearing for the self-test. A `cargo xtask denylist` that runs and fails for a REAL reason
-    (not "hits found" — that's a normal non-zero exit this function reads, not an error) still
-    degrades to {} with a note on stderr rather than crashing the whole gate: the own-src scan below
-    is unconditional and always runs regardless.
+    load-bearing for the self-test.
+
+    Returns None — not {} — when the subprocess ran but did not answer. The xtask exits 0 for "no
+    hits" and 1 for "hits found"; ANY other code (a compile error, a missing cargo, a panic, a
+    timeout) means the transitive-closure half of this rule did not happen. {} and None are the two
+    answers this gate must never confuse: {} says "asked, nothing found", None says "never asked".
+    A crate that fails to build has exactly the shape of a crate whose closure is clean, and the
+    silent {} turned that into a green row. The caller turns None into a red row instead; the
+    own-src scan below is unconditional and still runs either way.
     """
     if not os.path.isfile(os.path.join(root, "Cargo.toml")):
         return {}
@@ -1082,8 +1087,13 @@ def _xtask_denylist_hits(root):
             cwd=root, capture_output=True, text=True, timeout=300,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"source-denylist: `cargo xtask denylist` did not run ({e}); own-src scan only", file=sys.stderr)
-        return {}
+        print(f"source-denylist: `cargo xtask denylist` did not run ({e})", file=sys.stderr)
+        return None
+    if proc.returncode not in (0, 1):
+        why = (proc.stderr or proc.stdout or "").strip().splitlines()
+        print(f"source-denylist: `cargo xtask denylist` exited {proc.returncode}: "
+              + (" / ".join(why[-3:]) if why else "no output"), file=sys.stderr)
+        return None
     hits = {}
     for line in proc.stdout.splitlines():
         parts = line.split("\t")
@@ -1099,6 +1109,9 @@ def rule_source_denylist(tree, cfg):
     pat_rx = re.compile("|".join(re.escape(p) for p in c["patterns"]))
     allow = c.get("allowlist", {})
     xtask_hits = _xtask_denylist_hits(tree.root)
+    # None = the closure half never answered (see _xtask_denylist_hits). Every row this rule writes
+    # then says so and is RED: an unproven half of an invariant is not a met one.
+    unproven = xtask_hits is None
     rows = []
     seen = []
     for kind in c["kinds"]:
@@ -1113,7 +1126,11 @@ def rule_source_denylist(tree, cfg):
                 m = pat_rx.search(l.code)
                 if m and m.group(0) not in allow.get(crate, []):
                     offenders.append(f"`{m.group(0)}` at {rel}:{l.no}")
-        offenders += xtask_hits.get(crate, [])
+        if unproven:
+            offenders.append("UNPROVEN: `cargo xtask denylist` did not answer, so no transitive "
+                             "dependency was checked (reason on stderr)")
+        else:
+            offenders += xtask_hits.get(crate, [])
         current = len(offenders)
         detail = (f"{crate} ({kind}): {current} denylisted path(s)/transitive dep(s) (ceiling 0): "
                   + ("; ".join(offenders[:5]) if offenders else "none"))
