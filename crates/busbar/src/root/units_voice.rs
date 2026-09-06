@@ -1665,6 +1665,10 @@ impl Units for VoiceUnit<'_> {
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        // The ending the audit step already sealed, read once for the two answers below that turn
+        // on it. Deciding it a second time here is how a record that says a turn errored ends up
+        // beside a posting that charged for it.
+        let finish = *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner());
         Evidence {
             // WHAT THE TURN METERED, over every class the plane declares — the same figure the
             // metering step settles the session's lease at, read from the same place. One class of
@@ -1676,7 +1680,11 @@ impl Units for VoiceUnit<'_> {
             // What the kernel counted while the unit ran. The floor is evidence, never a charge.
             accrued_floor: self.accrued.load(Ordering::Acquire),
             locator_required: false,
-            terminal_error: false,
+            // DERIVED FROM THE ENDING THE PLANE SEALED, as it is on every other plane, rather than
+            // written here as a constant no. This is the row that decides whether a stream that
+            // stopped on an error still bills for what it had located: it must not, and hardcoding
+            // "no error" billed every one of them in full.
+            terminal_error: matches!(finish, Some(busbar_contract::FinishClass::Error)),
             recovered: false,
             dispatched: matches!(self.dial_outcome(), Some(Ok(()))),
             checkpointed: 0,
@@ -1687,12 +1695,7 @@ impl Units for VoiceUnit<'_> {
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
-            fee: fee_evidence(
-                self.shape,
-                ctx.origin,
-                self.answered(),
-                *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()),
-            ),
+            fee: fee_evidence(self.shape, ctx.origin, self.answered(), finish),
         }
     }
 }
@@ -3274,6 +3277,55 @@ mod tests {
             usage.total(),
             "a completed turn posts what it metered, not what it drew the lease at"
         );
+    }
+
+    /// A STREAM THAT ENDED ON AN ERROR BILLS NOTHING, even with a figure located.
+    ///
+    /// The settlement table has a row for exactly this — a live end that is not a completion, with
+    /// something located, whose stream carried an error signal — and it posts zero. Reaching that
+    /// row takes the plane saying the stream errored, and this file used to say the opposite
+    /// unconditionally: every dropped session, every upstream failure, every refused frame settled
+    /// in full for audio the caller never got the end of. The ending is the one the audit step
+    /// already sealed, so the record and the posting cannot tell two stories about one turn.
+    #[test]
+    fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
+        use busbar_kernel::teller::settle_amount;
+
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                ..TurnUsage::default()
+            });
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let token: UnitToken<Audit> = UnitToken::mint(&seal);
+        let refusal = Refusal::new(ReasonCode::DeadlineExceeded);
+        let _ = unit.audit_refused(&token, &ctx(1), &refusal);
+
+        let evidence = unit.evidence(&ctx(1));
+        assert!(
+            evidence.terminal_error,
+            "the plane sealed an error ending and the evidence says so"
+        );
+        assert_eq!(evidence.located, Some(120), "the figure is still located");
+        let end = Outcome::Refused(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded);
+        assert_eq!(
+            settle_amount(&end, &evidence).0,
+            0,
+            "and an errored stream posts nothing against it"
+        );
+
+        // And the completing turn beside it is untouched: the derivation only ever reads what the
+        // plane sealed, so a turn that finished cleanly still settles what it metered.
+        let clean = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                ..TurnUsage::default()
+            });
+        let _ = clean.audit(&token, &ctx(1), &Outcome::Completed);
+        assert!(!clean.evidence(&ctx(1)).terminal_error);
     }
 
     /// A turn that reported no output relayed no answer; one that emitted tokens did.
