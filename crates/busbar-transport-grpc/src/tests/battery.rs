@@ -851,6 +851,43 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
     );
 }
 
+/// An arrival names the port it arrived on.
+///
+/// `Port` is one of the selector forms this transport declares it can claim by, and a claim reads
+/// the arrival record. The record said `0` for every connection on every listener, so the one form
+/// that tells two bound ports apart could not tell them apart at all: every arrival on this
+/// transport looked like every other, whatever it had been accepted on.
+#[tokio::test]
+async fn an_arrival_names_the_port_it_arrived_on() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let bound: u16 = addr
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .expect("the listener is bound to a port");
+    assert_ne!(bound, 0, "the listener really is bound");
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let _client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    assert_eq!(
+        server_t.arrival(&server_conn).port,
+        bound,
+        "an arrival that names no port cannot be claimed by the Port selector form this transport declares"
+    );
+}
+
 /// A forwarder parked on a full inbound buffer ends when the connection does.
 ///
 /// Backpressure is a wait, and a wait needs a way out. The wait was on a send with no cancellation

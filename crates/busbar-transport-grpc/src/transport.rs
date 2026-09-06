@@ -31,6 +31,16 @@ use crate::conn::{ConnState, GrpcConnHandle};
 type FrameStream =
     std::pin::Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
 
+/// The port out of a bound address as the layer below spells it, zero where it spells one this
+/// cannot read — a listener on something that is not a socket has no port to report, and guessing
+/// one would be worse than saying so.
+fn local_port(addr: &str) -> u16 {
+    addr.rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(0)
+}
+
 /// The gRPC transport: unary and multiplexed streams over HTTP/2, byte-blind. In-tree, inside the
 /// trusted computing base — see the architecture doc's transport and transports-table sections.
 ///
@@ -148,16 +158,18 @@ impl TransportMeta for GrpcTransport {
 
 impl Transport for GrpcTransport {
     fn arrival(&self, conn: &Conn) -> ArrivalRecord {
+        let state = self.state_of(conn.id());
         ArrivalRecord {
             source: conn.peer(),
-            port: 0,
+            // The port the connection actually arrived on, so the `Port` selector form this
+            // transport declares has something to claim by. Zero was every arrival on every
+            // listener looking alike.
+            port: state.as_ref().map_or(0, |s| s.local_port()),
             alpn: None,
             sni: None,
             peer_cert: None,
             // The chain the layer below reported, plus this one.
-            transport_chain: self
-                .state_of(conn.id())
-                .map_or_else(|| vec!["grpc"], |s| s.chain.clone()),
+            transport_chain: state.map_or_else(|| vec!["grpc"], |s| s.chain.clone()),
         }
     }
 
@@ -176,9 +188,18 @@ impl Transport for GrpcTransport {
             let lower = self.lower()?;
             let conn = lower.accept(l).await?;
             let peer = conn.peer();
+            // The port this connection arrived on, taken before the stream is: the layer below is
+            // asked first, since it is the one holding the socket, and where it names none the
+            // listener's own bound address does — this transport binds nothing, so those are the
+            // only two places the fact exists.
+            let port = match lower.arrival(&conn).port {
+                0 => local_port(&l.local_addr()),
+                port => port,
+            };
             let (stream, chain) = self.take(lower, &conn)?;
             let id = self.mint_id();
             let state = ConnState::new(None, chain);
+            state.set_local_port(port);
             self.conns.lock().unwrap().insert(id, state.clone());
             crate::server::serve_connection(stream, state);
             Ok(Conn::new(Arc::new(GrpcConnHandle { id, peer })))

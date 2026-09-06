@@ -269,6 +269,13 @@ pub(crate) struct ConnState {
     /// counterpart: the HTTP/2 client's own driver holds the stream, so cutting the stream is what
     /// ends it. See [`Cut`].
     cut: SyncMutex<Option<Arc<Cut>>>,
+    /// The local port this connection arrived on, as the layer below reported it or as the listener
+    /// it was accepted from is bound. Zero on a dialled connection, which arrived nowhere.
+    ///
+    /// It is recorded because `Port` is one of the selector forms this transport declares, and a
+    /// claim by port reads the arrival record: a record that names no port is one the form it
+    /// declares cannot be answered from.
+    local_port: std::sync::atomic::AtomicU16,
     /// The composed stack this connection stands on, bottom layer first, ending in `grpc`. It is
     /// the layer below's chain plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
@@ -292,6 +299,7 @@ impl ConnState {
             served_paths: SyncMutex::new(VecDeque::new()),
             shutdown: SyncMutex::new(None),
             cut: SyncMutex::new(None),
+            local_port: std::sync::atomic::AtomicU16::new(0),
             chain,
         })
     }
@@ -401,6 +409,17 @@ impl ConnState {
     /// Remember how to stop the task driving this connection.
     pub(crate) fn arm_shutdown(&self, stop: tokio::sync::oneshot::Sender<()>) {
         *self.shutdown.lock().unwrap() = Some(stop);
+    }
+
+    /// Record the local port this connection arrived on.
+    pub(crate) fn set_local_port(&self, port: u16) {
+        self.local_port
+            .store(port, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The local port this connection arrived on, zero where it arrived on none.
+    pub(crate) fn local_port(&self) -> u16 {
+        self.local_port.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Remember how to cut the stream this connection runs on.
