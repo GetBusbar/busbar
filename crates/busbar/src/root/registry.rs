@@ -65,6 +65,16 @@
 //! composition would register, pass `check_composition` — because `composed_over()` returns `None`
 //! and the check reads a declaration — and then refuse every connection. That is why the two are
 //! built through `over` here and why the registered rows record what they were actually built over.
+//!
+//! ## One key, two compositions
+//!
+//! Seven keys register, and eight instances are built: `ws` is composed twice. It adds no
+//! encryption of its own — it upgrades whatever stream the layer below gives up — so an in-band
+//! upgrade arriving on `http` and a `wss://` dial that must stand on `tls` are two different
+//! stacks, and the transport refuses a secure target over a cleartext lower layer rather than put a
+//! plain upgrade on a wire the caller was told was encrypted. The registry seals by key and cannot
+//! hold both, so the dial-side instance is the root's own handle and
+//! [`ComposedTransports::dialer`] is where a destination's scheme picks between them.
 
 use std::sync::Arc;
 
@@ -144,8 +154,16 @@ pub struct ComposedTransports {
     pub http: Arc<HttpTransport>,
     /// Server-sent events over HTTP.
     pub sse: Arc<SseTransport>,
-    /// WebSocket, built over HTTP — never over nothing.
+    /// WebSocket for ingress, built over HTTP — never over nothing. This is the instance an in-band
+    /// upgrade arrives on, and the one registered under the `ws` key.
     pub ws: Arc<WsTransport>,
+    /// WebSocket for a secure dial, built over TLS — the same key, composed a second way.
+    ///
+    /// Not registered: the registry seals by key and there is one `ws` entry. This instance is the
+    /// root's own handle, reached through [`ComposedTransports::dialer`], because the composition a
+    /// `wss://` destination needs is not the composition an upgrade arrives on and one instance
+    /// cannot be both.
+    pub ws_tls: Arc<WsTransport>,
     /// gRPC, built over HTTP — never over nothing.
     pub grpc: Arc<GrpcTransport>,
     /// The process's own standard streams.
@@ -171,10 +189,10 @@ impl ComposedTransports {
             TlsTransport::KEY => Arc::clone(&self.tls) as Arc<dyn Transport>,
             HttpTransport::KEY => Arc::clone(&self.http) as Arc<dyn Transport>,
             SseTransport::KEY => Arc::clone(&self.sse) as Arc<dyn Transport>,
-            <WsTransport as TransportMeta>::KEY => {
-                let _ = secure;
-                Arc::clone(&self.ws) as Arc<dyn Transport>
+            <WsTransport as TransportMeta>::KEY if secure => {
+                Arc::clone(&self.ws_tls) as Arc<dyn Transport>
             }
+            <WsTransport as TransportMeta>::KEY => Arc::clone(&self.ws) as Arc<dyn Transport>,
             GrpcTransport::KEY => Arc::clone(&self.grpc) as Arc<dyn Transport>,
             StdioTransport::KEY => Arc::clone(&self.stdio) as Arc<dyn Transport>,
             _ => return None,
@@ -228,11 +246,28 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
 /// Registration order is the build order for a reason: `check_composition` resolves a declared
 /// layer against what is registered, so a layer must exist before anything that names it.
 fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
+    // The same number the door refuses a body at. A WebSocket message is assembled from
+    // continuation frames before anything above the transport sees it, so the ceiling has to be
+    // stated at the handshake or it is not stated at all — and a node that refuses a body of a
+    // given size over HTTP has no basis for holding a larger one over a socket it upgraded.
+    let max_message_bytes = client_settings.request_body_max_bytes;
     let tcp = Arc::new(TcpTransport::new());
     let tls = Arc::new(TlsTransport::new());
     let http = Arc::new(HttpTransport::new(client_settings));
     let sse = Arc::new(SseTransport::new(Arc::clone(&http)));
-    let ws = Arc::new(WsTransport::over(Arc::clone(&http) as Arc<dyn Transport>));
+    let ws = Arc::new(WsTransport::over_with_max_message_bytes(
+        Arc::clone(&http) as Arc<dyn Transport>,
+        max_message_bytes,
+    ));
+    // The dial-side composition of the same key. `ws` adds no encryption of its own, so a `wss://`
+    // target is only honest when the layer below is the one that encrypts — the transport refuses
+    // the dial otherwise rather than put a cleartext upgrade on a wire the caller was told was
+    // secure. Every realtime upstream this deployment reaches is `wss`, so without this instance
+    // the refusal is the whole voice plane's answer.
+    let ws_tls = Arc::new(WsTransport::over_with_max_message_bytes(
+        Arc::clone(&tls) as Arc<dyn Transport>,
+        max_message_bytes,
+    ));
     let grpc = Arc::new(GrpcTransport::over(Arc::clone(&http) as Arc<dyn Transport>));
     let stdio = Arc::new(StdioTransport::new());
     ComposedTransports {
@@ -241,6 +276,7 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         http,
         sse,
         ws,
+        ws_tls,
         grpc,
         stdio,
     }
@@ -995,7 +1031,10 @@ mod tests {
 
         let cleartext = sealed
             .transports
-            .dialer(ws_key, &UpstreamAddress::socket("ws://127.0.0.1:8080/duplex"))
+            .dialer(
+                ws_key,
+                &UpstreamAddress::socket("ws://127.0.0.1:8080/duplex"),
+            )
             .expect("`ws` is a registered key");
         assert_eq!(
             cleartext.composed_over(),
@@ -1024,7 +1063,10 @@ mod tests {
         assert!(
             sealed
                 .transports
-                .dialer("twilio-media", &UpstreamAddress::socket("wss://example.invalid"))
+                .dialer(
+                    "twilio-media",
+                    &UpstreamAddress::socket("wss://example.invalid")
+                )
                 .is_none(),
             "a key the root never registered resolves to no instance"
         );
