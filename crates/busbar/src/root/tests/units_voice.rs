@@ -1119,12 +1119,12 @@ fn the_runtimes_port_reaches_the_nodes_own_table() {
 ///
 /// Two things are judged here and they are the two halves of one claim.
 ///
-/// The first is that the root composes at all. `mount_root_voice` seals the registry and then
-/// writes this node's open-call table onto the served door; after it has run, the door's own
-/// per-session binding answers with a table rather than with nothing, and it answers with a
-/// fresh identifier each time — which is what a session is told apart by on a node where two
-/// conversations may carry identical call identifiers. Before this the port and its implementor
-/// both existed and no served session had ever been handed one.
+/// The first is that the root CAN compose at all — the switch, exercised here rather than on the
+/// boot path, because a table with nothing planned into it refuses every reply a served session
+/// carries and `mount_root_voice` therefore leaves it unbound until the serving path runs units
+/// on this node. Composed, the door's own per-session binding answers with a table rather than
+/// with nothing, and it answers with a fresh identifier each time — which is what a session is
+/// told apart by on a node where two conversations may carry identical call identifiers.
 ///
 /// The second is what that binding is worth: a call nobody answers, ended THROUGH the served
 /// path. The tick is the session pump's own `sweep_expired`, the table is this node's, and the
@@ -2452,5 +2452,84 @@ fn two_turns_of_one_session_are_handed_the_same_chain() {
     assert!(
         std::ptr::eq(one, &chain),
         "and it is the session's own value"
+    );
+}
+
+/// **A client's answer reaches the model — through this node's own table, on a real pump.**
+///
+/// Every other cell above stops at the port: it asks `replied` and reads the verdict. That is
+/// the table's half and it says nothing about the frame, and the frame is the whole point — a
+/// governed session that wakes the right unit and then puts nothing on the upstream wire is a
+/// conversation that stopped mid-tool-call, and the two look identical from the table's side.
+///
+/// So this drives the pump the way the socket does: a wait entered where the leg was planned, a
+/// client `function_call_output` decoded by the real codec, and the assertion on `plan.upstream`
+/// — the answer, and the `response.create` that asks the model to go on. This is the cell that
+/// would have failed on a node whose table nothing ever planned into.
+#[cfg(feature = "plane-voice")]
+#[test]
+fn a_client_answer_reaches_the_upstream_through_this_nodes_own_table() {
+    use busbar_voice::runtime::{Carrier, MeteringPort, SessionCore};
+
+    let kernel = Kernel::new();
+    let node = std::sync::Arc::new(node(serviceable()));
+    let session = 909;
+    let _ = plan_on(&kernel, &node, session, 11, "call_aaa", 0);
+
+    let lease = busbar_voice::runtime::LocalMeteringPort
+        .reserve(1_000, 0, None)
+        .expect("an uncapped lease always opens");
+    let core = SessionCore::new(
+        busbar_voice::ir::codec::OpenAiRealtimeCodec,
+        lease,
+        None,
+        std::sync::Arc::new(busbar_voice::runtime::EchoToolExecutor),
+        Carrier::sideband(),
+        None,
+    )
+    .with_governed(busbar_voice::runtime::GovernedSession {
+        session,
+        calls: std::sync::Arc::new(NodeCalls::new(std::sync::Arc::clone(&node))),
+    });
+
+    let reply_frame = busbar_voice::ir::codec::WireEvent(
+        serde_json::to_vec(&serde_json::json!({
+            "type": "conversation.item.create",
+            "item": {
+                "type": "function_call_output",
+                "call_id": "call_aaa",
+                "output": "42"
+            }
+        }))
+        .expect("the reply frame serializes")
+        .into(),
+    );
+    let plan = core.on_client_frame(reply_frame);
+    assert!(
+        !plan.refused_reply,
+        "the wait this node entered is the one the reply names"
+    );
+    let up: String = plan
+        .upstream
+        .iter()
+        .map(|w| String::from_utf8_lossy(&w.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        up.contains("function_call_output") && up.contains("call_aaa"),
+        "the client's answer reaches the model: {up}"
+    );
+    assert!(
+        up.contains("response.create"),
+        "and the model is asked to carry on from it: {up}"
+    );
+    assert!(
+        !node.tool_calls.waiting(session, UnitKey::new(11)),
+        "the wait left the table because it was answered"
+    );
+    assert_eq!(
+        node.tool_calls.ending(session, UnitKey::new(11)),
+        Some(CallEnd::Answered),
+        "and the unit's exit path reads the ending the reply left"
     );
 }
