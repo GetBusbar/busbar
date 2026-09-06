@@ -1666,12 +1666,13 @@ impl Units for VoiceUnit<'_> {
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         Evidence {
-            // What the upstream reported, where it reported anything.
-            located: self
-                .usage
-                .audio_tokens_out
-                .checked_add(0)
-                .filter(|n| *n > 0),
+            // WHAT THE TURN METERED, over every class the plane declares — the same figure the
+            // metering step settles the session's lease at, read from the same place. One class of
+            // it is not the turn: a turn that answered in text emitted no audio, and locating only
+            // the emitted audio posted nothing for a completed turn whose lease had already been
+            // drawn down by the whole report. Nothing located is `None` and not a zero, because the
+            // two are different rows of the settlement table.
+            located: Some(self.usage.total()).filter(|total| *total > 0),
             // What the kernel counted while the unit ran. The floor is evidence, never a charge.
             accrued_floor: self.accrued.load(Ordering::Acquire),
             locator_required: false,
@@ -2646,8 +2647,9 @@ mod tests {
         assert_eq!(end.outcome(), Outcome::Completed);
         assert_eq!(
             end.into_posted().expect("the report fits").settled(),
-            120,
-            "the frame that emptied the lease is charged exactly what it delivered"
+            121,
+            "the frame that emptied the lease is charged exactly what it delivered: the 120 emitted \
+             audio tokens plus the one second of audio it took in"
         );
 
         // And the next frame on that session does not get in.
@@ -3241,6 +3243,39 @@ mod tests {
         );
     }
 
+    /// A TURN THAT SPOKE ONLY IN TEXT BILLS ITS TEXT.
+    ///
+    /// The exit's located figure is the whole report and not one class of it. A turn that emitted no
+    /// audio at all is an ordinary shape of turn on this plane — a transcript-only exchange, a
+    /// tool-driven turn, a dialect answering in text — and reading only the emitted-audio class made
+    /// every one of them settle a completed turn at nothing while the session's lease had already
+    /// been drawn down by the same report in full. The lease and the posting read ONE number here.
+    #[test]
+    fn a_text_only_turn_settles_the_text_it_metered() {
+        use busbar_kernel::teller::settle_amount;
+
+        let node = priced_node(serviceable());
+        let usage = TurnUsage {
+            text_tokens_in: 40,
+            text_tokens_out: 60,
+            ..TurnUsage::default()
+        };
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(usage);
+        let evidence = unit.evidence(&ctx(1));
+        assert_eq!(
+            evidence.located,
+            Some(100),
+            "the located figure is every class the turn metered"
+        );
+        assert_eq!(
+            settle_amount(&Outcome::Completed, &evidence).0,
+            usage.total(),
+            "a completed turn posts what it metered, not what it drew the lease at"
+        );
+    }
+
     /// A turn that reported no output relayed no answer; one that emitted tokens did.
     #[test]
     fn an_answered_turn_is_one_that_emitted_something() {
@@ -3413,13 +3448,14 @@ mod tests {
             TURN_OPENING_TOKENS * 5_000,
             "what the door reserved"
         );
-        // What the settlement table posts is what the destination REPORTED, not what the kernel's
-        // meter counted; the accrual is the floor beside it, and the hold carries both.
-        assert_eq!(posted.settled(), 120, "what the upstream reported");
+        // What the settlement table posts is the WHOLE report — every class the turn metered, which
+        // here is 120 emitted audio tokens and the one second of audio the turn took in — not what
+        // the kernel's meter counted; the accrual is the floor beside it, and the hold carries both.
+        assert_eq!(posted.settled(), 121, "what the turn metered");
         assert_eq!(posted.overdraft(), 0, "well inside the reservation");
         assert_eq!(
             posted.released(),
-            TURN_OPENING_TOKENS * 5_000 - 120,
+            TURN_OPENING_TOKENS * 5_000 - 121,
             "and the residual the settlement hands back"
         );
 
@@ -3429,7 +3465,7 @@ mod tests {
             .expect("the memory-buffered journal takes it");
         assert_eq!(
             settled.settlement.released,
-            i128::from(TURN_OPENING_TOKENS * 5_000 - 120)
+            i128::from(TURN_OPENING_TOKENS * 5_000 - 121)
         );
         assert!(settled.overdraft.is_none());
 
@@ -3439,7 +3475,7 @@ mod tests {
             busbar_unit_admission::window::WINDOW_DAY,
             1_700_000_000,
         );
-        assert_eq!(durability.ledger.book().get(&key, window).settled, 120);
+        assert_eq!(durability.ledger.book().get(&key, window).settled, 121);
         let replayed = durability
             .journal
             .replay()
