@@ -194,9 +194,18 @@ pub async fn connect_reply<P: PlaneTrust>(ctx: AdminReqCtx) -> AdminReply {
         Err(e) => return AdminReply::Refused(e),
     };
     match P::look(subject, ctx.host, ctx.name).await {
-        Ok(view) => {
-            AdminReply::Applied(serde_json::to_string(&view).unwrap_or_else(|_| "{}".to_string()))
-        }
+        // A view that will not serialize is an internal failure, and answering it as an empty
+        // object would be worse than a 500: the caller reads a `200` with nothing in it and the
+        // audit row says `applied`, so the record claims a look succeeded whose answer nobody has
+        // ever seen. The verb ran, so this is a rejection rather than a resolve-time refusal, and
+        // it is audited as one.
+        Ok(view) => match serde_json::to_string(&view) {
+            Ok(body) => AdminReply::Applied(body),
+            Err(e) => AdminReply::Rejected(PlaneVerbError::Internal(format!(
+                "the {} view did not serialize: {e}",
+                P::PLANE
+            ))),
+        },
         // A look that landed a quarantine, or could not authenticate the endpoint, is the single most
         // operator-relevant thing this surface does — recorded whatever it found (the adapter audits
         // `rejected`).
@@ -285,4 +294,63 @@ pub fn plane_admin_envelope() -> &'static dyn PlaneAdminEnvelope {
     *PLANE_ADMIN_ENVELOPE
         .get()
         .expect("plane admin envelope must be installed before a self-enveloping verb runs")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{connect_reply, AdminReply, AdminReqCtx, PlaneTrust, PlaneVerbError};
+    use crate::plane_host::EngineHost;
+    use crate::testkit::fixture_host::FixtureHost;
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+
+    /// A view `serde_json` cannot render: JSON object keys are strings, so a map keyed by a pair is
+    /// a serialization error rather than a type error -- exactly the shape of mistake a plane's own
+    /// view struct can acquire without the compiler saying a word.
+    #[derive(serde::Serialize)]
+    struct UnrenderableView {
+        per_endpoint: BTreeMap<(String, String), u64>,
+    }
+
+    struct NanPlane;
+
+    impl PlaneTrust for NanPlane {
+        const PLANE: &'static str = "fixture";
+        type Subject = ();
+        type View = UnrenderableView;
+
+        fn resolve(_host: &Arc<dyn EngineHost>, _name: &str) -> Result<(), PlaneVerbError> {
+            Ok(())
+        }
+
+        async fn look(
+            _subject: (),
+            _host: Arc<dyn EngineHost>,
+            _name: String,
+        ) -> Result<UnrenderableView, PlaneVerbError> {
+            Ok(UnrenderableView {
+                per_endpoint: BTreeMap::from([(("a".to_string(), "b".to_string()), 1)]),
+            })
+        }
+    }
+
+    /// A view that will not serialize must not be answered as a success. Falling back to an empty
+    /// object hands the caller a `200` with nothing in it AND writes `applied` to the audit -- a
+    /// record of a look that succeeded whose answer nobody ever saw.
+    #[tokio::test]
+    async fn a_view_that_will_not_serialize_is_not_answered_as_applied() {
+        let host: Arc<dyn EngineHost> = Arc::new(FixtureHost::new());
+        let ctx = AdminReqCtx {
+            host,
+            name: "anything".to_string(),
+            body: axum::body::Bytes::new(),
+            headers: axum::http::HeaderMap::new(),
+            principal: None,
+        };
+        let reply = connect_reply::<NanPlane>(ctx).await;
+        assert!(
+            matches!(reply, AdminReply::Rejected(PlaneVerbError::Internal(_))),
+            "a view that will not serialize is an internal rejection, never an empty success"
+        );
+    }
 }
