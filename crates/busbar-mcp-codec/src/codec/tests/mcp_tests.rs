@@ -72,6 +72,42 @@ fn a_failed_tool_is_a_result_not_a_protocol_error() {
     assert_eq!(r.content[0]["text"], "no such file");
 }
 
+/// `isError` IS A BOOLEAN OR IT IS NOTHING. A peer that puts anything else there has not said the
+/// tool succeeded — it has said something this codec cannot read, and quietly reading it as `false`
+/// serves a failed tool as a successful one, which is the exact collapse the two-channel rule
+/// exists to prevent.
+#[test]
+fn a_non_boolean_tool_verdict_is_refused_rather_than_read_as_success() {
+    for verdict in [
+        serde_json::json!("true"),
+        serde_json::json!(1),
+        serde_json::json!(null),
+        serde_json::json!({}),
+    ] {
+        let wire = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "content": [{ "type": "text", "text": "no such file" }], "isError": verdict }
+        }))
+        .expect("fixture");
+        assert!(
+            super::invoke::read_invoke_response(&wire).is_err(),
+            "`isError: {verdict}` is not a verdict this codec may read as success"
+        );
+    }
+}
+
+/// An ABSENT `isError` is the ordinary successful call, and stays one.
+#[test]
+fn an_absent_tool_verdict_is_a_success() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": { "content": [{ "type": "text", "text": "ok" }] }
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("reads");
+    assert!(!r.is_error);
+}
+
 /// AN ANSWER THAT IS NOT AN ANSWER YET MUST NOT BE SERVED AS ONE. A result that carries no content
 /// and declares itself unfinished is not an empty successful tool call: served as one it tells a
 /// caller their tool ran and returned nothing, and the token that would let the exchange be resumed

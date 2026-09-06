@@ -92,10 +92,20 @@ pub(crate) fn read_invoke_response(wire: &[u8]) -> Result<InvokeResp, CodecError
     // exchange means the tool ran and failed; a call that could not be made at all is a
     // refusal that never produces an `IrResp`. Collapsing the two tells a caller their
     // request was malformed when their tool merely returned an error.
-    let is_error = result
-        .get("isError")
-        .and_then(serde_json::Value::as_bool)
-        .unwrap_or(false);
+    //
+    // A NON-BOOLEAN `isError` IS UNREADABLE, NOT FALSE. Absent means the ordinary successful call,
+    // but a peer that puts a string, a number or an object there has not said the tool succeeded;
+    // treating it as `false` serves a failure as a success, which is precisely the collapse this
+    // separation exists to prevent, so it is refused instead.
+    let is_error = match result.get("isError") {
+        None => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(other) => {
+            return Err(CodecError::Malformed(format!(
+                "`isError` is the tool's own verdict and is a boolean, not {other}"
+            )))
+        }
+    };
     let structured = result.get("structuredContent").cloned();
 
     // AN EXCHANGE THAT IS NOT OVER SAYS SO IN THESE THREE MEMBERS, and busbar models none of them
