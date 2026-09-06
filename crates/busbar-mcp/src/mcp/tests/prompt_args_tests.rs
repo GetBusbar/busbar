@@ -173,6 +173,35 @@ async fn an_unsupplied_placeholder_is_left_visible_rather_than_emptied() {
     );
 }
 
+/// A SUBSTITUTED VALUE IS TEXT, NOT A TEMPLATE. Placeholders are filled from the OPERATOR's
+/// template, once each; a placeholder spelling that arrives inside a caller's argument value is
+/// data the caller sent, and filling it would let one argument decide what another argument means.
+#[tokio::test]
+async fn a_placeholder_spelled_inside_an_argument_value_is_not_itself_substituted() {
+    let text = prompt_text(serde_json::json!({ "name": "{topic}", "topic": "looms" })).await;
+    assert_eq!(
+        text, "Hello, {topic}! You asked about looms.",
+        "the caller's own text was read back as a placeholder: {text}"
+    );
+}
+
+/// AND THE OUTPUT IS LINEAR IN WHAT WAS SENT. Substituting into an accumulator that already holds
+/// caller text makes each later argument multiply the earlier ones — the classic chained expansion,
+/// on a request thread, in the shipped binary. The output must be bounded by the template plus the
+/// arguments, whatever those arguments spell.
+#[tokio::test]
+async fn a_chained_expansion_cannot_multiply_the_output() {
+    let name = "{topic}".repeat(2_000); // 14 KiB of caller text that LOOKS like 2,000 placeholders
+    let topic = "x".repeat(200);
+    let sent = name.len() + topic.len();
+    let text = prompt_text(serde_json::json!({ "name": name, "topic": topic })).await;
+    assert!(
+        text.len() < sent + 1_024,
+        "the output multiplied what was sent: {sent} bytes in, {} bytes out",
+        text.len()
+    );
+}
+
 /// `completion/complete` is IMPLEMENTED and answers the EMPTY completion set. Empty is the complete
 /// and correct answer for a registry that declares no argument value sets — the same posture the
 /// catalogue takes for a caller whose grant reaches nothing — and it is a different answer from
