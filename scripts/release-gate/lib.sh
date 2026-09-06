@@ -223,3 +223,57 @@ contract_asset_names() {  # contract_asset_names <tag>
   fi
   printf '%s\n%s\n' "$per_target" "$metadata"
 }
+
+# ── The first-party plugin probe's expectations ─────────────────────────────────────────────────
+#
+# AN EMPTY EXPECTATION IS NOT AN EXPECTATION, AND grep DOES NOT SAY SO.
+#
+# platform-checks' plugin row — the one that functionally proves #52, i.e. that the shipped binary
+# accepts a REALLY-signed first-party plugin — decided its verdict with
+#
+#     printf '%s' "$row" | grep -qw "$WANT_SIG" && printf '%s' "$row" | grep -qw "$WANT_STATUS"
+#
+# and `grep -qw ""` MATCHES ANY non-empty line: the empty pattern matches at every position, and
+# the word-boundary test around a zero-width match is satisfied. So if the contract's plugin_probe
+# ever lost expect_signature/expect_status — a rename, a `""`, or simply jq not being installed on
+# the runner, which makes every substitution above come back empty — the strongest row in the gate
+# silently degrades to "the alias appeared in the output at all" and records PASS on a binary that
+# refuses every signed plugin. Nothing downstream can catch that: the ledger row says PASS and
+# gate.sh sees an ordinary pass.
+#
+# `null` counts as absent too. `jq -er` on a key that is GONE prints the four characters `null`
+# and exits 1; platform-checks runs without `set -e`, so that string becomes the expectation. It
+# would not match, so the row does go red — but red reading "expected signature 'null'" blames the
+# artifact when the fault is the contract, and the two have different fixes.
+#
+# These live here, not inline, so gate.sh --selftest can drive them with no runner, no network and
+# no release: the case that matters is one the OLD code called PASS.
+
+probe_expectation_absent() {  # probe_expectation_absent <value>  -> 0 if absent
+  case "${1:-}" in "" | null) return 0 ;; *) return 1 ;; esac
+}
+
+# probe_expectations_absent <alias> <want-sig> <want-status>
+# Prints the space-separated names of the contract fields that are absent (empty output = all
+# present). Always exits 0; the CALLER decides, so a `set -e` caller cannot be tripped by "all
+# present" and so the names can be quoted verbatim into the failure detail.
+probe_expectations_absent() {
+  local out=""
+  probe_expectation_absent "${1:-}" && out="${out}plugin_probe.alias "
+  probe_expectation_absent "${2:-}" && out="${out}plugin_probe.expect_signature "
+  probe_expectation_absent "${3:-}" && out="${out}plugin_probe.expect_status "
+  printf '%s' "$out"
+  return 0
+}
+
+# probe_row_matches <row> <want-sig> <want-status>
+# 0 only when BOTH expectations are non-empty AND both appear as whole words in the row. Refuses
+# (non-zero) on an absent expectation rather than matching everything.
+probe_row_matches() {
+  local row="${1:-}" want_sig="${2:-}" want_status="${3:-}"
+  [ -n "$row" ] || return 1
+  [ -n "$(probe_expectations_absent x "$want_sig" "$want_status")" ] && return 1
+  printf '%s' "$row" | grep -qw -- "$want_sig" || return 1
+  printf '%s' "$row" | grep -qw -- "$want_status" || return 1
+  return 0
+}
