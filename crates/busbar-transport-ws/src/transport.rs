@@ -478,11 +478,16 @@ impl Transport for WsTransport {
             }
             let payload = bytes.as_slice().to_vec();
             let n = payload.len();
+            // The lock first, the fence second. A write dropped while still QUEUED on the writer
+            // put no bytes on the socket, so there is no half-written frame to fence — arming
+            // before the lock condemned a healthy connection permanently on nothing but
+            // contention. From here on the send is the only thing that can be interrupted, which
+            // is exactly what the fence is for.
+            let mut w = state.writer.lock().await;
             let mut guard = PoisonGuard {
                 state: &state,
                 armed: true,
             };
-            let mut w = state.writer.lock().await;
             futures::SinkExt::send(&mut *w, Message::Binary(payload.into()))
                 .await
                 .map_err(|_| TransportError::Reset)?;

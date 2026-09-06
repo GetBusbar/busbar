@@ -288,6 +288,39 @@ async fn cancel_mid_frame_fences_the_connection() {
     assert_eq!(frame.bytes.as_slice(), b"after the cancel");
 }
 
+/// A write that never reached the writer at all did not tear a frame. The fence exists for a send
+/// that started and stopped half-way; a future dropped while still queued on the writer lock wrote
+/// nothing, so fencing it condemns a healthy connection for the lifetime of the process on nothing
+/// worse than contention. The guard must therefore be armed AFTER the lock is held, not before.
+#[tokio::test]
+async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connection() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    // One holder of the writer, so the next write can only queue on the lock and never send.
+    let state = t.state_of(a.id()).expect("the connection is live");
+    let held = state.writer.lock().await;
+    {
+        let queued = t.write(&a, StreamId(0), ArenaBytes::new(b"never sent"));
+        tokio::pin!(queued);
+        let raced = tokio::time::timeout(Duration::from_millis(20), queued.as_mut()).await;
+        assert!(raced.is_err(), "the write must still be queued on the lock");
+    }
+    drop(held);
+
+    // Nothing was written, so nothing was torn: the connection carries the next frame.
+    t.write(&a, StreamId(0), ArenaBytes::new(b"after the queue"))
+        .await
+        .expect("a write that never reached the socket must not fence the connection");
+    let mut frames = t.frames(b);
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the frame must arrive")
+        .expect("the stream must not end")
+        .expect("and must not be a fenced error");
+    assert_eq!(frame.bytes.as_slice(), b"after the queue");
+}
+
 #[tokio::test]
 async fn backpressure_is_bidirectional() {
     let t = Arc::new(WsTransport::new());
