@@ -279,6 +279,9 @@ impl busbar_substrate::plane_host::EngineTablesView for NativeRuntime {
             .map(|(name, members)| (name.as_str(), members.iter().map(|wl| wl.idx).collect()))
             .collect()
     }
+    fn pool_exists(&self, pool: &str) -> bool {
+        self.pools.contains_key(pool)
+    }
     fn model_indices(&self) -> Vec<(&str, usize)> {
         self.by_model
             .iter()

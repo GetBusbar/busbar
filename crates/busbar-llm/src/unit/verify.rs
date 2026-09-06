@@ -305,8 +305,12 @@ impl PoolView for HostPoolView<'_> {
     }
 
     fn is_configured(&self, name: &str) -> bool {
-        self.tables.pools().iter().any(|(n, _)| *n == name)
-            || self.tables.model_index(name).is_some()
+        // Two probes, one per half of the destination space, and neither builds a projection: this
+        // question is asked once per request and the scrape seam's `pools()` is not a request-path
+        // read. The order is the resolution order the Route step's own candidate lookup uses — pool
+        // first, bare model second — so "configured" here and "routable" there cannot disagree
+        // about which half a name belongs to.
+        self.tables.pool_exists(name) || self.tables.model_index(name).is_some()
     }
 
     fn pricing_enabled(&self) -> bool {
