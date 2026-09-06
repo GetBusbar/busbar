@@ -742,6 +742,16 @@ pub struct VoiceNode {
     /// Node-held rather than passed in, because nothing configuration decides is in it: it is empty
     /// at boot and its whole contents are what the sessions running on this node have opened since.
     pub tool_calls: OpenToolCalls,
+    /// **WHICH RATE CARD PRICED THIS NODE'S UNITS**, carried into every posting stamp and every
+    /// record's amount.
+    ///
+    /// Composed rather than restated at the two stamp sites, which both used to write a literal
+    /// zero. A zero is the honest answer for a deployment with no card configured and a WRONG one
+    /// for a deployment with a card, and the two were indistinguishable: a recompute reads the
+    /// version off the posting to find the card that produced it, so every voice posting ever
+    /// written claimed to have been priced by a card that does not exist. One value on the node,
+    /// beside the pricer it names, because the card and its version are one fact.
+    pub rate_card_version: u64,
     /// The origin every unit of this plane carries into its audit record, minted once at boot.
     ///
     /// A sealed origin cannot be constructed outside the kernel, and the audit step is lent its own
@@ -804,6 +814,9 @@ pub struct VoiceNodeParts {
     pub durability: crate::root::durability::Durability,
     /// The I/O half, behind its four seams.
     pub io: VoiceIo,
+    /// The version of the rate card `pricer` is built from — what a posting is stamped with and
+    /// what a recompute looks the card up by.
+    pub rate_card_version: u64,
     /// The sealed origin every unit of this plane carries into its record.
     pub origin: busbar_caps::Origin,
 }
@@ -824,6 +837,7 @@ impl VoiceNode {
             durability: Mutex::new(parts.durability),
             io: parts.io,
             tool_calls: OpenToolCalls::new(),
+            rate_card_version: parts.rate_card_version,
             origin: parts.origin,
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
@@ -1972,11 +1986,7 @@ impl VoiceUnit<'_> {
             // The loop has no exit step of its own; the figure this posting is OF is the metering
             // step's, and that is the step a durability loss here is attributed to.
             step: busbar_caps::StepName::Meter,
-            stamp: crate::root::durability::PostingStamp {
-                rate_card_version: 0,
-                wall: self.epoch,
-                mono: self.node.tick(),
-            },
+            stamp: self.posting_stamp(),
         };
         let mut durability = self
             .node
@@ -1984,6 +1994,21 @@ impl VoiceUnit<'_> {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         durability.settle_posted(&at, posted)
+    }
+
+    /// **HOW ONE POSTING IS STAMPED**: which card priced it, and the two clocks it happened on.
+    ///
+    /// Its own function because the version is a fact about this node and not a literal, and
+    /// because a value a test can read is the difference between a stamp that is checked and one
+    /// that is merely written. See [`VoiceNode::rate_card_version`]: a recompute finds the card by
+    /// that number, and a posting stamped with a version no card has is a settlement nothing can
+    /// re-derive.
+    fn posting_stamp(&self) -> crate::root::durability::PostingStamp {
+        crate::root::durability::PostingStamp {
+            rate_card_version: self.node.rate_card_version,
+            wall: self.epoch,
+            mono: self.node.tick(),
+        }
     }
 
     /// Seal one record onto the record chain.
@@ -2088,7 +2113,9 @@ impl VoiceUnit<'_> {
                 tier_bp: busbar_unit_admission::STANDARD_TIER_BP,
                 fee_count,
                 currency: String::new(),
-                rate_card_version: 0,
+                // The same number the posting stamp carries, off the same field. The record and
+                // the posting priced under one card, so they name one card.
+                rate_card_version: self.node.rate_card_version,
                 bucket_chain_ref: String::new(),
             },
             controls: busbar_unit_audit::record::Controls::default(),
@@ -2348,6 +2375,7 @@ mod tests {
             ),
             durability,
             io,
+            rate_card_version: 0,
             origin: Kernel::new().origin(busbar_caps::OriginKind::Client),
         })
     }
@@ -3745,6 +3773,11 @@ mod tests {
     // The hold's five acts, on this plane
     // -----------------------------------------------------------------------------------------
 
+    /// The version of the card [`priced_node`] composes. Any non-zero number; what matters is that
+    /// it is not the zero a deployment with no card stamps, so a stamp that ignored the node's own
+    /// composition would be visible.
+    const TEST_RATE_CARD_VERSION: u64 = 7;
+
     /// A node whose card prices the dialect, so a turn's estimate is a figure rather than a zero.
     fn priced_node(io: VoiceIo) -> VoiceNode {
         let mut node = node(io);
@@ -3754,6 +3787,9 @@ mod tests {
             busbar_unit_admission::RateNanos::from_micros_per_token(2.0, 5.0, 0.0, 0.0),
         );
         node.pricer = Pricer::with_card(0, rates);
+        // A card has a version, and a posting priced by it names that version rather than the zero
+        // that means "no card was configured".
+        node.rate_card_version = TEST_RATE_CARD_VERSION;
         node
     }
 
@@ -4331,6 +4367,54 @@ mod tests {
         );
     }
 
+    /// **A POSTING NAMES THE CARD THAT PRICED IT.**
+    ///
+    /// Both stamp sites — the journal's posting and the record's amount — used to write a literal
+    /// zero, on a node whose card was real. A recompute finds the card by that number, so every
+    /// voice posting ever written pointed at a card that does not exist, and no replay of the money
+    /// could have been checked against the rates it was actually charged under. The two sites are
+    /// asserted together because they are two readers of one fact: a record and a posting that
+    /// disagreed about which card was in force would be a discrepancy nothing downstream can settle.
+    #[test]
+    fn a_posting_and_its_record_both_name_the_card_that_priced_them() {
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                ..TurnUsage::default()
+            });
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let kernel = Kernel::new();
+        let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(
+            unit.audit_inputs(
+                &ctx(1),
+                Outcome::Completed,
+                busbar_contract::FinishClass::TurnComplete
+            )
+            .amount
+            .rate_card_version,
+            TEST_RATE_CARD_VERSION,
+            "the record names the node's card"
+        );
+        assert_eq!(
+            unit.posting_stamp().rate_card_version,
+            TEST_RATE_CARD_VERSION,
+            "and so does the posting the journal takes"
+        );
+        let posted = end.into_posted().expect("the usage report fits the record");
+        let _ = unit
+            .settle(
+                &PrincipalId::new("acct:voice"),
+                posted,
+                &busbar_caps::DurabilityToken::mint(&seal),
+            )
+            .expect("the memory-buffered journal takes it");
+    }
+
     /// A turn that outruns the coarse estimate tops the reservation up out of the headroom its own
     /// leg offered while it ran, rather than carrying the excess. The overdraft is the last resort,
     /// not the ordinary answer to a guess that was low.
@@ -4693,6 +4777,7 @@ mod tests {
             pricer: Pricer::flat(0),
             auth: Auth::new(AuthChain::new(Vec::new(), true)),
             auth_bindings: AuthBindings::new(std::sync::Arc::new(Directory)),
+            rate_card_version: 0,
             scope: scope_policy(),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
