@@ -53,6 +53,14 @@ pub fn assert_empty_config_rejected<T>(open: impl Fn(&str) -> Result<T, String>)
         !err.is_empty(),
         "empty config must be rejected with a NON-empty, descriptive error"
     );
+    // The doc above promises the error NAMES that config is the problem, and until this assertion
+    // existed the helper only checked the string was non-empty — so "error" or "failed" passed, and
+    // the operator reading their boot log learned nothing. `config` is the word: every plugin here
+    // is being handed a settings map and refusing it.
+    assert!(
+        err.to_ascii_lowercase().contains("config"),
+        "the empty-config error must say WHAT is missing (the word `config`), got: {err}"
+    );
 }
 
 /// UNIVERSAL: a whitespace-only config string is the same as empty from the operator's point of
@@ -93,6 +101,16 @@ pub fn assert_missing_required_field_rejected<T>(
     assert!(
         !err.is_empty(),
         "config missing required field `{field_name}` must be rejected with a NON-empty error"
+    );
+    // The assertion this helper exists FOR, and which it did not previously make: centralizing a
+    // check that only asks "did it fail" is worth nothing over a plain `is_err()` at the call site.
+    // What is worth centralizing is the ruling that a rejection NAMES the field, because that is the
+    // one line the operator gets in their boot log.
+    assert!(
+        err.to_ascii_lowercase()
+            .contains(&field_name.to_ascii_lowercase()),
+        "the rejection must NAME the missing field `{field_name}` so an operator can act on it, \
+         got: {err}"
     );
 }
 
