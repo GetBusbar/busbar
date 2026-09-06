@@ -542,6 +542,9 @@ impl HoldCell {
                 } else {
                     PostingFlags::NONE
                 },
+                // A child's spend goes into the parent's open hold and carries no usage report of
+                // its own; the class the money was measured on is on the parent's settlement.
+                class: None,
             }),
             Slot::Arrival(_) | Slot::Taken => Err(accrual),
         }
@@ -640,6 +643,7 @@ pub struct Posted {
     settled: u64,
     overdraft: u64,
     flags: PostingFlags,
+    class: Option<crate::step::MeterClassId>,
 }
 
 impl Posted {
@@ -687,6 +691,7 @@ impl Posted {
             settled,
             overdraft,
             flags,
+            class: single_class(usage),
         }
     }
 
@@ -732,6 +737,9 @@ impl Posted {
             settled: accrual.amount,
             overdraft: accrual.amount,
             flags: PostingFlags::LATE_ACCRUAL.with(PostingFlags::OVERDRAFT),
+            // A late accrual carries money and no usage report: there is no line to read a class
+            // off, and inventing one would be the posting naming a meter it never measured on.
+            class: None,
         }
     }
 
@@ -771,6 +779,28 @@ impl Posted {
     pub fn flags(&self) -> PostingFlags {
         self.flags
     }
+
+    /// WHICH METER THE SETTLEMENT LANDED ON.
+    ///
+    /// The class was carried into `settle` on the usage lines and then dropped on the floor: the
+    /// posting kept the money and the flags and nothing that said what the money was measured
+    /// against. That made "every settling site posts the same class" a claim about three
+    /// constructor call sites rather than about anything an observer could read, and a site that
+    /// posted a different class produced a posting indistinguishable from one that did not.
+    ///
+    /// `None` when the report is empty or spans more than one class: a settlement across classes
+    /// has no single meter, and answering with the first line's would be a guess wearing a fact's
+    /// clothes. Every settling site the kernel has builds a one-line, single-class report.
+    pub fn class(&self) -> Option<crate::step::MeterClassId> {
+        self.class
+    }
+}
+
+/// The one class a report is entirely in, if it is in one.
+fn single_class(usage: &Usage) -> Option<crate::step::MeterClassId> {
+    let mut lines = usage.lines().iter();
+    let first = lines.next()?.class;
+    lines.all(|line| line.class == first).then_some(first)
 }
 
 /// The write-ahead log observed a durable write fail. A unit that reaches the exit with one of
