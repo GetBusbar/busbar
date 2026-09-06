@@ -364,3 +364,47 @@ fn build_info_line_format_is_locked() {
         "a plain (non-pgo-build.sh) build must self-report pgo=false; got: {line}"
     );
 }
+
+/// EVERY DIAGNOSTIC CODE IS UNIQUE ACROSS THE WHOLE CATALOG — the neutral half in
+/// `busbar-substrate-values` AND every plane catalogue the composition root installs.
+///
+/// Each half is internally consistent on its own, and neither crate can see the other: a plane
+/// numbers its codes without the neutral registry in scope, and the neutral registry is compiled
+/// long before any plane is linked. THIS binary is the only place both halves exist at once, which
+/// is why the check lives here. A collision is not cosmetic — `by_code` resolves a code to the FIRST
+/// match, so a duplicate makes one diagnostic permanently unreachable and makes `busbar explain
+/// <code>` and a rendered catalog describe the wrong failure.
+///
+/// `slug` is checked too, for the same reason: it is the other stable handle a catalog is keyed by.
+#[test]
+fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
+    // The composition root's own registration, so `all()` returns the real runtime union rather
+    // than the neutral half alone. This is the only installer in the test binary; a second call
+    // would panic by design.
+    register_diagnostics();
+
+    let all = busbar_substrate::diagnostics::all();
+    assert!(
+        !all.is_empty(),
+        "the catalog must not be empty — the walk would assert nothing"
+    );
+
+    let mut by_code: std::collections::HashMap<u16, Vec<&str>> = std::collections::HashMap::new();
+    let mut by_slug: std::collections::HashMap<&str, Vec<u16>> = std::collections::HashMap::new();
+    for d in &all {
+        by_code.entry(d.code).or_default().push(d.slug);
+        by_slug.entry(d.slug).or_default().push(d.code);
+    }
+
+    let dup_codes: Vec<_> = by_code.iter().filter(|(_, v)| v.len() > 1).collect();
+    assert!(
+        dup_codes.is_empty(),
+        "diagnostic CODES collide across the neutral and plane catalogues: {dup_codes:?}"
+    );
+
+    let dup_slugs: Vec<_> = by_slug.iter().filter(|(_, v)| v.len() > 1).collect();
+    assert!(
+        dup_slugs.is_empty(),
+        "diagnostic SLUGS collide across the neutral and plane catalogues: {dup_slugs:?}"
+    );
+}
