@@ -335,6 +335,13 @@ pub struct Rehydrated {
 pub enum TaskStoreError {
     /// The task id is not in the working set.
     NoSuchTask(String),
+    /// A task with this id is ALREADY in the working set. A submit under a live id is refused rather
+    /// than allowed to displace it: the engine's install overwrites the slot, which resets the
+    /// handle's chain position to genesis, so the displacing task's first event seals at `seq` 1 with
+    /// an empty `prev_hash` while the store already holds a chain for that id. The next read verifies
+    /// the concatenation and reports the task TAMPERED. An id collision is the caller's bug; losing a
+    /// live task's provenance is not the price for it.
+    DuplicateTask(String),
     /// The A2A codec refused the row or the move — carried as its already-rendered message.
     Domain(String),
     /// The durable write failed.
@@ -345,6 +352,9 @@ impl std::fmt::Display for TaskStoreError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TaskStoreError::NoSuchTask(id) => write!(f, "no such task `{id}`"),
+            TaskStoreError::DuplicateTask(id) => {
+                write!(f, "a task `{id}` is already in flight")
+            }
             TaskStoreError::Domain(e) => write!(f, "{e}"),
             TaskStoreError::Store(e) => write!(f, "{e}"),
         }
@@ -354,6 +364,29 @@ impl std::fmt::Display for TaskStoreError {
 /// The neutral projection helper: build the substrate engine's [`HandleMeta`] from a [`TaskRow`]. The
 /// engine reads only this projection (owner / age / terminal / cursor) to run its mechanics; the row
 /// itself it holds opaquely.
+/// THE RETENTION CLOCK A NON-TRANSITION WRITE MAY NOT RESTART. `updated_at` is not a "last touched"
+/// field: it is the ONE axis every retention rule compares against — the engine's TTL evict, its
+/// oldest-first cap evict, and `compact`'s `before` — and it is the `ts` the durable row is stored
+/// under. A task that has SETTLED has started its retention window, and a later write that is not a
+/// transition (a dispatch record, an artifact-cursor advance, a push-callback registration) must not
+/// push that window forward: a backend that keeps advancing the cursor, or a caller that re-registers
+/// a callback, would hold a completed task in the working set and in the store indefinitely, and each
+/// write would also re-sort it to the YOUNGEST end of the cap-evict order, so it would outlive tasks
+/// that settled after it.
+///
+/// So on a TERMINAL row these writes keep the timestamp the terminal transition stamped, and on an
+/// ACTIVE row they stamp `now` exactly as before. The write itself is NOT refused — a terminal
+/// transition and an artifact chunk arrive on the SAME relay event (`a2a/receive.rs`'s streaming
+/// sink transitions, then advances the cursor, for one event), and refusing the second half would
+/// drop the resume point for the last chunk of every stream that ends by settling.
+fn stamp_on(row: &TaskRow, now: u64) -> u64 {
+    if is_terminal_state(&row.state) {
+        row.updated_at
+    } else {
+        now
+    }
+}
+
 fn meta_of(row: &TaskRow) -> HandleMeta {
     HandleMeta {
         owner: row.principal.clone(),
@@ -496,12 +529,18 @@ const SWEEP_BOUNDS: SweepBounds = SweepBounds {
 /// over it. No `Debug`: the engine holds a `dyn PlaneStore`.
 pub struct TaskRegistry {
     engine: DurableHandleEngine,
+    /// THE SAME SINK THE ENGINE HOLDS, kept plane-side too. The engine's own handle is private and
+    /// its verbs are single-KIND, but the A2A durable footprint is TWO kinds — a `task` row and the
+    /// `task_event` chain hung off it — so the one operation that spans both ([`TaskRegistry::compact`])
+    /// needs the store here. Nothing else reads it: every ordinary write still goes through the engine.
+    sink: std::sync::RwLock<Option<Arc<dyn PlaneStore>>>,
 }
 
 impl Default for TaskRegistry {
     fn default() -> Self {
         Self {
             engine: DurableHandleEngine::new(),
+            sink: std::sync::RwLock::new(None),
         }
     }
 }
@@ -524,13 +563,24 @@ impl TaskRegistry {
     /// Attach the configured governance store as the DURABLE SINK. Called once at boot. With no sink
     /// the registry is a RAM cache — the `store: memory` posture.
     pub fn set_sink(&self, store: Arc<dyn PlaneStore>) {
+        *self.sink.write().unwrap_or_else(|e| e.into_inner()) = Some(store.clone());
         self.engine.set_sink(store);
+    }
+
+    /// The plane-side sink handle, for the one path that spans both A2A record kinds.
+    fn sink(&self) -> Option<Arc<dyn PlaneStore>> {
+        self.sink
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .map(Arc::clone)
     }
 
     /// TEST ONLY: drop the sink again, so a test that attached one to the process-wide [`TASKS`] leaves
     /// the registry as it found it.
     #[cfg(any(test, feature = "test-support"))]
     pub fn clear_sink_for_test(&self) {
+        *self.sink.write().unwrap_or_else(|e| e.into_inner()) = None;
         self.engine.clear_sink_for_test();
     }
 
@@ -539,6 +589,19 @@ impl TaskRegistry {
     /// left in the store. The engine drives the orchestration + tolerance; this closure supplies the
     /// A2A decode, the read-back check, the terminal-token test, and the chain verify (accumulating the
     /// plane-typed [`ChainBreak`]s), and emits the A2A diagnostics.
+    ///
+    /// ## The rehydrate applies NONE of [`SWEEP_BOUNDS`], and that is the design
+    ///
+    /// A restore loads every ACTIVE row it can read, whatever its age and however many there are: an
+    /// active task idle past [`ACTIVE_TASK_ABANDON_SECS`] is restored active, and the working set may
+    /// come back over [`MAX_RETAINED_TASKS`]. That is not an omission to be quietly patched here.
+    /// `docs/design/handle-engine-retention-sweep.md` fixes the trigger — "nothing sweeps on a read,
+    /// and nothing sweeps on a timer; every rule fires from a submit" — and sweeping on the restore
+    /// would be a sweep on a read, settling tasks as `canceled` during boot before the process has
+    /// served anything. The bounds are applied by the FIRST submit after boot, which is the engine's
+    /// documented trigger and reaches the restored rows exactly as it reaches any other. A process
+    /// that boots and never submits again never sweeps, and its working set is bounded by what was
+    /// durable at the restart rather than by these constants.
     pub fn restore_from_store(
         &self,
         store: &dyn PlaneStore,
@@ -651,7 +714,18 @@ impl TaskRegistry {
 
     /// SUBMIT a new task: record it, write it through, and open its provenance chain. The durable write
     /// happens BEFORE the task is announced as accepted; the retention sweep runs before the insert.
+    ///
+    /// A LIVE ID IS REFUSED, NEVER DISPLACED. The engine's install OVERWRITES the working-set slot,
+    /// which replaces the handle's chain position with a fresh genesis — so a second submit under an
+    /// id already in flight would open a SECOND chain at `seq` 1 with an empty `prev_hash` under a
+    /// task id the store already holds a chain for, and every later read of that task would find a
+    /// sequence break and report it TAMPERED. It would also strand the first task: its caller is still
+    /// waiting, and its row has been overwritten by the newcomer's. So the collision is refused before
+    /// any durable write happens, and the live task is untouched.
     pub fn submit(&self, row: &TaskRow, request_id: &str) -> Result<TaskRow, TaskStoreError> {
+        if self.engine.meta(&row.task_id).is_some() {
+            return Err(TaskStoreError::DuplicateTask(row.task_id.clone()));
+        }
         let row = row.clone();
         let request_id = request_id.to_string();
         self.engine
@@ -739,7 +813,8 @@ impl TaskRegistry {
             .mutate(task_id, |row, pos| {
                 let mut candidate = as_task_ref(row).clone();
                 candidate.agent_id = agent_id.clone();
-                candidate.updated_at = now;
+                // Not a transition: a settled task's retention clock is not restarted. See `stamp_on`.
+                candidate.updated_at = stamp_on(&candidate, now);
                 let ev = EventInput {
                     kind: busbar_substrate::audit::vocab::EV_DELEGATED,
                     context_id: candidate.context_id.clone(),
@@ -815,7 +890,8 @@ impl TaskRegistry {
                 }
                 let mut candidate = row.clone();
                 candidate.artifact_cursor = cursor;
-                candidate.updated_at = now;
+                // Not a transition: a settled task's retention clock is not restarted. See `stamp_on`.
+                candidate.updated_at = stamp_on(&candidate, now);
                 let ev = EventInput {
                     kind: busbar_substrate::audit::vocab::EV_ARTIFACT,
                     context_id: candidate.context_id.clone(),
@@ -853,7 +929,8 @@ impl TaskRegistry {
             .mutate(task_id, |row, _pos| {
                 let mut candidate = as_task_ref(row).clone();
                 candidate.push_callback = callback.clone().unwrap_or_default();
-                candidate.updated_at = now;
+                // Not a transition: a settled task's retention clock is not restarted. See `stamp_on`.
+                candidate.updated_at = stamp_on(&candidate, now);
                 let row_record = candidate.to_plane_record().map_err(MutateError::Store)?;
                 let meta = meta_of(&candidate);
                 Ok(Some(Mutation {
@@ -903,6 +980,13 @@ impl TaskRegistry {
 
     /// Drop a task from the WORKING SET once it is terminal, leaving its durable rows and its
     /// provenance chain in the store for the retention window. Refuses to evict an ACTIVE task.
+    ///
+    /// NO PRODUCTION CALLER, deliberately — the RAM half of the same documented posture
+    /// [`TaskRegistry::compact`] describes. The engine's submit-time sweep already evicts a terminal
+    /// task past [`TERMINAL_TASK_TTL_SECS`] and under the cap, so nothing needs to ask for one by
+    /// name; this is the by-id verb an operator surface would call, kept because the retention
+    /// batteries drive it and because deleting it would leave the sweep's own rule with no
+    /// independently testable primitive.
     pub fn evict_terminal(&self, task_id: &str) -> bool {
         self.engine.evict_if_terminal(task_id)
     }
@@ -926,10 +1010,55 @@ impl TaskRegistry {
             .sweep_now(now, SWEEP_BOUNDS, plan_abandon, report_abandon_fail)
     }
 
-    /// RETENTION: ask the store to drop terminal task rows older than `before`, and drop any matching
-    /// working-set entries. Returns how many durable rows went.
+    /// RETENTION: ask the store to drop terminal task rows older than `before`, drop any matching
+    /// working-set entries, AND take each collected task's `task_event` chain with it. Returns how
+    /// many durable TASK rows went (the events that went with them are not counted separately —
+    /// the number an operator reasons about is tasks).
+    ///
+    /// ## The chain goes WITH the row, and it cannot go by age
+    ///
+    /// An A2A task's durable footprint is TWO kinds: the `task` row and the `task_event` chain hung
+    /// off it by `parent`. `purge_plane_records_before` is single-kind, so purging `task` alone left
+    /// every collected task's events behind FOREVER — orphan rows under a parent no read path can
+    /// reach, growing without bound, which is the exact condition retention exists to prevent, and
+    /// they carry the principal, context and agent id of the task that is otherwise gone.
+    ///
+    /// The events CANNOT be collected by their own age. They share one timestamp axis with every
+    /// other task's events, and an INTERRUPT waiting on a human is the row that legitimately sits
+    /// still longest: a by-age purge of `task_event` would delete the early events of a chain whose
+    /// task is still live, and the next boot's `verify_chain` would report that surviving task
+    /// TAMPERED — turning retention into the deletion primitive the restore path already refuses to
+    /// be. So the collected set is read FIRST, from the store's own terminal-and-older-than-`before`
+    /// contract applied to the `task` rows, and each collected id's chain is deleted BY ID.
+    ///
+    /// ## No production caller — by design, and still true
+    ///
+    /// Nothing in the tree calls this. `docs/design/handle-engine-retention-sweep.md` fixes the
+    /// engine's retention as SUBMIT-DRIVEN and working-set-only ("nothing sweeps on a read, and
+    /// nothing sweeps on a timer"), and it proposes no durable-store sweep; `docs/a2a.md` says so to
+    /// operators and points them at their store's own retention policy. This is the mechanism that
+    /// documented posture names — kept and made correct, deliberately NOT wired to a caller the
+    /// design does not have.
     pub fn compact(&self, before: u64) -> StoreResult<u64> {
-        self.engine.compact(before, KIND_TASK)
+        // Read the collected set BEFORE the purge, under the SAME rule the store applies: a `task`
+        // row that is terminal and older than `before`. Read after, the rows are already gone.
+        let collected: Vec<String> = match self.sink() {
+            Some(store) => store
+                .list_plane_records(KIND_TASK, &PlaneSelector::All)?
+                .iter()
+                .filter_map(|b| TaskRow::from_body(b).ok())
+                .filter(|t| is_terminal_state(&t.state) && t.updated_at < before)
+                .map(|t| t.task_id)
+                .collect(),
+            None => Vec::new(),
+        };
+        let removed = self.engine.compact(before, KIND_TASK)?;
+        if let Some(store) = self.sink() {
+            for id in &collected {
+                store.delete_plane_record(KIND_TASK_EVENT, id)?;
+            }
+        }
+        Ok(removed)
     }
 
     /// TEST ONLY: how many working-set entries hold a chain position — trivially the working-set size,

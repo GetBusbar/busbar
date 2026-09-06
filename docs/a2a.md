@@ -364,7 +364,13 @@ At boot, `restore_from_store` walks the store's task rows (`taskstore.rs:191-239
 
 **Reads are scoped.** "No such task" and "not yours" answer the same refusal and render `403` — a distinguishable not-found would be an enumeration oracle (`taskstore.rs:30-35`, `:63-67`).
 
-> **Retention is a mechanism with no wired sweep today.** `compact(before)` exists and calls the store's purge, but there is no production call site for it in the tree (`taskstore.rs:37-40`, `:590-600`). Terminal task rows accumulate in the durable store until something outside Busbar removes them. Plan for that in your store's own retention policy.
+> **Retention is a mechanism with no wired sweep today.** `compact(before)` exists and calls the store's purge, but there is no production call site for it in the tree, and that is deliberate: `docs/design/handle-engine-retention-sweep.md` fixes the engine's retention as submit-driven and working-set-only — "nothing sweeps on a read, and nothing sweeps on a timer" — and proposes no durable-store sweep. Terminal task rows accumulate in the durable store until something outside Busbar removes them. Plan for that in your store's own retention policy.
+>
+> When `compact` **is** called, it collects a task's `task_event` chain along with its `task` row. The chain cannot be collected by its own age — an interrupt waiting on a human is the row that legitimately sits still longest, and a by-age purge of `task_event` would delete the early events of a chain whose task is still live, so the next boot's verify would report that *surviving* task tampered. So the terminal-and-older-than-`before` set is read from the `task` rows first and each collected id's chain is deleted by id.
+>
+> **The retention clock is `updated_at`, and only a transition moves it.** A dispatch record, an artifact-cursor advance and a push-callback registration all still land on a settled task — a terminal transition and the stream's last artifact chunk arrive on the same relay event — but none of them re-stamps `updated_at`, so a backend that keeps advancing the cursor cannot hold a completed task in the working set indefinitely or re-sort it to the youngest end of the eviction order.
+>
+> **A submit under a task id already in flight is refused** (`a task \`…\` is already in flight`) rather than allowed to displace the live one. Displacing it would reset the handle's chain position to genesis, so the newcomer's first event would seal at `seq` 1 under an id the store already holds a chain for, and every later read of that task would report it tampered.
 
 ---
 
