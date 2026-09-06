@@ -130,7 +130,9 @@ if [ -n "$gate_files" ]; then
     slog="$here/target/land-selftest-$stamp.log"
     case "$f" in
       *.sh)
-        if grep -q -- '--selftest' "$here/$f"; then
+        # A script ADVERTISES a self-test when it handles the flag (a `case` arm or a quoted
+        # comparison), not when its prose merely mentions one.
+        if grep -qE -- "(--selftest\)|[\"']--selftest[\"'])" "$here/$f"; then
           if ! (cd "$here" && bash "$f" --selftest >"$slog" 2>&1); then
             tail -20 "$slog" >&2
             echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; exit 1
@@ -138,7 +140,7 @@ if [ -n "$gate_files" ]; then
           n_selftests=$((n_selftests + 1))
         fi ;;
       *.py)
-        if grep -q -- '--selftest' "$here/$f"; then
+        if grep -qE -- "[\"']--selftest[\"']" "$here/$f"; then
           if ! (cd "$here" && python3 "$f" --selftest >"$slog" 2>&1); then
             tail -20 "$slog" >&2
             echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; exit 1
