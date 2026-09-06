@@ -532,6 +532,12 @@ struct Progress {
     lanes: Vec<LaneId>,
     /// What the record legs came back with.
     legs: Vec<LegResult>,
+    /// What the kernel's meter was handed while the unit ran, in nano-units.
+    ///
+    /// Written where the accrual happens and nowhere else, which is what makes it the floor rather
+    /// than a restatement of the estimate: a unit refused before the routing step accrued nothing,
+    /// and reads zero here because zero is what it moved.
+    accrued: u64,
     /// What the metering step folded.
     metered: Option<u64>,
     /// Whether the metering step disputed its own reading.
@@ -1113,7 +1119,13 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // the exit, which is why this is an accrual and not a posting — and the meter counts in the
         // nano-units the hold was reserved in, so what accrues is the priced document and never the
         // count of its bytes.
-        meter.accrue(self.priced(self.draft.request_bytes));
+        let accrued = self.priced(self.draft.request_bytes);
+        meter.accrue(accrued);
+        // The same figure, written down where the exit can read it. The kernel's meter is not
+        // readable from the evidence step, so a leg that did not record its own accrual has to
+        // report something else in its place — and the only other figure available is the estimate,
+        // which is a number about a unit that was going to run rather than one that did.
+        read_through_poison(&self.progress).accrued = accrued;
         // How far this unit's reservation may still grow, read off the same chain the door was
         // judged against. Offered here rather than at the door because it is a reading of the window
         // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
@@ -1303,7 +1315,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             located: progress
                 .metered
                 .map(|priced| priced.saturating_add(fee_nanos)),
-            accrued_floor: self.priced(self.draft.request_bytes),
+            accrued_floor: progress.accrued,
             // Nothing is required of a card that does not price this class. With a card that does,
             // the located figure is what settles and the floor is the tripwire beside it.
             locator_required: false,
@@ -1984,6 +1996,14 @@ mod tests {
         let unit = deployment.calling(None);
 
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        // The routing step first, because the floor is what the unit MOVED and this is where it
+        // moves it.
+        let _ = Units::route(
+            &unit,
+            &UnitToken::mint(&seal),
+            &a2a_ctx(),
+            &AccrualMeter::new(),
+        );
         Units::meter(
             &unit,
             &UnitToken::mint(&seal),
@@ -2019,6 +2039,56 @@ mod tests {
         assert_eq!(
             estimate.pre_tier_nanos(),
             u128::from(128 * BYTES_NANOS + fee_nanos)
+        );
+    }
+
+    /// **A refused unit posts nothing.** The floor is what the kernel COUNTED while the unit ran,
+    /// and a unit the door turned away never ran: it dialled nothing, wrote nothing and read
+    /// nothing. Reported as the request document's price anyway, every refusal on this plane —
+    /// the unauthenticated caller, the denied scope, the body this plane could not decode, the
+    /// caller over quota, the caller whose group this node does not have, and, worst of the six,
+    /// the node's own store failing under a leg — settles at that figure, estimated and overdrawn,
+    /// against a principal who was told no.
+    #[test]
+    fn a_refused_unit_settles_at_nothing_and_a_routed_one_at_what_it_moved() {
+        const BYTES_NANOS: u64 = 5_000;
+        let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+        deployment.bytes_nanos = BYTES_NANOS;
+        let who = PrincipalId::new("vk_agent");
+
+        // The fail-closed arm: a caller bound to a group this node does not have.
+        let refused = deployment.calling(None);
+        let (decision, _) = ask_the_door(&refused, &who);
+        assert_eq!(
+            decision.expect_err("no chain, no admission").reason(),
+            ReasonCode::OverBudget
+        );
+        let evidence = refused.evidence(&a2a_ctx());
+        assert_eq!(
+            evidence.accrued_floor, 0,
+            "nothing ran, so nothing was counted"
+        );
+        assert_eq!(
+            busbar_kernel::teller::settle_amount(
+                &Outcome::Refused(busbar_caps::StepName::Admit, ReasonCode::OverBudget),
+                &evidence,
+            )
+            .0,
+            0,
+            "and the table posts what the floor says"
+        );
+
+        // The same unit that got as far as the routing step DID move the request document, and
+        // that is the figure the floor carries.
+        let routed = deployment.calling(None);
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let meter = AccrualMeter::new();
+        let _ = Units::route(&routed, &UnitToken::mint(&seal), &a2a_ctx(), &meter);
+        assert_eq!(routed.evidence(&a2a_ctx()).accrued_floor, 128 * BYTES_NANOS);
+        assert_eq!(
+            meter.total(),
+            128 * BYTES_NANOS,
+            "what the leg wrote down is what it handed the kernel's meter"
         );
     }
 
