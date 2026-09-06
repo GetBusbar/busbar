@@ -147,6 +147,27 @@ for row_id, was in sorted(baseline.items()):
 PY
 }
 
+# Which legs the voice battery DECLARES but did not report on this run. The battery discovers its
+# legs from `legs/*.sh` (never an enumeration), so this reads the same directory rather than a list
+# that would rot beside it. Defined ABOVE --selftest so --selftest drives this exact function.
+#
+# Why this exists: a leg that stops emitting RESULT lines contributes no row, so it earns no owed id
+# AND no baseline entry — nothing anywhere goes red and the rig reads green having judged one leg
+# fewer. That is not hypothetical: a `voice-conform` binary older than the legs it served once
+# reported "unknown composition slice" for FOUR legs at once (see
+# testing/voice-conformance/lib/conform-bin.sh). A leg count is the only thing that catches it.
+fold_declared_leg_floor() {  # fold_declared_leg_floor <legs-dir> <reported…> -> prints unreported leg names
+  local legs_dir="$1" reported=" ${2} " f name
+  for f in "${legs_dir}"/*.sh; do
+    [ -e "$f" ] || continue
+    name="$(basename "$f" .sh)"
+    case "$reported" in
+      *" ${name} "*) continue ;;
+    esac
+    printf '%s\n' "$name"
+  done
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --bin) BIN="$2"; shift 2 ;;
@@ -216,6 +237,49 @@ if [ "$SELFTEST" = 1 ]; then
       failures=$((failures+1))
     else
       say "  ok: zero rows is red (vacuous run), never a silent pass"
+    fi
+
+    # RED 3: a DECLARED voice leg that reports no row must be named as a FAIL. Drives the REAL
+    # fold_declared_leg_floor above against a fixture legs dir, so the guard is proven to bite rather
+    # than asserted to exist.
+    local legsdir="$tmp/legs"; mkdir -p "$legsdir"
+    : >"$legsdir/alpha.sh"; : >"$legsdir/beta.sh"; : >"$legsdir/gamma.sh"
+    local missed; missed="$(fold_declared_leg_floor "$legsdir" " alpha gamma")"
+    if [ "$missed" = "beta" ]; then
+      say "  ok: a declared leg that reported no row is named (beta), not silently dropped"
+    else
+      say "  MISS: expected the unreported leg 'beta' to be named, got: ${missed:-<nothing>}"
+      failures=$((failures+1))
+    fi
+    if [ -z "$(fold_declared_leg_floor "$legsdir" " alpha beta gamma")" ]; then
+      say "  ok: a run that reported every declared leg owes no floor row"
+    else
+      say "  MISS: a fully-reported battery still produced a missing-leg row"
+      failures=$((failures+1))
+    fi
+
+    # RED 4: the SHIPPED baseline must carry a row for every SHIPPED voice leg. A leg absent from the
+    # baseline is unprotected in the other direction: `fold_baseline_regressions` has nothing to miss,
+    # so the leg can stop running forever without a single red anywhere ("new coverage" is printed,
+    # never gated -- see the BASELINE section above). This is a static check on real, shipped files.
+    if [ -s "$BASELINE" ]; then
+      local uncovered
+      uncovered="$(python3 - "$BASELINE" "${repo}/testing/voice-conformance/legs" <<'PY'
+import glob, json, os, sys
+baseline_path, legs_dir = sys.argv[1], sys.argv[2]
+with open(baseline_path, encoding="utf-8") as f:
+    rows = (json.load(f) or {}).get("rows") or {}
+legs = sorted(os.path.basename(p)[:-3] for p in glob.glob(os.path.join(legs_dir, "*.sh")))
+print(" ".join(l for l in legs if f"voice.rig|{l}" not in rows))
+PY
+)"
+      if [ -z "$uncovered" ]; then
+        say "  ok: the baseline carries a row for every declared voice leg"
+      else
+        say "  MISS: voice leg(s) declared in the tree but absent from $(basename "$BASELINE"): $uncovered"
+        say "        (they can stop running forever without going red -- rebaseline, or explain the gap)"
+        failures=$((failures+1))
+      fi
     fi
 
     rm -rf "$tmp"
@@ -574,15 +638,28 @@ PY
     owed_ids="${owed_ids} voice.rig|_fold_failed"
     return
   fi
+  local reported=""
   while IFS=$'\t' read -r kind a b c; do
     case "$kind" in
       META) say "   legs reported: $a" ;;
       ROW)
         record "voice.rig|$a" "$b" "voice rig leg: $a" "$c" >/dev/null
         owed_ids="${owed_ids} voice.rig|$a"
+        reported="${reported} ${a}"
         ;;
     esac
   done <<<"$rows"
+
+  # FLOOR: every leg the battery DECLARES must have produced a row above. See
+  # fold_declared_leg_floor() for why a missing leg is otherwise completely invisible here.
+  local missing_leg
+  while IFS= read -r missing_leg; do
+    [ -n "$missing_leg" ] || continue
+    record "voice.rig|${missing_leg}" FAIL "voice rig leg: ${missing_leg}" \
+      "declared in testing/voice-conformance/legs/${missing_leg}.sh but reported NO result row this run \
+(a leg that stops emitting is otherwise invisible to this ledger and to the baseline) -- see ${WORK}/voice.log"
+    owed_ids="${owed_ids} voice.rig|${missing_leg}"
+  done < <(fold_declared_leg_floor "${repo}/testing/voice-conformance/legs" "$reported")
 }
 
 run_mcp
