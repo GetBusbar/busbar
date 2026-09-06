@@ -272,14 +272,20 @@ impl Plane for A2aPlane {
         // knows this task by a different name. That is the ONE rewrite this protocol performs, and
         // it performs it for one reason: the identifier this node minted is not the identifier the
         // agent minted, and relaying ours would name a task the agent has never heard of.
-        let bytes = match backend_task_id(u) {
-            Some(backend) => rewrite_task_id(body, backend)?,
-            None => body.to_vec(),
+        //
+        // The unchanged case is the common one, and it owns nothing: the caller's bytes go into the
+        // arena straight from where they already are. Only the rewrite needs a buffer of its own,
+        // because only the rewrite produces bytes that did not arrive.
+        let body = match backend_task_id(u) {
+            Some(backend) => ctx
+                .arena()
+                .alloc_bytes(&rewrite_task_id(body, backend)?)
+                .map_err(|_| Encode::ArenaExhausted)?,
+            None => ctx
+                .arena()
+                .alloc_bytes(body)
+                .map_err(|_| Encode::ArenaExhausted)?,
         };
-        let body = ctx
-            .arena()
-            .alloc_bytes(&bytes)
-            .map_err(|_| Encode::ArenaExhausted)?;
         let mut envelope = TransportEnvelope::default();
         let content_type = ctx
             .arena()
