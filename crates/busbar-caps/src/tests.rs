@@ -58,6 +58,26 @@ fn usage_of(k: &Kernel, quantity: u64) -> Usage {
     .expect("one line is within the bound")
 }
 
+/// Whether the kernel keeps this step's token to itself, read off the step markers' own
+/// `KERNEL_OWNED` constants rather than off a second runtime table.
+///
+/// The exhaustive match is the proof's totality check: a step added to `StepName` stops this file
+/// compiling until its marker is named here.
+fn kernel_owned_marker(name: StepName) -> bool {
+    match name {
+        StepName::Arrival => <Arrival as Step>::KERNEL_OWNED,
+        StepName::Decode => <Decode as Step>::KERNEL_OWNED,
+        StepName::Authenticate => <Authenticate as Step>::KERNEL_OWNED,
+        StepName::Verify => <Verify as Step>::KERNEL_OWNED,
+        StepName::Approve => <Approve as Step>::KERNEL_OWNED,
+        StepName::Admit => <Admit as Step>::KERNEL_OWNED,
+        StepName::Route => <Route as Step>::KERNEL_OWNED,
+        StepName::Meter => <Meter as Step>::KERNEL_OWNED,
+        StepName::Audit => <Audit as Step>::KERNEL_OWNED,
+        StepName::Encode => <Encode as Step>::KERNEL_OWNED,
+    }
+}
+
 #[test]
 fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
     assert_eq!(StepName::ALL.len(), 10);
@@ -65,9 +85,12 @@ fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
     sorted.sort();
     assert_eq!(sorted, StepName::ALL, "the list is already in loop order");
 
+    // Who owns a step's token is the marker's own constant — the production spelling, read by the
+    // teller when it decides whether to lend the token out. The list of three is the proof's, not a
+    // second runtime table on the crate's surface that could drift from the constants.
     let kernel_owned: Vec<_> = StepName::ALL
         .iter()
-        .filter(|s| s.kernel_owned())
+        .filter(|s| kernel_owned_marker(**s))
         .copied()
         .collect();
     assert_eq!(
@@ -77,15 +100,6 @@ fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
 
     // The marker's constant and the runtime name agree, for every step.
     assert_eq!(<Admit as Step>::NAME, StepName::Admit);
-    // The marker's constant and the runtime name agree about who owns the token, for both kinds.
-    assert_eq!(
-        <Admit as Step>::KERNEL_OWNED,
-        <Admit as Step>::NAME.kernel_owned()
-    );
-    assert_eq!(
-        <Encode as Step>::KERNEL_OWNED,
-        <Encode as Step>::NAME.kernel_owned()
-    );
 
     // Under-hold is a comparison, and it starts strictly after the door.
     assert!(!StepName::Admit.under_hold());
