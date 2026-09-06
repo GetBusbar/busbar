@@ -254,16 +254,38 @@ async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     );
 }
 
-/// [`crate::server::map_status`] directly, one row per `grpc-status` code family: `Ok` is a
-/// success, `PermissionDenied` and `Internal` are the client/server halves of the failure split,
-/// and a code the table names neither of falls to `Other` rather than silently landing in one of
-/// them.
+/// [`crate::server::map_status`] directly, EVERY `grpc-status` code the protocol defines, one row
+/// each.
+///
+/// The rows that matter most are the four that used to fall to a catch-all. The two failure classes
+/// part company on money — a server-side failure is retried elsewhere and held against the
+/// destination, a client-side one is relayed to the caller as its own fault and recorded against
+/// nobody — so a code landing in the wrong one is not a labelling question. Every code is listed so
+/// the table cannot silently grow a member again.
 #[test]
 fn map_status_reads_the_grpc_status_trailer_honestly() {
     for (code, expected) in [
         (tonic::Code::Ok, StatusClass::Success),
+        // The upstream blamed the request.
+        (tonic::Code::InvalidArgument, StatusClass::ClientError),
+        (tonic::Code::NotFound, StatusClass::ClientError),
+        (tonic::Code::AlreadyExists, StatusClass::ClientError),
         (tonic::Code::PermissionDenied, StatusClass::ClientError),
+        (tonic::Code::Unauthenticated, StatusClass::ClientError),
+        (tonic::Code::FailedPrecondition, StatusClass::ClientError),
+        (tonic::Code::OutOfRange, StatusClass::ClientError),
+        (tonic::Code::ResourceExhausted, StatusClass::ClientError),
+        // The upstream blamed itself.
         (tonic::Code::Internal, StatusClass::ServerError),
+        (tonic::Code::Unavailable, StatusClass::ServerError),
+        (tonic::Code::DataLoss, StatusClass::ServerError),
+        (tonic::Code::Unimplemented, StatusClass::ServerError),
+        // gRPC's own word for a server-side failure it could not attribute — and what an HTTP 5xx
+        // with no `grpc-status` at all arrives as.
+        (tonic::Code::Unknown, StatusClass::ServerError),
+        (tonic::Code::DeadlineExceeded, StatusClass::ServerError),
+        (tonic::Code::Aborted, StatusClass::ServerError),
+        // The one code where neither side is blamed.
         (tonic::Code::Cancelled, StatusClass::Other),
     ] {
         let status = tonic::Status::new(code, "fixture");
@@ -273,6 +295,48 @@ fn map_status_reads_the_grpc_status_trailer_honestly() {
             "tonic::Code::{code:?} maps to {expected:?}"
         );
     }
+}
+
+/// The HTTP/2 driver under a dialled connection FAILING is not the peer finishing.
+///
+/// The driver holds the socket, and its outcome was thrown away: every way a connection can break —
+/// a framing the peer got wrong, a socket that died mid-call — reached the reader as the same clean
+/// end-of-stream a finished peer produces, so an aborted answer read as a complete one. The peer
+/// here commits a protocol error (a PING on a non-zero stream), which is the deterministic way to
+/// make the driver fail rather than finish.
+#[tokio::test]
+async fn a_dialled_connection_whose_driver_fails_ends_with_an_error_not_a_clean_end() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut scratch = [0_u8; 4096];
+        // The client's preface and SETTINGS.
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut scratch).await;
+        // A well-formed SETTINGS of our own, then a PING carrying a stream id — which RFC 9113
+        // makes a connection error, so the peer's driver ends failing rather than finishing.
+        let mut out = vec![0, 0, 0, 4, 0, 0, 0, 0, 0];
+        out.extend_from_slice(&[0, 0, 8, 6, 0, 0, 0, 0, 1]);
+        out.extend_from_slice(&[0; 8]);
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut sock, &out).await;
+        futures::future::pending::<()>().await;
+    });
+
+    let client_t = client_transport();
+    let keys = test_key_handle();
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+
+    let mut frames = client_t.frames(client_conn);
+    let item = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a broken driver must answer, not park")
+        .expect("a driver that FAILED is not a clean end of stream");
+    assert_eq!(
+        item.expect_err("the failure is the stream's last word"),
+        TransportError::Reset
+    );
 }
 
 #[tokio::test]
