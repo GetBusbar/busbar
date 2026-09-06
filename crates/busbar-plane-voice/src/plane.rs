@@ -816,11 +816,17 @@ fn progress_from_server_event<'u>(
         IrServerEvent::AudioFrame(f) => {
             let writer = writer_for(client_dialect);
             let media_len = f.media.len() as u64;
+            // One buffer, filled and then copied into the arena. The identifier is BORROWED from the
+            // binding the `start` event made: it is the same string on every frame of the call, and
+            // a call sends fifty frames a second, so cloning it per frame is fifty copies a second
+            // of a string that never changes.
             let rendered = match client_dialect {
                 Dialect::TwilioMediaStreams => {
                     let mulaw = ulaw::encode_frame(&f.media);
-                    let sid = state.twilio_stream_sid.clone().unwrap_or_default();
-                    twilio::encode_media(&sid, &mulaw)
+                    let sid = state.twilio_stream_sid.as_deref().unwrap_or_default();
+                    let mut out = Vec::new();
+                    twilio::encode_media_into(&mut out, sid, &mulaw);
+                    out
                 }
                 _ => writer
                     .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
