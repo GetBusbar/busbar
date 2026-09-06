@@ -1674,8 +1674,9 @@ jobs:
           # never quietly disagree about what "the harness changed" means.
           rev=$(bash testing/shadow-oracle/harness-rev.sh | awk '{print $2}' | cut -c1-16)
           echo "key=oracle-golden-${digest:0:12}-${rev}" >> "$GITHUB_OUTPUT"
-      - name: Cache the golden recording and the 1.5.5 artifacts
-        uses: actions/cache@v4
+      - name: Restore the golden recording and the 1.5.5 artifacts
+        id: restore-golden
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cache/busbar-oracle
@@ -1708,6 +1709,14 @@ jobs:
           if [ -s target/oracle/recordings/golden/ledger.tsv ]; then echo "golden cached"; exit 0; fi
           mkdir -p target/oracle/recordings/golden
           bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out target/oracle/recordings/golden
+      - name: Save the golden recording and the 1.5.5 artifacts
+        if: always() && steps.restore-golden.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cache/busbar-oracle
+            target/oracle/recordings/golden
+          key: ${{ steps.rev.outputs.key }}
       - name: Record the candidate
         run: |
           set -euo pipefail
