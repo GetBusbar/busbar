@@ -278,6 +278,25 @@ jobs:
       # rows unchanged. Its eight cases each construct one malformation and require it be refused.
       - name: Artifact-contract wholeness self-test
         run: python3 scripts/verify-artifact.py --selftest
+      # ARTIFACT CONTRACT coverage. --selftest above proves the contract-wholeness GUARDS
+      # discriminate; it says nothing about whether every declared row actually gets a pipeline leg
+      # that runs it. --coverage reports that: today it exits 1, because the five image-target rows
+      # (image_boots_documented_quickstart, image_runs_as_nonroot, image_release_pubkey,
+      # image_version_anchored, image_matches_packaged_binary) are declared in
+      # .github/artifact-contract.json but no job invokes the verifier with --target
+      # image-linux-amd64/arm64 against a real digest. `continue-on-error: true` here so this step
+      # is REPORTING, not gating -- it names a gap that already exists rather than reddening every
+      # run on a fact nobody has wired a fix for yet. What makes it gating: once release-stage.yml
+      # (see the `--target image-linux-*` leg added there) actually exercises those five rows on
+      # every release, this step's exit code stops being informative-only and this
+      # `continue-on-error: true` (and the matching `# non-gating:` line below) should be deleted so
+      # a regression here reds CI again.
+      - name: Artifact-contract coverage (report-only until release-stage runs the image rows)
+        continue-on-error: true
+        run: python3 scripts/verify-artifact.py --coverage
+      # non-gating: structure-lint -- the "Artifact-contract coverage" step above is continue-on-error
+      # because the image-target rows it reports on have no pipeline leg yet (see release-stage.yml);
+      # structure-lint itself still gates via ci-umbrella.needs on every other step in this job.
       # RELEASE-CHECK VERDICT ACCOUNTING. release-check.sh used to end with an unconditional
       # "RELEASE GATE PASSED" banner even when phases had not run at all, so a green gate did not
       # prove those phases executed. This selftest proves the two are now distinguishable: a
