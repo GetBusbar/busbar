@@ -27,13 +27,19 @@ fn b64(bytes: &[u8]) -> String {
     busbar_substrate_values::media::base64_encode(bytes)
 }
 
+/// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer drops the
+/// concepts Gemini has no word for; every use of this helper is a concept it does frame.
+fn up<W: DuplexWriter>(codec: &W, ev: IrClientEvent) -> WireEvent {
+    codec.write_up(ev).expect("the dialect frames this concept")
+}
+
 /// Decode one client wire event, re-encode it, and assert the JSON is BYTE-stable (one IR event).
 fn roundtrip_up(src: &Value) -> Vec<IrClientEvent> {
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
     let ir = codec.read_up(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
-    let back = codec.write_up(ir[0].clone());
+    let back = up(&codec, ir[0].clone());
     assert_eq!(as_value(&back), *src, "up round-trip not stable");
     ir
 }
@@ -119,7 +125,7 @@ fn setup_is_ir_fixpoint_across_reencode() {
     let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config: cfg1 }) = &ir[0] else {
         panic!();
     };
-    let back = codec.write_up(ir[0].clone());
+    let back = up(&codec, ir[0].clone());
     let ir2 = codec.read_up(back, &mut DecodeState::default());
     let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config: cfg2 }) = &ir2[0] else {
         panic!();
@@ -132,7 +138,7 @@ fn setup_reencode_produces_gemini_shape() {
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
     let ir = codec.read_up(wire(&gemini_setup().to_string()), &mut st);
-    let back = as_value(&codec.write_up(ir[0].clone()));
+    let back = as_value(&up(&codec, ir[0].clone()));
     let s = &back["setup"];
     assert_eq!(s["model"], "models/gemini-2.0-flash-exp");
     assert_eq!(
@@ -273,7 +279,7 @@ fn setup_drops_unmapped_generation_params() {
         }
     });
     let ir = codec.read_up(wire(&src.to_string()), &mut st);
-    let back = as_value(&codec.write_up(ir[0].clone()));
+    let back = as_value(&up(&codec, ir[0].clone()));
     assert!(back["setup"]["generationConfig"]
         .get("temperature")
         .is_none());
@@ -396,7 +402,7 @@ fn realtime_input_ga_audio_is_ir_fixpoint() {
         ),
         &mut DecodeState::default(),
     );
-    let back = codec.write_up(ir1[0].clone());
+    let back = up(&codec, ir1[0].clone());
     let ir2 = codec.read_up(back, &mut DecodeState::default());
     let (IrClientEvent::AudioFrame(f1), IrClientEvent::AudioFrame(f2)) = (&ir1[0], &ir2[0]) else {
         panic!("expected AudioFrame on both decodes");
@@ -488,14 +494,47 @@ fn input_audio_commit_round_trips_to_audio_stream_end() {
     // The encode side is the mirror: InputAudioCommit → `realtimeInput.audioStreamEnd` → decode back
     // to InputAudioCommit (IR-fixpoint stable), the property the conformance harness now asserts.
     let codec = GeminiLiveCodec;
-    let up = codec.write_up(IrClientEvent::Control(IrDuplexControl::InputAudioCommit));
+    let framed = up(
+        &codec,
+        IrClientEvent::Control(IrDuplexControl::InputAudioCommit),
+    );
     let mut st = DecodeState::default();
-    let back = codec.read_up(up, &mut st);
+    let back = codec.read_up(framed, &mut st);
     assert_eq!(back.len(), 1);
     assert!(matches!(
         &back[0],
         IrClientEvent::Control(IrDuplexControl::InputAudioCommit)
     ));
+}
+
+#[test]
+fn the_uplink_verbs_gemini_has_no_word_for_frame_nothing() {
+    // The map's asymmetry rows: cancel/clear/delete/truncate/per-response-overrides are DROPPED toward
+    // Gemini. An empty `realtimeInput` frame is not a drop — it is a real message that carries none of
+    // the cancel semantics and would be sent upstream as if the concept had survived.
+    let codec = GeminiLiveCodec;
+    for ev in [
+        IrDuplexControl::ResponseCancel,
+        IrDuplexControl::InputAudioClear,
+        IrDuplexControl::ItemDelete {
+            item_ref: "item_1".into(),
+        },
+        IrDuplexControl::ItemTruncate {
+            item_ref: "item_1".into(),
+            content_index: 0,
+            audio_played_ms: 240,
+        },
+        IrDuplexControl::ResponseCreate { response: None },
+    ] {
+        assert!(
+            codec.write_up(IrClientEvent::Control(ev.clone())).is_none(),
+            "{ev:?} has no Gemini verb and must frame nothing"
+        );
+    }
+    // The concepts Gemini DOES have still frame.
+    assert!(codec
+        .write_up(IrClientEvent::Control(IrDuplexControl::InputAudioCommit))
+        .is_some());
 }
 
 // ── serverContent (downlink audio, turn/interrupt) ───────────────────────────────────────────────
@@ -696,7 +735,7 @@ fn tool_response_maps_to_call_result_and_roundtrips() {
     assert_eq!(payload, json!({ "temp": 72 }));
 
     // And it re-frames back to a Gemini toolResponse with the same id + payload.
-    let back = as_value(&codec.write_up(ir[0].clone()));
+    let back = as_value(&up(&codec, ir[0].clone()));
     assert_eq!(back, src, "toolResponse round-trip is byte-stable");
 }
 

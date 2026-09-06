@@ -42,6 +42,17 @@ pub struct Outbound {
     pub close: bool,
 }
 
+impl Outbound {
+    /// Queue one framed uplink event, honoring a DIALECT DROP: the writer answers `None` when the
+    /// upstream dialect has no verb for the concept (a Gemini upstream has no `response.cancel`), and
+    /// nothing is what a dropped concept must put on the wire.
+    fn push_up(&mut self, framed: Option<WireEvent>) {
+        if let Some(w) = framed {
+            self.upstream.push(w);
+        }
+    }
+}
+
 /// ONE IN-FLIGHT SERVER-SIDE TOOL CALL, correlated by [`CallRef`] and accumulated across the
 /// `CallOpen → CallArgs* → CallClose` frames the model streams (`plane4-duplex-session.md` §2.2). The raw `call_id` is kept so the
 /// stateless writer can re-frame the `function_call_output` without consulting the map.
@@ -168,7 +179,7 @@ where
                         if close {
                             // Budget dry (or the lease refused / faulted / unpriced): cancel the in-flight
                             // response upstream and demand a hard close.
-                            out.upstream.push(
+                            out.push_up(
                                 self.codec.write_up(IrClientEvent::Control(
                                     IrDuplexControl::ResponseCancel,
                                 )),
@@ -179,18 +190,17 @@ where
                     // ── barge-in: cancel + truncate at the audio the user actually heard (`plane4-duplex-session.md` §2.3) ────
                     IrServerEvent::SpeechStarted { item_id, .. } => {
                         let heard_ms = inner.decode.flush_playback();
-                        out.upstream.push(
+                        out.push_up(
                             self.codec
                                 .write_up(IrClientEvent::Control(IrDuplexControl::ResponseCancel)),
                         );
-                        out.upstream
-                            .push(self.codec.write_up(IrClientEvent::Control(
-                                IrDuplexControl::ItemTruncate {
-                                    item_ref: item_id.clone(),
-                                    content_index: 0,
-                                    audio_played_ms: heard_ms,
-                                },
-                            )));
+                        out.push_up(self.codec.write_up(IrClientEvent::Control(
+                            IrDuplexControl::ItemTruncate {
+                                item_ref: item_id.clone(),
+                                content_index: 0,
+                                audio_played_ms: heard_ms,
+                            },
+                        )));
                         // The client still hears the barge-in acknowledgement.
                         out.downlink
                             .push(self.codec.write_down(IrServerEvent::SpeechStarted {
@@ -256,7 +266,7 @@ where
         // model to continue.
         for (call_ref, call_id, name, args) in to_exec {
             let output = self.tools.execute(&name, &args).await;
-            out.upstream.push(
+            out.push_up(
                 self.codec
                     .write_up(IrClientEvent::Tool(IrDuplexTool::CallResult {
                         call_ref,
@@ -264,10 +274,9 @@ where
                         output: Bytes::from(output),
                     })),
             );
-            out.upstream
-                .push(self.codec.write_up(IrClientEvent::Control(
-                    IrDuplexControl::ResponseCreate { response: None },
-                )));
+            out.push_up(self.codec.write_up(IrClientEvent::Control(
+                IrDuplexControl::ResponseCreate { response: None },
+            )));
         }
 
         if out.close {
@@ -293,15 +302,14 @@ where
                 // holds a locked config, re-apply THAT; otherwise pass the client's through.
                 IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) => {
                     let effective = self.locked_config.clone().unwrap_or(config);
-                    out.upstream
-                        .push(self.codec.write_up(IrClientEvent::Control(
-                            IrDuplexControl::SessionConfigure { config: effective },
-                        )));
+                    out.push_up(self.codec.write_up(IrClientEvent::Control(
+                        IrDuplexControl::SessionConfigure { config: effective },
+                    )));
                 }
                 // Everything else forwards verbatim (audio uplink, commits, item ops, tool results the
                 // plane itself authored are not re-authored here).
                 ev => {
-                    out.upstream.push(self.codec.write_up(ev));
+                    out.push_up(self.codec.write_up(ev));
                 }
             }
         }

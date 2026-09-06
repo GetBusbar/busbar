@@ -335,8 +335,15 @@ pub trait DuplexReader {
 /// IR → WIRE. Re-frames the plane's neutral IR back onto a dialect's wire, in both directions.
 /// Stateless — every field needed to frame is carried in the IR (tool `call_id`, audio `media`).
 pub trait DuplexWriter {
-    /// Re-frame a client→server event onto the UPSTREAM dialect's wire.
-    fn write_up(&self, ev: IrClientEvent) -> WireEvent;
+    /// Re-frame a client→server event onto the UPSTREAM dialect's wire, or `None` when the dialect has
+    /// NO VERB for the concept.
+    ///
+    /// The uplink is where the cross-dialect map's drop rows live (an OpenAI `response.cancel` or
+    /// `input_audio_buffer.clear` has no Gemini twin), and a dropped concept must produce NOTHING: a
+    /// stand-in frame carrying none of the semantics is indistinguishable, upstream, from the concept
+    /// having survived. `None` IS the warn — this crate links no logging surface, so the caller that
+    /// sees the drop is the one positioned to report it.
+    fn write_up(&self, ev: IrClientEvent) -> Option<WireEvent>;
 
     /// Re-frame a server→client event onto the CLIENT dialect's wire.
     fn write_down(&self, ev: IrServerEvent) -> WireEvent;
@@ -554,7 +561,9 @@ fn extract_usage(u: &Value) -> IrDuplexUsage {
 // ── writer ──────────────────────────────────────────────────────────────────────────────────────
 
 impl DuplexWriter for OpenAiRealtimeCodec {
-    fn write_up(&self, ev: IrClientEvent) -> WireEvent {
+    /// The OpenAI Realtime dialect is the one every shared-IR concept was named from, so it frames
+    /// EVERY client event — this writer never drops.
+    fn write_up(&self, ev: IrClientEvent) -> Option<WireEvent> {
         let v = match ev {
             IrClientEvent::AudioFrame(f) => json!({
                 "type": wire::INPUT_AUDIO_APPEND,
@@ -626,7 +635,7 @@ impl DuplexWriter for OpenAiRealtimeCodec {
                 }),
             },
         };
-        wire_of(&v)
+        Some(wire_of(&v))
     }
 
     fn write_down(&self, ev: IrServerEvent) -> WireEvent {

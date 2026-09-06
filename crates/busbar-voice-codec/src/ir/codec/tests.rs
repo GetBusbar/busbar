@@ -25,13 +25,19 @@ fn b64(bytes: &[u8]) -> String {
     busbar_substrate_values::media::base64_encode(bytes)
 }
 
+/// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer may drop
+/// a concept a dialect has no word for; the OpenAI dialect names them all, so this never trips here.
+fn up<W: DuplexWriter>(codec: &W, ev: IrClientEvent) -> WireEvent {
+    codec.write_up(ev).expect("the dialect frames this concept")
+}
+
 /// Decode one client wire event, re-encode it, and assert the JSON is stable.
 fn roundtrip_up(src: &Value) -> Vec<IrClientEvent> {
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
     let ir = codec.read_up(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
-    let back = codec.write_up(ir[0].clone());
+    let back = up(&codec, ir[0].clone());
     assert_eq!(as_value(&back), *src, "up round-trip not stable");
     ir
 }
@@ -685,7 +691,7 @@ fn function_call_output_authoring_roundtrips() {
         call_id: "call_abc".into(),
         output: Bytes::from_static(b"{\"temp\":72}"),
     });
-    let w = codec.write_up(result);
+    let w = up(&codec, result);
     let v = as_value(&w);
     assert_eq!(v["type"], "conversation.item.create");
     assert_eq!(v["item"]["type"], "function_call_output");

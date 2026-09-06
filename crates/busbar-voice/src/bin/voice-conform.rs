@@ -191,8 +191,10 @@ fn reencode_up<C: DuplexReader + DuplexWriter>(
     let mut st = DecodeState::default();
     let mut ir2 = Vec::new();
     for e in ir1 {
-        let w = codec.write_up(e.clone());
-        ir2.extend(codec.read_up(w, &mut st));
+        // A concept the dialect has no verb for frames NOTHING; it re-decodes to nothing too.
+        if let Some(w) = codec.write_up(e.clone()) {
+            ir2.extend(codec.read_up(w, &mut st));
+        }
     }
     ir2
 }
@@ -389,8 +391,11 @@ fn replay_decode<C: DuplexReader + DuplexWriter>(
                 let irs = codec.read_up(wire_of(ev), &mut st);
                 for ir in &irs {
                     decoded += 1;
-                    let w = codec.write_up(ir.clone());
-                    if !val_of(&w).is_null() {
+                    // A dropped concept frames nothing at all — that is not a re-encode.
+                    if codec
+                        .write_up(ir.clone())
+                        .is_some_and(|w| !val_of(&w).is_null())
+                    {
                         reencoded += 1;
                     }
                 }
@@ -547,8 +552,11 @@ where
             let mut st = DecodeState::default();
             let mut n2 = Vec::new();
             for e in ir {
-                let w = to.write_up(client_from_norm_passthrough(e));
-                n2.extend(norm_up(&to.read_up(w, &mut st)));
+                // The destination dialect may have no verb for the concept: it frames nothing, and
+                // nothing is what the bridged side then carries (the map's documented drop).
+                if let Some(w) = to.write_up(client_from_norm_passthrough(e)) {
+                    n2.extend(norm_up(&to.read_up(w, &mut st)));
+                }
             }
             (n1, n2)
         }

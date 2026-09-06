@@ -225,7 +225,11 @@ impl Plane for VoicePlane {
         };
 
         let writer = writer_for(upstream_dialect);
-        let out = writer.write_up(client_event);
+        // The upstream dialect may have NO verb for this concept (the cross-dialect drop rows): then
+        // nothing is relayed — the same answer a lifecycle frame handled fully at decode gives.
+        let Some(out) = writer.write_up(client_event) else {
+            return Ok(None);
+        };
         ctx.arena()
             .alloc_bytes(&out.0)
             .map(Some)
