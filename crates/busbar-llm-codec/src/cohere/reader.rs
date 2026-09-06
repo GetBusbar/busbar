@@ -753,7 +753,12 @@ impl ProtocolReader for CohereReader {
             // leading tool-plan's tool-call-start), a later text frame must NOT reopen it. A failed
             // guard falls through to the `other` no-op arm and is dropped, keeping the egress balanced
             // (no second content_block_start / delta into a stopped index).
-            ET_CONTENT_START if !state.text_block_closed => {
+            // NOT guarded on `!text_block_closed`. A Cohere v2 stream may carry MORE THAN ONE content
+            // block — each `content-start` names its own wire `index` — and the one-way latch made
+            // the first `content-end` discard everything the model said afterwards. The latch's real
+            // job is to stop a STRAY delta from reopening a stopped index; an explicit `content-start`
+            // is the upstream saying a NEW block begins, so it opens one at a fresh IR index instead.
+            ET_CONTENT_START => {
                 // The text content block claims a DYNAMIC IR index by order of first appearance
                 // (`cohere_text_ir_index`), NOT a hardcoded 0: a `tool-call-start` that arrived
                 // before any content frame already took 0, and forcing text to 0 here produced two
@@ -763,8 +768,15 @@ impl ProtocolReader for CohereReader {
                 // clears the live flag. The raw upstream wire `index` is still
                 // never forwarded into the IR stream.
                 if !state.text_block_open {
+                    // A block that opens after a previous one CLOSED claims a fresh slot; the first
+                    // one claims by order of first appearance, as it always did.
+                    let ti = if state.text_block_closed {
+                        state.text_block_closed = false;
+                        cohere_reopen_text_ir_index(state)
+                    } else {
+                        cohere_text_ir_index(state)
+                    };
                     state.text_block_open = true;
-                    let ti = cohere_text_ir_index(state);
                     out.push(IrStreamEvent::BlockStart {
                         index: ti,
                         block: crate::ir::IrBlockMeta::Text,
