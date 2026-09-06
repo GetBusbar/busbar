@@ -356,7 +356,7 @@ pub fn meter(
                 posted = true;
             }
             row = Some(metering_row(sink, lane, reported));
-            priced_nanos = price_against(ctx.host, sink, lane, &tier);
+            priced_nanos = price_against(ctx.host, &sink.cost, lane, &tier);
         }
     }
 
@@ -435,12 +435,11 @@ pub fn meter(
 /// two amounts on two books. One expression, called twice, cannot.
 pub(crate) fn price_against(
     host: &Arc<dyn EngineHost>,
-    sink: &crate::engine::UsageSink,
+    card: &busbar_substrate::plane_host::CostHandle,
     lane: &crate::engine::Lane,
     tier: &busbar_substrate::billing::Usage,
 ) -> u128 {
-    host.cost_price_usage(&sink.cost, &lane.model, tier)
-        .unwrap_or(0)
+    host.cost_price_usage(card, &lane.model, tier).unwrap_or(0)
 }
 
 /// One line, if the tier carries anything. A zero-quantity line is not a fact about anything.

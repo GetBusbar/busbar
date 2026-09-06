@@ -93,6 +93,16 @@ struct Carry {
     facts: Option<MeterFacts>,
     /// The meter half the walk handed back unspent.
     meter_sink: Option<crate::engine::UsageSink>,
+    /// THE CARD THIS UNIT WAS ADMITTED UNDER, kept for a reading taken after the unit has ended.
+    ///
+    /// The sink itself cannot be kept. It carries the admission's in-flight grant, whose `Drop` on
+    /// the LAST clone is what releases the `concurrent` gauges — so a clone held for the length of
+    /// the response body would hold a deployment's concurrency leases open past the moment the
+    /// previous release releases them, which is an observable change and not one this seam is
+    /// allowed to make. The card is the one thing off the sink a late pricing needs, it is an opaque
+    /// handle with no drop of its own, and it is the SAME card: pinned when the hold opened at the
+    /// door, so a request that opened before a reload is still priced on the rates it agreed to.
+    card: Option<busbar_substrate::plane_host::CostHandle>,
     /// Whether the Meter step made the accrual itself rather than sealing the walk's.
     posted_here: bool,
     /// What the Meter step said about the fee and the refund.
@@ -325,6 +335,9 @@ impl Walk {
         carry.charged = admitted.charged;
         carry.effective = admitted.effective_pool;
         carry.upstream_candidate = admitted.upstream_candidate;
+        // The card, off the sink and before the walk takes it — see `Carry::card` for why the sink
+        // itself cannot be the thing that is kept.
+        carry.card = admitted.sink.as_ref().map(|s| s.cost.clone());
         carry.sink = admitted.sink;
         if let Some(resp) = admitted.refusal {
             carry.pending = Some(Served::of(resp));
@@ -426,10 +439,15 @@ impl Walk {
     /// accrual seam again here would bill the same tokens twice. What this produces is a reading, for
     /// a second book to post onto.
     ///
+    /// The card is the one the admission pinned at the door and NOT the sink, which by this point no
+    /// longer exists on this side: the walk takes the sink and its taps are where the accrual is
+    /// made, so a reading that waited for the sink to come back would wait forever on every routed
+    /// unit — which is exactly what the metering step's own zero was.
+    ///
     /// `None` where there is nothing to post: the cell is still empty, the Route step never ran, no
-    /// lane answered, or the walk held no sink to price against. A response the tap marked as billing
-    /// failed prices at zero, which is what the plane bills for it — the figures seen before a
-    /// terminal error are evidence and not a charge.
+    /// lane answered, or the unit was admitted under no card at all. A response the tap marked as
+    /// billing failed prices at zero, which is what the plane bills for it — the figures seen before
+    /// a terminal error are evidence and not a charge.
     #[must_use]
     pub fn priced_after_terminal(&self, tap: &Tap) -> Option<LateFigure> {
         let report = tap.0.get()?;
@@ -438,7 +456,7 @@ impl Walk {
         facts.fold(report);
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i))?;
-        let sink = carry.meter_sink.as_ref()?;
+        let card = carry.card.as_ref()?;
         // A terminal error, an abort or a cut transfer bills ZERO and the tier is empty, so the
         // reading is zero rather than absent: this response reached a lane and consumed nothing the
         // node will charge for, which is a different statement from "no reading could be taken".
@@ -452,7 +470,7 @@ impl Walk {
                 .unwrap_or_default()
         };
         Some(LateFigure {
-            priced_nanos: crate::unit::meter::price_against(&self.host, sink, lane, &tier),
+            priced_nanos: crate::unit::meter::price_against(&self.host, card, lane, &tier),
             lane: lane.model.clone(),
             provider: lane.provider.clone(),
         })
