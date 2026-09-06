@@ -1353,6 +1353,52 @@ impl<'n> VoiceUnit<'n> {
         .headroom_nanos(chain)
     }
 
+    /// **WHAT THIS UNIT DELIVERED IS WORTH, IN NANO-UNITS** — the money figure, priced against the
+    /// node's own card, before it is ever offered as evidence.
+    ///
+    /// This is the step the settlement was missing. The exit path hands the located figure to
+    /// `Posted::settle(hold, priced_nanos, ..)`, whose second argument is nano-units — the same
+    /// unit the door's reservation is in — and what it was being handed was a raw TOKEN COUNT. A
+    /// card pricing output at five micro-units a token therefore settled a hundred-and-twenty-token
+    /// answer at 120 against a reservation of twenty million, released the difference, and billed a
+    /// five-thousandth of what the operator's rate card says the turn cost. The reservation and the
+    /// settlement were being compared in two different units, so no cap and no overdraft flag could
+    /// have caught it: 120 is inside every reservation there is.
+    ///
+    /// Priced HERE, once, and read by both the located figure and the kernel's accrual floor, so the
+    /// floor and the settlement are the same kind of number. The reserved four are what a rate card
+    /// is written in, so this plane's classes fold onto them: what the model emitted prices at the
+    /// output rate, what the turn consumed at the input rate, and what the upstream served from its
+    /// cache at the cache-read rate. `audio_ms_in` is deliberately absent — it is a duration the
+    /// plane derived from frame byte counts, not a class any card prices.
+    fn priced_nanos(&self) -> u64 {
+        let rate = self
+            .node
+            .pricer
+            .rate_for(self.dialect.name())
+            .unwrap_or_default();
+        let mut units = std::collections::BTreeMap::new();
+        units.insert(
+            busbar_api::UNIT_INPUT.to_string(),
+            self.usage
+                .audio_tokens_in
+                .saturating_add(self.usage.text_tokens_in),
+        );
+        units.insert(
+            busbar_api::UNIT_OUTPUT.to_string(),
+            self.usage
+                .audio_tokens_out
+                .saturating_add(self.usage.text_tokens_out),
+        );
+        units.insert(
+            busbar_api::UNIT_CACHE_READ.to_string(),
+            self.usage.cached_tokens,
+        );
+        // The fold saturates in u128 and pins here: an astronomically over-cap figure blocks, and a
+        // wrapped one would land near zero and read as free.
+        u64::try_from(rate.reserved_nanos(&units)).unwrap_or(u64::MAX)
+    }
+
     /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
     /// and every later frame is allowed against.
     fn session_opening_nanos(&self) -> u64 {
@@ -1651,7 +1697,11 @@ impl Units for VoiceUnit<'_> {
         // zero opens the leg, which is why the dial is here and under this shape's arm alone — a
         // second dial per turn would be a second socket per sentence.
         if !self.shape.is_handshake() {
-            let spent = self.usage.audio_ms_in;
+            // THE ACCRUAL IS MONEY, so it is the priced figure and not the millisecond count it
+            // used to be. What the kernel counts here becomes `accrued_floor`, which the exit path
+            // reads as a settlement in nano-units when nothing was located — so a raw duration here
+            // was a duration being posted as a currency amount.
+            let spent = self.priced_nanos();
             self.accrued.fetch_add(spent, Ordering::AcqRel);
             meter.accrue(spent);
             // How far this turn's reservation may still grow, read off the same chain the door was
@@ -1764,12 +1814,11 @@ impl Units for VoiceUnit<'_> {
             located: if self.awaiting.load(Ordering::Acquire) {
                 None
             } else {
-                self.usage
-                    .audio_tokens_out
-                    .checked_add(0)
-                    .filter(|n| *n > 0)
+                Some(self.priced_nanos()).filter(|n| *n > 0)
             },
-            // What the kernel counted while the unit ran. The floor is evidence, never a charge.
+            // What the kernel counted while the unit ran, in the same nano-units the figure above
+            // is in. The floor is evidence, never a charge — but a floor in one unit under a
+            // settlement in another is not evidence of anything.
             accrued_floor: self.accrued.load(Ordering::Acquire),
             locator_required: false,
             terminal_error: false,
@@ -2716,8 +2765,8 @@ mod tests {
         assert_eq!(end.outcome(), Outcome::Completed);
         assert_eq!(
             end.into_posted().expect("the report fits").settled(),
-            120,
-            "the frame that emptied the lease is charged exactly what it delivered"
+            120 * 5_000,
+            "the frame that emptied the lease is charged what its card prices what it delivered at"
         );
 
         // And the next frame on that session does not get in.
@@ -3826,13 +3875,20 @@ mod tests {
             TURN_OPENING_TOKENS * 5_000,
             "what the door reserved"
         );
-        // What the settlement table posts is what the destination REPORTED, not what the kernel's
-        // meter counted; the accrual is the floor beside it, and the hold carries both.
-        assert_eq!(posted.settled(), 120, "what the upstream reported");
+        // What the settlement table posts is what the destination reported, PRICED — the settlement
+        // is in the nano-units the reservation above is in, and a token count posted into it would
+        // be a figure a five-thousandth of the size, inside every reservation there is and
+        // therefore invisible to every cap and every overdraft flag. The accrual is the floor
+        // beside it, in the same units, and the hold carries both.
+        assert_eq!(
+            posted.settled(),
+            120 * 5_000,
+            "the 120 output tokens the upstream reported, at the card's five micro-units each"
+        );
         assert_eq!(posted.overdraft(), 0, "well inside the reservation");
         assert_eq!(
             posted.released(),
-            TURN_OPENING_TOKENS * 5_000 - 120,
+            TURN_OPENING_TOKENS * 5_000 - 120 * 5_000,
             "and the residual the settlement hands back"
         );
 
@@ -3842,7 +3898,7 @@ mod tests {
             .expect("the memory-buffered journal takes it");
         assert_eq!(
             settled.settlement.released,
-            i128::from(TURN_OPENING_TOKENS * 5_000 - 120)
+            i128::from(TURN_OPENING_TOKENS * 5_000 - 120 * 5_000)
         );
         assert!(settled.overdraft.is_none());
 
@@ -3852,7 +3908,10 @@ mod tests {
             busbar_unit_admission::window::WINDOW_DAY,
             1_700_000_000,
         );
-        assert_eq!(durability.ledger.book().get(&key, window).settled, 120);
+        assert_eq!(
+            durability.ledger.book().get(&key, window).settled,
+            120 * 5_000
+        );
         let replayed = durability
             .journal
             .replay()
@@ -3875,9 +3934,11 @@ mod tests {
         let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
             .charging_through(ungoverned())
             .reporting(TurnUsage {
-                audio_tokens_out: 3,
-                // Far past what the door sized for, and the chain this node runs caps nothing.
-                audio_ms_in: reserved + 12_345,
+                // Three tokens past what the door sized for, which at this card's output rate is
+                // fifteen thousand nano-units past the reservation. The overrun is expressed in
+                // tokens because tokens are what a card prices; the millisecond count the cell used
+                // to overrun with is a duration, and no card prices one.
+                audio_tokens_out: TURN_OPENING_TOKENS + 3,
                 ..TurnUsage::default()
             });
         assert_eq!(
@@ -3891,7 +3952,7 @@ mod tests {
         let posted = end.into_posted().expect("the report fits the record");
         assert_eq!(
             posted.reserved(),
-            reserved + 12_345,
+            reserved + 3 * 5_000,
             "the reservation grew to cover the spend"
         );
         assert_eq!(posted.overdraft(), 0, "so nothing had to be carried");
