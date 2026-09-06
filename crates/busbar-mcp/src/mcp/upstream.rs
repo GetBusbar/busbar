@@ -38,12 +38,42 @@
 //! principal rather than by skipping the gate — which matters, because a wildcard principal is
 //! down-scoped to the single tool it called. Skipping the gate would have asked for everything.
 //!
-//! ## Re-planned on EVERY round, deliberately
+//! ## Re-planned on EVERY round — and WHAT that re-plan re-reads
 //!
 //! The credential is planned and minted inside the per-round call rather than once before the loop.
 //! Under on-demand negotiation every defence is a per-request check, and one logical dispatch is
-//! several requests: a grant narrowed part-way through must bite on the very next round. Caching the
-//! minted token across rounds would be a session by another name.
+//! several requests. Caching the minted token across rounds would be a session by another name, so
+//! no token is cached: every round re-runs `plan_credential`, re-runs the egress gate, and mints
+//! afresh.
+//!
+//! **WHAT THE RE-PLAN RE-READS IS THE OPERATOR'S SIDE, NOT THE CALLER'S KEY, and the difference is
+//! load-bearing enough to be stated rather than left to be inferred.** This header used to promise
+//! that "a grant narrowed part-way through must bite on the very next round", and that sentence was
+//! not true of the caller's own key. [`Authorised::caller`] is an `Arc<VirtualKey>` — a SNAPSHOT
+//! taken once, when the request was authorised, and carried unchanged through every round. The
+//! per-round gate ([`busbar_substrate::egress_auth::gate::authorise`]) therefore re-asks the same
+//! question of the same frozen answer, so:
+//!
+//! - **What DOES bite per round:** the operator's side. The registration, the tool's approval and
+//!   sighting, the credential mode and the exchange configuration are all re-read from the live
+//!   snapshot, so an operator revoking a tool, changing a credential or demoting an upstream stops
+//!   the very next round.
+//! - **What does NOT bite per round:** the CALLER'S key. Scopes narrowed, the key disabled, deleted
+//!   or expired mid-dispatch are not seen — the frozen snapshot still holds the scopes it had at
+//!   admission, and [`REQUIRE_LIVE_KEY`] is `false` on this plane
+//!   (`crate::mcp::client::egress`), so liveness is not consulted either. The bound on that
+//!   exposure is the dispatch's own deadline and its round cap: it lasts one `tools/call`, not a
+//!   session.
+//!
+//! Both halves are pinned by `characterisation_of_the_per_round_re_plan` in
+//! `mcp/tests/upstream_reauth_tests.rs`, which exists so the claim above is checked rather than
+//! believed. Making the caller's key bite per round is a real change and not a doc fix: it means
+//! re-resolving the principal from the live registry per round (the machinery
+//! `crate::mcp::subscribe` uses for its stream) AND turning `REQUIRE_LIVE_KEY` on, which is a
+//! deliberate cross-plane decision recorded on that const. Until that is designed, the header says
+//! what the code does.
+//!
+//! [`REQUIRE_LIVE_KEY`]: busbar_substrate::egress_auth::gate::EgressSubject::REQUIRE_LIVE_KEY
 
 use super::catalogue::{ServerEntry, ToolEntry};
 use super::client::egress::{
@@ -840,3 +870,10 @@ mod hook_tap_tests;
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/client_leg_metrics_tests.rs"]
 mod client_leg_metrics_tests;
+
+// WHAT THE PER-ROUND RE-PLAN RE-READS — the characterisation behind this module's header. Sited
+// here because the claim it checks is this file's, and a header nobody tests is a header that
+// drifts from the code under it exactly once and then stays wrong.
+#[cfg(all(test, feature = "test-support"))]
+#[path = "tests/upstream_reauth_tests.rs"]
+mod upstream_reauth_tests;
