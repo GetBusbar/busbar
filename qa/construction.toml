@@ -67,6 +67,31 @@ transport = ["crates/busbar-transport-*"]
 loader = ["crates/plugin-loader"]
 abi = ["crates/busbar-contract"]
 
+# THE CENSUS: which crate of each kind this tree OWES a row for.
+#
+# The globs above are discovered against the filesystem, and the gate's "a rule that did not run is
+# RED" check used to derive the owed id list from the rows the run itself had just produced — which
+# is not a check at all. Deleting crates/busbar-plane-llm dropped the owed count from 107 to 104 and
+# the run stayed GREEN, because the three rows that crate owed (manifest-allowlist, source-denylist,
+# forbid-unsafe) were never owed in the first place once the crate was gone.
+#
+# So the census is DECLARED here, and the owed id set is built from this file (rules x declared
+# subjects) rather than from the answer. A crate deleted or renamed out from under a kind now leaves
+# its row missing from the ledger and the verdict says so. Adding a crate of a listed kind is the
+# other direction: the `rule-census` row goes RED naming the undeclared crate, so the census is
+# edited in the same commit that adds the crate.
+[gate.expected_kind_crates]
+plane = ["busbar-plane-a2a", "busbar-plane-admin", "busbar-plane-llm", "busbar-plane-mcp", "busbar-plane-voice"]
+hook = ["hook-test-plugin", "hooks-ranking"]
+pure_auth = ["auth-admin-tokens", "auth-static-plugin"]
+egress_auth = []
+secret = ["secret-example-plugin", "secret-ref"]
+store = ["store-example-plugin", "store-memory"]
+export = ["export-example-plugin"]
+transport = ["busbar-transport-grpc", "busbar-transport-http", "busbar-transport-sse", "busbar-transport-stdio", "busbar-transport-tcp", "busbar-transport-tls", "busbar-transport-ws"]
+loader = ["plugin-loader"]
+abi = ["busbar-contract"]
+
 # The OTHER half of each plane's sources. Every plane kept its I/O half under its own name and shed
 # its pure half — the codecs, the record vocabularies, the duplex IR, the dialect grammars — into a
 # `-codec` crate; scripts/plane-keys.sh's `plane_src_roots` names both halves for exactly that

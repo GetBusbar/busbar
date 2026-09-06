@@ -357,6 +357,42 @@ run_selftest() {
     note "VACUOUS: an empty ledger is RED (zero rows never pass)"
   fi
 
+  # 6. THE CENSUS. The owed id set is derived from qa/construction.toml, not from the rows the run
+  # produced, so a subject that vanished is a row that did not run rather than a row nobody owed.
+  # Both directions are proved on a fresh copy of the pristine tree (never on $tree, which the plant
+  # loop above owns):
+  #   a. delete a declared plugin-kind crate  -> its rows go missing, the verdict says "did not run"
+  #   b. add an undeclared plugin-kind crate  -> rule-census names it
+  local ctree="$scratch/census-tree" cout="$scratch/out-census"
+  rm -rf "$ctree"; mkdir -p "$ctree"
+  (cd "$pristine" && tar -cf - .) | tar -C "$ctree" -xf -
+  local cgate="$ctree/scripts/construction-gate.sh"
+  rm -rf "$ctree/crates/busbar-plane-llm"
+  CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$cout" bash "$cgate" --check >/dev/null 2>&1
+  local owed_gone
+  owed_gone="$(grep -c '^\(manifest-allowlist\|source-denylist\|forbid-unsafe\):busbar-plane-llm$' \
+                 "$cout/expected-ids" || true)"
+  if grep -q 'did not run' "$cout/verdict.txt" && [ "$owed_gone" -eq 3 ]; then
+    note "CENSUS a: deleting crates/busbar-plane-llm leaves its 3 owed rows unrun and the verdict is RED"
+  else
+    fail=1; note "CENSUS a FAILED: a deleted plugin-kind crate did not read as 'did not run' (owed rows still declared: $owed_gone)"
+    tail -3 "$cout/verdict.txt" | sed 's/^/    /'
+  fi
+  rm -rf "$ctree"; mkdir -p "$ctree"
+  (cd "$pristine" && tar -cf - .) | tar -C "$ctree" -xf -
+  mkdir -p "$ctree/crates/busbar-plane-undeclared/src"
+  printf '[package]\nname = "busbar-plane-undeclared"\n\n[dependencies]\nbusbar-contract = { path = "../busbar-contract" }\n' \
+    >"$ctree/crates/busbar-plane-undeclared/Cargo.toml"
+  printf '#![forbid(unsafe_code)]\npub fn nothing() {}\n' >"$ctree/crates/busbar-plane-undeclared/src/lib.rs"
+  CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$cout" bash "$cgate" --check >/dev/null 2>&1
+  if awk -F'\t' '$1=="rule-census" && $2=="FAIL"' "$cout/ledger.tsv" | grep -q 'busbar-plane-undeclared'; then
+    note "CENSUS b: an undeclared plugin-kind crate makes rule-census RED and names it"
+  else
+    fail=1; note "CENSUS b FAILED: an undeclared plugin-kind crate did not make rule-census RED"
+    awk -F'\t' '$1=="rule-census"{print "    " $2 ": " $4}' "$cout/ledger.tsv"
+  fi
+  rm -rf "$ctree"
+
   if [ "$fail" -ne 0 ]; then
     red "construction-gate SELF-TEST FAILED — a rule would let its violation through"
     return 1
