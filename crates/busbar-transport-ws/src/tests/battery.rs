@@ -424,6 +424,50 @@ async fn unit0_refusal_writes_then_closes() {
     assert_eq!(frame.bytes.as_slice(), b"refused");
 }
 
+/// A refusal that never reached the peer is not a refusal. It is the only answer the far side will
+/// ever get about bytes that reached no plane, so the caller must be told when it did not go out —
+/// an `Ok(())` for a send that failed, or for a connection that was already fenced and skipped the
+/// send entirely, reports a refusal delivered over a socket nothing was written to.
+#[tokio::test]
+async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 4096).await;
+
+    // Take the far end away: its socket half is dropped, so a send on this end cannot land.
+    let peer = t.state_of(b.id()).expect("the peer connection is live");
+    t.close(b, CloseReason::Normal);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while Arc::strong_count(&peer) > 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the close task must finish and give up its handle");
+    drop(peer);
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let err = t
+        .unit0_refusal(a.clone(), None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal that could not be written must not report success");
+    assert_eq!(err, TransportError::Reset);
+    // And the connection is finalised either way: a refusal ends it.
+    assert!(t.state_of(a.id()).is_none(), "the refusal closed it");
+
+    // A connection this transport no longer holds cannot carry a refusal at all, and says so.
+    let err = t
+        .unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal over a connection that is gone must not report success");
+    assert_eq!(err, TransportError::Closed);
+}
+
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {

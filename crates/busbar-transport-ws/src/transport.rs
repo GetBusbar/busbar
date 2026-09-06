@@ -595,15 +595,29 @@ impl Transport for WsTransport {
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let id = conn.id();
-            if let Some(state) = self.state_of(id) {
-                if !state.is_poisoned() {
+            // The refusal is the only answer the far side will ever get about these bytes, so a
+            // send that did not happen is reported rather than swallowed. A connection this
+            // transport no longer holds, or one already fenced, cannot carry one at all — both are
+            // `Closed`, because the session is over either way and the caller's next move is the
+            // same. A send that reached the socket and failed is a `Reset`: the connection was
+            // live and the peer is what went away.
+            let outcome = match self.state_of(id) {
+                None => Err(TransportError::Closed),
+                Some(state) if state.is_poisoned() => Err(TransportError::Closed),
+                Some(state) => {
                     let payload = bytes.as_slice().to_vec();
                     let mut w = state.writer.lock().await;
-                    let _ = futures::SinkExt::send(&mut *w, Message::Binary(payload.into())).await;
+                    let sent = futures::SinkExt::send(&mut *w, Message::Binary(payload.into()))
+                        .await
+                        .map_err(|_| TransportError::Reset);
+                    drop(w);
+                    sent
                 }
-            }
+            };
+            // Finalised on every path, including the failures: a refusal ends the connection, and
+            // one that could not be written ends it no less than one that could.
             self.close(conn, CloseReason::Normal);
-            Ok(())
+            outcome
         })
     }
 }
