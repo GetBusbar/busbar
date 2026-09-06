@@ -2731,3 +2731,34 @@ tools:
         out.warnings
     );
 }
+
+/// A `pools:` written in a shape this migrator cannot merge into must be LEFT EXACTLY AS WRITTEN —
+/// the same take-on-match contract `Taken` states for every other section. Replacing it with a
+/// freshly-built mapping deletes the operator's whole pools section (the money path) and announces
+/// nothing; and because the `auth.upstream_credentials:` it was moving had already been taken off
+/// `auth:`, that key vanished with it. Both must survive, with a todo naming the block.
+#[test]
+fn malformed_pools_is_never_replaced_by_a_synthesized_one() {
+    let out = migrate_config(
+        "auth:\n  upstream_credentials: passthrough\npools: not-a-mapping\nproviders: {}\nmodels: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    assert_eq!(
+        doc["pools"].as_str(),
+        Some("not-a-mapping"),
+        "the operator's `pools:` was destroyed and replaced with a synthesized mapping: {}",
+        out.yaml
+    );
+    assert_eq!(
+        doc["auth"]["upstream_credentials"].as_str(),
+        Some("passthrough"),
+        "auth.upstream_credentials was taken off `auth:` and never put anywhere: {}",
+        out.yaml
+    );
+    assert!(
+        out.todos.iter().any(|t| t.contains("pools")),
+        "a section this migrator refuses to touch must say so: {:?}",
+        out.todos
+    );
+}
