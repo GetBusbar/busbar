@@ -28,6 +28,29 @@
 //! assert_eq!(decision.into_result(&seal).unwrap().total(), 0);
 //! ```
 //!
+//! The reason vocabulary is closed, and closed means a crate that renders reasons can decide
+//! something for every one of them without a fallback arm — so a reason added later is a compile
+//! error at every renderer rather than whatever the wildcard happened to say:
+//!
+//! ```
+//! use busbar_caps::ReasonCode::{self, *};
+//! fn is_the_callers_money(code: ReasonCode) -> bool {
+//!     match code {
+//!         OverBudget | OverdraftCeiling | Unpriced | NoRate => true,
+//!         InFlightCap | CursorBudget | CredentialBudget | SessionBudget | SpillBudget
+//!         | ArenaBudget | RateLimited | BodyTooLarge | OpenSlotBusy | DecodeFailed
+//!         | SchemeNotDeclared | SessionUnbound | Unauthenticated | ChallengeExhausted | Revoked
+//!         | ScopeDenied | PoolNotPermitted | HookVeto | NoDestination | GroupFrozen
+//!         | StaleSlice | DurabilityUnavailable | TierMismatch | Replayed | InFlight
+//!         | DestinationBudgetExhausted | BreakerOpen | DestinationUnreachable | MeterDisputed
+//!         | HandoffMismatch | PlanePanic | TaskLost | Stalled | SecretPlaceholder | Drain
+//!         | Superseded | ClientGone | DeadlineExceeded => false,
+//!     }
+//! }
+//! assert!(is_the_callers_money(ReasonCode::OverBudget));
+//! assert!(!is_the_callers_money(ReasonCode::Drain));
+//! ```
+//!
 //! It cannot open its own answer, because reading a decision needs the kernel's seal:
 //!
 //! ```compile_fail,E0061
@@ -46,8 +69,12 @@ macro_rules! reasons {
         /// Why a unit was stopped. A closed vocabulary: the wire may render whatever a dialect
         /// renders, but the reason a unit ended is one of these and nothing else, so the journal,
         /// the refusal and the disputes report all name the same thing.
+        ///
+        /// Closed in the language as well as in the prose: no `#[non_exhaustive]`, because a
+        /// renderer outside this crate has to be able to answer for every reason without a
+        /// fallback arm. Adding a reason is meant to break every renderer at compile time — that
+        /// is the whole value of writing the vocabulary down once.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        #[non_exhaustive]
         pub enum ReasonCode {
             $($(#[$doc])* $name,)*
         }
