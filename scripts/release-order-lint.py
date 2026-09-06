@@ -480,22 +480,31 @@ def check(root: str) -> Finding:
     # Every run on the sha must be judged, and a required workflow must be selected by the branch it
     # ran on (the qa push) and required to have concluded success.
     #
-    # BOTH GATES, NOT JUST THE FIRST ONE. `branch-green` is not the only place the question is
-    # asked: `promote-release`'s "Refuse to tag a commit that is red RIGHT NOW" step re-asks it
-    # immediately before the tag is pushed, over the same API, and it kept `unique_by(.name)` for
-    # months after branch-green dropped it. A rule that lints one of two identical judgments leaves
-    # the LAST word on whether a commit is red as the weakest one. So the check is over every job
-    # that judges the sha, keyed by the jq call rather than by the job name.
-    bg = rjobs.get("branch-green", "")
-    promote_recheck = rjobs.get("promote-release", "")
-    for where, body in (("`branch-green`", bg), ("`promote-release`'s promote-time re-check", promote_recheck)):
-        if body and "unique_by" in body:
+    # EVERY JOB THAT FILTERS THE RUN LIST FOR THIS SHA, NOT JUST `branch-green` BY NAME. It used to
+    # check only `branch-green` and `promote-release` because those were the two jobs that asked
+    # the question on the day this rule was written -- `promote-release`'s "Refuse to tag a commit
+    # that is red RIGHT NOW" step re-asks it immediately before the tag is pushed, over the same
+    # API, and it kept `unique_by(.name)` for months after branch-green dropped it. Hard-coding
+    # those two names is the exact drift this whole file exists to stop one level up: a THIRD job
+    # added later that reads `.workflow_runs[]` or `actions/runs?head_sha=` would not be discovered
+    # and could reintroduce `unique_by` in a place nobody is looking. So the check is over every job
+    # whose body actually reads the run list for this commit, discovered by that shape rather than
+    # by name.
+    RUN_LIST_MARKERS = (".workflow_runs[]", "actions/runs?head_sha=")
+    run_list_jobs = {
+        name: body for name, body in rjobs.items()
+        if any(m in body for m in RUN_LIST_MARKERS)
+    }
+    for name, body in sorted(run_list_jobs.items()):
+        if "unique_by" in body:
             bad.append(
-                "R12 release.yml's %s collapses the run list with `unique_by`. That "
+                "R12 release.yml's `%s` job collapses the run list with `unique_by`. That "
                 "keeps only the NEWEST run per workflow name, and a main push spawns a second, "
                 "all-skipped `qa-gate` run on the same sha - so a red qa soak reads green and the "
-                "release promotes over it. Judge every run on the sha." % where
+                "release promotes over it. Judge every run on the sha." % name
             )
+    bg = rjobs.get("branch-green", "")
+    promote_recheck = rjobs.get("promote-release", "")
     if bg:
         if not re.search(r"^\s+PROMOTE_SOURCE_BRANCH:", bg, re.M):
             bad.append(
@@ -504,6 +513,32 @@ def check(root: str) -> Finding:
                 "so both the qa-push run that carries the verdict and the main-push re-run that "
                 "carries nothing are present on the sha; without the branch selection the empty one "
                 "can satisfy the gate."
+            )
+        # A REQUIRED WORKFLOW'S skipped/neutral CONCLUSION MUST NOT COUNT AS GREEN. Elsewhere in
+        # this same gate, `skipped`/`neutral` are correctly treated as green for an INCIDENTAL
+        # workflow (a path filter, an `if:` that was false) -- but a workflow named in
+        # REQUIRED_WORKFLOWS is being asked "did the soak actually run", and a skip answers "no",
+        # not "yes, and it was fine". Losing the explicit `conclusion == "success"` test on the
+        # required-workflow branch (e.g. collapsing it into the same "not red" sweep the incidental
+        # workflows get) would make a required workflow that never ran read as green right up to the
+        # moment the tag is minted -- which is the promote-time half of this same defect class.
+        if not re.search(r'\.conclusion\s*==\s*"success"', bg):
+            bad.append(
+                "R12 release.yml's `branch-green` job no longer asserts SUCCESS (as opposed to "
+                "merely non-red) for each required workflow. Without that explicit check, "
+                "`skipped`/`neutral` -- correctly green for an incidental workflow -- would also "
+                "read as green for a REQUIRED one, so a qa-gate that never ran on this commit could "
+                "still reach promote-release looking green."
+            )
+    if promote_recheck:
+        guarded = depends_on(rjobs, "promote-release", "branch-green") or "REQUIRED_WORKFLOWS" in promote_recheck
+        if not guarded:
+            bad.append(
+                "R12 `promote-release` is no longer downstream of `branch-green` and does not assert "
+                "REQUIRED_WORKFLOWS success itself. Its own red-check treats `skipped`/`neutral` as "
+                "green for every name, which is only safe because `branch-green` already proved each "
+                "required workflow concluded SUCCESS before promote-release could run; break that "
+                "ordering and a required workflow's skip stops being caught at promote time too."
             )
 
     # R8. VERIFY-DEPLOY MUST STILL OFFER THE STAGING CONTRACT.
@@ -653,6 +688,21 @@ MUTATIONS = [
         "R12 gate 0 stops selecting the required runs by the branch they ran on",
         "release.yml",
         lambda t: t.replace('      PROMOTE_SOURCE_BRANCH: "qa"\n', ""),
+        "R12",
+    ),
+    (
+        "R12 gate 0 stops requiring SUCCESS (not merely non-red) for a required workflow",
+        "release.yml",
+        lambda t: t.replace(
+            'if [ "$(echo "$on_src" | jq \'[.[] | select(.conclusion == "success")] | length\')" = 0 ]; then',
+            'if [ "$(echo "$on_src" | jq \'length\')" = 0 ]; then',
+        ),
+        "R12",
+    ),
+    (
+        "R12 promote-release stops being downstream of gate 0",
+        "release.yml",
+        lambda t: t.replace("    needs: [plan, branch-green]\n", "    needs: [plan]\n"),
         "R12",
     ),
     (
