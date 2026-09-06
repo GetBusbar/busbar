@@ -84,6 +84,27 @@ const EOF_DRAIN: std::time::Duration = std::time::Duration::from_secs(3);
 /// waiting for, however many siblings hold permits.
 const MAX_INFLIGHT_HANDLERS: usize = 256;
 
+/// How many of ONE session's inbound non-reply frames may be WAITING for a handler permit. This is
+/// the second half of the rule the permit cap states: the reader must never be the thing that waits
+/// for a permit, because the reader is the only path to the frames the permit-holders are waiting
+/// for. A session whose handlers all park in [`DuplexHandle::issue`] holds every permit; if the next
+/// frame off the wire is not a reply and the reader stops to acquire a permit for it, the replies
+/// those handlers need are queued behind a reader that will never move again, and the session is
+/// wedged for good — no timeout, no EOF, nothing but the peer eventually giving up.
+///
+/// So the reader HANDS OFF instead of waiting: a non-reply frame is parked here and a separate
+/// dispatcher does the waiting, leaving the reader free to keep classifying and routing replies. The
+/// depth matches the handler cap, so a peer must have every handler in flight AND this many more
+/// frames outstanding before the bound is reached at all.
+const MAX_QUEUED_FRAMES: usize = MAX_INFLIGHT_HANDLERS;
+
+/// The queue's actual depth. A frame occupies a slot from the moment the reader accepts it until the
+/// dispatcher has spawned its handler, and the reader runs ahead of the dispatcher — so the slots a
+/// session may legitimately hold at once are the ones the handlers are running on PLUS the ones
+/// genuinely waiting for a permit. Sizing the channel to only the waiting half would refuse a peer
+/// that is merely within both bounds but faster than the dispatcher's next poll.
+const QUEUE_DEPTH: usize = MAX_INFLIGHT_HANDLERS + MAX_QUEUED_FRAMES;
+
 /// The largest ONE inbound frame may be on the byte path. A frame is a line, so a peer that never
 /// writes the terminator is writing a single frame that grows for as long as it keeps typing — with
 /// no cap, until the allocation fails. The bar is the same one an inbound request body is held to
@@ -211,9 +232,20 @@ struct Shared {
     /// The private sequence behind the `inflight` keys.
     next_inflight: AtomicU64,
     /// THIS SESSION'S handler permits — [`MAX_INFLIGHT_HANDLERS`] of them. A permit is taken before
-    /// the handler is spawned and released when it finishes, so the reader parks on a saturated
-    /// session rather than spawning into it, and the flood lands back on the peer's own transport.
+    /// the handler is spawned and released when it finishes, so a saturated session parks the
+    /// DISPATCHER rather than spawning into it, and the flood lands back on the peer's own transport
+    /// by way of the queue filling and then the session ending. The reader itself never touches this
+    /// semaphore — see [`MAX_QUEUED_FRAMES`] for why that separation is the whole point.
     handlers: Arc<tokio::sync::Semaphore>,
+    /// Non-reply frames the reader has handed off but the dispatcher has not yet turned into a
+    /// spawned handler. Counted so the end-of-session drain can tell "nothing left to do" apart from
+    /// "the handoff has not been polled yet": a one-shot invocation is one frame and then EOF, and
+    /// its handler may well not exist at the instant the reader sees the close.
+    ///
+    /// The invariant the drain relies on: a frame is counted here from the moment the reader accepts
+    /// it until the moment the dispatcher has RESERVED its `inflight` slot, so the union of the two
+    /// is never momentarily empty while work remains.
+    queued: std::sync::atomic::AtomicUsize,
 }
 
 /// THE PLUGGABLE WRITE HALF — one outbound frame in, framed onto the wire however the bound transport
@@ -292,40 +324,112 @@ fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
         inflight: Mutex::new(HashMap::new()),
         next_inflight: AtomicU64::new(0),
         handlers: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_HANDLERS)),
+        queued: std::sync::atomic::AtomicUsize::new(0),
     })
 }
 
-/// ROUTE ONE inbound frame: a REPLY the plane recognises goes to the caller awaiting it and reaches no
-/// handler; everything else is handled concurrently under a private key so it clears itself on
-/// completion and the EOF path can abort whatever remains. Shared by both entry points so the
-/// correlation contract is written once, regardless of framing.
-async fn dispatch_frame<P: DuplexPlane>(
+/// What the reader learned from offering ONE frame to the session.
+#[derive(Debug, PartialEq, Eq)]
+enum Offered {
+    /// The frame was routed to its waiting caller, or accepted for handling.
+    Accepted,
+    /// The peer has every handler in flight AND [`MAX_QUEUED_FRAMES`] more frames waiting for one,
+    /// and is still writing. Both of this session's bounds are exhausted at once, so there is no
+    /// place left to put the frame that does not cost this node unbounded memory — and no
+    /// plane-side meaning here to refuse it with, exactly as for a framing fault. The session ends.
+    Overrun,
+}
+
+/// OFFER ONE inbound frame to the session, WITHOUT EVER WAITING. A REPLY the plane recognises goes
+/// straight to the caller awaiting it and reaches no handler; everything else is handed to the
+/// dispatcher through the bounded queue. Shared by both entry points so the correlation contract is
+/// written once, regardless of framing.
+///
+/// This function is deliberately synchronous. It is called from the reader loop, and the reader loop
+/// is the only path to the frames that in-flight handlers are parked waiting for; anything the reader
+/// waits on is therefore something a peer can choose never to release. Waiting for a handler permit
+/// here is exactly that mistake — see [`MAX_QUEUED_FRAMES`].
+fn offer_frame<P: DuplexPlane>(
     shared: &Arc<Shared>,
-    handle: &DuplexHandle,
     plane: &Arc<P>,
+    frames: &tokio::sync::mpsc::Sender<Vec<u8>>,
     frame: Vec<u8>,
-) {
+) -> Offered {
     if let Some(call) = plane.classify(&frame).filter(|c| !c.is_none()) {
         if let Some(tx) = shared.pending.lock().unwrap().remove(&call.0) {
             let _ = tx.send(frame);
         }
         // A reply to a call nobody is waiting on is dropped: with no plane-side meaning to consult,
         // the transport has nothing to answer it with.
-        return;
+        return Offered::Accepted;
     }
-    // TAKE A HANDLER PERMIT FIRST. On a saturated session this parks the reader, which stops reading
-    // the socket and puts the backlog back on the peer's transport — the one place it can be held
-    // without costing this node anything. The permit rides into the task and is released when the
-    // handler finishes or is aborted. `Err` is a closed semaphore, which nothing here ever does.
-    let Ok(permit) = shared.handlers.clone().acquire_owned().await else {
-        return;
-    };
+    // Counted BEFORE the handoff so the drain never sees an empty union while this frame is in the
+    // air; withdrawn again if the queue refuses it.
+    shared
+        .queued
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+    match frames.try_send(frame) {
+        Ok(()) => Offered::Accepted,
+        Err(_) => {
+            shared
+                .queued
+                .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+            Offered::Overrun
+        }
+    }
+}
+
+/// START THE DISPATCHER for one session: the task that does the waiting the reader must not do. It
+/// takes queued non-reply frames in the order the reader accepted them, acquires a handler permit for
+/// each (parking here, where parking costs nothing but the queue backing up), and spawns the handler
+/// under a private key so it clears itself on completion and the EOF path can abort whatever remains.
+///
+/// Returns the sender the reader hands frames to, and the dispatcher's own handle so the end of the
+/// session can stop it.
+fn spawn_dispatcher<P: DuplexPlane>(
+    shared: &Arc<Shared>,
+    handle: &DuplexHandle,
+    plane: &Arc<P>,
+) -> (
+    tokio::sync::mpsc::Sender<Vec<u8>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<u8>>(QUEUE_DEPTH);
+    let shared = shared.clone();
+    let handle = handle.clone();
+    let plane = plane.clone();
+    let task = tokio::spawn(async move {
+        while let Some(frame) = rx.recv().await {
+            // `Err` is a closed semaphore, which nothing here ever does.
+            let Ok(permit) = shared.handlers.clone().acquire_owned().await else {
+                return;
+            };
+            spawn_handler(&shared, &handle, &plane, frame, permit);
+        }
+    });
+    (tx, task)
+}
+
+/// SPAWN ONE handler for one frame, holding the permit it was admitted on. The permit rides into the
+/// task and is released when the handler finishes or is aborted.
+fn spawn_handler<P: DuplexPlane>(
+    shared: &Arc<Shared>,
+    handle: &DuplexHandle,
+    plane: &Arc<P>,
+    frame: Vec<u8>,
+    permit: tokio::sync::OwnedSemaphorePermit,
+) {
     let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
-    // RESERVE the slot before the handler exists. The dispatcher runs on the reader's thread and the
-    // handler on the runtime's, so a handler that finishes first would otherwise clear a key not yet
+    // RESERVE the slot before the handler exists. This runs on the dispatcher's task and the handler
+    // on the runtime's, so a handler that finishes first would otherwise clear a key not yet
     // written — and the write would then land on a slot nobody will ever remove again, holding the
     // EOF drain open for its full bound and growing the registry for the life of the session.
     shared.inflight.lock().unwrap().insert(key, None);
+    // The frame is now accounted for by `inflight` instead of by the queue counter; releasing it only
+    // AFTER the reservation lands is what keeps the union of the two non-empty across the handoff.
+    shared
+        .queued
+        .fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
     let plane = plane.clone();
     let handle = handle.clone();
     let for_cleanup = shared.clone();
@@ -345,11 +449,22 @@ async fn dispatch_frame<P: DuplexPlane>(
 /// one-shot invocation (one frame, then EOF/close) has its answer computed after the far end goes
 /// away, so a straight abort would serve nothing to exactly the caller who asked for one thing. Shared
 /// by both entry points.
-async fn drain_and_flush(shared: &Arc<Shared>) {
+async fn drain_and_flush(shared: &Arc<Shared>, dispatcher: tokio::task::JoinHandle<()>) {
     let deadline = tokio::time::Instant::now() + EOF_DRAIN;
-    while !shared.inflight.lock().unwrap().is_empty() && tokio::time::Instant::now() < deadline {
+    // "Still working" is the UNION of frames the dispatcher has not yet spawned and handlers already
+    // running. Reading only the second would end a one-shot invocation before its single handler ever
+    // existed: the reader accepts the frame and sees the close in the same breath, and the dispatcher
+    // has not been polled once in between.
+    let working = || {
+        shared.queued.load(std::sync::atomic::Ordering::Acquire) > 0
+            || !shared.inflight.lock().unwrap().is_empty()
+    };
+    while working() && tokio::time::Instant::now() < deadline {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
+    // Stop admitting: anything still queued is a frame this session will not get to, and letting the
+    // dispatcher keep spawning past the drain would start handlers nobody is left to answer.
+    dispatcher.abort();
     for (_, h) in shared.inflight.lock().unwrap().drain() {
         // A reservation with no handle yet is a handler spawned moments ago; the runtime drops it
         // with the session, and there is nothing here to abort it with.
@@ -380,6 +495,7 @@ where
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
+    let (frames, dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
     let mut lines = tokio::io::BufReader::new(reader);
     let mut buf: Vec<u8> = Vec::new();
     loop {
@@ -408,9 +524,14 @@ where
         if buf.iter().all(u8::is_ascii_whitespace) {
             continue; // a blank line is not a frame
         }
-        dispatch_frame(&shared, &handle, &plane, std::mem::take(&mut buf)).await;
+        if offer_frame(&shared, &plane, &frames, std::mem::take(&mut buf)) == Offered::Overrun {
+            tracing::debug!(
+                "duplex: the session's handler cap and frame queue are both full and the peer is still writing; ending the session"
+            );
+            break;
+        }
     }
-    drain_and_flush(&shared).await;
+    drain_and_flush(&shared, dispatcher).await;
 }
 
 /// SERVE one inbound MESSAGE-duplex channel until the stream ends, driving the SAME `plane` callbacks,
@@ -433,12 +554,18 @@ where
     let handle = DuplexHandle {
         shared: shared.clone(),
     };
+    let (frames, dispatcher) = spawn_dispatcher(&shared, &handle, &plane);
     // One frame per message, no framing to strip. The stream ending (close / dropped sender) is the
     // message-duplex analogue of EOF.
     while let Some(frame) = stream.next().await {
-        dispatch_frame(&shared, &handle, &plane, frame).await;
+        if offer_frame(&shared, &plane, &frames, frame) == Offered::Overrun {
+            tracing::debug!(
+                "duplex: the session's handler cap and frame queue are both full and the peer is still writing; ending the session"
+            );
+            break;
+        }
     }
-    drain_and_flush(&shared).await;
+    drain_and_flush(&shared, dispatcher).await;
 }
 
 #[cfg(all(test, feature = "test-support"))]

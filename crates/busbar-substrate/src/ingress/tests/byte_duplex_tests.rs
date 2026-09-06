@@ -249,9 +249,15 @@ fn a_finished_handler_leaves_the_inflight_registry_empty() {
 
     let _in_runtime = handlers.enter();
     for _ in 0..20_000 {
-        // Driven right here, on the dispatching thread: the only await is the handler permit, and the
-        // handlers themselves run on the runtime entered above.
-        futures::executor::block_on(dispatch_frame(&shared, &handle, &plane, b"frame".to_vec()));
+        // The spawn is driven right here, on the dispatching thread, while the handlers themselves
+        // run on the runtime entered above — the overlap the reservation exists to survive. The
+        // permit and the queue accounting are the dispatcher's, so they are supplied by hand.
+        let permit = futures::executor::block_on(shared.handlers.clone().acquire_owned())
+            .expect("a handler permit");
+        shared
+            .queued
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        spawn_handler(&shared, &handle, &plane, b"frame".to_vec(), permit);
     }
 
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -423,4 +429,133 @@ async fn message_duplex_correlation_routes_a_reply_to_its_issuer() {
         .await
         .expect("pump did not stop on stream close")
         .unwrap();
+}
+
+/// A plane whose every handler ISSUES a call and waits for its answer — the ordinary shape of a
+/// session that talks back, and the one that puts every handler's fate in the reader's hands. Each
+/// handler names the ref the transport minted so the far side can answer it, and counts itself done
+/// only once the answer arrives.
+struct CallingPlane {
+    finished: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl DuplexPlane for CallingPlane {
+    fn classify(&self, frame: &[u8]) -> Option<CallRef> {
+        let rest = frame.strip_prefix(b"reply:")?;
+        let n: u64 = std::str::from_utf8(rest).ok()?.parse().ok()?;
+        Some(CallRef(n))
+    }
+    async fn handle(self: Arc<Self>, _frame: Vec<u8>, out: DuplexHandle) {
+        let call = out.mint();
+        if out
+            .issue(call, format!("call {}", call.0).into_bytes())
+            .await
+            .is_some()
+        {
+            self.finished.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// THE READER MUST NEVER WAIT ON A HANDLER PERMIT. Every handler on this session is parked awaiting
+/// the answer to a call it issued, so every permit is held; the frames that would release them are
+/// still on the wire, and the reader is the ONLY thing that can get to them. Put one ordinary
+/// non-reply frame in front of those answers and a reader that stops to acquire a permit for it stops
+/// for good: the permits are held by handlers waiting on frames behind a reader waiting on a permit,
+/// with no timeout and no EOF to break it. The peer chose that frame order, so the peer would own the
+/// session's liveness.
+///
+/// With the reader handing frames off instead of waiting, the odd frame parks in the queue, the
+/// reader carries on classifying, and every answer reaches the handler that asked for it.
+#[tokio::test]
+async fn a_non_reply_frame_ahead_of_the_answers_does_not_wedge_the_session() {
+    use futures::channel::mpsc;
+
+    let finished = Arc::new(AtomicU64::new(0));
+    let plane = Arc::new(CallingPlane {
+        finished: finished.clone(),
+    });
+
+    let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
+    let (out_tx, mut out_rx) = mpsc::unbounded::<Vec<u8>>();
+
+    // Exactly the cap, so every permit ends up held by a handler parked on its own answer.
+    for _ in 0..MAX_INFLIGHT_HANDLERS {
+        in_tx.send(b"work".to_vec()).await.unwrap();
+    }
+    // THE FRAME THAT WOULD DO THE WEDGING: not a reply, so it wants a permit, and there is none to be
+    // had until the frames behind it are read.
+    in_tx.send(b"work".to_vec()).await.unwrap();
+
+    let _pump = tokio::spawn(serve_messages(in_rx, out_tx, plane));
+
+    // Wait for the far side to actually SEE every call — a peer can only answer a call that reached
+    // it, so the answers must not be sent before the outbound frames carrying them exist. Collecting
+    // them here is what makes the reply order below the one a real peer would produce.
+    let mut refs = Vec::new();
+    for _ in 0..MAX_INFLIGHT_HANDLERS {
+        let issued = tokio::time::timeout(std::time::Duration::from_secs(10), out_rx.next())
+            .await
+            .expect("every admitted handler issued its call")
+            .expect("the outbound sink stayed open");
+        let n: u64 = std::str::from_utf8(&issued[b"call ".len()..])
+            .unwrap()
+            .parse()
+            .unwrap();
+        refs.push(n);
+    }
+    // Now answer them, one frame per call, exactly as the peer would.
+    for n in refs {
+        in_tx.send(format!("reply:{n}").into_bytes()).await.unwrap();
+    }
+
+    for _ in 0..200 {
+        if finished.load(Ordering::Relaxed) as usize >= MAX_INFLIGHT_HANDLERS {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(
+        finished.load(Ordering::Relaxed) as usize,
+        MAX_INFLIGHT_HANDLERS,
+        "every parked handler was reached by its answer even with a permit-hungry frame in front of it"
+    );
+}
+
+/// A PEER THAT EXHAUSTS BOTH BOUNDS AT ONCE ENDS ITS SESSION. Handlers that never finish hold every
+/// permit, and past the queue depth there is nowhere left to put a frame that does not cost this node
+/// memory the peer chose to spend. The reader stops rather than buffering, and the session closes —
+/// the same answer a framing fault gets, for the same reason: there is no plane-side meaning here to
+/// refuse it with.
+#[tokio::test]
+async fn a_peer_past_both_bounds_ends_the_session_rather_than_buffering() {
+    use futures::channel::mpsc;
+
+    let entered = Arc::new(AtomicU64::new(0));
+    let plane = Arc::new(ParkingPlane {
+        entered: entered.clone(),
+    });
+
+    let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
+    let (out_tx, _out_rx) = mpsc::unbounded::<Vec<u8>>();
+    // Well past the whole queue depth, which is itself the handler cap plus the waiting depth.
+    for _ in 0..(QUEUE_DEPTH + 64) {
+        in_tx.send(b"park".to_vec()).await.unwrap();
+    }
+    let pump = tokio::spawn(serve_messages(in_rx, out_tx, plane));
+
+    // The stream is never closed: only the overrun can end this pump.
+    tokio::time::timeout(std::time::Duration::from_secs(20), pump)
+        .await
+        .expect("the session ended on its own rather than buffering the flood")
+        .unwrap();
+
+    assert_eq!(
+        entered.load(Ordering::Relaxed) as usize,
+        MAX_INFLIGHT_HANDLERS,
+        "no more handlers than the cap ever existed"
+    );
+    drop(in_tx);
 }
