@@ -13,7 +13,22 @@ cell replaced by a fresh recording from the same published binary. A cell id pre
 is refused: the parts must be disjoint, or the merged ledger would carry two verdicts for one cell.
 
 ── WHAT IDENTIFIES A RECORDING'S SOURCE ────────────────────────────────────────────────────────
-    IDENTITY = version + binary_sha256 + host_triple.  Mismatch -> refused, always.
+    IDENTITY = version + binary_sha256.  Mismatch -> refused, always.
+
+`host_triple` says which machine did the recording, not which binary was recorded: the SAME
+published binary can be legitimately re-recorded on a different host (an A8 store-cell rig runs
+`x86_64-unknown-linux-gnu`; the committed golden is `aarch64-apple-darwin`). It is reportable, like
+`harness_rev`, not fatal like `binary_sha256`:
+
+  * parts agree                  -> merged as-is
+  * parts differ, no flag        -> REFUSED, naming both hosts
+  * parts differ, --allow-host-skew + --note
+                                 -> merged; the host_triple of the LAST-RECORDED part (max `at`)
+                                    becomes the merged `host_triple`, every other distinct triple is
+                                    pushed onto `host_triple_history` with the part's path and its
+                                    binary_sha256, and --note is recorded in `host_triple_note`. The
+                                    binary sha must STILL match across parts either way: a different
+                                    host recording the same bytes is fine, a different binary is not.
 
 A PATH IS WHERE A FILE WAS, NOT WHAT IT WAS. meta.json's `binary` is the --bin argument as typed:
 `/Users/runner/.cache/busbar-oracle/1.5.5/busbar` on a CI runner, `/Users/<you>/.cache/...` on a
@@ -47,8 +62,9 @@ import sys
 import tempfile
 
 # What actually identifies the source of a recording. `binary` (a filesystem path) is deliberately
-# NOT here; `harness_rev` is handled separately because it is reportable rather than fatal.
-IDENTITY = ("version", "binary_sha256", "host_triple")
+# NOT here; `harness_rev` and `host_triple` are handled separately because they are reportable
+# (skewable with a flag and a note) rather than fatal.
+IDENTITY = ("version", "binary_sha256")
 
 
 def machine_independent_binary(path: str) -> str:
@@ -88,14 +104,15 @@ def _load_meta(p: str) -> dict:
         return json.load(f)
 
 
-def merge(parts, out, allow_harness_skew=False, note=None, cells_json=None) -> int:
+def merge(parts, out, allow_harness_skew=False, note=None, cells_json=None,
+          allow_host_skew=False) -> int:
     metas = [(p, _load_meta(p)) for p in parts]
     base_p, base = metas[0]
     for p, m in metas[1:]:
         for k in IDENTITY:
             if m.get(k) != base.get(k):
                 sys.exit(f"merge-recordings: {p} {k}={m.get(k)!r} but {base_p} {k}={base.get(k)!r}; "
-                         "parts of one recording must come from the same binary on the same host")
+                         "parts of one recording must come from the same binary")
     # The binary PATH is bookkeeping, not identity: say so out loud rather than refusing on it.
     # The merged meta.json is committed, so every `binary` that reaches it — the base's and each
     # part's in merged_from — is written in the machine-independent form (see the docstring above).
@@ -126,6 +143,20 @@ def merge(parts, out, allow_harness_skew=False, note=None, cells_json=None) -> i
                      "re-recorded under which harness_rev and why; a skewed merge with no note is "
                      "an unexplained golden")
         print(f"merge-recordings: HARNESS SKEW ALLOWED — {named}")
+    triples = {m.get("host_triple") for _, m in metas}
+    if len(triples) > 1:
+        named_t = ", ".join(f"{os.path.basename(os.path.normpath(p))}={m.get('host_triple')}"
+                            for p, m in metas)
+        if not allow_host_skew:
+            sys.exit(f"merge-recordings: parts were recorded on {len(triples)} different "
+                     f"host_triple values ({named_t}); a cell's bytes may differ because the host "
+                     "differed, not because the binary did. Re-record every part on one host, or "
+                     "pass --allow-host-skew --note '<which cells, which host, why>'.")
+        if not note:
+            sys.exit("merge-recordings: --allow-host-skew needs --note saying which cells were "
+                     "recorded on which host and why; a skewed merge with no note is an "
+                     "unexplained golden")
+        print(f"merge-recordings: HOST SKEW ALLOWED — {named_t}")
     if os.path.exists(out):
         sys.exit(f"merge-recordings: {out} exists; refusing to merge over it")
     os.makedirs(os.path.join(out, "cells"))
@@ -179,6 +210,26 @@ def merge(parts, out, allow_harness_skew=False, note=None, cells_json=None) -> i
             if r and r not in history:
                 history.append(r)
         meta["harness_rev_history"] = history
+    if len(triples) > 1:
+        # Same rule as harness_rev above: stamp the host the LAST part was recorded on, keep every
+        # other host in history with the part that recorded on it and that part's binary_sha256 (so
+        # a reader can see, without opening the part, that the bytes matched even though the host
+        # didn't).
+        newest_t = max(metas, key=lambda pm: pm[1].get("at", ""))[1].get("host_triple")
+        meta["host_triple"] = newest_t
+        history_t = list(meta.get("host_triple_history", []))
+        for p, m in metas:
+            t = m.get("host_triple")
+            if t == newest_t:
+                continue
+            entry = {"host_triple": t, "part": os.path.basename(os.path.normpath(p)),
+                     "binary_sha256": m.get("binary_sha256")}
+            if entry not in history_t:
+                history_t.append(entry)
+        meta["host_triple_history"] = history_t
+        if note:
+            prev_t = meta.get("host_triple_note")
+            meta["host_triple_note"] = f"{note} | Earlier note: {prev_t}" if prev_t else note
     if note:
         prev = meta.get("harness_rev_note")
         meta["harness_rev_note"] = f"{note} | Earlier note: {prev}" if prev else note
@@ -245,6 +296,20 @@ def selftest() -> int:
     case("different host_triple -> refused",
          [("a", ["x|1"], {}), ("b", ["x|2"], {"host_triple": "x86_64-unknown-linux-gnu"})],
          [], 1, "host_triple")
+    case("same sha256, different host_triple, no flag -> refused",
+         [("a", ["x|1"], {}), ("b", ["x|2"], {"host_triple": "x86_64-unknown-linux-gnu"})],
+         [], 1, "host_triple")
+    case("same sha256, different host_triple, --allow-host-skew but no --note -> refused",
+         [("a", ["x|1"], {}), ("b", ["x|2"], {"host_triple": "x86_64-unknown-linux-gnu"})],
+         ["--allow-host-skew"], 1, "--note")
+    case("same sha256, different host_triple, skew allowed and noted -> merges",
+         [("a", ["x|1"], {}), ("b", ["x|2"], {"host_triple": "x86_64-unknown-linux-gnu",
+                                              "at": "2026-09-06T01:00:00Z"})],
+         ["--allow-host-skew", "--note", "x|2 recorded on x86_64-unknown-linux-gnu"], 0, "HOST SKEW ALLOWED")
+    case("different binary_sha256 AND different host_triple, --allow-host-skew -> still refused",
+         [("a", ["x|1"], {}), ("b", ["x|2"], {"binary_sha256": "deadbeef",
+                                              "host_triple": "x86_64-unknown-linux-gnu"})],
+         ["--allow-host-skew", "--note", "N"], 1, "binary_sha256")
     case("different version -> refused",
          [("a", ["x|1"], {}), ("b", ["x|2"], {"version": "busbar 1.6.0"})],
          [], 1, "version")
@@ -275,6 +340,22 @@ def selftest() -> int:
               + ("" if ok else f"  meta={m}"))
         fails += 0 if ok else 1
 
+    # the host-skewed merge's meta must be stamped with the LAST-recorded host_triple and keep the
+    # other in history, with the part's path and its (matching) binary_sha256
+    with tempfile.TemporaryDirectory() as t:
+        a = _part(t, "a", ["x|1"])
+        b = _part(t, "b", ["x|2"], host_triple="x86_64-unknown-linux-gnu", at="2026-09-06T01:00:00Z")
+        subprocess.run([sys.executable, me, "--out", os.path.join(t, "m"), "--allow-host-skew",
+                        "--note", "N", a, b], capture_output=True, text=True)
+        m = json.load(open(os.path.join(t, "m", "meta.json"), encoding="utf-8"))
+        history_triples = {e["host_triple"] for e in m.get("host_triple_history", [])}
+        ok = (m["host_triple"] == "x86_64-unknown-linux-gnu" and "aarch64-apple-darwin" in history_triples
+              and m["recorded"] == 2 and m["host_triple_note"] == "N"
+              and all(e["binary_sha256"] == "48e2800c" for e in m.get("host_triple_history", [])))
+        print(("PASS  " if ok else "FAIL  ") + "host-skewed merge stamps the newest host_triple, keeps the older in history with part+sha, notes it"
+              + ("" if ok else f"  meta={m}"))
+        fails += 0 if ok else 1
+
     # the merged ledger is written in cells.json order, not part-by-part concatenation order
     with tempfile.TemporaryDirectory() as t:
         cj = os.path.join(t, "cells.json")
@@ -300,8 +381,10 @@ def main() -> int:
     ap.add_argument("--out")
     ap.add_argument("--allow-harness-skew", action="store_true",
                     help="merge parts recorded under different harness revisions (needs --note)")
+    ap.add_argument("--allow-host-skew", action="store_true",
+                    help="merge parts recorded on different hosts (needs --note); binary_sha256 must still match")
     ap.add_argument("--note", default="",
-                    help="prepended to the merged meta.json's harness_rev_note; required for a skewed merge")
+                    help="prepended to the merged meta.json's harness_rev_note/host_triple_note; required for a skewed merge")
     ap.add_argument("--cells", default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "cells.json"),
                     help="cells.json whose order the merged ledger is written in (record.sh's own order)")
     ap.add_argument("--selftest", action="store_true", help="prove the provenance rule, then exit")
@@ -310,8 +393,9 @@ def main() -> int:
     if a.selftest:
         return selftest()
     if not a.out or not a.parts:
-        sys.exit("usage: merge-recordings.py --out <dir> [--allow-harness-skew] [--note TEXT] <part>...")
-    return merge(a.parts, a.out, a.allow_harness_skew, a.note, a.cells)
+        sys.exit("usage: merge-recordings.py --out <dir> [--allow-harness-skew] [--allow-host-skew] "
+                 "[--note TEXT] <part>...")
+    return merge(a.parts, a.out, a.allow_harness_skew, a.note, a.cells, a.allow_host_skew)
 
 
 if __name__ == "__main__":
