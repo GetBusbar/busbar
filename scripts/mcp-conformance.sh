@@ -255,14 +255,32 @@ official_control() {
     git clone --filter=blob:none "$SDK_REPO" "$sdk" >/dev/null 2>&1 \
       || die "could not clone the control peer. A finding about the runner's network, not busbar."
   fi
-  git -C "$sdk" fetch --quiet origin "$SDK_REF" 2>/dev/null || git -C "$sdk" fetch --quiet origin
-  git -C "$sdk" checkout --quiet "$SDK_REF" \
-    || die "the pinned control-peer commit $SDK_REF is not reachable. Bump the pin deliberately; \
+  # THE BUILD IS SKIPPED ONLY ON PROOF THAT THE TREE IS ALREADY THE PIN, BUILT.
+  #
+  # The clone was already conditional, but everything after it was not, so a restored cache still
+  # paid a fetch, a checkout, an install and a 53-package workspace build — the cache saved the
+  # download and nothing else. The stamp below is written ONLY after a build that succeeded, and it
+  # records the exact commit that was built; a tree whose HEAD has moved, a tree restored from a
+  # cache keyed on a different pin, and a tree whose build died halfway all lack a matching stamp
+  # and are rebuilt in full. An absent or stale stamp always means "build", so the fast path can
+  # only ever be taken over a tree this script itself finished building at this pin.
+  local stamp="$sdk/.busbar-built-ref" head=""
+  head="$(git -C "$sdk" rev-parse HEAD 2>/dev/null || true)"
+  if [ -n "$head" ] && [ "${head#"$SDK_REF"}" != "$head" ] \
+     && [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$head" ]; then
+    say "   control peer already built at $SDK_REF; reusing the restored tree"
+  else
+    git -C "$sdk" fetch --quiet origin "$SDK_REF" 2>/dev/null || git -C "$sdk" fetch --quiet origin
+    git -C "$sdk" checkout --quiet "$SDK_REF" \
+      || die "the pinned control-peer commit $SDK_REF is not reachable. Bump the pin deliberately; \
 never float it to a branch, or this leg goes red the day somebody else's main breaks."
-  say "   building the control peer at $(git -C "$sdk" rev-parse --short HEAD)"
-  ( cd "$sdk" && pnpm install --frozen-lockfile && pnpm run build:all ) >"$dir/build.log" 2>&1 \
-    || { tail -40 "$dir/build.log" >&2; die "the control peer would not build. Harness/runner \
+    say "   building the control peer at $(git -C "$sdk" rev-parse --short HEAD)"
+    rm -f "$stamp"
+    ( cd "$sdk" && pnpm install --frozen-lockfile && pnpm run build:all ) >"$dir/build.log" 2>&1 \
+      || { tail -40 "$dir/build.log" >&2; die "the control peer would not build. Harness/runner \
 finding, not a busbar finding."; }
+    git -C "$sdk" rev-parse HEAD >"$stamp"
+  fi
 
   # A free loopback port, asked of the OS immediately before the fixture is told to use it. The
   # window between the probe closing the socket and the fixture binding it is small and the fixture

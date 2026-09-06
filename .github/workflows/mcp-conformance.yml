@@ -108,14 +108,31 @@ jobs:
       # via corepack so the version is visible in the log when a build breaks.
       - name: Install pnpm
         run: npm install -g pnpm@10
-      # Keyed on the PIN, not on a lockfile hash: the checkout and its build are entirely a function
-      # of the commit the script pins, so the cache is correct by construction and a pin bump misses
-      # it on purpose. Without this the control leg builds a 53-package workspace on every push.
+      # THE KEY IS THE PIN ITSELF, read out of the script.
+      #
+      # It used to be `hashFiles('scripts/mcp-conformance.sh')`, which is the hash of the WHOLE
+      # script: every edit to any of its 700 lines — a comment, an unrelated leg — evicted a cache
+      # that was still perfectly valid, and the control leg rebuilt a 53-package workspace for a
+      # change that could not have affected the peer. The pin is what the cached tree is a function
+      # of, so the pin is what it is keyed on, and a deliberate pin bump still misses on purpose.
+      # An empty extraction is a hard error rather than a constant key: a key that never changes is
+      # a cache that outlives the pin it was built for.
+      - name: Read the control-peer pin
+        id: pin
+        run: |
+          ref="$(sed -n 's/^SDK_REF="\(.*\)"$/\1/p' scripts/mcp-conformance.sh)"
+          suite="$(sed -n 's/^CONFORMANCE_PIN="\(.*\)"$/\1/p' scripts/mcp-conformance.sh)"
+          [ -n "$ref" ] && [ -n "$suite" ] || {
+            echo "could not read SDK_REF/CONFORMANCE_PIN from scripts/mcp-conformance.sh" >&2
+            exit 1
+          }
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "suite=$(printf '%s' "$suite" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache the pinned control peer
         uses: actions/cache@v4
         with:
           path: .mcp-conformance/sdk
-          key: mcp-control-peer-${{ hashFiles('scripts/mcp-conformance.sh') }}
+          key: mcp-control-peer-${{ steps.pin.outputs.ref }}-${{ steps.pin.outputs.suite }}
       - name: Judge the pinned reference SDK
         run: ./scripts/mcp-conformance.sh --official-control
       - name: Publish the control results
