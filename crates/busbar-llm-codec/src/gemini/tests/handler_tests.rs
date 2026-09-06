@@ -559,6 +559,36 @@ fn gemini_speech_response_is_billed() {
     );
 }
 
+/// Regression: the TTS audio must be found wherever in `parts[]` it sits. A Gemini generateContent
+/// candidate is an ARRAY of parts and the audio is not required to be first — a text or thought part
+/// ahead of it is ordinary. Reading only `parts/0` missed the audio, fell through to the
+/// raw-body arm, and handed the caller the RESPONSE JSON ITSELF as a `MediaBlob` labelled
+/// `audio/mpeg`: an unplayable file served as a successful 200, with the real audio discarded.
+#[test]
+fn gemini_speech_response_finds_audio_past_the_first_part() {
+    let wire = serde_json::to_vec(&json!({
+        "candidates": [{ "content": { "parts": [
+            { "text": "here is your audio" },
+            { "inlineData": { "mimeType": "audio/L16;codec=pcm;rate=24000", "data": "AAAB" } }
+        ]}}]
+    }))
+    .unwrap();
+    let resp = super::read_speech_response(&wire).expect("speech response");
+    let blob = resp.audio.expect("audio blob present");
+    assert_eq!(
+        blob.mime_type, "audio/L16;codec=pcm;rate=24000",
+        "the part's own mimeType must be carried, not the raw-body fallback's audio/mpeg"
+    );
+    assert!(
+        matches!(
+            blob.payload,
+            busbar_substrate_values::media::MediaPayload::B64(ref d) if d == "AAAB"
+        ),
+        "the inlineData payload must be carried, not the response JSON bytes: {:?}",
+        blob.payload
+    );
+}
+
 // FIND-3 (money): whisper-1 transcription bills audio DURATION. On an openai->gemini transcription
 // hop the gemini response writer previously surfaced only `Billing::Tokens` and DROPPED a
 // `Billing::Duration`. Assert the seconds survive the hop. Fails pre-fix (usageMetadata absent).

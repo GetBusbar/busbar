@@ -730,12 +730,23 @@ pub fn read_speech_request(
 pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp, CodecError> {
     // Real Gemini → JSON with inline base64 audio; mock/raw → binary body. Try JSON, fall back.
     if let Ok(v) = serde_json::from_slice::<Value>(wire) {
-        if let Some(data) = v
-            .pointer("/candidates/0/content/parts/0/inlineData/data")
-            .and_then(Value::as_str)
-        {
-            let mime = v
-                .pointer("/candidates/0/content/parts/0/inlineData/mimeType")
+        // The audio is the first part that CARRIES it, not `parts[0]`. A generateContent candidate is
+        // an array and Gemini is free to put a text (or thought) part ahead of the `inlineData`;
+        // pointing at index 0 missed the audio for that shape, fell through to the raw-body arm
+        // below, and handed the caller the RESPONSE JSON ITSELF as a blob labelled `audio/mpeg` — an
+        // unplayable file served as a successful 200, with the real audio discarded. Both spellings
+        // are accepted for the same reason `read_transcription_request` accepts both.
+        let inline = v
+            .pointer("/candidates/0/content/parts")
+            .and_then(Value::as_array)
+            .and_then(|parts| {
+                parts
+                    .iter()
+                    .find_map(|p| p.get("inlineData").or_else(|| p.get("inline_data")))
+            });
+        if let Some(data) = inline.and_then(|i| i.get("data")).and_then(Value::as_str) {
+            let mime = inline
+                .and_then(|i| i.get("mimeType").or_else(|| i.get("mime_type")))
                 .and_then(Value::as_str)
                 .unwrap_or("audio/L16;codec=pcm;rate=24000")
                 .to_string();
