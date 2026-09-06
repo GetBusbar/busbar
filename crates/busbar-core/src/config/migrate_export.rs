@@ -224,7 +224,11 @@ fn migrate_one_export_projection(
 /// `root.remove` always removes the key, so without this arm a malformed block vanished from
 /// the migrated document with no `changes` entry at all, which is exactly the "silently lost operator
 /// config" shape `migrate_auth` refuses.
-pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<String>) {
+pub(super) fn migrate_observability_block(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
     let removed = root.remove(Value::from("observability"));
     let Some(Value::Mapping(mut obs)) = removed else {
         if let Some(other) = removed {
@@ -258,5 +262,25 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
             "observability: block removed (DELETED in 1.5.3; it carried no otlp_url to fold)"
                 .into(),
         );
+    }
+    // NAME WHAT IS BEING DELETED. `observability:` is a RETIRED section, so the block genuinely has
+    // to go — but everything still standing in it after `otlp_url` was folded out is operator
+    // configuration this function was about to drop on the floor under a ledger line that says only
+    // "it carried no otlp_url to fold". That reads as "there was nothing else", which is the silent
+    // loss the whole module refuses. In the normal path there is nothing left (the lift-out pass
+    // already moved the webhook + metrics keys); when there IS something — a forward-compat key, or
+    // a sink the lift-out pass declined to move because `export:` was malformed — the todo prints
+    // the key AND its value, so the operator can put it back by hand.
+    if !obs.is_empty() {
+        let residue: Vec<String> = obs
+            .iter()
+            .map(|(k, v)| format!("{}: {}", k.as_str().unwrap_or("?"), one_line(v)))
+            .collect();
+        todos.push(format!(
+            "observability: the block is DELETED in 1.5.3 and these keys had no mechanical home, so \
+             they are GONE from the migrated document — re-express them by hand if you still need \
+             them: {}",
+            residue.join(", ")
+        ));
     }
 }

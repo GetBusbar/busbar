@@ -376,14 +376,14 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (otlp rename) and
     // migrate_response_headers (emit_server_timing move) so this only sees the retired webhook +
     // metrics keys, and rewrites them into the new `export:` surface in place.
-    migrate_observability_export(&mut root, &mut changes);
+    migrate_observability_export(&mut root, &mut changes, &mut todos);
     // ── the 1.5.3 GRAMMAR-LOCK migrations ────────────────────────────────────────────────────────
     // Order matters: `migrate_export_named_map` runs AFTER `migrate_observability_export` (which
     // writes the TYPE-KEYED `export.request-log-webhook` / `export.prometheus` this then renames into
     // the NAMED map) and BEFORE `migrate_observability_block` folds `otlp_url` in as a named
     // instance, so a single run of the migrator lands a 1.4.x config directly in the 1.5.3 shape.
     super::migrate_export::migrate_export_named_map(&mut root, &mut changes);
-    super::migrate_export::migrate_observability_block(&mut root, &mut changes);
+    super::migrate_export::migrate_observability_block(&mut root, &mut changes, &mut todos);
     // AFTER both of the above: every export instance is in its named form by now, so the projection
     // pass sees the final `module:` of each one.
     super::migrate_export::migrate_export_projection(&mut root, &mut changes, &mut todos);
@@ -2002,18 +2002,38 @@ fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
 /// tarball plugins), this is a full mechanical rewrite (not just a printed TODO) — the config breaks
 /// ONCE and the sink is preserved, not lost. Idempotent: a config already in the new shape has no
 /// retired keys to move, so a second run is a no-op.
-fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
+fn migrate_observability_export(
+    root: &mut Mapping,
+    changes: &mut Vec<String>,
+    todos: &mut Vec<String>,
+) {
+    // TAKE-ON-MATCH, on the DESTINATION (see `Taken`), and checked BEFORE anything is lifted. The
+    // old `export_mut` "normalized" a non-mapping `export:` by OVERWRITING it — deleting whatever
+    // the operator wrote there — and by the time it ran, the webhook/metrics keys had already been
+    // taken off `observability:`/`metrics:`, so the migrated document had neither the operator's
+    // export block nor the sinks that were supposed to land in it. Bail out first instead: nothing
+    // is taken, nothing is overwritten, and the todo names the block.
+    if matches!(root.get(Value::from("export")), Some(v) if !v.is_mapping()) {
+        let shape = one_line(root.get(Value::from("export")).expect("just matched"));
+        todos.push(format!(
+            "export: is not a mapping (`{shape}`) — it was left EXACTLY as written, so the retired \
+             `observability.request_log_webhook_url` / `metrics:` sinks were NOT lifted into it and \
+             were left exactly where you wrote them too (nothing was half-migrated). 1.5.3 expects \
+             `export: {{ <name>: {{ module, settings }} }}`; fix the block by hand and re-run \
+             `--migrate-config`."
+        ));
+        return;
+    }
     // Ensure `export` exists as a mapping, returning a handle to splice a sub-exporter into.
     fn export_mut(root: &mut Mapping) -> &mut Mapping {
         let entry = root
             .entry("export".into())
             .or_insert_with(|| Value::Mapping(Mapping::new()));
-        if !matches!(entry, Value::Mapping(_)) {
-            *entry = Value::Mapping(Mapping::new());
-        }
         match entry {
             Value::Mapping(m) => m,
-            _ => unreachable!("just normalized to a mapping"),
+            // Unreachable: the caller returns early on a non-mapping `export:`, and `or_insert_with`
+            // only ever inserts a mapping.
+            _ => unreachable!("a non-mapping export: returns early above"),
         }
     }
 
