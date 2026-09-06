@@ -16,6 +16,17 @@
 # --gate      construction-gate rows (an egrep over the FAIL column) that must not be red after.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
+
+harness_touched_by_picks() {  # <newline-separated repo-relative paths> [--list] -> rc 0 if any is a
+  # harness file. The list comes from harness-rev.sh's own `harness_rev_files`, so "what counts as the
+  # harness" has exactly one definition in this repo: the one whose bytes go into harness_rev.
+  local touched="$1" mode="${2:-}" hit
+  hit="$(bash "$here/scripts/../testing/shadow-oracle/harness-rev.sh" --files 2>/dev/null \
+         | grep -Fxf <(printf '%s\n' "$touched" | grep -v '^$') - 2>/dev/null || true)"
+  if [ "$mode" = "--list" ]; then printf '%s\n' "$hit"; fi
+  [ -n "$hit" ]
+}
+
 tests=""; families=""; gate=""; prove=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -25,9 +36,56 @@ while [ $# -gt 0 ]; do
     # --prove: pick nothing; prove the tip as it stands (a landing whose picks are already on
     # the tree but whose legs were never run to green).
     --prove) prove=1; shift ;;
+    # --selftest: prove the decisions this script makes that are not somebody else's leg. Runs no
+    # git command, picks nothing, records nothing.
+    --selftest) selftest=1; shift ;;
     *) break ;;
   esac
 done
+if [ "${selftest:-0}" = 1 ]; then
+  lfails=0
+  lsay() { printf '%s  %s\n' "$1" "$2"; [ "$1" = PASS ] || lfails=$((lfails+1)); }
+
+  # THE SKEW DECISION. `--allow-harness-skew` was passed to the differ UNCONDITIONALLY on the
+  # families leg, which switches off the guard that proves the golden and the candidate were made
+  # under the same harness. With it always on, a cached golden that had drifted from the tree for
+  # any reason at all was compared anyway, and every difference between the two HARNESSES was
+  # reported as a difference the picked commits caused. It is now earned: allowed only when the
+  # picks themselves changed a file in the harness-rev set, refused otherwise.
+  if harness_touched_by_picks "$(printf '%s\n' 'crates/busbar/src/lib.rs' 'README.md')"; then
+    lsay FAIL "picks touching no harness file were granted --allow-harness-skew (the guard is off for everyone)"
+  else
+    lsay PASS "picks touching no harness file -> strict (no --allow-harness-skew)"
+  fi
+  if harness_touched_by_picks "$(printf '%s\n' 'crates/busbar/src/lib.rs' 'testing/shadow-oracle/cells.json')"; then
+    lsay PASS "picks that change cells.json -> skew allowed (the candidate cannot share the cached golden's rev)"
+  else
+    lsay FAIL "a pick changing cells.json was held to a rev it cannot possibly match"
+  fi
+  # The file that moved this guard's own definition: lib.sh is sourced by record.sh and all 20
+  # drivers and was outside the harness-rev set entirely until this round.
+  if harness_touched_by_picks "$(printf '%s\n' 'testing/fleet-fixtures/lib.sh')"; then
+    lsay PASS "picks that change testing/fleet-fixtures/lib.sh -> skew allowed"
+  else
+    lsay FAIL "testing/fleet-fixtures/lib.sh is not counted as a harness file"
+  fi
+  # An EMPTY touched list (a --prove run whose range resolved to nothing) must be strict, never
+  # skew-allowed: an empty intersection is not a reason.
+  if harness_touched_by_picks ""; then
+    lsay FAIL "an empty touched-file list was granted --allow-harness-skew"
+  else
+    lsay PASS "an empty touched-file list -> strict"
+  fi
+  # …and a near-miss name must not match: the list is compared as WHOLE LINES, or
+  # `testing/shadow-oracle/cells.json.bak` would license a skew.
+  if harness_touched_by_picks "$(printf '%s\n' 'testing/shadow-oracle/cells.json.bak')"; then
+    lsay FAIL "a path that merely CONTAINS a harness file's name was counted as one"
+  else
+    lsay PASS "the harness file list is matched as whole paths, not substrings"
+  fi
+  echo
+  [ "$lfails" -eq 0 ] && { echo "land.sh selftest: GREEN"; exit 0; } || { echo "land.sh selftest: RED ($lfails)"; exit 1; }
+fi
 [ $# -gt 0 ] || [ "$prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
 
 # ONE STAMP FOR EVERY PATH THIS RUN WRITES, and it carries the date and the pid.
@@ -209,9 +267,28 @@ if [ -n "$families" ]; then
   # The same regex selects the cells on both sides (an ID filter, the domain record.sh --filter
   # uses), and --strict makes the differ's exit code carry the verdict for this subset: zero owed
   # cells, an unaccepted divergence, or an owed cell missing from the candidate is red.
+  # ── --allow-harness-skew IS EARNED, NOT ASSUMED ────────────────────────────────────────────────
+  # It was passed unconditionally, which turns off the one guard that says "these two recordings were
+  # made under the same rules". The golden here is a CACHED recording; if the tree's harness_rev has
+  # drifted from it for a reason that has nothing to do with the picks — a stale cache, a rebase onto
+  # commits that changed cells.json, someone else's in-flight edit — the differ compares a golden made
+  # by one harness against a candidate made by another and every difference between the two harnesses
+  # is attributed to the picked commits. Landing is exactly where that attribution has to be right.
+  #
+  # There IS one honest reason to allow it: the picks themselves changed a harness file, so the
+  # candidate is recorded under a rev the cached golden could not possibly share. That is decided
+  # from the picked range's own diff against the harness-rev file set — the SAME list harness_rev()
+  # hashes, read from harness-rev.sh so the two can never drift apart. Anything else is strict.
+  skew_args=()
+  if harness_touched_by_picks "$touched"; then
+    skew_args=(--allow-harness-skew)
+    echo "land.sh: --allow-harness-skew: the picks changed harness file(s): $(harness_touched_by_picks "$touched" --list | tr '\n' ' ')"
+  fi
   python3 "$here/testing/shadow-oracle/diff-cells.py" --golden "$here/target/oracle/recordings/golden" \
-    --candidate "$out" --out "$out.report" --allow-harness-skew --id-filter "$families" --strict \
-    || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; exit 1; }
+    --candidate "$out" --out "$out.report" "${skew_args[@]+"${skew_args[@]}"}" --id-filter "$families" --strict \
+    || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2
+         [ ${#skew_args[@]} -eq 0 ] && echo "land.sh:       (harness skew was NOT allowed: the picks touched no harness file. If the cached golden is stale, re-record it — do not wave the guard.)" >&2
+         exit 1; }
   echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed)"
 fi
 # ── THE GREEN LINE NAMES ITS SCOPE ────────────────────────────────────────────────────────────────
