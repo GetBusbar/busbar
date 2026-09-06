@@ -222,7 +222,27 @@ PROBE_ALIAS="$(jq -er '.plugin_probe.alias' "$CONTRACT")"
 WANT_SIG="$(jq -er '.plugin_probe.expect_signature' "$CONTRACT")"
 WANT_STATUS="$(jq -er '.plugin_probe.expect_status' "$CONTRACT")"
 
-if [ -z "$BIN" ]; then
+# AN EMPTY EXPECTATION IS NOT AN EXPECTATION. The verdict below is
+# `grep -qw "$WANT_SIG" && grep -qw "$WANT_STATUS"`, and `grep -qw ""` MATCHES ANY non-empty line:
+# the empty pattern matches at every position and the word-boundary test around a zero-width match
+# is satisfied. So a contract whose plugin_probe lost expect_signature/expect_status — a rename, a
+# `""`, a jq that is not installed so both substitutions come back empty — turns the one row that
+# functionally proves #52 into "the alias appeared in some output at all", which is GREEN on a
+# binary that refuses every signed plugin. Note this cannot be caught downstream: the row records
+# PASS and the ledger and gate see a normal pass. It has to be refused here, and it is a FAIL and
+# not a SKIP for the same reason the pubkey row is: "we could not check" must never read as "it
+# holds".
+#
+# The emptiness test and the match itself both live in lib.sh (`probe_expectations_absent` and
+# `probe_row_matches`) so gate.sh --selftest can drive them directly, with no runner, no network
+# and no release: proving that an empty expectation is refused requires a case where the OLD code
+# said PASS, and staging that end-to-end would need a real signed plugin and a real binary.
+empty_expect="$(probe_expectations_absent "$PROBE_ALIAS" "$WANT_SIG" "$WANT_STATUS")"
+
+if [ -n "$empty_expect" ]; then
+  record "plugin:${TARGET}" FAIL "the first-party plugin expectation is EMPTY in ${CONTRACT}" \
+    "missing or empty: ${empty_expect}— an empty expectation is matched by anything (grep -qw '' matches every non-empty line), so this row would pass on a binary that refuses every signed plugin, which is exactly #52. Refusing to assert nothing. Fix: restore .plugin_probe.alias / .expect_signature / .expect_status in ${CONTRACT}, and confirm jq is installed on this runner."
+elif [ -z "$BIN" ]; then
   record "plugin:${TARGET}" FAIL "cannot load a plugin: ${EXE} was never extracted" "see extract:${TARGET}."
 elif [ -z "$PLUGIN_ASSET" ]; then
   record "plugin:${TARGET}" FAIL "no plugin_asset declared for ${TARGET} in ${CONTRACT}" \
@@ -258,7 +278,7 @@ YAML
     # `--list-plugins` prints one row per plugin with its signature verdict and load status, which
     # is a strictly stronger assertion than `--validate`'s "N validated" count: it names WHY.
     row="$(printf '%s\n' "$out" | awk -v a="$PROBE_ALIAS" '$3==a{print; exit}')"
-    if printf '%s' "$row" | grep -qw "$WANT_SIG" && printf '%s' "$row" | grep -qw "$WANT_STATUS"; then
+    if probe_row_matches "$row" "$WANT_SIG" "$WANT_STATUS"; then
       record "plugin:${TARGET}" PASS "real signed first-party plugin loads: ${WANT_SIG}/${WANT_STATUS}" ""
     else
       record "plugin:${TARGET}" FAIL "the shipped ${TARGET} binary REFUSES a correctly-signed first-party plugin (#52)" \
