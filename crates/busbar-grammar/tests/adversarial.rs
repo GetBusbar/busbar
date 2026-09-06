@@ -303,6 +303,39 @@ fn the_answers_the_hostile_cases_are_pinned_to() {
 }
 
 #[test]
+fn an_array_cut_off_after_the_wanted_element_asks_for_more_as_an_object_does() {
+    // The object walk will not answer until the closing brace has arrived, because bytes that have
+    // not come cannot be read as this object's own punctuation. The array walk owes the same: an
+    // element whose value happens to self-terminate at the last byte — a closed string, a matched
+    // container, a literal — is not yet followed by anything, and what follows it decides whether
+    // this is an array at all.
+    for (prefix, whole) in [
+        (&b"[\"a\""[..], &b"[\"a\"}"[..]),
+        (&b"[true"[..], &b"[truex]"[..]),
+        (&b"[{}"[..], &b"[{}}"[..]),
+        (&b"[[1]"[..], &b"[[1]}"[..]),
+    ] {
+        assert_eq!(
+            resolve_pointer(prefix, "/0"),
+            Resolved::NeedMore,
+            "{:?} answered off a truncated array",
+            String::from_utf8_lossy(prefix)
+        );
+        // And the completion that makes the prefix a lie is refused, which is what the prefix could
+        // not have known.
+        assert_eq!(
+            resolve_pointer(whole, "/0"),
+            Resolved::Malformed,
+            "{:?}",
+            String::from_utf8_lossy(whole)
+        );
+    }
+    // The array that did close still answers, at the last element as at the first.
+    assert_eq!(probe(br#"[10,20]"#, "/1"), Resolved::Found(Span::new(4, 6)));
+    assert_eq!(probe(br#"[10,20]"#, "/0"), Resolved::Found(Span::new(1, 3)));
+}
+
+#[test]
 fn the_depth_ceiling_is_the_same_number_from_either_direction() {
     // The ceiling is one number, so the deepest body that resolves and the shallowest that is
     // refused have to sit either side of it whichever way the descent got there — through a

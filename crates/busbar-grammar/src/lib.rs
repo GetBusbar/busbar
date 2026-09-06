@@ -249,8 +249,16 @@ fn element(b: &[u8], at: usize, index: &str, depth: usize) -> Result<Option<Span
         let element_start = i;
         i = skip_ws(b, end);
         if seen == wanted {
+            // What follows the element has to be this array's own punctuation, and it has to have
+            // ARRIVED. A value that self-terminates on the last byte — a closed string, a matched
+            // container, a literal — is followed by nothing yet, and what follows it is what says
+            // whether this is an array at all: the same bytes continued `}` make the document
+            // malformed. The object walk already waits for its closing brace for its own reason, and
+            // an answer that a later chunk turns into a refusal is the one thing the incremental
+            // scan must not hand back.
             return match b.get(i) {
-                Some(b',') | Some(b']') | None => Ok(Some(Span::new(element_start, end))),
+                Some(b',') | Some(b']') => Ok(Some(Span::new(element_start, end))),
+                None => Err(ScanErr::NeedMore),
                 Some(_) => Err(ScanErr::Malformed),
             };
         }
