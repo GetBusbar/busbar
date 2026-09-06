@@ -34,7 +34,7 @@ use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{UplinkForwarder, VoiceSession};
+use crate::runtime::session::{serve_with_sweep, UplinkForwarder, VoiceSession};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
@@ -397,7 +397,10 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
 /// session is admitted and served per WS-accept ARRIVAL (through `run_gauntlet_session`, one governed
 /// pass per connection), each running its own supervised pump that parks on the carrier's hard-close —
 /// there is no process-wide sweep loop to spawn here (unlike the A2A start, which resolves outbound
-/// client identities once). The live accept listener + provider dial are composed by the composition
+/// client identities once). The one thing that DOES run on a timer, the governed tool-call sweep
+/// ([`crate::runtime::serve_with_sweep`]), rides each session's own pump and ends with it, which is
+/// what keeps that true: a sweep outliving the socket it sweeps for would be exactly the background
+/// loop this hook says the plane does not have. The live accept listener + provider dial are composed by the composition
 /// root behind the plane's ports (the credential-gated tail). So this confirms readiness and returns
 /// `Ok`, participating in the boot fold so the plane is an explicit member of it rather than silent.
 ///
@@ -1293,7 +1296,12 @@ where
                             .await
                             {
                                 Ok((provider_in, provider_out)) => {
-                                    proxy.run(provider_in, provider_out, stream, sink).await;
+                                    let core = Arc::clone(proxy.core());
+                                    serve_with_sweep(
+                                        core,
+                                        proxy.run(provider_in, provider_out, stream, sink),
+                                    )
+                                    .await;
                                 }
                                 Err(e) => {
                                     // The dial failed: nothing to relay client frames to. Drop the
@@ -1329,10 +1337,13 @@ where
                             now,
                         ) {
                             let (upstream_tx, _) = futures::channel::mpsc::unbounded::<Vec<u8>>();
-                            serve_messages(
-                                stream,
-                                sink,
-                                Arc::new(UplinkForwarder::new(core, upstream_tx)),
+                            serve_with_sweep(
+                                Arc::clone(&core),
+                                serve_messages(
+                                    stream,
+                                    sink,
+                                    Arc::new(UplinkForwarder::new(core, upstream_tx)),
+                                ),
                             )
                             .await;
                         }
@@ -1352,7 +1363,11 @@ where
                         meter,
                         now,
                     ) {
-                        serve_messages(stream, sink, Arc::new(VoiceSession::new(core))).await;
+                        serve_with_sweep(
+                            Arc::clone(&core),
+                            serve_messages(stream, sink, Arc::new(VoiceSession::new(core))),
+                        )
+                        .await;
                     }
                 }
                 Ingress::Mint | Ingress::Sdp => {

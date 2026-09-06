@@ -23,7 +23,7 @@ pub use metering::{
     LeaseState, LocalLease, LocalMeteringPort, MeteringLease, MeteringPort,
 };
 pub use scope::{SessionHandle, VoiceSessionRow};
-pub use session::{Outbound, SessionCore, UplinkForwarder, VoiceSession};
+pub use session::{serve_with_sweep, Outbound, SessionCore, UplinkForwarder, VoiceSession};
 pub use tools::{EchoToolExecutor, ToolExecutor};
 
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;

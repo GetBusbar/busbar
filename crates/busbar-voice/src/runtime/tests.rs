@@ -608,9 +608,7 @@ impl crate::runtime::GovernedCalls for TableFake {
 
     fn expired(&self, _now_ms: u64) -> usize {
         let mut s = self.sessions.lock().unwrap();
-        let n: usize = s.values().map(Vec::len).sum();
-        s.clear();
-        n
+        s.values_mut().map(|open| open.drain(..).count()).sum()
     }
 }
 
@@ -761,4 +759,45 @@ async fn an_unanswered_client_served_call_is_swept_by_the_tick() {
     let plan = core.on_client_frame(client_reply("cr"));
     assert!(plan.refused_reply, "a late reply answers nothing");
     assert!(plan.upstream.is_empty());
+}
+
+/// **The tick actually runs, and it ends with the pump.**
+///
+/// `sweep_expired` is the sweep; this is whether anything on a served session ever calls it. A wait
+/// nobody sweeps is a hold nobody settles, and a client that never replies sends no frame on which
+/// anyone would notice — so time passing has to be the event, and it has to stop being one when the
+/// conversation does.
+/// Real time rather than a paused clock: pausing needs tokio's `test-util`, and shipping a test
+/// feature into the runtime build to make one assertion cheaper is a worse trade than a slow test.
+#[tokio::test]
+async fn the_sweep_rides_the_pump_and_ends_with_it() {
+    let table = Arc::new(TableFake::default());
+    let core = governed_core(Arc::clone(&table));
+    table
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(7, vec!["cr".to_string()]);
+
+    // A pump that runs past one tick and then returns, exactly as a socket closing would.
+    let pump = tokio::time::sleep(std::time::Duration::from_millis(1_400));
+    crate::runtime::serve_with_sweep(Arc::clone(&core), pump).await;
+
+    assert!(
+        table.sessions.lock().unwrap()[&7].is_empty(),
+        "the tick beside the pump swept the call nobody answered"
+    );
+
+    // And once the pump is gone so is the tick: a fresh call opened afterwards is swept by nobody.
+    table
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(7, vec!["cs".to_string()]);
+    tokio::time::sleep(std::time::Duration::from_millis(1_400)).await;
+    assert_eq!(
+        table.sessions.lock().unwrap()[&7],
+        vec!["cs".to_string()],
+        "a sweep that outlived its session would be the background loop this plane does not have"
+    );
 }

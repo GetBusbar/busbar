@@ -419,6 +419,60 @@ where
     }
 }
 
+/// How often the tick beside a session's pump sweeps its governed calls.
+///
+/// One second, against a reply deadline the plane declares in tens of seconds: fine enough that a
+/// call ends within a second of the deadline it was given, coarse enough that an idle session's tick
+/// is not a cost. The deadline itself is not this crate's to name — the leg the root plans carries it,
+/// and the sweep only asks the table which of them have passed.
+const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// **THE TICK BESIDE THE PUMP.** Run one session's frame loop with its governed-call sweep beside it,
+/// and end when the pump does.
+///
+/// The wake has a frame to arrive on. The sweep does not: a client that simply never replies sends
+/// nothing, so there is no frame on which anyone would notice, and a wait nobody sweeps is a hold
+/// nobody settles. This is the only place in the session's life where time passing is itself an
+/// event.
+///
+/// It rides each session's own pump rather than a process-wide loop, which is the shape this plane
+/// already has — voice spawns no boot task, and a sweep that outlived the socket it was sweeping for
+/// would be exactly the background loop the plane's start hook says it does not have. When the pump
+/// returns, the tick is dropped with it.
+pub async fn serve_with_sweep<C, F>(core: Arc<SessionCore<C>>, pump: F)
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+    F: std::future::Future<Output = ()>,
+{
+    let sweep = async {
+        loop {
+            tokio::time::sleep(SWEEP_EVERY).await;
+            // A closed carrier is a conversation that is over; nothing left on it can be answered and
+            // the pump is on its way out anyway.
+            if core.carrier().is_closed() {
+                return;
+            }
+            core.sweep_expired(now_ms());
+        }
+    };
+    futures::pin_mut!(pump);
+    futures::pin_mut!(sweep);
+    // The sweep never completes on its own, so this ends when — and only when — the pump does.
+    futures::future::select(pump, sweep).await;
+}
+
+/// Wall-clock milliseconds, for the sweep's "which deadlines have passed" question.
+///
+/// The reading is handed to the node's table rather than compared here: which calls are past their
+/// deadline is the table's judgement, and a clock read on this side that the table then re-derived
+/// would be two clocks deciding one deadline.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
+}
+
 /// THE UPSTREAM-FACING PLANE — bound to the socket busbar holds to the provider (OpenAI Realtime). The
 /// neutral pump reads server→client events off it; each `handle` decodes one and drives the plan onto
 /// `out` (the client→server write side of the SAME socket) and the carrier (downlink to the client).
