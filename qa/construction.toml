@@ -534,9 +534,14 @@ transport key handle. It has to be a public trait, because busbar-caps implement
 and sits ABOVE the contract, and Rust cannot say "implementable by exactly one other crate". So the \
 type system does not close it and this scan does: outside busbar-caps, an in-tree crate that \
 implements this trait can mint its own kernel evidence, and it does not need a token, a kernel or a \
-review to do it. Scanned INCLUDING test code on purpose -- every site this rule found on the day it \
-was written was in a test module, so a production-only reading of it would be vacuous by \
-construction and would prove nothing. This is the in-tree half only: an out-of-tree plugin can still \
+review to do it. Scanned INCLUDING test code on purpose -- NINE of the ten sites below are test \
+modules, so a production-only reading would see one site and prove almost nothing. It would not be \
+vacuous, and the earlier wording here said it was: `crates/busbar-transport-ws/src/transport.rs:842` \
+is PRODUCTION code -- an `impl KernelSeal for NoKeySeal` inside a `LazyLock<TransportKeyHandle>` \
+static, forging the seal for a handle that names no key slot. That one is real debt of a different \
+weight from the nine fixtures and is called out again on its line below, because a waiver whose \
+stated reason does not describe its own contents is a waiver nobody can re-review. This is the \
+in-tree half only: an out-of-tree plugin can still \
 implement the trait, and per the trust policy a loaded plugin is trusted code, so that is not a line \
 this rule pretends to draw."""
 pattern = 'impl(<[^>]*>)?\s+(busbar_contract::)?(plugin::)?KernelSeal\s+for'
@@ -557,6 +562,10 @@ known_sites = [
   "crates/busbar-transport-tcp/src/tests.rs",
   "crates/busbar-transport-tls/src/tests.rs",
   "crates/busbar-transport-ws/src/tests/battery.rs",
+  # THE ONE PRODUCTION SITE, not a test fixture: `NoKeySeal` at transport.rs:842 forges the seal in
+  # a `LazyLock` static so an accept-side upgrade can hold a handle naming no key slot. Whole-file
+  # entry, so a SECOND production forge added to this same file inherits this excuse without
+  # review — narrowing it needs the rule to learn the `path::function` form the symbol scans use.
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/busbar-unit-egress/src/tests/harness.rs",
 ]
