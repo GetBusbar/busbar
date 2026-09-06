@@ -759,6 +759,44 @@ fn unclaimed_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
 mod tests {
     use super::*;
 
+    /// The fee an apply carries reaches the card, and the card a reader already pinned is unmoved.
+    ///
+    /// The two halves of the swap, asserted together because either alone is a half-truth. A holder
+    /// that took the new fee but repriced its existing readers would bill a request on rates it was
+    /// never admitted under; a holder that left its readers alone by never taking the new fee at all
+    /// would pass the second assertion and be the boot-bound card this replaced. The fee is read as
+    /// the card's own unit price for its flat line, which is where a configured fee ends up.
+    #[test]
+    fn an_apply_moves_the_card_and_leaves_a_pinned_reader_on_the_one_it_took() {
+        let holder = RootCard::default();
+        assert!(
+            holder.pin().is_none(),
+            "a holder that has heard no apply prices nothing"
+        );
+
+        let version = busbar_unit_cost::RateCardVersion::new("root-llm");
+        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 3)));
+        let admitted = holder.pin().expect("the first apply put a card in place");
+        assert_eq!(admitted.fee_unit_price_nanos(), 30_000_000);
+
+        // The apply a request in flight must not feel.
+        let version = busbar_unit_cost::RateCardVersion::new("root-llm");
+        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 11)));
+        assert_eq!(
+            admitted.fee_unit_price_nanos(),
+            30_000_000,
+            "a reader that pinned before the apply was repriced by it"
+        );
+        assert_eq!(
+            holder
+                .pin()
+                .expect("the second apply put a card in place")
+                .fee_unit_price_nanos(),
+            110_000_000,
+            "the apply did not reach the next admission's card"
+        );
+    }
+
     /// A unit no plane on this node composed is not sealed as an administrative read.
     ///
     /// Both audit doors are asked, because both used to answer with the admin plane's word for a
