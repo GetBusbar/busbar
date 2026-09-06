@@ -12,6 +12,10 @@
 #   4. use that api_key to drive a real chat request through busbar -> the mock upstream
 #   A usable key that authorizes a real request is the proof; a 401 at the exchange or the request
 #   is a FAIL.
+#   5. AND FOUR CREDENTIALS THAT MUST NOT WORK — bad signature, expired, wrong audience, none at all.
+#      Steps 1-4 on their own are satisfied by a provider that verifies NOTHING and mints a key for
+#      any bearer header, because every credential they present is one that should be accepted. The
+#      refusals are what make the exchange a verification; see the block at the bottom of this file.
 #
 # Usage: BUSBAR_BIN=<busbar> PLUGIN_DIR=<dir> LEDGER=<tsv> \
 #          [AUTH_MODULE=oidc] probe-auth.sh <alias>
@@ -81,6 +85,13 @@ identity-providers:
     settings:
       issuer: "${ISSUER}"
       audience: "${AUDIENCE}"
+      # jwks_url EXPLICITLY, because the published auth-oidc plugin will not run OIDC DISCOVERY over
+      # a loopback http:// issuer (it refuses the URL and says, in as many words, "set jwks_url
+      # explicitly"). Without this the probe never gets past boot and records "busbar did not come
+      # up" — a fixture-shaped failure that says nothing about the plugin. Discovery is still served
+      # by the stub and still correct; what is pinned here is only where the KEYS are, and the
+      # signature/expiry/audience checks the refusal arms below exercise are unaffected.
+      jwks_url: "http://127.0.0.1:${IDP_PORT}/jwks"
 auth:
   chain: [keys, ${ALIAS}]
   admin_auth: [admin-tokens]
@@ -143,4 +154,68 @@ if [ "$GOT" != "$MARKER" ]; then
     "the key minted from the credential exchange was rejected on the data plane (got '$(printf '%s' "$CHAT" | tr '\n' ' ' | tail -c 200)'). A key that cannot be used is not a usable key."
 fi
 
-record "$ID" PASS "auth ${ALIAS}: credential exchange against a stub IdP returned a busbar key that authorized a real request" ""
+# ── THE REFUSALS. The positive control above is only half a proof. ───────────────────────────────
+# A provider that fetches no JWKS, verifies no signature, reads no `exp` and reads no `aud` — one
+# that mints a busbar key for any bearer header at all — passes everything above byte-for-byte,
+# because every credential presented so far was a credential that SHOULD be accepted. The exchange
+# is a verification only if there is something it says NO to.
+#
+# Four arms, each a credential wrong in exactly ONE way and correct in every other, so a refusal
+# names the property that was checked rather than "something about the token was off":
+#
+#   bad-signature   signed by a keypair the stub deliberately keeps out of its own JWKS
+#   expired         `exp` (and `iat`) an hour in the past
+#   wrong-audience  a different `aud`
+#   no-credential   no Authorization header at all
+#
+# AN ARM THAT DID NOT RUN IS NOT A REFUSAL. If the stub cannot mint an arm's token — a typo'd path,
+# an openssl failure — that arm produced no evidence, and silence is exactly what this probe exists
+# to refuse. Every arm is counted as it runs and the counts are reconciled before any PASS.
+ARMS="bad-signature expired wrong-audience no-credential"
+ARMS_OWED=0; for _a in $ARMS; do ARMS_OWED=$((ARMS_OWED + 1)); done
+ARMS_RAN=0; ARMS_REFUSED=0; ACCEPTED=""; NOT_RUN=""
+
+exchange_refuses() {  # exchange_refuses <arm> — 0 if the arm ran AND was refused
+  local arm="$1" tok="" code
+  if [ "$arm" != "no-credential" ]; then
+    tok="$(curl -fsS -m 30 "http://127.0.0.1:${IDP_PORT}/mint/${arm}" 2>/dev/null || true)"
+    # A mint that produced nothing means this arm never reached busbar. Do NOT count it as ran.
+    [ -n "$tok" ] || { NOT_RUN="${NOT_RUN}${arm}(no token minted) "; return 1; }
+  fi
+  ARMS_RAN=$((ARMS_RAN + 1))
+  if [ "$arm" = "no-credential" ]; then
+    code="$(curl -sS -m 30 -o "${WORK}/refusal.body" -w '%{http_code}' \
+      -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" 2>/dev/null || echo 000)"
+  else
+    code="$(curl -sS -m 30 -o "${WORK}/refusal.body" -w '%{http_code}' \
+      -X POST "http://127.0.0.1:${LISTEN_PORT}/auth/token" \
+      -H "Authorization: Bearer ${tok}" 2>/dev/null || echo 000)"
+  fi
+  # THE REFUSAL IS "NO KEY CAME BACK", not a particular status code: the contract this probe holds
+  # busbar to is that a bad credential does not become a usable busbar key. A 200 carrying an
+  # api_key is an acceptance whatever else it says.
+  if [ -n "$(jq -r '.api_key // empty' <"${WORK}/refusal.body" 2>/dev/null)" ]; then
+    ACCEPTED="${ACCEPTED}${arm}(HTTP ${code}) "
+    return 1
+  fi
+  ARMS_REFUSED=$((ARMS_REFUSED + 1))
+  return 0
+}
+
+for _arm in $ARMS; do exchange_refuses "$_arm" || true; done
+
+if [ "$ARMS_RAN" -ne "$ARMS_OWED" ]; then
+  fail_here "an auth refusal arm did not run, so the probe cannot say the credential was verified" \
+    "${ARMS_RAN} of ${ARMS_OWED} arms reached busbar; missing: ${NOT_RUN:-unknown}. An arm that produced no evidence is not a pass — the positive control alone cannot tell a verifying provider from one that mints a key for any bearer header."
+fi
+if [ -n "$ACCEPTED" ]; then
+  fail_here "the ${ALIAS} provider minted a busbar key for a credential it must refuse" \
+    "accepted: ${ACCEPTED}— each of those tokens is wrong in exactly one way and correct in every other, so this names the check that is missing. A provider that accepts them is not verifying the credential."
+fi
+if [ "$ARMS_REFUSED" -ne "$ARMS_OWED" ]; then
+  fail_here "the auth refusal arms did not reconcile" \
+    "${ARMS_REFUSED} refused of ${ARMS_OWED} owed with nothing recorded as accepted — the probe cannot account for every arm and refuses to report a pass it cannot support."
+fi
+
+record "$ID" PASS "auth ${ALIAS}: a stub-IdP credential exchanged into a busbar key that authorized a real request, and ${ARMS_REFUSED}/${ARMS_OWED} bad credentials were refused" \
+  "refused: ${ARMS}"
