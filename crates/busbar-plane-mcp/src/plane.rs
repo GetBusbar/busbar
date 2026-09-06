@@ -197,16 +197,23 @@ fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> 
 /// name wherever it appears — as a key of a NESTED object, or written inside another member's
 /// string value — and hands back a value the caller never put at that name. The progress token in
 /// particular is a correlation, and a correlation read off a decoy answers the wrong request.
+///
+/// A member spelled twice reads as the LAST one. This is the only place a member is read without
+/// the span grammar, and the span grammar takes the last occurrence because serde_json and the
+/// servers' own parsers do; a walk that stopped at the first would let the client attribute a fact
+/// to a value the server never sees, which is the same decoy in a different spelling.
 fn member_of<'u>(object: &'u [u8], name: &str) -> Option<&'u str> {
     let mut i = skip_space(object, 0);
     if object.get(i) != Some(&b'{') {
         return None;
     }
     i += 1;
+    let mut latest: Option<&'u str> = None;
     loop {
         i = skip_space(object, i);
         match object.get(i) {
-            Some(b'}') | None => return None,
+            Some(b'}') => return latest,
+            None => return None,
             Some(b',') => {
                 i += 1;
                 continue;
@@ -224,16 +231,19 @@ fn member_of<'u>(object: &'u [u8], name: &str) -> Option<&'u str> {
         if object.get(i) == Some(&b'"') {
             let (value, after_value) = string_at(object, i)?;
             if matched {
-                // A member present and not a string reads as absent, as it always has; a member
-                // present as a string reads as its own bytes, unescaped no more than before.
-                return core::str::from_utf8(value).ok();
+                // A member present as a string reads as its own bytes, unescaped no more than
+                // before.
+                latest = core::str::from_utf8(value).ok();
             }
             i = after_value;
         } else {
-            if matched {
-                return None;
-            }
             i = skip_value(object, i)?;
+            if matched {
+                // A member present and not a string reads as absent, as it always has — and a later
+                // spelling that is not a string takes the answer back off an earlier one that was,
+                // because the last spelling is the one the server reads.
+                latest = None;
+            }
         }
     }
 }
@@ -1153,6 +1163,39 @@ mod tests {
     fn a_member_that_is_not_a_string_reads_as_absent() {
         let block = br#"{"progressToken":42}"#;
         assert_eq!(member_of(block, "progressToken"), None);
+    }
+
+    /// A member spelled twice reads as the LAST one, which is what the server will read.
+    ///
+    /// Every other reading of a body here goes through the span grammar, and the span grammar takes
+    /// the last occurrence because serde_json and the servers' own parsers do. This walk is the one
+    /// place a member is read WITHOUT the grammar — the block's keys carry separators a pointer
+    /// would read as levels — so it owes the same answer. Taking the first lets the client attribute
+    /// a fact to a value the server never sees: the progress token is a correlation, and a
+    /// correlation read off the losing duplicate answers a different request than the one that asked.
+    #[test]
+    fn a_member_spelled_twice_reads_as_the_last_one() {
+        let block = br#"{"progressToken":"decoy","progressToken":"real"}"#;
+        assert_eq!(member_of(block, "progressToken"), Some("real"));
+
+        let three = br#"{"progressToken":"a","progressToken":"b","progressToken":"c"}"#;
+        assert_eq!(member_of(three, "progressToken"), Some("c"));
+
+        // The last one deciding also means a last one that is not a string reads as absent, however
+        // many string-valued spellings came before it.
+        let shadowed = br#"{"progressToken":"real","progressToken":42}"#;
+        assert_eq!(member_of(shadowed, "progressToken"), None);
+
+        // And a non-string first spelling does not blind the walk to the string that follows it.
+        let recovered = br#"{"progressToken":42,"progressToken":"real"}"#;
+        assert_eq!(member_of(recovered, "progressToken"), Some("real"));
+
+        // The same for the separator-carrying name the block actually uses.
+        let version = br#"{"io.modelcontextprotocol/protocolVersion":"old","io.modelcontextprotocol/protocolVersion":"new"}"#;
+        assert_eq!(
+            member_of(version, "io.modelcontextprotocol/protocolVersion"),
+            Some("new")
+        );
     }
 
     /// The codec state starts at nothing and counts up on both axes.
