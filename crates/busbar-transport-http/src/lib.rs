@@ -591,10 +591,7 @@ impl Transport for HttpTransport {
                     let req = builder
                         .body(Full::new(Bytes::from(raw.body)))
                         .map_err(|_| TransportError::Framing)?;
-                    let resp = client
-                        .request(req)
-                        .await
-                        .map_err(|_| TransportError::Refused)?;
+                    let resp = client.request(req).await.map_err(|e| map_egress_err(&e))?;
                     let status = resp.status().as_u16();
                     let mut head = format!(
                         "HTTP/1.1 {} {}\r\n",
@@ -763,6 +760,39 @@ impl Transport for HttpTransport {
             Ok(())
         })
     }
+}
+
+/// What actually went wrong with an egress exchange, read off the error's own source chain.
+///
+/// Everything a hyper client can fail with used to come back as `Refused`, which is a specific
+/// claim: nothing was listening. A connect that timed out, a keep-alive ping that went unanswered,
+/// and a connection reset halfway through a response are three different facts about an upstream,
+/// and an operator reading `Refused` for all three is being told the upstream is down when it may
+/// be slow, or wedged, or resetting mid-body. The chain is walked because the io error that carries
+/// the fact is wrapped by however many layers of connector and pool the client is built from.
+///
+/// `Refused` stays as the fallback: an error carrying no io fact at all is one this transport has
+/// nothing more specific to say about than that the exchange did not happen.
+fn map_egress_err(err: &(dyn std::error::Error + 'static)) -> TransportError {
+    let mut cursor = Some(err);
+    while let Some(current) = cursor {
+        if let Some(io) = current.downcast_ref::<io::Error>() {
+            return HttpTransport::map_io_err(io);
+        }
+        if let Some(h) = current.downcast_ref::<hyper::Error>() {
+            // No io error underneath, but hyper knows the exchange had already started: a body cut
+            // short, a request abandoned, a stream the peer took away. That is a reset, not a
+            // refusal — the connection existed.
+            if h.is_incomplete_message() || h.is_body_write_aborted() || h.is_canceled() {
+                return TransportError::Reset;
+            }
+            if h.is_timeout() {
+                return TransportError::Timeout;
+            }
+        }
+        cursor = current.source();
+    }
+    TransportError::Refused
 }
 
 /// Where an egress request actually goes: the dialled scheme and authority, carrying the path the

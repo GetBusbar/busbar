@@ -1291,6 +1291,61 @@ fn the_egress_chunked_body_is_decoded_once_across_many_write_calls() {
     );
 }
 
+/// One wrapping layer, standing in for the connector and pool layers a real client error arrives
+/// wrapped in: the fact this transport reports must be read off the CHAIN, not off the top.
+#[derive(Debug)]
+struct Wrapped(io::Error);
+impl std::fmt::Display for Wrapped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "client error")
+    }
+}
+impl std::error::Error for Wrapped {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.0)
+    }
+}
+
+/// An error with nothing underneath it: the shape the fallback exists for.
+#[derive(Debug)]
+struct Opaque;
+impl std::fmt::Display for Opaque {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "opaque")
+    }
+}
+impl std::error::Error for Opaque {}
+
+/// Every egress failure used to be reported as `Refused` — nothing was listening. A connect that
+/// timed out, a keep-alive that went unanswered and a connection reset mid-response are three
+/// different facts about an upstream, and collapsing them tells an operator the upstream is down
+/// when it is slow, or wedged, or resetting mid-body.
+#[test]
+fn an_egress_failure_reports_the_fact_it_carries_not_a_refusal_for_everything() {
+    let cases: Vec<(io::ErrorKind, TransportError)> = vec![
+        (io::ErrorKind::TimedOut, TransportError::Timeout),
+        (io::ErrorKind::ConnectionReset, TransportError::Reset),
+        (io::ErrorKind::ConnectionAborted, TransportError::Reset),
+        (io::ErrorKind::ConnectionRefused, TransportError::Refused),
+        (
+            io::ErrorKind::AddrNotAvailable,
+            TransportError::AddressRefused,
+        ),
+        (io::ErrorKind::BrokenPipe, TransportError::Closed),
+    ];
+    for (kind, expected) in cases {
+        let bare = io::Error::new(kind, "x");
+        assert_eq!(map_egress_err(&bare), expected, "bare {kind:?}");
+        let wrapped = Wrapped(io::Error::new(kind, "x"));
+        assert_eq!(map_egress_err(&wrapped), expected, "wrapped {kind:?}");
+    }
+    assert_eq!(
+        map_egress_err(&Opaque),
+        TransportError::Refused,
+        "an error carrying no io fact is the one case there is nothing more specific to say about"
+    );
+}
+
 #[test]
 fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     fn honest(frame: &Frame) -> bool {
