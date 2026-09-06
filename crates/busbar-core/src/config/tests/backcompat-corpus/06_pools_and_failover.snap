@@ -1,0 +1,17 @@
+per_request_fee = 2
+limits.default_max_tokens = 4096
+limits.reasoning_effort_budgets = minimal=1024 low=4096 medium=8192 high=16384
+rate_card:
+  claude-sonnet: input=3 output=15 cache_read=0 cache_write=0
+  gpt-4o: input=2.5 output=10 cache_read=0.3 cache_write=3.75
+  gpt-4o-mini: input=0.15 output=0.6 cache_read=0 cache_write=0
+models:
+  claude-sonnet: default_max_tokens=16384 max_requests=5000 max_concurrent=-
+  gpt-4o: default_max_tokens=8192 max_requests=-1 max_concurrent=32
+  gpt-4o-mini: default_max_tokens=4096 max_requests=-1 max_concurrent=-
+groups:
+  org: enabled=true parent=-
+    limit: metric=budget amount=250000 per=month scope=- on_exhaust=- downgrade_to=-
+    limit: metric=tokens_input amount=5000000 per=day scope=pool:primary on_exhaust=- downgrade_to=-
+    limit: metric=tokens_output amount=1000000 per=day scope=pool:cheap on_exhaust=- downgrade_to=-
+    limit: metric=concurrent amount=8 per=- scope=- on_exhaust=- downgrade_to=-

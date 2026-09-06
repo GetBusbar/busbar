@@ -1,0 +1,69 @@
+# `pools:` — the section the corpus had in ZERO of its five members, which meant the one part of the
+# money surface that is decided PER POOL was never resolved by this gate at all. A pool-scoped group
+# limit names a pool; a member's `context_max` is the per-lane token ceiling; a member's `weight:`
+# and `tier:` decide which priced lane a request lands on. All of that is billing behaviour, and all
+# of it was outside the corpus.
+#
+# It also exercises both member GRAMMARS in one document — the legacy rich object `{ model, weight,
+# context_max, ... }` and the 1.6.0 bare name — plus the pool-level `weights:`/`tier:` refinement,
+# the breaker/failover/on_exhausted blocks, and a `fallback_pool` edge between two pools, so a
+# refactor that changes how a pool lowers has somewhere to show.
+listen: "0.0.0.0:8080"
+providers:
+  openai:
+    api_key: { env: OPENAI_API_KEY }
+  anthropic:
+    api_key: { env: ANTHROPIC_API_KEY }
+models:
+  gpt-4o:
+    provider: openai
+    default_max_tokens: 8192
+    max_concurrent: 32
+  gpt-4o-mini:
+    provider: openai
+    default_max_tokens: 4096
+  claude-sonnet:
+    provider: anthropic
+    default_max_tokens: 16384
+    max_requests: 5000
+rate_card:
+  gpt-4o:
+    input_utok: 2.5
+    output_utok: 10
+    cache_read_utok: 0.3
+    cache_write_utok: 3.75
+  gpt-4o-mini:
+    input_utok: 0.15
+    output_utok: 0.6
+  claude-sonnet:
+    input_utok: 3
+    output_utok: 15
+per_request_fee: 2
+pools:
+  primary:
+    members:
+      - { model: gpt-4o, weight: 3, context_max: 128000, tier: large }
+      - { model: claude-sonnet, weight: 1, context_max: 200000 }
+    hooks: [cheapest]
+    breaker:
+      base_cooldown_secs: 20
+      max_cooldown_secs: 300
+      trip: { mode: consecutive, consecutive_n: 4 }
+    failover:
+      timeout_secs: 45
+      max_hops: 2
+    on_exhausted: { fallback_pool: cheap }
+    affinity: { mode: session, header_name: x-tenant-session }
+  cheap:
+    members: [gpt-4o-mini, gpt-4o]
+    weights: { gpt-4o-mini: 5, gpt-4o: 1 }
+    tier: small
+    attempt_timeout_ms: 2500
+    on_exhausted: least_bad
+groups:
+  org:
+    limits:
+      - { budget: 250000, per: month }
+      - { tokens_input: 5000000, per: day, pool: primary }
+      - { tokens_output: 1000000, per: day, pool: cheap }
+      - { concurrent: 8 }
