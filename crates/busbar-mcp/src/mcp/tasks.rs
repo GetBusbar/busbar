@@ -98,6 +98,23 @@ const MAX_RETAINED_TASKS: usize = 4096;
 /// sweep (no background timer to schedule or leak).
 const ACTIVE_TASK_ABANDON_MS: u64 = 86_400_000;
 
+/// The hard ceiling on DISTINCT ANSWER KEYS one task may accumulate.
+///
+/// `tasks/update` is idempotent and repeatable by design — a caller may answer a round, be asked
+/// again, and answer again — and until this bound each call inserted every key it carried into a map
+/// that only ever grew. A caller holding one task id could therefore drive an unbounded allocation
+/// with invented keys, inside a row the retention sweep will not drop while the task is active: the
+/// `MAX_RETAINED_TASKS` ceiling bounds how many tasks exist and said nothing about how large one is.
+///
+/// WHY 64, and why a ceiling rather than a per-key filter: the operator's own `ask_caller` rounds are
+/// what a task can legitimately be answering, and a registration with more than a handful of rounds
+/// is already refused by the ask cap. 64 is far above any real exchange and far below anything that
+/// costs memory. A key ARRIVING past the ceiling is dropped rather than refused, which is the
+/// behaviour `deliver`'s own contract already promises for a key the task is not waiting on — and a
+/// key past the ceiling is, by construction, not one an ask round asked for, because those were
+/// admitted long before the sixty-fifth.
+const MAX_TASK_ANSWERS: usize = 64;
+
 /// Has this caller declared the tasks extension?
 ///
 /// Reads `capabilities.extensions[TASKS_EXTENSION_ID]`, and PRESENCE is the declaration: the value
@@ -307,6 +324,12 @@ impl McpTask {
     fn deliver(&self, responses: &serde_json::Map<String, serde_json::Value>, now_ms: u64) {
         let mut state = self.lock();
         for (key, value) in responses {
+            // BOUNDED. A key already present is an UPDATE and always admitted — re-answering a round
+            // must keep working — but a NEW key past [`MAX_TASK_ANSWERS`] is dropped, so a caller
+            // cannot grow one task's map without limit by inventing keys.
+            if state.answers.len() >= MAX_TASK_ANSWERS && !state.answers.contains_key(key) {
+                continue;
+            }
             state.answers.insert(key.clone(), value.clone());
         }
         state

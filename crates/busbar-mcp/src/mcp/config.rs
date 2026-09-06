@@ -1368,7 +1368,24 @@ fn refuse_unknown_ask_methods(
     capability: &str,
     field: &str,
     rounds: &[AskRoundCfg],
+    cap: u32,
 ) -> Result<(), String> {
+    // AN ASK LIST LONGER THAN ITS OWN CAP MAKES THE CAPABILITY UNCALLABLE, and it used to do so
+    // silently: every round up to `cap` is served, the caller answers each one, and the round after
+    // `cap` refuses — so the tool can be called only by a caller who never finishes the exchange the
+    // operator wrote. That is a registration that cannot be satisfied, which is a boot-time fact
+    // about the file and belongs where the operator is. `cap == 0` is EXEMPT: it is the documented
+    // kill switch, whose whole meaning is "these rounds are not served", so a list under it is not a
+    // contradiction.
+    if cap > 0 && rounds.len() as u64 > u64::from(cap) {
+        return Err(format!(
+            "{at}: `{family}.{capability}.{field}` declares {} rounds, and \
+             `max_caller_ask_rounds:` is {cap}. The exchange can never be completed, so this \
+             capability could never be called. Shorten the list or raise the cap (`0` disables the \
+             asks outright).",
+            rounds.len()
+        ));
+    }
     for (round, entries) in rounds.iter().enumerate() {
         for (key, entry) in entries {
             if !super::callerask::ASK_METHODS.contains(&entry.method.as_str()) {
@@ -1552,13 +1569,24 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
 
     for (tool, allow) in &def.tools_allow {
         validate_capability_name(&at, "tools_allow", tool)?;
-        refuse_unknown_ask_methods(&at, "tools_allow", tool, "ask_caller", &allow.ask_caller)?;
+        let ask_cap = def
+            .max_caller_ask_rounds
+            .unwrap_or(DEFAULT_MAX_CALLER_ASK_ROUNDS);
+        refuse_unknown_ask_methods(
+            &at,
+            "tools_allow",
+            tool,
+            "ask_caller",
+            &allow.ask_caller,
+            ask_cap,
+        )?;
         refuse_unknown_ask_methods(
             &at,
             "tools_allow",
             tool,
             "task_ask_caller",
             &allow.task_ask_caller,
+            ask_cap,
         )?;
         // A task-scoped ask on a tool that never creates a task has no task to be asked inside of,
         // so it would be silently unreachable: the caller would get a plain result and never see
@@ -1604,6 +1632,8 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
             prompt,
             "ask_caller",
             &allow.ask_caller,
+            def.max_caller_ask_rounds
+                .unwrap_or(DEFAULT_MAX_CALLER_ASK_ROUNDS),
         )?;
         validate_prompt(&at, prompt, allow)?;
     }

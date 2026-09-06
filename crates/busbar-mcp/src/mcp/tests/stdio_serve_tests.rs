@@ -1362,3 +1362,63 @@ async fn a_buffered_body_that_cannot_be_read_answers_an_error_frame_not_silence(
     );
     client.eof().await;
 }
+
+/// A SECOND FRAME REUSING A LIVE ID IS REFUSED, NOT SWAPPED IN. The claim used to be a bare
+/// `insert`, which displaced the live entry and dropped the first frame's cancel sender — resolving
+/// its cancel arm and suppressing its answer. The client then got no response and no error for a
+/// request it never cancelled, and the survivor was un-cancellable because whichever finished first
+/// removed the shared key.
+#[tokio::test]
+async fn a_second_frame_reusing_a_live_id_does_not_displace_the_first() {
+    let app = test_app().mcp(&mcp_cfg()).build();
+    let client = Client::open(app, busbar_api::PlaneRequestCtx { key: None });
+    let session = client.session.clone();
+    let (first_tx, mut first_rx) = tokio::sync::oneshot::channel::<()>();
+    assert!(
+        session.claim_inflight("n:1", first_tx),
+        "the first frame to name an id owns it"
+    );
+    let (second_tx, _second_rx) = tokio::sync::oneshot::channel::<()>();
+    assert!(
+        !session.claim_inflight("n:1", second_tx),
+        "a duplicate must be REFUSED; taking the slot is how the first request's answer went missing"
+    );
+    assert!(
+        matches!(
+            first_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ),
+        "and the first frame's cancel gate is still armed and un-fired — a displaced sender would \
+         have resolved it and aborted a dispatch nobody cancelled"
+    );
+}
+
+/// TWO SPELLINGS OF ONE NUMBER ARE ONE KEY. JSON has a single number type, so `1` and `1.0` are the
+/// same id on the wire; keying the in-flight table by the serializer's TEXT gave them two entries,
+/// and a `notifications/cancelled` naming `1.0` for a request issued as `1` missed the table and the
+/// cancel silently did nothing. A cancel that quietly does nothing is the one outcome a cancel must
+/// never have.
+#[test]
+fn a_numeric_id_keys_by_its_value_and_not_by_the_spelling_the_client_chose() {
+    use crate::mcp::stdio_serve::id_key;
+    assert_eq!(
+        id_key(&serde_json::json!(1)),
+        id_key(&serde_json::json!(1.0)),
+        "`1` and `1.0` are the same JSON-RPC id and must reach the same in-flight entry"
+    );
+    assert_eq!(
+        id_key(&serde_json::json!(-7)),
+        id_key(&serde_json::json!(-7.0))
+    );
+    assert_ne!(
+        id_key(&serde_json::json!(1)),
+        id_key(&serde_json::json!("1")),
+        "a STRING id and a NUMBER id never correlate on the wire, so they must not collide here \
+         either — the type tag is still load-bearing"
+    );
+    assert_ne!(
+        id_key(&serde_json::json!(1)),
+        id_key(&serde_json::json!(1.5)),
+        "a genuinely fractional id keeps its own key"
+    );
+}
