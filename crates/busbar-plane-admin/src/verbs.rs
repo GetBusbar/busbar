@@ -266,6 +266,16 @@ fn match_path<'p>(
     Some(params)
 }
 
+/// The part of a request target that names an operation: everything before the first `?` or `#`.
+///
+/// A query string and a fragment are arguments TO an operation, never part of its identity, so the
+/// cut belongs at the one place both callers reach rather than at each of them. It lived at
+/// `resolve` alone for a release, which meant the plane's own decode matched a paged read's raw
+/// target against the templates and found no row at all.
+fn operation_target(target: &str) -> &str {
+    target.split(['?', '#']).next().unwrap_or(target)
+}
+
 /// Find the verb a method and concrete path decode to, and the path parameters it carries.
 ///
 /// Total over the closed table: a linear scan of at most [`VERB_COUNT`] rows, each a handful of segment
@@ -274,6 +284,7 @@ pub(crate) fn find_verb<'p>(
     method: &str,
     path: &'p str,
 ) -> Option<(&'static VerbEntry, Vec<(&'static str, &'p str)>)> {
+    let path = operation_target(path);
     all_verbs().iter().find_map(|entry| {
         if entry.method != method {
             return None;
@@ -318,14 +329,14 @@ impl ResolvedVerb {
 /// The same lookup [`find_verb`] runs at decode, exposed for the one caller entitled to ask it
 /// outside a decode: the composition root, which has to know which kernel verb a unit is a
 /// destination for before the unit's own decode has produced a draft. A query string is not part of
-/// the operation's identity — `GET /audit?limit=4` and `GET /audit` are one row — so it is cut
-/// before the match rather than carried into it.
+/// the operation's identity — `GET /audit?limit=4` and `GET /audit` are one row — so [`find_verb`]
+/// cuts it before the match rather than carrying it in, for this caller and for the plane's own
+/// decode alike.
 ///
 /// `None` means the table does not declare the pair, which is the plane's own answer for an
 /// unsupported operation and never an invitation to guess one.
 #[must_use]
 pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
-    let path = path.split(['?', '#']).next().unwrap_or(path);
     find_verb(method, path).map(|(entry, _params)| ResolvedVerb {
         verb: entry.verb,
         method: entry.method,
