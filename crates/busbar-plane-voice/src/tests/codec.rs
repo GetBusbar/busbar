@@ -1211,3 +1211,66 @@ fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
         );
     }
 }
+
+/// A barge-in on an OPEN turn opens the turn that takes over.
+///
+/// The scheduler reads the interrupt fact off an open and nowhere else — that is the one dispatch
+/// that reaches the compare-and-set which supersedes the unit in flight. Delivered as one more
+/// frame of the turn it interrupts, the fact named the superseded unit to nobody: the interrupted
+/// turn kept the direction's slot and kept pricing while the caller was already speaking over it.
+#[test]
+fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    // A turn is open and speaking.
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(first) = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+
+    // The caller talks over it.
+    let truncate = serde_json::to_vec(&json!({
+        "type": "conversation.item.truncate",
+        "item_id": "item_1",
+        "content_index": 0,
+        "audio_end_ms": 640,
+    }))
+    .expect("truncate fixture serializes");
+    let frames = [frame(&truncate)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the barge-in decodes");
+    let Ingress::Open(second) = ingress else {
+        panic!("a barge-in opens the turn that takes over, got {ingress:?}");
+    };
+    assert_eq!(
+        second
+            .facts
+            .get(<VoicePlane as busbar_contract::plane::PlaneMeta>::INTERRUPT_FACT.unwrap()),
+        Some(FactValue::Int(640)),
+        "the open carries the interrupt the scheduler supersedes on"
+    );
+    assert_ne!(
+        second
+            .correlation_out
+            .expect("the new turn correlates")
+            .value,
+        first
+            .correlation_out
+            .expect("the first turn correlates")
+            .value,
+        "a late frame of the superseded turn must not relay onto the one that replaced it"
+    );
+}

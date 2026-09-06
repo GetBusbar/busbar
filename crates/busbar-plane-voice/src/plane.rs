@@ -955,6 +955,12 @@ fn ingress_from_client_event<'u>(
 
 /// Open a fresh turn (this is its first frame) or relay onto the one already open, attaching the
 /// interrupt fact where the caller says the event carried one, either way.
+///
+/// A frame that CARRIES an interrupt always opens. The scheduler reads the interrupt off an OPEN —
+/// that is the only shape whose dispatch reaches the compare-and-set that supersedes the unit in
+/// flight — so a barge-in delivered as one more frame of the very turn it interrupts named the
+/// superseded unit to nobody: the interrupted turn kept the direction's slot and kept pricing while
+/// the caller was already talking over it, and the turn that took over could never open.
 fn open_or_relay<'u>(
     state: &mut VoiceSessionState,
     dialect: Dialect,
@@ -969,6 +975,9 @@ fn open_or_relay<'u>(
             meta::FACT_INTERRUPT_AUDIO_PLAYED_MS,
             FactValue::Int(i64::try_from(ms).unwrap_or(i64::MAX)),
         );
+        // The interrupted turn ends here; the frame that interrupted it opens the next one, and
+        // carries the fact that says which one it took over from.
+        let _ = state.close_turn();
     }
     if !state.turn_open {
         // The opening frame becomes the unit's own egress body rather than travelling through the
