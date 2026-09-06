@@ -190,6 +190,24 @@ fn one_plane_may_overlap_its_own_claims_and_they_are_ordered_most_specific_first
     assert_eq!(precedence_order(&claims), vec![1, 0]);
 }
 
+/// A pattern is a plane's own `&'static [PathSeg]` and nothing bounds how many open segments it
+/// names. Enough of them and the tail discount runs past the pattern's own score, which is an
+/// arithmetic the seal must survive: a panic here is a node that will not boot because a plugin
+/// wrote an absurd claim, and a wrap is that claim outranking every other claim in the tree.
+#[test]
+fn a_pattern_of_nothing_but_open_segments_still_ranks_below_a_literal_path() {
+    const ALL_TAIL: &[Segment] = &[Segment::Tail; 128];
+    let pattern = precedence(&Selector::PathPattern(ALL_TAIL));
+    assert!(
+        pattern < precedence(&Selector::ExactPath("/v1/thing")),
+        "an open pattern never outranks a whole path"
+    );
+    assert!(
+        pattern <= precedence(&Selector::PathPattern(&[Segment::Tail])),
+        "more open segments never make a pattern more specific"
+    );
+}
+
 #[test]
 fn distinct_exact_paths_and_distinct_headers_do_not_overlap() {
     assert!(!overlaps(

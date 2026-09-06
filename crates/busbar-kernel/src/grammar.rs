@@ -89,7 +89,11 @@ pub fn specificity(selector: &Selector) -> u32 {
                 .iter()
                 .filter(|s| matches!(s, Segment::Tail))
                 .count() as u32;
-            5_000 + literals * 100 + segments.len() as u32 - open * 50
+            // Saturating, because the discount is a plane's own count of open segments and nothing
+            // bounds it: a pattern with more tails than its own score can pay for is the least
+            // specific thing there is, not a subtraction that panics the seal or wraps a claim to
+            // the top of the order.
+            (5_000 + literals * 100 + segments.len() as u32).saturating_sub(open.saturating_mul(50))
         }
         Selector::PrefixOneLevel(p) => 4_000 + p.len() as u32,
         Selector::HeaderExact(n, v) => 3_000 + (n.len() + v.len()) as u32,
