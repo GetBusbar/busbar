@@ -166,16 +166,32 @@ struct MarkedConfig {
     body: String,
 }
 
+/// Every `.md` file under `dir`, at any depth — `read_dir` alone only sees one level, which is
+/// exactly the bug this function exists to not have: `docs/` nests subdirectories (`docs/design/`,
+/// `docs/proof/`, ...) and a non-recursive walk silently skips every `.md` file inside them.
+fn markdown_files_recursive(dir: &std::path::Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let entries = std::fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {dir:?}: {e}"));
+    for entry in entries.filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let file_type = match entry.file_type() {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        if file_type.is_dir() {
+            out.extend(markdown_files_recursive(&path));
+        } else if path.extension().is_some_and(|e| e == "md") {
+            out.push(path);
+        }
+    }
+    out
+}
+
 /// Walk every `docs/**/*.md` + `README.md` for `<!-- doc-check: config -->` immediately followed
 /// (allowing blank lines) by a ```yaml fence, and extract that fence's body.
 fn extract_marked_configs() -> Vec<MarkedConfig> {
     let root = repo_root();
-    let mut files: Vec<PathBuf> = std::fs::read_dir(root.join("docs"))
-        .expect("docs/ exists")
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|e| e == "md"))
-        .collect();
+    let mut files: Vec<PathBuf> = markdown_files_recursive(&root.join("docs"));
     files.push(root.join("README.md"));
 
     let mut out = Vec::new();
