@@ -309,6 +309,42 @@ fn an_unrecognized_error_map_class_reaches_the_roots_sink() {
     );
 }
 
+/// THE INNER ROUTER IS THE ADMIN AUTHORITY, and this is the test the module preamble names.
+///
+/// An administrative request carrying NO credential at all walks the whole loop and is handed to
+/// the mounted surface, which answers it — so nothing in these twelve steps refused it, and what
+/// admits or denies an operator today is the router's own check. That is the honest description
+/// of a composition built with an empty chain and no revocation view, and writing it down as an
+/// assertion is what keeps the steps from reading as a gate they are not yet.
+///
+/// It fails the day somebody binds a real chain here — which is exactly when the preamble it
+/// points at needs rewriting, and when the surface's own check stops being the only one.
+#[cfg(feature = "root-admin")]
+#[tokio::test]
+async fn the_inner_router_is_the_admin_authority_until_the_chain_is_bound() {
+    use tower::ServiceExt;
+
+    let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+    let wrapped =
+        crate::root::units_admin::mount(inner, new_kernel(), 1024, ProductionUnits::admin_only);
+    let response = wrapped
+        .oneshot(
+            axum::http::Request::builder()
+                .method("GET")
+                .uri("/api/v1/admin/audit")
+                .body(axum::body::Body::empty())
+                .expect("the request builds"),
+        )
+        .await
+        .expect("the router answers");
+    assert_eq!(
+        response.status(),
+        200,
+        "a credential-less administrative read was refused by the loop; the authenticate step \
+         has become an authority and the module preamble that says it is not needs rewriting"
+    );
+}
+
 /// The interner is idempotent, which is what makes "leaked exactly once" a property of the
 /// type rather than of the caller's discipline.
 #[test]
