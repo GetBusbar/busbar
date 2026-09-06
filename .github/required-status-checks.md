@@ -59,10 +59,18 @@ would be a red against a commit already being released.
 
 ## Intentionally NOT branch-protection-required (and why)
 
-- **`release gate` (`release-fleet.yml`)** — verifies the bytes of the **latest published release**
-  across platforms/channels. On a PR it asserts the *published* release, not the PR's code, so it is a
-  release-integrity **monitor**, not a code merge gate. It must still be watched (its red = a shipped
-  release regressed); keep its alert path, don't make it a PR merge blocker.
+- **`release gate` (`release-fleet.yml`)** — verifies the bytes of a **published release** across
+  platforms/channels. It asserts the *published* release, never the code in the PR under review, so
+  requiring it would gate merges on a fact about a different commit. It is a release-integrity
+  **verdict**, not a code merge gate.
+  Its teeth are not branch protection but **`release.yml`'s final job**, `release-fleet`, which calls
+  `release-fleet.yml` via `workflow_call` against the version that run just promoted. A red fan-out
+  therefore turns the **release run** red, on the release's own status page, attached to the release
+  that caused it. `release-fleet.yml` accordingly has **no `push:`, no `pull_request:` and no
+  `schedule:` trigger** — only `workflow_call` (release.yml), `workflow_dispatch` (manual re-verify
+  after a downstream is fixed) and `release: published`. Its own header says the same; the two files
+  agree. Do **not** add it to branch protection, and do not re-add a push/schedule trigger to
+  manufacture a status for it.
 - **`qa-gate` `umbrella`** — the ~2h full promotion gate; runs via `workflow_run` after CI on the
   promotion branches, so it gates **promotion**, not each PR. Watch it on `dev→qa→main` promotions.
 - **`mirror` (`ci-images-mirror.yml`)** — infra image mirror on push/schedule; advisory.
