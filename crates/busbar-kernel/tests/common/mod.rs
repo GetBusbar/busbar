@@ -98,6 +98,10 @@ pub struct TestUnits {
     pub challenge: bool,
     /// The lanes the verified set carried when it reached the approve step.
     pub approved_lanes: Mutex<Vec<busbar_caps::LaneId>>,
+    /// Who each of verify, approve and admit was run FOR, in the order they were called. A
+    /// challenge round has no established identity and still passes all three, so the subject they
+    /// are handed is the fact that says which.
+    pub subjects: Mutex<Vec<PrincipalId>>,
     /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
     /// them. Empty is the door that names none, which is every case that predates the slip.
     pub groups: Vec<&'static str>,
@@ -118,6 +122,7 @@ impl Default for TestUnits {
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
             approved_lanes: Mutex::new(Vec::new()),
+            subjects: Mutex::new(Vec::new()),
             groups: Vec::new(),
             capped: None,
         }
@@ -361,9 +366,10 @@ impl Units for TestUnits {
         token: &UnitToken<Verify>,
         trust: &busbar_caps::TrustToken,
         _ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        principal: &PrincipalId,
     ) -> Decision<Verify> {
         self.note(StepName::Verify);
+        self.subjects.lock().unwrap().push(principal.clone());
         match self.refusal(StepName::Verify) {
             Some(refusal) => Decision::refuse(token, refusal),
             // The trust token the loop lends this step is what seals a destination, so the fixture
@@ -383,9 +389,10 @@ impl Units for TestUnits {
         &self,
         token: &UnitToken<Approve>,
         _ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
+        self.subjects.lock().unwrap().push(principal.clone());
         self.approved_lanes
             .lock()
             .unwrap()
@@ -409,6 +416,7 @@ impl Units for TestUnits {
         leases: &busbar_kernel::slice::GroupLeaseSlip,
     ) -> Decision<Admit> {
         self.note(StepName::Admit);
+        self.subjects.lock().unwrap().push(principal.clone());
         match self.refusal(StepName::Admit) {
             Some(refusal) => Decision::refuse(token, refusal),
             None => {

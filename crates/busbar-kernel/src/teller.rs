@@ -724,11 +724,60 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         })
         // A challenge is not a decision about this unit: it is a request for one more round before
         // one can be made. The kernel delivers it and asks again, and the round itself is a
-        // handshake unit — it reaches no destination, is scoped against nothing and opens no
-        // reservation, which is exactly the zero-hold admission. Only an established identity walks
-        // on to verify.
+        // handshake unit — it reaches no destination and opens no reservation, which is exactly the
+        // zero-hold admission.
+        //
+        // NO STEP IS SKIPPED FOR WANT OF A NAME. The round used to jump straight from here to that
+        // admission, taking "no identity yet" as an answer for verify, approve and admit as well.
+        // It is not one. The hook veto seat sits at approve and the frozen-group check sits at
+        // admit, and both are gates that apply BEFORE anyone is known — so those were precisely the
+        // two a challenge round went around: an unauthenticated handshake no seat could veto, run
+        // for a tenant an operator had already frozen. The steps run; what they run FOR is the
+        // arrival subject the design names, an anonymous principal with no bucket.
+        //
+        // The door's sizing is read and discarded: whatever a real door would reserve for an
+        // established caller, a handshake reaches no destination and holds nothing. What the door
+        // is asked for is its REFUSAL, not its reservation.
         .and_then(|authenticated| match authenticated {
-            Authenticated::Challenge(_) => Ok(Admission::ZeroHold),
+            Authenticated::Challenge(_) => {
+                let anonymous = PrincipalId::anonymous();
+                units
+                    .verify(
+                        &UnitToken::<Verify>::mint(seal),
+                        &TrustToken::mint(seal),
+                        ctx,
+                        &anonymous,
+                    )
+                    .into_result(seal)
+                    .and_then(|destinations: Vec<VerifiedDestination>| {
+                        units
+                            .approve(
+                                &UnitToken::<Approve>::mint(seal),
+                                ctx,
+                                &anonymous,
+                                &destinations,
+                            )
+                            .into_result(seal)
+                            .map(|_| destinations)
+                    })
+                    .and_then(|destinations: Vec<VerifiedDestination>| {
+                        // A round takes no lease and the slip it names its groups on goes nowhere:
+                        // there is no admitted unit here to count, so nothing is drawn and there is
+                        // nothing for either of the unit's two ends to give back.
+                        let groups = GroupLeaseSlip::new();
+                        units
+                            .admit(
+                                &UnitToken::<Admit>::mint(seal),
+                                &AdmitToken::<Admit>::mint(seal),
+                                ctx,
+                                &anonymous,
+                                &destinations,
+                                &groups,
+                            )
+                            .into_result(seal)
+                    })
+                    .map(|_| Admission::ZeroHold)
+            }
             Authenticated::Principal(principal) => units
                 .verify(
                     &UnitToken::<Verify>::mint(seal),
