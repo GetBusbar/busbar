@@ -677,10 +677,18 @@ fn prompts_get(
         .and_then(|p| p.get("arguments"))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({}));
-    let cap = rt
-        .catalogue
-        .server(&prompt.server)
-        .map_or(0, |s| s.max_caller_ask_rounds);
+    // Unreachable: prompts and servers are built from one registration in one snapshot pass, so a
+    // prompt naming a server the snapshot lacks cannot exist. REFUSED rather than defaulted, because
+    // the former `map_or(0, …)` leaned on a zero cap meaning "refuse every call" — and a zero cap is
+    // now the operator's documented kill switch, which would have turned this impossible case into a
+    // silent dispatch of an unconfirmed prompt.
+    let Some(server) = rt.catalogue.server(&prompt.server) else {
+        return not_found(
+            id,
+            "this prompt names a server the current snapshot does not carry.",
+        );
+    };
+    let cap = server.max_caller_ask_rounds;
     match caller_ask_decision(
         ctx,
         AskSite {
