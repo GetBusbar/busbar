@@ -5994,6 +5994,86 @@ fn stream_gemini_cumulative_citation_sources_emit_only_the_new_ones() {
 }
 
 /// STREAMING citations, cross-protocol: a Gemini stream chunk carrying candidate-level
+/// A streamed GROUNDED answer changes the SHAPE of its citation list mid-stream, and a POSITIONAL
+/// watermark cannot survive that. `read_gemini_grounding_citations` emits one span-less citation per
+/// `groundingChunks[]` entry while there are no `groundingSupports[]`, then one SPAN-BEARING
+/// citation per (support, chunk) pair once the supports arrive — a different list, not a longer one.
+/// A watermark that only skips the first N entries then skipped the first N *span-bearing*
+/// citations, so the client kept the provisional span-less ones and never received the spans that
+/// say WHICH SENTENCE each source backs. Identity, not position, decides what has been emitted.
+#[test]
+fn stream_gemini_grounding_supports_do_not_lose_span_bearing_citations() {
+    let events = collect_stream(&[
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "The sky is blue. Water is wet."}]}
+            }]
+        }),
+        // Chunk with chunks but NO supports: two provisional, span-less citations.
+        serde_json::json!({
+            "candidates": [{
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {"web": {"uri": "https://a.example", "title": "A"}},
+                        {"web": {"uri": "https://b.example", "title": "B"}}
+                    ]
+                }
+            }]
+        }),
+        // The supports arrive: the SAME two chunks, now each with the span it backs.
+        serde_json::json!({
+            "candidates": [{
+                "groundingMetadata": {
+                    "groundingChunks": [
+                        {"web": {"uri": "https://a.example", "title": "A"}},
+                        {"web": {"uri": "https://b.example", "title": "B"}}
+                    ],
+                    "groundingSupports": [
+                        {"segment": {"startIndex": 0, "endIndex": 16, "text": "The sky is blue."},
+                         "groundingChunkIndices": [0]},
+                        {"segment": {"startIndex": 17, "endIndex": 30, "text": "Water is wet."},
+                         "groundingChunkIndices": [1]}
+                    ]
+                },
+                "finishReason": GEMINI_FINISH_STOP
+            }],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 8}
+        }),
+    ]);
+
+    let emitted: Vec<crate::ir::IrCitation> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockDelta {
+                delta: crate::ir::IrDelta::CitationsDelta(cs),
+                ..
+            } => Some(cs.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+
+    let with_spans: Vec<&crate::ir::IrCitation> =
+        emitted.iter().filter(|c| c.start_index.is_some()).collect();
+    assert_eq!(
+        with_spans.len(),
+        2,
+        "both span-bearing grounding citations must reach the client, not be skipped by a \
+         positional watermark: {emitted:?}"
+    );
+    assert_eq!(with_spans[0].url.as_deref(), Some("https://a.example"));
+    assert_eq!(with_spans[0].start_index, Some(0));
+    assert_eq!(with_spans[0].end_index, Some(16));
+    assert_eq!(with_spans[1].url.as_deref(), Some("https://b.example"));
+    assert_eq!(with_spans[1].start_index, Some(17));
+
+    // The cumulative restatement is still deduped: a source is never delivered twice under the
+    // same identity, which is the whole reason the watermark existed.
+    let mut span_less = emitted.iter().filter(|c| c.start_index.is_none());
+    assert_eq!(span_less.clone().count(), 2, "{emitted:?}");
+    assert!(span_less.all(|c| c.url.is_some()));
+}
+
 /// `citationMetadata.citationSources[]` must read into an `IrDelta::CitationsDelta` on the answer
 /// text block, and a cross-protocol Anthropic egress must re-emit it as a native
 /// `content_block_delta`/`citations_delta` event carrying the url/title — closing the streaming
