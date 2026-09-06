@@ -141,6 +141,34 @@ fn the_resegmentation_scan_costs_one_pass_over_the_frame_not_one_per_chunk() {
         "a {n}-byte frame arriving a byte at a time cost {scanned} bytes of scanning; \
          a resume point makes that O(n), restarting at zero makes it O(n^2)"
     );
+
+    // The other half of the same budget: carving the frames back out of the buffer. An upstream
+    // that flushes a batch of events in one body hands the re-segmenter a buffer holding many
+    // complete frames at once, and removing each one as it is found memmoves the whole remaining
+    // tail — a pass over the buffer per frame. Carving through a read offset and compacting once
+    // costs one buffer's worth however many frames are in it.
+    let mut batch: Vec<u8> = Vec::new();
+    let frames_in_batch = 400;
+    for i in 0..frames_in_batch {
+        batch.extend_from_slice(format!("data: {i}\n\n").as_bytes());
+    }
+    let batch_len = batch.len();
+    let (carved, moved) = carve_complete_frames(&mut batch, 0);
+    assert_eq!(
+        carved.len(),
+        frames_in_batch,
+        "every complete frame in the buffer is carved out in the one pass"
+    );
+    assert!(
+        batch.is_empty(),
+        "a buffer of nothing but complete frames is left empty"
+    );
+    assert!(
+        moved <= 2 * batch_len,
+        "carving {frames_in_batch} frames out of a {batch_len}-byte buffer relocated {moved} \
+         bytes; a read offset makes that O(buffer), removing each frame as it is found makes it \
+         O(frames x buffer)"
+    );
 }
 
 /// A frame trickled in one byte at a time is segmented exactly as one delivered whole.

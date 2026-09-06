@@ -40,6 +40,42 @@ use futures::{Stream, StreamExt};
 
 pub mod proto;
 
+/// Carve every complete SSE frame sitting at the front of `buf`, resuming the terminator scan at
+/// `scanned` (rewound by three, the most of a four-byte terminator a previous look can have left
+/// straddling the boundary).
+///
+/// Returns the carved frames alongside how many bytes this call RELOCATED inside `buf` — the pair a
+/// caller uses to pin the carve's own complexity class without a process-global counter racing every
+/// other test in the binary, exactly as the scan reports the bytes it examined. Carving through a
+/// read offset and compacting once at the end holds that figure to one buffer's worth however many
+/// frames the buffer holds; removing each frame as it is found instead moves the whole remaining
+/// tail once per frame, which is quadratic in the number of frames one buffer arrives holding — the
+/// ordinary shape when an upstream flushes a batch of events in a single body.
+fn carve_complete_frames(buf: &mut Vec<u8>, scanned: usize) -> (Vec<Vec<u8>>, usize) {
+    let mut carved: Vec<Vec<u8>> = Vec::new();
+    let mut moved = 0_usize;
+    let mut resume = scanned;
+    // How much of `buf` has been carved into a frame already. Nothing is removed inside the loop:
+    // the scan simply resumes past what it has taken.
+    let mut consumed = 0_usize;
+    while let (Some((offset, term_len)), _) =
+        proto::find_frame_terminator_from(&buf[consumed..], resume.saturating_sub(3))
+    {
+        let end = consumed + offset + term_len;
+        carved.push(buf[consumed..end].to_vec());
+        consumed = end;
+        // What follows a carved frame is a fresh frame's worth of bytes, none of it yet proven.
+        resume = 0;
+    }
+    if consumed > 0 {
+        // The one compaction: whatever is left of the last, incomplete frame moves to the front,
+        // once, no matter how many frames came off the front before it.
+        moved += buf.len() - consumed;
+        buf.drain(..consumed);
+    }
+    (carved, moved)
+}
+
 /// The `sse` transport.
 pub struct SseTransport {
     http: Arc<HttpTransport>,
@@ -183,14 +219,8 @@ impl Transport for SseTransport {
                             continue;
                         }
                         st.buf.extend_from_slice(http_frame.bytes.as_slice());
-                        while let (Some((offset, term_len)), _) =
-                            proto::find_frame_terminator_from(&st.buf, st.scanned.saturating_sub(3))
-                        {
-                            let end = offset + term_len;
-                            let raw: Vec<u8> = st.buf.drain(..end).collect();
-                            // The buffer moved under the scan: what is left is a fresh frame's
-                            // worth of bytes, none of it yet proven.
-                            st.scanned = 0;
+                        let (carved, _moved) = carve_complete_frames(&mut st.buf, st.scanned);
+                        for raw in carved {
                             if proto::parse_sse_frame(&raw).is_some() {
                                 let status = if st.status_attached {
                                     None
