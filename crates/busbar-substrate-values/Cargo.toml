@@ -37,6 +37,9 @@ serde_json = { workspace = true }
 sonic-rs = { workspace = true }
 # The AWS EventStream framing codec CRC32s each prelude/message.
 crc32fast = { workspace = true }
+# The SSE frame terminator scan jumps between candidate CR/LF bytes rather than stepping every
+# position; a pure byte scanner, opens nothing.
+memchr = { workspace = true }
 # The capped upstream-body read (`proxy::read_capped`) is generic over any chunk stream; `Bytes` is
 # the chunk type and `futures`' `Stream`/`StreamExt` the vocabulary it is generic over. Neither opens
 # anything — the caller supplies the already-connected stream.

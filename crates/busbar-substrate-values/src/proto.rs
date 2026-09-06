@@ -350,35 +350,42 @@ pub fn tool_arguments_to_string(input: &serde_json::Value) -> String {
 /// so the abort text a client sees is identical on every framing.
 pub const STREAM_ABORT_DETAIL: &str = "The response stream was interrupted.";
 
+/// The length of the line terminator starting at `i`, or `None` when `i` does not begin one.
+///
+/// The event-stream grammar names three: CRLF, a lone LF, and a lone CR. A CR at the very end of
+/// the buffer is not yet knowable — the LF that would make it a CRLF may still be in flight — so it
+/// reads as "no terminator here", which is the answer that makes a caller wait for more bytes
+/// rather than split a CRLF down the middle.
+fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
+    match buf.get(i)? {
+        b'\n' => Some(1),
+        b'\r' => match buf.get(i + 1) {
+            Some(b'\n') => Some(2),
+            Some(_) => Some(1),
+            None => None,
+        },
+        _ => None,
+    }
+}
+
 /// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
-/// where `offset` is the byte index of the first terminator byte. Recognizes both the LF-LF (`\n\n`,
-/// 2 bytes) and the spec-legal CRLF (`\r\n\r\n`, 4 bytes) blank-line terminators per WHATWG SSE.
-/// Returns `None` if no complete terminator is present yet.
+/// where `offset` is the byte index of the first terminator byte and the length spans BOTH line
+/// terminators that make the blank line. All three of the spec's terminators are recognised, in
+/// every pairing: `\n\n` and `\r\n\r\n` are the two the providers emit, and `\r\r`, `\n\r`,
+/// `\r\n\r` and `\r\r\n` are the rest of the grammar. Returns `None` if no complete blank line is
+/// present yet.
 pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     let mut i = 0;
-    while i < buf.len() {
-        if buf[i] == b'\n' {
-            // LF-LF: `\n\n` — the blank-line terminator begins at this `\n` and is 2 bytes long.
-            if buf.get(i + 1) == Some(&b'\n') {
-                return Some((i, 2));
-            }
-            // CRLF-CRLF: `\r\n\r\n` — the full spec-legal terminator is 4 bytes. We anchor the scan
-            // on the `\n` that ENDS the preceding line's CRLF, then confirm the blank line's own
-            // `\r\n` follows (`...\n` + `\r\n`). The terminator proper begins at the trailing `\r`
-            // of the preceding line (one byte BEFORE this `\n`), so report `offset = i - 1` and
-            // `len = 4`. (`i >= 1` is guaranteed here: a leading `\n` at index 0 cannot match this
-            // arm, since the preceding `\r` it requires would have to sit at index -1.)
-            if i >= 1
-                && buf[i - 1] == b'\r'
-                && buf.get(i + 1) == Some(&b'\r')
-                && buf.get(i + 2) == Some(&b'\n')
-            {
-                return Some((i - 1, 4));
-            }
+    loop {
+        let at = i + memchr::memchr2(b'\r', b'\n', &buf[i..])?;
+        let first = terminator_len(buf, at)?;
+        if let Some(second) = terminator_len(buf, at + first) {
+            return Some((at, first + second));
         }
-        i += 1;
+        // A line ended here but the next one is not blank: resume past the terminator itself, so a
+        // CRLF is never re-read as a bare CR followed by a bare LF.
+        i = at + first;
     }
-    None
 }
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
@@ -421,6 +428,35 @@ pub fn write_sse_frame(out: &mut Vec<u8>, event_type: &str, data: &serde_json::V
     // serialise is not a condition this emitter can report, and diverging here would be gratuitous.
     out.extend_from_slice(&crate::json::to_vec(data).unwrap_or_default());
     out.extend_from_slice(b"\n\n");
+}
+
+#[cfg(test)]
+mod frame_terminator_tests {
+    use super::*;
+
+    /// The event-stream grammar names three line terminators — CRLF, a lone LF, a lone CR — and a
+    /// blank line is any terminator immediately followed by any terminator (nine pairings). A
+    /// scanner that only recognised `\n\n`/`\r\n\r\n` never framed a bare-CR stream, or a stream
+    /// mixing terminators across the frame boundary, at all.
+    #[test]
+    fn every_spec_line_terminator_pairing_ends_a_frame() {
+        assert_eq!(find_frame_terminator(b"data: a\r\rrest"), Some((7, 2)));
+        assert_eq!(find_frame_terminator(b"data: a\n\rrest"), Some((7, 2)));
+        assert_eq!(find_frame_terminator(b"data: a\r\n\rrest"), Some((7, 3)));
+        assert_eq!(find_frame_terminator(b"data: a\n\r\nrest"), Some((7, 3)));
+        assert_eq!(find_frame_terminator(b"data: a\r\n\n"), Some((7, 3)));
+        assert_eq!(find_frame_terminator(b"data: a\n\r\n"), Some((7, 3)));
+        // One terminator is not a blank line: the frame has not ended.
+        assert_eq!(find_frame_terminator(b"data: a\r\nrest"), None);
+        // A CRLF is ONE terminator, never two: mis-splitting it is the only real risk here.
+        assert_eq!(find_frame_terminator(b"a\r\nb\r\n\r\nc"), Some((4, 4)));
+        // A lone trailing CR is not yet knowable — it may still turn out to be a CRLF.
+        assert_eq!(find_frame_terminator(b"data: a\r"), None);
+        // The existing LF/CRLF offsets stay byte-identical.
+        assert_eq!(find_frame_terminator(b"data: a\n\nrest"), Some((7, 2)));
+        assert_eq!(find_frame_terminator(b"data: a\r\n\r\nrest"), Some((7, 4)));
+        assert_eq!(find_frame_terminator(b"data: a"), None);
+    }
 }
 
 /// Neutral streaming byte-in/byte-out translator seam. The WHOLE concrete `StreamTranslate` (in the

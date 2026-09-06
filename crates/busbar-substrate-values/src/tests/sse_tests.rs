@@ -74,16 +74,50 @@ fn test_feed_scan_work_is_linear_in_bytes_fed() {
     );
 }
 
+/// All three of the spec's line terminators end a line, so all nine of their pairings end a frame —
+/// mirroring `busbar-transport-sse::proto`'s `every_spec_line_terminator_pairing_ends_a_frame` over
+/// `SseReader::feed` rather than the bare scanner. A bare-CR stream (or one mixing terminators
+/// across the frame boundary) must frame exactly like an LF/CRLF one.
+#[test]
+fn every_spec_line_terminator_pairing_ends_a_frame() {
+    let cases: &[(&str, &str)] = &[
+        ("data: a\r\rrest", "data: a\r\r"),
+        ("data: a\n\rrest", "data: a\n\r"),
+        ("data: a\r\n\rrest", "data: a\r\n\r"),
+        ("data: a\n\r\nrest", "data: a\n\r\n"),
+        ("data: a\r\n\n", "data: a\r\n\n"),
+        ("data: a\n\r\n", "data: a\n\r\n"),
+        ("data: a\n\nrest", "data: a\n\n"),
+        ("data: a\r\n\r\nrest", "data: a\r\n\r\n"),
+    ];
+    for (input, framed) in cases {
+        let mut r = SseReader::default();
+        let out = r.feed(input.as_bytes());
+        assert_eq!(out, vec![framed.to_string()], "input {input:?}");
+    }
+
+    // The lone trailing CR is not yet knowable — it may still turn out to be a CRLF — so it
+    // returns nothing until more bytes arrive.
+    let mut r = SseReader::default();
+    assert!(
+        r.feed(b"data: a\r").is_empty(),
+        "a bare trailing CR must wait for more bytes, not frame early"
+    );
+}
+
 /// The cursor rewind must not let a terminator SPLIT across a chunk boundary slip past: the longest
 /// terminator is four bytes, so resuming three bytes behind the previous end is exactly enough.
 /// Passes before and after the cursor exists — it guards the fix, not the defect.
 #[test]
 fn test_terminator_split_across_chunks_still_frames() {
-    for (head, tail) in [
-        ("data: a\r\n", "\r\n"),
-        ("data: a\r\n\r", "\n"),
-        ("data: a\n", "\n"),
-        ("data: a\r", "\r"),
+    for (head, tail, framed, leftover) in [
+        ("data: a\r\n", "\r\n", "data: a\r\n\r\n", ""),
+        ("data: a\r\n\r", "\n", "data: a\r\n\r\n", ""),
+        ("data: a\n", "\n", "data: a\n\n", ""),
+        // A bare CR ending the tail is ITSELF ambiguous (it may still turn out to be a CRLF), so
+        // the tail carries one more, unambiguous byte after it; that byte is not part of the
+        // terminator and stays pending.
+        ("data: a\r", "\rx", "data: a\r\r", "x"),
     ] {
         let mut r = SseReader::default();
         assert!(
@@ -93,9 +127,13 @@ fn test_terminator_split_across_chunks_still_frames() {
         let out = r.feed(tail.as_bytes());
         assert_eq!(
             out,
-            vec![format!("{head}{tail}")],
+            vec![framed.to_string()],
             "a terminator straddling the chunk boundary still ends the event ({head:?}+{tail:?})"
         );
-        assert_eq!(r.pending(), 0, "the framed event left the buffer");
+        assert_eq!(
+            r.pending(),
+            leftover.len(),
+            "only the disambiguating byte (if any) stays buffered ({head:?}+{tail:?})"
+        );
     }
 }

@@ -963,6 +963,7 @@ dependencies = [
  "hmac",
  "http",
  "httpdate",
+ "memchr",
  "metrics",
  "serde",
  "serde_json",
