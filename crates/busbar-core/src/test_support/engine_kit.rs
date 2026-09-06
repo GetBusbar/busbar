@@ -18,7 +18,8 @@ use busbar_substrate::plane::store::PlaneStore;
 use busbar_substrate::plane_host::{EngineHost, LiveHostFactory};
 use busbar_substrate::store::BreakerState;
 use busbar_substrate::testkit::engine_kit::{
-    AdminScope, EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed, TestAppKit,
+    AdminScope, CostKit, EngineApp, EngineHandle, EngineTestKit, GovKit, HookEnvHandle, HookNeed,
+    TestAppKit,
 };
 use std::any::Any;
 use std::collections::BTreeMap;
@@ -57,6 +58,23 @@ impl EngineTestKit for CoreEngineKit {
         crate::governance::GovState::new_with_signer(store, admin_token, signer)
             .map(|g| Arc::new(g) as Arc<dyn GovKit>)
             .map_err(|e| e.to_string())
+    }
+
+    fn cost_flat(&self, price_per_request_cents: i64) -> Arc<dyn CostKit> {
+        Arc::new(crate::cost::CostModel::flat(price_per_request_cents))
+    }
+
+    fn cost_parts(
+        &self,
+        rate_card: Option<&BTreeMap<String, busbar_substrate::config::sections::RateEntryCfg>>,
+        price_per_request_cents: i64,
+        groups: &BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
+    ) -> Arc<dyn CostKit> {
+        Arc::new(crate::cost::CostModel::resolve_parts(
+            rate_card,
+            price_per_request_cents,
+            groups,
+        ))
     }
 
     fn hook_env(
@@ -146,6 +164,8 @@ impl EngineTestKit for CoreEngineKit {
     }
 }
 
+impl CostKit for crate::cost::CostModel {}
+
 impl GovKit for crate::governance::GovState {
     fn create_key(&self, spec: NewKeySpec, now: u64) -> Result<(VirtualKey, String), String> {
         crate::governance::GovState::create_key(self, spec, now).map_err(|e| e.to_string())
@@ -179,10 +199,34 @@ impl GovKit for crate::governance::GovState {
     fn metering_for(&self, bucket: u64) -> Result<Vec<MeteringRow>, String> {
         crate::governance::GovState::metering_for(self, bucket).map_err(|e| e.to_string())
     }
+    fn hydrate_budgets(&self, cost: &dyn CostKit, now: u64) -> Result<(), String> {
+        crate::governance::GovState::hydrate_budgets(self, cost_model_ref(cost), now)
+            .map_err(|e| e.to_string())
+    }
+    fn flush_budgets(&self) {
+        crate::governance::GovState::flush_budgets(self);
+    }
+}
+
+/// The engine's concrete pricing table behind the neutral handle, BORROWED — the `&`-twin of
+/// [`cost_model`], for the registry verbs that only read the card.
+fn cost_model_ref(cost: &dyn CostKit) -> &crate::cost::CostModel {
+    (cost as &dyn Any)
+        .downcast_ref::<crate::cost::CostModel>()
+        .expect("a CostKit the engine's own kit minted is a CostModel")
+}
+
+/// Take the engine's concrete pricing table back out of the neutral handle a plane held — the
+/// [`CostKit`] twin of [`gov_state`]. The `Arc` is kept whole (the fixture holds an
+/// `Arc<CostModel>` anyway), so a plane may hand the same handle to more than one App.
+pub(super) fn cost_model(cost: Arc<dyn CostKit>) -> Arc<crate::cost::CostModel> {
+    let any: Arc<dyn Any + Send + Sync> = cost;
+    any.downcast::<crate::cost::CostModel>()
+        .expect("a CostKit the engine's own kit minted is a CostModel")
 }
 
 /// Take the engine's concrete registry back out of the neutral handle a plane held.
-fn gov_state(gov: Arc<dyn GovKit>) -> Arc<crate::governance::GovState> {
+pub(super) fn gov_state(gov: Arc<dyn GovKit>) -> Arc<crate::governance::GovState> {
     let any: Arc<dyn Any + Send + Sync> = gov;
     any.downcast::<crate::governance::GovState>()
         .expect("a GovKit the engine's own kit minted is a GovState")
@@ -191,6 +235,9 @@ fn gov_state(gov: Arc<dyn GovKit>) -> Arc<crate::governance::GovState> {
 impl TestAppKit for TestApp {
     fn set_governance(&mut self, gov: Arc<dyn GovKit>) {
         *self = std::mem::take(self).governance(gov_state(gov));
+    }
+    fn set_cost(&mut self, cost: Arc<dyn CostKit>) {
+        *self = std::mem::take(self).cost_kit(cost);
     }
     fn add_hook(&mut self, name: &str, def: serde_json::Value) {
         let cfg: crate::config::HookCfg = serde_json::from_value(def)

@@ -1373,6 +1373,28 @@ impl TestApp {
         self.governance = Some(g);
         self
     }
+
+    /// [`Self::cost`] taking the NEUTRAL pricing handle a plane's tests mint through
+    /// [`engine_kit::EngineTestKit::cost_flat`] / `cost_parts`, so a plane can drive this fixture's
+    /// full builder without naming `CostModel`. The handle carries the very model the kit built —
+    /// this unwraps it back to the concrete table and installs it exactly as [`Self::cost`] does.
+    pub fn cost_kit(
+        mut self,
+        c: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::CostKit>,
+    ) -> Self {
+        self.cost = Some(engine_kit::cost_model(c));
+        self
+    }
+
+    /// [`Self::governance`] taking the NEUTRAL registry handle a plane's tests mint through
+    /// [`engine_kit::EngineTestKit::governance`]. Same registry, same object — unwrapped back to
+    /// the concrete `GovState` the fixture holds.
+    pub fn governance_kit(
+        self,
+        g: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::GovKit>,
+    ) -> Self {
+        self.governance(engine_kit::gov_state(g))
+    }
     pub fn failover(mut self, f: crate::config::FailoverCfg) -> Self {
         self.failover_cfg = Some(f);
         self
