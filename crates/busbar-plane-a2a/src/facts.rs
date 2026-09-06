@@ -62,9 +62,9 @@ pub const CONTENT_FACTS: &[&str] = &[
 ///
 /// The identifier travels as ITSELF. This protocol's request identifier is a JSON scalar the shared
 /// reader accepts as either a string or a number and refuses in every other shape, and the
-/// contract's correlation value has an arm for each: a bare run of decimal digits is the number it
-/// is, and anything else is the string it is, copied into the unit's own arena so it lives exactly
-/// as long as the unit correlating on it.
+/// contract's correlation value has an arm for each: a run of decimal digits written the one way a
+/// number can be written is the number it is, and anything else is the string it is, copied into the
+/// unit's own arena so it lives exactly as long as the unit correlating on it.
 ///
 /// It used to be a sixty-four-bit digest, because the correlation value used to be a whole number
 /// and a string had no whole number to be. Two identifiers of one principal on one session could
@@ -82,9 +82,25 @@ pub fn correlation_for<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<Correl
     })
 }
 
+/// Whether a run of bytes is a whole number written the ONE way it can be written.
+///
+/// A leading zero is the case this exists for. `007` and `7` are different bytes and the identifier
+/// they name is compared as a JSON VALUE, so reading them both as the number seven makes two open
+/// requests of one principal on one session answer to each other — the collision the digest was
+/// removed for, arriving by a different road. The canonical spelling is the number; every other
+/// spelling of it is carried as the text it is, and text never equals a number.
+fn is_canonical_number(raw: &[u8]) -> bool {
+    match raw.first() {
+        // A single zero is the only number that may begin with one.
+        Some(b'0') => raw.len() == 1,
+        Some(b'1'..=b'9') => raw.len() <= 19 && raw.iter().all(u8::is_ascii_digit),
+        _ => false,
+    }
+}
+
 /// The value one raw request identifier stands for.
 fn correlation_value<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<CorrelationValue<'u>> {
-    if !raw_id.is_empty() && raw_id.len() <= 19 && raw_id.iter().all(u8::is_ascii_digit) {
+    if is_canonical_number(raw_id) {
         let mut n: u64 = 0;
         for byte in raw_id {
             n = n * 10 + u64::from(byte - b'0');
@@ -196,7 +212,14 @@ mod tests {
         );
     }
 
-    /// Anything that is not a bare run of digits is carried as text, including the near misses.
+    /// Anything that is not a CANONICAL run of digits is carried as text, including the near misses.
+    ///
+    /// The leading-zero rows are the ones that matter and the ones this test used to miss: it named
+    /// a single twenty-digit run, which was carried as text because it was too long to be a number
+    /// rather than because it began with a zero, so the guard it appeared to test was the length
+    /// guard. `007` is short enough to be a number and must still not BE one — it is different bytes
+    /// from `7`, the identifier is compared as a JSON value, and folding the two together makes two
+    /// open requests of one principal on one session answer to each other.
     #[test]
     fn the_near_misses_are_carried_as_text() {
         let arena = TestArena;
@@ -204,6 +227,9 @@ mod tests {
             &b"-1"[..],
             &b"1.0"[..],
             &b"1e3"[..],
+            &b"007"[..],
+            &b"00"[..],
+            &b"0123"[..],
             &b"01234567890123456789"[..],
         ] {
             assert!(
@@ -214,6 +240,26 @@ mod tests {
                 "{raw:?} was not carried as text"
             );
         }
+    }
+
+    /// A leading zero makes a DIFFERENT identifier, and the two never answer to each other.
+    ///
+    /// The one zero that is a number is the number zero written by itself.
+    #[test]
+    fn a_padded_identifier_is_not_the_number_it_pads() {
+        let arena = TestArena;
+        assert_eq!(
+            correlation_value(b"007", &arena),
+            Some(CorrelationValue::Str("007"))
+        );
+        assert_ne!(
+            correlation_value(b"007", &arena),
+            correlation_value(b"7", &arena)
+        );
+        assert_eq!(
+            correlation_value(b"0", &arena),
+            Some(CorrelationValue::Num(0))
+        );
     }
 
     /// The same bytes always give the same value.
