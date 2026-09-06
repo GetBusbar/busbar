@@ -1,0 +1,25 @@
+# A synthetic pure crate that depends directly on TWO banned crates whose published names are
+# hyphenated — `async-std` (the `async_std` pattern in qa/construction.toml, hyphenated by
+# `pattern_to_crate_name`) and `hyper-util` (named verbatim in `EXTRA_BANNED_CRATE_NAMES`).
+#
+# Both are local path packages rather than the real crates.io ones, so the fixture resolves with no
+# network and no registry cache: the denylist walk matches on the resolved package NAME, and a path
+# package carries exactly the same name as a registry one would.
+#
+# The point of the fixture is the name shape, not the crate: `cargo metadata`'s
+# `resolve.nodes[].deps[].name` is the extern-crate identifier (`async_std`, `hyper_util`), while
+# the banned set holds published names (`async-std`, `hyper-util`). A walk that compares those two
+# forms directly can never match a multi-word banned crate, and every other fixture here uses the
+# single-word `libc`, where the two forms coincide and the mismatch is invisible.
+[workspace]
+members = [".", "async-std", "hyper-util"]
+
+[package]
+name = "xtask-fixture-dirty-dep-hyphenated"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+async-std = { path = "async-std" }
+hyper-util = { path = "hyper-util" }

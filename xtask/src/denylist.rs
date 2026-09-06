@@ -444,14 +444,27 @@ fn closure_hits(meta: &Metadata, root_id: &str, root_name: &str, banned: &Banned
             let mut next_path = path.clone();
             next_path.push(dep_name.clone());
 
-            if banned.crate_names.contains(dep_name.as_str()) {
+            // `dep_name` is the edge's local extern-crate identifier: underscored, and the RENAME
+            // if the manifest gave one. `banned.crate_names` holds published package names, which
+            // are hyphenated (`async-std`, `hyper-util`). Comparing the two forms directly can
+            // never match a banned crate whose name has more than one word, and would also miss
+            // one pulled in under a rename — so resolve the edge's package id back to its real
+            // `[package] name` and ban on that. Reporting that same name keeps the offender string
+            // in the shape `qa/denylist-allow.toml` waivers are written in.
+            let dep_pkg_name = meta.names.get(dep_pkg).cloned().unwrap_or_else(|| {
+                // No `packages[]` entry for this id (a metadata shape we do not recognize):
+                // fall back to the edge identifier rather than skipping the check entirely.
+                dep_name.replace('_', "-")
+            });
+
+            if banned.crate_names.contains(dep_pkg_name.as_str()) {
                 hits.push(Hit {
                     crate_name: root_name.to_string(),
-                    offender: dep_name.clone(),
+                    offender: dep_pkg_name.clone(),
                     via: next_path.join(" -> "),
                 });
             }
-            if dep_name == "tokio" {
+            if dep_pkg_name == "tokio" {
                 if let Some((_, features)) = meta.nodes.get(dep_pkg) {
                     for feat in TOKIO_BANNED_FEATURES {
                         if features.iter().any(|f| f == feat) {

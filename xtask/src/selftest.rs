@@ -6,6 +6,12 @@
 //!   Must be GREEN.
 //! * `xtask-fixture-dirty-dep` — a pure crate that depends directly on `libc` (one of section
 //!   1.2's named banned crates). Must be RED, naming `libc`.
+//! * `xtask-fixture-dirty-dep-hyphenated` — a pure crate that depends directly on two banned
+//!   crates whose PUBLISHED names are hyphenated (`async-std`, `hyper-util`), where
+//!   `cargo metadata`'s resolve-graph edge name is the underscored extern-crate identifier
+//!   (`async_std`, `hyper_util`) and the banned set holds the hyphenated form. Must be RED on
+//!   both, naming them hyphenated — every other fixture here uses `libc`, whose two name forms
+//!   coincide, so nothing else can catch a walk that compares the two forms directly.
 //! * `xtask-fixture-dirty-src` — a pure crate with no unusual dependency at all, whose own
 //!   `src/lib.rs` calls `std::fs::read` in production code (and, to prove the test-code
 //!   exclusion, `std::env::var` inside a `#[cfg(test)] mod`). Must be RED on `std::fs` only —
@@ -132,6 +138,13 @@ pub fn run() -> bool {
         "dirty-dep",
         "xtask-fixture-dirty-dep",
         &["libc"],
+        &mut fails,
+    );
+    check(
+        "pure crate with banned hyphenated-name direct dependencies",
+        "dirty-dep-hyphenated",
+        "xtask-fixture-dirty-dep-hyphenated",
+        &["async-std", "hyper-util"],
         &mut fails,
     );
     check(
