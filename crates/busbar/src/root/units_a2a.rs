@@ -340,6 +340,26 @@ impl RecordLegs {
 //   WHAT THE PLANE ANSWERED
 // ═════════════════════════════════════════════════════════════════════════════════════════════════
 
+/// Which record this unit's legs are about, and what they write into it.
+///
+/// The identity is the plane's, read once off the document it decoded, and it is a field here for
+/// the same reason every other answer is: the step that runs the legs holds no borrow on the bytes.
+/// Nothing here is derived — an identity this file invented would be an identity the caller cannot
+/// ask for back, and a body this file assembled would be a record whose contents the plane never
+/// saw.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RecordIdentity {
+    /// The record's own key within its kind. Empty for a scan of a whole kind, which keys on
+    /// nothing, and required for every operation that keys on one.
+    pub id: String,
+    /// The record this one hangs under, for the append-only kinds and for a narrowed scan.
+    pub parent: Option<String>,
+    /// The position within that parent.
+    pub seq: u64,
+    /// The bytes the write carries. The store keeps them verbatim and never looks inside.
+    pub body: Vec<u8>,
+}
+
 /// Everything the plane said about one unit, read once.
 ///
 /// The kernel holds the borrow that lets a plane be asked; these are its answers, carried forward
@@ -366,6 +386,8 @@ pub struct A2aDraft {
     pub resource: Option<ResourceLocator>,
     /// The legs of the plane's route plan, in the plan's order.
     pub legs: Vec<Leg>,
+    /// Which record those legs are about, and what a write among them carries.
+    pub record: RecordIdentity,
     /// When the single-use token this plan redeems stops being redeemable, where it redeems one.
     ///
     /// The plane read it off the token; the root neither invents it nor derives it from a lifetime
@@ -892,6 +914,25 @@ fn record_ops(legs: &[Leg]) -> impl Iterator<Item = &'static str> + '_ {
     })
 }
 
+/// Whether one record operation is keyed on the record's own identity.
+///
+/// Every one of them is, except the scan: a scan of an append-only kind is narrowed by its parent
+/// and a scan of a top-level kind is the whole kind, and neither names a row.
+fn keys_by_id(op: &'static str) -> bool {
+    op != records::OP_SCAN
+}
+
+/// Whether a read leg came back with nothing where the plan expected a row.
+///
+/// Only the single-record read answers this: a scan over an empty kind is an empty answer and not a
+/// missing one, which is the difference between "this caller has no tasks" and "the task this
+/// caller named is not here".
+fn missing_row(legs: &[Leg], results: &[LegResult]) -> bool {
+    record_ops(legs)
+        .zip(results)
+        .any(|(op, result)| op == records::OP_GET && result.body.is_none())
+}
+
 /// Whether any leg of a plan spends a single-use token.
 fn plans_redemption(legs: &[Leg]) -> bool {
     record_ops(legs).any(|op| op == records::OP_REDEEM)
@@ -1152,13 +1193,21 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             }
         };
 
+        // A record the store cannot key is not written. Every kind but a whole-kind scan is keyed on
+        // the record's own identity, and a leg that ran with an empty one wrote every caller's row
+        // over every other caller's: one key, one row, and whichever principal wrote last is the
+        // one a later read answers with.
+        if self.draft.record.id.is_empty() && record_ops(&self.draft.legs).any(keys_by_id) {
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
+
         // The record legs, in the plan's order, before anything is dialled. They are what says
         // whether this caller may see the task at all and what the agent's own name for it is, and
         // the hop that follows carries that name.
         let key = LegKey {
-            id: "",
-            parent: None,
-            seq: 0,
+            id: &self.draft.record.id,
+            parent: self.draft.record.parent.as_deref(),
+            seq: self.draft.record.seq,
             ts: self.bindings.now,
             expires_at,
             terminal: matches!(
@@ -1166,7 +1215,11 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
                 FinishClass::Complete | FinishClass::Error
             ),
         };
-        match self.bindings.records.run_plan(&self.draft.legs, &key, &[]) {
+        match self
+            .bindings
+            .records
+            .run_plan(&self.draft.legs, &key, &self.draft.record.body)
+        {
             Err(LegError::UndeclaredOp { .. }) => {
                 return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination))
             }
@@ -1180,6 +1233,13 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
                 // answer and dial the agent anyway.
                 if spent_token(&self.draft.legs, &results) {
                     return Decision::refuse(token, Refusal::new(ReasonCode::Replayed));
+                }
+                // And the read legs are READ. They are what says whether this caller may see the
+                // task at all: a row the store does not have is nothing to project and nothing for
+                // the hop to carry a name from, so the plan stops here rather than proceeding to
+                // hand back an answer about a record that does not exist.
+                if missing_row(&self.draft.legs, &results) {
+                    return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
                 }
                 read_through_poison(&self.progress).legs = results;
             }
@@ -2213,6 +2273,7 @@ mod tests {
 
         let mut redeeming = draft(ops::OP_PUSH_EVENT);
         redeeming.legs = vec![leg_record(records::SCHEMA_PUSH_CONFIG, records::OP_REDEEM)];
+        redeeming.record.id = "push-token-1".to_string();
         redeeming.redeem_expires_at = Some(NOW + 300);
 
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
@@ -2244,6 +2305,79 @@ mod tests {
         assert_eq!(
             route(&unheld)
                 .expect_err("a redemption nothing can hold is not run")
+                .reason(),
+            ReasonCode::NoDestination
+        );
+    }
+
+    /// **One caller's task is one caller's row.** The record legs used to run with an empty
+    /// identity and an empty body: every task this node ever wrote landed on the same key, with
+    /// nothing in it, so the second principal's send replaced the first's and a later read handed
+    /// the survivor to whoever asked. The identity and the body are the plane's, carried here and
+    /// written as the plane read them.
+    ///
+    /// And the answers are ACTED ON, which is the other half: a read leg that came back with no row
+    /// refuses, because a task this node does not have is nothing to project and nothing for a hop
+    /// to carry a name from.
+    #[test]
+    fn each_callers_record_is_its_own_row_and_a_missing_one_refuses() {
+        let store = Arc::new(KeyedStore::default());
+        let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+        deployment.records = RecordLegs::new(store.clone());
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let route = |unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>| {
+            Units::route(
+                unit,
+                &UnitToken::mint(&seal),
+                &a2a_ctx(),
+                &AccrualMeter::new(),
+            )
+            .into_result(&seal)
+        };
+
+        let writing = |id: &str, body: &[u8]| {
+            let mut sending = draft(ops::OP_MESSAGE_SEND);
+            sending.legs = vec![leg_record(records::SCHEMA_TASK, records::OP_PUT)];
+            sending.record = RecordIdentity {
+                id: id.to_string(),
+                parent: None,
+                seq: 0,
+                body: body.to_vec(),
+            };
+            sending
+        };
+
+        assert!(route(&deployment.driving(None, writing("task-a", br#"{"who":"a"}"#))).is_ok());
+        assert!(route(&deployment.driving(None, writing("task-b", br#"{"who":"b"}"#))).is_ok());
+        assert_eq!(
+            store.rows(),
+            2,
+            "two callers, two rows — not one row written twice"
+        );
+        assert_eq!(
+            store.body(records::SCHEMA_TASK.as_str(), "task-a"),
+            Some(br#"{"who":"a"}"#.to_vec()),
+            "and each row carries the body its own caller sent"
+        );
+
+        // The read leg answers with the row, and the answer is kept where the later steps read it.
+        let mut reading = draft(ops::OP_TASK_GET);
+        reading.legs = vec![leg_record(records::SCHEMA_TASK, records::OP_GET)];
+        reading.record.id = "task-a".to_string();
+        let found = deployment.driving(None, reading.clone());
+        assert!(route(&found).is_ok());
+        assert_eq!(
+            read_through_poison(&found.progress).legs[0].body,
+            Some(br#"{"who":"a"}"#.to_vec()),
+            "the row the plan read is the row the plan answers from"
+        );
+
+        let mut absent = reading;
+        absent.record.id = "task-nobody-wrote".to_string();
+        assert_eq!(
+            route(&deployment.driving(None, absent))
+                .expect_err("there is no such task on this node")
                 .reason(),
             ReasonCode::NoDestination
         );
@@ -2561,6 +2695,12 @@ mod tests {
                 name: "probe",
             }),
             legs: Vec::new(),
+            record: RecordIdentity {
+                id: "task-1".to_string(),
+                parent: None,
+                seq: 0,
+                body: br#"{"id":"task-1"}"#.to_vec(),
+            },
             redeem_expires_at: None,
             request_bytes: 128,
             response_bytes: 256,
@@ -2738,6 +2878,53 @@ mod tests {
             Ok(spent
                 .insert((kind.to_string(), token.to_string()), expires_at)
                 .is_none())
+        }
+    }
+
+    /// A store that keeps rows the way a store keeps rows: by kind and identity, with the body.
+    ///
+    /// The recording double above answers the question "was the leg reached"; this one answers
+    /// "what is in the row afterwards", which is the only way to see one caller's task written over
+    /// another's.
+    #[derive(Default)]
+    struct KeyedStore {
+        rows: Mutex<std::collections::BTreeMap<(String, String), Vec<u8>>>,
+    }
+
+    impl KeyedStore {
+        fn rows(&self) -> usize {
+            self.rows.lock().expect("rows lock").len()
+        }
+
+        fn body(&self, kind: &str, id: &str) -> Option<Vec<u8>> {
+            self.rows
+                .lock()
+                .expect("rows lock")
+                .get(&(kind.to_string(), id.to_string()))
+                .cloned()
+        }
+    }
+
+    impl busbar_api::Store for KeyedStore {
+        no_governance_rows!();
+
+        fn upsert_plane_record(
+            &self,
+            record: &busbar_api::PlaneRecord,
+        ) -> busbar_api::StoreResult<()> {
+            self.rows.lock().expect("rows lock").insert(
+                (record.kind.clone(), record.id.clone()),
+                record.body.clone(),
+            );
+            Ok(())
+        }
+
+        fn get_plane_record(
+            &self,
+            kind: &str,
+            id: &str,
+        ) -> busbar_api::StoreResult<Option<Vec<u8>>> {
+            Ok(self.body(kind, id))
         }
     }
 
