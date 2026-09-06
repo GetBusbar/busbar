@@ -947,12 +947,12 @@ impl TurnUsage {
         // The four token figures and the cache figure are the upstream's own: reported, not derived,
         // so nothing here is marked as an estimate.
         let reported = |quantity| Some((quantity, QuantitySource::Count, false));
-        match decl.key.as_str() {
-            "audio_tokens_in" => reported(self.audio_tokens_in),
-            "audio_tokens_out" => reported(self.audio_tokens_out),
-            "text_tokens_in" => reported(self.text_tokens_in),
-            "text_tokens_out" => reported(self.text_tokens_out),
-            "cached_tokens" => reported(self.cached_tokens),
+        match decl.key {
+            meta::CLASS_AUDIO_TOKENS_IN => reported(self.audio_tokens_in),
+            meta::CLASS_AUDIO_TOKENS_OUT => reported(self.audio_tokens_out),
+            meta::CLASS_TEXT_TOKENS_IN => reported(self.text_tokens_in),
+            meta::CLASS_TEXT_TOKENS_OUT => reported(self.text_tokens_out),
+            meta::CLASS_CACHED_TOKENS => reported(self.cached_tokens),
             // The duration this plane counted itself rather than read off the upstream, in SECONDS,
             // through the plane's own boundary. The counter is milliseconds; the class the plane
             // declares is denominated in seconds, and a figure that settled in the counter's unit
@@ -960,7 +960,7 @@ impl TurnUsage {
             // because that is what it is — a duration derived from a byte count under an assumed
             // format — and a billing dispute turns on the difference between that and a figure the
             // destination confirmed.
-            "audio_seconds_in" => Some((
+            meta::CLASS_AUDIO_SECONDS_IN => Some((
                 meta::audio_seconds_in(self.audio_ms_in),
                 QuantitySource::Count,
                 true,
@@ -968,7 +968,7 @@ impl TurnUsage {
             // A cardinality the plane surfaced as a declared content fact, named as the fact it was
             // read from rather than as a bare count: the variance rule needs to know which
             // declaration a figure came from to find its kernel-derived companion.
-            "tool_calls" => Some((
+            meta::CLASS_TOOL_CALLS => Some((
                 self.tool_calls,
                 QuantitySource::PlaneCount {
                     content_fact_key: meta::FACT_TOOL_CALLS.to_string(),
@@ -1782,7 +1782,7 @@ impl Units for VoiceUnit<'_> {
             // The located figure beside it spans every class the plane declares, and the exit path
             // posts it as the settled amount rather than pricing it through this label; what the
             // label is for is saying what the kernel's own counting was OF.
-            class: declared_class("audio_seconds_in"),
+            class: declared_class(meta::CLASS_AUDIO_SECONDS_IN.as_str()),
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
