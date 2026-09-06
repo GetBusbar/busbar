@@ -68,10 +68,56 @@ EOF
     bash "${repo}/testing/fleet-fixtures/verdict.sh"
 }
 
+# regen_clean → 0 if the committed ledger is what a fresh derivation from Appendix B produces.
+#
+# WHAT --strict ACTUALLY VERIFIED, AND WHAT IT DID NOT. Every row it judges comes out of the CACHED
+# qa/design-bindings.json. Appendix B of ARCHITECTURE.md is the SOURCE of that file and was never
+# opened: --strict proved that every binding IN THE CACHE is mapped, which is a statement about the
+# cache. Add a binding to Appendix B and do not re-run --write, and --strict stays green — the new
+# binding is unmapped, unproven, and invisible, because it is not in the file being read. That is the
+# precise inverse of what "DONE requires every binding mapped" is meant to mean.
+#
+# So a strict run re-derives from Appendix B into a temp dir and diffs. The regen is written OUTSIDE
+# the tree and nothing here rewrites the committed ledger: a check that repairs what it is checking
+# has not checked anything.
+regen_clean() {
+  local tmp rc=0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/design-bindings-regen.XXXXXX")" || return 2
+  if ! python3 "${repo}/scripts/design-bindings.py" --write \
+        --out-json "$tmp/fresh.json" --out-md "$tmp/fresh.md" >"$tmp/regen.log" 2>&1; then
+    echo "design bindings REGEN-CLEAN: the derivation from Appendix B FAILED --" >&2
+    sed 's/^/    /' "$tmp/regen.log" >&2
+    rm -rf "$tmp"; return 2
+  fi
+  diff -u "$BINDINGS" "$tmp/fresh.json" >"$tmp/json.diff" 2>&1 || rc=1
+  diff -u "${repo}/qa/DESIGN-BINDINGS.md" "$tmp/fresh.md" >"$tmp/md.diff" 2>&1 || rc=1
+  if [ "$rc" -ne 0 ]; then
+    echo
+    echo "design bindings REGEN-CLEAN: RED -- the committed ledger is NOT what Appendix B derives."
+    echo "  --strict judges the rows in $BINDINGS. If that file is stale, a binding added to"
+    echo "  ARCHITECTURE.md Appendix B is absent from every row --strict reads, so it is unmapped,"
+    echo "  unproven, and green. Regenerate with 'scripts/design-bindings.sh --write' and commit both"
+    echo "  qa/design-bindings.json and qa/DESIGN-BINDINGS.md."
+    head -40 "$tmp/json.diff" | sed 's/^/    /'
+    head -20 "$tmp/md.diff"   | sed 's/^/    /'
+  else
+    echo "design bindings REGEN-CLEAN: the committed ledger matches a fresh derivation from Appendix B"
+  fi
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 check() {
-  local strict="$1" ledger="$WORK/ledger.tsv" rc
+  local strict="$1" ledger="$WORK/ledger.tsv" rc regen_rc=0
   [ -f "$BINDINGS" ] || { echo "design-bindings: $BINDINGS missing -- run $0 --write first" >&2; return 2; }
+  # REGEN-CLEAN first, and only under --strict: plain --check is the gap REPORT, and a report on a
+  # slightly stale ledger is still a useful report. --strict is the DONE claim, and that claim is
+  # about Appendix B, not about a cache of it.
+  if [ "$strict" = 1 ]; then
+    regen_clean || regen_rc=$?
+  fi
   run_check "$BINDINGS" "$ledger" "$strict"; rc=$?
+  [ "$regen_rc" -ne 0 ] && rc="$regen_rc"
   # The gap list: every SKIP row names the binding and the check that would prove it.
   local skips
   skips="$(awk -F'\t' '$2=="SKIP"{n++} END{print n+0}' "$ledger")"
@@ -224,6 +270,27 @@ sys.exit(0 if any(c['ref']=='$real_fn' and c['kind']=='test' for c in b['checks'
     say PASS "an owed id with no ledger row -> red, named DID NOT RUN (the PASS row does not carry it)"
   else
     say FAIL "owed id with no row: rc=$rc (expected rc!=0 and a named DID NOT RUN line)"; cat "$tmp/g.log"
+  fi
+
+  # (h) REGEN-CLEAN. --strict judges the rows in the CACHED qa/design-bindings.json and never opened
+  #     Appendix B, so a binding added to ARCHITECTURE.md and not re-derived was simply absent from
+  #     everything --strict reads: unmapped, unproven, and green. Prove both arms of the new check —
+  #     the committed ledger is clean, and a ledger with one binding removed is REFUSED.
+  if ( regen_clean ) >"$tmp/h-clean.log" 2>&1; then
+    say PASS "REGEN-CLEAN: the committed ledger matches a fresh derivation from Appendix B"
+  else
+    say FAIL "REGEN-CLEAN: the committed ledger does not match Appendix B"; cat "$tmp/h-clean.log"
+  fi
+  "$PY" -c "
+import json,sys
+d=json.load(open('${repo}/qa/design-bindings.json'))
+d['bindings']=d['bindings'][1:]
+json.dump(d, open('$tmp/stale.json','w'), indent=1, ensure_ascii=False)
+"
+  if ( BINDINGS="$tmp/stale.json" regen_clean ) >"$tmp/h-stale.log" 2>&1; then
+    say FAIL "REGEN-CLEAN: a ledger missing a binding was ACCEPTED -- a binding added to Appendix B would stay invisible to --strict"
+  else
+    say PASS "REGEN-CLEAN: a ledger missing one binding is REFUSED (a stale cache cannot hide an unmapped binding)"
   fi
 
   echo
