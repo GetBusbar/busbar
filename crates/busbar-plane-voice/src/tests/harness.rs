@@ -116,6 +116,55 @@ impl SessionView for FreshSession {
     }
 }
 
+/// A session that answers the facts the kernel sealed onto it from the unit that opened the turn.
+///
+/// The kernel is what carries a fact from an `Ingress::Open` draft onto the session, and it is the
+/// only way one connection half of a session can be told something another half determined. A
+/// harness that always answers `None` cannot tell a plane that publishes a fact apart from one that
+/// does not.
+#[derive(Debug, Default)]
+pub struct SealedSession {
+    facts: Vec<(String, String)>,
+    upstreams: usize,
+}
+
+impl SealedSession {
+    /// A session carrying one sealed fact, on top of whatever it already carries.
+    #[must_use]
+    pub fn with_fact(mut self, key: &str, value: &str) -> Self {
+        self.facts.push((key.to_string(), value.to_string()));
+        self
+    }
+
+    /// The same session, reporting this many paired upstreams.
+    #[must_use]
+    pub fn with_upstreams(mut self, n: usize) -> Self {
+        self.upstreams = n;
+        self
+    }
+}
+
+impl SessionView for SealedSession {
+    fn id(&self) -> SessionId {
+        SessionId(7)
+    }
+    fn is_bound(&self) -> bool {
+        true
+    }
+    fn session_fact(&self, key: &str) -> Option<&str> {
+        self.facts
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, v)| v.as_str())
+    }
+    fn transport_fact(&self, _key: &str) -> Option<&str> {
+        None
+    }
+    fn upstream_count(&self) -> usize {
+        self.upstreams
+    }
+}
+
 /// The marker the kernel-built constructors take. A test is not a plugin; what stops a plugin
 /// fabricating one is the manifest allow-list, not the type system.
 #[derive(Debug)]
@@ -142,6 +191,28 @@ pub fn ctx<'u>(
         },
         config,
         None,
+        transport,
+        labels,
+        arena,
+    )
+}
+
+/// The same context, with a session the kernel has already sealed facts onto.
+#[must_use]
+pub fn ctx_in_session<'u>(
+    arena: &'u LeakArena,
+    config: &'u EmptyConfig,
+    transport: &'u WsStack,
+    labels: &'u Labels<'u>,
+    session: &'u SealedSession,
+) -> Ctx<'u> {
+    Ctx::new(
+        Clock {
+            unix_secs: 1_772_000_000,
+            monotonic_nanos: 0,
+        },
+        config,
+        Some(session),
         transport,
         labels,
         arena,

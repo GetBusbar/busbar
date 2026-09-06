@@ -215,7 +215,15 @@ pub const EGRESS_PACING_FACT_KEY: &str = "voice.pacing.played_ms";
 ///
 /// The dialect is a session fact for the same reason `busbar-plane-llm` declares its own dialect
 /// fact one: a session that changed dialect mid-stream would be a different priced thing.
-const SESSION_FACTS: &[&str] = &[FACT_DIALECT];
+///
+/// The turn's identity is a session fact because a session has TWO connection halves and the turn
+/// is opened on one of them. The upstream's half — the one every downlink frame is read against —
+/// has no other way to be told which turn it is answering, and a session fact is the route this
+/// plane's dialect already travels between the two.
+const SESSION_FACTS: &[&str] = &[
+    FACT_DIALECT,
+    crate::session::VoiceSessionState::TURN_FACT_KEY,
+];
 
 /// The content fact keys this plane produces.
 const CONTENT_FACTS: &[&str] = &[
