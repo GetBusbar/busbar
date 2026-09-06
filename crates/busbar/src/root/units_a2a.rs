@@ -865,12 +865,25 @@ fn auth_request(draft: &A2aDraft, now: u64) -> AuthRequest<'_> {
     }
 }
 
+/// What this plane's arrival step answers, for one draft.
+///
+/// The gate itself is the kernel's, over the configured budgets, and it has already run by the time
+/// a plane's units are reached — a unit the in-flight table refused never gets here at all. What is
+/// left for the plane is to carry forward what the TRANSPORT recorded, which is what the later steps
+/// read the source and the composed chain from.
+///
+/// It is a function rather than a line inside the step for the same reason `auth_request` is: the
+/// arrival CELL drives the answer the step gives rather than a hand-built copy of it. The chain is
+/// the field that makes this matter — a copy that re-derived it from the plane's own claims would
+/// agree with itself while the step quietly stopped reporting the layer the bytes actually came in
+/// on.
+fn arrival_answer(draft: &A2aDraft, token: &UnitToken<Arrival>) -> Decision<Arrival> {
+    Decision::proceed(token, draft.arrival.clone())
+}
+
 impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
-        // The gate itself is the kernel's, over the configured budgets, and it has already run by
-        // the time a plane's units are reached. What this step carries forward is what the
-        // transport recorded, which is what the later steps read the source and the chain from.
-        Decision::proceed(token, self.draft.arrival.clone())
+        arrival_answer(&self.draft, token)
     }
 
     fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
@@ -1407,6 +1420,86 @@ mod tests {
         assert_eq!(declared_scope(ops::OP_MESSAGE_SEND), Scope::Full);
         assert_eq!(declared_scope(ops::OP_TASK_CANCEL), Scope::Full);
         assert_eq!(declared_scope(ops::OP_PUSH_EVENT), Scope::Full);
+    }
+
+    /// A unit the table has no room for is refused AT arrival, and one it admits keeps the chain the
+    /// transport recorded.
+    ///
+    /// THE arrival STEP, over the loop. §2.2 gives the step two things to decide and this drives
+    /// both, because either one alone is half the door:
+    ///
+    /// - THE GATE, which is the kernel's and which this plane is UNDER. A2A arrives on the data
+    ///   listener, so `admin_listener` is false and the exemption the admin leg gets does not reach
+    ///   it: on a table with room the unit enters and its hold lives in the cell, and on a full one
+    ///   it is refused with `InFlightCap`, stamped at `Arrival` because the origin is a client, with
+    ///   the arrival hold handed straight back rather than dropped. A refusal here is the whole
+    ///   unit: the loop runs `arrival` first and nothing after it, so decode never reads a byte and
+    ///   nothing downstream can charge for one.
+    /// - THE PLANE'S ANSWER for a unit that got through, which is the transport's own record carried
+    ///   forward whole. The composed chain is the field worth pinning: this unit came in over HTTP
+    ///   composed on TCP, both layers are named, and the step reports what arrived rather than what
+    ///   the plane would have guessed from its own claims.
+    #[test]
+    fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival() {
+        use busbar_caps::{KernelSeal, OriginKind, StepName, UnitKey};
+        use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter, InFlight};
+
+        let kernel = busbar_kernel::teller::Kernel::new();
+        let door = crate::root::kernel::AdmissionDoor;
+        let seal = KernelSeal::acquire_for_kernel();
+
+        // One slot, none held back: a table this plane can fill and then be measured against.
+        let table = InFlight::new(1, 0);
+        // What an a2a unit asks the table for. The data listener is the whole point — an a2a unit
+        // that claimed the admin listener's exemption would be outside the cap the deployment set.
+        let entering = |key: u64| Enter {
+            key: UnitKey::new(key),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &door, PrincipalId::new("caller")),
+        };
+
+        // ADMITTED: there is room, the unit is in the table, and its arrival hold is in the cell.
+        let slot = table
+            .insert(entering(1))
+            .unwrap_or_else(|_| panic!("an empty table admits the first unit"));
+        assert_eq!(table.len(), 1);
+        assert_eq!(
+            slot.cell().state(),
+            busbar_caps::HoldCellState::Arrival,
+            "the unit is in the table holding its arrival hold and nothing more"
+        );
+
+        // The step that unit then reaches carries the transport's record forward, both layers named.
+        let draft = draft(ops::OP_MESSAGE_SEND);
+        let record = arrival_answer(&draft, &UnitToken::mint(&seal))
+            .into_result(&seal)
+            .expect("the plane's arrival step admits a unit the gate let through");
+        assert_eq!(record.transport_chain, vec!["tcp", "http"]);
+        assert_eq!(record.source, draft.arrival.source);
+        assert_eq!(record.port, draft.arrival.port);
+
+        // REFUSED: the same shape, one slot later. The gate answers before any plane is asked.
+        let Err(refused) = table.insert(entering(2)) else {
+            panic!("a full table has nowhere to put a second unit");
+        };
+        assert_eq!(refused.reason, ReasonCode::InFlightCap);
+        assert_eq!(refused.step, StepName::Arrival);
+        assert_eq!(refused.step, cap_refusal_step(OriginKind::Client));
+        // The hold comes back, because even a refusal is an event that has to balance — and it
+        // comes back reserving nothing, which is what makes "a unit refused at the gate has spent
+        // nothing" a fact about the ledger rather than a phrase.
+        let handed_back = refused.hold;
+        assert_eq!(
+            handed_back.reserved(),
+            0,
+            "the arrival hold reserves nothing"
+        );
+        assert_eq!(handed_back.accrued(), 0);
+        assert_eq!(table.len(), 1, "a refused unit took no slot");
     }
 
     /// A bad credential is refused before Verify is ever reached, through the node's own auth seams.
