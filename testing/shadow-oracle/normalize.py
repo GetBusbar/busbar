@@ -44,6 +44,11 @@ What is normalized (each rule is a named entry in `applied`):
                       lines (one per pool with an `on_exhausted:`) come out in map order, which is
                       nondeterministic on the SAME binary (measured on 1.5.5: two runs on the same
                       oracle config gave different orderings) -> each run sorted in place
+  info.uptime         `uptime_seconds` (GET /api/v1/admin/info) -> 0: how long the process has been
+                      up is a measurement of the recording, not of the binary — it read 0 or 1
+                      depending on whether the cell was reached inside the first second of the boot.
+                      Only the numeric VALUE; an openapi schema's `uptime_seconds` property is a
+                      dict and stays exactly as documented.
   ver.string          `"version": "X.Y.Z"` of the binary -> "<VERSION>" (the diff of interest is
                       everything else; the version itself is expected to differ)
   body.keep-lines     a cell whose contract is the ABSENCE of something (`body_lines` on the cell)
@@ -200,6 +205,17 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = "", path: s
                 applied.add("ts.usage-window"); out[k] = 0; continue
             if k in TS_KEYS and isinstance(x, (int, float)):
                 applied.add("ts.unix"); out[k] = 0; continue
+            if k == "uptime_seconds" and isinstance(x, (int, float)) and not isinstance(x, bool):
+                # HOW LONG THE PROCESS HAS BEEN UP IS A MEASUREMENT, NOT A CONTRACT. `GET
+                # /api/v1/admin/info` reports it, and nothing normalized it: a recording that reached
+                # that cell inside the first second of the boot recorded 0 and one that took a second
+                # longer recorded 1, so the cell diverged on how busy the machine was. Same treatment
+                # (and same 0) the other clock-derived values get above, so the value the golden
+                # already holds does not move — only its ability to say something else does.
+                # The VALUE is what is rewritten, so the openapi SCHEMA cells that carry
+                # `uptime_seconds` as a property description (a dict, not a number) are untouched:
+                # there the key's documentation IS the contract.
+                applied.add("info.uptime"); out[k] = 0; continue
             if k in TIMING_KEYS and isinstance(x, (int, float)):
                 applied.add("metrics.timing"); continue
             if k == "version" and isinstance(x, str) and VERSION_RX.match(x):
