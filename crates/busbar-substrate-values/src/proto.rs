@@ -319,11 +319,18 @@ pub fn rewrite_text_pairs(messages: &[serde_json::Value]) -> Option<Vec<(String,
 /// consumer that only needs the event TYPE to decide whether a frame is worth parsing at all.
 /// Returns `""` when the frame carries no `event:` line (OpenAI style) or the name is not UTF-8, and
 /// the LAST `event:` line wins when a frame illegally carries several.
+///
+/// Walks the SAME line grammar as [`sse_lines`] / [`find_frame_terminator`] — CRLF, a lone LF, **or**
+/// a lone CR each end a line — rather than splitting on LF alone. Splitting on LF alone made a
+/// bare-CR frame read as ONE line, so the whole frame body came back as the event name
+/// (`message_start\rdata: …`); the Anthropic same-protocol fast path matches that name against its
+/// usage-bearing event set, so every usage frame of such a stream was skipped and the request billed
+/// zero tokens. One grammar here means the probe and the parse can no longer disagree about where a
+/// line ends.
 pub fn sse_event_type(frame: &[u8]) -> &str {
     let mut name = "";
-    for line in frame.split(|&b| b == b'\n') {
-        let line = line.strip_suffix(b"\r").unwrap_or(line);
-        if let Some(rest) = line.strip_prefix(b"event:") {
+    for (start, end) in sse_line_spans(frame) {
+        if let Some(rest) = frame[start..end].strip_prefix(b"event:") {
             name = std::str::from_utf8(rest).map(str::trim).unwrap_or("");
         }
     }
@@ -394,14 +401,24 @@ pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
 /// `str::lines()` and so silently produced no fields at all on a frame framed by a bare-CR
 /// terminator (a frame `find_frame_terminator` above correctly frames).
 pub(crate) fn sse_lines(text: &str) -> Vec<&str> {
-    let bytes = text.as_bytes();
-    let mut lines = Vec::new();
+    sse_line_spans(text.as_bytes())
+        .into_iter()
+        .map(|(start, end)| &text[start..end])
+        .collect()
+}
+
+/// The `(start, end)` byte span of each line in `bytes` under the event-stream line-terminator rule.
+/// The single walk both [`sse_lines`] (which projects the spans back onto the `&str`) and the
+/// byte-level [`sse_event_type`] probe share, so the two cannot disagree about where a line ends.
+/// Every terminator byte is ASCII, so a span taken from valid UTF-8 always lands on a char boundary.
+fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
+    let mut spans = Vec::new();
     let mut start = 0usize;
     let mut i = 0usize;
     while i < bytes.len() {
         match terminator_len(bytes, i) {
             Some(len) => {
-                lines.push(&text[start..i]);
+                spans.push((start, i));
                 i += len;
                 start = i;
             }
@@ -409,9 +426,9 @@ pub(crate) fn sse_lines(text: &str) -> Vec<&str> {
         }
     }
     if start < bytes.len() {
-        lines.push(&text[start..]);
+        spans.push((start, bytes.len()));
     }
-    lines
+    spans
 }
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
@@ -506,6 +523,35 @@ mod frame_terminator_tests {
             parse_sse_frame(b"data: line1\ndata: line2"),
             Some((String::new(), "line1\nline2".to_string()))
         );
+    }
+
+    /// The cheap `event:`-name probe split on LF alone, so a bare-CR frame came back as the WHOLE
+    /// frame body (`message_delta\rdata: {…}`). The Anthropic same-protocol fast path matches that
+    /// name against its usage-bearing set, so a bare-CR stream's usage frames were skipped and the
+    /// request billed zero. The probe now walks the same terminator grammar the parser does.
+    #[test]
+    fn sse_event_type_splits_on_bare_cr() {
+        assert_eq!(
+            sse_event_type(b"event: message_delta\rdata: {\"x\":1}\r\r"),
+            "message_delta"
+        );
+        assert_eq!(
+            sse_event_type(b"event: message_start\rdata: {}"),
+            "message_start"
+        );
+        // The LAST `event:` line still wins across a bare-CR frame.
+        assert_eq!(sse_event_type(b"event: a\revent: b\rdata: {}"), "b");
+        // LF / CRLF / no-event frames stay byte-identical to today.
+        assert_eq!(
+            sse_event_type(b"event: message_delta\ndata: {}\n\n"),
+            "message_delta"
+        );
+        assert_eq!(
+            sse_event_type(b"event: message_delta\r\ndata: {}\r\n\r\n"),
+            "message_delta"
+        );
+        assert_eq!(sse_event_type(b"data: {}\n\n"), "");
+        assert_eq!(sse_event_type(b""), "");
     }
 }
 

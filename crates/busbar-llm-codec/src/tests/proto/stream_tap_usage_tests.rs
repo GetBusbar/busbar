@@ -41,6 +41,28 @@ fn test_stream_inspection_tap_usage_parsing() {
     );
 }
 
+/// A bare CR is one of the three line terminators the event-stream grammar names, and the frame
+/// scanner already frames such a stream correctly. The Anthropic same-protocol fast path decides
+/// whether a frame is worth parsing from the borrowed `event:`-name probe; while that probe split on
+/// LF alone it returned the whole frame body as the name, which matches none of the usage-bearing
+/// event names, so every `message_start`/`message_delta` of a bare-CR stream was skipped and the
+/// request billed ZERO tokens. Drive the real translator on a bare-CR framing and require usage.
+#[test]
+fn same_proto_anthropic_bare_cr_frames_still_tap_usage() {
+    let mut t = StreamTranslate::new_same_proto("anthropic").expect("same-proto translator");
+    let _ = t.feed(b"event: message_start\rdata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\r\r");
+    let _ = t.feed(b"event: message_delta\rdata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\r\r");
+    // A lone trailing CR is not yet knowable (the LF that would pair it may still be in flight), so
+    // the stream closes on a terminator the scanner can complete — exactly as a real one does.
+    let _ = t.feed(b"event: message_stop\rdata: {\"type\":\"message_stop\"}\r\n\r\n");
+    let _ = t.finish();
+    let u = t
+        .usage()
+        .expect("a bare-CR framed Anthropic stream must still bill its usage, not zero");
+    assert_eq!(u.input_tokens, 10);
+    assert_eq!(u.output_tokens, 5);
+}
+
 /// The same-protocol A-tap must carry the usage DETAIL sub-buckets, not just the four totals. The
 /// trailing `include_usage` chunk of an OpenAI stream carries the identical `usage` object the
 /// buffered response does, and the reader decodes every sub-bucket off it; the A-tap that feeds
