@@ -338,7 +338,8 @@ async fn every_transport_error_is_mapped() {
 
 /// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
 /// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
-/// http`'s identical table cell, minus the arm `http` alone carries.
+/// http`'s table cell, which this transport's mapping matches arm for arm; the `tls` sibling's cell
+/// carries one arm more, for the handshake this transport does not have.
 #[test]
 fn every_io_error_kind_maps_through_the_table() {
     for (kind, expected) in [

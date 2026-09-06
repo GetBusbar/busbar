@@ -230,8 +230,12 @@ impl TcpTransport {
     }
 
     /// Named for what it does rather than where it was first used: every I/O path in this crate —
-    /// the dial, the frame reads, the writes and the refusal — maps its errors through it, matching
-    /// the sibling `http` and `tls` crates' function of the same shape.
+    /// the dial, the frame reads, the writes and the refusal — maps its errors through it.
+    ///
+    /// The table is `http`'s, arm for arm. `tls` carries the same arms and one more of its own:
+    /// malformed TLS bytes surface as `InvalidData`, which that transport maps to `HandshakeFailed`
+    /// because it has a handshake to fail. This one has none, so the kind falls to `Closed` with
+    /// every other unclassified error, and the difference is deliberate rather than drift.
     fn map_io_err(e: &io::Error) -> TransportError {
         match e.kind() {
             io::ErrorKind::ConnectionRefused => TransportError::Refused,
