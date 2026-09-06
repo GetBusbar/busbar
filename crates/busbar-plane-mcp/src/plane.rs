@@ -568,6 +568,19 @@ impl Plane for McpPlane {
                     reason: DiscardCode::Unsupported,
                 });
             };
+            // THE OTHER HALF OF THE GUARD `decode_ingress` MAKES. That side refuses a method only an
+            // upstream may send, because reading it would let a caller open a unit only a paired
+            // server is allowed to open. This side is the mirror and was missing it: a method only a
+            // CALLER may send, arriving from the server, opened a unit of its own here — one this
+            // node runs all seven steps for and pays for on its own budget. An upstream could
+            // therefore spend this node's money by naming methods it is not the sender of. Dropped
+            // rather than refused, for the same reason the unknown method above is: an answer to a
+            // request the peer was never entitled to make is still an answer.
+            if row.sender == ops::Sender::Client {
+                return Ok(Progress::Discard {
+                    reason: DiscardCode::Unsupported,
+                });
+            }
             // The subject is read HERE, at the one step entitled to read the bytes, so the steps
             // after this one read it off the draft rather than scanning the request a second time.
             if let Some(pointer) = row.name_pointer {

@@ -399,6 +399,77 @@ fn a_servers_own_request_opens_a_provider_unit() {
     }
 }
 
+/// THE SENDER GUARD IS SYMMETRIC: neither side reads a method the other side is the sender of.
+///
+/// The ingress side has always refused a `Sender::Provider` method arriving from a caller, because
+/// reading it would let a caller open a unit only a paired server may open. The response side had no
+/// such guard at all, and the two are the same rule: a `Sender::Client` method arriving FROM a
+/// server opened a unit here — one this node runs all seven steps for, and pays for on its own
+/// budget. An upstream could spend this node's money by naming methods it is not the sender of.
+///
+/// Driven over the vocabulary rather than over two hand-picked names, so a method added to the table
+/// tomorrow is held to the rule the day it is added, not the day someone remembers this test.
+#[test]
+fn neither_decoder_reads_a_method_the_other_side_is_the_sender_of() {
+    let plane = McpPlane::EMPTY;
+    let mut client_rows = 0;
+    let mut provider_rows = 0;
+    for row in ops::METHODS {
+        let body = format!(
+            r#"{{"jsonrpc":"2.0","id":7,"method":"{}","params":{{}}}}"#,
+            row.method
+        )
+        .into_bytes();
+        match row.sender {
+            ops::Sender::Provider => {
+                provider_rows += 1;
+                let scaffold = Scaffold::new("http");
+                let ctx = scaffold.ctx();
+                let frames = vec![frame(&body)];
+                let mut cursor = FrameCursor::new(&frames);
+                let seen = plane.decode_ingress(&mut cursor, None, &ctx);
+                assert!(
+                    matches!(seen, Err(Decode::UnsupportedOperation)),
+                    "`{}` is sent by an upstream, so a CALLER naming it must not open a unit; \
+                     decode_ingress answered {seen:?}",
+                    row.method
+                );
+            }
+            ops::Sender::Client => {
+                client_rows += 1;
+                let scaffold = Scaffold::new("http");
+                let ctx = scaffold.ctx();
+                let frames = vec![response_frame(&body)];
+                let mut cursor = FrameCursor::new(&frames);
+                let seen = plane
+                    .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+                    .expect("a document from a server decodes");
+                assert!(
+                    matches!(
+                        seen,
+                        Progress::Discard {
+                            reason: DiscardCode::Unsupported
+                        }
+                    ),
+                    "`{}` is sent by a caller, so a SERVER naming it must not open a unit on this \
+                     node's budget; decode_response answered {seen:?}",
+                    row.method
+                );
+            }
+            // A notice is answered by nobody and opens nothing that is settled; it is the one class
+            // both sides may see, which is why it is out of scope here rather than silently passed.
+            ops::Sender::Notice => {}
+        }
+    }
+    // The loop must have had something to do on BOTH sides. A vocabulary that lost its provider rows
+    // (or its client rows) would leave one arm of this test running zero times and reporting green.
+    assert!(
+        client_rows > 0 && provider_rows > 0,
+        "the vocabulary has {client_rows} caller-sent and {provider_rows} upstream-sent method(s); \
+         this test proves nothing about a direction with no rows in it"
+    );
+}
+
 /// A result that asks the caller for something is a turn, not an ending.
 #[test]
 fn a_result_that_asks_for_something_is_a_turn() {

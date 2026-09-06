@@ -48,7 +48,18 @@ TOUCHED = [
     "crates/busbar-unit-admission/src/cells.rs",
     "crates/busbar-unit-breaker/src/port.rs",
     "crates/busbar/src/root/vocabulary.rs",
+    "crates/busbar/src/root/units_llm.rs",
+    "crates/busbar-plane-voice/src/claims.rs",
+    "scripts/planted-gate-probe.sh",
 ]
+
+# The ceilings file the plants for waiver-shaped rules edit, and the marker every such edit carries.
+# A waiver lives in the CEILINGS FILE, not in the source, so the only honest way to plant an unused
+# one is to write it there — and the only honest way to take it away again is to remove the lines
+# carrying this marker before the next plant, which `restore` does. The marker is a path component
+# so the planted entry is a well-formed waiver in every other respect.
+PLANT_MARKER = "planted-unused-waiver"
+PLANTED_WAIVER_ENTRY = f'"crates/{PLANT_MARKER}/src/lib.rs", '
 
 
 # TOUCHED IS LOAD-BEARING AND SILENT WHEN WRONG: a file a plant edits but nobody restores stays
@@ -90,7 +101,16 @@ def _assert_touched_covers_the_plants():
 _assert_touched_covers_the_plants()
 
 
-def restore(pristine, scratch):
+def restore(pristine, scratch, toml=None):
+    if toml and os.path.exists(toml):
+        # The planted ENTRY is removed, never the line it sits on. The calibrated ceilings file is
+        # machine-emitted with each array on ONE line, so dropping the whole line took the array's
+        # real entries and its closing bracket with it and left every later plant unable to parse
+        # the file at all — a saboteur that breaks the instrument instead of the subject.
+        with open(toml, encoding="utf-8") as fh:
+            text = fh.read()
+        with open(toml, "w", encoding="utf-8") as fh:
+            fh.write(text.replace(PLANTED_WAIVER_ENTRY, ""))
     for rel in TOUCHED:
         src, dst = os.path.join(pristine, rel), os.path.join(scratch, rel)
         if os.path.exists(src):
@@ -116,7 +136,7 @@ def nothing_to_plant(reason):
     sys.exit(3)
 
 
-def plant(rule, pristine, scratch, cfg, baseline):
+def plant(rule, pristine, scratch, cfg, baseline, toml=None):
     if rule == "one-attempt-seam":
         # The planted send lives in a file that is NOT the attempt file, whatever the tree calls
         # the attempt file today.
@@ -380,6 +400,63 @@ def plant(rule, pristine, scratch, cfg, baseline):
         dst[b.body_start:b.body_start] = block
         with open(bpath, "w", encoding="utf-8") as fh:
             fh.write("\n".join(dst))
+    elif rule == "gate-script-hygiene:strict-mode":
+        # A new gate script that never asks the shell to be strict. It runs a subject, but with the
+        # status honoured, so only the strict-mode row can see it.
+        append(scratch, "scripts/planted-gate-probe.sh",
+               "#!/usr/bin/env bash\n"
+               "# a planted gate that forgot to ask the shell to be strict\n"
+               'cargo tree >/dev/null\n')
+    elif rule == "gate-script-hygiene:muffled-subject":
+        # The mirror image: strict mode is set, and the one command the script exists to run has its
+        # exit code thrown away.
+        append(scratch, "scripts/planted-gate-probe.sh",
+               "#!/usr/bin/env bash\n"
+               "set -euo pipefail\n"
+               "cargo test --workspace || true\n")
+    elif rule == "unused-waiver":
+        # A waiver lives in the CEILINGS file, so that is where the violation is planted: one more
+        # `known_sites` entry, well-formed in every respect except that the path it excuses is not
+        # in the tree. `restore` takes it away again by its marker before the next plant.
+        if toml is None or not os.path.exists(toml):
+            nothing_to_plant("no ceilings file was handed to the planter")
+        with open(toml, encoding="utf-8") as fh:
+            src = fh.read()
+        needle = "known_sites = ["
+        if needle not in src:
+            nothing_to_plant("the ceilings file carries no known_sites list to extend")
+        src = src.replace(needle, needle + PLANTED_WAIVER_ENTRY, 1)
+        with open(toml, "w", encoding="utf-8") as fh:
+            fh.write(src)
+    elif rule == "assertion-free-tests":
+        append(scratch, "crates/busbar-voice/src/lib.rs",
+               "#[cfg(test)]\nmod planted_bare_tests {\n"
+               "    #[test]\n    fn planted_test_that_cannot_fail() {\n"
+               "        let _ = 1 + 1;\n    }\n}")
+    elif rule == "accrued-floor-metered":
+        # A floor filled from a figure the caller chose rather than from what the kernel counted.
+        # The field is spelled exactly as the kernel's Evidence spells it, in the composition root's
+        # own unit module, which is the only place the rule looks.
+        append(scratch, "crates/busbar/src/root/units_llm.rs",
+               "fn planted_evidence(draft: &PlantedDraft) -> Evidence {\n"
+               "    Evidence {\n        accrued_floor: draft.request_bytes,\n"
+               "        ..Default::default()\n    }\n}")
+    elif rule == "live-config-pinned":
+        append(scratch, "crates/busbar-substrate/src/lib.rs",
+               "static PLANTED_CARD: std::sync::OnceLock<busbar_unit_cost::RateCard> =\n"
+               "    std::sync::OnceLock::new();")
+    elif rule.startswith("claimed-path-has-arm:"):
+        # An OPEN claim on a path no other file in the plane names. Planted in the voice plane,
+        # whose ratchet is zero, and the constant is declared beside the claim so the rule can
+        # resolve it to a literal exactly as it resolves the real ones.
+        crate = rule.split(":", 1)[1]
+        rel = f"crates/{crate}/src/claims.rs"
+        if not os.path.exists(os.path.join(scratch, rel)):
+            nothing_to_plant(f"{rel} does not exist yet")
+        append(scratch, rel,
+               'const PLANTED_UNANSWERED: &str = "/.well-known/planted-with-no-arm";\n'
+               "pub const PLANTED_CLAIMS: &[Claim] = &[\n"
+               "    open_http(Selector::ExactPath(PLANTED_UNANSWERED)),\n];")
     else:
         sys.exit(f"plant: no plant defined for rule {rule}")
 
@@ -390,11 +467,11 @@ def main():
     if len(sys.argv) > 5 and os.path.exists(sys.argv[5]):
         with open(sys.argv[5], encoding="utf-8") as fh:
             baseline = json.load(fh)
+    restore(pristine, scratch, toml)
     with open(toml, "rb") as fh:
         cfg = tomllib.load(fh)
-    restore(pristine, scratch)
     if rule != "none":
-        plant(rule, pristine, scratch, cfg, baseline)
+        plant(rule, pristine, scratch, cfg, baseline, toml)
 
 
 if __name__ == "__main__":
