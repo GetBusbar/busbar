@@ -345,8 +345,8 @@ fn synthesize_item_id(prefix: &str) -> String {
 // THE CREATION TIME IS AN INPUT, NOT A CLOCK READ.
 //
 // This writer used to call `SystemTime::now()` for the `created_at` it stamps when the answer it is
-// writing carries none — the only clock read in the codecs, and the thing that made this writer's
-// output different on two identical calls. A codec that reads a clock cannot be checked against a
+// writing carries none — the thing that made this writer's output different on two identical calls.
+// A codec that fabricates a timestamp cannot be checked against a
 // frozen output and cannot live in a pure kind, so the reading became a value the caller supplies:
 //
 //   * the buffered path fills `IrResponse::created` in the answer-normalization pass
@@ -356,7 +356,12 @@ fn synthesize_item_id(prefix: &str) -> String {
 //     (`ResponsesWriter::stamped_at`), set once by whoever opened the stream.
 //
 // With neither supplied the writer stamps `UNSTAMPED_CREATED_AT`, which is what a caller that never
-// offered a time asked for. Nothing here reads a clock.
+// offered a time asked for.
+//
+// The rule is about FABRICATING a time, not about clocks as such. The crate does read a monotonic
+// clock in two places — the Bedrock writer and the stream framer both start an `Instant` to MEASURE
+// elapsed latency for the metrics they report. That is a duration of something that really
+// happened, not a timestamp invented to fill a field, and it stays.
 
 /// Build the Responses API `usage` object from the neutral [`crate::ir::IrUsage`] with ALL fields the
 /// official SDKs require. `openai-python`'s `ResponseUsage` and `openai-node`'s
