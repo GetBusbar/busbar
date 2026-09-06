@@ -660,6 +660,36 @@ fn migrate_auth_mode_arms() {
     );
 }
 
+/// `auth.mode:` and `auth.chain:` TOGETHER — both are shapes `detect_legacy_markers` names as 1.x,
+/// so a config carrying both is squarely inside this migrator's declared input domain. The `mode:`
+/// arm must NOT overwrite the chain the operator wrote: an identity provider listed there is a whole
+/// auth module, and dropping it with no `todos`/`changes` entry is exactly the silent-loss class the
+/// `Taken` doctrine exists to forbid. `keys` still has to end up in the chain (that is what
+/// `mode: token` meant), but ALONGSIDE what was already there, not instead of it.
+#[test]
+fn migrate_auth_mode_does_not_clobber_an_existing_chain() {
+    let out = migrate_config(
+        "auth:\n  mode: token\n  chain: [ad, tokens]\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .unwrap();
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).unwrap();
+    let chain = doc["auth"]["chain"]
+        .as_sequence()
+        .expect("auth.chain must survive the mode: arm");
+    let names: Vec<&str> = chain.iter().filter_map(|e| e.as_str()).collect();
+    assert!(
+        names.contains(&"ad"),
+        "the `ad` module the operator wrote was DROPPED by the auth.mode arm; chain is {names:?} \
+         and the ledgers never mention it (changes={:?} todos={:?})",
+        out.changes,
+        out.todos
+    );
+    assert!(
+        names.contains(&"keys"),
+        "mode: token must still land the signed-key verifier in the chain; chain is {names:?}"
+    );
+}
+
 /// A group_map with an AMBIGUOUS module home (no external chain module) gets the placeholder +
 /// TODO, never a silent guess.
 #[test]
