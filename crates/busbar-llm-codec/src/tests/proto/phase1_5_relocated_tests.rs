@@ -142,7 +142,7 @@ fn error_kind_to_bedrock_type_covers_ingress_emitted_kinds() {
 /// witnessed codec (`protocol_for(...).reader()`) and the concrete IR (`ir.shape()` / `ir::project`),
 /// so it lives beside them in the plugin (RELOCATED from core).
 #[test]
-fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
+fn every_known_protocol_reads_an_empty_conversation_to_an_empty_ir() {
     // Seed the registry, then pin the sweep's WIDTH. `known_protocols()` folds the process-global
     // registry, which is EMPTY until something registers: run alone this "exhaustiveness guard"
     // reported green over ZERO iterations, so a reader that invented a turn for an empty
