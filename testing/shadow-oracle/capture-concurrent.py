@@ -21,17 +21,13 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from capture import audit_diff, load_json, metrics_delta, num_delta  # noqa: E402
+from capture import audit_diff, load_json, metrics_delta, usage_delta  # noqa: E402
 
 
 def main() -> int:
     statuses = json.loads(sys.argv[1])
     before, after = sys.argv[2], sys.argv[3]
-    ub, ua = load_json(before, "usage.json"), load_json(after, "usage.json")
-    for snap in (ub, ua):
-        if isinstance(snap, dict):
-            snap.pop("as_of", None)
-    usage = num_delta(ub, ua) if ua is not None else {"unavailable": True}
+    usage = usage_delta(before, after)
     ab, aa = load_json(before, "audit.json"), load_json(after, "audit.json")
     audit = audit_diff(ab, aa)
     cap = {
