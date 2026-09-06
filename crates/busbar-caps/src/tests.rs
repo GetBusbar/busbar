@@ -466,6 +466,55 @@ fn an_estimated_usage_report_flags_the_posting() {
     assert!(!posted.flags().is_clean());
 }
 
+/// A report with one floored line among reported ones is a floored report.
+///
+/// The whole-report mark and the per-line mark are the same claim at two widths, and only one of
+/// them reached the posting. A fold that reads one class off the destination's own response and
+/// derives another itself — a duration from a byte count under an assumed format — has to go
+/// through `report`, because `estimate` would say the destination confirmed nothing, and then the
+/// posting came out clean: a node-derived figure billed with nothing on it saying so, and no row on
+/// the disputes report the settlement table puts it on.
+#[test]
+fn a_report_carrying_one_floored_line_is_a_floored_report() {
+    let k = Kernel::new();
+    let mixed = Usage::report(
+        &k.usage_token(),
+        vec![
+            UsageLine {
+                class: MeterClassId::new("audio_tokens_in"),
+                quantity: 900,
+                source: QuantitySource::Count,
+                estimated: false,
+            },
+            UsageLine {
+                class: MeterClassId::new("audio_seconds_in"),
+                quantity: 12,
+                source: QuantitySource::KernelBytes { divisor: 32_000 },
+                estimated: true,
+            },
+        ],
+    )
+    .expect("two lines are within the bound");
+    assert!(
+        mixed.is_estimated(),
+        "a report carrying a line the node floored is not a report the destination confirmed"
+    );
+
+    let posted = Posted::settle(
+        Hold::open(&k.admit_token(), who("acct-1"), 1_000),
+        900,
+        &mixed,
+        &k.ledger_token(),
+    );
+    assert!(
+        posted.flags().contains(PostingFlags::ESTIMATED),
+        "the floor mark has to travel onto the posting, or nothing puts it on the disputes report"
+    );
+
+    // And a report every line of which the destination confirmed still says so.
+    assert!(!usage_of(&k, 42).is_estimated());
+}
+
 #[test]
 fn a_usage_report_is_bounded_by_the_record_size() {
     let k = Kernel::new();
