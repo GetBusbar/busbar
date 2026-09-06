@@ -906,23 +906,25 @@ fn recv_side_from_std_failure_releases_the_sender_increment() {
 /// Binding: the ingress server posture is ALPN `http/1.1` only (never advertise h2, since axum's
 /// server here does not speak it), a hyper HTTP/1 header-read timeout of 30s, a
 /// `tls_handshake_timeout_secs` default of 10, and a `request_body_read_timeout_secs` default of
-/// 30. Asserted against the real `build_server_config` output and the real default-limits
-/// accessors (uninstalled state), not a re-typed copy of the literals.
+/// 30. Asserted against the real `build_server_config` output AND the real `handshake_timeout`/
+/// `body_read_timeout` functions the accept loop actually calls (uninstalled state) — not the bare
+/// `crate::limits` accessors, which only prove the config DEFAULT is 10/30 and say nothing about
+/// whether `tls.rs`'s own timeout functions still read through to it.
 #[tokio::test]
 async fn server_posture_matches_the_1_5_5_defaults() {
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    // Uninstalled `crate::limits` state: the historical hardcoded defaults these two accessors
-    // fall back to, exactly like `uninstalled_accessors_return_historical_defaults` pins for the
-    // sibling probe-interval/timeout accessors.
+    // Uninstalled `crate::limits` state, read through the SAME functions the accept loop calls per
+    // connection (`super::handshake_timeout`/`super::body_read_timeout`), not a re-typed copy of
+    // the literals and not the bare `crate::limits` accessor one layer down from them.
     assert_eq!(
-        crate::limits::tls_handshake_timeout_secs(),
-        10,
-        "tls_handshake_timeout_secs default"
+        super::handshake_timeout(),
+        std::time::Duration::from_secs(10),
+        "handshake_timeout() default"
     );
     assert_eq!(
-        crate::limits::request_body_read_timeout_secs(),
-        30,
-        "request_body_read_timeout_secs default"
+        super::body_read_timeout(),
+        std::time::Duration::from_secs(30),
+        "body_read_timeout() default"
     );
 
     super::install_crypto_provider();
