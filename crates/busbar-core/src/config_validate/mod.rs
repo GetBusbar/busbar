@@ -30,6 +30,72 @@ const MAX_AFFINITY_HEADER_NAME_LEN: usize = 64;
 /// guaranteed to panic (on this target width) are newly rejected as a clean `400`/boot `die()`
 /// instead.
 const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
+/// The ceiling on a `file:` secret this module will read into memory (see
+/// [`resolve_validate_time_secret`]). A megabyte is orders of magnitude above any credential a
+/// provider block names — an API key, a `client_id:client_secret` pair, a service-account JSON — so
+/// no config that resolves today stops resolving. It exists to bound the pathological case, not to
+/// have an opinion about credential size.
+const VALIDATE_SECRET_MAX_BYTES: u64 = 1024 * 1024;
+
+/// THE 1.x-DOCUMENT REFUSAL, as one function both validating callers reach.
+///
+/// A busbar 1.x config is not a config with a typo in it; it is a config written against a grammar
+/// that was redesigned, and the useful answer names the markers and says `--migrate-config`. Boot and
+/// `--validate` have always given that answer, from `load_config_from_disk`, which runs this check on
+/// the raw document BEFORE the typed parse — because after the typed parse there is nothing left to
+/// recognize: `deny_unknown_fields` has already collapsed every 1.x section into an anonymous
+/// `unknown field` error.
+///
+/// `POST /api/v1/admin/config/validate` had no equivalent, and could not have one by accident: its
+/// body is deserialized straight into `DeployCfg`, so an operator dry-running their 1.x file through
+/// the endpoint got a `400 malformed config body: unknown field 'governance'` and no mention that a
+/// migrator exists. Same document, same product, two different answers. This is that answer, factored
+/// out of the pair `load_config_from_disk` already calls so the wording cannot drift between them.
+///
+/// `Ok(())` when the document carries no 1.x marker (including a document that is not a mapping at
+/// all — that is a parse question, not a migration one).
+pub fn refuse_legacy_document(doc: &serde_yaml::Value) -> Result<(), String> {
+    let markers = crate::config::migrate::detect_legacy_markers(doc);
+    if markers.is_empty() {
+        return Ok(());
+    }
+    Err(crate::config::migrate::legacy_config_error(&markers))
+}
+
+/// Resolve a provider credential FOR VALIDATION ONLY, with the `file:` read BOUNDED.
+///
+/// Validation dry-runs the credential FORMAT checks that otherwise only run at boot, which means it
+/// resolves the reference — and `POST /api/v1/admin/config/validate` runs this same `validate` over a
+/// config the CALLER supplied. An unbounded `std::fs::read` there is an unbounded allocation driven
+/// by a read-scope admin: a path naming an endless character device or a very large file is read
+/// until the process dies, and the endpoint's own contract (a stateless dry-run) never promised a
+/// caller that much of the machine.
+///
+/// So a `file:` reference is stat'ed first: it must be a REGULAR file (a character device, a fifo,
+/// a directory or a socket is not a delivered secret) and no larger than
+/// [`VALIDATE_SECRET_MAX_BYTES`]. Anything else resolves to `Err`, which every caller here already
+/// treats the way it treats an unset env var — the dry-run check that needed the value is skipped,
+/// and boot remains the place an unresolvable credential is a hard failure. `env:` and every
+/// plugin-provided module are untouched: the read is what is bounded, not the resolution.
+fn resolve_validate_time_secret(secret: &crate::config::SecretRef) -> Result<String, String> {
+    if let Some(path) = secret.file_path() {
+        let meta = std::fs::metadata(path)
+            .map_err(|e| format!("secret file:{path} cannot resolve: {e}"))?;
+        if !meta.is_file() {
+            return Err(format!(
+                "secret file:{path} is not a regular file; validation reads only a regular file"
+            ));
+        }
+        if meta.len() > VALIDATE_SECRET_MAX_BYTES {
+            return Err(format!(
+                "secret file:{path} is {} bytes, over the {VALIDATE_SECRET_MAX_BYTES}-byte \
+                 validation read cap; not read",
+                meta.len()
+            ));
+        }
+    }
+    crate::config::secret::resolve_builtin_string(secret)
+}
 // SSRF host guards relocated DOWN into the neutral `busbar-substrate` net_guard leaf (Batch A),
 // re-exported here so every in-core caller keeps naming `config_validate::{…}` unchanged and the
 // two SSRF guards still single-source their byte-identical atoms.

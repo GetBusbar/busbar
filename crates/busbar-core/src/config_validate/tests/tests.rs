@@ -5538,3 +5538,38 @@ fn test_validate_rejects_empty_canonical_builtin_secret_ref() {
         "a non-empty canonical key must not raise the empty-secret error; got: {errs:?}"
     );
 }
+
+/// THE 1.x DOCUMENT GETS THE MIGRATOR, FROM EVERY VALIDATING CALLER. Boot and `--validate` have
+/// always answered a 1.x config by naming its markers and pointing at `--migrate-config`;
+/// `POST /api/v1/admin/config/validate` answered `unknown field` and never mentioned that a migrator
+/// exists, because its body goes straight into a `deny_unknown_fields` struct where the 1.x sections
+/// are no longer recognizable. Both now reach this one function, so the wording cannot drift.
+#[test]
+fn a_1_x_document_is_refused_by_name_with_the_migrator() {
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str("governance:\n  admin_token: \"x\"\n").expect("the 1.x doc parses");
+    let err = crate::config_validate::refuse_legacy_document(&doc)
+        .expect_err("a 1.x marker must refuse the document");
+    assert!(
+        err.contains("busbar --migrate-config"),
+        "the refusal must point at the migrator: {err}"
+    );
+    assert!(
+        err.contains("governance"),
+        "and must NAME the marker it recognized: {err}"
+    );
+}
+
+/// The other half, so the check above is not a blanket: a current document carries no marker and is
+/// passed straight through. A `refuse_legacy_document` that refused everything would send every
+/// operator to a migrator they do not need.
+#[test]
+fn a_current_document_carries_no_legacy_marker() {
+    let doc: serde_yaml::Value = serde_yaml::from_str(
+        "listen: \"0.0.0.0:8080\"\nmodels:\n  claude:\n    provider: anthropic\n",
+    )
+    .expect("the current doc parses");
+    assert!(crate::config_validate::refuse_legacy_document(&doc).is_ok());
+    // Not a mapping at all is a PARSE question, not a migration one, and must not be claimed here.
+    assert!(crate::config_validate::refuse_legacy_document(&serde_yaml::Value::Null).is_ok());
+}
