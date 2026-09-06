@@ -38,14 +38,15 @@
 //! What leaves the unit is `{ slot, fingerprint }` and nothing else; its debug output says so
 //! rather than printing anything derived from the material.
 //!
-//! **A hazard this allocation exposes, named here because this is what exposes it.** The TLS
-//! transport's `listen`, `dial` and `adopt` all read the slot off the handle they were given, which
-//! is correct. Its `accept` does not: it reads slot 0 directly. So an administrative listener
-//! provisioned at slot 1 passes `listen` and then mis-serves every accepted connection — either
-//! refusing for want of a key or presenting the data listener's certificate. Nothing here works
-//! around it: the workaround would be to put every listener in slot 0, which would make the slot
-//! meaningless and hide the defect behind the composition that was supposed to reveal it. The fix
-//! belongs in the transport, and until it lands a deployment with two TLS listeners is exposed.
+//! The allocation once exposed a hazard worth naming here, and the note that named it has been
+//! replaced by the test that settles it: the TLS transport's `accept` read slot 0 directly rather
+//! than the slot its listener was provisioned with, so an administrative listener at slot 1 passed
+//! `listen` and then mis-served every accepted connection. The transport reads the listener's own
+//! slot now, and `two_tls_listeners_each_present_their_own_certificate` below drives two listeners
+//! in slots 0 and 1 through a real handshake and asserts each presents the material provisioned into
+//! its own slot — and that a peer trusting one of them is refused by the other. A prose warning that
+//! a fix has landed for is a warning nobody can act on; an executing assertion is one that fails if
+//! the slot is ever read from a fixed place again.
 
 use busbar_contract::{ConfigView, Listener, Transport, TransportConfigView, TransportError};
 #[cfg(feature = "plane-voice")]
@@ -347,8 +348,15 @@ mod tests {
     fn self_signed() -> (Vec<u8>, Vec<u8>, Arc<rustls::ClientConfig>) {
         busbar_unit_transport_key::install_crypto_provider();
         let rcgen::CertifiedKey { cert, signing_key } =
-            rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-                .expect("a self-signed pair");
+            // Both names, because the two tests that use this reach the listener by two routes: one
+            // binds and never handshakes, and one dials the loopback address the bind returned. A
+            // pair that named only the host would fail verification on the second for a reason that
+            // has nothing to do with slots.
+            rcgen::generate_simple_self_signed(vec![
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+            ])
+            .expect("a self-signed pair");
         let cert_pem = cert.pem().into_bytes();
         let key_pem = signing_key.serialize_pem().into_bytes();
 
@@ -605,6 +613,102 @@ mod tests {
         assert_eq!(view.get_int("limits.request_body_max_bytes.other"), None);
         assert_eq!(view.get_int("port"), None);
         assert_eq!(view.bind(), Some("127.0.0.1:8080"));
+    }
+
+    /// TWO TLS LISTENERS, IN TWO SLOTS, EACH PRESENTING ITS OWN CERTIFICATE.
+    ///
+    /// This is the composition the slot allocation exists for and the one that used to be broken: an
+    /// administrative listener provisioned at slot 1 bound cleanly and then served the material in
+    /// slot 0, because the accept path read a fixed slot instead of the listener's own. Nothing about
+    /// that is visible from `listen` — it is visible from a handshake, which is why this test does
+    /// one.
+    ///
+    /// Two independently generated pairs, so "its own" is a difference a peer can detect rather than
+    /// a claim about which object was registered where. Each listener is met by a client that trusts
+    /// ONLY the pair provisioned into that listener's slot, and the cross case — the data listener's
+    /// peer meeting the administrative listener — is refused, which is what says the two slots really
+    /// are two.
+    #[test]
+    fn two_tls_listeners_each_present_their_own_certificate() {
+        let (data_cert, data_key, data_peer) = self_signed();
+        let (admin_cert, admin_key, admin_peer) = self_signed();
+        let source = MapSource(HashMap::from([
+            ("data-cert".to_string(), data_cert),
+            ("data-key".to_string(), data_key),
+            ("admin-cert".to_string(), admin_cert),
+            ("admin-key".to_string(), admin_key),
+        ]));
+        let journal = RecordingJournal::default();
+        let tls = busbar_transport_tls::TlsTransport::new();
+        let token = crate::root::kernel::new_kernel().transport_key_token();
+
+        let mut listeners = two_listeners("data-cert", "data-key");
+        listeners[1].tls = Some(TlsMaterialRefs {
+            cert: "admin-cert".into(),
+            key: "admin-key".into(),
+            client_ca: None,
+        });
+        let provisioned = provision_servers(&listeners, &source, &journal, &tls, &token)
+            .expect("both pairs resolve and parse");
+        assert_eq!(provisioned[0].handle.slot(), 0);
+        assert_eq!(provisioned[1].handle.slot(), 1);
+
+        // The dial side of each slot: a peer that trusts exactly the pair that slot serves.
+        let data_dialer = provision_dial(&tls, &token, ListenerRole::Data, "data-peer", data_peer);
+        let admin_dialer =
+            provision_dial(&tls, &token, ListenerRole::Admin, "admin-peer", admin_peer);
+
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("a runtime");
+        let bound = runtime
+            .block_on(listen_all(&tls, &provisioned, 1024))
+            .expect("both listeners bind against their own slots");
+        assert_eq!(bound.len(), 2);
+
+        let trust = busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+        let dest = |addr: &str| {
+            let host: &'static str = Box::leak(addr.to_string().into_boxed_str());
+            busbar_contract::VerifiedDestination::seal(
+                &trust,
+                busbar_contract::DestinationFacts::Upstream {
+                    transport: "tls",
+                    address: busbar_contract::UpstreamAddress::socket(host),
+                    lane: busbar_contract::LaneId::new("two-listeners"),
+                },
+                "tls",
+                None,
+            )
+        };
+        let data_at = dest(&bound[0].local_addr());
+        let admin_at = dest(&bound[1].local_addr());
+
+        // Each listener, met by its own slot's peer. The accept and the dial have to run together:
+        // the handshake is the thing under test, and neither half completes without the other.
+        for (listener, at, dialer, which) in [
+            (&bound[0], &data_at, &data_dialer, "the data listener"),
+            (&bound[1], &admin_at, &admin_dialer, "the admin listener"),
+        ] {
+            let (accepted, dialled) = runtime
+                .block_on(async { tokio::join!(tls.accept(listener), tls.dial(at, dialer)) });
+            assert!(
+                accepted.is_ok() && dialled.is_ok(),
+                "{which} presented the certificate provisioned into its own slot"
+            );
+        }
+
+        // And the cross case. The admin listener presents slot 1's certificate, which the data
+        // slot's peer does not trust, so the handshake fails — which is the assertion that the two
+        // slots are two and not one read twice.
+        let (_, crossed) = runtime.block_on(async {
+            tokio::join!(tls.accept(&bound[1]), tls.dial(&admin_at, &data_dialer))
+        });
+        assert!(
+            crossed.is_err(),
+            "the admin listener presented material the data slot's peer trusts, so the two \
+             listeners are serving one slot"
+        );
     }
 
     /// The handle carries a slot and a fingerprint, and its debug output says as much rather than
