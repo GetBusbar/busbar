@@ -36,13 +36,17 @@
    "paths": [
     "crates/api/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "f1eae9809a85afcf90f7675e51fef0f9373d2d45c332cde4ebfe8892d3739e9d",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "LOW": 6,
+    "NIT": 4
+   },
+   "report": "pass 1: foreign wire field bricks a VirtualKey row (fixed c03edabc); redeem_plane_token defaulted to first-redemption (fixed 51e73174); put_key tombstone precondition unenforceable (ABI, post-1.6.0); all 10 production files read",
+   "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
     "crates/api/src/tests"
@@ -54,13 +58,13 @@
    "paths": [
     "crates/auth-admin-tokens/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "f3712a56c4c5f077ef5eb92e41a0276f85e1882b6652e4af8e8423048da7a79e",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "zero",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "pass 1: zero; read fully",
+   "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
     "crates/auth-admin-tokens/src/tests"
@@ -72,13 +76,15 @@
    "paths": [
     "crates/auth-static-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "5b262becf58afcc3f997a73a817b5cf7a981636c3bb331e36cb0e6b28f42912c",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "NIT": 2
+   },
+   "report": "pass 1: license compared with ==, whitespace-only token accepted (test-support plugin); read fully",
+   "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
     "crates/auth-static-plugin/src/tests"
