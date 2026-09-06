@@ -137,6 +137,29 @@ fn an_unclaimed_request_names_no_dialect() {
     assert_eq!(dialect_for("/api/status", &none), None);
 }
 
+/// The bare model-listing targets are not claimed by this plane.
+///
+/// A model-scoped rung is about ONE model, and the target that names no model is the listing of
+/// them all — a route the previous release serves itself, with no request body to read. The tail of
+/// a path pattern swallows what remains INCLUDING nothing, so a rung written as "the model surface,
+/// whatever follows" claimed the listing as well: the plane then named a dialect for a target it
+/// has no operation class for, tried to read a request document out of a body that has none, and
+/// answered a refusal in a dialect's envelope where the listing's own answer belonged.
+#[test]
+fn the_model_listing_targets_are_not_claimed() {
+    let none = |_: &str| None;
+    for path in ["/v1/models", "/v1beta/models"] {
+        assert_eq!(
+            dialect_for(path, &none),
+            None,
+            "{path} lists the models rather than naming one, so no rung may claim it"
+        );
+    }
+    // The model-scoped targets the rung exists for are still claimed.
+    assert_eq!(dialect_for("/v1/models/gpt-4o", &none), Some("gemini"));
+    assert_eq!(dialect_for("/v1beta/models/gemini", &none), Some("gemini"));
+}
+
 /// A header rung beats a path rung, whichever way the request is built.
 ///
 /// This is the whole point of the ordering: a request whose target says one dialect and whose
