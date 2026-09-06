@@ -103,7 +103,27 @@ idx=m.test_index(m.CRATES)
 print(sorted(k for k,v in idx.items() if len(v)==1)[0])
 EOF
 )"
-  real_cell="$("$PY" -c 'import json;print(json.load(open("testing/shadow-oracle/cells.json"))["cells"][0]["id"])')"
+  # A cell the GOLDEN RECORDED, not merely the first line of cells.json: two thirds of the cell
+  # list is protocol surface the 1.5.5 binary never served, and the golden carries those as SKIP.
+  # `skipped_cell` is one of them, and case (b2) below needs it.
+  local skipped_cell
+  pick_cell() { "$PY" - "$1" <<'PYEOF'
+import json, sys
+want = sys.argv[1]
+led = {}
+for ln in open("testing/shadow-oracle/golden/1.5.5/ledger.tsv", encoding="utf-8"):
+    p = ln.rstrip("\n").split("\t")
+    if len(p) >= 2:
+        led[p[0]] = p[1]
+ids = [c["id"] for c in json.load(open("testing/shadow-oracle/cells.json"))["cells"]]
+if want == "recorded":
+    print(sorted(i for i in ids if led.get(i) == "PASS")[0])
+else:
+    print(sorted(i for i in ids if i.startswith("mcp|") and led.get(i) == "SKIP")[0])
+PYEOF
+  }
+  real_cell="$(pick_cell recorded)"
+  skipped_cell="$(pick_cell skipped-mcp)"
 
   # (a) one bogus ref among good ones -> exactly one FAIL, red
   cat >"$tmp/bogus.json" <<EOF
@@ -132,6 +152,20 @@ EOF
   run_check "$tmp/cell.json" "$tmp/b.tsv" 0 >"$tmp/b.log" 2>&1; rc=$?
   [ "$rc" != 0 ] && [ "$(fails_in "$tmp/b.tsv")" = 1 ] && say PASS "a vanished oracle cell id -> one FAIL, red" \
     || { say FAIL "vanished cell: rc=$rc fails=$(fails_in "$tmp/b.tsv")"; cat "$tmp/b.log"; }
+
+  # (b2) a cell that EXISTS in cells.json but that the golden recorded as SKIP proves nothing, and
+  #      is a FAIL too. Without this the ledger's strongest-looking evidence — an oracle cell id —
+  #      could name surface the pinned binary never served and read green forever.
+  cat >"$tmp/skipped.json" <<EOF
+{"bindings": [
+ {"id":"PB-3","surface":"skipped cell","binding":"x","inventory":"x","status":"mapped",
+  "checks":[{"kind":"oracle-cell","ref":"${skipped_cell}","status":"mapped"}]}
+]}
+EOF
+  run_check "$tmp/skipped.json" "$tmp/b2.tsv" 0 >"$tmp/b2.log" 2>&1; rc=$?
+  [ "$rc" != 0 ] && [ "$(fails_in "$tmp/b2.tsv")" = 1 ] && grep -q "golden never recorded it" "$tmp/b2.tsv" \
+    && say PASS "an oracle cell the golden never recorded -> one FAIL, red" \
+    || { say FAIL "unrecorded cell: rc=$rc fails=$(fails_in "$tmp/b2.tsv") ($skipped_cell)"; cat "$tmp/b2.log"; }
 
   # (c) an empty table -> zero rows -> the vacuous red
   echo '{"bindings": []}' >"$tmp/empty.json"

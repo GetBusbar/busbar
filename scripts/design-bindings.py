@@ -13,8 +13,10 @@ qa/design-bindings.json carrying the checks that PROVE it today:
   test            a Rust test fn (bare name, or `path/to/file.rs::name` when the name is not
                   unique across the tree); existence = the fn is declared under a test attribute
   oracle-cell     one shadow-oracle cell id (testing/shadow-oracle/cells.json) that diffs the
-                  published 1.5.5 binary on that surface
-  oracle-family   a whole cell family (every cell in it cites the binding)
+                  published 1.5.5 binary on that surface, AND that the pinned golden actually
+                  RECORDED (PASS on golden/1.5.5/ledger.tsv). A cell the golden could not record
+                  is a cell nothing is compared against; naming it proves nothing.
+  oracle-family   a whole cell family, at least one of whose cells the golden recorded
   lint            a scripts/*-lint.sh style static check
   conformance     a row of a conformance rig (testing/*-conformance)
   gate            a scripts/*.sh or testing/*.sh gate
@@ -53,6 +55,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ARCH = ROOT / "docs" / "design" / "ARCHITECTURE.md"
 CELLS = ROOT / "testing" / "shadow-oracle" / "cells.json"
+GOLDEN_LEDGER = ROOT / "testing" / "shadow-oracle" / "golden" / "1.5.5" / "ledger.tsv"
 OUT_JSON = ROOT / "qa" / "design-bindings.json"
 OUT_MD = ROOT / "qa" / "DESIGN-BINDINGS.md"
 CRATES = ROOT / "crates"
@@ -988,9 +991,33 @@ def test_index(crates: Path) -> dict[str, set[str]]:
     return idx
 
 
-def verify(doc: dict, cells_doc: dict, crates: Path, root: Path) -> list[tuple[str, str, str, str]]:
+def golden_recorded(ledger: Path) -> set[str]:
+    """The cell ids the pinned golden actually recorded a comparable answer for (status PASS).
+
+    Roughly a third of cells.json is protocol surface the 1.5.5 binary never served, and the golden
+    carries those as SKIP rows. Existence in cells.json is therefore not evidence of anything: a
+    binding could name a cell that has been SKIP since the day it was written, and read PASS forever
+    on a comparison that has never once run. Only a PASS row on this ledger means the golden holds
+    bytes for that cell. An absent ledger yields an empty set, which is honest: nothing is proven.
+    """
+    out: set[str] = set()
+    if not ledger.is_file():
+        return out
+    for line in ledger.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1] == "PASS":
+            out.add(parts[0])
+    return out
+
+
+def verify(doc: dict, cells_doc: dict, crates: Path, root: Path,
+           ledger: Path = GOLDEN_LEDGER) -> list[tuple[str, str, str, str]]:
     idx = test_index(crates) if crates.exists() else {}
     cell_ids = {c["id"] for c in cells_doc.get("cells", [])}
+    recorded = golden_recorded(ledger)
+    fam_cells: dict[str, list[str]] = defaultdict(list)
+    for c in cells_doc.get("cells", []):
+        fam_cells[c.get("family") or c.get("plane") or "?"].append(c["id"])
     families = Counter((c.get("family") or c.get("plane") or "?") for c in cells_doc.get("cells", []))
     rows: list[tuple[str, str, str, str]] = []
     for b in doc.get("bindings", []):
@@ -1010,9 +1037,15 @@ def verify(doc: dict, cells_doc: dict, crates: Path, root: Path) -> list[tuple[s
                 else:
                     ok = r in idx
             elif k == "oracle-cell":
-                ok = r in cell_ids
+                ok = r in cell_ids and r in recorded
+                if r in cell_ids and not ok:
+                    missing.append(f"{k}:{r} (in cells.json, but the golden never recorded it)")
+                    continue
             elif k == "oracle-family":
-                ok = families.get(r, 0) > 0
+                ok = any(i in recorded for i in fam_cells.get(r, []))
+                if families.get(r, 0) > 0 and not ok:
+                    missing.append(f"{k}:{r} (cells exist, but the golden recorded none of them)")
+                    continue
             elif k in ("lint", "gate", "conformance"):
                 ok = (root / r).exists()
             if not ok:
@@ -1086,6 +1119,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--out-json", default=str(OUT_JSON))
     ap.add_argument("--out-md", default=str(OUT_MD))
     ap.add_argument("--crates", default=str(CRATES))
+    ap.add_argument("--golden-ledger", default=str(GOLDEN_LEDGER),
+                    help="the pinned golden's ledger.tsv; an oracle check is only proven by a PASS row here")
     a = ap.parse_args(argv)
 
     cells_doc = json.loads(Path(a.cells).read_text()) if Path(a.cells).exists() else {"cells": []}
@@ -1096,7 +1131,7 @@ def main(argv: list[str]) -> int:
         if existing is None:
             print(f"design-bindings: {a.bindings} missing -- run --write first", file=sys.stderr)
             return 2
-        for r in verify(existing, cells_doc, Path(a.crates), ROOT):
+        for r in verify(existing, cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger)):
             print("\t".join(x.replace("\t", " ") for x in r))
         return 0
 
