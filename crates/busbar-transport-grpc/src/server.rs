@@ -108,7 +108,7 @@ struct RpcHandler {
     out_rx: Option<crate::conn::OutboundRx>,
 }
 
-impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
+impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
     type Response = Response<OutStream>;
     type Error = Status;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Status>> + Send>>;
@@ -117,7 +117,7 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, request: Request<tonic::Streaming<Vec<u8>>>) -> Self::Future {
+    fn call(&mut self, request: Request<tonic::Streaming<bytes::Bytes>>) -> Self::Future {
         let state = self.state.clone();
         let stream_id = self.stream_id;
         let serial = self.serial;
@@ -150,14 +150,17 @@ impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
 pub(crate) async fn forward_inbound(
     state: Arc<ConnState>,
     stream_id: StreamId,
-    mut inbound: tonic::Streaming<Vec<u8>>,
+    mut inbound: tonic::Streaming<bytes::Bytes>,
     is_response: bool,
 ) {
     use futures::StreamExt;
     let final_status = loop {
         match inbound.next().await {
             Some(Ok(bytes)) => {
-                let slab = SlabBytes::new(Arc::<[u8]>::from(bytes));
+                // One copy, straight from the decoded message into the slab the frame carries: the
+                // decoder's own buffer is not first turned into a `Vec` for the `Arc` to copy out
+                // of again.
+                let slab = SlabBytes::new(Arc::<[u8]>::from(&bytes[..]));
                 let meta = FrameMeta {
                     bytes: slab.len() as u64,
                     transport_units: None,

@@ -15,7 +15,10 @@ pub(crate) struct RawCodec;
 
 impl Codec for RawCodec {
     type Encode = Vec<u8>;
-    type Decode = Vec<u8>;
+    /// Decoded messages come out as [`bytes::Bytes`] rather than `Vec<u8>`: the framing layer hands
+    /// this decoder a buffer it already owns, and taking the body out of it is a claim on those
+    /// bytes rather than a fresh allocation zero-filled and then overwritten.
+    type Decode = bytes::Bytes;
     type Encoder = RawEncoder;
     type Decoder = RawDecoder;
 
@@ -46,7 +49,7 @@ impl Encoder for RawEncoder {
 pub(crate) struct RawDecoder;
 
 impl Decoder for RawDecoder {
-    type Item = Vec<u8>;
+    type Item = bytes::Bytes;
     type Error = Status;
 
     /// The buffer handed here is always ONE complete message body: the framing layer above reads
@@ -57,8 +60,10 @@ impl Decoder for RawDecoder {
     /// message is decoded as what it is: zero bytes, delivered.
     fn decode(&mut self, src: &mut DecodeBuf<'_>) -> Result<Option<Self::Item>, Self::Error> {
         use bytes::Buf;
-        let mut out = vec![0u8; src.remaining()];
-        src.copy_to_slice(&mut out);
-        Ok(Some(out))
+        // Taken from the buffer as it stands, rather than allocated, zero-filled, and immediately
+        // overwritten by a copy — the memset was writing over every byte of every message this
+        // transport carries, for a buffer whose whole content is about to be replaced.
+        let len = src.remaining();
+        Ok(Some(src.copy_to_bytes(len)))
     }
 }
