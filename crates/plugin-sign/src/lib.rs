@@ -867,7 +867,15 @@ pub fn evaluate(
         Err(Untrusted::ThirdParty { publisher }) => {
             if policy.allow_third_party {
                 Ok(Verdict::Allowed {
-                    reason: format!("signed by non-allowlisted publisher '{publisher}'"),
+                    // NOT "signed by": this branch is reached precisely because no key is held
+                    // for that publisher, so no signature was checked and none could be. All that
+                    // is known is what the manifest CLAIMS. Saying "signed by" would report a
+                    // verification that never ran, in the one line an operator reads to decide
+                    // whether allow_third_party is doing what they think it is.
+                    reason: format!(
+                        "publisher '{publisher}' is not in the allowlist, so no signature was \
+                         verified"
+                    ),
                     allow: AllowReason::ThirdParty,
                 })
             } else {

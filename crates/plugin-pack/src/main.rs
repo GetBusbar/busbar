@@ -207,6 +207,20 @@ fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
     Ok(text)
 }
 
+/// The refusal for a `$BUSBAR_SIGN_KEY` that is not hex, built here so the message has exactly one
+/// definition and a test can assert on it without reconstructing it.
+///
+/// It deliberately carries NONE of the value. The hex decoder's own error names the offending
+/// character and its index, and that character is a nibble of the ed25519 signing seed; a packaging
+/// run is exactly where such a line goes to live, in a CI log or a pasted bug report. Which variable
+/// is malformed and what shape it must have is the whole of what the operator needs.
+fn sign_key_hex_error() -> String {
+    format!(
+        "{SIGN_KEY_ENV} is not valid hex; it must be exactly 64 hex characters (a 32-byte ed25519 \
+         seed)"
+    )
+}
+
 /// Resolve `$ref`/`allOf` into an effective (locally merged) schema object, so field-depth and
 /// `x-busbar-secret` checks see the shape the way a form renderer actually would — not the raw
 /// document structure. `schemars`-style struct derivation commonly emits a nested field as a
@@ -215,11 +229,28 @@ fn read_and_validate_settings_schema(path: &str) -> Result<String, String> {
 /// Local `#/$defs/<Name>` / `#/definitions/<Name>` pointers only — an
 /// external or fragment-shaped `$ref` is left unresolved (its siblings are still merged) since
 /// there is nothing local to look up.
+///
+/// DEPTH-CAPPED for the same reason `scan` is, and it needs its own cap rather than borrowing that
+/// one: the `resolving` set unwinds as each resolution returns, so a `$defs` entry reachable from
+/// itself through an `allOf` chain resolves cleanly at every step and simply never stops — and this
+/// function recurses into itself twice (through `$ref` and through each `allOf` member) without ever
+/// passing back through `scan`, so `scan`'s counter never advances while it does. Uncapped, an
+/// operator-supplied schema at pack time overflows the stack, which aborts with no diagnostic at
+/// all: the one outcome a validator must never produce.
 fn resolve_effective(
     schema: &serde_json::Value,
     defs: &serde_json::Map<String, serde_json::Value>,
     resolving: &mut HashSet<String>,
+    depth: u32,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    const MAX_RESOLVE_DEPTH: u32 = 64;
+    if depth > MAX_RESOLVE_DEPTH {
+        return Err(format!(
+            "settings_schema nests deeper than {MAX_RESOLVE_DEPTH} levels while resolving \
+             $ref/allOf — a self-referencing $defs entry is the usual cause; the schema cannot be \
+             validated"
+        ));
+    }
     let Some(obj) = schema.as_object() else {
         return Ok(serde_json::Map::new());
     };
@@ -235,7 +266,7 @@ fn resolve_effective(
             let target = defs
                 .get(name)
                 .ok_or_else(|| format!("settings_schema has a dangling $ref: '{r}'"))?;
-            let base = resolve_effective(target, defs, resolving)?;
+            let base = resolve_effective(target, defs, resolving, depth + 1)?;
             resolving.remove(name);
             merged = base;
             for (k, v) in obj {
@@ -247,7 +278,7 @@ fn resolve_effective(
     }
     if let Some(all_of) = merged.get("allOf").and_then(|v| v.as_array()).cloned() {
         for sub in &all_of {
-            let sub_eff = resolve_effective(sub, defs, resolving)?;
+            let sub_eff = resolve_effective(sub, defs, resolving, depth + 1)?;
             if let Some(sub_props) = sub_eff.get("properties").and_then(|v| v.as_object()) {
                 let props = merged
                     .entry("properties")
@@ -325,7 +356,7 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
                  $defs entry is the usual cause; the schema cannot be validated"
             ));
         }
-        let eff = resolve_effective(schema, defs, resolving)?;
+        let eff = resolve_effective(schema, defs, resolving, depth)?;
         if eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true)) {
             if at != Position::RootProperty {
                 return Err(
@@ -347,7 +378,7 @@ fn validate_secret_fields(root: &serde_json::Value) -> Result<(), String> {
         }
         if let Some(props) = eff.get("properties").and_then(|p| p.as_object()) {
             for (name, prop_schema) in props {
-                let prop_eff = resolve_effective(prop_schema, defs, resolving)?;
+                let prop_eff = resolve_effective(prop_schema, defs, resolving, depth)?;
                 let marked =
                     prop_eff.get("x-busbar-secret") == Some(&serde_json::Value::Bool(true));
                 if !marked {
@@ -534,8 +565,7 @@ fn pack(args: &[String]) -> ExitCode {
         // Sign with $BUSBAR_SIGN_KEY, or package unsigned only under the explicit dev flag.
         let manifest = match std::env::var(SIGN_KEY_ENV) {
             Ok(hex_seed) => {
-                let seed = hex::decode(hex_seed.trim())
-                    .map_err(|e| format!("{SIGN_KEY_ENV} is not valid hex: {e}"))?;
+                let seed = hex::decode(hex_seed.trim()).map_err(|_| sign_key_hex_error())?;
                 let seed: [u8; 32] = seed
                     .as_slice()
                     .try_into()
