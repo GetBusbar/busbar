@@ -498,20 +498,43 @@ def rule_neutral_no_dialect(tree, cfg, hits_path):
                     -1, c["max_hits"], c["why"], [])]
     per_file = {}
     samples = []
+    scanned = {}
     with open(hits_path, encoding="utf-8", errors="replace") as fh:
         for ln in fh:
             parts = ln.rstrip("\n").split("\t")
+            # The `#SCAN` provenance line plane-purity-lint.sh prefixes the artefact with: how many
+            # files it examined, across how many roots. This row counts HITS, and a hit count of zero
+            # means "clean" only if the scan actually opened files -- a scan of nothing reports zero
+            # just as convincingly. The denominator is read here so the two can be told apart.
+            if parts and parts[0] == "#SCAN":
+                for kv in parts[1:]:
+                    k, _, v = kv.partition("=")
+                    if v.isdigit():
+                        scanned[k] = int(v)
+                continue
             if len(parts) < 3 or parts[0] not in cats:
                 continue
             f = parts[1].split(":")[0]
             per_file[f] = per_file.get(f, 0) + 1
             if len(samples) < 5:
                 samples.append(f"{parts[0]} {parts[1]}: {parts[2][:80]}")
+    # A zero-file scan is RED for the same reason a missing hits file is: the delegated scan did not
+    # actually happen, so its silence proves nothing. Reported before the ceiling comparison, because
+    # `0 <= max_hits` is true and would otherwise pass this row on an empty scan.
+    blind = [k for k in ("neutral_files", "plane_files") if scanned.get(k, -1) == 0]
+    if blind:
+        return [row("neutral-no-dialect", False,
+                    "neutral crates name no dialect or plane (delegated to plane-purity-lint.sh)",
+                    "plane-purity-lint.sh scanned zero files ("
+                    + ", ".join(f"{k}={scanned[k]}" for k in sorted(scanned))
+                    + "); zero hits over zero files is not a clean tree",
+                    -1, c["max_hits"], c["why"], blind)]
     current = sum(per_file.values())
     top = sorted(per_file.items(), key=lambda kv: -kv[1])[:5]
     offenders = [f"{n} in {f}" for f, n in top] + samples
-    detail = (f"{current} {'/'.join(sorted(cats))} hit(s) in the neutral crates per plane-purity-lint.sh "
-              f"(ceiling {c['max_hits']})" + (": " + "; ".join(offenders[:3]) if offenders else ""))
+    over = (f" over {scanned['neutral_files']} neutral file(s)" if "neutral_files" in scanned else "")
+    detail = (f"{current} {'/'.join(sorted(cats))} hit(s) in the neutral crates per plane-purity-lint.sh"
+              f"{over} (ceiling {c['max_hits']})" + (": " + "; ".join(offenders[:3]) if offenders else ""))
     return [row("neutral-no-dialect", current <= c["max_hits"],
                 "neutral crates name no dialect or plane (delegated to plane-purity-lint.sh)",
                 detail, current, c["max_hits"], c["why"], offenders)]
