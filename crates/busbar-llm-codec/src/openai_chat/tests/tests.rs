@@ -1221,11 +1221,14 @@ fn text_then_tool_closes_text_block_before_opening_tool() {
 
 // Chat#1 regression: preamble-text → tool_calls → MORE text. The `tool_calls` chunk closes the text
 // block (BlockStart+BlockStop at its index); a LATER `delta.content` chunk must NOT reopen a text
-// block at that already-closed index (a second `content_block_start` at one index = an unbalanced IR
+// block at that ALREADY-CLOSED index (a second `content_block_start` at one index = an unbalanced IR
 // stream on an Anthropic egress). Reachable with OpenAI-compatible backends (vLLM/Azure/OpenRouter).
 // Pre-fix: `text_index` stays `Some` and the reopen fires on `!text_block_open`, emitting TWO
-// BlockStart at the same index. Post-fix: `text_block_closed` latches on the close and the resumed
-// text is dropped, leaving exactly one balanced text block.
+// BlockStart at the SAME index.
+//
+// The resumed text is NOT dropped — OpenAI models narrate around their tool calls, and dropping it
+// lost everything the model said after the call. It opens a SECOND text block at a FRESH index, so
+// every block is opened once and closed once and no index is ever reopened.
 #[test]
 fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
     let reader = OpenAiReader;
@@ -1269,7 +1272,8 @@ fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
         &mut st,
     ));
 
-    // Exactly ONE text BlockStart across the whole stream — the resumed text never reopens.
+    // TWO text blocks — the preamble and the resumed narration — at DISTINCT indices. The
+    // already-closed index is never reopened.
     let text_starts: Vec<usize> = events
         .iter()
         .filter_map(|e| match e {
@@ -1282,19 +1286,36 @@ fn preamble_text_then_tool_then_text_keeps_one_balanced_text_block() {
         .collect();
     assert_eq!(
         text_starts.len(),
-        1,
-        "the text block must be opened exactly once, never reopened at a closed index: {events:?}"
+        2,
+        "the resumed text must reach the client as its own block: {events:?}"
     );
-    let text_idx = text_starts[0];
-    // …and exactly one BlockStop at that text index, so the block is balanced.
-    let text_stops = events
+    assert_ne!(
+        text_starts[0], text_starts[1],
+        "a closed index must never be reopened: {events:?}"
+    );
+    // …and each text index is closed exactly once, so both blocks are balanced.
+    for text_idx in &text_starts {
+        let text_stops = events
+            .iter()
+            .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if index == text_idx))
+            .count();
+        assert_eq!(
+            text_stops, 1,
+            "text index {text_idx} must be closed exactly once (balanced): {events:?}"
+        );
+    }
+    // The resumed narration is carried, not dropped.
+    let text: String = events
         .iter()
-        .filter(|e| matches!(e, IrStreamEvent::BlockStop { index } if *index == text_idx))
-        .count();
-    assert_eq!(
-        text_stops, 1,
-        "the text block index must be closed exactly once (balanced): {events:?}"
-    );
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockDelta {
+                delta: IrDelta::TextDelta(t),
+                ..
+            } => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(text, "Thinking… …done.", "{events:?}");
 }
 
 // --- total_tokens must saturate, never overflow-panic/wrap ---
@@ -5706,5 +5727,104 @@ fn test_inline_error_chunk_reaches_anthropic_ingress_as_an_error_frame() {
     assert!(
         wire.contains("event: error"),
         "the Anthropic client must receive a native error frame, not a silent success: {wire}"
+    );
+}
+
+/// A model that streams TEXT AFTER a tool call is not out of spec — OpenAI models narrate around
+/// their tool calls, and the `tool_calls` chunk closing the text block is a block boundary, not the
+/// end of the turn. The reader latched `text_block_closed` on that boundary and DROPPED every later
+/// content delta, so the client received the tool call and nothing the model said afterwards. A
+/// resumed content stream opens a NEW block at a fresh index instead.
+#[test]
+fn text_after_a_tool_call_reaches_the_client() {
+    let reader = OpenAiReader;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let mut events: Vec<IrStreamEvent> = Vec::new();
+    for chunk in [
+        serde_json::json!({"id":"c","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"let me look"}}]}),
+        serde_json::json!({"id":"c","created":1,"model":"m","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"f","arguments":"{}"}}]}}]}),
+        serde_json::json!({"id":"c","created":1,"model":"m","choices":[{"index":0,"delta":{"content":"here is what I found"}}]}),
+    ] {
+        events.extend(reader.read_response_events("", &chunk, &mut state));
+    }
+
+    let text: String = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockDelta {
+                delta: IrDelta::TextDelta(t),
+                ..
+            } => Some(t.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        text, "let me lookhere is what I found",
+        "text after a tool call must not be dropped: {events:?}"
+    );
+
+    // The resumed text lands on its OWN block: never a second BlockStart at a stopped index.
+    let starts: Vec<usize> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockStart { index, .. } => Some(*index),
+            _ => None,
+        })
+        .collect();
+    let mut distinct = starts.clone();
+    distinct.sort_unstable();
+    distinct.dedup();
+    assert_eq!(
+        starts.len(),
+        distinct.len(),
+        "no index may be opened twice: {starts:?}"
+    );
+}
+
+/// The buffered writer reports OpenAI's audio and predicted-outputs attribution slices
+/// (`prompt_tokens_details.audio_tokens`, `completion_tokens_details.audio_tokens` /
+/// `accepted_prediction_tokens` / `rejected_prediction_tokens`); the STREAMED writer emitted only
+/// `cached_tokens` and `reasoning_tokens`. The same request therefore answered two different usage
+/// objects depending only on `stream`, and an audio or predicted-outputs turn lost its attribution
+/// entirely on the streamed path.
+#[test]
+fn streamed_usage_reports_the_same_sub_buckets_the_buffered_path_does() {
+    let usage = IrUsage {
+        input_tokens: 100,
+        output_tokens: 20,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail {
+            input_audio_tokens: Some(7),
+            output_audio_tokens: Some(3),
+            accepted_prediction_tokens: Some(11),
+            rejected_prediction_tokens: Some(5),
+            ..Default::default()
+        },
+    };
+    let writer = OpenAiWriter;
+    let (_t, chunk) = writer
+        .write_response_event(&IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage,
+        })
+        .expect("MessageDelta emits a terminal chunk");
+    assert_eq!(
+        chunk.pointer("/usage/prompt_tokens_details/audio_tokens"),
+        Some(&serde_json::json!(7)),
+        "{chunk}"
+    );
+    assert_eq!(
+        chunk.pointer("/usage/completion_tokens_details/audio_tokens"),
+        Some(&serde_json::json!(3))
+    );
+    assert_eq!(
+        chunk.pointer("/usage/completion_tokens_details/accepted_prediction_tokens"),
+        Some(&serde_json::json!(11))
+    );
+    assert_eq!(
+        chunk.pointer("/usage/completion_tokens_details/rejected_prediction_tokens"),
+        Some(&serde_json::json!(5))
     );
 }

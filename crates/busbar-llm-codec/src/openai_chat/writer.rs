@@ -744,24 +744,53 @@ impl ProtocolWriter for OpenAiWriter {
                             "completion_tokens": completion_tokens,
                             "total_tokens": prompt_tokens.saturating_add(completion_tokens),
                         });
-                        if usage.cache_read_input_tokens.is_some() {
-                            if let Some(uo) = usage_obj.as_object_mut() {
-                                uo.insert(
-                                    "prompt_tokens_details".to_string(),
-                                    serde_json::json!({ "cached_tokens": cache_read }),
+                        // The SAME sub-bucket set the buffered writer reports, by the same rule:
+                        // emit a details object only when a member is present, and each member only
+                        // when the source reported it (`None` means "this provider said nothing",
+                        // which is NOT `Some(0)`). Emitting only `cached_tokens` and
+                        // `reasoning_tokens` here made one request answer two different usage
+                        // objects depending on nothing but `stream`, and lost an audio or
+                        // predicted-outputs turn's attribution entirely on the streamed path.
+                        if let Some(uo) = usage_obj.as_object_mut() {
+                            let mut ptd = serde_json::Map::new();
+                            if usage.cache_read_input_tokens.is_some() {
+                                ptd.insert(
+                                    "cached_tokens".to_string(),
+                                    serde_json::json!(cache_read),
                                 );
                             }
-                        }
-                        // The reasoning SUB-BUCKET, in OpenAI's native
-                        // `completion_tokens_details.reasoning_tokens` slot — the same field the
-                        // buffered writer emits. Emitted only when the source actually reported it
-                        // (`None` means "this provider said nothing", which is NOT `Some(0)`), so a
-                        // non-reasoning stream carries no fabricated details object.
-                        if let Some(rt) = usage.detail.reasoning_tokens {
-                            if let Some(uo) = usage_obj.as_object_mut() {
+                            if let Some(a) = usage.detail.input_audio_tokens {
+                                ptd.insert("audio_tokens".to_string(), serde_json::json!(a));
+                            }
+                            if !ptd.is_empty() {
+                                uo.insert(
+                                    "prompt_tokens_details".to_string(),
+                                    serde_json::Value::Object(ptd),
+                                );
+                            }
+                            let mut ctd = serde_json::Map::new();
+                            if let Some(rt) = usage.detail.reasoning_tokens {
+                                ctd.insert("reasoning_tokens".to_string(), serde_json::json!(rt));
+                            }
+                            if let Some(a) = usage.detail.output_audio_tokens {
+                                ctd.insert("audio_tokens".to_string(), serde_json::json!(a));
+                            }
+                            if let Some(t) = usage.detail.accepted_prediction_tokens {
+                                ctd.insert(
+                                    "accepted_prediction_tokens".to_string(),
+                                    serde_json::json!(t),
+                                );
+                            }
+                            if let Some(t) = usage.detail.rejected_prediction_tokens {
+                                ctd.insert(
+                                    "rejected_prediction_tokens".to_string(),
+                                    serde_json::json!(t),
+                                );
+                            }
+                            if !ctd.is_empty() {
                                 uo.insert(
                                     "completion_tokens_details".to_string(),
-                                    serde_json::json!({ "reasoning_tokens": rt }),
+                                    serde_json::Value::Object(ctd),
                                 );
                             }
                         }
