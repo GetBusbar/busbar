@@ -1513,6 +1513,45 @@ cross-product of the thirteen selector forms — 169 pairs — with no catch-all
 loop's step order is carried by types: ten step markers, and twelve token types that name the step or
 the unit they entitle. Totality and type-level step order are what the surface costs.
 
+### Decisions 2026-09-06 (owner)
+
+- **Planes and transports are plugins like every other plugin.** Store, hook, auth, secret, export,
+  plane, transport — every plugin kind can be compiled into the binary or dropped into the plugins
+  directory; the difference between kinds is only WHEN a dropped-in file takes effect (a plane's
+  claims are sealed by the registry, so a new plane takes effect at the next seal; a transport binds
+  a listener, so it takes effect at boot), never whether it is a plugin. The codec-only rules on
+  planes (no I/O, no clock, bounded arena, POD facts over a versioned vtable) exist so that a plane
+  crosses a dlopen boundary at compiled-in cost. The loader half — a plane cdylib kind, a manifest
+  carrying claims, the registry sealing from loaded manifests, the deletion test proving every plane
+  as a dropped-in file — is the first item after 1.6.0 is done, carried in the tracker as a
+  post-1.6.0 row so it cannot be silently dropped.
+- **Units are core, not plugins.** The fourteen units are the rules, not surfaces; they are never
+  loadable.
+- **One crate per plane: the codec folds into its plane.** End state `busbar-plane-llm` = today's
+  `busbar-plane-llm` + `busbar-llm-codec`, likewise mcp, a2a, voice. The separate codec crates exist
+  only because the legacy engine and the new plane had to share one codec during the strangler; when
+  the legacy caller is deleted (D33's last wave) each codec folds into its plane crate as the final
+  D33 step. Planes carry no line ceiling, so the gate allows it; the source denylist and purity lint
+  apply to the folded crate exactly as to the codec today.
+
+- **Core is the hub.** Planes, admin, plugins, secrets, peers, scrape, hooks and exports all talk
+  to core, and core shuttles on to whatever is allowed or needed. A plane can reach none of the
+  other inputs or outputs directly. This is a restatement, not a new constraint — the gate already
+  proves it: a plane returns facts/locators only and holds no money type (plane-no-money); a plane
+  reaches the kernel only through its declared ports, never another plane or a store/hook/secret/
+  export plugin directly (ports-only); the source denylist forbids a plane crate from naming
+  another plane, a transport, or an out-of-tree plugin kind in its dependency graph; the purity
+  lint holds every plane to codec shape (no I/O, no clock, no direct fan-out) so a cross-plane or
+  cross-plugin call could not compile even before the denylist runs; every unit's walk ends at the
+  single terminal (one exit point back through core, never a plane-to-plane handoff); and admin
+  mutations are reachable only on the admin listener, never composed into a plane's own route
+  table. Together these are the hub-and-spoke shape already enforced; this row names it in the
+  owner's words so it is legible as one decision rather than five independent rules.
+
+**Proposal awaiting the owner (not a decision):** the admin "plane" is a codec for the admin wire
+whose only destination is core (`busbar-unit-verbs` executes; scope always checked; admin listener
+only) — renaming it "admin surface" would make that plain.
+
 ## Appendix B — Parity bindings (override any conflicting sentence in §1–§9 for every 1.5.5-reachable surface)
 
 **PB-0 (master rule).** EVERY row of every inventory file under `inventory/` is a parity binding and an oracle cell, whether or not it is restated below: the 1.5.5 behaviour it cites is reproduced byte for byte on every 1.5.5-reachable surface. Appendix B restates only the rows where a sentence in the body needed an explicit override or where a reviewer found the transcription worth pinning; absence of a row from this table binds nothing looser. Where a binding paraphrases its row imprecisely, the row wins (PB-72). Consequently the reviewer's question for the body is only: does a body sentence introduce a user-observable behaviour that contradicts an inventory row without an override here?
