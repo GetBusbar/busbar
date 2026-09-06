@@ -681,15 +681,41 @@ async fn an_upgrade_the_peer_never_answers_expires_on_the_handshake_budget() {
     let t = WsTransport::new();
     // The far half is held open and never written to: the accept side can only wait.
     let (end_a, _end_b) = tokio::io::duplex(64 * 1024);
-    let started = tokio::time::Instant::now();
     let err = t
         .handshake_over(end_a, true, WS_TARGET, "silent-peer")
         .await
         .expect_err("an unanswered upgrade must not wait forever");
+    // The load-bearing claim, and the only one: the upgrade ENDS, and it ends as a deadline rather
+    // than as a handshake failure the peer could be blamed for.
+    //
+    // The assertion that used to sit here — `started.elapsed() >= HANDSHAKE_BUDGET` — was the
+    // constant compared against itself. Under a paused clock the elapsed time IS whatever deadline
+    // the code under test armed, so the check reads the production constant back out of the
+    // production code and agrees with it: set the budget to a second, or to a week, and it still
+    // passes. It could never have gone red for any value, so it is gone. What a real value change
+    // is caught by is the wall-clock cell below.
     assert_eq!(err, TransportError::Timeout);
+}
+
+/// A HEALTHY upgrade completes well inside a bound this cell names as a literal.
+///
+/// The budget cell above runs on a paused clock, so no assertion in it can be about how long
+/// anything really took. This one is the other side of the same number and is measured against the
+/// wall: two ends of a live duplex complete the opening handshake in microseconds, so five seconds
+/// is two orders of magnitude of headroom — and the literal is written here rather than derived
+/// from `HANDSHAKE_BUDGET`, because a bound computed from the constant under test moves with it and
+/// can never fail. A budget shrunk far enough to fire on a healthy peer turns this red, which is
+/// what a self-referential bound could never do.
+#[tokio::test]
+async fn a_healthy_upgrade_finishes_far_inside_the_wall_clock_bound_this_cell_names() {
+    const HANDSHAKE_HEADROOM: Duration = Duration::from_secs(5);
+    let t = WsTransport::new();
+    let started = std::time::Instant::now();
+    let (_a, _b) = bounded("pair(&t, 64 * 1024)", pair(&t, 64 * 1024)).await;
+    let took = started.elapsed();
     assert!(
-        started.elapsed() >= crate::transport::HANDSHAKE_BUDGET,
-        "the budget is what ended it"
+        took < HANDSHAKE_HEADROOM,
+        "a healthy upgrade took {took:?}, past the {HANDSHAKE_HEADROOM:?} this cell allows it"
     );
 }
 
@@ -1119,7 +1145,12 @@ async fn close_gives_up_on_a_peer_that_never_reads() {
     let state = t.state_of(a.id()).expect("the connection is live");
     t.close(a, CloseReason::Normal);
 
-    let gave_up = tokio::time::timeout(crate::transport::CLOSE_BUDGET * 8, async {
+    // A FIXED wall-clock bound, not `CLOSE_BUDGET * 8`. A bound derived from the constant under
+    // test scales with it: widen `CLOSE_BUDGET` to an hour and the bound becomes eight hours, so
+    // the cell goes on passing while the courtesy frame holds the writer lock — and the socket —
+    // for the whole of it. The number the deployment cannot afford is a wall-clock number, so this
+    // is one, and it is written here rather than computed from the thing it is checking.
+    let gave_up = tokio::time::timeout(Duration::from_secs(10), async {
         while Arc::strong_count(&state) > 1 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -1210,8 +1241,13 @@ async fn a_peer_that_pings_and_then_stops_reading_does_not_park_the_pump_forever
     }
 
     let mut frames = t.frames(a);
+    // A FIXED bound, not `PONG_BUDGET * 4`. A bound multiplied out of the constant under test can
+    // never fail: widen the budget and the bound widens with it, so a Pong that parks the pump for
+    // an hour still passes. Thirty seconds is written here as a literal, comfortably past the ten
+    // the production budget allows — and this cell's clock is paused, so the wait costs nothing
+    // real either way.
     let ended = tokio::time::timeout(
-        crate::transport::PONG_BUDGET * 4,
+        Duration::from_secs(30),
         futures::StreamExt::next(&mut frames),
     )
     .await
