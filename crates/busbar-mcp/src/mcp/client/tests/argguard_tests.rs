@@ -380,6 +380,45 @@ fn bare_host_formats_are_judged_as_hosts() {
     assert_eq!(scan.declared_judged, 4);
 }
 
+/// A BARE-HOST FORMAT CARRYING A WHOLE URL IS STILL JUDGED. The schema is the UPSTREAM's document —
+/// pinning fixes which one is read, not what it says — so `{"format": "hostname"}` on a field the
+/// model then fills with `http://169.254.169.254/…` is a shape the upstream can author. Read as a
+/// bare host, such a value yields the SCHEME as its host (`http`), which is not an address, not an
+/// alternate encoding and not private, so every arm of the host judgement passes and the walk that
+/// exists to catch exactly this value waves it through. Judge what the value IS.
+#[test]
+fn a_bare_host_format_carrying_a_whole_url_is_judged_as_a_url() {
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "host": {"type": "string", "format": "hostname"},
+            "v4": {"type": "string", "format": "ipv4"}
+        }
+    });
+    for (field, value) in [
+        ("host", "http://169.254.169.254/latest/meta-data/"),
+        ("host", "http://localhost:9000/admin"),
+        ("v4", "https://127.0.0.1/"),
+    ] {
+        let refusal = guard(&schema, &json!({ field: value }), public());
+        let err = refusal.expect_err("a whole URL in a bare-host field must be refused");
+        assert!(err.declared_format.is_some(), "{err:?}");
+    }
+    // AND THE SCHEME ARM STILL APPLIES: a non-http scheme in a host field is refused as a scheme
+    // rather than silently read as the host `file`.
+    let err = guard(
+        &schema,
+        &json!({"host": "file:///etc/shadow"}),
+        private_ok(),
+    )
+    .expect_err("a non-http scheme in a host field is refused");
+    assert!(matches!(err.why, ArgWhy::Scheme(_)), "{err:?}");
+    // THE CONTROL: an ordinary bare host in the same field still passes and is still counted.
+    let scan = guard(&schema, &json!({"host": "api.example.com"}), public())
+        .expect("a real hostname still passes");
+    assert_eq!(scan.declared_judged, 1);
+}
+
 /// THE UNDECLARED CASE, and the decision it encodes. Most real MCP tools take a URL in a plain
 /// `{"type": "string"}`, so a walk that judged only declared fields would refuse almost nothing.
 /// A string whose WHOLE value is an `http(s)` URL is therefore judged wherever it appears — and
