@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::{StatusClass, TransportError};
 
 use crate::GrpcTransport;
 
@@ -157,7 +157,32 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
     // call's response stream ends — the honest reading of the `grpc-status` trailer.
     let (_s, terminal) = client_frames.next().await.unwrap().unwrap();
     assert_eq!(terminal.bytes.len(), 0);
-    assert!(terminal.meta.status.is_some(), "STATUS_CLASS at Terminal");
+    assert_eq!(
+        terminal.meta.status,
+        Some(StatusClass::Success),
+        "STATUS_CLASS at Terminal: an OK grpc-status is honestly Success, not merely present"
+    );
+}
+
+/// [`crate::server::map_status`] directly, one row per `grpc-status` code family: `Ok` is a
+/// success, `PermissionDenied` and `Internal` are the client/server halves of the failure split,
+/// and a code the table names neither of falls to `Other` rather than silently landing in one of
+/// them.
+#[test]
+fn map_status_reads_the_grpc_status_trailer_honestly() {
+    for (code, expected) in [
+        (tonic::Code::Ok, StatusClass::Success),
+        (tonic::Code::PermissionDenied, StatusClass::ClientError),
+        (tonic::Code::Internal, StatusClass::ServerError),
+        (tonic::Code::Cancelled, StatusClass::Other),
+    ] {
+        let status = tonic::Status::new(code, "fixture");
+        assert_eq!(
+            crate::server::map_status(&status),
+            expected,
+            "tonic::Code::{code:?} maps to {expected:?}"
+        );
+    }
 }
 
 #[tokio::test]

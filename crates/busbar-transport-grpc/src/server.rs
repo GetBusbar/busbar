@@ -179,7 +179,7 @@ pub(crate) async fn forward_inbound(
 
 /// The transport's own honest reading of the `grpc-status` trailer, into the closed
 /// [`busbar_contract_transport::wire::StatusClass`] — never a judgement about what the RPC's bytes meant.
-fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
+pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::StatusClass {
     use busbar_contract_transport::wire::StatusClass;
     use tonic::Code;
     match status.code() {
