@@ -178,6 +178,14 @@ enum Inner {
         /// notifies this, every read is raced against it, and the stream ends where it was parked.
         /// The sibling `tcp` crate closes the same way.
         closing: tokio::sync::Notify,
+        /// The local port this connection was accepted on.
+        ///
+        /// `Port` is one of the selector forms this transport declares, and a claim by port reads
+        /// the arrival record: zero there made every arrival on every listener look alike. It is
+        /// taken off the ACCEPTED SOCKET rather than off the bind string, which is the only place
+        /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp`, `tls` and `ws`
+        /// crates record it the same way.
+        local_port: u16,
     },
     /// A dialled destination: the exchange happens inside `write` once the message it is
     /// accumulating is complete, and pushes the response's frames into this channel for `frames` to
@@ -507,9 +515,15 @@ impl TransportMeta for HttpTransport {
 
 impl Transport for HttpTransport {
     fn arrival(&self, conn: &Conn) -> ArrivalRecord {
+        // The port this connection arrived on, so the `Port` selector form has something to claim
+        // by. Zero on a DIALLED connection, which arrived nowhere.
+        let port = match self.inner(conn.id()).as_deref() {
+            Some(Inner::Ingress { local_port, .. }) => *local_port,
+            _ => 0,
+        };
         ArrivalRecord {
             source: conn.peer(),
-            port: 0,
+            port,
             alpn: None,
             sni: None,
             peer_cert: None,
@@ -554,6 +568,8 @@ impl Transport for HttpTransport {
                 .await
                 .map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
+            // Before the split, which is the last moment the socket itself can be asked.
+            let local_port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
             let (read, write) = stream.into_split();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let inner = Arc::new(Inner::Ingress {
@@ -565,6 +581,7 @@ impl Transport for HttpTransport {
                 leftover: AsyncMutex::new(Vec::new()),
                 closed: AtomicBool::new(false),
                 closing: tokio::sync::Notify::new(),
+                local_port,
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
