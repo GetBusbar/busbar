@@ -743,16 +743,17 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     ///
     /// One class, because this plane declares one. The priced input is the whole request document,
     /// which is what the plane's admit facts point at, and the flat fee applies only where the
-    /// verified set contains an agent — a push the agent sent draws no client's slot and posts no
-    /// fee.
-    fn estimate(&self) -> Estimate {
+    /// verified set contains an agent AND the unit is a caller's — a push the agent sent draws no
+    /// client's slot and posts no fee, so the hold does not size for one. The rule is
+    /// [`fee_could_land`], which reads the same evidence the settlement reads.
+    fn estimate(&self, origin: busbar_caps::OriginKind) -> Estimate {
         Estimate {
             per_class: vec![busbar_unit_admission::ClassEstimate {
                 class: CLASS_BYTES.as_str().to_string(),
                 quantity: self.draft.request_bytes,
                 max_unit_price_nanos: self.bindings.bytes_nanos,
             }],
-            fee_nanos: if self.draft.has_upstream() {
+            fee_nanos: if fee_could_land(&self.draft, origin) {
                 u64::try_from(self.bindings.pricer.price_per_request_cents().max(0))
                     .unwrap_or(0)
                     .saturating_mul(NANOS_PER_CENT)
@@ -1001,7 +1002,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
@@ -1025,7 +1026,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             self.bindings.pool,
             self.bindings.now,
         );
-        let decision = unit.admit(&self.estimate(), principal, chain, admit, token);
+        let decision = unit.admit(&self.estimate(ctx.origin), principal, chain, admit, token);
         // What the door counted, said out loud. The names are the interned ones the root handed the
         // chain's groups at registration; the loop records one lease per name on this unit's slot,
         // where its end and the node's sweep can both give them back. Empty on a refusal, and empty
@@ -1309,6 +1310,24 @@ fn fee_evidence(
         status: None,
         finish: Some(draft.finish),
     }
+}
+
+/// Whether the flat fee could land on this unit AT ALL — the question the hold has to size for.
+///
+/// The hold is a promise that the settlement will fit, so what it reserves has to be decided by the
+/// same rule the settlement is. The kernel's fee needs three things true together; two of them —
+/// the client origin and the selected upstream — are already known at the door, and the third, the
+/// relayed frame, cannot be and only ever makes the charge SMALLER. So the door sizes for the two it
+/// knows, which is the largest fee this unit could ever be asked for.
+///
+/// Read off the evidence rather than restated beside it, and that is the point of the function: a
+/// hold that spelled the origin rule a second time is a second rule, and the one that drifts is the
+/// one nobody re-derived. Spelled twice, a provider push on a thin bucket was refused `OverBudget`
+/// for a fee its own settlement would never have posted.
+fn fee_could_land(draft: &A2aDraft, origin: busbar_caps::OriginKind) -> bool {
+    // `false` for the relay: it is not knowable at the door and it is not part of this question.
+    let evidence = fee_evidence(draft, origin, false);
+    evidence.client_open_or_one_shot && evidence.selected_upstream
 }
 
 /// Judge one destination's address, before any dial.
@@ -2554,6 +2573,10 @@ mod tests {
     }
 
     fn deployment(groups: busbar_unit_admission::GroupTable) -> Deployment {
+        deployment_priced(groups, Pricer::flat(0))
+    }
+
+    fn deployment_priced(groups: busbar_unit_admission::GroupTable, pricer: Pricer) -> Deployment {
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
@@ -2570,7 +2593,7 @@ mod tests {
             denylist: busbar_unit_trust::Denylist::default(),
             door: Door::new(busbar_unit_admission::InMemoryCells::new()),
             groups,
-            pricer: Pricer::flat(0),
+            pricer,
             records: RecordLegs::new(Arc::new(RecordingStore::default())),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
@@ -2628,9 +2651,13 @@ mod tests {
     }
 
     fn a2a_ctx() -> UnitCtx {
+        a2a_ctx_from(busbar_caps::OriginKind::Client)
+    }
+
+    fn a2a_ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
         UnitCtx {
             key: busbar_caps::UnitKey::new(1),
-            origin: busbar_caps::OriginKind::Client,
+            origin,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: false,
@@ -2646,13 +2673,25 @@ mod tests {
         Result<busbar_caps::Admission, busbar_caps::Refusal>,
         GroupLeaseSlip,
     ) {
+        ask_the_door_as(unit, who, busbar_caps::OriginKind::Client)
+    }
+
+    /// The same call, under a named origin — the one fact that decides whether a fee is coming.
+    fn ask_the_door_as(
+        unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+        who: &PrincipalId,
+        origin: busbar_caps::OriginKind,
+    ) -> (
+        Result<busbar_caps::Admission, busbar_caps::Refusal>,
+        GroupLeaseSlip,
+    ) {
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let slip = GroupLeaseSlip::new();
         let decision = Units::admit(
             unit,
             &busbar_caps::UnitToken::mint(&seal),
             &busbar_caps::AdmitToken::mint(&seal),
-            &a2a_ctx(),
+            &a2a_ctx_from(origin),
             who,
             &[],
             &slip,
@@ -2704,6 +2743,55 @@ mod tests {
         assert!(
             after.is_ok(),
             "the cap is instantaneous — it gates what is running, never what has run"
+        );
+    }
+
+    /// **The hold reserves the fee the settlement could post, and nothing where it could post
+    /// none.**
+    ///
+    /// One deployment, one flat fee, and two units differing in NOTHING but the origin the kernel
+    /// sealed them under. The caller's unit reserves the fee: it is coming, and a hold that did not
+    /// cover it would be a promise the settlement could break. The push the agent sent reserves
+    /// nothing at all, because the evidence that unit will settle from posts no fee — and the draw
+    /// against a hold is all-or-nothing, so a reservation for money nobody would ever take is a
+    /// caller refused over quota for a charge that was never going to land.
+    ///
+    /// Sized by ONE rule, [`fee_could_land`], which reads the same evidence the audit row and the
+    /// settlement read. Spelled a second time at the door, the two answers drift and the one that
+    /// drifts is the one nobody re-derived.
+    #[test]
+    fn the_hold_reserves_a_fee_only_where_the_settlement_could_post_one() {
+        const GROUP: &str = "a2a-team";
+        // Five cents a request, and bytes priced at nothing: the fee is the whole of the hold, so
+        // what is reserved IS the answer to whether one was sized for.
+        const FEE_CENTS: i64 = 5;
+        let who = PrincipalId::new("vk_agent");
+        let reserved = |origin| {
+            let deployment = deployment_priced(one_call_at_a_time(GROUP), Pricer::flat(FEE_CENTS));
+            let chain = deployment.resolve(&who, Some(GROUP));
+            let unit = deployment.calling(chain.as_ref());
+            match ask_the_door_as(&unit, &who, origin)
+                .0
+                .expect("the group is uncapped on spend, so the door says yes to both")
+            {
+                busbar_caps::Admission::Own(hold) => hold.reserved(),
+                // Nothing held is nothing reserved, which is exactly the answer for a unit priced
+                // at zero.
+                busbar_caps::Admission::ZeroHold => 0,
+                busbar_caps::Admission::Accrual(_) => panic!("this unit has no parent"),
+            }
+        };
+
+        let fee_nanos = u64::try_from(FEE_CENTS).expect("a positive fee") * NANOS_PER_CENT;
+        assert_eq!(
+            reserved(busbar_caps::OriginKind::Client),
+            fee_nanos,
+            "a caller's request is charged the flat fee, so the hold covers it"
+        );
+        assert_eq!(
+            reserved(busbar_caps::OriginKind::Provider),
+            0,
+            "a push the agent sent posts no fee, so there is nothing for the hold to reserve"
         );
     }
 
