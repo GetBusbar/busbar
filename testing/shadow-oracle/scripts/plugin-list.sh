@@ -3,9 +3,18 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 # Script-driver cell: `--list-plugins` with ONE published 1.5.5-era plugin in the dir. The STATUS
 # column (ready | SKIPPED: … | INVALID: …) is the contract (PB-11). Writes $RAW/captured.json.
+#
+# PORTS COME FROM THE RECORDER'S BLOCK, like every other script cell. They were hardcoded 48851/48852
+# here — which are also key-revoke.sh's defaults, and are three above record.sh's own 48811/48812
+# rather than derived from them. A caller that moves the recording off the default block
+# (ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT, which record.sh passes down as SCRIPT_LISTEN_PORT/
+# SCRIPT_ADMIN_PORT — selftest.sh does exactly this, giving each parallel recording `48851 + n*3`)
+# moved every other cell and not this one, so this cell went on binding the block it was moved OFF,
+# which is either a bind failure or, worse, an adoption of whatever else is there.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="${1:?plugin name}"; BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
+LP="${PLUGINLIST_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48851}}" AP="${PLUGINLIST_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48852}}"
 W="$RAW/plugin-work"; mkdir -p "$W/plugins"
 # EVERY STEP AFTER THE FETCH USED TO BE UNCHECKED. A `cp` that never happened, or a capture pipeline
 # whose python half died, still left this driver exiting on the last command's status while the
@@ -16,8 +25,8 @@ tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" "$PLUGIN")" |
 [ -s "$tarball" ] || fail "fetch-plugin.sh reported success but $PLUGIN's tarball is empty or missing"
 cp "$tarball" "$W/plugins/" || fail "could not copy $PLUGIN's tarball into the cell's plugins dir"
 cat >"$W/config.yaml" <<YAML
-listen: "127.0.0.1:48851"
-admin_listen: "127.0.0.1:48852"
+listen: "127.0.0.1:${LP}"
+admin_listen: "127.0.0.1:${AP}"
 plugins:
   enabled: true
   dir: "${W}/plugins"
