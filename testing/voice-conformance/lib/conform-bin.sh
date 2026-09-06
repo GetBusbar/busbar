@@ -19,8 +19,10 @@ VC_MAP="$VC_ROOT/docs/design/voice-cross-dialect-map.json"
 
 # Echo the path to the built `voice-conform` binary, building it once if necessary.
 #   * $VOICE_CONFORM_BIN, if set, is used verbatim (the workflow builds once and exports it).
-#   * else a prebuilt target/debug binary is reused if present.
-#   * else the harness is built (features `runtime,test-support` — the D2 governance probe needs the
+#   * else the harness is built (cargo is incremental, so an up-to-date binary costs a lock and a
+#     stat; a binary older than the legs it serves once reported "unknown composition slice" for
+#     four legs that existed only in source, and this is what stops that recurring) — features
+#     `runtime,test-support` — the D2 governance probe needs the
 #     async session engine, and the admit/route/audit/exit composition legs drive the substrate's
 #     `FixtureHost` test double over the real `EngineHost` seam) — cargo noise goes to stderr so it
 #     never pollutes the RESULT lines the runner parses on stdout.
@@ -30,9 +32,8 @@ voice_conform_bin() {
     return 0
   fi
   local bin="${CARGO_TARGET_DIR:-$VC_ROOT/target}/debug/voice-conform"
-  if [ ! -x "$bin" ]; then
-    cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" \
-      -p busbar-voice --features runtime,test-support --bin voice-conform >&2 || return 1
-  fi
+  cargo build -q --manifest-path "$VC_ROOT/Cargo.toml" \
+    -p busbar-voice --features runtime,test-support --bin voice-conform >&2 || return 1
+  [ -x "$bin" ] || return 1
   printf '%s' "$bin"
 }
