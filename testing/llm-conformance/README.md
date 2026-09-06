@@ -27,13 +27,15 @@ Plus wire rules the schema alone cannot say: a `stream: true` request answered a
 
 A row is **PASS** (valid), **FAIL** (one or more violations, each a JSON pointer + rule — e.g.
 `/choices/0 required: missing property 'logprobs'`, `sse[4]:/usage required ...`,
-`frame[1](contentBlockStart):/start minProperties ...`), or **SKIP** (a named gap). The verdict is
+`frame[1](contentBlockStart):/start minProperties ...`), **SKIP** (nothing could be checked — a
+named gap in the CHECK), or **GAP** (the row was checked and failed on exactly a violation the
+owner has registered in `named-gaps.json` — a named gap in the SPEC). The verdict is
 `testing/fleet-fixtures/verdict.sh` with `GATE_NAME="llm spec conformance"`: zero rows is red, an
 owed id with no row is red, a FAIL is red.
 
 Output (`--out`, default `target/llm-conformance/<recording>/`): `ledger.tsv`, `report.json`,
 `report.md` (per-dialect counts and every distinct violation, pointer generalized), `owed.txt`,
-`owed-gaps.txt`, `validate.log`.
+`owed-gaps.txt`, `named-gap-rows.txt`, `validate.log`.
 
 ## The specs, pinned
 
@@ -91,13 +93,45 @@ The kinds of gap that arise:
   lossily; when `raw/<cell>/body` is absent the row SKIPs rather than judge mangled bytes.
 * **The `#request` row of `malformed` cells** is not owed: that request is non-JSON by design.
 
-Known spec-vs-docs discrepancy, reported as FAIL on purpose: Anthropic's published
-`MessageStreamEvent` union has no `ping` member although the docs say `ping` events may occur.
-1.5.5 emits `event: ping` in cross-protocol streams and the row fails the published union.
-Decided 2026-09-04: `ping` stays — it is a documented event that real Anthropic streams carry, and
-a client that cannot take it is not an Anthropic client. The row is a NAMED GAP of the published
-spec (recorded here, not special-cased in the validator); it is re-judged whenever the pinned
-spec is re-pinned, and disappears the day the union gains the member.
+## What is a named conformance gap (GAP)
+
+A different thing from a SKIP, and the opposite kind of ignorance. A SKIP is a check that could not
+be made. A GAP is a check that WAS made, against the pinned document, and failed — because the
+product emits what the provider's own DOCUMENTATION describes and the provider's published
+machine-readable spec does not admit. The owner has read both and decided the product is right.
+
+The register is `named-gaps.json` — the LLM plane's counterpart to the shadow oracle's
+`accepted-differences.json`, with the same three rules:
+
+* **Never a silent pass.** A gapped row is written with the row class `gap`, printed in its own
+  column with `::warning ... NAMED CONFORMANCE GAP`, listed in `named-gap-rows.txt`, kept out of
+  the owed set, and counted by the verdict (`named conformance gaps: N`). It is not a pass and it is
+  never counted as one.
+* **Pinned to a spec digest.** Each entry names the `spec_digest` it was confirmed against and
+  restates it as `review_at`. When `spec-digests.tsv` moves, the entry goes **STALE**: it forgives
+  nothing (the rows it covered go back to FAIL) and it reports RED itself, until a human reads the
+  new document and either re-confirms the entry against the new digest or deletes it.
+* **An unused gap is a lie.** Every entry in scope for the run (the run's cell universe contains a
+  cell it names) owes a `named-gap|<id>` ledger row: fired at least once is PASS, fired zero times
+  is FAIL. `named_gaps.py --check` additionally reports an entry that names no cell in the universe
+  at all as `DEAD`, and every run prints the register's state.
+
+An entry names the provider, the spec and its digest, the exact `schema_path` that fails, the frame
+or event, the `cells` it may forgive (regexes), the exact `violation` (pointer, rule, detail), a
+`reason` citing the provider's public documentation URL, and `by`. Every violation on a row must
+match, or the row stays FAIL. Nothing in the register touches the validator's schema logic: the
+checker produces the same violations against the same document; the register only decides what the
+failure is called.
+
+Registered today:
+
+* **Anthropic `ping`.** Anthropic's published `MessageStreamEvent` union has no `ping` member,
+  although Anthropic documents `ping` as an event a stream may carry and real native streams emit
+  it. busbar injects one `event: ping` after the translated `message_start` of an ingress-Anthropic
+  cross-protocol stream, so those four rows (`anthropic|{bedrock,cohere,openai,responses}|
+  request|ok_stream#response`) fail the published union. Decided 2026-09-04: `ping` stays — a client
+  that cannot take it is not an Anthropic client — so the published spec is the thing with the gap.
+  The entry disappears the day the union gains the member.
 
 ## Running it
 
@@ -105,10 +139,16 @@ spec is re-pinned, and disappears the day the union gains the member.
 testing/llm-conformance/selftest.sh                 # proves the rig cannot pass vacuously
 testing/llm-conformance/run.sh --recording target/oracle/recordings/candidate
 testing/llm-conformance/run.sh --recording target/oracle/recordings/golden   # what 1.5.5 does
+testing/llm-conformance/named_gaps.py --check       # the register: well-formed, pinned, not dead
 ```
 
 `validate.py` is stdlib Python apart from PyYAML ≥ 6.0, which the YAML specs need on every run
 (they are re-measured against their pin and re-parsed each time; see "The specs, pinned"). The
+`--named-gaps <file>` points the run at another register (the selftest uses it to drive a stale and
+an unused entry through the real pipeline).
+
+`validate.py` is stdlib Python; the two YAML specs (openai, cohere) need PyYAML ≥ 6.0 the first
+time they are parsed, after which the parsed document is cached as JSON beside the spec. The
 checker is a small JSON-schema subset (`type`, `const`, `enum`, `required`, `properties`,
 `additionalProperties`, `patternProperties`, `items`, `min/max*`, `pattern`, `allOf/anyOf/oneOf/not`,
 `nullable`, `discriminator`) written here on purpose: a verdict must not move because a validator
@@ -127,6 +167,8 @@ with **closed** objects (a field the provider's proto does not name is one the p
    set is derived from `cells.json`, so nothing here needs enumerating.
 4. Run `selftest.sh`; if the dialect needs its own known-good fixture cell, add it to
    `fixtures/selftest-recording/` (three 1.5.5 cells today: cohere ok, cohere ok_stream, gemini ok).
+   The named-gap cases drive `fixtures/selftest-gap-recording/` (one cell: the ingress-Anthropic
+   cross-protocol stream that carries `ping`).
 
 ## Proposed CI job (FAST tier)
 
