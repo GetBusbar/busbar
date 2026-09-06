@@ -336,14 +336,15 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly nine entries of kind `breaking`:
+The accepted-differences register for this release has exactly ten entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
 from the hook view, one refusal that now comes out of the resolver rather than the validator, one
 key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
 edit stops repricing history it should not touch, one provider credential that no longer
-degrades to an empty key, and one pool whose kind infers to a 1.6.0 plane that now refuses the
-knobs that plane cannot read instead of discarding them.
+degrades to an empty key, one pool whose kind infers to a 1.6.0 plane that now refuses the
+knobs that plane cannot read instead of discarding them, and one where an unknown key in the
+reasoning-budget table or in a persisted overlay fails the load instead of being discarded.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -429,6 +430,18 @@ identically, and every 1.5.5 key and minted secret carries over.
   a 1.6.0 tool/agent pool it was doing nothing: delete it, or move the members to an LLM pool. The
   neutral routing knobs (`weights:`, `tier:`, `attempt_timeout_ms:`) are unaffected. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
+- 1.6.0 Changed: an unknown key in the reasoning-effort budget table or in the persisted overlay
+  fails the load instead of being discarded. These were the last two config shapes without
+  `deny_unknown_fields`, and both hide a typo perfectly: every rung of
+  `limits.reasoning_effort_budgets` has a default, so `meduim: 2048` left that rung at the shipped
+  value and threw the operator's cost decision away; every section of the overlay has a default, so
+  a mis-spelled section name loaded a document with that section simply absent — hooks, gates and
+  groups the operator believes are persisted, gone, with no signal. Both now refuse, naming the
+  offending key and listing the accepted ones; the overlay refusal is additionally logged as
+  `BUSBAR-3023` with the key and the file, because the read itself only reports "unreadable".
+  **Migration:** if a config or overlay is refused after the upgrade, the message names the exact
+  key — it was doing nothing before, so fix the spelling or delete the line. No shipped config, and
+  no config in the migration corpus, carries such a key.
 
 One further breaking change is not in that register, because it moves no request, response or
 config byte: it changes how a persisted audit chain's digest is FRAMED.

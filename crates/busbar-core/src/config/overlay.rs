@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::diagnostics::{
     diag_error, diag_warn, CONFIG_OVERLAY_CORRUPT_BASE_ONLY, CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
     CONFIG_OVERLAY_NOT_WRITABLE, CONFIG_OVERLAY_PATCH_UNPARSABLE, CONFIG_OVERLAY_PROBE_LEAK,
-    CONFIG_OVERLAY_VERSION_TOO_NEW, CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
+    CONFIG_OVERLAY_REJECTED, CONFIG_OVERLAY_VERSION_TOO_NEW, CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
 };
 
 use super::{
@@ -723,7 +723,16 @@ pub(crate) fn clear_section(path: Option<&Path>, section: OverlaySection) -> Res
 /// (`deleted`) — hooks removed via the API that must be subtracted from base config at boot. Tombstones
 /// are what let the additive `base + overlay` model express a DELETION (an additive merge alone cannot
 /// remove a base-defined hook).
+///
+/// UNKNOWN KEYS FAIL THE READ. Every section here defaults, so an overlay carrying a section this
+/// binary does not know deserialized cleanly with that section simply GONE — the exact silent-drop
+/// the `version` field exists to prevent, reachable without ever moving the version. The version
+/// guard catches a NEWER busbar's overlay; this catches the other two ways one arrives at the same
+/// place: a hand-edited overlay with a mis-spelled section (`gruops:`), and a section written by a
+/// build whose version stamp did not move. Both now surface instead of running a node without hooks
+/// or groups the operator believes are persisted, security gates included.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct OverlayDoc {
     /// Overlay schema version (see `OVERLAY_VERSION`). Absent in a pre-versioning overlay -> `1`.
     #[serde(default = "default_overlay_version")]
@@ -927,10 +936,29 @@ pub(crate) fn read_state(path: &Path) -> OverlayReadState {
                         OverlayReadState::VersionTooNew(doc.version)
                     }
                     Ok(doc) => OverlayReadState::Loaded(doc),
-                    Err(_) => OverlayReadState::Unreadable,
+                    // NAME THE KEY AND THE FILE. `Unreadable` is a verdict, not a diagnosis, and it
+                    // is what boot and the admin read paths act on — but an operator handed only
+                    // "unreadable" for a one-character typo in a section name has nothing to fix.
+                    // serde's message already names the offending key and lists the accepted
+                    // sections; this is the only place that text exists, so it is logged here.
+                    Err(e) => {
+                        diag_warn!(
+                            CONFIG_OVERLAY_REJECTED,
+                            path = %path.display(),
+                            "overlay document rejected: {e}"
+                        );
+                        OverlayReadState::Unreadable
+                    }
                 }
             }
-            Err(_) => OverlayReadState::Unreadable,
+            Err(e) => {
+                diag_warn!(
+                    CONFIG_OVERLAY_REJECTED,
+                    path = %path.display(),
+                    "overlay document is not valid JSON: {e}"
+                );
+                OverlayReadState::Unreadable
+            }
         },
     }
 }

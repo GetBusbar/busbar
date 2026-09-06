@@ -482,6 +482,25 @@ pub const CONFIG_OVERLAY_CORRUPT_BASE_ONLY: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// The overlay document was rejected at READ; this is the only place the reason exists.
+pub const CONFIG_OVERLAY_REJECTED: Diagnostic = Diagnostic {
+    code: 3023,
+    class: Class::Config,
+    slug: "config-overlay-rejected",
+    title: "Config overlay rejected at read (the reason, naming the key and the file)",
+    severity: Severity::Actionable,
+    summary: "The persisted config overlay was present but could not be read into a document, so \
+              every caller of the overlay classifies it unreadable (BUSBAR-3005 at boot, \
+              BUSBAR-3017 on the settings read) and proceeds without it. Those report the \
+              CONSEQUENCE; this line reports the CAUSE, because the parser's message — the \
+              offending key and the sections that are accepted — exists nowhere else. The common \
+              causes are a hand-edit that mis-spelled a section name and a truncated write.",
+    action: "Read this line's message for the exact key and path, then fix or remove the overlay \
+             file and restart so the API-applied hooks, gates and groups are restored.",
+    since: "1.6.0",
+    retired: false,
+};
+
 /// At boot the overlay was written by a NEWER busbar; the boot caller refuses to start (fatal).
 pub const CONFIG_OVERLAY_VERSION_TOO_NEW: Diagnostic = Diagnostic {
     code: 3006,
@@ -3653,6 +3672,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &CONFIG_OVERLAY_CORRUPT_REFUSE_WRITE,
     &CONFIG_OVERLAY_VERSION_TOO_NEW_RMW,
     &CONFIG_OVERLAY_CORRUPT_BASE_ONLY,
+    &CONFIG_OVERLAY_REJECTED,
     &CONFIG_OVERLAY_VERSION_TOO_NEW,
     &CONFIG_OVERLAY_PATCH_UNPARSABLE,
     &CONFIG_ANTIDOWNGRADE_FLOOR_INVALID,

@@ -298,7 +298,14 @@ pub struct LimitsCfg {
 }
 
 /// The `minimal/low/medium/high` → token-budget table (see `LimitsCfg::reasoning_effort_budgets`).
+///
+/// UNKNOWN KEYS FAIL THE LOAD, like the enclosing `LimitsCfg`. Every field here has a serde default,
+/// so a mis-spelled rung (`meduim: 2048`) parsed cleanly and left that rung at its shipped value —
+/// the operator's explicit cost decision silently discarded, and every request routed at the default
+/// thinking budget instead of theirs. A four-key table where each key is a number is exactly the
+/// shape a typo hides in.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ReasoningEffortBudgets {
     #[serde(default = "default_reasoning_minimal")]
     pub minimal: u32,
