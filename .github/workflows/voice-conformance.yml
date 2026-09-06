@@ -48,6 +48,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# LEAST PRIVILEGE, STATED RATHER THAN INHERITED. With no `permissions:` block a workflow takes the
+# repository/org DEFAULT, which is a setting nobody can see from this file and which is write-all on
+# a repo that has never been narrowed. The header already says "there is no secret anywhere in this
+# file"; this says the other half — there is no WRITE anywhere in it either. No release, no tag, no
+# issue, no package, no commit; every leg builds from the checkout or replays a captured fixture.
+# `contents: read` is what a checkout needs; `actions: read` is for the `voice-conform-bin` artifact
+# every downstream leg downloads from gate-selftest. Withholding the rest is the enforcement.
+permissions:
+  contents: read
+  actions: read
+
 concurrency:
   group: voice-conformance-${{ github.ref }}
   cancel-in-progress: true
