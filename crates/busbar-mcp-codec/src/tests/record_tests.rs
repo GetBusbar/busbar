@@ -115,6 +115,37 @@ fn an_oversized_or_truncated_length_prefix_fails_closed() {
     assert_eq!(err.0, "truncated call suffix length prefix");
 }
 
+/// A TEXT FIELD THAT IS NOT TEXT FAILS CLOSED TOO, and this is the arm that stops corruption from
+/// being reported as forgery.
+///
+/// The digest is sealed over the bytes the seam wrote. A reader that substitutes a replacement
+/// character for a bad byte hands back a record whose `tool` is no longer what was hashed, so the
+/// engine's verification fails and a flipped bit in storage is indistinguishable from someone having
+/// rewritten the chain. Refusing the field says what actually happened.
+#[test]
+fn a_text_field_that_is_not_utf8_fails_closed_rather_than_being_substituted() {
+    fn lp(out: &mut Vec<u8>, b: &[u8]) {
+        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+        out.extend_from_slice(b);
+    }
+    let mut content = Vec::new();
+    lp(&mut content, &1000u64.to_be_bytes()); // ts
+    lp(&mut content, b"fs"); // server
+    lp(&mut content, &[b'f', b's', 0xFF, b'_', b'r']); // tool, with a byte no UTF-8 permits
+    lp(&mut content, b"dispatched");
+    lp(&mut content, b"");
+    lp(&mut content, b"sha256:aaa");
+    lp(&mut content, &7u64.to_be_bytes());
+    let body = serde_json::to_vec(&serde_json::json!({
+        "seq": 1u64, "prev_hash": "", "hash": "h", "content": content,
+    }))
+    .unwrap();
+
+    let err = McpCallRecord::from_journal_body("key-1", &body)
+        .expect_err("a text field that is not UTF-8 must be refused, never repaired");
+    assert_eq!(err.0, "call suffix text field is not utf-8");
+}
+
 #[test]
 fn mcp_demotion_row_round_trips_through_the_plane_record_envelope() {
     let row = McpDemotionRow {
