@@ -2204,6 +2204,42 @@ pub fn resolve(
             }
             None
         };
+        // THE KNOBS AN INFERRED MCP/A2A POOL CANNOT READ. The projection below carries `members:`
+        // and `repeatable:` into a `CandidatePoolCfg` and then REMOVES the pool from `pools:`, so
+        // everything else the operator wrote on it reached no engine AND was seen by no validator:
+        // `config_validate` only ever walks `cfg.pools`. A per-pool `hooks:` never attached, a
+        // `breaker: { base_cooldown_secs: 0 }` was never rejected, an `on_exhausted:
+        // { fallback_pool: <typo> }` was never resolved. This is the rule the `tools:` attach path
+        // below states in its own words: a dropped attachment leaves an operator believing a control
+        // is attached that is not, which is worse than the typo it came from. So NAME them.
+        //
+        // The three NEUTRAL 1.6.0 knobs (`weights:`/`tier:`/`attempt_timeout_ms:`) are deliberately
+        // NOT listed: the projection is documented just below as behaviour-neutral for them by
+        // design, which is a stated position rather than an oversight.
+        let unreadable_knobs = |p: &PoolCfg| -> Vec<&'static str> {
+            let mut named: Vec<&'static str> = Vec::new();
+            // `hooks:` is split at parse into the base strategy and the gate names, so BOTH halves
+            // have to be consulted to tell "the operator wrote a `hooks:` list" from "they did not".
+            if p.base_named || !p.gates.is_empty() {
+                named.push("hooks");
+            }
+            if p.breaker.is_some() {
+                named.push("breaker");
+            }
+            if p.failover.is_some() {
+                named.push("failover");
+            }
+            if p.on_exhausted.is_some() {
+                named.push("on_exhausted");
+            }
+            if p.affinity.is_some() {
+                named.push("affinity");
+            }
+            if p.upstream_credentials.is_some() {
+                named.push("upstream_credentials");
+            }
+            named
+        };
         let mut non_llm: Vec<String> = Vec::new();
         for (pool_name, pool) in pools.iter() {
             // The pool's kind = its members' shared kind. Determine it from the FIRST resolvable
@@ -2251,8 +2287,30 @@ pub fn resolve(
                 ));
                 continue;
             }
+            // One sentence for BOTH non-LLM arms, written once so the two planes cannot drift in
+            // what they refuse or in how they say it.
+            let mut refuse_unreadable = |section: &'static str| {
+                let named = unreadable_knobs(pool);
+                if !named.is_empty() {
+                    errors.push(format!(
+                        "pools.{pool_name}: `{}` {} written on a pool whose kind INFERS to \
+                         `{section}:`, and the {section} plane's ordered-failover engine does not \
+                         read {}. Leaving {} in place would be a control the operator believes is \
+                         attached and is not, so it is refused here rather than discarded. Remove \
+                         {} from this pool, or make it an LLM pool (`models:` members), which is \
+                         the plane that reads {}.",
+                        named.join("`, `"),
+                        if named.len() == 1 { "is" } else { "are" },
+                        if named.len() == 1 { "it" } else { "them" },
+                        if named.len() == 1 { "it" } else { "them" },
+                        if named.len() == 1 { "it" } else { "them" },
+                        if named.len() == 1 { "it" } else { "them" },
+                    ));
+                }
+            };
             match kind {
                 Some(k) if k == tools_section => {
+                    refuse_unreadable(tools_section);
                     tool_pools_derived.insert(
                         pool_name.clone(),
                         crate::failover::CandidatePoolCfg {
@@ -2263,6 +2321,7 @@ pub fn resolve(
                     non_llm.push(pool_name.clone());
                 }
                 Some(k) if k == agents_section => {
+                    refuse_unreadable(agents_section);
                     agent_pools_derived.insert(
                         pool_name.clone(),
                         crate::failover::CandidatePoolCfg {
