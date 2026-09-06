@@ -83,7 +83,7 @@ jobs:
             exit 1
           }
 
-      - name: Commit + push to dev (NO tag — tag-on-main.yml cuts the release when this reaches main)
+      - name: Commit + push to dev (NO tag — release.yml's promote job tags it once qa's build reaches main)
         run: |
           git config user.name "Matthew Jackson"
           git config user.email "matthew@pq.io"
@@ -91,4 +91,4 @@ jobs:
           git commit -m "$V: prepare release"
           git push origin HEAD
           echo "::notice::Prepared v$V on dev (Cargo bumped, OpenAPI regenerated, CHANGELOG rolled)." \
-               "Promote dev→qa (full gate) then qa→main — tag-on-main.yml will auto-tag v$V and cut the release."
+               "Promote dev→qa (release-stage.yml builds + stages everything) then qa→main — release.yml will auto-tag v$V and cut the release."
