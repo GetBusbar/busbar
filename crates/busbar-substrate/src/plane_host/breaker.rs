@@ -12,7 +12,7 @@
 //! through the host reproduces the EXACT disposition the plane's own `record_signal` would.
 
 use crate::breaker::{CanonicalSignal, StatusClass as BreakerClass};
-use busbar_plugin::hot::{FaultClass, Signal, StatusClass};
+use busbar_plugin::hot::{FaultClass, RawFault, RawStatus, Signal, StatusClass};
 
 /// The inverse of the host `classify`'s fine [`FaultClass`] → [`BreakerClass`] table: the plane's own
 /// canonical class back to the ABI fine class the settle carries. Total — every [`BreakerClass`] maps
@@ -59,11 +59,11 @@ pub fn failure_signal(cs: &CanonicalSignal) -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
-        class: StatusClass::Fault,
+        class: RawStatus::of(StatusClass::Fault),
         _reserved: 0,
         latency_nanos: 0,
         bytes: 0,
-        fault_class: fault_of(cs.class),
+        fault_class: RawFault::of(fault_of(cs.class)),
         fault_flags: flags,
         _reserved2: 0,
         _reserved3: 0,
@@ -83,11 +83,11 @@ pub fn success_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
-        class: StatusClass::Ok,
+        class: RawStatus::of(StatusClass::Ok),
         _reserved: 0,
         latency_nanos: 0,
         bytes: 0,
-        fault_class: FaultClass::Unspecified,
+        fault_class: RawFault::of(FaultClass::Unspecified),
         fault_flags: 0,
         _reserved2: 0,
         _reserved3: 0,
@@ -109,11 +109,11 @@ pub fn refused_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
-        class: StatusClass::Refused,
+        class: RawStatus::of(StatusClass::Refused),
         _reserved: 0,
         latency_nanos: 0,
         bytes: 0,
-        fault_class: FaultClass::Unspecified,
+        fault_class: RawFault::of(FaultClass::Unspecified),
         fault_flags: 0,
         _reserved2: 0,
         _reserved3: 0,

@@ -83,7 +83,7 @@ fn http_desc(url: &[u8]) -> EgressDesc {
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
-        kind: EgressKind::Http,
+        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::Http),
         _reserved: 0,
         allowlist_scope: SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT,
         _reserved2: 0,
@@ -278,7 +278,7 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
         {
             let url = b"http://example.test/".to_vec();
             let mut d = http_desc(&url);
-            d.kind = EgressKind::RawConn;
+            d.kind = busbar_plugin::hot::RawEgressKind::of(EgressKind::RawConn);
             assert_eq!(
                 (vt.egress_open.unwrap())(host, &d as *const EgressDesc, &mut out),
                 StatusClass::Unsupported
@@ -289,7 +289,7 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
         {
             let url = b"http://example.test/".to_vec();
             let mut d = http_desc(&url);
-            d.kind = EgressKind::Subprocess;
+            d.kind = busbar_plugin::hot::RawEgressKind::of(EgressKind::Subprocess);
             assert_eq!(
                 (vt.egress_open.unwrap())(host, &d as *const EgressDesc, &mut out),
                 StatusClass::Refused

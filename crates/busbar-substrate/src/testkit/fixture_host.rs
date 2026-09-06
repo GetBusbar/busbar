@@ -244,7 +244,7 @@ impl BreakerHost for FixtureHost {
     ) -> busbar_plugin::hot::StatusClass {
         scope
             .settle_admission(admission, signal)
-            .unwrap_or(signal.class)
+            .unwrap_or(signal.class.class())
     }
 
     fn breaker_record_success(&self, pool: &str, lane: usize) {

@@ -508,7 +508,12 @@ pub(crate) fn egress_open(
         // SAFETY: a non-null `desc` is a live, initialized `EgressDesc` for the call (ABI).
         let d = unsafe { &*desc };
 
-        match d.kind {
+        // The PLANE wrote this tier byte; decode it through the checked carrier so a tier this build
+        // does not name is refused honestly instead of dispatched on an invalid discriminant.
+        let Some(kind) = d.kind.kind() else {
+            return StatusClass::Unsupported;
+        };
+        match kind {
             // FFI-F2: the plane's POD `allowlist_scope` carries NO authority over this untrusted seam —
             // a plugin plane may not self-grant private/plaintext egress. The host authors that
             // decision, and no operator config wires a per-plane egress scope over the FFI seam today,
@@ -1314,7 +1319,10 @@ pub(crate) fn egress_open_scoped(
         }
         // SAFETY: a non-null `desc` is a live, initialized `EgressDesc` for the call (ABI).
         let d = unsafe { &*desc };
-        match d.kind {
+        let Some(kind) = d.kind.kind() else {
+            return StatusClass::Unsupported;
+        };
+        match kind {
             // The hostless entry's `EgressDesc` is CORE-AUTHORED (built by `crate::egress::seam` from a
             // host-side `HopSpec`), so its `allowlist_scope` IS host authority — passed through as the
             // judged scope. This is the trusted twin of the FFI slot's `0` (see `egress_open`).

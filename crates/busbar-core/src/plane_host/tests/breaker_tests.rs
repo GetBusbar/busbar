@@ -7,7 +7,7 @@ use super::*;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
 use crate::store::BreakerState;
 use busbar_plugin::hot::host::{HostCtx, PlaneHostVtable};
-use busbar_plugin::hot::{Signal, POD_VERSION};
+use busbar_plugin::hot::{RawFault, RawStatus, Signal, POD_VERSION};
 
 const POOL: &[u8] = b"tool:fs";
 const POOL_STR: &str = "tool:fs";
@@ -32,11 +32,11 @@ fn signal(class: StatusClass) -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: POD_VERSION,
-        class,
+        class: RawStatus::of(class),
         _reserved: 0,
         latency_nanos: 0,
         bytes: 0,
-        fault_class: FaultClass::Unspecified,
+        fault_class: RawFault::of(FaultClass::Unspecified),
         fault_flags: 0,
         _reserved2: 0,
         _reserved3: 0,
@@ -60,11 +60,11 @@ fn fine_signal(fault: FaultClass, retry_after: Option<u64>, code: Option<&[u8]>)
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: POD_VERSION,
-        class: StatusClass::Fault,
+        class: RawStatus::of(StatusClass::Fault),
         _reserved: 0,
         latency_nanos: 0,
         bytes: 0,
-        fault_class: fault,
+        fault_class: RawFault::of(fault),
         fault_flags: flags,
         _reserved2: 0,
         _reserved3: 0,

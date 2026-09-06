@@ -200,7 +200,10 @@ enum Outcome {
 /// `signal.provider_signal_ptr`/`provider_signal_len`, when the tail is present and non-null/non-zero,
 /// MUST describe a live, initialized byte range for the duration of the call (settle's ABI discipline).
 unsafe fn classify(signal: &Signal) -> Outcome {
-    match signal.class {
+    // The plugin WROTE this byte, so decode it through the checked carrier: an unnamed class settles
+    // as `Fault` (a failure to fold) rather than materializing an invalid discriminant.
+    let coarse = signal.class.class();
+    match coarse {
         StatusClass::Ok => return Outcome::Success,
         // A policy refusal is not an upstream health signal — record nothing (ADR-0002).
         StatusClass::Refused => return Outcome::RecordNothing,
@@ -210,9 +213,10 @@ unsafe fn classify(signal: &Signal) -> Outcome {
 
     // Prefer the FINE breaker class when the sender wrote it (append-only sized read); an older
     // sender, a truncated tail, or an explicit `Unspecified` all fall back to the coarse map.
-    let fine = read_sized_field!(signal, Signal, fault_class).unwrap_or(FaultClass::Unspecified);
+    let fine = read_sized_field!(signal, Signal, fault_class)
+        .map_or(FaultClass::Unspecified, |raw| raw.class());
     let class = match fine {
-        FaultClass::Unspecified => return Outcome::Failure(coarse_signal(signal.class)),
+        FaultClass::Unspecified => return Outcome::Failure(coarse_signal(coarse)),
         FaultClass::RateLimit => BreakerClass::RateLimit,
         FaultClass::Overloaded => BreakerClass::Overloaded,
         FaultClass::UpstreamError => BreakerClass::ServerError,

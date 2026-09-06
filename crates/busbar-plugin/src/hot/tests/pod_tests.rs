@@ -72,3 +72,58 @@ fn every_pod_leads_with_size_version() {
     assert_preamble!(TargetRef);
     assert_preamble!(ContentChunk);
 }
+
+// ── The plugin-WRITTEN enum fields cross as raw bytes, never as bare enums ─────────────────────
+// A plugin fills `Signal`/`EgressDesc` itself, so every byte in them is attacker-controlled in the
+// same way a by-value status return is. Reading a bare `#[repr(u8)]` enum out of such a struct
+// materializes an INVALID DISCRIMINANT the moment the host touches it — UB before any `match`. The
+// fields carry the `#[repr(transparent)]` raw form and decode through the checked accessors.
+
+/// A `Signal` whose class byte is `7` — a value NO shipped `StatusClass` names. Building it from raw
+/// bytes is exactly what an older/newer/hostile plugin does; the host must settle it as `Fault`,
+/// never form the invalid enum.
+#[test]
+fn out_of_range_signal_class_settles_as_fault() {
+    let mut bytes = [0u8; core::mem::size_of::<Signal>()];
+    bytes[..4].copy_from_slice(&(core::mem::size_of::<Signal>() as u32).to_ne_bytes());
+    bytes[4..6].copy_from_slice(&POD_VERSION.to_ne_bytes());
+    bytes[core::mem::offset_of!(Signal, class)] = 7;
+    bytes[core::mem::offset_of!(Signal, fault_class)] = 200;
+
+    // SAFETY: `Signal` is a `#[repr(C)]` POD of scalars and raw pointers; every field is now a type
+    // for which EVERY bit pattern is valid, so any byte image is a valid `Signal`.
+    let sig: Signal = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast()) };
+
+    assert_eq!(sig.class.class(), StatusClass::Fault);
+    assert_eq!(sig.fault_class.class(), FaultClass::Unspecified);
+}
+
+/// The same discipline on the admit side: an unnamed egress kind decodes to `None`, so the host
+/// answers `Unsupported` instead of dispatching on a discriminant that does not exist.
+#[test]
+fn out_of_range_egress_kind_decodes_to_none() {
+    assert_eq!(RawEgressKind(0).kind(), Some(EgressKind::Http));
+    assert_eq!(RawEgressKind(2).kind(), Some(EgressKind::Subprocess));
+    assert_eq!(RawEgressKind(3).kind(), None);
+    assert_eq!(RawEgressKind(255).kind(), None);
+}
+
+/// Every named class round-trips through its raw carrier unchanged — the encode direction stays
+/// lossless while the decode direction stays total.
+#[test]
+fn raw_fault_class_round_trips_every_named_class() {
+    for c in [
+        FaultClass::Unspecified,
+        FaultClass::RateLimit,
+        FaultClass::Overloaded,
+        FaultClass::UpstreamError,
+        FaultClass::Timeout,
+        FaultClass::Network,
+        FaultClass::Auth,
+        FaultClass::Billing,
+        FaultClass::ClientError,
+        FaultClass::ContextLength,
+    ] {
+        assert_eq!(RawFault::of(c).class(), c);
+    }
+}

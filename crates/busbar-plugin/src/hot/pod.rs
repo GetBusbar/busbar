@@ -176,6 +176,77 @@ impl RawStatus {
     }
 }
 
+/// The RAW, unvalidated one-byte fine breaker class a plugin writes into [`Signal::fault_class`].
+///
+/// Same reasoning as [`RawStatus`], one step further out: a plugin does not only RETURN bytes across
+/// the seam, it also FILLS the POD structs it hands in. Every byte of a plugin-written `Signal` is
+/// plugin-chosen, so typing `fault_class` as the bare [`FaultClass`] enum lets a stale, newer, or
+/// hostile plane materialize an invalid discriminant the moment the host reads the field — UB BEFORE
+/// the `match`, exactly the hazard the by-value carrier already closes. This transparent u8 has no
+/// invalid bit pattern; the host decodes through the checked [`class`](Self::class).
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawFault(pub u8);
+
+impl RawFault {
+    /// The raw byte for a [`FaultClass`] — the TRUSTED encode direction (a host shim or a plane
+    /// building a signal from a class it named itself).
+    #[inline]
+    #[must_use]
+    pub const fn of(class: FaultClass) -> Self {
+        RawFault(class as u8)
+    }
+
+    /// Decode into a [`FaultClass`], mapping ANY unnamed discriminant to
+    /// [`FaultClass::Unspecified`] — the forward-compatible default that makes the host fall back to
+    /// the coarse mapping, which is precisely what "a class this build does not know" means.
+    #[inline]
+    #[must_use]
+    pub fn class(self) -> FaultClass {
+        FaultClass::try_from(self.0).unwrap_or(FaultClass::Unspecified)
+    }
+}
+
+impl From<FaultClass> for RawFault {
+    #[inline]
+    fn from(c: FaultClass) -> Self {
+        RawFault(c as u8)
+    }
+}
+
+/// The RAW, unvalidated one-byte egress tier a plugin writes into [`EgressDesc::kind`].
+///
+/// The admit-side counterpart of [`RawFault`]: `EgressDesc` is built ENTIRELY by the plane, and the
+/// host dispatches the channel shape on this byte. Unlike a status or a fault class there is no
+/// meaningful neutral fallback for a tier the host cannot open, so [`kind`](Self::kind) is honest and
+/// returns `None` — the host answers `Unsupported` rather than guessing a channel.
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RawEgressKind(pub u8);
+
+impl RawEgressKind {
+    /// The raw byte for an [`EgressKind`] — the TRUSTED encode direction.
+    #[inline]
+    #[must_use]
+    pub const fn of(kind: EgressKind) -> Self {
+        RawEgressKind(kind as u8)
+    }
+
+    /// Decode into an [`EgressKind`], or `None` for any tier this build does not name.
+    #[inline]
+    #[must_use]
+    pub fn kind(self) -> Option<EgressKind> {
+        EgressKind::try_from(self.0).ok()
+    }
+}
+
+impl From<EgressKind> for RawEgressKind {
+    #[inline]
+    fn from(k: EgressKind) -> Self {
+        RawEgressKind(k as u8)
+    }
+}
+
 /// The governance admit decision, returned BY VALUE.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -224,6 +295,23 @@ pub enum EgressKind {
     RawConn = 1,
     /// A governed child process, framed over stdio as a raw byte channel (NOT a separate capability).
     Subprocess = 2,
+}
+
+impl TryFrom<u8> for EgressKind {
+    /// The offending out-of-range byte, so a caller can log WHAT tier it refused.
+    type Error = u8;
+
+    /// Decode a raw tier byte, REJECTING anything this build does not name. The plane fills
+    /// [`EgressDesc::kind`] itself, so the byte is decoded HERE (via [`RawEgressKind`]).
+    #[inline]
+    fn try_from(v: u8) -> Result<Self, u8> {
+        match v {
+            0 => Ok(EgressKind::Http),
+            1 => Ok(EgressKind::RawConn),
+            2 => Ok(EgressKind::Subprocess),
+            other => Err(other),
+        }
+    }
 }
 
 /// WHY a governed egress FAILED — the neutral failure CLASS the host surfaces on a non-`Ok`
@@ -442,6 +530,31 @@ pub enum FaultClass {
     /// The request exceeded the target's context/size window — the target is healthy; fail over
     /// WITHOUT penalizing it.
     ContextLength = 9,
+}
+
+impl TryFrom<u8> for FaultClass {
+    /// The offending out-of-range byte, so a caller can log WHAT it refused.
+    type Error = u8;
+
+    /// Decode a raw discriminant, REJECTING anything this build does not name. A plugin fills
+    /// [`Signal::fault_class`] itself, so the byte is decoded HERE (via [`RawFault`]) and never
+    /// transmuted into an enum with an invalid discriminant.
+    #[inline]
+    fn try_from(v: u8) -> Result<Self, u8> {
+        match v {
+            0 => Ok(FaultClass::Unspecified),
+            1 => Ok(FaultClass::RateLimit),
+            2 => Ok(FaultClass::Overloaded),
+            3 => Ok(FaultClass::UpstreamError),
+            4 => Ok(FaultClass::Timeout),
+            5 => Ok(FaultClass::Network),
+            6 => Ok(FaultClass::Auth),
+            7 => Ok(FaultClass::Billing),
+            8 => Ok(FaultClass::ClientError),
+            9 => Ok(FaultClass::ContextLength),
+            other => Err(other),
+        }
+    }
 }
 
 /// WHY an admit was REFUSED — the fine reason a refused acquire carries out through the host so a
@@ -956,8 +1069,11 @@ pub struct Signal {
     pub size: u32,
     /// POD schema version.
     pub version: u16,
-    /// The outcome class observed for the guarded operation.
-    pub class: StatusClass,
+    /// The outcome class observed for the guarded operation. A plugin writes this byte, so it
+    /// crosses as the checked [`RawStatus`] carrier and the host reads it through
+    /// [`RawStatus::class`] — an unnamed byte settles as [`StatusClass::Fault`], never as an enum
+    /// with an invalid discriminant.
+    pub class: RawStatus,
     /// Preamble tail padding.
     pub _reserved: u8,
     /// Observed latency in nanoseconds.
@@ -965,8 +1081,9 @@ pub struct Signal {
     /// Bytes transferred (0 if not applicable).
     pub bytes: u64,
     /// (minor-1) The FINE breaker class refining a FAILURE `class`. [`FaultClass::Unspecified`] (the
-    /// zero default) means "no refinement — use the coarse mapping".
-    pub fault_class: FaultClass,
+    /// zero default) means "no refinement — use the coarse mapping". Plugin-written, so it crosses
+    /// as the checked [`RawFault`] carrier (an unnamed byte reads back as `Unspecified`).
+    pub fault_class: RawFault,
     /// (minor-1) Bit 0: a `Retry-After` floor is present in [`retry_after_secs`](Self::retry_after_secs)
     /// (distinguishes "no header" from a header value of `0`). Other bits reserved (must be 0).
     pub fault_flags: u8,
@@ -1099,8 +1216,10 @@ pub struct EgressDesc {
     pub size: u32,
     /// POD schema version.
     pub version: u16,
-    /// The egress tier/kind (data, not a capability).
-    pub kind: EgressKind,
+    /// The egress tier/kind (data, not a capability). Plane-written, so it crosses as the checked
+    /// [`RawEgressKind`] carrier; a tier the host does not name decodes to `None` and the open is
+    /// refused `Unsupported` rather than dispatched on a discriminant that does not exist.
+    pub kind: RawEgressKind,
     /// Preamble tail padding.
     pub _reserved: u8,
     /// The host-defined allowlist scope this egress is checked against.
