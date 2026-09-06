@@ -475,7 +475,7 @@ impl LlmNode {
             // across two windows. Spelled out of the ONE arrival reading below rather than read
             // here, so the epoch this unit is billed in and the stamp the table enters it under
             // cannot be two different instants.
-            charged_at: arrived.secs(),
+            arrived,
             card: card.clone(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
@@ -940,8 +940,14 @@ pub struct LlmUnit<'n> {
     model_hint: Option<String>,
     /// When the request started, for the terminal's finish-stage latency observation.
     started: Instant,
-    /// The pinned header-arrival epoch every charge and every refund lands in.
-    charged_at: u64,
+    /// THE UNIT'S PINNED ARRIVAL, as the drive read it once at the top.
+    ///
+    /// The epoch every charge and every refund lands in is spelled out of it, and so is the pair the
+    /// posting a client that went away leaves behind is dated and ordered by. Held whole rather than
+    /// as the seconds alone, because the unit is the one thing that outlives the await: an abandoned
+    /// end is settled from here, and a settlement that had to re-read a clock would land in whatever
+    /// window the unwind happened to reach.
+    arrived: Arrived,
     /// THE CARD THIS UNIT WAS ADMITTED UNDER, pinned beside `charged_at` and for the same reason.
     ///
     /// The live Meter step prices against this rather than against whatever the root's card happens
@@ -995,7 +1001,7 @@ impl LlmUnit<'_> {
             op_class: self.op_class,
             destination,
             started: self.started,
-            charged_at: self.charged_at,
+            charged_at: self.arrived.secs(),
         }
     }
 
@@ -1255,7 +1261,7 @@ impl Units for LlmUnit<'_> {
                 gov: self.walk.gov(),
                 proto: self.walk.proto(),
                 destination: &model,
-                charged_at: self.charged_at,
+                charged_at: self.arrived.secs(),
             },
             principal,
             destinations,
@@ -1411,6 +1417,32 @@ impl Units for LlmUnit<'_> {
                 }),
             },
         }
+    }
+
+    /// THE ABANDONED UNIT'S EXIT ARM, which is the exit arm the drive runs written where the drive
+    /// cannot reach.
+    ///
+    /// A client that hangs up drops the drive's future inside its one await, so the line that
+    /// settles what the terminal posted never runs — and the posting the guard's terminal handed
+    /// back went nowhere. The legacy book, which the plane's own shell wrote before the loop ever
+    /// awaited, still has the unit's row; the root's journal has none, and the two books disagree on
+    /// every abort. This is the same settlement, from the one value that survives the unwind.
+    ///
+    /// Once per unit: a unit that reached its own end is settled by the drive and never arrives
+    /// here, because the guard whose terminal was taken does nothing when it is dropped.
+    fn abandoned(
+        &self,
+        _token: &UnitToken<Audit>,
+        _ctx: &UnitCtx,
+        ended: busbar_kernel::teller::Ended,
+    ) {
+        self.node.settle_end(
+            &authenticate::principal_id(self.walk.gov()),
+            // THE PINNED ARRIVAL, not a clock read on the unwind. The abandoned unit's row lands on
+            // the same balance and in the same window every other charge this unit made landed in.
+            self.arrived,
+            ended,
+        );
     }
 }
 
@@ -2525,6 +2557,101 @@ mod tests {
         assert_eq!(replayed.len(), 1, "one posting, one record");
     }
 
+    /// A memory-buffered book, as the composition root binds one.
+    fn a_book() -> Arc<Mutex<crate::root::durability::Durability>> {
+        Arc::new(Mutex::new(
+            crate::root::durability::build(
+                &crate::root::durability::DurabilityConfig { data_dir: None },
+                Box::new(busbar_unit_wal::NullShipper::new()),
+                Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+            )
+            .expect("a memory-buffered journal cannot fail to open"),
+        ))
+    }
+
+    /// The drive, DROPPED where a client that hangs up drops it: inside the one await.
+    ///
+    /// This is the abort, and it is driven rather than simulated. The loop yields in exactly one
+    /// place — Route, under the hold, with the leases drawn — so a future that has been polled once
+    /// and answered `Pending` is parked in that place and nowhere else. Dropping it there is
+    /// byte-for-byte what the server does when the connection goes away: the frame unwinds, the
+    /// kernel's abandoned guard runs the unit's one terminal, and nothing is left to read the end.
+    ///
+    /// The pending assertion is the fixture's own premise, not decoration: a drive that had already
+    /// finished would be a completed unit dropped afterwards, which proves nothing about the arm
+    /// this test is about.
+    async fn drive_and_go_away(rig: &Rig, node: &LlmNode, fixture: Fixture) {
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: PROTO,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: fixture.body(),
+            path: None,
+        };
+        let drive =
+            node.answer_arriving_at(arrival, None, NATIVE_SEATS, Arrived::at(EPOCH * 1_000, 0));
+        let mut drive = std::pin::pin!(drive);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        assert!(
+            std::future::Future::poll(drive.as_mut(), &mut cx).is_pending(),
+            "the unit must still be parked in its one await for the drop below to be a client \
+             going away MID-UNIT rather than one that left after being served"
+        );
+    }
+
+    /// **THE ABANDONED UNIT'S ROW.** A client that goes away mid-unit still reaches the journal.
+    ///
+    /// The guard's terminal has always run — the audit door seals the end, the cell is emptied and
+    /// the leases go back — and what it hands back is a POSTING, which has moved no balance and left
+    /// no record until something settles it. The caller that settles every other unit's posting is
+    /// the frame the abort is unwinding, so until the end was carried out to the node the two books
+    /// disagreed on every abort: the legacy book counted the request the door charged for, and the
+    /// root's journal had nothing at all. Both halves are asserted here, because a journal row on
+    /// its own does not say the row belongs to the same unit the other book counted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_unit_the_client_went_away_from_posts_its_row_to_the_journal() {
+        let rig = rig(Fixture::BufferedOk).await;
+        let node = LlmNode::new();
+        let book = a_book();
+        node.bind_book(Arc::clone(&book));
+
+        drive_and_go_away(&rig, &node, Fixture::BufferedOk).await;
+        rig.server.shutdown().await;
+
+        // THE LEGACY BOOK, which has counted this unit since before there was a loop: the door
+        // charged the request, and the terminal the guard ran wrote the row.
+        let gov = rig
+            .app
+            .governance
+            .clone()
+            .expect("governance is configured");
+        gov.flush_metering();
+        let derived = gov
+            .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
+            .expect("usage read");
+        assert_eq!(
+            derived.requests, 1,
+            "the door charged the request the client then went away from"
+        );
+
+        // AND THE ROOT'S, which is the half that was missing.
+        let replayed = book
+            .lock()
+            .expect("the book")
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(
+            replayed.len(),
+            1,
+            "an abandoned unit posts to the root's journal exactly once, like every other unit"
+        );
+    }
+
     /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
     ///
     /// One unit, driven once and then asked the same question under two origins. The delivered
@@ -2618,7 +2745,7 @@ mod tests {
             op_class: OpClassId::new(arrival.operation.name()),
             model_hint: None,
             started: Instant::now(),
-            charged_at: EPOCH,
+            arrived: Arrived::at(EPOCH * 1_000, 0),
             // The card the root would have pinned at admission, pinned here the same way so the
             // fixture prices through the step the live loop prices through.
             card: crate::root::kernel::ROOT_CARD.pin(),
