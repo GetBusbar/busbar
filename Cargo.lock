@@ -1231,6 +1231,7 @@ dependencies = [
  "async-trait",
  "axum",
  "busbar-api",
+ "busbar-plane-voice",
  "busbar-plugin",
  "busbar-substrate",
  "busbar-voice-codec",

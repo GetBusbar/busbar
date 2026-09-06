@@ -154,6 +154,15 @@ where
         self
     }
 
+    /// Which session the node's table knows this pump as, when a composition root bound one.
+    ///
+    /// `None` is the ungoverned deployment, and telling the two apart from outside is what lets a
+    /// composition prove that the sessions it serves are the governed kind rather than asserting it.
+    #[must_use]
+    pub fn governed_session(&self) -> Option<u64> {
+        self.governed.as_ref().map(|g| g.session)
+    }
+
     /// **The tick's sweep.** End every governed call whose deadline has passed, and say how many.
     ///
     /// Driven from the node's tick beside the pump, because a wait that is never woken is a hold that

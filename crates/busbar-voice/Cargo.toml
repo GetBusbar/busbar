@@ -120,6 +120,13 @@ hyper = { workspace = true, optional = true }
 # `upstream_attempt_on` emit names, so voice counts on the family without reaching into `busbar-core`.
 # OPTIONAL, pulled only by `runtime` (the mount that emits is runtime-gated).
 metrics = { workspace = true, optional = true }
+# THE PURE HALF OF THIS PLANE, named ONLY so the conformance harness and the governed-binding cells can
+# pin the tool-reply deadline (`busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS`) against the one
+# declaration the composition root's own leg is built from, rather than restating thirty seconds in a
+# second place where the two could drift apart in silence. OPTIONAL and pulled only by `test-support`
+# (which the `voice-conform` bin already requires), so the shipped build's closure is untouched. No
+# cycle: `busbar-plane-voice` names `busbar-contract` + `busbar-voice-codec` and never this crate.
+busbar-plane-voice = { path = "../busbar-plane-voice", optional = true }
 
 [features]
 # THE VOICE SESSION RUNTIME — the T2 live duplex engine (session pump + SessionScope + D2 metering
@@ -140,7 +147,7 @@ openapi-schema = ["busbar-substrate/openapi-schema"]
 # loopback HTTP provider, the metrics capture) to the cells that drive a plane-host seam — the breaker,
 # hook-gate/tap, metrics, SDP-broker and billing-ledger batteries. Pulls NO busbar-core: the fixture
 # host is a substrate double reached through the same seam production uses.
-test-support = ["busbar-substrate/test-support"]
+test-support = ["busbar-substrate/test-support", "dep:busbar-plane-voice"]
 
 [dev-dependencies]
 # None beyond the workspace crates above: the test surface is the `test-support` feature.

@@ -321,6 +321,12 @@ where
         budget,
         meter,
         now,
+        // NO BINDING FROM HERE. This entry point is the one a caller drives directly — a topology
+        // test, a conformance probe, the one-shot HTTP passes — and none of them is a session a
+        // composition root's table has an identifier for. The SERVED door mints one per session and
+        // hands it to the post-admit open below, which is the whole of what makes a served session a
+        // governed one.
+        None,
     )
 }
 
@@ -331,6 +337,13 @@ where
 /// caller (`begin_session`, or the inbound WS-accept `accept_gauntlet` path) is responsible for having
 /// run it first. A refused budget or a failed durable open returns before ANY durable row is committed
 /// — so an aborted open, like a refused gauntlet, leaves no orphaned live session row.
+///
+/// `governed` is the node's open-call table and the identifier this session is known to it by — the
+/// composition root's own binding, minted per session at the served door
+/// (`crate::mount::served_governed_session`). Every session this door opens over a socket carries
+/// one, which is what makes "served" and "governed" the same set rather than two that overlap.
+/// `None` is a deployment with no composition root behind it: every tool call is served in-process
+/// and a client-authored result is carried upstream verbatim, exactly as before the wait existed.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn open_admitted_session<C>(
     rt: &VoiceRuntime,
@@ -342,6 +355,7 @@ pub(crate) fn open_admitted_session<C>(
     budget: SessionBudget,
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
+    governed: Option<crate::runtime::GovernedSession>,
 ) -> Result<(Arc<SessionCore<C>>, SessionHandle, LeaseCloseGuard), StartError>
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
@@ -375,13 +389,20 @@ where
     // Mint the by-value close guard from the lease BEFORE it moves into the core, so the topology owns a
     // handle that closes the reserve independent of the core's (possibly pinned) refcount.
     let guard = lease.close_guard();
-    let core = Arc::new(SessionCore::new(
+    let core = SessionCore::new(
         codec,
         lease,
         meter,
         Arc::clone(&rt.tools),
         carrier,
         locked_config,
-    ));
+    );
+    // The binding, applied before the core is shared: a session that reached a socket ungoverned and
+    // was governed afterwards would have a window in which its pump could see a tool call it had no
+    // table to enter.
+    let core = Arc::new(match governed {
+        Some(g) => core.with_governed(g),
+        None => core,
+    });
     Ok((core, handle, guard))
 }
