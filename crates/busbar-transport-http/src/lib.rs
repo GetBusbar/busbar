@@ -104,6 +104,15 @@ pub struct ClientSettings {
     /// accept a body the door refused, or refuse one the door accepted. The default here is the
     /// same historical 32 MiB the config layer falls back to when no limit is installed.
     pub request_body_max_bytes: usize,
+    /// The largest RESPONSE body this transport will carry for one exchange, in bytes.
+    ///
+    /// The request cap above is the operator's own, shared with the served door. A response body
+    /// has no such layer above it: the door's inbound limit does not reach what an upstream answers
+    /// with, and the response arrives as a stream that declares no total. So the cap is held
+    /// against the bytes that actually arrive, and an upstream — or anything wearing one's address
+    /// — that answers past it ends the frame stream instead of growing this node's heap. Defaults
+    /// to the same value as the request cap.
+    pub response_body_max_bytes: usize,
 }
 
 /// The uninstalled-config fallback for [`ClientSettings::request_body_max_bytes`] — the same
@@ -119,6 +128,7 @@ impl Default for ClientSettings {
             upstream_http1_only: false,
             upstream_h2_prior_knowledge: false,
             request_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
+            response_body_max_bytes: DEFAULT_REQUEST_BODY_MAX_BYTES,
         }
     }
 }
@@ -766,11 +776,21 @@ fn complete_message(
             headers: message.headers,
         });
     }
-    let head = cache.head.as_ref().expect("set just above");
-    let rest = &buffered[head.end..];
+    // Read what the head says before touching the cache again: the decoder lives beside it, and
+    // feeding it is a mutation of the same cell this borrow reads.
+    let (head_end, chunked, declared) = {
+        let head = cache.head.as_ref().expect("set just above");
+        (
+            head.end,
+            raw::is_chunked(&head.headers),
+            raw::content_length(&head.headers),
+        )
+    };
+    let rest = &buffered[head_end..];
 
-    let (body, trailers) = if raw::is_chunked(&head.headers) {
+    let (body, trailers) = if chunked {
         let mut decoder = raw::ChunkedDecoder::default();
+        cache.feeds += rest.len();
         decoder.feed(rest).map_err(|_| TransportError::Framing)?;
         if !decoder.is_done() {
             return Ok(None);
@@ -778,9 +798,7 @@ fn complete_message(
         let (chunks, trailers) = decoder.take();
         (chunks.concat(), trailers)
     } else {
-        let declared = raw::content_length(&head.headers)
-            .map_err(|()| TransportError::Framing)?
-            .unwrap_or(0);
+        let declared = declared.map_err(|()| TransportError::Framing)?.unwrap_or(0);
         if declared > max_body_bytes {
             return Err(TransportError::Framing);
         }
@@ -822,6 +840,15 @@ struct CachedHead {
 struct EgressHead {
     head: Option<CachedHead>,
     parses: usize,
+    /// The chunked decoder this message is being decoded by, kept across `write` calls so each
+    /// call feeds only the bytes that arrived with it — the same discipline the ingress reader
+    /// keeps across reads.
+    decoder: Option<raw::ChunkedDecoder>,
+    /// How many bytes past the header block have already been fed to `decoder`.
+    fed: usize,
+    /// This connection's own tally of bytes fed to a decoder, per instance for the same reason
+    /// `parses` is: a test reading it back sees only its own connection's work.
+    feeds: usize,
 }
 
 /// Read one HTTP/1.1 request off an ingress connection.

@@ -895,6 +895,268 @@ fn the_egress_header_block_is_parsed_once_across_many_write_calls() {
     );
 }
 
+/// An upstream that streams and never closes delivers frames while it is still open.
+///
+/// This is the whole of what "composes over" means for a streamed body: `sse` re-segments the bytes
+/// `http` hands it, so a body that only arrives when the upstream closes is a body `sse` can never
+/// re-segment in time. Collecting the response before emitting anything turned every event stream
+/// into a zero-frame stream until close, and a stream that never closes into nothing at all. The
+/// response HEAD leaves as soon as the head arrives, and each body chunk as hyper yields it.
+#[tokio::test]
+async fn a_streamed_upstream_yields_frames_before_it_closes() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
+        tokio::io::AsyncWriteExt::write_all(
+            &mut sock,
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        // One event every 100ms, and no terminal chunk ever: the stream does not end.
+        loop {
+            let event = b"data: tick\n\n";
+            let mut piece = format!("{:x}\r\n", event.len()).into_bytes();
+            piece.extend_from_slice(event);
+            piece.extend_from_slice(b"\r\n");
+            if tokio::io::AsyncWriteExt::write_all(&mut sock, &piece)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = tokio::io::AsyncWriteExt::flush(&mut sock).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+
+    let transport = HttpTransport::new(ClientSettings::default());
+    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
+    let conn = transport
+        .dial(&upstream_dest(uri), &fixture_key())
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        transport.write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ),
+    )
+    .await
+    .expect("write answers on the response head, not on the upstream's close")
+    .unwrap();
+
+    let mut frames = transport.frames(conn);
+    let (_s, head) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
+        .await
+        .expect("the HEAD frame is emitted as soon as the head arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.meta.status, Some(StatusClass::Success));
+
+    for _ in 0..2 {
+        let (_s, body) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
+            .await
+            .expect("a body frame arrives while the upstream is still streaming")
+            .unwrap()
+            .unwrap();
+        assert_eq!(body.bytes.as_slice(), b"data: tick\n\n");
+        assert_eq!(body.meta.status, None, "the status leg rides the HEAD only");
+        assert_eq!(body.meta.bytes, body.bytes.len() as u64);
+    }
+    server.abort();
+}
+
+/// A response body past the configured maximum ends the stream instead of growing the node's heap.
+///
+/// The request cap has always been real on both accumulators. The RESPONSE had none: an upstream —
+/// or anything wearing one's address — could answer with as many bytes as it liked and this node
+/// would hold every one of them. The cap is held against the bytes that actually arrive, since a
+/// streamed body declares no total, and nothing past it is emitted.
+#[tokio::test]
+async fn a_response_body_past_the_cap_ends_the_stream_rather_than_accumulating() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut buf).await;
+        tokio::io::AsyncWriteExt::write_all(
+            &mut sock,
+            b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        for _ in 0..64 {
+            let payload = [b'a'; 1024];
+            let mut piece = format!("{:x}\r\n", payload.len()).into_bytes();
+            piece.extend_from_slice(&payload);
+            piece.extend_from_slice(b"\r\n");
+            if tokio::io::AsyncWriteExt::write_all(&mut sock, &piece)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = tokio::io::AsyncWriteExt::flush(&mut sock).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    const CAP: usize = 4096;
+    let transport = HttpTransport::new(ClientSettings {
+        response_body_max_bytes: CAP,
+        ..ClientSettings::default()
+    });
+    let uri: &'static str = Box::leak(format!("http://{addr}/").into_boxed_str());
+    let conn = transport
+        .dial(&upstream_dest(uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+
+    let mut frames = transport.frames(conn);
+    let (_s, head) = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the head arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.meta.status, Some(StatusClass::Success));
+
+    let mut body_bytes = 0_usize;
+    let ended = loop {
+        let item = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+            .await
+            .expect("the stream ends rather than accumulating an unbounded body");
+        match item {
+            Some(Ok((_s, frame))) => body_bytes += frame.bytes.len(),
+            Some(Err(e)) => break Some(e),
+            None => break None,
+        }
+    };
+    assert_eq!(
+        ended,
+        Some(TransportError::Framing),
+        "a response past the cap ends the stream with an error, not with a clean close"
+    );
+    assert!(
+        body_bytes <= CAP,
+        "{body_bytes} bytes were emitted for a {CAP}-byte cap"
+    );
+    server.abort();
+}
+
+/// The synthesised response head describes the bytes that follow it, not the ones on the wire.
+///
+/// hyper de-chunks the body before this transport ever sees it, so a `Transfer-Encoding: chunked`
+/// copied out of the upstream's head describes a framing that is no longer there — and a
+/// `Content-Length` copied beside it describes a body this transport now hands over in pieces. The
+/// request side already strips both for exactly this reason; the response side says the same.
+#[tokio::test]
+async fn a_chunked_upstream_response_head_carries_no_framing_headers() {
+    let uri = fixed_response_server(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+    )
+    .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    let head_text = String::from_utf8(head.bytes.as_slice().to_vec())
+        .unwrap()
+        .to_ascii_lowercase();
+    assert!(head_text.starts_with("http/1.1 200"));
+    assert!(
+        head_text.contains("content-type: text/plain"),
+        "the headers that describe the payload are still carried: {head_text:?}"
+    );
+    assert!(
+        !head_text.contains("transfer-encoding"),
+        "a de-chunked body must not be described as chunked: {head_text:?}"
+    );
+    assert!(
+        !head_text.contains("content-length"),
+        "the length of a body handed over in frames is not the head's to state: {head_text:?}"
+    );
+    assert_eq!(head.meta.bytes, head.bytes.len() as u64);
+
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    assert_eq!(body.bytes.as_slice(), b"hello");
+}
+
+/// The egress chunked body is decoded once, not once per `write` call.
+///
+/// The sibling of the header-parse cell above, and the same standard: `write` accumulates and asks
+/// "is this message whole yet?" on every chunk, and answering that with a FRESH decoder re-decoded
+/// every byte received so far — quadratic in the body, with a full re-allocation of the decoded
+/// chunks each time. The ingress reader already keeps one decoder across reads. This drives the
+/// production `complete_message` and counts the bytes it actually feeds a decoder.
+#[test]
+fn the_egress_chunked_body_is_decoded_once_across_many_write_calls() {
+    let mut buffered = b"POST / HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n".to_vec();
+    let mut cache = EgressHead::default();
+    assert!(complete_message(&buffered, &mut cache, usize::MAX)
+        .unwrap()
+        .is_none());
+
+    const CALLS: usize = 200;
+    const PIECE: &[u8] = b"10\r\naaaaaaaaaaaaaaaa\r\n";
+    let mut wire_bytes = 0_usize;
+    for _ in 0..CALLS {
+        buffered.extend_from_slice(PIECE);
+        wire_bytes += PIECE.len();
+        assert!(
+            complete_message(&buffered, &mut cache, usize::MAX)
+                .unwrap()
+                .is_none(),
+            "no terminal chunk yet, so the message is not whole"
+        );
+    }
+    buffered.extend_from_slice(b"0\r\n\r\n");
+    wire_bytes += 5;
+    let done = complete_message(&buffered, &mut cache, usize::MAX)
+        .unwrap()
+        .expect("the terminal chunk completes the message");
+    assert_eq!(done.body.len(), CALLS * 16, "the body is decoded byte-exact");
+
+    let fed = cache.feeds;
+    assert!(
+        fed <= 2 * wire_bytes,
+        "a {wire_bytes}-byte chunked body arriving in {CALLS} calls cost {fed} bytes of decoding; \
+         one decoder across the calls makes that O(n), a fresh one per call makes it O(n^2)"
+    );
+
+    // And the decoder is spent with the message: the next one decodes its own body.
+    assert!(
+        cache.head.is_none() && cache.decoder.is_none(),
+        "a completed message leaves no stale decoder"
+    );
+}
+
 #[test]
 fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     fn honest(frame: &Frame) -> bool {
