@@ -328,13 +328,17 @@
    "paths": [
     "crates/busbar-llm-codec/src"
    ],
-   "tree_hash": "55eb84b7f88d7b3444bcbd1ee76a5571ec7645896c4d3f8417c2e12f7fda8327",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "0a6238586d970b53cf4a42c5e3735b8b8eb1b2085d8b3a36695d67b97ab68654",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 9,
+    "LOW": 5
+   },
+   "report": "pass 2 fresh eyes: cohere truncated-tail billed on raw bucket (fixed 38983be9), bedrock attachment double-emit on index desync (fixed 18a6ceea), responses citations unreadable (fixed d32ee6d6), gemini tts audio by part (fixed 7fbe4721); gemini toolUsePromptTokenCount, responses cache_write_tokens, error mapping loses status, responses error arm, logprobs unbounded, cohere latch/rerank index, openai_chat text after tool call reported; all production files read",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm-codec/src/tests"
