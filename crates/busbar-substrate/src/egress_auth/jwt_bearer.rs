@@ -267,13 +267,22 @@ fn jwt_claims_json(
 }
 
 /// SA-JSON credential material: inline JSON (`{...}`) or a filesystem path to a key file.
+///
+/// The failure message deliberately does NOT render `credential`. On this branch the argument is a
+/// PATH only by assumption — the sole thing that distinguishes the two forms is a leading `{`, so an
+/// operator who pasted the key body, or a secret ref that resolved to key material rather than to a
+/// filename, lands here holding the SIGNING KEY. This error is not a swallowed one: `--validate`
+/// prints it and the boot path panics with it, so interpolating the argument would publish the key
+/// to a terminal, a CI log and a crash report in one step. Both callers already name the lane and
+/// the secret's configured source, so what this layer owes is the io failure and nothing else.
 fn read_credential(credential: &str) -> Result<String, String> {
     let trimmed = credential.trim_start();
     if trimmed.starts_with('{') {
         return Ok(credential.to_string());
     }
-    std::fs::read_to_string(credential)
-        .map_err(|e| format!("could not read service-account key file '{credential}': {e}"))
+    std::fs::read_to_string(credential).map_err(|e| {
+        format!("could not read service-account key file named by this lane's credential: {e}")
+    })
 }
 
 /// Strip the PEM armor from a PKCS#8 private key and base64-decode the body to DER.
