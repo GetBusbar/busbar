@@ -3,11 +3,11 @@
   "version": "busbar 1.5.5",
   "recorded": 885,
   "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48",
-  "harness_rev": "028cb0d282e3b5e218513627dc30643a29ca4eb78fd17e162d378f3d6a5bcca2",
+  "harness_rev": "44f3b2a66d6473a567a0f3a8b630766ceb9e08fd316463082407d9f025e30d2d",
   "host_triple": "aarch64-apple-darwin",
   "at": "2026-09-06T00:22:48Z",
   "harness_rev_recorded": "434f297637d9c9e898ef9cdd354b18a53a509de36e41b530f27e8b8bee7b4200",
-  "harness_rev_note": "3 cells hand-replaced from fresh single-cell recordings against the SAME golden binary (48e2800c...) after two harness fixes: (1) scripts/documented-validate-checks.sh resolved BUSBAR_BIN and RAW to absolute paths before step4's `cd \"$W/s4\"` -- previously a relative --bin or --out made step4's own `busbar --validate` invocation (or its stdout/stderr redirects) fail before/without ever running busbar, which is why the old golden's step4_bare_path_exit was \"1\" with EMPTY stderr; the real 1.5.5 behavior is exit 0 with the BUSBAR_PROVIDERS deprecation warning, now reflected in documented|changelog|validate-checks; (2) normalize.py gained a `ts.usage-window` rule (window.start/window.end under a `window` object -> 0) so admin.ops|GetUsage|ok and admin.ops|GetUsage|no-usage-after-mutation no longer pin the UTC-day boundary the recording happened to be made on. renormalize.sh could not be used because this golden's raw/ captures are not checked in; each of the 3 cells was replaced by hand from `record.sh --filter <cell-id>` output. The other 882 cells are untouched and still reflect harness_rev_recorded.",
+  "harness_rev_note": "RE-STAMPED 2026-09-05 (round-3 audit), NO cell re-recorded and no cell's bytes changed — `recorded`, `at` and every cells/*.json are exactly as they were under harness_rev 028cb0d2 (now the last entry of harness_rev_history). Three harness changes moved the hash: (1) harness-rev.sh's own file set gained apply-mutation.py and scripts/*.py (scripts/apply-deferred-decisions.py) — both decide what an exec/script cell is recorded against, and neither was in the revision that names how a recording was made; (2) cells.json grew 10 SKIP-able cell DEFINITIONS the round-3 audit named (six llm|<d>|<d>|request|stream_upstream_error, billing|key-usage|refund-across-window, http.crosscut|413|{mcp-streamable-http,a2a-jsonrpc,gemini-path}) — definitions only, all needs_fixture except the gemini 413, none recorded here, so they read as named golden gaps until the integrator re-records from the published 1.5.5 binary; (3) mock-upstream.py gained the `stream-error` control verb those six cells need, which fires only under the control header on an already-streaming request and leaves every happy-path stream builder byte-identical. capture.py's audit-delta fix is in the hash too and is a no-op on this golden (its audit deltas are 0/1/11 — nowhere near the `?limit=1000` page the fix is about). PREVIOUS NOTE: 3 cells hand-replaced from fresh single-cell recordings against the SAME golden binary (48e2800c...) after two harness fixes: (1) scripts/documented-validate-checks.sh resolved BUSBAR_BIN and RAW to absolute paths before step4's `cd \"$W/s4\"` -- previously a relative --bin or --out made step4's own `busbar --validate` invocation (or its stdout/stderr redirects) fail before/without ever running busbar, which is why the old golden's step4_bare_path_exit was \"1\" with EMPTY stderr; the real 1.5.5 behavior is exit 0 with the BUSBAR_PROVIDERS deprecation warning, now reflected in documented|changelog|validate-checks; (2) normalize.py gained a `ts.usage-window` rule (window.start/window.end under a `window` object -> 0) so admin.ops|GetUsage|ok and admin.ops|GetUsage|no-usage-after-mutation no longer pin the UTC-day boundary the recording happened to be made on. renormalize.sh could not be used because this golden's raw/ captures are not checked in; each of the 3 cells was replaced by hand from `record.sh --filter <cell-id>` output. The other 882 cells are untouched and still reflect harness_rev_recorded.",
   "merged_from": [
     {
       "part": "golden",
@@ -33,6 +33,7 @@
   "harness_rev_history": [
     "b47661cbb9ebe50c000984b40c96e7ffc1aeeffdcdaa649de786e09dcae362e1",
     "04e3c755517f4b9d660f1acc972c3b0ca6112ee330f62919f9121b9ae5bacfc3",
-    "a222fabaf9699056838284847bbffb512866095e20aef1c89bb1c884545f4986"
+    "a222fabaf9699056838284847bbffb512866095e20aef1c89bb1c884545f4986",
+    "028cb0d282e3b5e218513627dc30643a29ca4eb78fd17e162d378f3d6a5bcca2"
   ]
 }

@@ -7,7 +7,8 @@
 #
 #   harness_rev    which revision of the FILES THAT DECIDE WHAT GETS RECORDED AND HOW IT IS
 #                  COMPARED produced it: cells.json, normalize.py, capture*.py, oracle-config.sh,
-#                  mock-upstream.py, build-request.py, record.sh, scripts/*.sh, fixtures/*.json.
+#                  mock-upstream.py, build-request.py, record.sh, apply-mutation.py,
+#                  scripts/*.sh, scripts/*.py, fixtures/*.json.
 #                  This is the SAME file list ci.yml hashes for its shadow-oracle cache key —
 #                  computed here, in one place, so record.sh, diff-cells.py and ci.yml can never
 #                  quietly drift onto different definitions of "the harness changed".
@@ -33,8 +34,15 @@ binary_sha256() { sha256_of "$1"; }  # binary_sha256 <path-to-busbar-binary>
 
 harness_rev() {  # sha256 over the exact file set ci.yml's shadow-oracle cache key hashes
   local d="$_hr_here"
+  # apply-mutation.py and scripts/*.py were missing from this list. apply-mutation.py is what turns
+  # a boot-mutation fixture into the config an exec cell is recorded against — change it and the
+  # boot.refusal / boot.warning cells are recorded against DIFFERENT configs, with no provenance
+  # saying so; scripts/apply-deferred-decisions.py is driven by the script cells the same way. A
+  # file that can change what a cell records must be in the revision that names how it was recorded,
+  # or a harness change gets attributed to busbar.
   cat "$d/cells.json" "$d/normalize.py" "$d"/capture*.py "$d/oracle-config.sh" "$d/mock-upstream.py" \
-      "$d/build-request.py" "$d/record.sh" "$d"/scripts/*.sh "$d"/fixtures/*.json 2>/dev/null | _hr_sha256_stdin
+      "$d/build-request.py" "$d/record.sh" "$d/apply-mutation.py" \
+      "$d"/scripts/*.sh "$d"/scripts/*.py "$d"/fixtures/*.json 2>/dev/null | _hr_sha256_stdin
 }
 
 host_triple() {  # the running machine's target triple, as busbar release assets name it
