@@ -118,8 +118,93 @@ async fn unary_shaped_round_trip() {
     assert_eq!(frame.bytes.as_slice(), b"pong", "byte-exact");
 }
 
+/// A raw HTTP/2 peer that answers every call TRAILERS-ONLY: one HEADERS frame carrying
+/// `:status: 200`, the gRPC content type and a non-zero `grpc-status`, with END_STREAM set and no
+/// DATA at all. This is the standard shape an upstream refuses with — `UNIMPLEMENTED` for a method
+/// it does not serve, `UNAUTHENTICATED` for a credential it will not take — and it is not the same
+/// wire event as a trailer at the end of a body: the answer is over before any stream exists.
+///
+/// Hands back the address it is listening on; the task serves calls until the test drops.
+async fn trailers_only_peer(code: tonic::Code) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |_req| async move {
+                    let mut response =
+                        hyper::Response::new(http_body_util::Empty::<bytes::Bytes>::new());
+                    response.headers_mut().insert(
+                        http::header::CONTENT_TYPE,
+                        http::HeaderValue::from_static("application/grpc"),
+                    );
+                    response.headers_mut().insert(
+                        "grpc-status",
+                        http::HeaderValue::from_str(&(code as i32).to_string()).unwrap(),
+                    );
+                    response.headers_mut().insert(
+                        "grpc-message",
+                        http::HeaderValue::from_static("refused by the fixture"),
+                    );
+                    Ok::<_, std::convert::Infallible>(response)
+                });
+                let _ =
+                    hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                        .serve_connection(hyper_util::rt::TokioIo::new(sock), svc)
+                        .await;
+            });
+        }
+    });
+    addr
+}
+
+/// A call the upstream refuses trailers-only still reaches the reader as a TERMINAL FRAME carrying
+/// the class the upstream named — the whole point of declaring `STATUS_CLASS` at
+/// `StatusAt::Terminal`. Flattening it to a dial error left a call that WAS answered posting no
+/// status evidence at all, which is the difference between "the upstream said no" and "nothing
+/// answered" on the leg that decides a fee.
 #[tokio::test]
 async fn terminal_status_is_read_from_the_grpc_status_trailer() {
+    let client_t = client_transport();
+    let keys = test_key_handle();
+    let addr = trailers_only_peer(tonic::Code::PermissionDenied).await;
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+
+    let mut client_frames = client_t.frames(client_conn.clone());
+    // The write itself still reports the refusal to its caller.
+    let wrote = client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"hello"))
+        .await;
+    assert!(wrote.is_err(), "a refused call is not a delivered write");
+
+    let (_s, terminal) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+        .await
+        .expect("a trailers-only refusal must produce a terminal frame, not silence")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        terminal.bytes.len(),
+        0,
+        "the terminal frame carries no body"
+    );
+    assert_eq!(
+        terminal.meta.status,
+        Some(StatusClass::ClientError),
+        "PERMISSION_DENIED is the upstream blaming the request"
+    );
+    assert_eq!(
+        terminal.meta.status_code,
+        Some(tonic::Code::PermissionDenied as i32 as u16),
+        "the exact grpc-status number the upstream sent, not just its class"
+    );
+}
+
+/// The other end of the same rule: a call the upstream answers and ends with an OK `grpc-status`
+/// trailer at the end of a real body posts `Success` on its terminal frame.
+#[tokio::test]
+async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     let server_t = std::sync::Arc::new(server_transport());
     let client_t = client_transport();
     let cfg = BindTo("127.0.0.1:0".to_string());
@@ -161,6 +246,11 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
         terminal.meta.status,
         Some(StatusClass::Success),
         "STATUS_CLASS at Terminal: an OK grpc-status is honestly Success, not merely present"
+    );
+    assert_eq!(
+        terminal.meta.status_code,
+        Some(tonic::Code::Ok as i32 as u16),
+        "the number the upstream sent, which for an untroubled call is zero"
     );
 }
 
