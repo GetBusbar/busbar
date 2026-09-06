@@ -335,3 +335,57 @@ fn asking_whether_a_name_is_configured_allocates_nothing() {
         "a membership probe on the request path allocates nothing"
     );
 }
+
+/// THE OPERATOR'S HALF of the same denial: the diagnostic names the pool the ACL tripped on.
+///
+/// The caller-facing bytes are the previous test's — one 403, indistinguishable — and this is
+/// the fact only the node's own log carries. A key restricted to A reaches A, whose exhaustion
+/// policy names B, whose policy names C; the ACL denies B. An operator told "A" would go looking
+/// at a pool the key is explicitly allowed to use, and the two edges that are actually
+/// misconfigured would appear in no line at all. Guard one still names the pool it was handed,
+/// and the pricing guard names no pool because it refuses a name.
+#[test]
+fn the_fallback_denial_names_the_pool_the_acl_tripped_on() {
+    let view = View {
+        keyed: true,
+        scopes: Some(vec!["a".into(), "c".into()]),
+        fallbacks: vec![("a".into(), "b".into()), ("b".into(), "c".into())],
+        ..Default::default()
+    };
+    let (refusal, denied) =
+        destination_guard_named(&view, "a").expect_err("a falls over to b, and b is denied");
+    assert_eq!(refusal, VerifyRefusal::NotAuthorized);
+    assert_eq!(
+        denied.as_deref(),
+        Some("b"),
+        "the fallback edge the key may not take is the one the operator has to fix"
+    );
+
+    let direct = View {
+        keyed: true,
+        scopes: Some(vec!["a".into()]),
+        ..Default::default()
+    };
+    assert_eq!(
+        destination_guard_named(&direct, "z")
+            .expect_err("z is not on the key's list")
+            .1
+            .as_deref(),
+        Some("z"),
+        "guard one names the pool it was handed"
+    );
+
+    let unpriced = View {
+        keyed: true,
+        card: true,
+        priced_names: vec!["gpt-priced".into()],
+        ..Default::default()
+    };
+    assert_eq!(
+        destination_guard_named(&unpriced, "gpt-unpriced")
+            .expect_err("no card entry for that name")
+            .1,
+        None,
+        "the pricing guard refuses a name, not a pool"
+    );
+}
