@@ -281,11 +281,17 @@ impl DecodeState {
         let Some(buf) = held else {
             return; // already abandoned — a later fragment cannot make the whole readable.
         };
-        if buf.len().saturating_add(fragment.len()) > MAX_TOOL_ARG_BYTES {
+        // THE CEILING IS ON WHAT IS KEPT, so it is measured on the text that will be kept — after
+        // the lossy conversion, not on the wire fragment that went into it. Every byte that is not
+        // valid UTF-8 becomes a THREE-byte replacement character, so a fragment measured before the
+        // conversion admits up to three times the ceiling: a peer streaming invalid bytes holds
+        // three quarters of a megabyte per call against a quarter-megabyte bound.
+        let text = String::from_utf8_lossy(fragment);
+        if buf.len().saturating_add(text.len()) > MAX_TOOL_ARG_BYTES {
             *held = None;
             return;
         }
-        buf.push_str(&String::from_utf8_lossy(fragment));
+        buf.push_str(&text);
     }
 
     /// TAKE a call's accumulated arguments, parsed as ONE whole JSON value, and forget them.
@@ -305,6 +311,14 @@ impl DecodeState {
             return None;
         }
         serde_json::from_str::<Value>(&buf).ok()
+    }
+
+    /// The bytes CURRENTLY HELD for a call's accumulating arguments (`None` when nothing is held or
+    /// the accumulation was abandoned) — the quantity [`MAX_TOOL_ARG_BYTES`] bounds, so a test can
+    /// assert the bound on the memory itself rather than on the fragments that went into it.
+    #[cfg(test)]
+    fn held_call_args_len(&self, call: CallRef) -> Option<usize> {
+        self.call_args.get(&call)?.as_ref().map(String::len)
     }
 
     /// RECORD a wire field the decode could not model and dropped — the plane's "warn" made readable.
@@ -580,6 +594,12 @@ impl DuplexReader for OpenAiRealtimeCodec {
                 if let Some(fmt) = cfg.output_audio_format {
                     st.set_output_format(fmt);
                 }
+                // THE OTHER DIRECTION IS ITS OWN NEGOTIATION. A session may take µ-law down and
+                // pcm16 up (ordinary telephony); the uplink writer labels the caller's audio with
+                // THIS format, so it is remembered separately.
+                if let Some(fmt) = cfg.input_audio_format {
+                    st.set_input_format(fmt);
+                }
                 vec![IrClientEvent::Control(IrDuplexControl::SessionConfigure {
                     config: cfg,
                 })]
@@ -664,6 +684,13 @@ impl DuplexReader for OpenAiRealtimeCodec {
                     .and_then(AudioFormat::from_wire)
                 {
                     st.set_output_format(fmt);
+                }
+                if let Some(fmt) = session
+                    .get("input_audio_format")
+                    .and_then(Value::as_str)
+                    .and_then(AudioFormat::from_wire)
+                {
+                    st.set_input_format(fmt);
                 }
                 vec![IrServerEvent::SessionCreated { session }]
             }
