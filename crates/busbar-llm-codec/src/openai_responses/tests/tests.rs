@@ -4429,9 +4429,11 @@ fn test_cap_still_bounds_new_indices_after_guard_fix() {
     );
     // The over-cap index clamps to MAX_OUTPUT_INDEX (127), which is already open (it was inserted
     // in the loop), so by the already-open rule it emits nothing and does not grow the set.
+    // Two INDEPENDENT claims. As one `||` the first disjunct was free: the second is the loop
+    // invariant that already held, so the whole assertion passed whatever `over` contained.
     assert!(
-        over.is_empty() || state.open_tools.len() <= MAX_OPEN_TOOLS,
-        "the cap is never exceeded"
+        over.is_empty(),
+        "an over-cap index clamps onto an already-open one and must emit nothing, got {over:?}"
     );
     assert!(
         state.open_tools.len() <= MAX_OPEN_TOOLS,

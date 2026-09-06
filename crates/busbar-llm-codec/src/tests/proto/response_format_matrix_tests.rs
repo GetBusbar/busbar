@@ -176,18 +176,20 @@ fn tool_choice_without_tools_is_omitted_on_every_writer() {
     let responses_writer = ResponsesWriter;
     let bedrock_writer = BedrockWriter;
 
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-    let (a, o, g, b, c, r) = tracing::subscriber::with_default(subscriber, || {
-        (
-            anthropic_writer().write_request(&req),
-            OpenAiWriter.write_request(&req),
-            gemini_writer.write_request(&req),
-            bedrock_writer.write_request(&req),
-            cohere_writer.write_request(&req),
-            responses_writer.write_request(&req),
-        )
-    });
+    // Capture PER WRITER. A single shared capture cannot say WHICH writer warned — one writer's warn
+    // satisfied the check for all six — so each runs under its own subscriber.
+    let run = |f: &dyn Fn() -> serde_json::Value| -> (serde_json::Value, WarnCapture) {
+        let cap = WarnCapture::default();
+        let subscriber = tracing_subscriber::registry().with(cap.clone());
+        let value = tracing::subscriber::with_default(subscriber, f);
+        (value, cap)
+    };
+    let (a, cap_a) = run(&|| anthropic_writer().write_request(&req));
+    let (o, cap_o) = run(&|| OpenAiWriter.write_request(&req));
+    let (g, cap_g) = run(&|| gemini_writer.write_request(&req));
+    let (b, cap_b) = run(&|| bedrock_writer.write_request(&req));
+    let (c, cap_c) = run(&|| cohere_writer.write_request(&req));
+    let (r, cap_r) = run(&|| responses_writer.write_request(&req));
 
     assert!(
         a.get("tool_choice").is_none(),
@@ -218,18 +220,21 @@ fn tool_choice_without_tools_is_omitted_on_every_writer() {
         "responses must omit tool_choice with no tools; got {r}"
     );
 
-    // Every writer that dropped a directive must have warned (Bedrock already did, pre-fix).
-    for name in [
-        "Anthropic",
-        "OpenAI",
-        "Gemini",
-        "Cohere",
-        "Responses",
-        "Bedrock",
+    // Every writer that dropped a directive must have warned (Bedrock already did, pre-fix). `&&`
+    // binds tighter than `||`, so the un-parenthesised form read as
+    // `(dropping && tool_choice) || toolChoice` — a capture carrying only `toolChoice` passed with no
+    // "dropping" at all. The naming half is the alternative; the "dropping" half is required.
+    for (name, cap) in [
+        ("Anthropic", &cap_a),
+        ("OpenAI", &cap_o),
+        ("Gemini", &cap_g),
+        ("Cohere", &cap_c),
+        ("Responses", &cap_r),
+        ("Bedrock", &cap_b),
     ] {
         assert!(
-            cap.contains("dropping") && cap.contains("tool_choice") || cap.contains("toolChoice"),
-            "expected a warn naming the dropped tool_choice (checking around {name}); got {:?}",
+            cap.contains("dropping") && (cap.contains("tool_choice") || cap.contains("toolChoice")),
+            "{name} must warn that it dropped the tool_choice; got {:?}",
             cap.messages()
         );
     }

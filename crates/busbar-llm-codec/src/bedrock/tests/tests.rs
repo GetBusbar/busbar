@@ -5256,8 +5256,10 @@ fn bedrock_specific_tool_choice_warns_it_is_claude_only() {
         .expect("toolChoice still emitted");
     assert_eq!(tc, &serde_json::json!({"tool": {"name": "get_weather"}}));
 
+    // `contains("Claude")` was implied by `contains("Claude-only")`, so the `||` only ever weakened
+    // the claim to the looser half. Assert the specific phrase the warn is required to carry.
     assert!(
-        cap.contains("Claude-only") || cap.contains("Claude"),
+        cap.contains("Claude-only"),
         "emitting toolChoice.tool must warn that it is Claude-only on Bedrock: {:?}",
         cap.messages()
     );
