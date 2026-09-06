@@ -159,7 +159,24 @@ def check(root: str) -> Finding:
             continue
         text = strip_comments(read(name) or "")
         on = top_level_block(text, "on")
-        if re.search(r"^\s*-\s*[\"']?v\*", on, re.M):
+        # BOTH YAML SEQUENCE FORMS. The test was `^\s*-\s*["']?v\*`, which sees only the BLOCK
+        # form:
+        #
+        #     tags:
+        #       - "v*"          <- caught
+        #     tags: ["v*"]      <- NOT caught: no `-`, and the `v*` is not at line start
+        #
+        # The flow form is ordinary, idiomatic YAML that GitHub Actions accepts identically, and it
+        # is what a maintainer writes when compressing a trigger block. R1 is the root rule of this
+        # whole design — a `v*` trigger means the version name is public before one consumer check
+        # has run against it — and it could be reinstated in the shorter of the two spellings with
+        # the lint staying green. A rule a formatting choice can switch off is not a rule.
+        tag_trigger = (
+            re.search(r"^\s*-\s*[\"']?v\*", on, re.M)
+            or re.search(r"\btags\s*:\s*\[[^\]]*[\"']?v\*", on)
+            or re.search(r"\btags\s*:\s*[\"']?v\*", on)
+        )
+        if tag_trigger:
             bad.append(
                 "R1 %s is triggered by a `v*` tag push. A tag must be the RESULT of a verified "
                 "release, never its trigger: keying a build off a tag means the version name is "
@@ -481,7 +498,14 @@ def check(root: str) -> Finding:
         text = strip_comments(open(os.path.join(wf, name), encoding="utf-8").read())
         for m in re.finditer(r"^[^\n]*\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*", text, re.M):
             cmd = m.group(0).strip()
-            dest = re.search(r"HEAD:(?:refs/heads/)?([^\s\"']+)", cmd)
+            # THE DESTINATION IS WHAT MATTERS, AND THE SOURCE SIDE IS NOT ALWAYS `HEAD`.
+            # This only ever looked for `HEAD:<dst>`, so `git push origin main:main` — the exact
+            # form scripts/promote.sh documents, and the one a workflow copies when it wants to
+            # fast-forward a release branch — matched neither this test nor the one below (whose
+            # `(?![\w:/-])` lookahead is defeated by the `:` in `main:main`). A push straight to a
+            # protected branch from a workflow was therefore invisible to R11 in its most likely
+            # spelling. Read the whole refspec instead: `[+]<src>:<dst>`, any src.
+            dest = re.search(r"[\s\"']\+?(?:[^\s\"':]+):(?:refs/heads/)?([^\s\"']+)", cmd)
             if dest and (dest.group(1).startswith("$") or dest.group(1) in ("main", "qa")):
                 bad.append(
                     "R11 %s pushes a commit to `%s` (`%s`). Never push to a release branch from a "
@@ -491,6 +515,8 @@ def check(root: str) -> Finding:
                     "refuses forever. Publish to an unprotected branch (proof-manifests) or upload "
                     "an artifact." % (name, dest.group(1), cmd)
                 )
+            # A BARE `git push origin main` (no refspec) — the `(?![\w:/-])` guard keeps this from
+            # firing on `main:main`, which the refspec test above now owns, and on `main-docs`.
             if re.search(r"\bpush\b[^\n]*\borigin\s+[\"']?\+?(?:refs/heads/)?(?:main|qa)(?![\w:/-])", cmd):
                 bad.append(
                     "R11 %s pushes directly to a release branch (`%s`). Release branches move only "
@@ -599,6 +625,23 @@ MUTATIONS = [
         "release.yml",
         lambda t: t.replace("  push:\n    branches: [main]", "  push:\n    tags:\n      - \"v*\""),
         "R1",
+    ),
+    (
+        # THE SAME RULE, IN THE OTHER YAML SPELLING. The block form above was caught; this flow
+        # form was not, and GitHub Actions treats the two identically.
+        "R1 a v* tag trigger comes back as a FLOW sequence (tags: [\"v*\"])",
+        "release.yml",
+        lambda t: t.replace("  push:\n    branches: [main]", "  push:\n    tags: [\"v*\"]"),
+        "R1",
+    ),
+    (
+        # `git push origin main:main` — the refspec form promote.sh documents, which R11's
+        # `HEAD:<dst>` test and its no-refspec test both walked past.
+        "R11 a workflow pushes a refspec straight to main (git push origin main:main)",
+        "release.yml",
+        lambda t: t.replace("      - uses: actions/checkout@v7",
+                            "      - run: git push origin main:main\n      - uses: actions/checkout@v7", 1),
+        "R11",
     ),
     (
         "R3 the release is created without --draft (stage workflow)",
