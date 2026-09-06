@@ -102,12 +102,12 @@ ssh $SSHOPT "ubuntu@$IP" "git clone -q https://github.com/GetBusbar/busbar.git b
 # openapi_doc/operation_id/capitalize "MISSED" mutants were entirely this artifact, not real gaps).
 #
 # `--all-features` (tried first) is WRONG here and burned 6 EC2 boxes on an instant baseline-build
-# failure: `txn-fence-red` gates admin/v1/json/tests/txn_fence.rs, a NEGATIVE compile-fence test
-# that is REQUIRED to fail to type-check (its own Cargo.toml comment: "a successful build under
-# this feature is the test failing") — enabling it via --all-features makes cargo build itself fail
-# before a single mutant runs. `loom-model` is also special-purpose (scripts/loom.sh's own
-# exhaustive-interleaving harness). openapi-schema is the one feature actually worth mutating
-# under; name it explicitly instead of reaching for --all-features again.
+# failure: at the time the NEGATIVE compile fence (admin/v1/json/tests/txn_fence.rs, a module
+# REQUIRED to fail to type-check) sat behind a cargo feature, so --all-features made cargo build
+# itself fail before a single mutant ran. The fence is a rustc cfg now (`scripts/txn-fence.sh`),
+# so --all-features builds again, but `loom-model` is still special-purpose (scripts/loom.sh's own
+# exhaustive-interleaving harness) and openapi-schema is the one feature actually worth mutating
+# under; name it explicitly rather than reaching for --all-features.
 FILE_ARGS=""
 for f in $FILES; do FILE_ARGS="$FILE_ARGS --file $f"; done
 log "running mutants (-j $JOBS) over: $FILES - this is the long part"

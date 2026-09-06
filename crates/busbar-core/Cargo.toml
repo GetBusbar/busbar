@@ -214,7 +214,6 @@ egress-auth-gate = []
 # enabling this must enable substrate's so the re-exported view keeps its schema impl in lock-step.
 openapi-schema = ["dep:schemars", "busbar-substrate/openapi-schema"]
 loom-model = ["dep:loom"]
-txn-fence-red = []
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. Forwards to substrate's matching feature
 # so the relocated test-only `governance::signing::TokenSigner::mint_for_audience` is likewise
@@ -280,4 +279,10 @@ tikv-jemalloc-ctl = { workspace = true }
 [[bench]]
 name = "pool_upstream_creds"
 harness = false
+
+# `txn_fence_red` is the rustc cfg `scripts/txn-fence.sh` sets to compile the NEGATIVE compile
+# fence (admin/v1/json/tests/txn_fence.rs). It is a cfg rather than a cargo feature because a
+# feature whose only effect is to break the build makes `--all-features` red for no defect.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(txn_fence_red)'] }
 

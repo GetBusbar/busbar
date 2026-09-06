@@ -225,7 +225,6 @@ auth-admin-tokens = ["busbar-core/auth-admin-tokens"]
 hooks-ranking = ["busbar-core/hooks-ranking"]
 openapi-schema = ["busbar-core/openapi-schema", "busbar-llm?/openapi-schema", "busbar-mcp?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-core/loom-model"]
-txn-fence-red = ["busbar-core/txn-fence-red"]
 
 [dev-dependencies]
 # The root's own llm tests install the plane's seams.

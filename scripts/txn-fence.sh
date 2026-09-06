@@ -14,9 +14,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 echo "== txn compile fence (this build MUST fail) =="
-# Both packages: the fence module rides the core split (step 3.7) into busbar-core; naming both
-# sides keeps this a fence in either state of the tree.
-out=$(cargo check -p busbar -p busbar-core --features txn-fence-red 2>&1) && status=0 || status=$?
+# The fence is a rustc cfg, not a cargo feature: a feature whose only effect is to break the build
+# would make `--all-features` red for no defect. `cargo rustc` scopes the flag to the one crate
+# that carries the fence, so nothing else in the graph is rebuilt under it.
+out=$(cargo rustc -p busbar-core --lib -- --cfg txn_fence_red 2>&1) && status=0 || status=$?
 
 if [ "$status" -eq 0 ]; then
   echo "  FENCE BREACHED: crates/busbar-core/src/admin/v1/json/tests/txn_fence.rs COMPILED."
