@@ -47,6 +47,13 @@
 //! And the scan is of the Meter step's BODY, not of the file the step lives in. A leg file names
 //! the usage seam in several steps; asking the file is how a `fn meter` that returns
 //! `Decision::proceed` with an empty report keeps a green gate.
+//!
+//! The step itself is located THE WAY THE LOOP REACHES IT: the `fn meter(&self, …)` on the leg's
+//! `impl … Units for …` block, not the first thing in the file spelled `fn meter(`. A free function
+//! in a leg file can fold the usage seam perfectly and be called by nothing at all — it is not on
+//! the trait, so the loop has no way to reach it — and a leg whose only `fn meter` is that function
+//! contributes no Meter step. Asked of the file it passes; asked of the trait method it is named
+//! for exactly what it is.
 
 mod common;
 
@@ -161,6 +168,56 @@ const PLANE_METER_STEP_MODULE: &[&str] = &["src", "unit", "meter.rs"];
 /// The call shapes that hand the Meter step off to the plane's own waist.
 const WAIST_HOP_TOKENS: &[&str] = &[".meter(", "::meter("];
 
+/// The trait the Teller loop calls every step through. A leg contributes its Meter step by
+/// IMPLEMENTING this; the loop holds the leg and calls the method on it.
+const UNITS_IMPL_SIGNATURE: &str = "Units for ";
+
+/// The Meter step's own body, located as THE METHOD THE LOOP CALLS rather than as the first thing in
+/// the file that happens to be spelled `fn meter(`.
+///
+/// The distinction is the whole gate. A free `pub fn meter(retained, kernel, policy, token)` sitting
+/// in a leg file folds the usage seam beautifully and is called by NOBODY: it is not on the trait,
+/// so the loop cannot reach it, and a leg whose only `fn meter` is that function contributes no
+/// Meter step at all. Asked of the file, such a leg passes; asked of the trait method, it is exactly
+/// the unwired shape this gate exists to name. So the search is scoped to the `impl … Units for …`
+/// block and the method must take `&self` — an associated function with no receiver is not a step
+/// the loop can call on the leg it holds either.
+///
+/// Returns `None` when the file carries no `Units` impl, or when that impl carries no `fn meter`
+/// with a receiver.
+fn units_impl_meter_step(lines: &[common::Line]) -> Option<Vec<&common::Line>> {
+    let start = lines
+        .iter()
+        .position(|l| l.code.contains(UNITS_IMPL_SIGNATURE))?;
+    // The impl block's extent, by the same brace match `common::item_body` uses.
+    let mut depth: i64 = 0;
+    let mut seen_open = false;
+    let mut end = lines.len() - 1;
+    for (i, line) in lines.iter().enumerate().skip(start) {
+        depth += line.blank.matches('{').count() as i64;
+        if line.blank.contains('{') {
+            seen_open = true;
+        }
+        depth -= line.blank.matches('}').count() as i64;
+        if seen_open && depth <= 0 {
+            end = i;
+            break;
+        }
+    }
+    let body = common::item_body(&lines[start..=end], "fn meter(")?;
+    // The receiver, read off the signature — everything up to the parameter list's close.
+    let head: String = body
+        .iter()
+        .map(|l| l.code.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let sig = &head[..head.find(')').unwrap_or(head.len())];
+    if !sig.contains("&self") && !sig.contains("&mut self") {
+        return None;
+    }
+    Some(body)
+}
+
 /// Whether a classified production line reaches a Teller usage seam.
 fn line_reaches_usage_seam(line: &common::Line) -> bool {
     TELLER_USAGE_SEAM_TOKENS
@@ -210,14 +267,19 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
             leg_path.display()
         );
 
-        // (1) The leg must CARRY the Teller Meter step at all, IN PRODUCTION. A leg with no
-        //     `fn meter` contributes no Meter method to the loop, and the loop cannot call a step
-        //     that is not there. A `fn meter` that exists only inside the leg's own
-        //     `#[cfg(test)] mod` is not in the binary and does not count.
-        let Some(body) = common::item_body(&lines, "fn meter(") else {
+        // (1) The leg must CARRY the Teller Meter step at all, IN PRODUCTION, AS THE TRAIT METHOD
+        //     THE LOOP CALLS. A leg with no `fn meter` contributes no Meter method to the loop, and
+        //     the loop cannot call a step that is not there. Neither can it call a FREE `fn meter`
+        //     that is not on the `Units` impl — that function is reachable only by a caller who
+        //     names it, and an unwired leg has none. A `fn meter` that exists only inside the leg's
+        //     own `#[cfg(test)] mod` is not in the binary and does not count either.
+        let Some(body) = units_impl_meter_step(&lines) else {
             offenders.push(format!(
-                "{plane}: root leg {leg} has NO production `fn meter(` — it contributes no Meter \
-                 step to the Teller loop, so nothing it serves over the root is ever priced"
+                "{plane}: root leg {leg} has NO production `fn meter(&self, …)` on an \
+                 `impl {UNITS_IMPL_SIGNATURE}…` block — it contributes no Meter step to the Teller \
+                 loop, so nothing it serves over the root is ever priced. A free `fn meter` \
+                 elsewhere in the file is not this: the loop holds the leg and calls the method on \
+                 it, and it cannot call a function nothing is wired to"
             ));
             continue;
         };
@@ -352,6 +414,73 @@ mod tests {
         "the step hands off to nothing either, so this synthetic leg is exactly the shape the gate \
          must report: proceed with an empty report, charging nobody:\n{body}"
     );
+}
+
+/// THE THIRD FAILURE. The step used to be located by the first `fn meter(` ANYWHERE in the leg file,
+/// so a FREE function nothing calls satisfied a gate asking whether the loop's Meter step meters. A
+/// leg with no `Units` impl at all — every one of its steps a free function, wired to nothing —
+/// passed on the strength of a fold that never runs.
+#[test]
+fn selftest_a_free_fn_meter_is_not_the_loops_meter_step() {
+    let prod = |src: &str| -> Vec<common::Line> {
+        common::classify(src, false)
+            .into_iter()
+            .filter(|l| !l.intest)
+            .collect()
+    };
+
+    // A leg whose only `fn meter` is a free function: it folds the seam, and nothing calls it.
+    let unwired = r#"
+pub fn meter(
+    retained: &RetainedLocatorValues,
+    kernel: &KernelCounts,
+    policy: &MeterPolicy,
+    token: &UsageToken,
+) -> Result<Metered, UsageError> {
+    fold_usage(retained, kernel, policy, &leg_declaration(), token)
+}
+"#;
+    let lines = prod(unwired);
+    assert!(
+        common::item_body(&lines, "fn meter(").is_some(),
+        "the file-wide search finds it, which is exactly the blind spot"
+    );
+    assert!(
+        units_impl_meter_step(&lines).is_none(),
+        "a free `fn meter` is not the trait method the Teller loop calls, and counting it lets an \
+         unwired leg pass a gate about whether the loop meters anybody"
+    );
+
+    // The same fold, this time as the method the loop actually calls.
+    let wired = r#"
+impl Units for Leg<'_> {
+    fn meter(
+        &self,
+        token: &UnitToken<Meter>,
+        usage: &UsageToken,
+        _ctx: &UnitCtx,
+        _provisional: &Outcome,
+    ) -> Decision<Meter> {
+        fold_usage(&self.retained, &self.kernel, &self.policy, &decl(), usage)
+    }
+}
+"#;
+    let lines = prod(wired);
+    let body = units_impl_meter_step(&lines).expect("the trait method is the step");
+    assert!(
+        usage_seam_reaches(&body) > 0,
+        "and its body is what the seam question is asked of"
+    );
+
+    // An associated function on the impl with no receiver is not a step the loop can call either.
+    let receiverless = r#"
+impl Units for Leg<'_> {
+    fn meter(usage: &UsageToken) -> Decision<Meter> {
+        fold_usage(usage)
+    }
+}
+"#;
+    assert!(units_impl_meter_step(&prod(receiverless)).is_none());
 }
 
 /// THE SECOND FAILURE. The waist hop used to be summed over the plane's whole `src/unit/` tree, so
