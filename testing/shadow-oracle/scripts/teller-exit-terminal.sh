@@ -81,10 +81,20 @@ fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$
 pid=$!; track_pid $pid
 wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 500 "$W/busbar.log")"
 
-mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"teller-exit","group":"oracle"}')"
+# THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
+
+# `mint_status` below is what this binary answered rather than what the harness
+
+# assumed; a mint that stopped being a 201 is then a diff on this cell.
+
+mint_raw="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"teller-exit","group":"oracle"}')"
+
+mint_code="$(printf '%s' "$mint_raw" | tail -1)"
+
+mint="$(printf '%s' "$mint_raw" | sed '$d')"
 kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mint")"
 [ -n "$kid" ] && [ -n "$tok" ] || fail 2 "$mint"
-step mint_status "201"
+step mint_status "$mint_code"
 
 usage_of() { curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)'; }
 sleep 0.3

@@ -187,12 +187,21 @@ stop "$pid"
 req_before="$(jq -r '.requests // 0' <<<"$usage_before")"; req_after="$(jq -r '.requests // 0' <<<"$usage_after")"
 usage_delta="$(jq -n --argjson a "$req_before" --argjson b "$req_after" '{requests: ($b - $a)}')"
 
-result="$(jq -n \
+if ! result="$(jq -n \
   --argjson mint_status "$mint_status" \
   --argjson spend_before "$(jq -r .spend_before <<<"$eff")" \
   --argjson spend_after "$(jq -r .spend_after <<<"$eff")" \
   --argjson body_after "$(jq -c .body_after <<<"$eff")" \
   --argjson usage_delta "$usage_delta" \
-  '{mint_status:$mint_status, spend_before:$spend_before, spend_after:$spend_after, body_after:$body_after, usage_delta:$usage_delta}')"
+  '{mint_status:$mint_status, spend_before:$spend_before, spend_after:$spend_after, body_after:$body_after, usage_delta:$usage_delta}' 2>"$W/result.err")"; then
+  # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
+  # measured something it cannot state and the body would go out EMPTY — and an empty body with
+  # status 0 compares clean against a golden that failed the same way, which is the vacuous green
+  # the ledger exists to refuse. Record the -1 UNSUPPORTED shape record.sh reads as a named gap.
+  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
+    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
+    >"$RAW/captured.json"
+  exit 0
+fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

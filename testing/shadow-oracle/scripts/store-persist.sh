@@ -102,10 +102,15 @@ env_ "$BIN" --list-plugins >"$W/plugins.log" 2>&1; step list_plugins "$(grep -w 
 pid="$(spawn_ "$W/busbar1.log" "$BIN")"; track_pid $pid
 wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" \
   || fail 2 "boot 1 (first, fresh) did not come up within ${BOOT_BOUND}s: $(tail -c 500 "$W/busbar1.log")"
-mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"store-oracle","group":"oracle"}')"
+# THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
+# `mint_status` below is what this binary answered rather than what the harness
+# assumed; a mint that stopped being a 201 is then a diff on this cell.
+mint_raw="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"store-oracle","group":"oracle"}')"
+mint_code="$(printf '%s' "$mint_raw" | tail -1)"
+mint="$(printf '%s' "$mint_raw" | sed '$d')"
 kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mint")"
 [ -n "$kid" ] && [ -n "$tok" ] || fail 3 "$mint"
-step mint_status "201"
+step mint_status "$mint_code"
 st="$(curl -sS -m 20 -o "$W/chat.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LP}/v1/chat/completions" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"ping"}]}')"
 step chat_status "$st"
 sleep 0.5
@@ -133,7 +138,17 @@ u2="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/a
 step usage_after_restart "$u2"
 st2="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${LP}/v1/chat/completions" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"ping"}]}')"
 step chat_after_restart "$st2"
-step survived "$([ "$k2" = 200 ] && [ "$(jq -r .requests <<<"$u2")" = "$(jq -r .requests <<<"$u1")" ] && echo yes || echo no)"
+# `survived` COMPARES TWO READS, SO IT MUST FIRST PROVE THERE WERE TWO READS. `"" = ""` is true in
+# `[`, so a /usage call that came back empty on BOTH sides of the restart — an admin API that
+# answered 500, a body jq could not parse, a curl that timed out twice — read as "the usage the
+# store was supposed to keep is exactly what it was", i.e. the money class this cell exists for said
+# `yes` on the strength of having measured nothing. Both reads must be real: a 200 whose body
+# actually carries a `requests` number.
+u1_req="$(jq -r '.requests // empty' <<<"$u1" 2>/dev/null)"
+u2_req="$(jq -r '.requests // empty' <<<"$u2" 2>/dev/null)"
+[ -n "$u1_req" ] && [ -n "$u2_req" ] \
+  || fail 5 "the /usage read before ($u1) or after ($u2) the restart carried no requests count, so 'survived' would compare two absences and call them equal"
+step survived "$([ "$k2" = 200 ] && [ "$u2_req" = "$u1_req" ] && echo yes || echo no)"
 kill $pid; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 # Every `store error` line across BOTH boots. A store the binary cannot actually write to still

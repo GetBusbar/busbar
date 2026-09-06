@@ -86,10 +86,20 @@ audit_of() { curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:
 a_before="$(audit_of)"; stepjson audit_before "$a_before"
 n_before="$(jq '.items | length' <<<"$a_before")"
 
-mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"teller-audit","group":"oracle"}')"
+# THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
+
+# `mint_status` below is what this binary answered rather than what the harness
+
+# assumed; a mint that stopped being a 201 is then a diff on this cell.
+
+mint_raw="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"teller-audit","group":"oracle"}')"
+
+mint_code="$(printf '%s' "$mint_raw" | tail -1)"
+
+mint="$(printf '%s' "$mint_raw" | sed '$d')"
 kid="$(jq -r '.id // empty' <<<"$mint")"
 [ -n "$kid" ] || fail 2 "$mint"
-step mint_status "201"
+step mint_status "$mint_code"
 
 sleep 0.3
 a_after="$(audit_of)"; stepjson audit_after "$a_after"
@@ -106,7 +116,7 @@ step first_entry_prev_hash_empty "$(jq -r 'if (.prev_hash // "x") == "" then "tr
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-result="$(jq -n \
+if ! result="$(jq -n \
   --argjson mint_status "$(jq -r .mint_status <<<"$eff")" \
   --argjson audit_entry_delta "$(jq -r .audit_entry_delta <<<"$eff")" \
   --arg newest_action "$(jq -r .newest_action <<<"$eff")" \
@@ -116,6 +126,15 @@ result="$(jq -n \
   '{mint_status:$mint_status, audit_entry_delta:$audit_entry_delta,
     newest_action:$newest_action, newest_outcome:$newest_outcome,
     newest_resource_names_key:$newest_resource_names_key,
-    first_entry_prev_hash_empty:$first_entry_prev_hash_empty}')"
+    first_entry_prev_hash_empty:$first_entry_prev_hash_empty}' 2>"$W/result.err")"; then
+  # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
+  # measured something it cannot state and the body would go out EMPTY — and an empty body with
+  # status 0 compares clean against a golden that failed the same way, which is the vacuous green
+  # the ledger exists to refuse. Record the -1 UNSUPPORTED shape record.sh reads as a named gap.
+  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
+    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
+    >"$RAW/captured.json"
+  exit 0
+fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

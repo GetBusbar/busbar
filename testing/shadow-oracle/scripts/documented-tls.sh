@@ -84,8 +84,16 @@ YAML
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN=shadow-oracle-admin RUST_LOG=warn "$BIN" ) \
   >"$W/stdout.log" 2>"$W/stderr.log" &
 pid=$!; track_pid $pid
+# ONE BOOT BOUND FOR THE WHOLE HARNESS. This loop's 100 × 0.1 s was 10 seconds while every sibling
+# waits ORACLE_BOOT_BOUND_SECS (default 60, and record.sh/store-persist.sh both read that same
+# knob). A TLS boot generates no key material of its own but it does load the cert, and on a machine
+# running a test suite beside the recording 10 s was not always enough — and what this cell then
+# recorded was `booted_https: false`, i.e. "native TLS does not serve traffic", frozen into the
+# golden as the documented behaviour. Same knob, same bound, same answer on a slow machine.
+_tls_bound="${ORACLE_BOOT_BOUND_SECS:-60}"
+_tls_polls=$(( _tls_bound * 10 ))   # 10 polls/sec at the 0.1 s step below
 i=0; healthy=0
-while [ $i -lt 100 ]; do
+while [ $i -lt "$_tls_polls" ]; do
   if ! kill -0 "$pid" 2>/dev/null; then break; fi
   if curl -k -fsS -m 1 -o /dev/null "https://127.0.0.1:${LP}/healthz" 2>/dev/null; then healthy=1; break; fi
   sleep 0.1; i=$((i+1))
