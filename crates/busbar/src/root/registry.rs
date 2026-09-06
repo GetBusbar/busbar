@@ -812,6 +812,59 @@ mod tests {
         assert_eq!(sealed.precedence.len(), 48);
     }
 
+    /// The operator's request-body cap reaches every mounted plane's transport.
+    ///
+    /// A deployment that writes `limits.request_body_max_bytes: 1024` is asking for a node that
+    /// buffers a kilobyte, and it has to mean it on every plane at once — the door's inbound limit
+    /// and the transport's accumulation ceiling are the same number, so a plane served over a
+    /// transport built from a `Default` would take a body the door refused. The seal composes ONE
+    /// http instance from the settings it is handed and every http-carrying transport is over that
+    /// instance, so the cap is checked at the instance and the claim walk is what says no plane sits
+    /// anywhere else.
+    #[test]
+    fn the_operators_body_cap_reaches_every_mounted_planes_transport() {
+        const CAP: usize = 1024;
+        let limits = busbar_substrate::config::limits::LimitsResolved {
+            request_body_max_bytes: CAP,
+            ..busbar_substrate::config::limits::LimitsResolved::default()
+        };
+        let sealed = crate::root::registry::seal(crate::root::policy::client_settings(&limits))
+            .expect("every claim names a live transport");
+
+        assert_eq!(
+            sealed.transports.http.max_body_bytes(),
+            CAP,
+            "the http transport must carry the operator's cap, not the crate's default"
+        );
+
+        for claim in &sealed.claims {
+            let key = claim.claim.transport;
+            let row = sealed
+                .registered
+                .iter()
+                .find(|r| r.key == key)
+                .unwrap_or_else(|| panic!("claim of plane `{}` names unregistered `{key}`", claim.plane));
+            let over_the_capped_instance =
+                key == HttpTransport::KEY || row.composed_over == Some(HttpTransport::KEY);
+            assert!(
+                over_the_capped_instance || key == StdioTransport::KEY,
+                "plane `{}` claims bytes on transport `{key}`, which neither is the capped http \
+                 instance nor is composed over it",
+                claim.plane
+            );
+        }
+
+        // The other direction: a deployment that set nothing is where it always was.
+        let unset = crate::root::registry::seal(crate::root::policy::client_settings(
+            &busbar_substrate::config::limits::LimitsResolved::default(),
+        ))
+        .expect("every claim names a live transport");
+        assert_eq!(
+            unset.transports.http.max_body_bytes(),
+            ClientSettings::default().request_body_max_bytes
+        );
+    }
+
     /// And the same check over every declared claim, voice included now that its telephony row is
     /// gone: nothing anywhere names a transport the root did not register.
     #[test]

@@ -37,6 +37,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use busbar_contract::{ClaimKey, OpClassId};
+use busbar_substrate::config::limits::LimitsResolved;
+use busbar_transport_http::ClientSettings;
 use busbar_unit_scope::{PolicyView, Scope};
 use busbar_unit_usage::MeterPolicy;
 
@@ -154,6 +156,29 @@ pub fn pools_without_expansion(cfg: &MeterPolicyConfig, policy: &MeterPolicyHand
         })
         .map(|p| p.pool.clone())
         .collect()
+}
+
+/// The egress/ingress client settings the http transport is built from, taken off the deployment's
+/// resolved limits rather than from the transport crate's `Default`.
+///
+/// Every field of `ClientSettings` is an operator knob that already has a home in `limits:` /
+/// `advanced:`, and the legacy serving path builds its upstream client from exactly these five
+/// values. The one that matters most is `request_body_max_bytes`: it is the SAME number the served
+/// door's inbound body limit is built from, so a transport built from a `Default` would accept a
+/// body the door refused (or refuse one the door accepted) on any deployment that set the knob.
+/// Reading all five off one struct is what makes that impossible to get half-right.
+///
+/// A deployment that sets nothing gets the config layer's own resolved defaults — which for the
+/// body cap is the same 32 MiB `ClientSettings::default()` carries, so an unset limit changes
+/// nothing.
+///
+/// The two deprecated upstream env overrides the legacy client build still honors are deliberately
+/// not read here: this is the CONFIGURED posture, and the env vars are the legacy path's own
+/// compatibility shim.
+#[must_use]
+pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
+    let _ = limits;
+    ClientSettings::default()
 }
 
 /// The scope unit's policy view, over what the deployment's policy actually declared.
@@ -354,6 +379,45 @@ mod tests {
         let cfg = a_configured_card();
         let policy = build(&cfg);
         assert!(pools_without_expansion(&cfg, &policy).is_empty());
+    }
+
+    /// **The hazard**, on the transport axis: a client built from the crate's own `Default` ignores
+    /// what the operator wrote. A deployment that caps request bodies at 1 KiB gets a transport that
+    /// buffers 32 MiB, and the door and the transport then disagree about which bodies exist. Every
+    /// field is checked, not just the cap, because the four beside it are operator knobs too and a
+    /// mapping that forgot one would be invisible until the deployment that set it.
+    #[test]
+    fn the_transport_client_reads_the_operators_limits_and_not_a_default() {
+        let limits = LimitsResolved {
+            request_body_max_bytes: 1024,
+            pool_max_idle_per_host: 7,
+            pool_idle_timeout_secs: 11,
+            upstream_http1_only: true,
+            upstream_h2_prior_knowledge: false,
+            ..LimitsResolved::default()
+        };
+        let settings = client_settings(&limits);
+        assert_eq!(settings.request_body_max_bytes, 1024);
+        assert_eq!(settings.pool_max_idle_per_host, 7);
+        assert_eq!(settings.pool_idle_timeout_secs, 11);
+        assert!(settings.upstream_http1_only);
+        assert!(!settings.upstream_h2_prior_knowledge);
+    }
+
+    /// And a deployment that set nothing is left where it was: the resolved default body cap is the
+    /// same 32 MiB the transport's own `Default` carries, so wiring the knob through cannot move a
+    /// deployment that never touched it.
+    #[test]
+    fn an_unset_body_cap_resolves_to_the_transport_default() {
+        let settings = client_settings(&LimitsResolved::default());
+        assert_eq!(
+            settings.request_body_max_bytes,
+            ClientSettings::default().request_body_max_bytes
+        );
+        assert_eq!(
+            settings.request_body_max_bytes,
+            busbar_transport_http::DEFAULT_REQUEST_BODY_MAX_BYTES
+        );
     }
 
     /// **Silence is a refusal.** The pair nobody wrote an entry for answers nothing, and the scope

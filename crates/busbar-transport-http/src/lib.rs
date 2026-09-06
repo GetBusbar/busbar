@@ -241,6 +241,17 @@ impl HttpTransport {
         }
     }
 
+    /// The body ceiling this instance was built with, in bytes — the operator's
+    /// `limits.request_body_max_bytes` as it reached this transport.
+    ///
+    /// Readable because the composition that hands it here is a boot-time wiring a caller must be
+    /// able to prove: a root that built its transports from a `Default` instead of from the
+    /// deployment's limits looks identical from the outside until a body of the wrong size arrives.
+    #[must_use]
+    pub fn max_body_bytes(&self) -> usize {
+        self.max_body_bytes
+    }
+
     fn inner(&self, id: u64) -> Option<Arc<Inner>> {
         self.conns.lock().expect("poisoned").get(&id).cloned()
     }
