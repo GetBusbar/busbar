@@ -5322,6 +5322,26 @@ pub(crate) async fn validate_config(
     State(handle): State<Arc<AppHandle>>,
     body: axum::body::Bytes,
 ) -> Response {
+    // THE 1.x REFUSAL, BEFORE THE TYPED PARSE — the same ordering `load_config_from_disk` uses, and
+    // for the same reason: `DeployCfg` denies unknown fields, so once the body has been typed there
+    // is no `governance:` block left to recognize, only an anonymous `unknown field`. Reported as a
+    // validation VERDICT (`ok: false` with the named error) rather than a `400`: the caller's request
+    // was well-formed JSON and the honest answer is about their config, not their HTTP.
+    if let Ok(raw) = serde_json::from_slice::<serde_json::Value>(&body) {
+        if let Some(cfg_member) = raw.get("config") {
+            if let Ok(doc) = serde_yaml::to_value(cfg_member) {
+                if let Err(named) = crate::config_validate::refuse_legacy_document(&doc) {
+                    return respond(
+                        StatusCode::OK,
+                        Ok::<_, AdminError>(crate::admin::v1::contract::ConfigValidateView {
+                            ok: false,
+                            errors: vec![named],
+                        }),
+                    );
+                }
+            }
+        }
+    }
     let req: ValidateConfigReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {

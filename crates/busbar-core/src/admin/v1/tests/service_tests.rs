@@ -2348,3 +2348,96 @@ plugins:
         view.errors
     );
 }
+
+/// A minimal, valid `DeployCfg` + its provider defs — the fixture the `config/validate` parity
+/// tests below vary one thing against.
+fn minimal_validate_fixture() -> (
+    crate::config::DeployCfg,
+    std::collections::HashMap<String, crate::config::ProviderDef>,
+) {
+    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(
+        "listen: \"0.0.0.0:8080\"\nproviders:\n  anthropic:\n    api_key: { env: ANTHROPIC_API_KEY }\nmodels:\n  claude:\n    provider: anthropic\n",
+    )
+    .expect("the fixture parses through the document entry point");
+    let def: crate::config::ProviderDef = serde_yaml::from_str(
+        "protocol: anthropic\nbase_url: https://api.anthropic.com\nerror_map:\n  \"400\": client_error\n",
+    )
+    .unwrap();
+    (
+        deploy,
+        std::collections::HashMap::from([("anthropic".to_string(), def)]),
+    )
+}
+
+/// THE DRY RUN VALIDATES THE EFFECTIVE CONFIG, NOT THE SUBMITTED FILE ALONE.
+///
+/// Every other rebuild path on this node layers the persisted overlay under the document it judges —
+/// boot, `--validate`, reload, apply, reset, the named-map writes. `config/validate` did not, so it
+/// answered about a document that never exists here: the operator's dry run and their next boot were
+/// reading two different configs.
+///
+/// Written as the direction that FAILS, because that is the direction an operator is hurt by: the
+/// submitted config references a hook the effective config does not define, and the endpoint must
+/// say so rather than report `ok: true` for a config that cannot boot.
+#[tokio::test]
+async fn validate_config_layers_the_persisted_overlay_under_the_submitted_document() {
+    let dir = tmp_plugins_dir("validate-overlay");
+    let overlay = dir.join("busbar-overlay.json");
+    // An overlay carrying NO hooks. The submitted document references one, so the EFFECTIVE config
+    // is invalid — and only a validation that layers the overlay judges the effective config at all.
+    std::fs::write(&overlay, br#"{"version":1,"hooks":{},"groups":{}}"#).unwrap();
+    let svc = AdminService::new(TestApp::new().overlay_path(overlay).build());
+
+    let (_, defs) = minimal_validate_fixture();
+    let deploy: crate::config::DeployCfg = crate::config::deploy_from_yaml_str(
+        "listen: \"0.0.0.0:8080\"\nproviders:\n  anthropic:\n    api_key: { env: ANTHROPIC_API_KEY }\nmodels:\n  claude:\n    provider: anthropic\n  claude2:\n    provider: anthropic\npools:\n  main:\n    members: [claude, claude2]\n    hooks: [nowhere]\n",
+    )
+    .expect("the pooled fixture parses");
+
+    let view = svc
+        .validate_config(deploy, defs)
+        .await
+        .expect("validate returns a view");
+    assert!(
+        !view.ok,
+        "a hook reference no effective config defines must fail the dry run: {:?}",
+        view.errors
+    );
+    assert!(
+        view.errors.iter().any(|e| e.contains("nowhere")),
+        "and the error must name it: {:?}",
+        view.errors
+    );
+}
+
+/// THE STRICT-SECRET STEP, which is `--validate`'s last one and this endpoint's question too. An
+/// unresolvable built-in secret WARNS on the apply/reload paths by design — a live change must not
+/// be refused for a variable the next deploy will set. A DRY RUN is the opposite: the operator is
+/// asking whether the config is good, and an unset variable is the answer, not a footnote.
+#[tokio::test]
+async fn validate_config_answers_strictly_about_an_unresolvable_secret() {
+    const UNSET: &str = "BUSBAR_TEST_VALIDATE_ENDPOINT_NEVER_SET";
+    std::env::remove_var(UNSET);
+    let svc = AdminService::new(TestApp::new().build());
+
+    let (mut deploy, defs) = minimal_validate_fixture();
+    deploy.auth = Some(
+        serde_yaml::from_str(&format!("signing_key: {{ env: {UNSET} }}\nchain: []\n"))
+            .expect("the auth fixture parses"),
+    );
+
+    let view = svc
+        .validate_config(deploy, defs)
+        .await
+        .expect("validate returns a view");
+    assert!(
+        !view.ok,
+        "an unset signing-key variable must fail the DRY RUN: {:?}",
+        view.errors
+    );
+    assert!(
+        view.errors.iter().any(|e| e.contains(UNSET)),
+        "and the error must name the variable so it is actionable: {:?}",
+        view.errors
+    );
+}

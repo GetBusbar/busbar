@@ -2069,12 +2069,32 @@ impl AdminService {
         mut deploy: DeployCfg,
         defs: std::collections::HashMap<String, ProviderDef>,
     ) -> Result<ConfigValidateView, AdminError> {
-        // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
+        // THE PERSISTED OVERLAY LAYERS UNDER THE SUBMITTED DOCUMENT, exactly as it does on every
+        // other rebuild path (boot, `--validate`, reload, apply, reset, the named-map writes). Without
+        // it this endpoint validated a document that never exists on this node: the answer was about
+        // the caller's file alone, while what would actually run is that file with the API-applied
+        // `root`/`hooks`/`groups` sections layered on. Both directions were wrong — a `store:
+        // { module: redis }` the overlay's own `root` block overrides was green-lit as if it stood,
+        // and a config whose validity DEPENDS on an overlay-supplied hook or group was reported
+        // invalid. Same two calls in the same two places as every sibling: `root` (and the
+        // pre-resolve sections it carries) BEFORE resolve, `hooks`/`groups` after.
+        let overlay = self
+            .app
+            .overlay_path
+            .as_deref()
+            .and_then(crate::config::overlay::read);
+        if let Some(doc) = overlay.as_ref() {
+            crate::config::overlay::apply_root_to_deploy(&mut deploy, doc);
+        }
+        // Resolve (cross-references config.yaml providers against providers.yaml defs); if that
         // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
-        let root = match crate::config::resolve(&deploy, &defs) {
+        let mut root = match crate::config::resolve(&deploy, &defs) {
             Ok(root) => root,
             Err(errors) => return Ok(ConfigValidateView { ok: false, errors }),
         };
+        if let Some(doc) = overlay {
+            crate::config::overlay::merge_into(&mut root, doc);
+        }
         if let Err(errors) = crate::config_validate::validate(&root) {
             return Ok(ConfigValidateView { ok: false, errors });
         }
@@ -2102,6 +2122,19 @@ impl AdminService {
         // whose module is neither built-in nor installed -- so an operator could dry-run a config
         // green here and then watch boot fail on it. Manifest-only: nothing is `dlopen`ed.
         if let Err(e) = crate::preflight_plugins_and_secrets(&deploy, &root) {
+            return Ok(ConfigValidateView {
+                ok: false,
+                errors: vec![e],
+            });
+        }
+        // STRICT SECRETS — `--validate`'s last step, and this endpoint asks `--validate`'s question.
+        // The pre-flight above is shared with boot and with apply/reload, where an unresolvable
+        // secret WARNS by design (a live config change must not be refused for a variable that will
+        // be set on the next deploy). A DRY RUN is the other question entirely: the operator is
+        // asking whether this config is good, and an env var that is not set is an answer, not a
+        // footnote. Also the step that runs the pure-VALUE guards boot runs — the blank admin token,
+        // the signing-key format — so a config this endpoint calls valid is one that boots.
+        if let Err(e) = crate::validate_builtin_secrets_resolve(&root) {
             return Ok(ConfigValidateView {
                 ok: false,
                 errors: vec![e],
