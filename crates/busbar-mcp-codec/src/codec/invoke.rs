@@ -191,8 +191,10 @@ pub(crate) fn invoke_write_request(r: &InvokeReq) -> Bytes {
 #[allow(dead_code)]
 pub(crate) fn invoke_write_response(r: &InvokeResp) -> WireBody {
     let mut result = serde_json::json!({ "content": r.content, "isError": r.is_error });
-    // Carried, never synthesised: busbar models no output schema, so it emits structured
-    // content only when the tool produced some.
+    // CARRIED VERBATIM, NEVER SYNTHESISED. This IR relays the structured content the tool produced
+    // and emits the member only where there was some; it does not check it. Holding the result to
+    // the schema busbar published for the tool is a separate job with separate inputs, and it lives
+    // at the plane in `crate::outputschema::check`.
     if let Some(s) = &r.structured {
         result["structuredContent"] = s.clone();
     }

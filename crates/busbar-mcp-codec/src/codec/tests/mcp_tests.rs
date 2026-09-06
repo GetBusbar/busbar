@@ -214,8 +214,9 @@ fn the_response_round_trips_through_the_codec() {
     assert_eq!(out["result"]["structuredContent"]["rows"], 2);
 }
 
-/// Structured content is CARRIED, never synthesised: busbar models no output schema, so a tool that
-/// returned none must not be given one.
+/// Structured content is CARRIED, never synthesised: this codec relays what the tool produced, so a
+/// tool that returned none must not be given one. Checking it against a published schema is
+/// `outputschema::check`'s job at the plane, not this writer's.
 #[test]
 fn structured_content_is_omitted_when_the_tool_produced_none() {
     let ir = InvokeResp {
