@@ -2533,3 +2533,145 @@ fn a_client_answer_reaches_the_upstream_through_this_nodes_own_table() {
         "and the unit's exit path reads the ending the reply left"
     );
 }
+
+/// **A session that never opened owes its reservation back.**
+///
+/// The reservation is taken at unit zero's door and the dial happens two steps later, so every
+/// ending between the two is a session that took a hold against a real principal's grant
+/// ceiling and never had a conversation. The seam's own contract says the lease is closed once,
+/// on the exit path, whatever the end — and before this nothing called it at all, so a caller
+/// retrying against an upstream that is down walked its own ceiling to zero one failed dial at
+/// a time. The count below is the whole claim: three dials, three closes.
+#[test]
+fn a_refused_dial_gives_the_sessions_reservation_back() {
+    /// A dial that is never going to work, and a lease that remembers what it was told.
+    struct Down;
+    impl ProviderDial for Down {
+        fn dial(&self, _target: &DialTarget) -> Result<(), DialRefusal> {
+            Err(DialRefusal::GuardRefused)
+        }
+    }
+    #[derive(Default)]
+    struct Books {
+        reserved: std::sync::Mutex<Vec<u64>>,
+        closed: std::sync::Mutex<Vec<u64>>,
+    }
+    struct Ledger(std::sync::Arc<Books>);
+    impl SessionLease for Ledger {
+        fn reserve(&self, session: u64, _nanos: u64) -> Result<(), ReasonCode> {
+            self.0.reserved.lock().expect("lock").push(session);
+            Ok(())
+        }
+        fn settle(&self, _session: u64, _nanos: u64) -> bool {
+            true
+        }
+        fn close(&self, session: u64) {
+            self.0.closed.lock().expect("lock").push(session);
+        }
+    }
+
+    let books = std::sync::Arc::new(Books::default());
+    let kernel = Kernel::new();
+    let node = node(VoiceIo {
+        dial: Box::new(Down),
+        lease: Box::new(Ledger(std::sync::Arc::clone(&books))),
+        ..VoiceIo::default()
+    });
+    for _ in 0..3 {
+        let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+            panic!("the exit settles it");
+        };
+        assert!(
+            matches!(end.outcome(), Outcome::Failed(_, ReasonCode::NoDestination)),
+            "got {:?}",
+            end.outcome()
+        );
+    }
+    assert_eq!(
+        books.reserved.lock().expect("lock").len(),
+        3,
+        "each attempt took the session's opening reservation"
+    );
+    assert_eq!(
+        *books.closed.lock().expect("lock"),
+        vec![7, 7, 7],
+        "and each one gave it back — a refused dial is an ending like any other"
+    );
+}
+
+/// **A close happens once, and the calls go with it.**
+///
+/// The reservation is a hold: closing it twice is a second release of budget that was already
+/// given back, which is the mirror of never closing it at all. And a conversation that is over
+/// cannot answer anything, so the waits it had open leave with it rather than being left for a
+/// sweep at a deadline nobody is left to satisfy — the caller `OpenToolCalls::closed` never had.
+#[test]
+fn a_session_that_ends_closes_once_and_takes_its_open_calls_with_it() {
+    #[derive(Default)]
+    struct Counting {
+        closes: std::sync::Mutex<usize>,
+    }
+    struct Ledger(std::sync::Arc<Counting>);
+    impl SessionLease for Ledger {
+        fn reserve(&self, _session: u64, _nanos: u64) -> Result<(), ReasonCode> {
+            Ok(())
+        }
+        fn settle(&self, _session: u64, _nanos: u64) -> bool {
+            // Dry on the first settle: the turn that emptied it is delivered, and the frame
+            // after it is the one refused at the door.
+            false
+        }
+        fn close(&self, _session: u64) {
+            *self.0.closes.lock().expect("lock") += 1;
+        }
+    }
+
+    let counting = std::sync::Arc::new(Counting::default());
+    let kernel = Kernel::new();
+    let node = node(VoiceIo {
+        dial: Box::new(OpenDial),
+        lease: Box::new(Ledger(std::sync::Arc::clone(&counting))),
+        ..VoiceIo::default()
+    });
+    // The session opens, holds a tool call, then empties its lease on a turn.
+    let open = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+    let Ended::Settled { .. } = run(&kernel, &open) else {
+        panic!("the handshake settles");
+    };
+    assert_eq!(
+        *counting.closes.lock().expect("lock"),
+        0,
+        "a handshake that opened a session keeps the reservation it took"
+    );
+    let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+    assert!(
+        node.tool_calls.waiting(7, UnitKey::new(11)),
+        "the call is waiting when the lease runs dry under it"
+    );
+
+    // Three more frames arrive on a session that can pay for none of them. The first is the
+    // ending; the two after it find a session that has already ended.
+    for _ in 0..3 {
+        let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned());
+        let Ended::Settled { end, .. } = run(&kernel, &next) else {
+            panic!("the exit settles it");
+        };
+        assert!(
+            matches!(end.outcome(), Outcome::Refused(_, ReasonCode::OverBudget)),
+            "got {:?}",
+            end.outcome()
+        );
+    }
+    assert_eq!(
+        *counting.closes.lock().expect("lock"),
+        1,
+        "the reservation is released once, however many frames arrive after the end"
+    );
+    assert_eq!(
+        node.tool_calls.open(),
+        0,
+        "and the calls the conversation had open ended with it"
+    );
+}
