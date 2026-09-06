@@ -1465,12 +1465,117 @@ async fn a_close_ends_a_parked_ingress_pump_and_releases_the_socket() {
         tokio::io::AsyncReadExt::read(&mut client, &mut sink),
     )
     .await
+    .expect("the closed socket must be released, which the peer reads as the end of the socket");
+    // Either shape proves the release. The close now WAKES the parked read rather than waiting for
+    // the peer's next bytes, so the socket may already be gone by the time those bytes land — which
+    // the peer reads as a reset rather than as an orderly end. What is being pinned is that the
+    // descriptor went, not which of the two ways the peer found out.
+    assert!(
+        matches!(read, Ok(0) | Err(_)),
+        "the closed connection's socket must close, not stay readable"
+    );
+}
+
+/// The same close, against a peer that says NOTHING more after it.
+///
+/// The cell above only reaches the flag because the peer keeps writing: those bytes are what return
+/// the read the pump is parked on, and the flag is not looked at until it returns. The peer this
+/// close has to work against is the one that half-writes a request and then goes quiet — which is
+/// the case the doc above actually names, and the only one where "parked on a read the peer may
+/// never answer" is literally true. With nothing to return the read, a flag nothing wakes leaves the
+/// pump parked for the life of the process, holding the last clone of the socket: one leaked
+/// descriptor per closed connection, and a drain that never finishes. The close has to WAKE the
+/// read, not merely mark it.
+#[tokio::test]
+async fn a_close_ends_a_parked_ingress_pump_whose_peer_never_writes_again() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    let pump = tokio::spawn({
+        let transport = transport.clone();
+        let conn = conn.clone();
+        async move { transport.frames(conn).next().await.is_none() }
+    });
+    // A header block that never ends, and a body that never starts.
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"POST / HTTP/1.1\r\nHost: x\r\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    transport.close(conn, CloseReason::Drain);
+
+    // The peer holds the socket open and writes nothing further. Nothing but the close itself is
+    // going to return that read.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+        .await
+        .expect("a close must wake the parked read, not wait for bytes that never come")
+        .unwrap();
+    assert!(ended, "a closed connection yields no further frames");
+
+    let mut sink = [0_u8; 32];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut client, &mut sink),
+    )
+    .await
     .expect("the closed socket must be released, which the peer reads as end-of-stream");
     assert_eq!(
         read.unwrap(),
         0,
         "the closed connection's socket must close"
     );
+}
+
+/// The same close again, with the pump parked on a BODY read rather than a header one.
+///
+/// A declared length the peer never finishes sending parks the reader in a different loop, and a
+/// wake that only covers the header loop would leave this one holding the socket just as long.
+#[tokio::test]
+async fn a_close_ends_a_pump_parked_on_a_body_the_peer_never_finishes() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    let pump = tokio::spawn({
+        let transport = transport.clone();
+        let conn = conn.clone();
+        async move { transport.frames(conn).next().await.is_none() }
+    });
+    // A whole header block declaring ten bytes, and one byte of them.
+    tokio::io::AsyncWriteExt::write_all(
+        &mut client,
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\na",
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    transport.close(conn, CloseReason::Drain);
+
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+        .await
+        .expect("a close must wake a read parked mid-body too")
+        .unwrap();
+    assert!(ended, "a closed connection yields no further frames");
 }
 
 /// One read buffer per ingress connection, not a fresh `READ_CHUNK_BYTES` one per read syscall.
