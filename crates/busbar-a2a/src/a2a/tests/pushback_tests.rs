@@ -934,13 +934,155 @@ async fn the_callback_endpoint_refuses_everything_but_the_token_busbar_minted() 
 /// A MINTED TOKEN VERIFIES FOR ITS OWN TASK AND FOR NO OTHER.
 #[test]
 fn a_token_names_exactly_one_task() {
-    let a = pushback::mint("task-a").expect("a process with a CSPRNG mints");
-    let b = pushback::mint("task-b").expect("a process with a CSPRNG mints");
+    const NOW: u64 = 1_770_000_000;
+    let a = pushback::mint("task-a", NOW).expect("a process with a CSPRNG mints");
+    let b = pushback::mint("task-b", NOW).expect("a process with a CSPRNG mints");
     assert_ne!(a, b, "two tasks must not share a capability");
     assert!(
         a.as_str().starts_with("task-a."),
         "the token names its task: {}",
         a.as_str()
+    );
+}
+
+/// **TWO MINTS FOR ONE TASK ARE TWO DIFFERENT TOKENS, AND EACH CARRIES A DEADLINE.**
+///
+/// The MAC covered the TASK ID ALONE, so a mint was a pure function of the task: re-registering
+/// produced the SAME string, which made a re-registration indistinguishable from a replay of the
+/// first, and — the part that matters more — the token had no deadline at all. One mint opened one
+/// task for the whole life of the process, which for a long-running deployment was the only bound
+/// there was: a leaked or logged token stayed live indefinitely.
+#[test]
+fn two_mints_for_one_task_differ_and_both_declare_a_deadline() {
+    const NOW: u64 = 1_770_000_000;
+    let first = pushback::mint("task-a", NOW).expect("mint");
+    let second = pushback::mint("task-a", NOW).expect("mint");
+    assert_ne!(
+        first, second,
+        "two mints for ONE task must be two distinct capabilities, or a re-registration cannot be \
+         told from a replay of the first"
+    );
+    // `<task-id>.<nonce>.<expires-at>.<mac>` — the deadline is carried in the clear because the
+    // verifier needs it, and it is inside the MAC so a holder cannot move it.
+    let expires: u64 = second
+        .as_str()
+        .rsplit('.')
+        .nth(1)
+        .expect("the token carries an expiry field")
+        .parse()
+        .expect("the expiry is a number");
+    assert_eq!(
+        expires,
+        NOW + pushback::token_ttl_secs(),
+        "the deadline is measured from the mint, not from an unbounded process lifetime"
+    );
+}
+
+/// **A LAPSED TOKEN IS REFUSED, AND IS REFUSED INDISTINGUISHABLY FROM A FORGED ONE.**
+///
+/// The endpoint is driven at a `now` past the token's deadline by minting the token AT a `now` far
+/// enough in the past that the shipped TTL has already elapsed against the real clock — so what is
+/// under test is the shipped constant and the shipped comparison, not a test-only clock seam.
+#[tokio::test]
+async fn a_lapsed_push_token_is_refused_the_same_way_a_forged_one_is() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &submission()).await;
+    let before = h.sent().len();
+    let registration = issued_last(&h, before, &create_call(&task)).await;
+    let live = token_on_the_wire(&registration);
+    // A token minted a whole TTL ago, under the SAME secret this process mints under: the MAC
+    // verifies and only the deadline refuses it.
+    let ttl = pushback::token_ttl_secs();
+    let lapsed = pushback::mint(&task, 1_000)
+        .expect("mint")
+        .as_str()
+        .to_string();
+    assert!(
+        ttl > 0 && lapsed != live,
+        "the lapsed token is a genuine second mint"
+    );
+
+    let document = serde_json::json!({ "id": BACKEND_TASK, "kind": "task",
+                                       "status": { "state": "completed" } });
+    assert_eq!(
+        push_to_busbar(&h, &lapsed, &document).await,
+        401,
+        "a token whose deadline has passed is not a capability any more"
+    );
+    // AND THE SAME `401` A FORGERY GETS. A distinguishable expiry would tell the holder of a stale
+    // token that the task id it names was real — the probing oracle `task_of` gives one answer for.
+    assert_eq!(push_to_busbar(&h, "not-a-token", &document).await, 401);
+}
+
+/// **THE ONE UNAUTHENTICATED WRITING ROUTE IS RATE LIMITED, PER TASK.**
+///
+/// A holder of one valid token could otherwise drive an unlimited number of task-store transitions,
+/// provenance-chain appends and outbound push deliveries through this endpoint. Each is a durable
+/// write and an egress hop, so "as many as you like" is an amplifier pointed at busbar's own store
+/// and at the caller's webhook.
+///
+/// PER TASK and not per address: a backend behind a NAT pool is many addresses reporting one task,
+/// and one address may legitimately front many tasks.
+#[tokio::test]
+async fn one_tasks_pushes_are_bounded_and_the_bound_is_the_shipped_one() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let task = open_a_task(&h, &submission()).await;
+    let before = h.sent().len();
+    let registration = issued_last(&h, before, &create_call(&task)).await;
+    let token = token_on_the_wire(&registration);
+    // The window is process-wide state, so this battery starts from a known one.
+    pushback::clear_push_rate_for_test();
+
+    let (limit, _window) = pushback::push_rate_bounds();
+    // A re-report of the state busbar already holds is a RETRY and not a transition, so these cost
+    // no chain append — which is exactly the shape a replay takes, and exactly what the bound is
+    // for. The FIRST push is the transition; every one after it is the replay.
+    let document = serde_json::json!({ "id": BACKEND_TASK, "kind": "task",
+                                       "status": { "state": "completed" } });
+    for i in 0..limit {
+        assert_eq!(
+            push_to_busbar(&h, &token, &document).await,
+            202,
+            "push {i} is within the window and must be taken"
+        );
+    }
+    assert_eq!(
+        push_to_busbar(&h, &token, &document).await,
+        429,
+        "the {limit}th push filled this task's window; the next is refused"
+    );
+    pushback::clear_push_rate_for_test();
+}
+
+/// **AN OVERSIZED BODY IS REFUSED BEFORE THE TOKEN IS EVEN LOOKED AT.**
+///
+/// The ceiling used to be judged AFTER the MAC was verified, which is the wrong order twice over: a
+/// 30 MiB body paid for a full HMAC computation before it was refused, and the refusal it earned was
+/// decided only once busbar had worked out who was asking. The cheapest, most certain refusal comes
+/// first — and it is answered for a request carrying NO token at all, which is the proof that the
+/// size gate runs ahead of the auth gate rather than behind it.
+#[tokio::test]
+async fn an_oversized_push_is_refused_ahead_of_the_token_check() {
+    let h = harness_on(
+        in_turn(200, vec![jsonrpc_working(), jsonrpc_config()]),
+        BINDING_JSONRPC,
+    )
+    .await;
+    let oversized = serde_json::json!({ "id": BACKEND_TASK, "kind": "task",
+                                        "filler": "x".repeat(70 * 1024) });
+    assert_eq!(
+        push_to_busbar(&h, "", &oversized).await,
+        413,
+        "an oversized body earns 413 and not the 401 an absent token would earn — the size gate \
+         runs FIRST"
     );
 }
 

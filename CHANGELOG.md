@@ -522,6 +522,13 @@ moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
   REST binding can reach it: `POST /message:send`, `POST /message:stream`, `GET /tasks`, the
   `pushNotificationConfigs` collection and the rest, with errors in that binding's own
   representation.
+- **The A2A push-callback token expires, and the endpoint is rate limited.** `POST /a2a/push` is
+  the one route on this plane a fronted agent reaches without a Busbar key, and the capability it
+  authenticated against was a MAC over the task id alone — a bearer with no deadline, identical on
+  every re-registration. It now carries a nonce and a 24-hour expiry, both inside the MAC, and one
+  task may report at most 60 pushes a minute (`429` past that). An oversized body is refused `413`
+  before the token is read rather than after, so a large body pays for no MAC computation. A lapsed
+  token answers the same `401` a forged one does, so expiry is not a probing oracle.
 - **Each A2A binding declares the protocol version it actually speaks.** A HTTP+JSON request that
   names no `A2A-Version` is relayed onward as `1.0` rather than `0.3`: that binding was introduced
   with v1.0 and composes v1.0 method names, so a `0.3` hop told the backend one version and then

@@ -226,7 +226,9 @@ pub(super) async fn mirror_push_config(
     if !super::pushback::worth_registering(task.state) {
         return;
     }
-    let Some(token) = super::pushback::mint(&task.task_id) else {
+    // MINTED AT THIS REQUEST'S `now`, so the capability's deadline is measured from the moment the
+    // registration was made rather than from an unbounded process lifetime.
+    let Some(token) = super::pushback::mint(&task.task_id, now) else {
         return;
     };
     let Some(at) = originate(

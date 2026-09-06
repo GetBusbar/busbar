@@ -283,7 +283,7 @@ fn admit_push(task_id: &str, now: u64) -> bool {
 }
 
 /// TEST ONLY: forget every window, so one battery's pushes do not count against another's.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn clear_push_rate_for_test() {
     push_rate()
         .lock()
@@ -293,13 +293,13 @@ pub(crate) fn clear_push_rate_for_test() {
 
 /// TEST ONLY: the rate bound and its window, so a test asserts against the shipped values rather
 /// than restating them.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn push_rate_bounds() -> (u32, u64) {
     (PUSH_RATE_LIMIT, PUSH_RATE_WINDOW_SECS)
 }
 
 /// TEST ONLY: the minted token's lifetime.
-#[cfg(all(test, feature = "test-support"))]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn token_ttl_secs() -> u64 {
     TOKEN_TTL_SECS
 }
