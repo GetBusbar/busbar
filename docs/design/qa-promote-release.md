@@ -271,6 +271,80 @@ digest is unreachable by construction. Two consequences named rather than discov
 * **The draft's assets always describe the latest staged iteration**, and `resolve-staged` proves
   it (target-commitish check) rather than assuming it.
 
+## What every push is judged by
+
+One table per branch: the exact required check, the jobs behind it, the scripts those jobs run, and
+what a red on each one means. Nothing here is a convention — every row is enforced by branch
+protection on the exact sha, or by a lint that refuses the workflow file.
+
+### Push to `dev`
+
+**Required check: `ci umbrella`** (`ci.yml`, job `ci-umbrella`). Its `needs:` list *is* the whole of
+what "CI is green" means, and `scripts/ci-umbrella-lint.py` refuses `ci.yml` if any job is outside
+that list without a written `# non-gating:` reason, or inside it without a `RESULTS` row.
+
+| job | what it runs | red means |
+| --- | --- | --- |
+| `check` · `no-default-features` · `openapi-schema` · `windows` | `cargo fmt/clippy/build/test` across four build configurations | the code does not compile, does not pass its tests, or fails a lint on some configuration. `scripts/full-gate.sh` runs all of these locally except the Windows leg. |
+| `structure-lint` · `public-hygiene` · `executable-config-lint` · `no-plugins-gate` | the grep/AST gates | a shipped file breaks a structural rule; public prose describes the process rather than the software |
+| `config-stability` · `migration-corpus` · `generated-artifact-drift` | `config-stability-gate.sh`, the migration corpus, the regen check | a config grammar changed non-additively, a shipped config stopped migrating, or a generated artifact is stale in the tree |
+| `shadow-oracle` | `fetch-golden.sh` (by pinned digest) → `record.sh --plane all` ×2 → `replay.sh` | this build diverges from the **published 1.5.5** on a cell nobody accepted in `accepted-differences.json`. Report and candidate recording are uploaded as artifacts. |
+| `llm-conformance` | `testing/llm-conformance/run.sh` against the five specs pinned by digest | the LLM plane violates a vendor's published schema |
+| `teller-steps` · `design-bindings` · `service-image-pins` · `deletion-test-matrix` | `teller-steps-check.py`, `design-bindings.sh --check`, `service-images-check.sh`, the plane-deletion build matrix | a Teller step or Appendix B binding has no check that exists; a workflow image drifted off the one pinned list; a neutral crate stopped compiling with a plane removed |
+| `construction-gate` | `construction-gate.sh --check` | **report-only today** (`continue-on-error`, printed by the umbrella, not counted) while the construction work it measures is in flight |
+| `timing` · `perf-build-gate` · `coverage` · `txn-guards` · `proof-manifest` | the release-profile timing gate, the perf/build-parity gate, `llvm-cov`, `txn-fence.sh`/`loom.sh`, `proof-manifest.py` | a wall-clock or allocation budget regressed; the transaction fence stopped failing to compile; the proof manifest could not be collated |
+
+A red `ci umbrella` on dev means: **do not promote dev→qa.** Nothing else is spent.
+
+### Push to `qa`
+
+**Required checks: `ci umbrella` *and* `qa-gate umbrella`**, both on the exact sha. `qa-gate.yml`
+fires off CI's *completion* and only for a CI run that succeeded on `qa`.
+
+`qa-gate.yml` is a **dispatcher**: `workflow_run` always loads the workflow file from the default
+branch, so the file holds only what GitHub must read before a checkout exists (`on:`, `concurrency`,
+`env`, `runs-on`, `timeout-minutes`, the `needs`/`if` graph, the matrix *expression*, and the
+`actions/cache` wiring). Every tier's logic lives in `scripts/qa-gate-run.sh`, which rides the
+commit it gates. `scripts/qa-gate-dispatch-lint.py` fails the build if the two drift structurally.
+
+| job | what it runs | red means |
+| --- | --- | --- |
+| `build` | `qa-gate-run.sh build` — compile once, pack `target/` as an artifact | nothing downstream can hydrate; the whole gate is unmeasured |
+| `fast` | `qa-gate-run.sh fast` + `matrix` | the cheap segments failed, or `qa/segments.toml` could not be turned into a fan-out |
+| `slow` (matrix) | `qa-gate-run.sh segment <id>` — one leg per live-mock segment: ten plugin repos, real Postgres/Valkey/MySQL/Vault | busbar does not work against its plugins **together** at this commit. `fail-fast: false`, so each leg reports independently. |
+| `loader` | `qa-gate-run.sh loader` | the plugin-loader mechanism fails against the real sibling-built `store-sqlite` cdylib |
+| **`done-oracle`** | `qa-gate-run.sh done-oracle` → `scripts/verify-1.6.0-done.sh` **in FULL** | **1.6.0 is not done at this commit.** Nineteen groups, one verdict: the BUILD group's whole `scripts/full-gate.sh` battery, the PARITY group's `--plane all` replay against the pinned 1.5.5 golden, `audit-ledger.py --check`, STORE-QA, DESIGN, PLANE-PURITY, PLANE-DELETE, BYTE-IDENTITY, CHANGELOG and the rest. The report and the parity diff are uploaded as `qa-gate-done-oracle-report`. |
+| `umbrella` | scores all five | any tier not `success` — `skipped` included, deliberately |
+
+`done-oracle` never runs `--fast`: the flag is refused by construction in `qa-gate-run.sh`, and a
+`--fast` run that comes out clean prints PROVISIONAL and exits 3 rather than the DONE banner and
+exit 0. It is a **sibling** of `slow`, not a dependency, so it costs no wall clock the fleet legs do
+not already spend (~100–140 min warm, against `slow`'s 180-minute ceiling), and it shares ci.yml's
+golden cache key character for character so the golden is restored rather than re-recorded.
+`scripts/ci-umbrella-lint.py --workflow qa-gate` refuses the file if `done-oracle` leaves the
+umbrella's `needs`, and `scripts/full-gate.sh --selftest` plants that exact mutation and requires it
+red.
+
+A green `qa-gate umbrella` is what earns a promotion qa→main. `release-stage.yml` also runs here and
+builds the bytes that will ship; a red there means there is nothing to promote.
+
+### Push to `main`
+
+**Required checks: `ci umbrella` + `qa-gate umbrella`, plus `Release stage` present and green on
+this sha.** Because qa→main must be a fast-forward, main's HEAD *is* the qa commit those runs
+certified.
+
+| gate | what it runs | red means |
+| --- | --- | --- |
+| `branch-green` | wait-for-everything on this sha; `REQUIRED_WORKFLOWS = CI, qa-gate, Release stage` must be **present**, not merely not-red | this commit was never soaked, or a check went red after the fact. Unknown is red. |
+| `resolve-staged` | finds the successful stage run for this exact sha, re-derives every claim in `staged.json` from outside (registry digests, `gh attestation verify`, draft state) | the bytes cannot be proven to be the ones qa verified. **There is no fallback build**; lint rule R10 makes reintroducing one a build failure. |
+| `promote-image` · `promote-release` | manifest-only retag, git tag, publish the draft, then re-derive all four facts from outside | a partial promote — named and refused rather than left half-public |
+| post-release checklist step | renders the oracle-golden rotation chore into the run summary | nothing; it is a reminder, and a candidate promote prints nothing at all |
+
+A red anywhere up to and including `resolve-staged` leaves no git tag, no listed release, no `X.Y.Z`
+container tag and no fan-out. The retry price is a re-run of the stage on the same sha — never a
+rebuild in the promote.
+
 ## Rotating the oracle golden — the step that follows every `vX.Y.Z` tag on main
 
 **The golden is always the last shipped binary; the register is always this release's named
