@@ -5288,3 +5288,30 @@ fn cohere_writer_emits_every_citation_in_a_multi_citation_delta() {
         "each citation-start keeps its paired citation-end, got {frames:?}"
     );
 }
+
+/// Regression (money): the truncated-usage recovery path must ledger the SAME bucket the
+/// whole-body reader does. Cohere reports usage TWICE — a raw `tokens` bucket and the
+/// separately-metered `billed_units` bucket an operator is actually invoiced on — and
+/// `IrUsage::to_token_usage` lets `billed_units` win for the reserved input/output tiers. Reading
+/// only `tokens` here billed the RAW counts whenever the response body was head-truncated, so one
+/// completion was invoiced two different amounts depending only on whether it fit the reassembly
+/// cap, and `search_units` (a separately billed non-token unit) vanished entirely on that path.
+#[test]
+fn recover_truncated_usage_bills_the_billed_units_bucket() {
+    let reader = CohereReader;
+    // A HEAD-truncated tail: the opening document structure is gone, the trailing `usage` object
+    // is intact and self-contained.
+    let tail = br#"...cut through here"}]},"finish_reason":"COMPLETE","usage":{"billed_units":{"input_tokens":9,"output_tokens":3,"search_units":2},"tokens":{"input_tokens":11,"output_tokens":7}}}"#;
+    let usage = reader
+        .recover_truncated_usage(tail)
+        .expect("cohere usage tail must be recoverable");
+    assert_eq!(
+        usage.input, 9,
+        "the BILLED input count must win over the raw `tokens` total, as it does on the \
+         whole-body path"
+    );
+    assert_eq!(
+        usage.output, 3,
+        "the BILLED output count must win over the raw `tokens` total"
+    );
+}
