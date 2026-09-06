@@ -694,17 +694,11 @@ impl ProtocolWriter for CohereWriter {
                 // event is `CitationStartEventDeltaMessage(citations=Citation(...))`, one Citation per
                 // event. Emitting a JSON array here was off-spec: a native Cohere v2 SDK deserializes
                 // `delta.message.citations` into ONE `Citation`, so an array body is a decode error
-                // (and a proxy tell). `max_citations_per_delta == Some(1)` makes `StreamTranslate` fan
-                // a multi-citation delta out to one `citation-start` event per citation BEFORE it
-                // reaches here, so `first()` is the whole (already-split) delta; the debug_assert pins
-                // that invariant rather than silently truncating if the seam changes. An empty batch
-                // emits nothing.
+                // (and a proxy tell). This SINGLE-frame arm therefore frames the FIRST citation only;
+                // `write_response_events` is what walks a multi-citation delta, re-entering here once
+                // per citation, so a caller reaching this method directly still gets a well-formed
+                // (if partial) frame rather than an off-spec array. An empty batch emits nothing.
                 crate::ir::IrDelta::CitationsDelta(cits) if !cits.is_empty() => {
-                    debug_assert!(
-                        cits.len() <= 1,
-                        "cohere writer expects the citation fan-out to have split multi-citation \
-                         deltas (max_citations_per_delta == Some(1))"
-                    );
                     let c = cits.first()?;
                     Some((
                         "".to_string(),
@@ -885,21 +879,27 @@ impl ProtocolWriter for CohereWriter {
             delta: crate::ir::IrDelta::CitationsDelta(cits),
         } = ev
         {
-            if !cits.is_empty() {
-                // The framing seam fans a multi-citation delta out to one citation per delta
-                // (`max_citations_per_delta == Some(1)`) BEFORE it reaches here, matching the
-                // single-frame arm's own invariant, so this emits exactly one start/end pair.
-                if let Some(start) = self.write_response_event(ev) {
-                    return vec![
-                        start,
-                        (
-                            "".to_string(),
-                            serde_json::json!({ "type": ET_CITATION_END, "index": index }),
-                        ),
-                    ];
+            let mut frames = Vec::with_capacity(cits.len() * 2);
+            // One native start/end PAIR per citation. The framing seam fans a multi-citation delta
+            // out to one citation per delta (`max_citations_per_delta`) on its way here, but it is
+            // not the only caller — the plane codec drives `write_response_events` directly — and a
+            // delta that arrives with several citations must emit all of them, not silently keep the
+            // first. Each citation is framed by re-entering the single-frame arm with a one-citation
+            // delta, so that arm stays the ONE source of truth for the `citation-start` shape.
+            for c in cits {
+                let one = IrStreamEvent::BlockDelta {
+                    index: *index,
+                    delta: crate::ir::IrDelta::CitationsDelta(vec![c.clone()]),
+                };
+                if let Some(start) = self.write_response_event(&one) {
+                    frames.push(start);
+                    frames.push((
+                        "".to_string(),
+                        serde_json::json!({ "type": ET_CITATION_END, "index": index }),
+                    ));
                 }
-                return Vec::new();
             }
+            return frames;
         }
         self.write_response_event(ev).into_iter().collect()
     }

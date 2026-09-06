@@ -6579,3 +6579,38 @@ fn buffered_to_eventstream_metadata_carries_metrics_even_without_timing() {
     );
     assert_eq!(v["usage"]["totalTokens"], 7);
 }
+
+/// A two-citation delta driven straight at `write_response_events` must emit BOTH citations. The
+/// writer used to keep only the first, leaning on the framing seam's citation fan-out to have split
+/// the batch — but the plane codec calls this seam directly, and a caller that does loses every
+/// citation after the first with no signal.
+#[test]
+fn bedrock_writer_emits_every_citation_in_a_multi_citation_delta() {
+    let cit = |title: &str| crate::ir::IrCitation {
+        kind: Some("web_search_result_location".to_string()),
+        cited_text: Some("quoted".to_string()),
+        title: Some(title.to_string()),
+        url: Some("https://example.invalid/a".to_string()),
+        document_index: None,
+        start_index: Some(0),
+        end_index: Some(6),
+        encrypted_index: None,
+        raw: None,
+    };
+    let writer = BedrockWriter;
+    let frames = writer.write_response_events(&crate::ir::IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::CitationsDelta(vec![cit("first"), cit("second")]),
+    });
+
+    let titles: Vec<Option<&str>> = frames
+        .iter()
+        .filter(|(_, d)| d.pointer("/delta/citation").is_some())
+        .map(|(_, d)| d.pointer("/delta/citation/title").and_then(|v| v.as_str()))
+        .collect();
+    assert_eq!(
+        titles,
+        vec![Some("first"), Some("second")],
+        "both citations must reach the wire, in order, got {frames:?}"
+    );
+}
