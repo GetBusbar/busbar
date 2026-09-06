@@ -13,12 +13,20 @@
 # Refuses (exit 3) on any digest mismatch and deletes the download. Also caches the release's
 # openapi JSON (used by enumerate-cells.py) beside the binary.
 #
+# EVERY invocation re-hashes what is on disk against a PINNED digest — the fast path never trusts a
+# sidecar note about a download that happened once (see verify_cached below). Preferred pin is the
+# extracted binary's own digest (golden-digests.tsv row `busbar-<triple>`); a triple with no such row
+# falls back to re-hashing the cached tarball against its pinned digest, and the install path prints
+# the row to add so that host can be pinned properly next time.
+#
 #   --check-golden <dir>   verify that <dir>/meta.json's `binary_sha256` (the exact binary record.sh
 #                           used to make that recording) matches the sha256 of the binary this script
 #                           has cached/pinned for that recording's version — i.e. the golden on disk
 #                           was really produced by the binary we still believe is "the golden binary",
 #                           not some other build that happens to share a version string. Exit 3 on
-#                           mismatch or a meta.json with no binary_sha256 (an unproven golden).
+#                           mismatch or a meta.json with no binary_sha256 (an unproven golden), and
+#                           exit 5 (distinct) when this host simply has no cached golden binary to
+#                           check against — a caller replaying two recordings can carry on.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
@@ -45,21 +53,6 @@ pinned() {  # pinned <asset> -> sha256 or empty
   awk -F'\t' -v v="$VERSION" -v a="$1" '$1==v && $2==a {print $3; exit}' "$DIGESTS"
 }
 
-if [ -n "$CHECK_GOLDEN" ]; then
-  meta_path="${CHECK_GOLDEN}/meta.json"
-  [ -s "$meta_path" ] || { echo "fetch-golden --check-golden: no meta.json at ${meta_path}" >&2; exit 3; }
-  want_bin_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_sha256") or "")' "$meta_path" 2>/dev/null)"
-  [ -n "$want_bin_sha" ] || { echo "fetch-golden --check-golden: ${meta_path} has no binary_sha256 (an unproven golden — re-record it)" >&2; exit 3; }
-  meta_ver="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version") or "")' "$meta_path" 2>/dev/null)"
-  [ -x "$BIN" ] || { echo "fetch-golden --check-golden: no cached binary at ${BIN} (version ${VERSION}; golden reports version ${meta_ver:-unknown}) — run fetch-golden.sh first" >&2; exit 3; }
-  have_bin_sha="$(binary_sha256 "$BIN")"
-  if [ "$have_bin_sha" != "$want_bin_sha" ]; then
-    echo "fetch-golden --check-golden: MISMATCH — ${meta_path} was recorded with binary_sha256 ${want_bin_sha} but the cached ${BIN} is ${have_bin_sha}" >&2
-    exit 3
-  fi
-  echo "ok  ${CHECK_GOLDEN}  binary_sha256 ${want_bin_sha:0:12} matches cached ${BIN}"
-  exit 0
-fi
 
 case "$(uname -sm)" in
   "Darwin arm64") TRIPLE=aarch64-apple-darwin; EXT=tar.gz ;;
@@ -73,17 +66,71 @@ OPENAPI="busbar-openapi-v${VERSION}.json"
 WANT="$(pinned "$ASSET")"; WANT_OPENAPI="$(pinned "$OPENAPI")"
 [ -n "$WANT" ] || { echo "fetch-golden: no pinned digest for ${VERSION} ${ASSET} in ${DIGESTS}" >&2; exit 2; }
 
-if [ "$CHECK" -eq 1 ]; then
-  [ -x "$BIN" ] || { echo "fetch-golden: cached binary absent: $BIN" >&2; exit 3; }
-  have="$(cat "${CACHE}/.asset-digest" 2>/dev/null || true)"
-  [ "$have" = "$WANT" ] || { echo "fetch-golden: cached asset digest ${have:-none} != pinned ${WANT}" >&2; exit 3; }
-  "$BIN" --version >/dev/null 2>&1 || { echo "fetch-golden: cached binary does not run" >&2; exit 3; }
-  echo "ok  ${BIN}  $("$BIN" --version 2>/dev/null | head -1)  asset ${ASSET} ${WANT:0:12}"
+WANT_BIN="$(pinned "busbar-${TRIPLE}")"
+
+# Re-verify what is ON DISK against a PINNED digest — every invocation, never a sidecar. `.asset-digest`
+# is a note this script wrote about a download that happened once; it says nothing about whether the
+# bytes still there are the released ones. Anything that can rewrite the cached binary (a stale
+# partial extract, a local build copied over it, a `cargo install` into the same path, tampering) can
+# rewrite a 65-byte note beside it just as easily, and a golden recorded from the wrong binary is a
+# golden that proves nothing about 1.5.5.
+#   preferred: the extracted binary's own pinned digest (golden-digests.tsv `busbar-<triple>`)
+#   fallback:  re-hash the cached TARBALL against its pinned digest (kept in the cache for exactly
+#              this reason) for a triple whose binary digest is not pinned yet
+# Prints the reason on stderr and returns non-zero; the caller decides whether that is fatal (--check)
+# or just means "re-download" (the fast path).
+verify_cached() {
+  [ -x "$BIN" ] || { echo "fetch-golden: cached binary absent: $BIN" >&2; return 3; }
+  local have
+  if [ -n "$WANT_BIN" ]; then
+    have="$(sha256_of "$BIN")"
+    [ "$have" = "$WANT_BIN" ] || { echo "fetch-golden: cached BINARY digest ${have} != pinned ${WANT_BIN} (${BIN})" >&2; return 3; }
+  elif [ -s "${CACHE}/${ASSET}" ]; then
+    have="$(sha256_of "${CACHE}/${ASSET}")"
+    [ "$have" = "$WANT" ] || { echo "fetch-golden: cached ASSET digest ${have} != pinned ${WANT} (${CACHE}/${ASSET})" >&2; return 3; }
+  else
+    echo "fetch-golden: no pinned digest for busbar-${TRIPLE} and no cached ${ASSET} to re-hash — the cached binary cannot be verified" >&2
+    return 3
+  fi
+  if [ -n "$WANT_OPENAPI" ]; then
+    [ -s "${CACHE}/openapi.json" ] || { echo "fetch-golden: cached openapi.json absent" >&2; return 3; }
+    have="$(sha256_of "${CACHE}/openapi.json")"
+    [ "$have" = "$WANT_OPENAPI" ] || { echo "fetch-golden: cached openapi.json digest ${have} != pinned ${WANT_OPENAPI}" >&2; return 3; }
+  fi
+  return 0
+}
+
+if [ -n "$CHECK_GOLDEN" ]; then
+  meta_path="${CHECK_GOLDEN}/meta.json"
+  [ -s "$meta_path" ] || { echo "fetch-golden --check-golden: no meta.json at ${meta_path}" >&2; exit 3; }
+  want_bin_sha="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("binary_sha256") or "")' "$meta_path" 2>/dev/null)"
+  [ -n "$want_bin_sha" ] || { echo "fetch-golden --check-golden: ${meta_path} has no binary_sha256 (an unproven golden — re-record it)" >&2; exit 3; }
+  meta_ver="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version") or "")' "$meta_path" 2>/dev/null)"
+  # Exit 5, distinct from the mismatch exit, for "this host has no cached golden binary": a caller
+  # replaying two recordings does not need the released artifact on disk, and must be able to tell
+  # "cannot check here" apart from "the golden was made by a DIFFERENT binary".
+  [ -x "$BIN" ] || { echo "fetch-golden --check-golden: no cached binary at ${BIN} (version ${VERSION}; golden reports version ${meta_ver:-unknown}) — run fetch-golden.sh first" >&2; exit 5; }
+  # The cached binary is only evidence if it is itself still the pinned one — re-hash it here too,
+  # otherwise this check would compare the golden's provenance against an unverified file.
+  verify_cached || exit 3
+  have_bin_sha="$(binary_sha256 "$BIN")"
+  if [ "$have_bin_sha" != "$want_bin_sha" ]; then
+    echo "fetch-golden --check-golden: MISMATCH — ${meta_path} was recorded with binary_sha256 ${want_bin_sha} but the cached ${BIN} is ${have_bin_sha}" >&2
+    exit 3
+  fi
+  echo "ok  ${CHECK_GOLDEN}  binary_sha256 ${want_bin_sha:0:12} matches cached ${BIN}"
   exit 0
 fi
 
-if [ -x "$BIN" ] && [ "$(cat "${CACHE}/.asset-digest" 2>/dev/null || true)" = "$WANT" ] && [ -s "${CACHE}/openapi.json" ]; then
-  echo "cached  ${BIN}  asset ${ASSET} ${WANT:0:12}"
+if [ "$CHECK" -eq 1 ]; then
+  verify_cached || exit 3
+  "$BIN" --version >/dev/null 2>&1 || { echo "fetch-golden: cached binary does not run" >&2; exit 3; }
+  echo "ok  ${BIN}  $("$BIN" --version 2>/dev/null | head -1)  binary $(sha256_of "$BIN" | cut -c1-12)  asset ${ASSET} ${WANT:0:12}"
+  exit 0
+fi
+
+if verify_cached 2>/dev/null; then
+  echo "cached  ${BIN}  binary $(sha256_of "$BIN" | cut -c1-12)  asset ${ASSET} ${WANT:0:12}"
   exit 0
 fi
 
@@ -122,7 +169,24 @@ found="$(find "$DL" -type f -name busbar -perm -u+x | head -1)"
 [ -n "$found" ] || { echo "fetch-golden: no 'busbar' in ${ASSET}" >&2; exit 4; }
 install -m 0755 "$found" "$BIN"
 declaw "$BIN"
+# Keep the verified tarball beside the binary: on a triple whose extracted-binary digest is not
+# pinned yet, re-hashing this file against its pinned digest is what lets the next invocation verify
+# the cache against a PIN rather than a sidecar note.
+install -m 0644 "${DL}/${ASSET}" "${CACHE}/${ASSET}"
 printf '%s\n' "$WANT" >"${CACHE}/.asset-digest"
 printf 'v%s\t%s\t%s\n' "$VERSION" "$ASSET" "$WANT" >"${CACHE}/.provenance"
+GOT_BIN="$(sha256_of "$BIN")"
+if [ -n "$WANT_BIN" ] && [ "$GOT_BIN" != "$WANT_BIN" ]; then
+  echo "fetch-golden: DIGEST MISMATCH for the extracted binary busbar-${TRIPLE}" >&2
+  echo "  expected ${WANT_BIN}" >&2
+  echo "  actual   ${GOT_BIN}" >&2
+  rm -f "$BIN"
+  exit 3
+fi
 "$BIN" --version >/dev/null 2>&1 || { echo "fetch-golden: installed binary does not run" >&2; exit 4; }
-echo "installed  ${BIN}  $("$BIN" --version 2>/dev/null | head -1)  asset ${ASSET} ${WANT:0:12}"
+if [ -z "$WANT_BIN" ]; then
+  echo "fetch-golden: NOTE — golden-digests.tsv has no row for the extracted binary on this host." >&2
+  echo "  Pin it so later runs verify the binary itself, not the tarball it came out of:" >&2
+  printf '  %s\tbusbar-%s\t%s\n' "$VERSION" "$TRIPLE" "$GOT_BIN" >&2
+fi
+echo "installed  ${BIN}  $("$BIN" --version 2>/dev/null | head -1)  binary ${GOT_BIN:0:12}  asset ${ASSET} ${WANT:0:12}"
