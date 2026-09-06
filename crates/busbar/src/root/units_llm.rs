@@ -432,9 +432,10 @@ impl LlmNode {
     /// and the size hint are the inner body's, forwarded. What the wrapper adds is a place to stand
     /// at the one instant this plane's money becomes a fact.
     ///
-    /// Three ways this hands the response straight back, and each is a case where there is nothing to
-    /// wait for. No book bound: the build carries no root ledger. No tap on the response: nothing was
-    /// ever going to fill one, so a wrapper would only ever drop empty.
+    /// Two ways this hands the response straight back, and each is a case where there is nothing to
+    /// wait for. No book bound: the build carries no root ledger and there is nowhere for a posting
+    /// to go. No tap on the response: nothing was ever going to fill one, so a wrapper would only
+    /// ever drop empty.
     fn attach_late_accrual(
         &self,
         response: Response,
