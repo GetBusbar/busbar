@@ -2326,12 +2326,61 @@ impl Drop for Occupied<'_> {
 #[cfg(feature = "root-admin")]
 fn refused_answer(ended: &busbar_kernel::teller::Ended) -> AdminAnswer {
     match ended {
-        busbar_kernel::teller::Ended::Settled { end, .. } => answer_for(end.outcome()),
+        busbar_kernel::teller::Ended::Settled { end, .. } => {
+            if is_credential_refusal(end.outcome()) {
+                return door_answer();
+            }
+            answer_for(end.outcome())
+        }
         // The node's own sweep took the hold first, which means this unit is not going to produce an
         // answer at all. That is the node being unable to serve the request, not the caller being
         // told no.
         busbar_kernel::teller::Ended::AlreadySettled => unavailable_answer(),
     }
+}
+
+/// Whether this ending is one about WHO is calling.
+///
+/// The two the authenticate step can reach: a credential the chain would not identify, and one it
+/// identified and the revocation set had taken away. Both are the same thing to the caller — the
+/// door — and both are answered with the door's own bytes.
+#[cfg(feature = "root-admin")]
+fn is_credential_refusal(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Refused(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
+            | Outcome::Failed(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
+    )
+}
+
+/// The status the previous release's administrative door answers an unidentified caller with.
+#[cfg(feature = "root-admin")]
+const DOOR_STATUS: u16 = 401;
+
+/// The frozen `code` that door writes.
+#[cfg(feature = "root-admin")]
+const DOOR_CODE: &str = "unauthorized";
+
+/// The frozen human message that door writes, character for character.
+#[cfg(feature = "root-admin")]
+const DOOR_MESSAGE: &str = "missing or invalid admin credential (Bearer or x-admin-token)";
+
+/// What the deployment's own door answers a caller it will not identify.
+///
+/// THE LOOP DECIDES THE PATH; THE BYTES ARE STILL THE DOOR'S — WRITTEN, NOT RE-RUN. A unit refused at
+/// Authenticate never reaches the operation, which is the whole point of refusing there, and the
+/// caller must not be able to tell that the path changed. The three values above are the previous
+/// release's, and the envelope around them is the plane's one source for the frozen shape, so the
+/// answer is composed from what is written down rather than obtained by asking the surface for it.
+///
+/// It is composed rather than obtained BECAUSE a refusal path may not execute anything. Sending the
+/// request back down to the mounted gate to be refused a second time runs a request on the path
+/// where nothing is supposed to run, and it makes the bytes depend on an invariant — that gate
+/// refusing a credential-less request — which nothing here can hold. A status check afterwards
+/// discards an answer; it cannot discard an execution that already happened.
+#[cfg(feature = "root-admin")]
+fn door_answer() -> AdminAnswer {
+    error_answer_with_message(DOOR_STATUS, DOOR_CODE, DOOR_MESSAGE)
 }
 
 /// The surface's answer for one ending.
@@ -2373,10 +2422,20 @@ fn answer_for(outcome: Outcome) -> AdminAnswer {
 /// place and not the other.
 #[cfg(feature = "root-admin")]
 fn error_answer(status: u16, code: &str) -> AdminAnswer {
+    error_answer_with_message(status, code, code)
+}
+
+/// The same envelope where the previous release writes prose rather than the code again.
+///
+/// Two of its ten errors carry a message this file cannot derive from the code alone — the door's,
+/// and the scope refusal's, which names the scope that would have sufficed. They are the same
+/// envelope from the same source; only the second string differs.
+#[cfg(feature = "root-admin")]
+fn error_answer_with_message(status: u16, code: &str, message: &str) -> AdminAnswer {
     AdminAnswer {
         status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: busbar_plane_admin::refusal::envelope_of(code, code).into_bytes(),
+        body: busbar_plane_admin::refusal::envelope_of(code, message).into_bytes(),
     }
 }
 
@@ -2736,6 +2795,45 @@ mod tests {
             at: 1_700_000_000,
             unit: a_fresh_unit(),
         }
+    }
+
+    /// THE DOOR'S BYTES, PINNED TO THE PUBLISHED RELEASE'S OWN.
+    ///
+    /// A refusal path may not execute anything, so these bytes are composed from what is written
+    /// down rather than obtained by sending the request back down to be refused a second time.
+    /// Composed bytes are only as good as what they were copied from, which is why the comparison is
+    /// against the recorded cell the oracle replays — the published binary's actual answer, read out
+    /// of the golden tree here — and not against a literal restated in this test.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_door_answers_the_published_releases_own_bytes() {
+        const GOLDEN: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testing/shadow-oracle/golden/1.5.5/cells/admin.ops__GetConfig__unauth.json"
+        ));
+        let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+        let answer = door_answer();
+
+        assert_eq!(
+            u64::from(answer.status),
+            cell["status"].as_u64().expect("the cell records a status"),
+            "the door's status is the recorded one"
+        );
+        // Serialised out of the cell's OWN recorded body: two keys, in the order the wire has them.
+        // Nothing in this comparison is a value this file chose.
+        let recorded =
+            serde_json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
+        assert_eq!(
+            answer.body, recorded,
+            "the door's bytes are the recorded answer's bytes"
+        );
+        assert_eq!(
+            answer.body.len().to_string(),
+            cell["headers"]["content-length"]
+                .as_str()
+                .expect("the cell records a content length"),
+            "the length the caller is told is the length the recorded answer had"
+        );
     }
 
     /// The round trip is the whole reason the answer travels as bytes: a status, a header value and
@@ -3499,8 +3597,11 @@ mod tests {
             "a credential on nobody's denylist reaches the operation"
         );
         let refused = answer_under_denylist(true);
-        assert_eq!(refused.status, 403);
-        assert_eq!(refused, error_answer(403, "forbidden"));
+        assert_eq!(
+            refused,
+            door_answer(),
+            "a credential the node took away is the door's answer, written and not re-run"
+        );
     }
 
     /// A binding holding one open unit, with the decode step run so the verb is resolved exactly as

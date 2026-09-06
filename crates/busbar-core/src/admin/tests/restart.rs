@@ -21,17 +21,21 @@ fn cannot_restart_when_no_channel_is_published() {
 /// The ask cell is one process-wide cell, so the tests that write it take turns. Without this they
 /// would be testing each other's writes — which is the very fault the keyed ask exists to stop, and
 /// not something to reproduce in the harness that proves it.
-/// An async-aware lock, because two of these tests take their turn across an await: a std guard
-/// held over an await point is the lint's hazard (a parked task holding a blocking lock), and the
-/// tokio guard is the shape that is allowed to be held there.
-static ASK_CELL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static ASK_CELL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-fn one_at_a_time() -> tokio::sync::MutexGuard<'static, ()> {
-    ASK_CELL.blocking_lock()
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    ASK_CELL.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-async fn one_at_a_time_async() -> tokio::sync::MutexGuard<'static, ()> {
-    ASK_CELL.lock().await
+/// Drive one future to completion on a runtime of this test's own.
+///
+/// Entered here rather than wrapping the whole test, because the turn a test takes at the shared ask
+/// cell is an ordinary lock and must not be held across an await.
+fn on_a_runtime<F: std::future::Future>(f: F) -> F::Output {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .expect("a current-thread runtime builds")
+        .block_on(f)
 }
 
 #[test]
@@ -59,13 +63,14 @@ fn a_drain_asked_for_is_released_by_the_exit_path_exactly_once() {
 /// shutdown raced the 202 the restarting caller had not been sent yet.
 ///
 /// Driven on the runtime because the attribution is ambient to the task the operation's body runs
-/// on, which is the same place the real seam puts it.
-#[tokio::test]
-async fn a_drain_is_released_only_by_the_unit_that_asked_for_it() {
-    let _turn = one_at_a_time_async().await;
+/// on, which is the same place the real seam puts it. The runtime is entered rather than wrapped
+/// around the test, so the turn this test takes at the shared cell is not held across an await.
+#[test]
+fn a_drain_is_released_only_by_the_unit_that_asked_for_it() {
+    let _turn = one_at_a_time();
     drain_released_at_exit();
     // Unit seven asks, from inside its own scope, exactly as an operation's body does.
-    as_unit(7, async { begin_drain() }).await;
+    on_a_runtime(as_unit(7, async { begin_drain() }));
     assert!(
         !release_asked_drain(9),
         "a unit that asked for nothing releases nothing, however it is ordered against one that did"
@@ -87,9 +92,9 @@ async fn a_drain_is_released_only_by_the_unit_that_asked_for_it() {
 /// A drain asked for OUTSIDE any unit scope is attributed to the reserved unkeyed marker rather than
 /// lost. That is the posture of a composition with an exit path but no loop behind it, and losing
 /// the ask there would be a restart that answered 202 and never restarted.
-#[tokio::test]
-async fn an_ask_made_outside_a_unit_scope_is_the_unkeyed_one() {
-    let _turn = one_at_a_time_async().await;
+#[test]
+fn an_ask_made_outside_a_unit_scope_is_the_unkeyed_one() {
+    let _turn = one_at_a_time();
     drain_released_at_exit();
     begin_drain();
     assert!(

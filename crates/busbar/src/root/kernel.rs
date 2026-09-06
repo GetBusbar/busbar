@@ -496,6 +496,21 @@ impl ProductionUnits {
         self
     }
 
+    /// Put the deployment's real chain in front of the authenticate step.
+    ///
+    /// Separate from the constructors for the same reason the bindings are: the chain a node runs is
+    /// resolved from live governance state, which does not exist when the units are assembled. What
+    /// it replaces is the OPEN door the assembly starts from — and that door is why this exists.
+    /// With it, the authenticate step admitted every caller anonymously and the only thing deciding
+    /// was the surface mounted underneath, so a credential the node had revoked was admitted at
+    /// Authenticate and refused, if at all, several steps later by something that had never heard of
+    /// the revocation.
+    #[must_use]
+    pub fn with_auth_chain(mut self, chain: AuthChain) -> Self {
+        self.auth = Auth::new(chain);
+        self
+    }
+
     /// The scope an admin credential carries.
     ///
     /// A deployment that mounts the administrative listener behind its own credential grants the
