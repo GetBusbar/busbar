@@ -32,7 +32,17 @@ Outcome controls (the recorder sets them per cell):
   body    {"stream": true} (openai/anthropic/cohere) or the *stream* path (gemini/bedrock)
                                     -> a fixed SSE / streamed sequence in that dialect
 
-Usage: mock-upstream.py <port> [marker]
+Usage: mock-upstream.py <port> [marker] [control-file]
+
+<control-file> is the third positional every caller in this tree actually passes (record.sh and the
+script cells under scripts/): the path of a file the RECORDER writes between requests to select the
+outcome for the next cell. It carries either a bare verb (down | 429 | 5xx | 401 | slow | cut,
+applying to every model) or JSON {"<model>": "<verb>", ...} with "*" as the fallback — the same
+vocabulary as the X-Oracle-Upstream header above, but chosen OUT OF BAND so busbar's own request is
+byte-identical to the healthy cell it is being compared against. Absent file means a healthy
+upstream; the recorder removes it again once the cell is captured. A FOREIGN mock answering on this
+port would ignore the file entirely and serve every outage cell healthy, which is why record.sh
+proves the port's owner is its own pid before it records anything.
 
 Egress capture (opt-in, for proving what busbar actually SENT upstream — not just what came back):
   When the environment variable ORACLE_MOCK_CAPTURE_DIR is set, every handled request (whatever the
