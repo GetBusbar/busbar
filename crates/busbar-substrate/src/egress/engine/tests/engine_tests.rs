@@ -301,7 +301,7 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
             .unwrap();
     });
 
-    // A connector wired to the scripted proxy (installed_proxy() is process-global; tests wire
+    // A connector wired to the scripted proxy (tunnel::installed_proxy() is process-global; tests wire
     // the config directly so parallel tests never race an env var or the OnceLock).
     let config = tunnel::test_config(
         &addr.ip().to_string(),
@@ -350,14 +350,40 @@ async fn connect_tunnel_end_to_end_through_scripted_proxy() {
     );
 }
 
-/// `install_proxy_tunnel_if_configured` is Ok in a clean environment (the common arm every boot
-/// takes). Env-var permutations are covered by the direct resolve/select tests above — mutating
-/// process env in a parallel test binary is a race, so none of these tests do it.
+/// The boot install agrees with the pure resolve over the SAME environment, in whichever arm this
+/// run happens to be in. Env-var permutations are covered by the direct resolve/select tests above —
+/// mutating process env in a parallel test binary is a race, so none of these tests do it.
+///
+/// Both arms assert. The clean arm is the one every boot takes: install is Ok and nothing is
+/// installed, because a deployment with no proxy configured must not acquire one. A run under a
+/// developer's or a CI runner's proxy variables takes the other arm, and there install must answer
+/// exactly what resolving those same values answers — which is what makes a run in a dirty
+/// environment evidence rather than a test that quietly did nothing.
 #[test]
-fn install_is_ok_without_proxy_env() {
+fn install_agrees_with_the_resolve_over_the_same_environment() {
     let env = tunnel::ProxyEnvValuesForTests::from_process_env();
-    if env.https.is_none() && env.http.is_none() && env.all.is_none() {
-        assert!(install_proxy_tunnel_if_configured().is_ok());
+    let clean = env.https.is_none() && env.http.is_none() && env.all.is_none();
+    let resolved = tunnel::resolve_config_for_tests(&env);
+    let installed = install_proxy_tunnel_if_configured();
+    assert_eq!(
+        installed.is_ok(),
+        resolved.is_ok(),
+        "the boot install and the pure resolve disagreed over the same environment"
+    );
+    if clean {
+        assert!(
+            installed.is_ok(),
+            "a deployment with no proxy variables must boot"
+        );
+        assert!(
+            tunnel::installed_proxy().is_none(),
+            "a deployment with no proxy variables must not acquire one"
+        );
+    } else {
+        assert!(
+            resolved.is_err() || tunnel::installed_proxy().is_some() == resolved.unwrap().is_some(),
+            "the environment names a proxy and the installed decision does not match the resolve"
+        );
     }
 }
 
