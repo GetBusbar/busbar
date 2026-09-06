@@ -72,6 +72,7 @@
 //! to the step file it is delegated to; what this file owns is the binding, the interner it lends,
 //! and the in-flight table the unit's cell lives in.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Instant;
@@ -84,7 +85,7 @@ use busbar_caps::{
     Encode, Meter, OpClassId, OriginKind, Outcome, PrincipalId, ReasonCode, Refusal, Route,
     TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_contract::{Registration, UnitKey};
+use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_llm::unit::walk::{Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
@@ -101,6 +102,52 @@ const TRANSPORT_CHAIN: [&str; 1] = ["http"];
 // The node
 // ---------------------------------------------------------------------------------------------
 
+/// THE NAMES THIS NODE HAS ALREADY RESOLVED, in front of the image's one interner.
+///
+/// The interner is a single mutex for the whole process — every plane, every node, every thread —
+/// and the answer it gives for a given name never changes, because a leaked name is never unleaked.
+/// So a step that asks it per request, per candidate lane, is queueing the whole image behind one
+/// lock to be told something that was settled the first time the name was seen. This table is that
+/// first time, kept: the interner is consulted once per distinct configured lane name for the life
+/// of the node, and every request after reads the map.
+///
+/// Bounded by the number of configured lanes, because that is what its keys are.
+struct LaneNames {
+    interner: Arc<Mutex<Registration>>,
+    resolved: HashMap<String, LaneId>,
+    consulted: u64,
+}
+
+impl LaneNames {
+    /// The id for one lane name, reaching the interner only for a name this node has not resolved.
+    ///
+    /// `None` where the image's vocabulary does not hold the name and cannot take it — the freeze
+    /// is done, or the ceiling is reached — which is a refusal to route on that name rather than an
+    /// error to recover from, and is not cached: a name the vocabulary refuses today is a name it
+    /// may hold tomorrow, and nothing was leaked to remember.
+    fn resolve(&mut self, name: &str) -> Option<LaneId> {
+        if let Some(lane) = self.resolved.get(name) {
+            return Some(*lane);
+        }
+        self.consulted += 1;
+        let lane = self
+            .interner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .lane(name)?;
+        self.resolved.insert(name.to_owned(), lane);
+        Some(lane)
+    }
+
+    /// How many times the image's interner has been reached through this table.
+    ///
+    /// One per distinct lane name for the life of the node, which is the property the table exists
+    /// for — and a number a test can read, rather than a claim about a lock.
+    fn consulted(&self) -> u64 {
+        self.consulted
+    }
+}
+
 /// The long-lived half: the kernel, the in-flight table, the gauge, the counts and the interner.
 ///
 /// One per process. The per-request half is [`LlmUnit`], which borrows this and is thrown away with
@@ -116,6 +163,9 @@ pub struct LlmNode {
     /// once. Leaking is the composition root's decision and this is where it is made: idempotent,
     /// bounded by the number of configured lanes, and therefore legal on a request path.
     lanes: Arc<Mutex<Registration>>,
+    /// The names this node has already put through that interner, so the request path does not put
+    /// them through it again.
+    lane_names: Mutex<LaneNames>,
     next_key: AtomicU64,
 }
 
@@ -135,6 +185,7 @@ impl LlmNode {
     /// Compose the node every LLM request is answered by.
     #[must_use]
     pub fn new() -> Self {
+        let lanes = Arc::new(Mutex::new(crate::root::kernel::new_registration()));
         LlmNode {
             kernel: crate::root::kernel::new_kernel(),
             // The data listener already carries the operator-configured inbound-concurrency layer,
@@ -149,7 +200,12 @@ impl LlmNode {
             gauge: busbar_kernel::slice::ConcurrencyGauge::new(),
             canary: busbar_caps::Canary::new(),
             door: crate::root::kernel::AdmissionDoor,
-            lanes: Arc::new(Mutex::new(crate::root::kernel::new_registration())),
+            lanes: Arc::clone(&lanes),
+            lane_names: Mutex::new(LaneNames {
+                interner: lanes,
+                resolved: HashMap::new(),
+                consulted: 0,
+            }),
             next_key: AtomicU64::new(1),
         }
     }
@@ -504,9 +560,9 @@ impl Units for LlmUnit<'_> {
         // priced axis is written in. Sealing takes the trust token the loop lends this step, so no
         // other step can seal a destination.
         let destinations: Vec<VerifiedDestination> = {
-            let mut reg = self
+            let mut names = self
                 .node
-                .lanes
+                .lane_names
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             self.walk
@@ -515,7 +571,8 @@ impl Units for LlmUnit<'_> {
                 // A lane the frozen vocabulary does not hold is not a candidate this node can
                 // route to, so it is left out rather than sealed under a name it cannot name.
                 .filter_map(|name| {
-                    reg.lane(name)
+                    names
+                        .resolve(name)
                         .map(|lane| VerifiedDestination::seal(trust, lane))
                 })
                 .collect()
@@ -2015,5 +2072,38 @@ mod tests {
         let first = first.expect("an unfrozen image interns a configured lane");
         let again = again.expect("a repeated lane is the same lane");
         assert!(std::ptr::eq(first.as_str(), again.as_str()));
+    }
+
+    /// AND THE INTERNER IS REACHED ONCE PER NAME, not once per request.
+    ///
+    /// The interner is one mutex for the whole image, and the Verify step resolves a name per
+    /// candidate lane, per request — so a node that asks it every time makes every plane in the
+    /// process queue behind one lock for an answer that was settled the first time. The count is
+    /// per distinct name and does not grow with how often the name is asked for.
+    #[test]
+    fn a_lane_name_reaches_the_interner_once_however_often_it_is_resolved() {
+        let node = LlmNode::new();
+        let mut names = node
+            .lane_names
+            .lock()
+            .expect("the node's lane table is never poisoned");
+
+        let first = names
+            .resolve(LANE)
+            .expect("an unfrozen image interns a lane");
+        for _ in 0..64 {
+            let again = names
+                .resolve(LANE)
+                .expect("a repeated lane is the same lane");
+            assert!(std::ptr::eq(first.as_str(), again.as_str()));
+        }
+        assert_eq!(names.consulted(), 1);
+
+        let _ = names.resolve("a-second-configured-lane");
+        assert_eq!(
+            names.consulted(),
+            2,
+            "a name the node has not resolved still reaches the interner, exactly once"
+        );
     }
 }
