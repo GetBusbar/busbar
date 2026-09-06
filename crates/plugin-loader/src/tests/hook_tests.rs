@@ -688,6 +688,64 @@ async fn dlopen_a_hook_that_cannot_answer_is_an_err_not_an_abstain() {
     );
 }
 
+/// Saturate one loaded hook with wedged calls and drive an UNRELATED one.
+///
+/// Every call is fired with a short caller budget, so each future is abandoned while its blocking
+/// thread sleeps on inside the plugin — which is exactly how a wedged plugin holds slots: the
+/// permit is released when the closure returns, not when the caller gives up. Returns the wedged
+/// policy beside its in-flight handles, so the caller can drive it too.
+async fn wedge_one_hook(
+    sleep_ms: u64,
+) -> (Arc<dyn RoutingPolicy>, Vec<tokio::task::JoinHandle<()>>) {
+    let wedged = load(&format!(r#"{{"order": [0], "sleep_ms": {sleep_ms}}}"#));
+    let mut inflight = Vec::new();
+    for _ in 0..MAX_INFLIGHT_HOOK_CALLS {
+        let wedged = wedged.clone();
+        inflight.push(tokio::spawn(async move {
+            let _ = wedged
+                .decide(
+                    &req_with_prompt("x"),
+                    &[cand(0)],
+                    &ctx(),
+                    Duration::from_millis(50),
+                )
+                .await;
+        }));
+    }
+    // Let every call reach the plugin and take its slot.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    (wedged, inflight)
+}
+
+/// The concurrency cap is per LOADED HOOK, so a wedged plugin cannot starve an unrelated one.
+///
+/// One hook is saturated with as many wedged calls as the cap admits. A second, healthy hook —
+/// a different loaded plugin, sharing nothing with the first but the blocking pool — must still
+/// answer, and answer promptly. A cap shared by every hook in the process makes the healthy
+/// hook's call queue behind the wedged plugin's slots and come back as its `on_error`, which is
+/// the isolation the cap is documented to provide being provided to nobody.
+#[tokio::test]
+async fn a_wedged_hook_does_not_starve_an_unrelated_hook() {
+    let Some(_) = hook_plugin_path() else {
+        return;
+    };
+    let healthy = load("{}");
+    let _wedged = wedge_one_hook(2_000).await;
+
+    let started = std::time::Instant::now();
+    let status = healthy.status(Duration::from_secs(1)).await;
+    assert!(
+        status.is_some(),
+        "a hook with every one of its own slots free must answer while a DIFFERENT hook is \
+         wedged; it came back as the failure disposition instead, so the two hooks are sharing \
+         one cap"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(500),
+        "the unrelated hook answered only after waiting on the wedged plugin's slots"
+    );
+}
+
 /// A `spawn_blocking` task runs to completion, so a timed-out hook call abandons the future but
 /// NOT the thread. Uncapped, a wedged plugin would leak one blocking thread per call until
 /// Tokio's 512-thread pool is exhausted and every unrelated `spawn_blocking` in the process —
@@ -695,18 +753,13 @@ async fn dlopen_a_hook_that_cannot_answer_is_an_err_not_an_abstain() {
 ///
 /// The cap must therefore (a) sit far below the pool, and (b) make a saturated plugin fail on
 /// the caller's own deadline rather than wait for a slot indefinitely.
-/// `#[ignore]`: this test's SUBJECT is `HOOK_CALL_SLOTS` (`hook.rs`), a crate-global
-/// `Semaphore::const_new(MAX_INFLIGHT_HOOK_CALLS)` acquired by every hook call
-/// (`DlopenPolicy::call`). Draining all of it for the test's duration makes any
-/// concurrently-running sibling hook test in this binary (the transform/status/decide tests,
-/// `dlopen_plugin_panic_is_fail_closed_err`, …) take the caller-deadline timeout branch and fail
-/// on a fail-closed `Err`/`None` it did not expect — for a reason unrelated to what it tests. The
-/// pool being process-global is load-bearing production behaviour (it protects Tokio's shared
-/// blocking pool across every loaded plugin), not something a test can inject around without
-/// weakening that guarantee. Run explicitly and alone to reproduce:
-/// `cargo test -p busbar-plugin-loader -- --ignored --test-threads=1 hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline`.
+///
+/// The saturation is the real thing rather than a semaphore drained from the test: the wedged
+/// plugin's own calls hold its slots, on its own blocking threads, which is the situation the cap
+/// is for. It also needs no `#[ignore]` any more — the slots the wedged hook holds are ITS slots,
+/// so a sibling test driving a different loaded hook is unaffected. That the test can now run
+/// beside its siblings IS the isolation the cap promises.
 #[tokio::test]
-#[ignore = "drains the global hook-call semaphore; run alone"]
 async fn hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline() {
     // The cap must leave most of Tokio's 512-thread blocking pool to the rest of the process.
     const _: () = assert!(MAX_INFLIGHT_HOOK_CALLS < 256);
@@ -714,13 +767,8 @@ async fn hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline() {
     let Some(_) = hook_plugin_path() else {
         return;
     };
-    let policy = load("{}");
-
-    // Occupy every slot, standing in for that many wedged plugin threads.
-    let held = HOOK_CALL_SLOTS
-        .acquire_many(MAX_INFLIGHT_HOOK_CALLS as u32)
-        .await
-        .expect("slots are open");
+    // Every one of this policy's slots is held by a call still inside the plugin.
+    let (policy, inflight) = wedge_one_hook(1_500).await;
 
     let start = std::time::Instant::now();
     assert!(
@@ -732,8 +780,13 @@ async fn hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline() {
         "the wait must be bounded by the caller's budget, not by the wedged plugin"
     );
 
-    // Releasing the slots restores service — the cap is backpressure, not a latch.
-    drop(held);
+    // The wedged calls returning frees the slots, and service resumes — the cap is backpressure,
+    // not a latch.
+    for h in inflight {
+        let _ = h.await;
+    }
+    // The budget here is generous enough to outlast the wedged calls still on their threads: the
+    // point is that a slot comes back at all, not how fast.
     assert!(
         policy.status(Duration::from_secs(5)).await.is_some(),
         "a freed slot must let the next call through"
