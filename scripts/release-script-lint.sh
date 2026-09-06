@@ -59,24 +59,60 @@ hdr()  { printf '\n== %s ==\n' "$1"; }
 
 # ── THE SCANNER (one copy; the self-test drives THIS function, never a duplicate) ─────────────────
 # Emits `file:lineno: <line>` for every backgrounded server launch that fails to redirect stdout.
-# A backgrounded launch = a non-comment line ending in a single `&` (not `&&`). A "server" = a line
-# mentioning python / serve_forever / http.server. stdout is considered redirected if, AFTER removing
-# stderr-only redirects (`2>&1`, `2>FILE`, `2>>FILE`), any `>` remains (`>FILE`, `1>FILE`, `&>FILE`).
+# A backgrounded launch = a non-comment line whose CODE ends in a single `&` (not `&&`). A "server"
+# = a line mentioning python / serve_forever / http.server. stdout is considered redirected if,
+# AFTER removing stderr-only redirects (`2>&1`, `2>FILE`, `2>>FILE`), any `>` remains (`>`, `1>`,
+# `&>`).
+#
+# "THE CODE ENDS IN `&`", NOT "THE LINE ENDS IN `&`". This test used to be `$0 ~ /&[[:space:]]*$/`
+# against the RAW line, so the entire GATE-HANG rule — the one that exists because a backgrounded
+# `python3 "$script" &` wedged CI for 2h31m — was defeated by a trailing comment:
+#
+#     python3 "$script" &            # start the plugin registry
+#
+# is the exact antipattern, and the scanner walked past it because the line ends in `y`. Worse in
+# the other direction: a comment could FABRICATE a redirect, because has_stdout_redirect() also read
+# the raw line, so
+#
+#     python3 "$script" &            # NB: caller does >/dev/null
+#
+# was scored as redirected. Both are ordinary things to write, neither is flagged by anything else,
+# and a lint that a comment can switch off is a lint nobody can rely on. So the comment is removed
+# FIRST, quote-aware (a `#` inside '…' or "…" is data — `python3 -c 'x = "#!"' &` is a real launch),
+# and every subsequent test reads only the code.
 scan_backgrounded_servers() {
   awk '
+    # decomment(s) — drop a trailing `#` comment, honouring single and double quotes. A `#` only
+    # starts a comment at the start of a word (start of line, or after whitespace, `;`, `&`, `|`,
+    # `(`), which is the same rule the shell itself applies; `x=a#b` and `${v#p}` are not comments.
+    function decomment(s,   i, c, q, prev, out) {
+      q = ""; out = ""; prev = ""
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (q != "") {
+          if (c == q && !(q == "\"" && prev == "\\")) q = ""
+          out = out c; prev = c; continue
+        }
+        if (c == "\047" || c == "\"") { q = c; out = out c; prev = c; continue }
+        if (c == "#" && (out == "" || prev ~ /[[:space:];&|(]/)) break
+        out = out c; prev = c
+      }
+      return out
+    }
     function has_stdout_redirect(s,   t) {
       t = s
       gsub(/2>&[0-9]/, "", t)               # strip stderr-dup (2>&1)
       gsub(/2>>?[^[:space:]&]*/, "", t)     # strip stderr-to-file (2>FILE, 2>>FILE)
       return (t ~ />/)                       # any surviving > redirects stdout (>, 1>, &>)
     }
-    /^[[:space:]]*#/ { next }                                  # whole-line comment: prose, skip
     {
-      is_bg = ($0 ~ /&[[:space:]]*$/) && ($0 !~ /&&[[:space:]]*$/)
+      code = decomment($0)
+      if (code ~ /^[[:space:]]*$/) next                         # whole-line comment / blank: prose
+      is_bg = (code ~ /&[[:space:]]*$/) && (code !~ /&&[[:space:]]*$/)
       if (!is_bg) next
-      launches = ($0 ~ /python3?[[:space:]]/) || ($0 ~ /serve_forever/) || ($0 ~ /http\.server/)
+      launches = (code ~ /python3?[[:space:]]/) || (code ~ /serve_forever/) || (code ~ /http\.server/)
       if (!launches) next
-      if (has_stdout_redirect($0)) next
+      if (has_stdout_redirect(code)) next
       disp = $0; sub(/^[[:space:]]+/, "", disp)
       printf "%s:%d: %s\n", FILENAME, FNR, disp
     }
@@ -100,35 +136,70 @@ scan_lost_registrations() {
       function closes(s, n) { n = gsub(/\}/, "}", s); return n }
 
       # ── pass 1: which functions append to a non-local global array? ──
+      #
+      # THE HEADER MATCH USED TO BE THE HOLE. It required `name() {` with the brace LAST on the
+      # line, which recognises exactly one of bash three definition forms:
+      #
+      #     new_tmpdir() {                      recognised
+      #     function new_tmpdir {               NOT recognised — bash keyword form, no parens
+      #     function new_tmpdir() {             NOT recognised
+      #     new_tmpdir() { TMP_DIRS+=("$d"); }  NOT recognised — one-liner, brace is not last
+      #
+      # A helper written in any of the last three registered its cleanup into a global array, was
+      # captured with `x="$(new_tmpdir)"` two lines later, and the lint said nothing — the leak the
+      # rule exists to catch, invisible to it, for no reason but where the author put a brace. The
+      # one-liner form was the worse of the two: the old code `next`ed on a header line WITHOUT
+      # reading its body, so even had the header matched, a one-line registrar body was skipped.
+      #
+      # So: recognise the header as a PREFIX, push, and keep parsing the REST of the same line as
+      # body. Depth accounting follows suit — the definition brace is counted once, here, and the
+      # remainder is measured normally, so `f() { …; }` opens and closes on its own line and pops
+      # only AFTER its appends have been attributed.
+      function fn_header_name(s,   t, nm) {
+        t = s
+        # keyword form: `function NAME [()] {`
+        if (t ~ /^[[:space:]]*function[[:space:]]+[A-Za-z_][A-Za-z0-9_.-]*[[:space:]]*(\(\)[[:space:]]*)?\{/) {
+          nm = t; sub(/^[[:space:]]*function[[:space:]]+/, "", nm)
+          sub(/[[:space:]]*(\(\))?[[:space:]]*\{.*$/, "", nm)
+          return nm
+        }
+        # POSIX form: `NAME() {`
+        if (t ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_.-]*[[:space:]]*\(\)[[:space:]]*\{/) {
+          nm = t; sub(/^[[:space:]]*/, "", nm); sub(/[[:space:]]*\(\).*$/, "", nm)
+          return nm
+        }
+        return ""
+      }
+      function fn_header_rest(s,   t) { t = s; sub(/^[^{]*\{/, "", t); return t }
+
       NR == FNR {
         line = strip($0)
-        if (line ~ /^[[:space:]]*(function[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(\)[[:space:]]*\{[[:space:]]*$/) {
-          nm = line
-          sub(/^[[:space:]]*(function[[:space:]]+)?/, "", nm)
-          sub(/[[:space:]]*\(\).*$/, "", nm)
+        nm = fn_header_name(line)
+        if (nm != "") {
           sp++; stack[sp] = nm; sdepth[sp] = depth
-          depth += opens(line) - closes(line)
-          next
+          depth += 1                 # the definition brace, consumed here
+          line = fn_header_rest(line)  # the REST of the line is body — a one-liner lives here
+        }
+        if (sp > 0) {
+          # every `local a b c=1` on this line, wherever it sits (`local x; x=...` is idiomatic here)
+          rest = line
+          while (match(rest, /(^|[;&|[:space:]])local[[:space:]]+[^;#]*/)) {
+            decl = substr(rest, RSTART, RLENGTH)
+            rest = substr(rest, RSTART + RLENGTH)
+            sub(/^[^l]*local[[:space:]]+/, "", decl)
+            n = split(decl, toks, /[[:space:]]+/)
+            for (i = 1; i <= n; i++) { sub(/=.*$/, "", toks[i]); if (toks[i] != "") loc[stack[sp] SUBSEP toks[i]] = 1 }
+          }
+          rest = line
+          while (match(rest, /[A-Za-z_][A-Za-z0-9_]*\+=\(/)) {
+            g = substr(rest, RSTART, RLENGTH - 3)
+            rest = substr(rest, RSTART + RLENGTH)
+            # attribute the append to every enclosing function that has not localised the name
+            for (j = sp; j >= 1; j--) if (!((stack[j] SUBSEP g) in loc)) reg[stack[j]] = reg[stack[j]] " " g
+          }
         }
         depth += opens(line) - closes(line)
         while (sp > 0 && depth <= sdepth[sp]) sp--
-        if (sp == 0) next
-        # every `local a b c=1` on this line, wherever it sits (`local x; x=...` is idiomatic here)
-        rest = line
-        while (match(rest, /(^|[;&|[:space:]])local[[:space:]]+[^;#]*/)) {
-          decl = substr(rest, RSTART, RLENGTH)
-          rest = substr(rest, RSTART + RLENGTH)
-          sub(/^[^l]*local[[:space:]]+/, "", decl)
-          n = split(decl, toks, /[[:space:]]+/)
-          for (i = 1; i <= n; i++) { sub(/=.*$/, "", toks[i]); if (toks[i] != "") loc[stack[sp] SUBSEP toks[i]] = 1 }
-        }
-        rest = line
-        while (match(rest, /[A-Za-z_][A-Za-z0-9_]*\+=\(/)) {
-          g = substr(rest, RSTART, RLENGTH - 3)
-          rest = substr(rest, RSTART + RLENGTH)
-          # attribute the append to every enclosing function that has not localised the name
-          for (j = sp; j >= 1; j--) if (!((stack[j] SUBSEP g) in loc)) reg[stack[j]] = reg[stack[j]] " " g
-        }
         next
       }
 
@@ -190,13 +261,26 @@ start_mock() {
 }
 serve() { python3 -m http.server "$port" &
 }
+start_commented() {
+  python3 "$script" &            # start the plugin registry
+}
+start_fake_redirect() {
+  python3 "$script" &            # NB: the caller does >/dev/null on this one
+}
+start_quoted_hash() {
+  python3 -c 'print("#")' &
+}
 RED
   local red_hits; red_hits="$(scan_backgrounded_servers "${tmp}/red.sh" || true)"
   local red_n; red_n="$(printf '%s' "$red_hits" | grep -c ':' || true)"
-  if [ "$red_n" -eq 3 ]; then
-    pass=$((pass+1)); note "RED: flagged all 3 backgrounded-server-without-stdout-redirect lines"
+  # 6: the three original antipattern shapes, plus the three a TRAILING COMMENT used to hide —
+  # a plain trailing comment (the line no longer ends in `&`), a comment that merely MENTIONS a
+  # redirect (has_stdout_redirect() used to read it and score the line as safe), and a `#` that is
+  # inside quotes and is therefore code, not a comment, and must not truncate the line.
+  if [ "$red_n" -eq 6 ]; then
+    pass=$((pass+1)); note "RED: flagged all 6 backgrounded-server-without-stdout-redirect lines (incl. the 3 a trailing comment used to hide)"
   else
-    fail=1; note "RED FAILED: expected 3 flags, got ${red_n}:"; printf '%s\n' "$red_hits"
+    fail=1; note "RED FAILED: expected 6 flags, got ${red_n}:"; printf '%s\n' "$red_hits"
   fi
 
   # GREEN fixtures — the fix (stdout redirected) plus benign backgrounds the scanner must NOT flag.
@@ -215,7 +299,11 @@ boot_busbar() {
 }
 run_pair() { true && sleep 1 &            # backgrounded, but not a server
 }
+start_ok_commented() {
+  python3 "$script" >/dev/null 2>&1 &     # redirected AND commented: still fine
+}
 # python3 "$script" &                     # a comment that merely SHOWS the antipattern: not code
+   # python3 "$script" &                  # ...indented, likewise
 GREEN
   local green_hits; green_hits="$(scan_backgrounded_servers "${tmp}/green.sh" || true)"
   if [ -z "$green_hits" ]; then
@@ -239,20 +327,38 @@ start_mock() {
   python3 "$s" >/dev/null 2>&1 &
   local pid=$!; BG_PIDS+=("$pid"); echo "$pid"
 }
+function new_keyword_tmpdir {
+  local d; d="$(mktemp -d)"
+  TMP_DIRS+=("$d"); echo "$d"
+}
+function new_keyword_paren_tmpdir() {
+  local d; d="$(mktemp -d)"
+  TMP_DIRS+=("$d"); echo "$d"
+}
+new_oneline_tmpdir() { local d; d="$(mktemp -d)"; TMP_DIRS+=("$d"); echo "$d"; }
 run_phase() {
   local work; work="$(new_tmpdir)"
   local out1 out2; out1="$(new_tmpdir)"; out2="$(new_tmpdir)"
   local mock; mock="$(start_mock 8080)"
   local legacy; legacy=`start_mock 8081`
+  local kw; kw="$(new_keyword_tmpdir)"
+  local kwp; kwp="$(new_keyword_paren_tmpdir)"
+  local one; one="$(new_oneline_tmpdir)"
 }
 RED3
   local red3_hits; red3_hits="$(scan_lost_registrations "${tmp}/red3.sh" || true)"
   local red3_n; red3_n="$(printf '%s' "$red3_hits" | grep -c ':' || true)"
-  # 4 lines carry a capture (the `out1/out2` line carries two, and the scanner reports per LINE)
-  if [ "$red3_n" -eq 4 ]; then
-    pass=$((pass+1)); note "RED3: flagged all 4 lines that capture a cleanup-registering helper"
+  # 7 lines carry a capture (the `out1/out2` line carries two, and the scanner reports per LINE).
+  #
+  # The last three are the ones the old header match could not see at all. It required `name() {`
+  # with the brace LAST on the line, so bash's keyword form (`function new_keyword_tmpdir {`), its
+  # parenthesised keyword form, and any ONE-LINE registrar were all invisible: their appends were
+  # never attributed to a function, so no capture of them was ever a finding. A cleanup helper
+  # written in any of those three shapes leaked exactly as the 1.5.2 gate's did, silently.
+  if [ "$red3_n" -eq 7 ]; then
+    pass=$((pass+1)); note "RED3: flagged all 7 lines that capture a cleanup-registering helper (incl. keyword-form and one-line definitions)"
   else
-    fail=1; note "RED3 FAILED: expected 4 flags, got ${red3_n}:"; printf '%s\n' "$red3_hits"
+    fail=1; note "RED3 FAILED: expected 7 flags, got ${red3_n}:"; printf '%s\n' "$red3_hits"
   fi
 
   # GREEN — the fix shape, plus the three things the scanner must NEVER flag: a helper whose array is
@@ -274,11 +380,24 @@ collect_files() {          # a LOCAL array: per-call scratch, nothing to clean u
   while IFS= read -r f; do files+=("$f"); done < <(find . -name '*.rs')
   printf '%s\n' "${files[@]}"
 }
+function keyword_scratch {   # keyword form, LOCAL array: still nothing to clean up
+  local acc=()
+  acc+=("x")
+  printf '%s\n' "${acc[@]}"
+}
+oneline_scratch() { local acc=(); acc+=("x"); printf '%s\n' "${acc[@]}"; }
+function new_keyword_tmpdir {   # keyword form, FIXED shape: sets a global, caller reads it
+  NEW_TMPDIR="$(mktemp -d)"
+  TMP_DIRS+=("$NEW_TMPDIR")
+}
 run_phase() {
   local work; new_tmpdir; work="$NEW_TMPDIR"
   new_tmpdir; local out="$NEW_TMPDIR"
   start_mock 8080; local mock="$NEW_BG_PID"
   local listing; listing="$(collect_files)"
+  local s1; s1="$(keyword_scratch)"
+  local s2; s2="$(oneline_scratch)"
+  new_keyword_tmpdir; local kw="$NEW_TMPDIR"
   # local bad; bad="$(new_tmpdir)"   <-- a comment SHOWING the antipattern, not code
 }
 GREEN3
