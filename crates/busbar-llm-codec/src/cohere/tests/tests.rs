@@ -5165,3 +5165,69 @@ fn cohere_empty_or_missing_stream_event_type_is_ignored_not_panic() {
         "a type-less Cohere frame must be ignored (no IR events), got {evs:?}"
     );
 }
+
+/// A Cohere stream that terminates with `message-end` carrying the generic infra `finish_reason:
+/// "ERROR"` decodes to `IrStopReason::Error` — but the cross-protocol writers have no native
+/// error token for that reason and render it as a SUCCESS terminator (`stop` / `end_turn`). With no
+/// `IrStreamEvent::Error` alongside it, `terminal_error()` stays `None`, the breaker records no
+/// fault and the failed stream is billed as a completion. The terminal `ERROR` must therefore push
+/// an `Error` event too, exactly as the gemini/bedrock inline-error arms do.
+///
+/// `ERROR_TOXIC` is NOT an infra failure — it is a content-moderation stop that maps to
+/// `IrStopReason::Safety` — so it must keep producing NO error event.
+#[test]
+fn test_stream_generic_error_finish_pushes_ir_error_event() {
+    let reader = CohereReader;
+
+    let mut state = crate::ir::StreamDecodeState::default();
+    let evs = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "type": ET_MESSAGE_END,
+            "delta": { "finish_reason": COHERE_FINISH_ERROR, "usage": { "tokens": {} } }
+        }),
+        &mut state,
+    );
+    let err = evs
+        .iter()
+        .find_map(|e| match e {
+            IrStreamEvent::Error(err) => Some(err),
+            _ => None,
+        })
+        .unwrap_or_else(|| {
+            panic!("a terminal generic ERROR must push an IrStreamEvent::Error, got {evs:?}")
+        });
+    assert_eq!(
+        err.class,
+        StatusClass::ServerError,
+        "the generic infra ERROR is a TRANSIENT upstream fault so the lane recovers via cooldown \
+         rather than being permanently penalized: {evs:?}"
+    );
+    // The terminal MessageDelta/MessageStop still ride along so the stream stays properly
+    // terminated and its usage is still folded.
+    assert!(
+        evs.iter().any(|e| matches!(
+            e,
+            IrStreamEvent::MessageDelta { stop_reason, .. }
+                if stop_reason == &Some(crate::ir::IrStopReason::Error)
+        )),
+        "the terminal MessageDelta must survive alongside the Error event: {evs:?}"
+    );
+
+    let mut toxic_state = crate::ir::StreamDecodeState::default();
+    let toxic_evs = reader.read_response_events(
+        "",
+        &serde_json::json!({
+            "type": ET_MESSAGE_END,
+            "delta": { "finish_reason": COHERE_FINISH_ERROR_TOXIC, "usage": { "tokens": {} } }
+        }),
+        &mut toxic_state,
+    );
+    assert!(
+        !toxic_evs
+            .iter()
+            .any(|e| matches!(e, IrStreamEvent::Error(_))),
+        "ERROR_TOXIC is a content-moderation stop, not an upstream fault — it must NOT push an \
+         Error event (that would fail a lane for a safety refusal): {toxic_evs:?}"
+    );
+}
