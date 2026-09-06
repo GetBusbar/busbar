@@ -469,6 +469,48 @@ fn the_oracle_cooldown_pool_draws_a_whole_second_in_one_to_three() {
     );
 }
 
+/// A CONFIGURATION THAT INVERTS THE COOLDOWN BOUNDS ANSWERS; IT DOES NOT BRING THE NODE DOWN.
+///
+/// The jitter band is clamped between a floor derived from the duration and the configured ceiling,
+/// and `Ord::clamp` panics outright when the floor is above the ceiling. `BreakerCfg` is plain data
+/// with public fields and nothing in the tree refuses either shape below, so both are configurations
+/// an operator can write — and the panic would land inside `record_failure`, on the response path,
+/// at the moment an upstream first fails. The two cases are different routes to the same inversion:
+/// a zero ceiling, where the floor is one by construction, and a base cooldown above the ceiling on a
+/// FRESH trip, where the escalation branch that would have capped the duration never ran.
+#[test]
+fn a_cooldown_ceiling_below_the_floor_is_answered_rather_than_panicked_on() {
+    for (label, cfg) in [
+        (
+            "a zero ceiling",
+            BreakerCfg {
+                base_cooldown_secs: 15,
+                max_cooldown_secs: 0,
+                honor_retry_after: false,
+                trip: TripConfig::default(),
+                bench_below_trip_threshold: true,
+            },
+        ),
+        (
+            "a base cooldown above the ceiling",
+            BreakerCfg {
+                base_cooldown_secs: 1_000,
+                max_cooldown_secs: 10,
+                honor_retry_after: false,
+                trip: TripConfig::default(),
+                bench_below_trip_threshold: true,
+            },
+        ),
+    ] {
+        let cell = BreakerCell::new();
+        let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, None, 86_400);
+        assert_eq!(
+            duration, cfg.max_cooldown_secs,
+            "{label}: the ceiling is what a ceiling means"
+        );
+    }
+}
+
 #[test]
 fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
     let cell = BreakerCell::new();
