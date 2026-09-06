@@ -1325,6 +1325,7 @@ async fn read_ingress_message(
 ) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
     let Inner::Ingress {
         read,
+        write,
         leftover,
         closed,
         closing,
@@ -1395,6 +1396,20 @@ async fn read_ingress_message(
             // itself. Refused rather than forwarded.
             return Err(TransportError::Framing);
         }
+    }
+
+    // The head passed its framing checks, so this request IS accepted for a body — and a client
+    // that asked to be told so is WAITING to be told before it sends one. `curl` sets the header
+    // itself for any body past about a kibibyte; against a reader that only parks on the body,
+    // both sides then wait on each other until the client's own timeout fires, and what the client
+    // sees is a hang rather than an answer. `hyper` served this surface in 1.5.5 and answered the
+    // header, so the answer is the parity bar. Nothing is written where the client did not ask, and
+    // an interim answer that cannot be written is not fatal on its own: the body may already be in
+    // flight, and the read below is the one that decides.
+    if raw::header(&headers, "expect").is_some_and(|v| v.eq_ignore_ascii_case("100-continue")) {
+        let mut w = write.lock().await;
+        let _ = w.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await;
+        let _ = w.flush().await;
     }
 
     let (bodies, trailers) = if raw::is_chunked(&headers) {
