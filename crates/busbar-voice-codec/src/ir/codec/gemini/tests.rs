@@ -10,7 +10,7 @@
 use super::*;
 use crate::ir::config::MaxOutputTokens;
 use crate::ir::control::IrVad;
-use crate::ir::media::UpDown;
+use crate::ir::media::{IrAudioRef, UpDown};
 use crate::ir::tool::CallRef;
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
@@ -30,7 +30,18 @@ fn b64(bytes: &[u8]) -> String {
 /// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer drops the
 /// concepts Gemini has no word for; every use of this helper is a concept it does frame.
 fn up<W: DuplexWriter>(codec: &W, ev: IrClientEvent) -> WireEvent {
-    codec.write_up(ev).expect("the dialect frames this concept")
+    codec
+        .write_up(ev, &mut DecodeState::default())
+        .expect("the dialect frames this concept")
+}
+
+/// Frame one server→client event, insisting this event IS a frame. The downlink writer answers
+/// nothing for a streamed tool-argument fragment (it is held for the atomic call); every use of this
+/// helper is an event that frames on its own.
+fn down<W: DuplexWriter>(codec: &W, ev: IrServerEvent) -> WireEvent {
+    codec
+        .write_down(ev, &mut DecodeState::default())
+        .expect("the dialect frames this event")
 }
 
 /// Decode one client wire event, re-encode it, and assert the JSON is BYTE-stable (one IR event).
@@ -50,7 +61,7 @@ fn roundtrip_down(src: &Value) -> Vec<IrServerEvent> {
     let mut st = DecodeState::default();
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
-    let back = codec.write_down(ir[0].clone());
+    let back = down(&codec, ir[0].clone());
     assert_eq!(as_value(&back), *src, "down round-trip not stable");
     ir
 }
@@ -256,6 +267,32 @@ fn an_undecodable_gemini_audio_payload_emits_no_frame() {
 }
 
 #[test]
+fn an_unreadable_output_token_cap_is_a_recorded_drop_not_a_lifted_cap() {
+    // A cap that does not fit is not "no cap". Silently dropping it hands the session an UNBOUNDED
+    // response where the client asked for a bounded one — the one direction a limit must never move.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let mut setup = gemini_setup();
+    setup["setup"]["generationConfig"]["maxOutputTokens"] = json!(5_000_000_000u64);
+    let ir = codec.read_up(wire(&setup.to_string()), &mut st);
+    let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) = &ir[0] else {
+        panic!("expected SessionConfigure");
+    };
+    assert_eq!(config.max_output_tokens, None, "the cap does not survive");
+    assert!(
+        st.dropped_fields().contains(&"maxOutputTokens"),
+        "and its loss is recorded, not silent: {:?}",
+        st.dropped_fields()
+    );
+    // The rest of the session still stands — one field is dropped, never the whole setup.
+    assert_eq!(config.voice.as_deref(), Some("Puck"));
+    assert_eq!(
+        config.instructions.as_deref(),
+        Some("You are a helpful voice agent.")
+    );
+}
+
+#[test]
 fn setup_adopts_pcm16_output_format() {
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
@@ -322,18 +359,27 @@ fn client_content_roundtrips_verbatim() {
 
 #[test]
 fn realtime_input_audio_decodes_and_frames_up() {
+    // The LEGACY `mediaChunks[]` spelling is still read (a peer may speak it); it re-frames onto the
+    // GA `realtimeInput.audio` blob, so the guarantee here is IR-fixpoint, not byte carriage.
     let payload = b"pretend-uplink-audio-bytes";
+    let codec = GeminiLiveCodec;
     let src = json!({
         "realtimeInput": {
             "mediaChunks": [ { "mimeType": "audio/pcm;rate=16000", "data": b64(payload) } ]
         }
     });
-    let ir = roundtrip_up(&src);
+    let ir = codec.read_up(wire(&src.to_string()), &mut DecodeState::default());
+    assert_eq!(ir.len(), 1);
     let IrClientEvent::AudioFrame(f) = &ir[0] else {
         panic!("expected AudioFrame");
     };
     assert_eq!(f.dir, UpDown::Up);
     assert_eq!(&f.media[..], payload, "base64 decoded to the exact bytes");
+    let ir2 = codec.read_up(up(&codec, ir[0].clone()), &mut DecodeState::default());
+    let IrClientEvent::AudioFrame(f2) = &ir2[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(f.media, f2.media, "the audio survives the re-frame");
 }
 
 #[test]
@@ -413,6 +459,42 @@ fn realtime_input_ga_audio_is_ir_fixpoint() {
         "uplink audio survives the IR round-trip"
     );
     assert_eq!(&f2.media[..], payload);
+}
+
+#[test]
+fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
+    // The writer frames the GA `realtimeInput.audio` SINGLE blob (the shape this codec's own reader
+    // prefers), not the legacy `mediaChunks[]` array — and the mime states the rate the bytes are
+    // ACTUALLY in (the session's negotiated pcm16 = 24 kHz), never a rate they are not.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16);
+    let w = codec
+        .write_up(
+            IrClientEvent::AudioFrame(IrAudioFrame {
+                dir: UpDown::Up,
+                seq: 0,
+                media: Bytes::from_static(b"uplink-pcm"),
+                origin: IrAudioRef::default(),
+            }),
+            &mut st,
+        )
+        .expect("uplink audio frames");
+    let ri = &as_value(&w)["realtimeInput"];
+    assert!(ri["audio"].is_object(), "the GA single blob: {ri}");
+    assert!(ri["mediaChunks"].is_null(), "not the legacy array: {ri}");
+    let mime = ri["audio"]["mimeType"].as_str().unwrap_or_default();
+    assert!(
+        !mime.contains("rate=16000"),
+        "pcm16 bytes are 24 kHz; the mime must not claim 16 kHz: {mime}"
+    );
+    assert_eq!(mime, "audio/pcm;rate=24000");
+    // And the codec reads its own frame back to the same bytes.
+    let ir = codec.read_up(w, &mut DecodeState::default());
+    let IrClientEvent::AudioFrame(f) = &ir[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(&f.media[..], b"uplink-pcm");
 }
 
 #[test]
@@ -527,13 +609,21 @@ fn the_uplink_verbs_gemini_has_no_word_for_frame_nothing() {
         IrDuplexControl::ResponseCreate { response: None },
     ] {
         assert!(
-            codec.write_up(IrClientEvent::Control(ev.clone())).is_none(),
+            codec
+                .write_up(
+                    IrClientEvent::Control(ev.clone()),
+                    &mut DecodeState::default()
+                )
+                .is_none(),
             "{ev:?} has no Gemini verb and must frame nothing"
         );
     }
     // The concepts Gemini DOES have still frame.
     assert!(codec
-        .write_up(IrClientEvent::Control(IrDuplexControl::InputAudioCommit))
+        .write_up(
+            IrClientEvent::Control(IrDuplexControl::InputAudioCommit),
+            &mut DecodeState::default()
+        )
         .is_some());
 }
 
@@ -628,6 +718,38 @@ fn the_gemini_turn_boundary_resets_the_playback_position() {
     assert_eq!(st.played_ms(), 0, "turnComplete zeroes the played position");
     let _ = codec.read_down(wire(&turn(240)), &mut st);
     assert_eq!(st.flush_playback(), 240, "this turn's audio only");
+}
+
+#[test]
+fn a_downlink_blob_at_the_uplink_rate_is_not_counted_as_playback() {
+    // The playback position is BYTES ÷ the negotiated format's bytes-per-ms, and `pcm16` means
+    // 24 kHz (48 B/ms). A downlink blob tagged 16 kHz is not that format: counted at 48 B/ms it
+    // reports two thirds of the audio it is, and the barge-in truncate cuts the user off mid-word.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "serverContent": { "modelTurn": { "parts": [
+            { "inlineData": { "mimeType": "audio/pcm;rate=16000", "data": b64(&vec![0u8; 480]) } }
+        ] } }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    assert!(
+        ir.is_empty(),
+        "a downlink blob at a rate this dialect does not synthesize has no frame: {ir:?}"
+    );
+    assert_eq!(
+        st.played_ms(),
+        0,
+        "and nothing it carried was accounted as played"
+    );
+    // The 24 kHz downlink the dialect DOES synthesize still counts.
+    let ok = json!({
+        "serverContent": { "modelTurn": { "parts": [
+            { "inlineData": { "mimeType": "audio/pcm;rate=24000", "data": b64(&vec![0u8; 480]) } }
+        ] } }
+    });
+    assert_eq!(codec.read_down(wire(&ok.to_string()), &mut st).len(), 1);
+    assert_eq!(st.played_ms(), 10, "480 bytes at 48 B/ms");
 }
 
 // ── setupComplete ↔ SessionCreated ────────────────────────────────────────────────────────────────
@@ -766,11 +888,14 @@ fn a_gemini_tool_response_keeps_its_name_across_the_round_trip() {
 #[test]
 fn tool_call_open_writer_shape() {
     let codec = GeminiLiveCodec;
-    let w = codec.write_down(IrServerEvent::Tool(IrDuplexTool::CallOpen {
-        call_ref: CallRef(0),
-        call_id: "fc_9".into(),
-        name: "lookup".into(),
-    }));
+    let w = down(
+        &codec,
+        IrServerEvent::Tool(IrDuplexTool::CallOpen {
+            call_ref: CallRef(0),
+            call_id: "fc_9".into(),
+            name: "lookup".into(),
+        }),
+    );
     let v = as_value(&w);
     assert_eq!(v["toolCall"]["functionCalls"][0]["id"], "fc_9");
     assert_eq!(v["toolCall"]["functionCalls"][0]["name"], "lookup");
@@ -833,7 +958,7 @@ fn usage_metadata_extracts_split_token_classes() {
     assert_eq!(u.text_out, 10);
     assert_eq!(u.cached, 5);
     // Re-encode is byte-stable against the canonical Gemini shape.
-    let back = as_value(&codec.write_down(ir[0].clone()));
+    let back = as_value(&down(&codec, ir[0].clone()));
     assert_eq!(back, src);
 }
 
@@ -887,16 +1012,34 @@ fn cached_content_tokens_are_not_billed_twice() {
 
 #[test]
 fn audio_format_from_mime_probe() {
+    // Uplink: either PCM rate is the shared token (no millisecond count is taken from the uplink).
     assert_eq!(
-        audio_format_from_mime("audio/pcm;rate=24000"),
+        audio_format_from_mime("audio/pcm;rate=24000", UpDown::Up),
         Some(AudioFormat::Pcm16)
     );
     assert_eq!(
-        audio_format_from_mime("audio/pcm;rate=16000"),
+        audio_format_from_mime("audio/pcm;rate=16000", UpDown::Up),
         Some(AudioFormat::Pcm16)
     );
-    assert_eq!(audio_format_from_mime("text/plain"), None);
-    assert_eq!(audio_format_from_mime("video/mp4"), None);
+    // Downlink: only the rate the shared token actually means — the truncate math divides by it.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=24000", UpDown::Down),
+        Some(AudioFormat::Pcm16)
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=16000", UpDown::Down),
+        None,
+        "a 16 kHz downlink blob is not the 24 kHz format the position is measured in"
+    );
+    // An untagged `audio/pcm` is the direction's own rate.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm", UpDown::Down),
+        Some(AudioFormat::Pcm16)
+    );
+    for dir in [UpDown::Up, UpDown::Down] {
+        assert_eq!(audio_format_from_mime("text/plain", dir), None);
+        assert_eq!(audio_format_from_mime("video/mp4", dir), None);
+    }
 }
 
 // ── degrade, don't error (drop+warn asymmetries) ─────────────────────────────────────────────────
@@ -934,4 +1077,112 @@ fn transcription_and_unknown_frames_yield_empty_vec() {
     assert!(codec
         .read_up(wire(&json!({ "neverHeardOfIt": {} }).to_string()), &mut st)
         .is_empty());
+}
+
+#[test]
+fn a_streamed_argument_fragment_never_dispatches_a_call_without_its_arguments() {
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("fc_frag");
+    let frag = |s: &str| {
+        IrServerEvent::Tool(IrDuplexTool::CallArgs {
+            call_ref: call,
+            call_id: "fc_frag".into(),
+            json_delta: Bytes::from(s.as_bytes().to_vec()),
+        })
+    };
+    let mut frames = Vec::new();
+    for piece in [r#"{"loc"#, r#"ation":"SF"}"#] {
+        // A FRAGMENT IS NOT A FRAME: parsed alone it is not JSON, and framing it dispatched the tool
+        // with `args: null` — arguments the model never asked for.
+        assert!(
+            codec.write_down(frag(piece), &mut st).is_none(),
+            "an argument fragment frames nothing on its own"
+        );
+    }
+    frames.push(as_value(
+        &codec
+            .write_down(
+                IrServerEvent::Tool(IrDuplexTool::CallClose {
+                    call_ref: call,
+                    call_id: "fc_frag".into(),
+                }),
+                &mut st,
+            )
+            .expect("the closed call frames once, whole"),
+    ));
+    assert_eq!(frames.len(), 1, "exactly one toolCall for the whole call");
+    let fc = &frames[0]["toolCall"]["functionCalls"][0];
+    assert_eq!(fc["id"], "fc_frag");
+    assert_eq!(fc["args"], json!({ "location": "SF" }));
+    assert!(!fc["args"].is_null(), "never a null argument list");
+}
+
+#[test]
+fn a_free_form_tool_output_reaches_the_wire_carrying_its_text() {
+    // The OpenAI dialect's `function_call_output.output` is a FREE-FORM STRING: a tool that answers
+    // `OK` is answering. Relayed as `response: null` the model was told the tool returned nothing.
+    let codec = GeminiLiveCodec;
+    let w = up(
+        &codec,
+        IrClientEvent::Tool(IrDuplexTool::CallResult {
+            call_ref: CallRef(0),
+            call_id: "fc_plain".into(),
+            name: "restart".into(),
+            output: Bytes::from_static(b"OK"),
+        }),
+    );
+    let fr = &as_value(&w)["toolResponse"]["functionResponses"][0];
+    assert!(
+        !fr["response"].is_null(),
+        "the tool's answer is not nothing"
+    );
+    assert_eq!(fr["response"], json!({ "result": "OK" }));
+}
+
+#[test]
+fn a_json_tool_output_still_rides_as_the_object_it_is() {
+    let codec = GeminiLiveCodec;
+    let w = up(
+        &codec,
+        IrClientEvent::Tool(IrDuplexTool::CallResult {
+            call_ref: CallRef(0),
+            call_id: "fc_json".into(),
+            name: "get_weather".into(),
+            output: Bytes::from_static(br#"{"temp":72}"#),
+        }),
+    );
+    let fr = &as_value(&w)["toolResponse"]["functionResponses"][0];
+    assert_eq!(fr["response"], json!({ "temp": 72 }));
+}
+
+#[test]
+fn a_tool_call_whose_arguments_never_parse_frames_nothing() {
+    // The other half of the same rule: when the accumulated whole is still not readable JSON, the
+    // call is not dispatched at all — an unreadable argument list is not an empty one.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("fc_torn");
+    assert!(codec
+        .write_down(
+            IrServerEvent::Tool(IrDuplexTool::CallArgs {
+                call_ref: call,
+                call_id: "fc_torn".into(),
+                json_delta: Bytes::from_static(br#"{"location":"S"#),
+            }),
+            &mut st
+        )
+        .is_none());
+    assert!(
+        codec
+            .write_down(
+                IrServerEvent::Tool(IrDuplexTool::CallClose {
+                    call_ref: call,
+                    call_id: "fc_torn".into(),
+                }),
+                &mut st
+            )
+            .is_none(),
+        "a call whose arguments never became whole frames nothing"
+    );
 }

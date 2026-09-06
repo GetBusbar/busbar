@@ -23,11 +23,9 @@
 //!   datagram transport the frame is dropped and journaled as unemitted. Only emitted frames are
 //!   metered.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Mutex;
 
-use busbar_caps::{ReasonCode, SessionId, StepName, UnitKey};
+use busbar_caps::{ReasonCode, StepName, UnitKey};
 
 use crate::grammar::{resolve_pointer, DeepestPointer, Resolved};
 use crate::inflight::{InFlight, SessionSlot};
@@ -110,12 +108,6 @@ pub enum Dispatch {
 pub struct Scheduler {
     one_shots: AtomicUsize,
     k: usize,
-    /// How many frames in a row a session has answered "not a whole anything yet" with.
-    ///
-    /// A session appears here only while it is in such a run: the first frame that IS something
-    /// takes it out again, so the map is bounded by the sessions currently stalling, which the
-    /// session budget already bounds.
-    needmore: Mutex<HashMap<SessionId, usize>>,
 }
 
 impl Scheduler {
@@ -124,29 +116,23 @@ impl Scheduler {
         Scheduler {
             one_shots: AtomicUsize::new(0),
             k,
-            needmore: Mutex::new(HashMap::new()),
         }
     }
 
     /// Count one more consecutive "not yet" for a session, and say whether the run is past the
-    /// ceiling. A session with no slot — a one-shot transport — has no run to keep.
-    fn ask_again(&self, session: Option<&SessionSlot>) -> bool {
-        let Some(session) = session else {
-            return false;
-        };
-        let mut runs = self.needmore.lock().unwrap_or_else(|e| e.into_inner());
-        let run = runs.entry(session.id()).or_insert(0);
-        *run += 1;
-        *run > MAX_NEEDMORE_FRAMES
+    /// ceiling. A session with no slot — a one-shot transport — has no run to keep. The count is
+    /// the session's own, so it is neither shared with another connection nor left behind by one.
+    fn ask_again(session: Option<&SessionSlot>) -> bool {
+        match session {
+            None => false,
+            Some(session) => session.asked_again() > MAX_NEEDMORE_FRAMES,
+        }
     }
 
     /// A frame that was something ends the run.
-    fn made_progress(&self, session: Option<&SessionSlot>) {
+    fn made_progress(session: Option<&SessionSlot>) {
         if let Some(session) = session {
-            self.needmore
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&session.id());
+            session.made_progress();
         }
     }
 
@@ -195,13 +181,13 @@ impl Scheduler {
     ) -> Dispatch {
         // A frame that is something ends whatever run of "not yet" came before it.
         if shape != Shape::NeedMore {
-            self.made_progress(session);
+            Scheduler::made_progress(session);
         }
         match shape {
             // The handshake framing ceiling, enforced where it can be: a peer that never finishes a
             // frame otherwise holds its session slot for as long as it likes. The run is counted per
             // session and consecutively, so a slow-but-progressing peer never meets it.
-            Shape::NeedMore if self.ask_again(session) => Dispatch::Refuse {
+            Shape::NeedMore if Scheduler::ask_again(session) => Dispatch::Refuse {
                 step: StepName::Decode,
                 reason: ReasonCode::Stalled,
             },
@@ -270,7 +256,7 @@ impl Default for Scheduler {
 #[derive(Debug)]
 pub struct NestedPool {
     permits: AtomicUsize,
-    blocked: AtomicUsize,
+    refusals: AtomicUsize,
     size: usize,
     max_depth: usize,
 }
@@ -288,7 +274,7 @@ impl NestedPool {
     pub fn new(size: usize, max_depth: usize) -> Self {
         NestedPool {
             permits: AtomicUsize::new(size),
-            blocked: AtomicUsize::new(0),
+            refusals: AtomicUsize::new(0),
             size,
             max_depth,
         }
@@ -299,9 +285,15 @@ impl NestedPool {
         self.permits.load(Ordering::Acquire)
     }
 
-    /// How many parents are waiting on a permit.
-    pub fn blocked(&self) -> usize {
-        self.blocked.load(Ordering::Acquire)
+    /// How many times the pool had nothing to give.
+    ///
+    /// A COUNTER and not a gauge, and the distinction is the whole of it: `enter` does not block,
+    /// so a refused parent is back with its caller before this number is read and will never come
+    /// back to `leave`. Counted as "parents waiting" it only ever went up — a number that says the
+    /// pool is the bottleneck right now when what it means is that the pool has ever been one. How
+    /// much of the pool is out is `size` less `available`, and that one does come back to zero.
+    pub fn refusals(&self) -> usize {
+        self.refusals.load(Ordering::Acquire)
     }
 
     /// The pool's size.
@@ -323,18 +315,16 @@ impl NestedPool {
         {
             Ok(_) => Ok(NestedPermit { depth }),
             Err(_) => {
-                self.blocked.fetch_add(1, Ordering::AcqRel);
+                self.refusals.fetch_add(1, Ordering::AcqRel);
                 Err(ReasonCode::InFlightCap)
             }
         }
     }
 
-    /// Give a permit back, and wake one waiting parent's accounting.
+    /// Give a permit back. It returns the permit and nothing else: a permit coming back does not
+    /// un-refuse a parent the pool already turned away.
     pub fn leave(&self, _permit: NestedPermit) {
         self.permits.fetch_add(1, Ordering::AcqRel);
-        let _ = self
-            .blocked
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_sub(1));
     }
 }
 

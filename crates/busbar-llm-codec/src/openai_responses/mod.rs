@@ -156,6 +156,60 @@ const DEFAULT_MODEL: &str = super::openai_chat::OPENAI_FAMILY_DEFAULT_MODEL;
 /// DoS). Matches `openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS` (OpenAI's documented parallel-tool-call limit, 128).
 const MAX_OPEN_TOOLS: usize = super::openai_chat::OPENAI_FAMILY_MAX_OPEN_TOOLS;
 
+/// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
+/// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
+/// grows, which is the other half of the same memory-amplification exposure — a backend streaming an
+/// unbounded run of fragments against a single open index needs only one entry to exhaust memory.
+///
+/// The value is `busbar_substrate_values::proxy::max_translate_body_bytes()`, the operator-tunable,
+/// live-reconfigurable limit (default 32 MiB) that already bounds a buffered cross-protocol
+/// non-stream body and the Gemini writer's streamed tool-argument buffer. Reusing it — rather than
+/// minting another constant — means an operator who raises the one knob to admit larger payloads
+/// gets that headroom here too, instead of the paths silently diverging. A read is an uncontended
+/// `Relaxed` atomic load, cheap enough to take per fragment.
+fn accum_byte_cap() -> usize {
+    busbar_substrate_values::proxy::max_translate_body_bytes()
+}
+
+/// Append `fragment` to the per-item string buffer at `index`, honouring BOTH bounds: a new index is
+/// refused once `MAX_OPEN_TOOLS` items are already accumulating, and an existing buffer stops
+/// growing at [`accum_byte_cap`]. Stop-growing, never slice: a fragment that would cross the cap is
+/// dropped whole, which is the policy the Gemini writer's tool-argument accumulator established.
+fn append_capped(
+    map: &mut std::collections::BTreeMap<usize, String>,
+    index: usize,
+    fragment: &str,
+) {
+    match map.get_mut(&index) {
+        Some(buf) => {
+            if buf.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+                buf.push_str(fragment);
+            }
+        }
+        None => {
+            if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+                return;
+            }
+            map.entry(index).or_default().push_str(fragment);
+        }
+    }
+}
+
+/// The carried TEXT weight of one buffered citation — the owned strings it holds, which is the part
+/// an upstream controls and can therefore grow without bound. The fixed-width numeric fields are not
+/// counted; they cannot be inflated.
+fn citation_bytes(c: &crate::ir::IrCitation) -> usize {
+    fn len(s: &Option<String>) -> usize {
+        s.as_ref().map_or(0, String::len)
+    }
+    len(&c.kind)
+        + len(&c.cited_text)
+        + len(&c.title)
+        + len(&c.url)
+        + len(&c.encrypted_index)
+        + c.raw.as_ref().map_or(0, |v| v.to_string().len())
+}
+
 /// Key offset under which the streaming reader tracks OPEN TEXT output indices inside the shared
 /// `StreamDecodeState::open_tools` set. A native /v1/responses stream can carry MULTIPLE message
 /// (text) output items, each at its OWN `output_index`, so a single index-blind `text_block_open`
@@ -1647,9 +1701,28 @@ impl ResponsesWriter {
     /// Append a streamed `arguments` fragment for the function-call item at `index`. Native
     /// `response.output_item.done` carries the COMPLETE accumulated arguments string, so the writer
     /// concatenates the `InputJsonDelta` fragments here. Lock poisoning degrades to a no-op.
+    /// Bounded on BOTH axes, like every accumulator on this writer (see [`accum_byte_cap`]): a NEW
+    /// index is refused once `MAX_OPEN_TOOLS` distinct items are already accumulating (the same line
+    /// `mark_tool_open` holds), and an existing buffer stops growing at the translate-body cap.
+    /// A refused fragment is dropped WHOLE rather than sliced at the boundary — a cap-truncated
+    /// `arguments` string is unparseable JSON either way, and the writer's `output_item.done` already
+    /// degrades an unparseable accumulation to the empty-arguments fallback, so the call's identity
+    /// (`call_id`/`name`) always survives and no new failure mode is introduced.
     fn append_tool_arguments(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.tool_calls.lock() {
-            map.entry(index).or_default().arguments.push_str(fragment);
+            match map.get_mut(&index) {
+                Some(entry) => {
+                    if entry.arguments.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+                        entry.arguments.push_str(fragment);
+                    }
+                }
+                None => {
+                    if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+                        return;
+                    }
+                    map.entry(index).or_default().arguments.push_str(fragment);
+                }
+            }
         }
     }
 
@@ -1668,20 +1741,42 @@ impl ResponsesWriter {
     /// `response.output` carries the COMPLETE assembled text per message item, so the writer
     /// concatenates the `TextDelta` fragments here. Lock poisoning degrades to a no-op (the terminal
     /// item then carries empty text) rather than panicking on the request path.
+    /// Bounded on both axes exactly as `append_tool_arguments` is: a new index is refused past
+    /// `MAX_OPEN_TOOLS`, and an existing buffer stops growing at [`accum_byte_cap`]. A truncated
+    /// text item is what the client already gets from any capped stream; an unbounded one is a
+    /// per-connection memory-amplification DoS.
     fn append_text(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.text_accum.lock() {
-            map.entry(index).or_default().push_str(fragment);
+            append_capped(&mut map, index, fragment);
         }
     }
 
     /// Buffer streamed citations for the message item at `index` until `BlockStop` assembles the
     /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
+    /// Bounded on both axes, as `append_text` is: a new index is refused past `MAX_OPEN_TOOLS`, and
+    /// an item's buffered citations stop accumulating once their carried text weight
+    /// ([`citation_bytes`]) would cross [`accum_byte_cap`]. The whole batch is refused rather than
+    /// split, so an annotation is never emitted half-formed.
     fn append_citations(&self, index: usize, cits: &[crate::ir::IrCitation]) {
         if cits.is_empty() {
             return;
         }
+        let added: usize = cits.iter().map(citation_bytes).sum();
         if let Ok(mut map) = self.citation_accum.lock() {
-            map.entry(index).or_default().extend_from_slice(cits);
+            match map.get_mut(&index) {
+                Some(entry) => {
+                    let held: usize = entry.iter().map(citation_bytes).sum();
+                    if held.saturating_add(added) <= accum_byte_cap() {
+                        entry.extend_from_slice(cits);
+                    }
+                }
+                None => {
+                    if map.len() >= MAX_OPEN_TOOLS || added > accum_byte_cap() {
+                        return;
+                    }
+                    map.entry(index).or_default().extend_from_slice(cits);
+                }
+            }
         }
     }
 
@@ -1806,9 +1901,10 @@ impl ResponsesWriter {
 
     /// Append a streamed reasoning-text fragment for the reasoning item at `index`. Lock
     /// poisoning degrades to a no-op (the terminal item then carries empty reasoning text).
+    /// Bounded on both axes, as `append_text` is.
     fn append_reasoning(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.reasoning_accum.lock() {
-            map.entry(index).or_default().push_str(fragment);
+            append_capped(&mut map, index, fragment);
         }
     }
 

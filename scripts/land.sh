@@ -30,6 +30,27 @@ while [ $# -gt 0 ]; do
 done
 [ $# -gt 0 ] || [ "$prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
 
+# ONE STAMP FOR EVERY PATH THIS RUN WRITES, and it carries the date and the pid.
+#
+# `%H%M%S` alone names a time of day, so a landing at 14:32:07 today writes exactly where yesterday's
+# 14:32:07 landing wrote. That is harmless for the logs (they are truncated by `>`), and it is NOT
+# harmless for the recording: record.sh only does `mkdir -p` on its `--out`, so a directory left by
+# an earlier run keeps its cells, and `diff-cells.py --strict` then reads a mixture of this
+# candidate and a stale one. A recording that is partly somebody else's is the one artifact in this
+# script whose verdict is attributed to the picked commits.
+#
+# The pid is there for the second collision: two worktrees landing in the same second.
+stamp="$(date +%Y%m%d-%H%M%S)-$$"
+
+# THE PORTS ARE DEFAULTS, NOT PINS. The landing queue relies on this triple, so it stays the
+# default; but two worktrees recording at once on one host would both bind it, and record.sh's own
+# occupied-port guard would turn that collision into a RED attributed to whichever commits happened
+# to be picked. An operator running a second landing sets these in the environment and gets a
+# recording of their own binary; the RED path below prints the triple so a collision reads as one.
+ORACLE_LISTEN_PORT="${ORACLE_LISTEN_PORT:-49901}"
+ORACLE_ADMIN_PORT="${ORACLE_ADMIN_PORT:-49902}"
+ORACLE_MOCK_PORT="${ORACLE_MOCK_PORT:-49911}"
+
 # The lock file drifts between worktrees; a pick must never fail on it.
 git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
 for h in "$@"; do
@@ -43,7 +64,7 @@ echo "land.sh: picked $# commit(s); tip $(git -C "$here" rev-parse --short HEAD)
 
 # The plugin batteries refuse to skip when their cdylib is absent, so the example plugins are
 # built before any test leg; a green here must mean the ABI-crossing cells actually ran.
-plog="$here/target/land-plugins-$(date +%H%M%S).log"
+plog="$here/target/land-plugins-$stamp.log"
 if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static-plugin -p busbar-store-example-plugin -p busbar-export-example-plugin -p busbar-secret-example-plugin >"$plog" 2>&1); then
   grep -E '^error' "$plog" | head -5 >&2
   echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; exit 1
@@ -58,7 +79,7 @@ if [ -n "$tests" ]; then
   echo "land.sh: cargo test $args"
   # cargo's own exit status is the verdict; the grep only names the red lines. A pipeline here
   # would let pipefail turn a failing cargo into a skipped check.
-  log="$here/target/land-$(date +%H%M%S).log"
+  log="$here/target/land-$stamp.log"
   # shellcheck disable=SC2086
   if ! (cd "$here" && cargo test $args >"$log" 2>&1); then
     grep -E '^test result:.* [1-9][0-9]* failed|^error(\[|:)|^---- .* stdout ----|panicked at' "$log" | head -20 >&2
@@ -76,7 +97,7 @@ if [ -n "$gate" ]; then
   # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
   # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
   # at all (missing python, missing ceilings file) is red, not green.
-  glog="$here/target/land-gate-$(date +%H%M%S).log"
+  glog="$here/target/land-gate-$stamp.log"
   "$here/scripts/construction-gate.sh" >"$glog" 2>&1 || true
   rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
   [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; exit 1; }
@@ -89,15 +110,22 @@ fi
 
 if [ -n "$families" ]; then
   # cargo's exit status is the verdict (a pipe into grep would let pipefail invert it).
-  blog="$here/target/land-build-$(date +%H%M%S).log"
+  blog="$here/target/land-build-$stamp.log"
   if ! (cd "$here" && cargo build --release -p busbar >"$blog" 2>&1); then
     grep -E '^error' "$blog" | head -5 >&2
     echo "land.sh: RED — release build (log: $blog)" >&2; exit 1
   fi
-  out="$here/target/oracle/recordings/land-$(date +%H%M%S)"
-  ORACLE_LISTEN_PORT=49901 ORACLE_ADMIN_PORT=49902 ORACLE_MOCK_PORT=49911 \
+  out="$here/target/oracle/recordings/land-$stamp"
+  # record.sh only `mkdir -p`s its --out, so the directory is cleared HERE. A recording the differ
+  # reads must contain this candidate's cells and nothing else.
+  rm -rf "$out" "$out.report"
+  ORACLE_LISTEN_PORT="$ORACLE_LISTEN_PORT" ORACLE_ADMIN_PORT="$ORACLE_ADMIN_PORT" ORACLE_MOCK_PORT="$ORACLE_MOCK_PORT" \
     "$here/testing/shadow-oracle/record.sh" --plane all --bin "$here/target/release/busbar" --filter "$families" \
-    --out "$out" >"$out.log" 2>&1 || { echo "land.sh: RED — record.sh (see $out.log)" >&2; exit 1; }
+    --out "$out" >"$out.log" 2>&1 || {
+      echo "land.sh: RED — record.sh on ports $ORACLE_LISTEN_PORT/$ORACLE_ADMIN_PORT/$ORACLE_MOCK_PORT (see $out.log)" >&2
+      echo "land.sh:       if another landing is recording on this host, set ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT/ORACLE_MOCK_PORT and re-run" >&2
+      exit 1
+    }
   # The same regex selects the cells on both sides (an ID filter, the domain record.sh --filter
   # uses), and --strict makes the differ's exit code carry the verdict for this subset: zero owed
   # cells, an unaccepted divergence, or an owed cell missing from the candidate is red.

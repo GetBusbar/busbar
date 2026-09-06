@@ -115,7 +115,7 @@ fn build_desc<'a>(spec: &'a HopSpec<'a>, packed_headers: &'a [u8]) -> EgressDesc
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
-        kind: EgressKind::Http,
+        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::Http),
         _reserved: 0,
         allowlist_scope: scope_bits(spec.allow_private, spec.allow_plaintext),
         _reserved2: 0,

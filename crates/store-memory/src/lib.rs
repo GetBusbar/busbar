@@ -7,8 +7,9 @@
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 
 use busbar_api::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
-    UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
+    PlaneRecord, PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger,
+    VirtualKey,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,8 +34,10 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// In-memory `Store`: keys by id, row-looked-up credentials by id (indexed by `(kind, public_id)`
-/// for lookup and by `key_id` for the per-key listing/cascade), token ledgers keyed by (bucket_id,
+/// In-memory `Store`: keys by id, row-looked-up credentials by id (`(kind, public_id)` lookup and
+/// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
+/// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
+/// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
 /// window_start), metering rows keyed by (key_id, bucket, model, provider).
 #[derive(Default)]
 pub struct MemoryStore {
@@ -45,6 +48,19 @@ pub struct MemoryStore {
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
+    /// The SPENT-TOKEN ledger behind `redeem_plane_token`: `(kind, token) -> expires_at`. Presence
+    /// means "already redeemed", so the test-and-set is an occupied-entry check under one guard.
+    /// Bounded by dropping lapsed rows on every redemption (a token past its own `expires_at` can
+    /// never be presented again, so keeping it proves nothing).
+    plane_tokens: RwLock<HashMap<(String, String), u64>>,
+    /// Plane records keyed by `(kind, identity, seq)`. The identity is the record's `parent` for the
+    /// APPENDED child kinds (a chain is `(parent, seq)`) and its `id` for the upserted ones, which
+    /// take `seq` 0 — one map serves both because the child kinds never point-read by id.
+    plane_records: RwLock<HashMap<(String, String, u64), PlaneRecord>>,
+    /// The durable admin AUDIT log, by `seq`. EPHEMERAL like every other map here — this backend is
+    /// RAM — but append-only and fork-detecting within the process's life, which is what the
+    /// engine's write-through actually asks of a store. Ordered reads come from the `BTreeMap`.
+    audit: RwLock<std::collections::BTreeMap<u64, AuditRecord>>,
     /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked `creds` (see
     /// `MAX_RETENTION_SECS`). Separate per map since the maps see independent write rates.
     usage_sweep_ticker: AtomicU64,
@@ -81,6 +97,26 @@ impl MemoryStore {
     ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
         self.metering.write().unwrap_or_else(|e| e.into_inner())
     }
+    // The SHARED (read) side of the same four locks, for the methods that only ever read. A pure
+    // read taking the exclusive side serializes every concurrent reader behind it, and the reads
+    // here are the expensive ones — `list_keys`/`list_credentials`/`list_metering` clone whole
+    // tables — so a governance `get_key` on the admit path would wait out an admin listing pass.
+    // Poison-recovering for the same reason the write accessors are: the governance surface must
+    // never panic on a request.
+    fn keys_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, VirtualKey>> {
+        self.keys.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn creds_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, CredentialSecret>> {
+        self.creds.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn usage_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64), UsageLedger>> {
+        self.usage.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn metering_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
+        self.metering.read().unwrap_or_else(|e| e.into_inner())
+    }
     fn next_revision(&self) -> u64 {
         self.revision.fetch_add(1, Ordering::Relaxed) + 1
     }
@@ -91,6 +127,63 @@ impl MemoryStore {
             0 => now(),
             pinned => pinned,
         }
+    }
+    fn plane_records(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
+        self.plane_records
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    fn plane_records_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
+        self.plane_records.read().unwrap_or_else(|e| e.into_inner())
+    }
+    /// A plane record's identity in the one map: its `parent` when it is an APPENDED child (a chain
+    /// position is `(parent, seq)`), else its own `id` at `seq` 0.
+    fn plane_key(record: &PlaneRecord) -> (String, String, u64) {
+        let identity = record.parent.clone().unwrap_or_else(|| record.id.clone());
+        (record.kind.clone(), identity, record.seq)
+    }
+    /// The two credential-table preconditions, factored out of `put_credential` so the ATOMIC
+    /// `put_key_with_credential` can run the identical rules under its own single critical section
+    /// rather than a second, drifting copy of them. Takes the map (not the guard) so either caller's
+    /// guard serves.
+    fn credential_preconditions(
+        creds: &HashMap<String, CredentialSecret>,
+        secret: &CredentialSecret,
+    ) -> StoreResult<()> {
+        // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
+        // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
+        // operator mistake, not an intended rotation.
+        let occupied = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.key_id == secret.meta.key_id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.slot == secret.meta.slot
+                && c.meta.revoked_at.is_none()
+        });
+        if occupied {
+            return Err(StoreError(format!(
+                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                secret.meta.slot, secret.meta.key_id, secret.meta.kind
+            )));
+        }
+        // UNIQUE(kind, public_id): a public_id must never resolve to two different credentials,
+        // even across keys (an AccessKeyId is a global lookup handle).
+        let public_id_taken = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.public_id == secret.meta.public_id
+        });
+        if public_id_taken {
+            return Err(StoreError(format!(
+                "put_credential: public_id '{}' is already in use for kind '{}'",
+                secret.meta.public_id, secret.meta.kind
+            )));
+        }
+        Ok(())
     }
     /// Test-only: pin `self.now()` to `t` so the sweep's retention ceiling is deterministic.
     #[cfg(test)]
@@ -144,14 +237,14 @@ impl Store for MemoryStore {
     }
 
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-        Ok(self.keys().get(id).cloned())
+        Ok(self.keys_read().get(id).cloned())
     }
 
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         // Deliberately UNFILTERED — see the trait doc. Tombstones are included so both the admin
         // listing caller (which filters live-only itself) and the default `list_keys_since` (which
         // needs tombstones visible) are served by this one method.
-        let mut v: Vec<VirtualKey> = self.keys().values().cloned().collect();
+        let mut v: Vec<VirtualKey> = self.keys_read().values().cloned().collect();
         v.sort_by_key(|k| k.created_at); // mirror SqliteStore's ORDER BY created_at
         Ok(v)
     }
@@ -206,7 +299,7 @@ impl Store for MemoryStore {
 
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
-            .keys()
+            .keys_read()
             .values()
             .filter(|k| k.revision > since)
             .cloned()
@@ -215,7 +308,7 @@ impl Store for MemoryStore {
 
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
         Ok(self
-            .usage()
+            .usage_read()
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
@@ -302,7 +395,7 @@ impl Store for MemoryStore {
 
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
         Ok(self
-            .metering()
+            .metering_read()
             .iter()
             .filter(|((_, b, _, _), _)| *b == bucket)
             .map(|(_, row)| row.clone())
@@ -310,36 +403,28 @@ impl Store for MemoryStore {
     }
 
     fn put_credential(&self, secret: &CredentialSecret) -> StoreResult<()> {
+        // The owning key is read under the SAME critical section as the credential write, in
+        // `delete_key`'s fixed lock order (keys → creds) so the two can never deadlock against each
+        // other. Checking the key first and writing after would let a `delete_key` commit in the
+        // gap: its cascade removes the credentials that exist AT THAT MOMENT, so material written
+        // just behind it survives the tombstone and keeps resolving — the same read-then-write hole
+        // `put_key`'s own tombstone precondition closes, one door over.
+        let keys = self.keys_read();
         let mut creds = self.creds();
-        // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
-        // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
-        // operator mistake, not an intended rotation.
-        let occupied = creds.values().any(|c| {
-            c.meta.id != secret.meta.id
-                && c.meta.key_id == secret.meta.key_id
-                && c.meta.kind == secret.meta.kind
-                && c.meta.slot == secret.meta.slot
-                && c.meta.revoked_at.is_none()
-        });
-        if occupied {
+        let Some(owner) = keys.get(&secret.meta.key_id) else {
             return Err(StoreError(format!(
-                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
-                secret.meta.slot, secret.meta.key_id, secret.meta.kind
+                "put_credential: key '{}' does not exist; a credential must hang off a real key",
+                secret.meta.key_id
+            )));
+        };
+        if owner.deleted_at.is_some() {
+            return Err(StoreError(format!(
+                "put_credential: key '{}' is tombstoned; its credentials were revoked with it and \
+                 are never reissued",
+                secret.meta.key_id
             )));
         }
-        // UNIQUE(kind, public_id): a public_id must never resolve to two different credentials,
-        // even across keys (an AccessKeyId is a global lookup handle).
-        let public_id_taken = creds.values().any(|c| {
-            c.meta.id != secret.meta.id
-                && c.meta.kind == secret.meta.kind
-                && c.meta.public_id == secret.meta.public_id
-        });
-        if public_id_taken {
-            return Err(StoreError(format!(
-                "put_credential: public_id '{}' is already in use for kind '{}'",
-                secret.meta.public_id, secret.meta.kind
-            )));
-        }
+        Self::credential_preconditions(&creds, secret)?;
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         creds.insert(secret.meta.id.clone(), secret);
@@ -369,9 +454,55 @@ impl Store for MemoryStore {
         Ok(())
     }
 
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> StoreResult<()> {
+        // The trait calls this mint ATOMIC, and the DEFAULT it inherits is `put_key` followed by
+        // `put_credential` — two independent critical sections. When the credential leg fails (a
+        // reused `public_id` is the ordinary way it does), the key leg has already committed, so the
+        // caller is told the mint failed while a bearer key with no credential is left live in the
+        // table: a row nobody will ever clean up, and a `put_key` the operator never asked for. Both
+        // rows go in under ONE acquisition of the same two guards `delete_key` takes, in the same
+        // fixed order, with every precondition tested before anything is written.
+        let mut keys = self.keys();
+        let mut creds = self.creds();
+        if key.deleted_at.is_none() {
+            if let Some(existing) = keys.get(&key.id) {
+                if existing.deleted_at.is_some() {
+                    return Err(StoreError(format!(
+                        "put_key_with_credential: '{}' is tombstoned and its id is never reissued",
+                        key.id
+                    )));
+                }
+            }
+        }
+        // The credential must name the key being minted alongside it — a mint that quietly hung its
+        // secret material off some OTHER key is not the operation the caller asked for, and the
+        // tombstone/existence check `put_credential` makes cannot apply to a key that does not exist
+        // until this call commits.
+        if secret.meta.key_id != key.id {
+            return Err(StoreError(format!(
+                "put_key_with_credential: the credential names key '{}', not the key '{}' being \
+                 minted with it",
+                secret.meta.key_id, key.id
+            )));
+        }
+        Self::credential_preconditions(&creds, secret)?;
+
+        let mut key = key.clone();
+        key.revision = self.next_revision();
+        keys.insert(key.id.clone(), key);
+        let mut secret = secret.clone();
+        secret.meta.revision = self.next_revision();
+        creds.insert(secret.meta.id.clone(), secret);
+        Ok(())
+    }
+
     fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
@@ -384,7 +515,7 @@ impl Store for MemoryStore {
         public_id: &str,
     ) -> StoreResult<Option<CredentialSecret>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
             .cloned())
@@ -410,7 +541,7 @@ impl Store for MemoryStore {
 
     fn list_credentials_since(&self, since: u64) -> StoreResult<Vec<CredentialSecret>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .filter(|c| c.meta.revision > since)
             .cloned()
@@ -433,6 +564,133 @@ impl Store for MemoryStore {
             .iter()
             .cloned()
             .collect())
+    }
+
+    fn append_audit(&self, entry: &AuditRecord) -> StoreResult<()> {
+        // Append-only, never rewriting: a second record on an occupied `seq` is EITHER the
+        // write-through retrying (byte-identical → Ok, the common case) or a forked/tampered chain
+        // (different → error). Collapsing those two is the one thing an audit store must not do.
+        let mut audit = self.audit.write().unwrap_or_else(|e| e.into_inner());
+        match audit.get(&entry.seq) {
+            Some(stored) if stored == entry => Ok(()),
+            Some(_) => Err(StoreError(format!(
+                "append_audit: seq {} already holds a DIFFERENT record — the audit chain has forked",
+                entry.seq
+            ))),
+            None => {
+                audit.insert(entry.seq, entry.clone());
+                Ok(())
+            }
+        }
+    }
+
+    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+        Ok(self
+            .audit
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        self.plane_records()
+            .insert(Self::plane_key(record), record.clone());
+        Ok(())
+    }
+
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        Ok(self
+            .plane_records_read()
+            .get(&(kind.to_string(), id.to_string(), 0))
+            .map(|r| r.body.clone()))
+    }
+
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        // Keyed by `(parent, seq)`, so a replay of the same position replaces rather than duplicates
+        // it and the chain stays one record per seq — the ordering `list_plane_records` promises.
+        self.plane_records()
+            .insert(Self::plane_key(record), record.clone());
+        Ok(())
+    }
+
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        let records = self.plane_records_read();
+        let mut rows: Vec<(u64, Vec<u8>)> = records
+            .iter()
+            .filter(|((k, _, _), r)| {
+                k == kind
+                    && match selector {
+                        PlaneSelector::All => true,
+                        PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
+                    }
+            })
+            .map(|(_, r)| (r.seq, r.body.clone()))
+            .collect();
+        // Oldest-first by `seq` — the order the engine's chain verifier reads a parent's events in.
+        rows.sort_by_key(|(seq, _)| *seq);
+        Ok(rows.into_iter().map(|(_, body)| body).collect())
+    }
+
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+        let records = self.plane_records_read();
+        let mut parents: Vec<String> = records
+            .iter()
+            .filter(|((k, _, _), _)| k == kind)
+            .filter_map(|(_, r)| r.parent.clone())
+            .collect();
+        parents.sort();
+        parents.dedup();
+        Ok(parents)
+    }
+
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
+        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
+        // work), every other kind drops any row older than `before`.
+        let mut records = self.plane_records();
+        let before_len = records.len();
+        records.retain(|(k, _, _), r| {
+            if k != kind || r.ts >= before {
+                return true;
+            }
+            k == "task" && r.disposition != PlaneDisposition::Terminal
+        });
+        Ok((before_len - records.len()) as u64)
+    }
+
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        // Absent is a no-op, per the trait. Every `seq` under the identity goes, so deleting a
+        // parent's record cannot leave part of a chain behind.
+        self.plane_records()
+            .retain(|(k, i, _), _| !(k == kind && i == id));
+        Ok(())
+    }
+
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        // TEST-AND-SET under ONE guard. The trait's default is `Ok(true)` — "this store keeps no
+        // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
+        // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
+        // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
+        let mut spent = self.plane_tokens.write().unwrap_or_else(|e| e.into_inner());
+        // Lapsed rows go in the same call: a token past its own expiry can never be presented
+        // again, so retaining it only grows the map.
+        spent.retain(|_, exp| *exp > now);
+        let first = spent
+            .insert((kind.to_string(), token.to_string()), expires_at)
+            .is_none();
+        Ok(first)
     }
 }
 

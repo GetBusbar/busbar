@@ -305,10 +305,13 @@ fn apply<T>(handle: &Arc<AppHandle>, mut outcome: Outcome<T>) -> Result<T, Admin
 #[path = "tests/txn_tests.rs"]
 mod txn_tests;
 
-// THE COMPILE FENCE — a module that must NOT type-check. Behind the `txn-fence-red`
-// feature; `scripts/txn-fence.sh` compiles it and asserts the compiler rejects it. See the file
-// header for why this is an in-crate negative build rather than a `trybuild` ui case.
-#[cfg(feature = "txn-fence-red")]
+// THE COMPILE FENCE — a module that must NOT type-check. Behind the `txn_fence_red` cfg (a
+// rustc `--cfg`, deliberately NOT a cargo feature: features are additive by contract, and a
+// feature whose only effect is to break the build would turn `--all-features` into a red that
+// names no defect). `scripts/txn-fence.sh` sets the cfg and asserts the compiler rejects the
+// module. See the file header for why this is an in-crate negative build rather than a `trybuild`
+// ui case.
+#[cfg(txn_fence_red)]
 #[path = "tests/txn_fence.rs"]
 mod txn_fence;
 

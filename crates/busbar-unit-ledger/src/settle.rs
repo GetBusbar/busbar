@@ -124,19 +124,24 @@ impl Ledger {
         &mut self.book
     }
 
-    /// Settle a hold against what the unit used, and move the books.
+    /// Settle a hold against what the unit's usage priced at, and move the books.
     ///
     /// The token is required by the capability itself, so this function cannot be reached by
     /// anything that is not the ledger unit mid-settlement. The hold is consumed.
+    ///
+    /// `priced_nanos` is the money figure, in the unit the reservation is written in; `usage` is
+    /// the report it was priced from. See [`busbar_caps::Posted::settle`] for why those are two
+    /// arguments and not one.
     pub fn settle(
         &mut self,
         key: &TotalsKey,
         window: WindowStart,
         hold: Hold,
+        priced_nanos: u128,
         usage: &Usage,
         token: &LedgerToken,
     ) -> Posted {
-        self.settle_recording(key, window, hold, usage, token)
+        self.settle_recording(key, window, hold, priced_nanos, usage, token)
             .posted
     }
 
@@ -150,10 +155,11 @@ impl Ledger {
         key: &TotalsKey,
         window: WindowStart,
         hold: Hold,
+        priced_nanos: u128,
         usage: &Usage,
         token: &LedgerToken,
     ) -> Settlement {
-        let posted = Posted::settle(hold, usage, token);
+        let posted = Posted::settle(hold, priced_nanos, usage, token);
         self.post(key, window, posted)
     }
 

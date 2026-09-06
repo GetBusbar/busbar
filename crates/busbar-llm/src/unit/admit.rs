@@ -113,10 +113,9 @@ pub struct Admitted {
     /// concurrency gauges, which release when its last clone drops — i.e. when the response stream
     /// completes or the request unwinds — so it is built here, with the admission, and never later.
     ///
-    /// Read by the Route step, which carries it to every accrual site, and by Meter. `allow` while
-    /// the module is dark: nothing installs these steps yet, so the reader does not exist to the
-    /// compiler until the Route step lands.
-    #[allow(dead_code)]
+    /// Read by the Route step, which carries it to every accrual site, and by Meter — both of which
+    /// now exist, so the `allow(dead_code)` this field used to carry has been deleted rather than
+    /// left to cover a reader that arrived.
     pub(crate) sink: Option<crate::engine::UsageSink>,
     /// The door's own rendered refusal — bytes, not a posted record. Present exactly when the
     /// decision refuses, and handed to the Audit step's not-charged terminal there and nowhere
@@ -253,7 +252,7 @@ mod tests {
 
     /// A governed app with one key, a one-cent flat fee, and whatever groups the caller declares.
     fn governed(
-        groups: BTreeMap<String, busbar_core::config::GroupCfg>,
+        groups: BTreeMap<String, busbar_substrate::config::groups::GroupCfg>,
         group: Option<&str>,
         seed: Option<(&str, u64)>,
     ) -> (
@@ -445,6 +444,9 @@ mod tests {
         let usage_token = UsageToken::mint(&seal);
         let posted = Posted::settle(
             hold,
+            // Nothing was routed, so the priced total is zero — and it is passed as money rather
+            // than derived from the report, which carries no lines to derive one from.
+            0,
             &Usage::report(&usage_token, Vec::new()).expect("no lines is a legal report"),
             &LedgerToken::mint(&seal),
         );
@@ -469,13 +471,13 @@ mod tests {
     async fn over_budget_refuses_with_no_charge_and_nothing_to_refund() {
         let groups = BTreeMap::from([(
             "bgrp".to_string(),
-            busbar_core::config::GroupCfg {
+            busbar_substrate::config::groups::GroupCfg {
                 parent: None,
                 enabled: true,
-                limits: vec![busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 100,
-                    per: Some(busbar_core::config::groups::LimitWindow::Total),
+                    per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                     scope: None,
                     on_exhaust: None,
                     downgrade_to: None,
@@ -572,7 +574,7 @@ mod tests {
         assert_eq!(refusal.reason(), ReasonCode::OverBudget);
         assert_eq!(
             refusal.step(),
-            StepName::Admit,
+            Some(StepName::Admit),
             "the decision stamps the step, so the record cannot claim it stopped elsewhere"
         );
     }

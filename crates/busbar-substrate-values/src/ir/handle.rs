@@ -78,9 +78,20 @@ pub mod handle_impl {
         }
 
         /// JSON egress path: value-first (a JSON body the router post-shapes) else `set_model` + final
-        /// bytes, written onto the `egress_proto` dialect. Default: empty bytes (non-request handles).
-        fn write_egress_request(&mut self, _egress_proto: &str, _model: &str) -> EgressWire {
-            EgressWire::Bytes(Bytes::new())
+        /// bytes, written onto the `egress_proto` dialect.
+        ///
+        /// The default is LOUD. A handle that does not override this cannot write itself onto any
+        /// dialect, and the honest answer to "write yourself onto `egress_proto`" is that it cannot
+        /// be done — not an empty body, which is a DIFFERENT request forwarded upstream in the
+        /// caller's name and diagnosable only from the backend's own complaint. The seam turns
+        /// [`EgressWire::Unrepresentable`] into the same refusal the representability guard raises.
+        fn write_egress_request(&mut self, egress_proto: &str, _model: &str) -> EgressWire {
+            EgressWire::Unrepresentable {
+                reason: format!(
+                    "this request cannot be written onto {egress_proto}: the operation carries no \
+                     writer for that dialect"
+                ),
+            }
         }
 
         /// OPAQUE egress path (multipart/audio): `set_model` + the `egress_proto` dialect's final bytes.

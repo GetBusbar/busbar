@@ -297,11 +297,13 @@ const FROZEN_PAIRS: &[(&str, &str)] = &[
 #[test]
 fn every_frozen_request_translation_reproduces() {
     let mut differing: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     let mut compared = 0usize;
     for (ingress, egress) in FROZEN_PAIRS {
         for (stem, body) in corpus(ingress) {
             let name = format!("req_{}2{}_{stem}.json", code(ingress), code(egress));
             if !golden_dir().join(&name).exists() {
+                missing.push(name);
                 continue;
             }
             compared += 1;
@@ -316,6 +318,12 @@ fn every_frozen_request_translation_reproduces() {
             }
         }
     }
+    assert!(
+        missing.is_empty(),
+        "{} frozen request outputs the corpus names were never read, so nothing checked them:\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
     assert!(
         compared > 0,
         "no frozen request output was found to compare"
@@ -655,11 +663,13 @@ const FROZEN_ANSWER_PAIRS: &[(&str, &str)] = &[
 #[test]
 fn every_frozen_answer_translation_reproduces() {
     let mut differing: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
     let mut compared = 0usize;
     for (egress, ingress) in FROZEN_ANSWER_PAIRS {
         for (stem, body) in answers_for(egress, ingress) {
             let name = format!("resp_{}2{}_{stem}.json", code(egress), code(ingress));
             if !golden_dir().join(&name).exists() {
+                missing.push(name);
                 continue;
             }
             compared += 1;
@@ -671,6 +681,12 @@ fn every_frozen_answer_translation_reproduces() {
             }
         }
     }
+    assert!(
+        missing.is_empty(),
+        "{} frozen answer outputs the corpus names were never read, so nothing checked them:\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
     assert!(compared > 0, "no frozen answer output was found to compare");
     assert!(
         differing.is_empty(),

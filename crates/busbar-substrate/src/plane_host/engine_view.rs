@@ -56,6 +56,17 @@ pub trait EngineTablesView {
     /// the telemetry engine-label bank.
     fn pools(&self) -> Vec<(&str, Vec<usize>)>;
 
+    /// WHETHER `pool` IS A CONFIGURED POOL — one probe, no projection.
+    ///
+    /// The odd one out on this trait, and deliberately so. Everything else here is a cold
+    /// scrape/discovery read that may allocate; this is the membership question a REQUEST asks, and
+    /// it is stated separately because the only way to ask it through [`Self::pools`] is to build
+    /// the whole projection — a `Vec` of pools plus a `Vec` per pool — and walk it. That is the
+    /// scrape path's price paid on the request path, and it scales with the size of the deployment
+    /// for a yes/no. It is the exact counterpart of [`Self::model_index`], which has always been the
+    /// one-probe form of the same question for the direct-model half.
+    fn pool_exists(&self, pool: &str) -> bool;
+
     /// The direct-model index: every `(model name, lane index)` reachable without a pool.
     fn model_indices(&self) -> Vec<(&str, usize)>;
 
@@ -109,6 +120,9 @@ pub static EMPTY_VIEW: EmptyEngineTablesView = EmptyEngineTablesView;
 impl EngineTablesView for EmptyEngineTablesView {
     fn pools(&self) -> Vec<(&str, Vec<usize>)> {
         Vec::new()
+    }
+    fn pool_exists(&self, _pool: &str) -> bool {
+        false
     }
     fn model_indices(&self) -> Vec<(&str, usize)> {
         Vec::new()

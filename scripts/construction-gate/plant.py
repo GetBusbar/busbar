@@ -33,11 +33,13 @@ TOUCHED = [
     "crates/busbar-llm/src/native_ingress.rs",
     "crates/busbar-llm/src/unit/route.rs",
     "crates/busbar-voice/src/lib.rs",
+    "crates/busbar-llm-codec/src/planted_codec_reach.rs",
     "crates/busbar-substrate/src/lib.rs",
     "crates/busbar-substrate/src/plane_host/mod.rs",
     "crates/busbar-substrate/src/teller/run.rs",
     "crates/busbar-core/src/router.rs",
     "crates/busbar-kernel/src/arena.rs",
+    "crates/busbar-kernel/src/tick.rs",
     "crates/busbar-kernel/src/teller.rs",
     "crates/busbar-kernel/src/lib.rs",
     "crates/hook-test-plugin/Cargo.toml",
@@ -89,6 +91,15 @@ def plant(rule, pristine, scratch, cfg, baseline):
     elif rule == "ports-only:busbar-voice":
         append(scratch, "crates/busbar-voice/src/lib.rs",
                "fn planted_reach() { let _ = busbar_core::planted::Thing; }")
+    elif rule == "ports-only:busbar-llm":
+        # The reach is planted in the plane's OTHER half -- the pure codec crate the LLM plane shed.
+        # Nothing under crates/busbar-llm/ is touched, so this only goes red if the plane's row
+        # covers both halves; a scanner that knows only the engine crate stays green here.
+        codec = os.path.join(scratch, "crates/busbar-llm-codec/src")
+        if not os.path.isdir(codec):
+            nothing_to_plant("crates/busbar-llm-codec/src does not exist yet")
+        append(scratch, "crates/busbar-llm-codec/src/planted_codec_reach.rs",
+               "fn planted_reach() { let _ = busbar_core::planted::Thing; }")
     elif rule == "ports-only-tests:busbar-voice":
         append(scratch, "crates/busbar-voice/src/lib.rs",
                "#[cfg(test)]\nmod planted_tests {\n"
@@ -104,9 +115,21 @@ def plant(rule, pristine, scratch, cfg, baseline):
         append(scratch, "crates/busbar-core/src/router.rs",
                "fn planted_terminal() { crate::ingress::finish_inner(); }")
     elif rule == "token-sealed":
-        # A hold opened outside the Teller: a forged token.
+        # A token MINTED outside the kernel: a forged token.
+        #
+        # This used to forge `Hold::open(`, and it stopped planting anything the rule could see.
+        # The rule's own `why` now says so: opening a hold with a token you were handed is the
+        # design working, and only MINTING is forgery, so `patterns` narrowed to the `*::mint(`
+        # constructors and this plant was left spelling a call nothing matches. It planted a
+        # violation of a promise the gate no longer makes, the gate stayed green, and a green
+        # self-test row read as "the rule sees its violation" when the rule saw nothing at all.
+        # A saboteur that cannot sabotage is the one failure a self-test cannot report about itself.
+        #
+        # `LedgerToken::mint(` is deliberately not one of the two patterns delegated to their own
+        # rows below, so this plant trips exactly the aggregate row.
         append(scratch, "crates/busbar-substrate/src/plane_host/mod.rs",
-               "fn planted_forge() { let _ = crate::teller::Hold::open(None, None, false); }")
+               "fn planted_forge(seal: &busbar_caps::KernelSeal) { "
+               "let _ = busbar_caps::LedgerToken::mint(seal); }")
     elif rule == "teller-step-order":
         rel = cfg["rules"]["teller-step-order"]["file"]
         path = os.path.join(scratch, rel)
@@ -153,6 +176,17 @@ def plant(rule, pristine, scratch, cfg, baseline):
         n = 40
         body = "\n".join(f"    let _planted_{i} = 1;" for i in range(n))
         append(scratch, "crates/busbar-kernel/src/arena.rs", f"fn planted_bloat() {{\n{body}\n}}")
+    elif rule == "loc-ceilings:kernel:ticks":
+        # The same shape as arena above, against the clock file. This row spent its life matching no
+        # file at all and reporting a vacuous 0; a row that cannot be made red is not a ceiling.
+        spec = cfg["rules"]["loc-ceilings"]["kernel_files"]["ticks"]
+        target = next((p for p in spec["patterns"]
+                       if os.path.exists(os.path.join(scratch, "crates/busbar-kernel/src", p))), None)
+        if target is None:
+            nothing_to_plant(f"no kernel file matches {spec['patterns']}")
+        n = 40
+        body = "\n".join(f"    let _planted_{i} = 1;" for i in range(n))
+        append(scratch, f"crates/busbar-kernel/src/{target}", f"fn planted_bloat() {{\n{body}\n}}")
     elif rule == "manifest-allowlist:hook-test-plugin":
         path = os.path.join(scratch, "crates/hook-test-plugin/Cargo.toml")
         with open(path, encoding="utf-8") as fh:

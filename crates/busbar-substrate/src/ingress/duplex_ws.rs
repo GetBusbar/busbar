@@ -23,34 +23,48 @@ use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::response::Response;
-use futures::channel::mpsc::{unbounded, UnboundedReceiver, UnboundedSender};
+use futures::channel::mpsc::{channel as bounded, unbounded, Receiver, UnboundedSender};
 use futures::{SinkExt, StreamExt};
 
 use crate::ingress::byte_duplex::{serve_messages, DuplexPlane};
 use crate::plane_host::{run_gauntlet_session, GauntletPlane, GauntletRequest};
+
+/// How many inbound frames one accepted socket may hold for a reader that has not taken them yet. The
+/// queue is what stands between a client's write rate and this node's memory: unbounded, every frame a
+/// client can push through the socket is held here and the client alone decides what a session costs.
+/// At the bound the acceptor's reader stops taking frames off the socket, so the backlog stays on the
+/// client's own transport — where TCP already knows how to hold it — instead of on this node's heap.
+/// Deep enough that ordinary jitter between a peer's writes and a plane's reads never touches it.
+pub(crate) const MAX_QUEUED_INBOUND_FRAMES: usize = 64;
 
 /// Bridge an already-upgraded [`WebSocket`] into the neutral `(frame-stream, frame-sink)` the pump
 /// speaks, over two mpsc channels (both `Unpin + Send`, the shape `serve_messages` requires): inbound
 /// text/binary → one `Vec<u8>` frame; an outbound frame → one binary WS message. Control frames and
 /// receive errors are dropped so only data payloads cross; the peer's close ends the inbound stream —
 /// the message-duplex analogue of EOF — and dropping the outbound sink closes the socket.
-pub fn channel(socket: WebSocket) -> (UnboundedReceiver<Vec<u8>>, UnboundedSender<Vec<u8>>) {
+///
+/// The INBOUND half is bounded at [`MAX_QUEUED_INBOUND_FRAMES`]: the reader awaits capacity rather
+/// than queueing whatever arrives, so a client outrunning its own session is held by TCP and not by
+/// this node's memory. The OUTBOUND half stays unbounded — its producer is the plane, whose frames are
+/// answers this side has already committed to, and blocking a handler on the socket's write rate would
+/// stall the very session it is answering.
+pub fn channel(socket: WebSocket) -> (Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) {
     let (mut ws_tx, mut ws_rx) = socket.split();
-    let (in_tx, in_rx) = unbounded::<Vec<u8>>();
+    let (mut in_tx, in_rx) = bounded::<Vec<u8>>(MAX_QUEUED_INBOUND_FRAMES);
     let (out_tx, mut out_rx) = unbounded::<Vec<u8>>();
 
     // Reader: inbound WS messages → `Vec<u8>` frames. Ends on close/error; dropping `in_tx` ends the
-    // pump's inbound stream.
+    // pump's inbound stream. `send` awaits capacity, which is where the backpressure lives.
     tokio::spawn(async move {
         while let Some(msg) = ws_rx.next().await {
             match msg {
                 Ok(Message::Binary(b)) => {
-                    if in_tx.unbounded_send(b.to_vec()).is_err() {
+                    if in_tx.send(b.to_vec()).await.is_err() {
                         break;
                     }
                 }
                 Ok(Message::Text(t)) => {
-                    if in_tx.unbounded_send(t.as_bytes().to_vec()).is_err() {
+                    if in_tx.send(t.as_bytes().to_vec()).await.is_err() {
                         break;
                     }
                 }
@@ -81,7 +95,7 @@ pub fn channel(socket: WebSocket) -> (UnboundedReceiver<Vec<u8>>, UnboundedSende
 /// session without ever naming the HTTP handshake, the routing, or the WS framing.
 pub fn accept<F, Fut>(upgrade: WebSocketUpgrade, on_socket: F) -> Response
 where
-    F: FnOnce(UnboundedReceiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
+    F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     upgrade.on_upgrade(move |socket| async move {
@@ -125,7 +139,7 @@ pub fn accept_gauntlet<F, Fut>(
     on_socket: F,
 ) -> Response
 where
-    F: FnOnce(UnboundedReceiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
+    F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     match run_gauntlet_session(req, plane) {

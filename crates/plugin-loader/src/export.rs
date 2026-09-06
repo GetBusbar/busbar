@@ -113,6 +113,13 @@ pub fn load_export_from_bytes(
         manifest_kind,
         Some(staged),
     )?;
+    export_from_raw(raw, display)
+}
+
+/// Ask an already-wired plugin what it carries and hand back the sink. Split from the staging above
+/// so the two questions a load asks — which streams, which routes — are exercisable over a chosen
+/// set of answers rather than only over whatever a built cdylib happens to say.
+fn export_from_raw(raw: RawPlugin, display: &str) -> Result<DynExport, String> {
     // Query the declared streams ONCE at load and retain them alongside the handle.
     let streams =
         match raw.transport_call::<ExportRequest, ExportResponse>(&ExportRequest::Streams)? {
@@ -123,17 +130,35 @@ pub fn load_export_from_bytes(
             ))
             }
         };
-    // Query the declared HTTP routes ONCE at load. ADDITIVE: a sink built against an older SDK cannot
-    // decode the `routes` op and its dispatch returns the undecodable-variant signal (or an unexpected
-    // arm) — treated as "no HTTP surface" rather than a load failure, so an existing metrics-push sink
-    // keeps loading unchanged.
-    let routes = match raw.transport_call::<ExportRequest, ExportResponse>(&ExportRequest::Routes) {
-        Ok(ExportResponse::Routes(r)) => r,
-        Ok(_) | Err(_) => Vec::new(),
-    };
+    // Query the declared HTTP routes ONCE at load. ADDITIVE, and on exactly one arm: a sink built
+    // against an older SDK cannot decode the `routes` op and says so out of band, which is the sink
+    // saying it has no HTTP surface — that one keeps loading with an empty route table, as it did
+    // before the op existed. Every OTHER failure is the sink failing to ANSWER rather than answering
+    // "none": a caught panic, a backend error and a caller-protocol violation all fail the load,
+    // because mounting a sink whose route table nobody has heard from mounts a gate that is not there.
+    let routes =
+        match raw.transport_call_status::<ExportRequest, ExportResponse>(&ExportRequest::Routes) {
+            Ok(ExportResponse::Routes(r)) => r,
+            Ok(other) => {
+                return Err(format!(
+                    "export plugin '{display}' returned an unexpected response to routes: {other:?}"
+                ))
+            }
+            Err(e) if e.is_unsupported() => Vec::new(),
+            Err(e) => {
+                return Err(format!(
+                    "export plugin '{display}' could not be asked for its HTTP routes: {}",
+                    e.message
+                ))
+            }
+        };
     Ok(DynExport {
         raw,
         streams,
         routes,
     })
 }
+
+#[cfg(test)]
+#[path = "tests/export_tests.rs"]
+mod tests;

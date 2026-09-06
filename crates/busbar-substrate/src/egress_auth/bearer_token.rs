@@ -86,6 +86,10 @@ pub(crate) type CredentialProviderArc = Arc<dyn CredentialProvider>;
 /// A bearer credential backed by a background-refreshed cached token.
 pub(crate) struct BearerToken {
     token: RwLock<Arc<CachedToken>>,
+    /// THE LANE'S HEARTBEAT, held only so it dies with the provider. The refresher waits on the
+    /// paired receiver alongside its sleep, so a config reload that drops this lane ends its
+    /// refresher within the reload rather than at the end of a token lifetime.
+    _alive: Option<tokio::sync::watch::Sender<()>>,
 }
 
 impl CredentialProvider for BearerToken {
@@ -123,12 +127,14 @@ impl CredentialProvider for BearerToken {
 /// refresher (which mints immediately and re-mints before expiry). When no tokio runtime is present
 /// (e.g. a sync construction test) the refresher is skipped and the credential simply holds no token.
 pub(crate) fn spawn(minter: Minter) -> CredentialProviderArc {
+    let (alive, dropped) = tokio::sync::watch::channel(());
     let provider = Arc::new(BearerToken {
         token: RwLock::new(Arc::new(CachedToken::new(String::new(), 0))),
+        _alive: Some(alive),
     });
     if let Ok(handle) = tokio::runtime::Handle::try_current() {
         let weak = Arc::downgrade(&provider);
-        handle.spawn(async move { refresh_loop(minter, weak).await });
+        handle.spawn(async move { refresh_loop(minter, weak, dropped).await });
     }
     provider
 }
@@ -162,7 +168,11 @@ fn next_refresh_secs(expires_at: u64, now: u64) -> u64 {
 
 /// Mint (immediately on entry), store, then sleep until shortly before expiry and repeat. Exits when
 /// the provider is dropped (config reload) so the task never outlives its lane.
-async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
+async fn refresh_loop(
+    minter: Minter,
+    weak: Weak<BearerToken>,
+    mut dropped: tokio::sync::watch::Receiver<()>,
+) {
     loop {
         match minter().await {
             // A 200 with an EMPTY access_token must be treated as a (retryable) failure, not stored:
@@ -179,7 +189,9 @@ async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
                 if weak.upgrade().is_none() {
                     return;
                 }
-                tokio::time::sleep(Duration::from_secs(MIN_SLEEP_SECS)).await;
+                if !wait_unless_dropped(MIN_SLEEP_SECS, &mut dropped).await {
+                    return;
+                }
             }
             Ok(fresh) => {
                 let expires_at = fresh.expires_at;
@@ -190,7 +202,9 @@ async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
                     None => return, // provider dropped — stop refreshing
                 }
                 let sleep_secs = next_refresh_secs(expires_at, now_epoch());
-                tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
+                if !wait_unless_dropped(sleep_secs, &mut dropped).await {
+                    return;
+                }
             }
             Err(e) => {
                 // Keep serving whatever token is current; retry soon. If retries keep failing past
@@ -200,9 +214,27 @@ async fn refresh_loop(minter: Minter, weak: Weak<BearerToken>) {
                 if weak.upgrade().is_none() {
                     return;
                 }
-                tokio::time::sleep(Duration::from_secs(MIN_SLEEP_SECS)).await;
+                if !wait_unless_dropped(MIN_SLEEP_SECS, &mut dropped).await {
+                    return;
+                }
             }
         }
+    }
+}
+
+/// Sleep `secs` UNLESS the provider goes away first; `false` means it did and the caller must stop.
+///
+/// The wait between mints is most of a token lifetime, and the check for a dropped provider used to
+/// happen only after it. A reloaded-away lane therefore kept a task alive for the rest of that
+/// lifetime and then minted one more token — a real request to the operator's token endpoint on
+/// behalf of a lane that no longer exists — before noticing. Waiting on the provider's heartbeat
+/// alongside the clock is what makes the reload the end of the task.
+async fn wait_unless_dropped(secs: u64, dropped: &mut tokio::sync::watch::Receiver<()>) -> bool {
+    // The provider holds the only sender, so `changed()` resolves `Err` the moment it is dropped;
+    // the elapsed timeout is the ordinary "slept the whole wait, carry on".
+    match tokio::time::timeout(Duration::from_secs(secs), dropped.changed()).await {
+        Err(_elapsed) => true,
+        Ok(r) => r.is_ok(),
     }
 }
 

@@ -13,6 +13,7 @@ use busbar_substrate_values::handlers::{CodecError, IngressReject, OperationHand
 use busbar_substrate_values::ir::handle::IrHandle;
 use busbar_substrate_values::ir::invoke::{InvokeReq, InvokeResp};
 use busbar_substrate_values::ir::neutral_handles::{InvokeReqHandle, InvokeRespHandle};
+use busbar_substrate_values::ir::SourceScopedExtra;
 #[cfg(any(test, feature = "test-support"))]
 use busbar_substrate_values::wire::WireBody;
 
@@ -50,11 +51,15 @@ impl OperationHandler for InvokeOperation {
 /// dissolved `(mcp, Invoke)` round-trip test can recover the concrete IR without a downcast. Used in
 /// production by the trait `read_request` above.
 pub(crate) fn read_invoke_request(body: &[u8]) -> Result<InvokeReq, IngressReject> {
-    let v: serde_json::Value =
+    // MUTABLE because the document is this function's OWN and is dropped on the way out: every
+    // member the IR keeps is MOVED out of it with `Value::take` rather than deep-cloned. Arguments
+    // are caller-authored and arbitrarily large, so cloning them copied a whole tree only to free
+    // the original a line later.
+    let mut v: serde_json::Value =
         serde_json::from_slice(body).map_err(|e| IngressReject::BadRequest(e.to_string()))?;
     // The envelope's own validity is `ingress::jsonrpc`'s business and has already been decided
     // before a body reaches a codec; what this reader owns is the `params` shape.
-    let params = v.get("params").ok_or_else(|| {
+    let params = v.get_mut("params").ok_or_else(|| {
         IngressReject::BadRequest("a tools/call carries a `params` member".to_string())
     })?;
     let tool = params
@@ -69,8 +74,8 @@ pub(crate) fn read_invoke_request(body: &[u8]) -> Result<InvokeReq, IngressRejec
         // ABSENT ARGUMENTS ARE AN EMPTY OBJECT, not an error: a tool that takes none is called
         // with none, and rejecting that would refuse a legal call.
         arguments: params
-            .get("arguments")
-            .cloned()
+            .get_mut("arguments")
+            .map(serde_json::Value::take)
             .unwrap_or_else(|| serde_json::json!({})),
         extra: Default::default(),
     })
@@ -78,27 +83,86 @@ pub(crate) fn read_invoke_request(body: &[u8]) -> Result<InvokeReq, IngressRejec
 
 /// Wire -> concrete `InvokeResp` parse (see [`read_invoke_request`]).
 pub(crate) fn read_invoke_response(wire: &[u8]) -> Result<InvokeResp, CodecError> {
-    let v: serde_json::Value =
+    // MOVED, never cloned — see [`read_invoke_request`]. Tool output is the larger of the two
+    // documents on this operation.
+    let mut v: serde_json::Value =
         serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
     let result = v
-        .get("result")
+        .get_mut("result")
         .ok_or_else(|| CodecError::Malformed("no `result` member".to_string()))?;
+    let content = result
+        .get_mut("content")
+        .map(serde_json::Value::take)
+        .unwrap_or_else(|| serde_json::json!([]));
+    // THE TOOL'S OWN VERDICT, and it is not the protocol's. `isError` on a successful
+    // exchange means the tool ran and failed; a call that could not be made at all is a
+    // refusal that never produces an `IrResp`. Collapsing the two tells a caller their
+    // request was malformed when their tool merely returned an error.
+    //
+    // A NON-BOOLEAN `isError` IS UNREADABLE, NOT FALSE. Absent means the ordinary successful call,
+    // but a peer that puts a string, a number or an object there has not said the tool succeeded;
+    // treating it as `false` serves a failure as a success, which is precisely the collapse this
+    // separation exists to prevent, so it is refused instead.
+    let is_error = match result.get("isError") {
+        None => false,
+        Some(serde_json::Value::Bool(b)) => *b,
+        Some(other) => {
+            return Err(CodecError::Malformed(format!(
+                "`isError` is the tool's own verdict and is a boolean, not {other}"
+            )))
+        }
+    };
+    let structured = result
+        .get_mut("structuredContent")
+        .map(serde_json::Value::take);
+
+    // AN EXCHANGE THAT IS NOT OVER SAYS SO IN THESE THREE MEMBERS, and busbar models none of them
+    // first-class — so they are kept under the source protocol's own namespace rather than dropped.
+    // `requestState` in particular is the ONLY thing that can resume the exchange; discarding it
+    // ends a conversation the peer believes is still open.
+    let mut carried = serde_json::Map::new();
+    for key in INTERIM_MEMBERS {
+        if let Some(v) = result.get_mut(key).map(serde_json::Value::take) {
+            carried.insert((*key).to_string(), v);
+        }
+    }
+    let unfinished = carried
+        .get("resultType")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|t| t != RESULT_TYPE_COMPLETE);
+    // AN ANSWER THAT IS NOT AN ANSWER YET IS NOT AN EMPTY SUCCESSFUL CALL. With nothing in it and a
+    // `resultType` that declares it unfinished, the only reading left is "the tool ran and returned
+    // nothing", which is a different fact from the one on the wire. Refusing is the honest answer:
+    // busbar serves what it can attribute, and it cannot attribute this one yet.
+    if unfinished && !is_error && structured.is_none() && is_empty_content(&content) {
+        return Err(CodecError::Malformed(
+            "the result declares itself unfinished and carries no content, which is not a \
+             successful tool call"
+                .to_string(),
+        ));
+    }
+    let mut extra = SourceScopedExtra::new();
+    if !carried.is_empty() {
+        extra.insert(crate::PLANE_KEY.to_string(), carried);
+    }
     Ok(InvokeResp {
-        content: result
-            .get("content")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!([])),
-        // THE TOOL'S OWN VERDICT, and it is not the protocol's. `isError` on a successful
-        // exchange means the tool ran and failed; a call that could not be made at all is a
-        // refusal that never produces an `IrResp`. Collapsing the two tells a caller their
-        // request was malformed when their tool merely returned an error.
-        is_error: result
-            .get("isError")
-            .and_then(serde_json::Value::as_bool)
-            .unwrap_or(false),
-        structured: result.get("structuredContent").cloned(),
-        extra: Default::default(),
+        content,
+        is_error,
+        structured,
+        extra,
     })
+}
+
+/// The `result` members that describe an exchange busbar's IR does not model — whether the result is
+/// final, what the peer is waiting for, and the opaque token that resumes it.
+const INTERIM_MEMBERS: &[&str] = &["resultType", "requestState", "inputRequests"];
+
+/// The one `resultType` that means the exchange is over.
+const RESULT_TYPE_COMPLETE: &str = "complete";
+
+/// Is this `content` nothing at all? Absent and `[]` are the same fact; anything else is content.
+fn is_empty_content(content: &serde_json::Value) -> bool {
+    content.as_array().is_some_and(|items| items.is_empty())
 }
 
 /// IR → `tools/call` request wire — the former `InvokeOperation::write_request` body, moved to a
@@ -127,8 +191,10 @@ pub(crate) fn invoke_write_request(r: &InvokeReq) -> Bytes {
 #[allow(dead_code)]
 pub(crate) fn invoke_write_response(r: &InvokeResp) -> WireBody {
     let mut result = serde_json::json!({ "content": r.content, "isError": r.is_error });
-    // Carried, never synthesised: busbar models no output schema, so it emits structured
-    // content only when the tool produced some.
+    // CARRIED VERBATIM, NEVER SYNTHESISED. This IR relays the structured content the tool produced
+    // and emits the member only where there was some; it does not check it. Holding the result to
+    // the schema busbar published for the tool is a separate job with separate inputs, and it lives
+    // at the plane in `crate::outputschema::check`.
     if let Some(s) = &r.structured {
         result["structuredContent"] = s.clone();
     }

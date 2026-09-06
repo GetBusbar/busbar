@@ -208,11 +208,15 @@ fn every_unit_end_leaves_through_the_one_exit() {
         Outcome::Completed,
         Outcome::Refused(StepName::Admit, ReasonCode::OverBudget),
         Outcome::Failed(StepName::Route, ReasonCode::PlanePanic),
-        Outcome::Aborted(Abort::Client),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        }),
         Outcome::Aborted(Abort::Kernel {
             reason: ReasonCode::Revoked,
         }),
-        Outcome::Aborted(Abort::Drain),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::Drain,
+        }),
         Outcome::Aborted(Abort::Superseded {
             by: busbar_caps::UnitKey::new(9),
         }),
@@ -430,7 +434,9 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
     for outcome in [
         Outcome::Completed,
         Outcome::Failed(StepName::Route, ReasonCode::ClientGone),
-        Outcome::Aborted(Abort::Drain),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::Drain,
+        }),
     ] {
         gauge.acquire(&bucket, 4).expect("room in the gauge");
         assert_eq!(gauge.count(&bucket), 1);
@@ -514,6 +520,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now: 0,
         })
         .expect("the empty table takes the first unit");
 
@@ -617,5 +624,6 @@ fn client(key: u64) -> Enter {
         provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(&Kernel::new(), &TestDoor, principal()),
+        now: 0,
     }
 }

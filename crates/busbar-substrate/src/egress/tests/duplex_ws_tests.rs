@@ -148,6 +148,110 @@ async fn ws_transport_round_trips_a_frame_both_directions() {
     assert_eq!(got, b"ping", "the frame crossed both directions verbatim");
 }
 
+/// A PEER WRITING FASTER THAN ITS FRAMES ARE READ MUST NOT BE ABLE TO QUEUE THEM ALL HERE. The
+/// acceptor's inbound channel is what stands between a socket and this node's memory: with no bound,
+/// every frame a client can push through the socket is held in it, so the client alone decides how
+/// much a session costs. Bounded, the acceptor's own reader stops taking frames off the socket at the
+/// bound and the backlog stays on the client's transport, where TCP already knows how to hold it.
+#[tokio::test]
+async fn the_acceptor_queues_no_more_inbound_frames_than_its_bound() {
+    use std::sync::Mutex;
+
+    type Parked = Arc<Mutex<Option<futures::channel::mpsc::Receiver<Vec<u8>>>>>;
+
+    // The route PARKS the frame stream instead of serving it — a session whose reader is busy. Every
+    // frame the client sends then has nowhere to go but the channel, which is the thing under test.
+    async fn ws_route(
+        axum::extract::State(parked): axum::extract::State<Parked>,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        ws_ingress::accept(upgrade, move |stream, sink| async move {
+            *parked.lock().unwrap() = Some(stream);
+            let _write_side = sink; // held open, so the socket stays up while nothing is read
+            std::future::pending::<()>().await;
+        })
+    }
+
+    let parked: Parked = Arc::new(Mutex::new(None));
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(ws_route))
+        .with_state(parked.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let url = format!("ws://{addr}/");
+    let (_stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+        .await
+        .expect("dial the parked acceptor");
+
+    let flood = ws_ingress::MAX_QUEUED_INBOUND_FRAMES * 8;
+    for _ in 0..flood {
+        sink.send(b"flood".to_vec()).await.ok();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let mut queued = 0usize;
+    let mut held = parked.lock().unwrap();
+    let stream = held.as_mut().expect("the session parked its frame stream");
+    while stream.try_recv().is_ok() {
+        queued += 1;
+    }
+    assert!(
+        queued <= ws_ingress::MAX_QUEUED_INBOUND_FRAMES + 1,
+        "a flood of {flood} frames left {queued} queued on an unread session"
+    );
+}
+
+/// THE SAME BOUND ON THE UPSTREAM LEG. An upstream that emits faster than the leg consumes is the
+/// mirror image of a flooding client, and the dialer's inbound queue is the same single thing between
+/// that socket and the heap. A relay has two legs; a bound on only one of them is not a bound.
+#[tokio::test]
+async fn the_dialer_queues_no_more_upstream_frames_than_its_bound() {
+    use futures::FutureExt;
+
+    let flood = crate::egress::duplex_ws::MAX_QUEUED_UPSTREAM_FRAMES * 8;
+
+    // An upstream that talks unprompted, as a realtime provider does: it pushes its whole output at
+    // the socket without waiting to be asked.
+    async fn ws_route(
+        axum::extract::State(flood): axum::extract::State<usize>,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        ws_ingress::accept(upgrade, move |_stream, mut sink| async move {
+            for _ in 0..flood {
+                if sink.send(b"upstream".to_vec()).await.is_err() {
+                    break;
+                }
+            }
+            std::future::pending::<()>().await;
+        })
+    }
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(ws_route))
+        .with_state(flood);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let url = format!("ws://{addr}/");
+    let (mut stream, _sink) = duplex_ws::dial(&url, loopback_policy())
+        .await
+        .expect("dial the flooding upstream");
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Counted WITHOUT yielding, so the reader task cannot refill behind the count: this is what the
+    // queue was holding at the moment the leg first looked at it.
+    let mut queued = 0usize;
+    while stream.next().now_or_never().flatten().is_some() {
+        queued += 1;
+    }
+    assert!(
+        queued <= crate::egress::duplex_ws::MAX_QUEUED_UPSTREAM_FRAMES + 1,
+        "a flood of {flood} upstream frames left {queued} queued on an unread leg"
+    );
+}
+
 /// `Transport::WebSocket` IS ARMED: a real caller selects it, resolves the axis to
 /// [`UpstreamWireKind::Duplex`] through `upstream_wire()`, and drives the guarded dialer that arm names
 /// — the wire resolves to a LIVE socket, not an `unreachable!()`.

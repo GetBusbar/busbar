@@ -408,17 +408,39 @@ fn test_encode_exception_frame_is_valid() {
     assert!(!frame.starts_with(b"event:"));
 }
 
-/// An oversized payload (above `MAX_FRAME_BYTES`) must be DROPPED (empty frame), never emitted as
-/// a CRC-valid frame carrying byte-truncated, unparseable JSON. Exercises the cap branch that the
-/// round-trip test (64 KiB) never reaches.
+/// THE CAP, FROM BOTH SIDES. A frame whose total length is EXACTLY `MAX_FRAME_BYTES` is encoded
+/// whole; one byte more is DROPPED (empty frame), never emitted as a CRC-valid frame carrying
+/// byte-truncated, unparseable JSON.
+///
+/// Asserting only the far side of a cap says something large is rejected; it does not say the
+/// boundary is where the code claims it is. An off-by-one that rejected the last legal frame — a
+/// silently dropped event on a live stream — would have passed a one-sided test.
 #[test]
-fn test_encode_frame_oversized_payload_drops_frame() {
-    // A payload comfortably above MAX_FRAME_BYTES.
-    let payload = vec![b'x'; MAX_FRAME_BYTES + 1024];
-    let frame = encode_frame("contentBlockDelta", &payload);
+fn test_encode_frame_cap_admits_the_boundary_and_drops_one_past_it() {
+    // Measure the per-frame overhead (prelude + the three headers + trailing CRC) from the encoder
+    // itself rather than restating the wire layout here, so the boundary under test is its own.
+    const EVENT: &str = "contentBlockDelta";
+    let probe = encode_frame(EVENT, b"x");
+    assert!(!probe.is_empty(), "the probe frame must encode");
+    let overhead = probe.len() - 1;
+
+    let at_cap = vec![b'x'; MAX_FRAME_BYTES - overhead];
+    let frame = encode_frame(EVENT, &at_cap);
+    assert_eq!(
+        frame.len(),
+        MAX_FRAME_BYTES,
+        "a frame of exactly MAX_FRAME_BYTES is legal and must be encoded whole"
+    );
+    assert_eq!(
+        u32::from_be_bytes(frame[0..4].try_into().unwrap()) as usize,
+        MAX_FRAME_BYTES,
+        "and its prelude must declare exactly the cap"
+    );
+
+    let one_over = vec![b'x'; MAX_FRAME_BYTES - overhead + 1];
     assert!(
-        frame.is_empty(),
-        "oversized payload must drop the frame, not truncate JSON into a CRC-valid corrupt frame"
+        encode_frame(EVENT, &one_over).is_empty(),
+        "one byte past the cap must drop the frame, not truncate JSON into a CRC-valid corrupt frame"
     );
 }
 
@@ -575,55 +597,62 @@ fn test_encode_frame_byte_for_byte_matches_reference() {
 
 use crate::test_support::warn_capture::WarnCapture;
 
-/// When an oversized `:event-type` makes
-/// `push_string_header` reject the header, `encode_frame` drops the frame. The drop stays OBSERVABLE
-/// in the diagnostics catalog — it now carries `BUSBAR-9004` at `debug!` (a per-request data-path
-/// event that is unreachable for any real Bedrock event name, so it must not spam operator WARN
-/// logs). This test pins two things: the frame is dropped (empty `Vec`), and the drop is SILENT at
-/// WARN — it must not surface as an unlatched per-frame warning.
+/// When an oversized `:event-type` makes `push_string_header` reject the header, `encode_frame`
+/// drops the frame. The drop stays OBSERVABLE in the diagnostics catalog: it carries
+/// `EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE`'s own code, at `debug!` — a per-request data-path event
+/// unreachable for any real Bedrock event name, so it must not spam operator WARN logs.
+///
+/// The capture asserts the CODE, at the level the diagnostic actually emits at. Capturing only at
+/// WARN and asserting nothing was captured says the event is not a warning; it says nothing about
+/// whether the event happened at all, so deleting the emission entirely would have passed.
 #[test]
-fn test_encode_frame_oversized_event_type_warns() {
+fn test_encode_frame_oversized_event_type_is_a_coded_debug_drop() {
+    use crate::diagnostics::EVENTSTREAM_EVENTTYPE_HEADER_OVERSIZE as DIAG;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-
     let huge_event_type = "e".repeat(u16::MAX as usize + 1);
+
+    let debug_cap = WarnCapture::capturing_debug();
+    let warn_cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry()
+        .with(debug_cap.clone())
+        .with(warn_cap.clone());
     let frame = tracing::subscriber::with_default(subscriber, || {
-        // Emit twice: tracing caches per-callsite interest globally, and a concurrent test
-        // installing/dropping another dispatcher can race the cache rebuild so the FIRST
-        // emission through this scoped subscriber is occasionally invisible (seen as a CI-only
-        // flake). The second emission always follows the rebuilt interest, making the capture
-        // deterministic; the returned frame is from the first call (identical inputs).
-        let f = encode_frame(&huge_event_type, br#"{"x":1}"#);
-        let _ = encode_frame(&huge_event_type, br#"{"x":1}"#);
-        f
+        encode_frame(&huge_event_type, br#"{"x":1}"#)
     });
 
     assert!(
         frame.is_empty(),
         "oversized :event-type still drops the frame"
     );
-    let msgs = cap.messages();
+    let banner = DIAG.banner().to_string();
     assert!(
-        msgs.is_empty(),
-        "dropping an oversized :event-type frame is a per-frame data-path event (BUSBAR-9004) and \
-         must stay at debug, never an unlatched WARN, got: {msgs:?}"
+        debug_cap.contains(&banner),
+        "the drop must carry diag={banner} so an operator can look it up; captured: {:?}",
+        debug_cap.messages()
+    );
+    let warned = warn_cap.messages();
+    assert!(
+        warned.is_empty(),
+        "and it must stay at debug, never an unlatched per-frame WARN, got: {warned:?}"
     );
 }
 
-/// The same guarantee for
-/// `encode_exception_frame` — an oversized `:exception-type` drops the frame. The drop is observable
-/// as `BUSBAR-9005` at `debug!` (a swallowed mid-stream error-signal frame, near-unreachable per
-/// request), so this pins the drop AND that it stays SILENT at WARN rather than spamming per frame.
+/// The same guarantee for `encode_exception_frame` — an oversized `:exception-type` drops the frame,
+/// and the drop carries `EVENTSTREAM_EXCEPTIONTYPE_HEADER_OVERSIZE`'s code at `debug!` (a swallowed
+/// mid-stream error signal, near-unreachable per request) rather than spamming per frame.
 #[test]
-fn test_encode_exception_frame_oversized_type_warns() {
+fn test_encode_exception_frame_oversized_type_is_a_coded_debug_drop() {
+    use crate::diagnostics::EVENTSTREAM_EXCEPTIONTYPE_HEADER_OVERSIZE as DIAG;
     use tracing_subscriber::layer::SubscriberExt as _;
 
-    let cap = WarnCapture::default();
-    let subscriber = tracing_subscriber::registry().with(cap.clone());
-
     let huge = "x".repeat(u16::MAX as usize + 1);
+
+    let debug_cap = WarnCapture::capturing_debug();
+    let warn_cap = WarnCapture::default();
+    let subscriber = tracing_subscriber::registry()
+        .with(debug_cap.clone())
+        .with(warn_cap.clone());
     let frame =
         tracing::subscriber::with_default(subscriber, || encode_exception_frame(&huge, "msg"));
 
@@ -631,11 +660,16 @@ fn test_encode_exception_frame_oversized_type_warns() {
         frame.is_empty(),
         "oversized :exception-type still drops the frame"
     );
-    let msgs = cap.messages();
+    let banner = DIAG.banner().to_string();
     assert!(
-        msgs.is_empty(),
-        "dropping an oversized :exception-type frame is a per-frame data-path event (BUSBAR-9005) \
-         and must stay at debug, never an unlatched WARN, got: {msgs:?}"
+        debug_cap.contains(&banner),
+        "the drop must carry diag={banner}; captured: {:?}",
+        debug_cap.messages()
+    );
+    let warned = warn_cap.messages();
+    assert!(
+        warned.is_empty(),
+        "and it must stay at debug, never an unlatched per-frame WARN, got: {warned:?}"
     );
 }
 

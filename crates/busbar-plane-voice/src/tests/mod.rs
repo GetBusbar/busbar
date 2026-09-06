@@ -74,15 +74,11 @@ mod purity {
         assert_eq!(VoicePlane::EMPTY, VoicePlane::default());
     }
 
-    /// The µ-law transform is a pure function: the same byte decodes to the same sample every time,
-    /// with no I/O anywhere in the call.
-    #[test]
-    fn ulaw_decode_is_deterministic() {
-        use crate::ulaw::ulaw_byte_to_pcm16;
-        for byte in 0u8..=255 {
-            assert_eq!(ulaw_byte_to_pcm16(byte), ulaw_byte_to_pcm16(byte));
-        }
-    }
+    // The µ-law transform's determinism used to be "asserted" here by comparing one call of a pure
+    // function to a second call of the same pure function over the same byte — a statement no
+    // implementation of it can falsify, and one that read as coverage the transform did not have.
+    // What the transform is actually held to lives in [`super::ulaw`]: the standard's own reference
+    // vectors in both directions, and a round trip over all 256 bytes that pins the decoded sample.
 }
 
 /// Style rules this crate holds itself to, checked rather than merely asserted in prose: no

@@ -360,6 +360,9 @@ pub struct Enter {
     pub zero_hold_tick: bool,
     /// The arrival hold minted at the door of the table.
     pub arrival: Hold,
+    /// When the unit entered. The slot's progress clock starts here, so a unit is idle from the
+    /// moment it arrived and never from the moment the node booted.
+    pub now: Millis,
 }
 
 /// The node's live units.
@@ -460,7 +463,7 @@ impl InFlight {
             step: StepState::new(),
             cancel: CancelToken::new(),
             marked: AtomicBool::new(false),
-            last_progress: AtomicU64::new(0),
+            last_progress: AtomicU64::new(request.now),
         });
         self.shard(request.key)
             .lock()
@@ -527,6 +530,7 @@ pub struct SessionSlot {
     open: Mutex<HashMap<(StreamId, Direction), UnitKey>>,
     upstreams: AtomicUsize,
     last_non_tick: AtomicU64,
+    needmore: AtomicUsize,
     closed: AtomicBool,
 }
 
@@ -615,6 +619,25 @@ impl SessionSlot {
         self.upstreams.load(Ordering::Acquire)
     }
 
+    /// Count one more frame in a row that was not a whole anything yet, and say what the run is
+    /// now at. The run lives HERE and not in a table beside the pump: a counter keyed by session id
+    /// in a node-global map is a counter nothing takes out again, and one that a later session on
+    /// the same id inherits. On the slot it is born and closed with the connection it describes,
+    /// and no node-global lock is taken on the path every relayed frame walks.
+    pub fn asked_again(&self) -> usize {
+        self.needmore.fetch_add(1, Ordering::AcqRel) + 1
+    }
+
+    /// A frame that WAS something ends the run.
+    pub fn made_progress(&self) {
+        self.needmore.store(0, Ordering::Release);
+    }
+
+    /// How long the current run of asks is.
+    pub fn asks(&self) -> usize {
+        self.needmore.load(Ordering::Acquire)
+    }
+
     /// Note a unit that was not a tick. The idle clock reads this and nothing else, so a priced
     /// accrual tick can run all night without making an idle session look busy.
     pub fn touch_non_tick(&self, now: Millis) {
@@ -666,13 +689,24 @@ impl Sessions {
     }
 
     /// Open a session, at unit zero. Refused when the node's session budget is spent.
+    ///
+    /// The slot is CLAIMED in one atomic step, exactly as the in-flight table claims its own: two
+    /// connections that both read "there is room" and then both opened is how a node ends up
+    /// holding more sessions than the budget it computes its exposure from. An id already in the
+    /// table takes no new slot, so the claim is handed straight back rather than leaked.
     pub fn open(
         &self,
         id: SessionId,
         binding: Binding,
         now: Millis,
     ) -> Result<Arc<SessionSlot>, ReasonCode> {
-        if self.len() >= self.budget {
+        if self
+            .count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.budget).then_some(n + 1)
+            })
+            .is_err()
+        {
             return Err(ReasonCode::SessionBudget);
         }
         let slot = Arc::new(SessionSlot {
@@ -682,13 +716,17 @@ impl Sessions {
             open: Mutex::new(HashMap::new()),
             upstreams: AtomicUsize::new(0),
             last_non_tick: AtomicU64::new(now),
+            needmore: AtomicUsize::new(0),
             closed: AtomicBool::new(false),
         });
-        self.shard(id)
+        let displaced = self
+            .shard(id)
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(id, Arc::clone(&slot));
-        self.count.fetch_add(1, Ordering::AcqRel);
+        if displaced.is_some() {
+            self.count.fetch_sub(1, Ordering::AcqRel);
+        }
         Ok(slot)
     }
 
@@ -765,11 +803,19 @@ pub enum HardClose {
 /// the session closes; a datagram that could not be decoded is one datagram, and the next is
 /// unaffected — it is discarded and the session stands. Without the framing this function read a
 /// forged packet as a reason to drop a session, which is a denial of service anyone can post.
+///
+/// The binding is load-bearing for exactly one other arm, and for the same kind of reason. A
+/// credential refused at the re-check means different things on the two kinds of session: on a
+/// BOUND one the cached principal is what every later unit runs as, and a session running as
+/// somebody it can no longer prove it is has nothing left to be, so it closes; on an unbound one
+/// every unit authenticates for itself and a bad credential is one bad unit. Without the binding
+/// there was no arm that could tell the two apart, and one of the two answers was never given.
 pub fn hard_closes(
     origin: OriginKind,
     step: StepName,
     reason: ReasonCode,
     framing: Framing,
+    binding: Binding,
 ) -> Option<HardClose> {
     let money_reason = matches!(
         reason,
@@ -795,6 +841,10 @@ pub fn hard_closes(
         (_, _, ReasonCode::HandoffMismatch) => Some(HardClose::HandoffMismatch),
         (_, StepName::Decode, ReasonCode::DecodeFailed) if framing == Framing::Stream => {
             Some(HardClose::DecodeFailedOnStream)
+        }
+        // The re-check arm, on a bound session only.
+        (_, StepName::Authenticate, ReasonCode::Unauthenticated) if binding == Binding::Bound => {
+            Some(HardClose::BoundPrincipalFailed)
         }
         _ => None,
     }

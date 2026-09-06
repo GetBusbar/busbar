@@ -230,19 +230,6 @@ pub trait Clock: Send + Sync {
     fn now(&self) -> u64;
 }
 
-/// The system clock.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct SystemClock;
-
-impl Clock for SystemClock {
-    fn now(&self) -> u64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    }
-}
-
 /// The durable path a recorded mutation also goes down.
 ///
 /// The ring is a hot cache of the recent tail and keeps no durable state; the seam is what persists
@@ -291,19 +278,13 @@ impl std::fmt::Debug for AuditLog {
     }
 }
 
-impl Default for AuditLog {
-    fn default() -> Self {
-        AuditLog::new()
-    }
-}
-
 impl AuditLog {
-    /// A fresh ring on the system clock, with no durable seam behind it.
-    pub fn new() -> Self {
-        AuditLog::with(Box::new(SystemClock), Box::new(NoSeam))
-    }
-
     /// A fresh ring on a given clock and seam.
+    ///
+    /// There is deliberately no `new()` and no `Default`: either would have to bind a clock, and the
+    /// only clock this crate could bind is the wall clock. A unit crate that reads the wall clock
+    /// stops being replayable — the same inputs no longer give the same record — so the clock is the
+    /// composition root's to inject, and the absence of a default is what makes that unavoidable.
     pub fn with(clock: Box<dyn Clock>, seam: Box<dyn DurableSeam>) -> Self {
         AuditLog {
             entries: std::sync::Mutex::new(std::collections::VecDeque::new()),
@@ -387,8 +368,12 @@ impl AuditLog {
         while q.len() > MAX_AUDIT_ENTRIES {
             q.pop_front();
         }
-        self.seq
-            .fetch_max(max_seq + 1, std::sync::atomic::Ordering::Relaxed);
+        // Saturating, not `+ 1`: the highest position a `u64` can hold has no successor, and a
+        // snapshot carrying it must seed the ring rather than panic a booting node.
+        self.seq.fetch_max(
+            max_seq.saturating_add(1),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// Restore the ring from what a store persisted, verifying it first.

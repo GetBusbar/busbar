@@ -51,12 +51,21 @@ pub fn key_ids(ns: &str) -> Vec<String> {
         format!("{ns}_resurrect"),
         format!("{ns}_deltwice"),
         format!("{ns}_credowner"),
+        format!("{ns}_deadowner"),
+        format!("{ns}_mintowner"),
+        format!("{ns}_minted"),
     ]
 }
 
 /// Every credential id the suite writes under `ns`. See [`key_ids`].
 pub fn credential_ids(ns: &str) -> Vec<String> {
-    vec![format!("{ns}_cred")]
+    vec![
+        format!("{ns}_cred"),
+        format!("{ns}_orphan"),
+        format!("{ns}_deadcred"),
+        format!("{ns}_mintcred"),
+        format!("{ns}_mintdupe"),
+    ]
 }
 
 /// A minimal live key. `id` names the row; every other field is a don't-care the checks never read.
@@ -215,6 +224,79 @@ pub fn assert_revoke_credential_unknown_id_is_an_error(store: &dyn Store, ns: &s
     store
         .revoke_credential(&cred_id, "leaked again")
         .expect("revoking an ALREADY-revoked credential is idempotent, not an error");
+}
+
+/// **`put_credential` requires a LIVE owning key.** A credential minted onto a key that names no
+/// row, or onto a TOMBSTONED one, must be refused: `delete_key` cascades a key's credentials away
+/// precisely so the secret material stops resolving, and accepting a write afterwards puts it back
+/// under a key an operator just revoked.
+///
+/// Enforced in the store for the same reason the tombstone rule above is: a caller that checks the
+/// key first and writes after is a read-then-write, and a `delete_key` committing in the gap cascades
+/// away only the rows that existed at that moment.
+///
+/// Skip on a backend with no credential support.
+pub fn assert_put_credential_requires_a_live_key(store: &dyn Store, ns: &str) {
+    let absent = format!("{ns}_no_such_owner");
+    assert!(
+        store
+            .put_credential(&credential(&format!("{ns}_orphan"), &absent))
+            .is_err(),
+        "a credential whose owning key names no row was accepted — the secret material now hangs \
+         off nothing and no cascade will ever reach it"
+    );
+
+    let key_id = format!("{ns}_deadowner");
+    let cred_id = format!("{ns}_deadcred");
+    store.put_key(&live_key(&key_id)).expect("seed the key");
+    store.delete_key(&key_id).expect("tombstone it");
+    assert!(
+        store
+            .put_credential(&credential(&cred_id, &key_id))
+            .is_err(),
+        "a credential minted onto a TOMBSTONED key was accepted — the tombstone cascade is undone \
+         through the other door"
+    );
+    assert!(
+        store
+            .lookup_credential_secret("sigv4", &format!("AKIA{cred_id}"))
+            .expect("lookup is never an error")
+            .is_none(),
+        "the refused credential still resolves on the verify path"
+    );
+}
+
+/// **`put_key_with_credential` is ATOMIC.** When the credential leg is refused — a `public_id`
+/// already in use is the ordinary way it is — NO key row may survive. The trait's default is the
+/// two-call sequence, which commits the key before the credential can fail, leaving a live bearer key
+/// with no credential that the caller was told did not get created.
+///
+/// Skip on a backend with no credential support.
+pub fn assert_put_key_with_credential_is_atomic(store: &dyn Store, ns: &str) {
+    let incumbent_key = format!("{ns}_mintowner");
+    let incumbent_cred = format!("{ns}_mintcred");
+    store
+        .put_key(&live_key(&incumbent_key))
+        .expect("seed the incumbent key");
+    store
+        .put_credential(&credential(&incumbent_cred, &incumbent_key))
+        .expect("seed the credential holding the public_id");
+
+    // The mint the operator asks for, colliding on the global (kind, public_id) lookup handle.
+    let minted_key = format!("{ns}_minted");
+    let mut minted = credential(&format!("{ns}_mintdupe"), &minted_key);
+    minted.meta.public_id = format!("AKIA{incumbent_cred}");
+    assert!(
+        store
+            .put_key_with_credential(&live_key(&minted_key), &minted)
+            .is_err(),
+        "a mint whose credential collides on (kind, public_id) must fail"
+    );
+    assert!(
+        store.get_key(&minted_key).expect("read back").is_none(),
+        "the refused mint committed its key leg anyway — an orphan bearer key is live and the \
+         caller was told the mint failed"
+    );
 }
 
 /// **`append_audit` on a duplicate `seq`:** identical record → `Ok` (the write-through retrying after

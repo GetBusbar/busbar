@@ -297,6 +297,54 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     );
 }
 
+/// And the other lifecycle: an instance that only ever DIALS holds the same ceiling.
+///
+/// The cell above reaches the transport through `listen`, which is the seam a served instance
+/// learns the deployment's configuration through. A dial-side instance never reaches it — nothing
+/// binds it, so nothing hands it a config view — and an upstream that streams audio is exactly the
+/// connection an unbounded message ceiling costs the most on. The composition root holds the number
+/// in both cases, so it names it at construction here and the same field answers.
+#[tokio::test]
+async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
+    const CAP: usize = 1024;
+    // No `listen` anywhere in this cell: the ceiling arrives only through the constructor.
+    let t = WsTransport::over_with_max_message_bytes(
+        Arc::new(busbar_transport_tcp::TcpTransport::new()),
+        CAP,
+    );
+
+    let peer = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (dialled, accepted) = tokio::join!(
+        t.handshake_over(end_a, false, WS_TARGET, "capped-dialer"),
+        peer.handshake_over(end_b, true, WS_TARGET, "uncapped-upstream")
+    );
+    let (mine, theirs) = (dialled.unwrap(), accepted.unwrap());
+
+    // At the ceiling the message is a message, so this is a ceiling and not a smaller default.
+    let at_cap = vec![b'k'; CAP];
+    peer.write(&theirs, StreamId(0), ArenaBytes::new(&at_cap))
+        .await
+        .unwrap();
+    let mut frames = t.frames(mine);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), CAP);
+
+    let oversized = vec![b'w'; 2 * CAP];
+    peer.write(&theirs, StreamId(0), ArenaBytes::new(&oversized))
+        .await
+        .expect("the uncapped upstream puts the oversized message on the wire");
+    let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the cap must be enforced rather than waited on")
+        .expect("an over-cap message is an error, not a clean end of session");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Framing,
+        "a dial-side connection is bounded by the same number a served one is"
+    );
+}
+
 /// A secure handshake happened underneath this connection, and the upgrade does not unhappen it.
 /// The port the bytes arrived on, the name offered, the protocol negotiated and the certificate
 /// presented exist in exactly one place — the record the lower layer reported before it gave the

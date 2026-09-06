@@ -312,7 +312,8 @@ pub struct PickInput<'a, 't> {
     /// This second, read once for the whole pick.
     pub now: u64,
     /// The capability token proving the loop is at the route step for this unit right now
-    /// (`busbar-caps`'s `&UnitToken<Route>`, per CG-29), lent down to every
+    /// (`busbar-caps`'s `&UnitToken<Route>`): a unit may only act at the step its token names.
+    /// Lent down to every
     /// [`crate::ports::Breaker::ready`] / [`crate::ports::Breaker::cooldown_remaining`] call the
     /// pick makes.
     pub token: &'t UnitToken<Route>,

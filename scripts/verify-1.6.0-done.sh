@@ -242,6 +242,13 @@ if [ -x testing/shadow-oracle/replay.sh ]; then
     step "record the golden (1.5.5)" bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"
   fi
   rm -rf "$CAND"
+  # BUILD THE THING THE ORACLE IS ABOUT TO DIFF. The candidate recording is taken from
+  # target/release/busbar, and nothing else in this run puts a binary there: full-gate.sh names the
+  # release build CI-only on purpose (a release build on a laptop re-measures the laptop), so on a
+  # tree that has never been release-built the record step below either dies on a missing path or —
+  # worse — records a STALE binary from some earlier checkout and calls the resulting zero
+  # divergences a parity proof of HEAD. This step makes the candidate HEAD's by construction.
+  step "cargo build -p busbar --release --locked" cargo build -p busbar --release --locked
   step "record the candidate (target/release/busbar)" bash testing/shadow-oracle/record.sh --bin target/release/busbar --plane all --out "$CAND"
   step "replay: candidate vs golden" bash testing/shadow-oracle/replay.sh --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
 else

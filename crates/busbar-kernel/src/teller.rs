@@ -260,6 +260,13 @@ pub struct Evidence {
     pub fee: FeeEvidence,
 }
 
+/// The class the kernel's own accrual is reported against when nothing else named one.
+///
+/// Spelled ONCE. The exit path, the sweep and the recovery path all post the same figure against
+/// the same class, and three string literals for one class is three places a typo can put a
+/// settled unit on a meter nobody prices.
+pub const KERNEL_ACCRUAL_CLASS: MeterClassId = MeterClassId::new("nano_units");
+
 /// The settlement table, as one pure function.
 ///
 /// Every row of it says the same thing in a different situation: **post the lower evidence, mark
@@ -693,7 +700,11 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         // The refused door: nothing was charged beyond the arrival hold the table minted, and the
         // audit that seals it never sees a hold.
         Err(refusal) => {
-            let outcome = Outcome::Refused(refusal.step(), refusal.reason());
+            // The step comes from the decision that stamped it. `unwrap_or` names the door
+            // rather than a sentinel: a refusal that reached here without a stamp did not come
+            // from a decision at all, and the door is the last step it could have been raised at.
+            let outcome =
+                Outcome::Refused(refusal.step().unwrap_or(StepName::Admit), refusal.reason());
             let _sealed = units
                 .audit_refused(&UnitToken::<Audit>::mint(seal), ctx, &refusal)
                 .into_result(seal);
@@ -838,7 +849,9 @@ impl<U: Units> Drop for Abandoned<'_, '_, U> {
                 self.units,
                 self.ctx,
                 run,
-                Outcome::Aborted(Abort::Client),
+                Outcome::Aborted(Abort::Kernel {
+                    reason: ReasonCode::ClientGone,
+                }),
                 settling,
             );
         }
@@ -921,7 +934,9 @@ async fn under_hold<U: Units, R: RouteAwait>(
     let seal = &kernel.seal;
     let token = UnitToken::<Route>::mint(seal);
     match route.route_leg(&token, ctx, meter).await.into_result(seal) {
-        Err(refusal) => Outcome::Failed(refusal.step(), refusal.reason()),
+        Err(refusal) => {
+            Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
+        }
         Ok(_) => {
             let provisional = Outcome::Completed;
             match units
@@ -934,7 +949,9 @@ async fn under_hold<U: Units, R: RouteAwait>(
                 .into_result(seal)
             {
                 Ok(_) => Outcome::Completed,
-                Err(refusal) => Outcome::Failed(refusal.step(), refusal.reason()),
+                Err(refusal) => {
+                    Outcome::Failed(refusal.step().unwrap_or(StepName::Meter), refusal.reason())
+                }
             }
         }
     }
@@ -979,9 +996,7 @@ pub fn exit<U: Units>(
             // carried out as an overdraft. There is no arm on this path that refuses — value was
             // delivered, so the only question left is which column it lands in.
             let _spend = hold.spend(run.meter.total(), run.meter.headroom());
-            let class = evidence
-                .class
-                .unwrap_or_else(|| MeterClassId::new("nano_units"));
+            let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
             let lines = vec![UsageLine {
                 class,
                 quantity: amount,
@@ -998,7 +1013,13 @@ pub fn exit<U: Units>(
             };
             let posted = match usage {
                 Ok(usage) => {
-                    Ok(Posted::settle(hold, &usage, &LedgerToken::mint(seal)).flagged(flags))
+                    // `amount` is the settlement table's money figure, in nano-units; the line
+                    // above carries it as a quantity against whichever class the unit metered on.
+                    // The posting settles the money, and reads the report for its evidence.
+                    Ok(
+                        Posted::settle(hold, u128::from(amount), &usage, &LedgerToken::mint(seal))
+                            .flagged(flags),
+                    )
                 }
                 // A usage report the record cannot hold is a durability failure, not a discount:
                 // the unit delivered value it cannot prove it recorded.

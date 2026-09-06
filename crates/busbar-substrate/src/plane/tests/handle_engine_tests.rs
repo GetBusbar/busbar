@@ -271,9 +271,23 @@ fn the_cursor_advances_monotonically_and_a_regress_is_a_no_op() {
 #[test]
 fn the_cap_sweep_evicts_oldest_terminal_first_and_never_an_active() {
     let engine = DurableHandleEngine::new();
-    // Four terminal (settled) handles at increasing ages, then one active — the cap is 4, so the
-    // fifth submit sweeps the oldest TERMINAL, never the active ones.
-    for i in 0..4u64 {
+    // An ACTIVE handle OLDER than every terminal one. This is the row the rule is actually about: a
+    // sweep that evicted by age alone would take this one first, dropping a caller's in-flight work
+    // to make room, and it must survive precisely because it is not settled.
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "elder-live".into(),
+            owner: "o".into(),
+            updated_at: 1,
+            terminal: false,
+            cursor: 0,
+        },
+        1,
+    );
+    // Three terminal (settled) handles at increasing ages, all NEWER than the active one — the cap
+    // is 4, so the fifth submit sweeps the oldest TERMINAL and nothing else.
+    for i in 0..3u64 {
         submit_demo(
             &engine,
             DemoRow {
@@ -287,7 +301,8 @@ fn the_cap_sweep_evicts_oldest_terminal_first_and_never_an_active() {
         );
     }
     assert_eq!(engine.len(), 4);
-    // A fifth submit at now=20 (well within TTL of the terminal rows) drives the cap sweep.
+    // A fifth submit at now=20 — within the terminal TTL of every settled row and within the
+    // abandon ceiling of the elder active one, so the cap is the only thing driving the eviction.
     submit_demo(
         &engine,
         DemoRow {
@@ -299,10 +314,24 @@ fn the_cap_sweep_evicts_oldest_terminal_first_and_never_an_active() {
         },
         20,
     );
-    // Oldest terminal (t0) evicted; the new live handle is present.
-    assert!(engine.get_unscoped("t0").is_none());
-    assert!(engine.get_unscoped("live").is_some());
-    assert!(engine.len() <= 4);
+    // The exact surviving set: the oldest TERMINAL went and nothing else did. Asserted as a set
+    // rather than as a count under the cap, which a sweep that evicted the elder active row — or one
+    // that evicted three rows instead of one — would also satisfy.
+    for surviving in ["elder-live", "t1", "t2", "live"] {
+        assert!(
+            engine.get_unscoped(surviving).is_some(),
+            "{surviving} was swept and should not have been"
+        );
+    }
+    assert!(
+        engine.get_unscoped("t0").is_none(),
+        "the oldest terminal handle survived the cap sweep"
+    );
+    assert_eq!(
+        engine.len(),
+        4,
+        "the sweep evicted a different number of handles than the one the cap called for"
+    );
 }
 
 #[test]

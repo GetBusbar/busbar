@@ -25,6 +25,19 @@ use std::collections::BTreeMap;
 
 use crate::price::{units_total, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 
+/// The most models one cell interns before the coldest one is evicted.
+///
+/// The all-time window never rolls, so a cell on it is reset by nothing: without a cap its model
+/// list grows one entry per DISTINCT model name ever routed through that bucket, and the model name
+/// arrives from the request. A deployment serving a long tail of names, or a caller sending
+/// made-up ones, therefore grows the cell without bound for the life of the process. The cap is
+/// what makes that growth finite.
+///
+/// The number is generous on purpose. A real deployment prices a few dozen models at most, so the
+/// eviction below is unreachable in ordinary traffic and the cap is a backstop rather than a policy
+/// a normal caller can feel.
+pub const MAX_MODELS_PER_CELL: usize = 128;
+
 /// One model's token counters inside a cell. Interned on first sight of a (bucket, model) pair, so
 /// a bucket carries only the models it actually used and accrual after that is a linear scan over
 /// a handful of entries plus integer adds.
@@ -32,11 +45,17 @@ use crate::price::{units_total, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, U
 struct ModelCell {
     model: String,
     units: BTreeMap<String, u64>,
+    /// The cell's use counter as of this model's last accrual, for the least-recently-used
+    /// eviction the cap runs. A counter rather than a clock: accrual is handed no time, and a
+    /// monotonic sequence orders the entries just as well as one would.
+    last_use: u64,
 }
 
 /// A bucket's counters for its current window — the authoritative hot-path enforcement state.
 ///
-/// Reset on rollover, so growth is bounded by the bucket count rather than by traffic.
+/// Reset on rollover, so growth is bounded by the bucket count rather than by traffic. The
+/// all-time window never rolls and so is never reset; there, the bound is the model cap the accrual
+/// applies — see [`MAX_MODELS_PER_CELL`].
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LedgerCell {
     /// The epoch start of the window these counters belong to.
@@ -54,6 +73,12 @@ pub struct LedgerCell {
     /// Wall-clock of the last accrual or admission charge, for the store's own eviction.
     pub last_touch: u64,
     models: Vec<ModelCell>,
+    /// The counts of every model this cell has evicted, summed together and no longer attributed to
+    /// any name. The token caps read this alongside the interned models, so eviction costs the cell
+    /// its per-model attribution and never a single counted token.
+    evicted: BTreeMap<String, u64>,
+    /// The monotonic use counter the eviction orders entries by.
+    use_seq: u64,
 }
 
 impl LedgerCell {
@@ -67,17 +92,30 @@ impl LedgerCell {
 
     /// Accrue one response's keyed token counts under a model, interning the model on first sight
     /// and each unit key on first sight of that pair. Zero counts are not stored.
+    ///
+    /// Interning a name the cell has not seen before, when the cell is already at
+    /// [`MAX_MODELS_PER_CELL`], first evicts the least recently used entry. That is the bound on a
+    /// cell that never rolls: without it the list grows one entry per distinct model name the
+    /// caller sends, forever.
     pub fn accrue(&mut self, model: &str, units: &BTreeMap<String, u64>) {
-        let cell = match self.models.iter_mut().position(|m| m.model == model) {
-            Some(i) => &mut self.models[i],
+        self.use_seq = self.use_seq.saturating_add(1);
+        let seq = self.use_seq;
+        let idx = match self.models.iter().position(|m| m.model == model) {
+            Some(i) => i,
             None => {
+                if self.models.len() >= MAX_MODELS_PER_CELL {
+                    self.evict_coldest_model();
+                }
                 self.models.push(ModelCell {
                     model: model.to_string(),
                     units: BTreeMap::new(),
+                    last_use: seq,
                 });
-                self.models.last_mut().expect("just pushed")
+                self.models.len() - 1
             }
         };
+        let cell = &mut self.models[idx];
+        cell.last_use = seq;
         for (k, v) in units {
             if *v == 0 {
                 continue;
@@ -94,18 +132,24 @@ impl LedgerCell {
     }
 
     /// Total current tokens across every model and every unit key — the counter the total-token
-    /// cap reads.
+    /// cap reads. The evicted tally counts here too, so the cap sees every token ever accrued into
+    /// this cell whether or not the name that carried it is still interned.
     pub fn total_tokens(&self) -> u64 {
         self.models
             .iter()
-            .fold(0u64, |acc, m| acc.saturating_add(units_total(&m.units)))
+            .fold(units_total(&self.evicted), |acc, m| {
+                acc.saturating_add(units_total(&m.units))
+            })
     }
 
-    /// Current summed count of one unit key across models — a per-tier cap's counter.
+    /// Current summed count of one unit key across models — a per-tier cap's counter. The evicted
+    /// tally counts here too, for the same reason.
     pub fn total_tier(&self, unit: &str) -> u64 {
-        self.models.iter().fold(0u64, |acc, m| {
-            acc.saturating_add(m.units.get(unit).copied().unwrap_or(0))
-        })
+        self.models
+            .iter()
+            .fold(self.evicted.get(unit).copied().unwrap_or(0), |acc, m| {
+                acc.saturating_add(m.units.get(unit).copied().unwrap_or(0))
+            })
     }
 
     /// Current uncached-input tokens.
@@ -128,10 +172,28 @@ impl LedgerCell {
         self.total_tier(UNIT_CACHE_WRITE)
     }
 
-    /// Drop models carrying no tokens, so a never-rolling cell cannot grow one entry per model
-    /// name ever seen. Removing an empty entry loses no enforcement truth.
-    pub fn prune_empty_models(&mut self) {
-        self.models.retain(|m| units_total(&m.units) != 0);
+    /// Drop the least recently used model, moving its counters into the cell's evicted tally.
+    ///
+    /// Two things are true of this and both matter. The counts are KEPT, summed into one unnamed
+    /// tally that every token total below reads, so no cap under-counts by a single token because
+    /// of an eviction. The attribution is LOST: the derived spend prices per model name, and a
+    /// count with no name left cannot be priced, so an evicted model's tokens stop contributing to
+    /// the spend derivation. That is the price of the bound, and it is paid only by the coldest name
+    /// on a cell that has already interned more names than any real deployment prices.
+    fn evict_coldest_model(&mut self) {
+        let coldest = self
+            .models
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, m)| m.last_use)
+            .map(|(i, _)| i);
+        if let Some(i) = coldest {
+            let gone = self.models.remove(i);
+            for (k, v) in gone.units {
+                let slot = self.evicted.entry(k).or_insert(0);
+                *slot = slot.saturating_add(v);
+            }
+        }
     }
 }
 

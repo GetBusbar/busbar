@@ -12,8 +12,10 @@
 #     failure the audit is about, checked for by name rather than trusted not to happen.
 #
 # Usage: EXPECTED_IDS="store:sqlite hook:headroom" LEDGER=<tsv> verdict.sh
-#        (EXPECTED_IDS is the space-separated list of probe ids the run OWED. It is derived by the
-#        workflow from the plugin kind under test, so a probe that silently did not fire is caught.)
+#        EXPECTED_IDS=$'a|b|GET /x|ok\nc|d'          LEDGER=<tsv> verdict.sh
+#        (EXPECTED_IDS is the list of probe ids the run OWED, ONE PER LINE, or space-separated on a
+#        single line when no id contains a space. It is derived by the caller from the plugin kind
+#        or cell set under test, so a probe that silently did not fire is caught.)
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
 
@@ -47,7 +49,7 @@ if [ -z "$EXPECTED_IDS" ]; then
   exit 1
 fi
 
-fail_ids="" skip_ids="" missing_ids="" pass_n=0
+fail_ids="" skip_ids="" missing_ids="" pass_n=0 owed_n=0
 report="$(mktemp)"
 resolved="$(mktemp)"
 trap 'rm -f "$report" "$resolved"' EXIT
@@ -61,7 +63,9 @@ trap 'rm -f "$report" "$resolved"' EXIT
 # which is O(ids × rows) file reads on a ledger the oracle replay can fill with thousands of cells.
 awk -F'\t' -v ids="$EXPECTED_IDS" '
   BEGIN {
-    n = split(ids, want, /[ \t\n]+/)
+    # AN ID IS A LINE, NOT A WORD: the owed set of the oracle has ids that contain spaces, so a list
+    # that carries newlines is split on newlines only; a one-line list is the space-separated shape.
+    if (index(ids, "\n") > 0) n = split(ids, want, /\n/); else n = split(ids, want, /[ \t]+/)
     for (i = 1; i <= n; i++) if (want[i] != "") seen[want[i]] = 1
   }
   NF && ($1 in seen) { status[$1] = $2; detail[$1] = $4; got[$1] = 1 }
@@ -88,8 +92,11 @@ done < "$resolved"
 
 cat "$report"
 echo
+# `owed` is counted BY THE LOOP, not re-derived with `wc -w`: a word count of the same string is the
+# very miscount the loop was fixed for, and the two disagreeing is how the wrong number stayed
+# plausible.
 printf 'owed: %s   pass: %s   fail: %s   skip: %s   did not run: %s\n' \
-  "$(echo "$EXPECTED_IDS" | wc -w | tr -d ' ')" "$pass_n" \
+  "$owed_n" "$pass_n" \
   "$(printf '%s' "$fail_ids"    | wc -w | tr -d ' ')" \
   "$(printf '%s' "$skip_ids"    | wc -w | tr -d ' ')" \
   "$(printf '%s' "$missing_ids" | wc -w | tr -d ' ')"

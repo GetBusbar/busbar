@@ -345,17 +345,36 @@ impl StoreAdapter {
     /// store that simply has an empty log all read the same way — and the migration seals a zero
     /// opening balance for all three rather than refusing to boot a configuration that worked
     /// yesterday.
-    pub fn legacy_audit_head(&self) -> LegacyHead {
+    ///
+    /// A store that FAILED to answer said none of those things. It is empty here too, because a
+    /// node whose store is briefly unreachable must still boot, but the reason travels with the
+    /// answer and is said out loud: a migration that seals a zero opening balance over a chain that
+    /// was really there has broken the chain, and the one thing it may not do is break it quietly.
+    pub fn legacy_audit_head(&self) -> LegacyAuditHead {
         match self.store().list_audit_tail(1) {
-            Ok(tail) => match tail.last() {
-                Some(entry) => LegacyHead {
-                    seq: Some(entry.seq),
-                    hash: Some(entry.hash.clone()),
-                    ..LegacyHead::empty()
+            Ok(tail) => LegacyAuditHead {
+                head: match tail.last() {
+                    Some(entry) => LegacyHead {
+                        seq: Some(entry.seq),
+                        hash: Some(entry.hash.clone()),
+                        ..LegacyHead::empty()
+                    },
+                    None => LegacyHead::empty(),
                 },
-                None => LegacyHead::empty(),
+                unreadable: None,
             },
-            Err(_) => LegacyHead::empty(),
+            Err(e) => {
+                tracing::warn!(
+                    reason = %e,
+                    "the store would not answer for the previous release's audit tail, so the \
+                     migration seals a zero opening balance over a chain whose head is unknown. \
+                     If that store held audit rows, this node's chain starts again from nothing."
+                );
+                LegacyAuditHead {
+                    head: LegacyHead::empty(),
+                    unreadable: Some(format!("the previous release's audit tail: {e}")),
+                }
+            }
         }
     }
 
@@ -503,6 +522,7 @@ impl StoreAdapter {
             adapter: self.clone(),
             plan,
             cells: std::sync::OnceLock::new(),
+            audit: std::sync::OnceLock::new(),
         }
     }
 
@@ -552,6 +572,20 @@ impl LegacyReadPlan {
     }
 }
 
+/// What the previous release's chain head read as, beside the reason it could not be read.
+///
+/// The two travel together because the empty head has two very different meanings — "there was
+/// nothing there" and "the store would not say" — and a caller handed only the head cannot tell
+/// them apart. The reason joins the same named-reason channel [`LegacyCells::unreadable`] carries,
+/// so one unanswered read is reported rather than either stopping a boot or vanishing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LegacyAuditHead {
+    /// The head itself. Empty when the store had nothing to say AND when it would not say.
+    pub head: LegacyHead,
+    /// Why the head is empty, when it is empty because the store would not answer.
+    pub unreadable: Option<String>,
+}
+
 /// What the previous release's cells held.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LegacyCells {
@@ -579,6 +613,7 @@ pub struct LegacyStoreRows {
     adapter: StoreAdapter,
     plan: LegacyReadPlan,
     cells: std::sync::OnceLock<LegacyCells>,
+    audit: std::sync::OnceLock<LegacyAuditHead>,
 }
 
 impl LegacyStoreRows {
@@ -592,6 +627,12 @@ impl LegacyStoreRows {
         self.cells
             .get_or_init(|| self.adapter.legacy_cells_read(&self.plan))
     }
+
+    /// The chain head, taken on first use and kept — for the same reason the cells are: the head a
+    /// caller reads and the reason it reports must describe one reading of one store.
+    pub fn audit_head(&self) -> &LegacyAuditHead {
+        self.audit.get_or_init(|| self.adapter.legacy_audit_head())
+    }
 }
 
 impl LegacyMigrationSource for LegacyStoreRows {
@@ -602,7 +643,7 @@ impl LegacyMigrationSource for LegacyStoreRows {
         LegacyHead {
             balances: cells.balances.clone(),
             cells_read: cells.cells_read,
-            ..self.adapter.legacy_audit_head()
+            ..self.audit_head().head.clone()
         }
     }
 }
@@ -610,9 +651,13 @@ impl LegacyMigrationSource for LegacyStoreRows {
 impl LegacyLedgerRows for LegacyStoreRows {
     fn read_figures(&self) -> LegacyFigures {
         let cells = self.cells();
+        // An unread chain head joins the unread cells on the one channel the migration report
+        // already prints, so "the store would not say" reaches an operator whichever read it was.
+        let mut unreadable = cells.unreadable.clone();
+        unreadable.extend(self.audit_head().unreadable.clone());
         LegacyFigures {
             figures: cells.figures.clone(),
-            unreadable: cells.unreadable.clone(),
+            unreadable,
         }
     }
 }
@@ -817,3 +862,7 @@ impl std::fmt::Debug for StoreAdapter {
             .finish()
     }
 }
+
+#[cfg(test)]
+#[path = "tests/store_adapter_seam_tests.rs"]
+mod tests;

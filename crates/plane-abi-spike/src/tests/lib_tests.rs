@@ -63,3 +63,21 @@ fn shapes_agree_and_alloc_gate() {
         "vec-returning anti-pattern must allocate once per call: expected {N}, saw {c_allocs}"
     );
 }
+
+/// A TRUNCATED request is refused, not panicked on. The serialized shape's fixed preamble runs
+/// through the name-length field at bytes 40..44, so every length short of 44 must come back as an
+/// error — the lengths in between are the ones a guard written against the scalar block alone lets
+/// through and then indexes off the end of.
+#[test]
+fn a_truncated_request_is_refused_rather_than_indexed_off_the_end() {
+    for len in 0..=43usize {
+        assert!(
+            govern_admit_vec(&vec![0u8; len]).is_err(),
+            "a {len}-byte request is shorter than the fixed preamble and must be refused"
+        );
+    }
+    // And the boundary from the other side: a well-formed request still parses.
+    let (name, tokens, budget, tenant, prio, flags) = sample();
+    let g = Facts::new(tokens, budget, tenant, prio, flags, &name);
+    assert!(govern_admit_vec(&encode_facts(&g)).is_ok());
+}

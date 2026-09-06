@@ -20,8 +20,8 @@ fn binding(
     allowed_pools: Option<&[&str]>,
     group: Option<&str>,
     admin_scope: Option<&str>,
-) -> busbar_core::config::RoleBindingCfg {
-    busbar_core::config::RoleBindingCfg {
+) -> busbar_substrate::config::auth::RoleBindingCfg {
+    busbar_substrate::config::auth::RoleBindingCfg {
         allowed_pools: allowed_pools.map(|ps| ps.iter().map(|p| p.to_string()).collect()),
         group: group.map(str::to_string),
         admin_scope: admin_scope.map(str::to_string),
@@ -31,23 +31,23 @@ fn binding(
 /// Helper: a `RoleBindings` table with one module's role->binding entries.
 fn bindings_for(
     module: &str,
-    roles: &[(&str, busbar_core::config::RoleBindingCfg)],
-) -> busbar_core::config::RoleBindings {
+    roles: &[(&str, busbar_substrate::config::auth::RoleBindingCfg)],
+) -> busbar_substrate::config::auth::RoleBindings {
     let mut table = std::collections::BTreeMap::new();
     for (role, b) in roles {
         table.insert(role.to_string(), b.clone());
     }
-    let mut rb = busbar_core::config::RoleBindings::new();
+    let mut rb = busbar_substrate::config::auth::RoleBindings::new();
     rb.insert(module.to_string(), table);
     rb
 }
 
 /// Helper: an `AuthCfg` whose data-plane chain names the given modules (bare entries).
-fn chain_cfg(modules: &[&str]) -> busbar_core::config::AuthCfg {
-    busbar_core::config::AuthCfg::with_chain(
+fn chain_cfg(modules: &[&str]) -> busbar_substrate::config::auth::AuthCfg {
+    busbar_substrate::config::auth::AuthCfg::with_chain(
         modules
             .iter()
-            .map(|m| busbar_core::config::AuthChainEntry::bare(*m))
+            .map(|m| busbar_substrate::config::auth::AuthChainEntry::bare(*m))
             .collect(),
     )
 }

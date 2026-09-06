@@ -23,9 +23,15 @@ use std::collections::HashMap;
 ///
 /// Per pool: two pools that happen to share a lane keep independent credit, because they are
 /// independent proportional sequences.
+///
+/// The nesting is not decoration. Keyed by the pair `(pool, lane)`, every lookup on the selection
+/// path would have to build a key, and a borrowed pool name cannot be one — so each candidate on
+/// each selection would cost a freshly owned copy of the pool's name. Keyed pool-first, a selection
+/// finds the pool's credits once and then reads each lane's credit by index, and the owned name is
+/// paid for once per pool for the lifetime of the state.
 #[derive(Debug, Default)]
 pub struct SwrrState {
-    credits: HashMap<(String, usize), i64>,
+    credits: HashMap<String, HashMap<usize, i64>>,
 }
 
 impl SwrrState {
@@ -37,7 +43,8 @@ impl SwrrState {
     /// The credit a lane currently holds. For tests and for the operator's own report.
     pub fn credit(&self, pool: &str, lane: usize) -> i64 {
         self.credits
-            .get(&(pool.to_string(), lane))
+            .get(pool)
+            .and_then(|lanes| lanes.get(&lane))
             .copied()
             .unwrap_or(0)
     }
@@ -45,7 +52,9 @@ impl SwrrState {
     /// Clear one lane's credit — what a recovery does when a lane rejoins, so it starts level rather
     /// than owed.
     pub fn reset(&mut self, pool: &str, lane: usize) {
-        self.credits.remove(&(pool.to_string(), lane));
+        if let Some(lanes) = self.credits.get_mut(pool) {
+            lanes.remove(&lane);
+        }
     }
 }
 
@@ -61,20 +70,27 @@ pub fn select_weighted(
     breaker: &dyn BreakerView,
     now: u64,
 ) -> Option<usize> {
-    let healthy: Vec<LaneCandidate> = candidates
-        .iter()
-        .copied()
-        .filter(|c| survives_prewalk_filter(*c, lanes, breaker, pool, now))
-        .collect();
-    if healthy.is_empty() {
-        return None;
+    // The pool's own credits, found once. Everything below reads them by lane index, so no part of
+    // the walk builds a key or copies the pool's name.
+    if !state.credits.contains_key(pool) {
+        state.credits.insert(pool.to_string(), HashMap::new());
     }
+    let pool_credits = state
+        .credits
+        .get_mut(pool)
+        .expect("the pool's credits were just ensured to be present");
 
-    let total: i64 = healthy.iter().map(|c| i64::from(c.weight)).sum();
+    // One pass: the filter decides membership, the surviving weights accumulate the total, and each
+    // survivor's credit moves as it is visited. Filtered candidates are never visited, so an
+    // excluded lane still consumes no turn.
+    let mut total: i64 = 0;
     let mut best: Option<(usize, i64)> = None;
-    for c in &healthy {
-        let key = (pool.to_string(), c.idx);
-        let credit = state.credits.entry(key).or_insert(0);
+    for c in candidates.iter().copied() {
+        if !survives_prewalk_filter(c, lanes, breaker, pool, now) {
+            continue;
+        }
+        total += i64::from(c.weight);
+        let credit = pool_credits.entry(c.idx).or_insert(0);
         *credit += i64::from(c.weight);
         // Ties go to the earlier candidate, so a pool of equal weights walks its members in
         // configuration order — which is what an operator reading the pool expects to see.
@@ -88,7 +104,7 @@ pub fn select_weighted(
     }
 
     let (winner, _) = best?;
-    if let Some(credit) = state.credits.get_mut(&(pool.to_string(), winner)) {
+    if let Some(credit) = pool_credits.get_mut(&winner) {
         *credit -= total;
     }
     Some(winner)

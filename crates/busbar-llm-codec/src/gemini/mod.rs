@@ -644,11 +644,68 @@ fn coerce_tool_args(input: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+/// Byte→character offset index for ONE response text, built in a single ordered pass over the
+/// text's `char_indices()` and then answering each citation offset by binary search.
+///
+/// Gemini's `CitationSource`/`groundingSupports` offsets are documented in BYTES; the IR's
+/// `IrCitation::start_index`/`end_index` contract is CHARACTERS. Converting a single offset means
+/// counting the characters in a prefix, which is linear in the text — and a grounded answer converts
+/// two offsets per source, so doing it per offset walked the whole response text once per number
+/// (O(sources × text_len)) for what one walk answers. The index is built once per read and each
+/// lookup is O(log n).
+///
+/// Results are IDENTICAL to converting each offset independently, including both degradations that
+/// contract already promised: a negative or past-the-end offset clamps to `[0, text.len()]`, and an
+/// offset landing MID-codepoint (a malformed or adversarial upstream value, which has no valid
+/// character count at that exact point) resolves to the nearest EARLIER boundary rather than
+/// panicking on a non-boundary slice.
+struct GeminiCharIndex {
+    /// Byte offset of every character START, ascending, with `text.len()` appended as the terminator
+    /// so a clamp-to-end offset resolves without a special case.
+    starts: Vec<usize>,
+    len: usize,
+}
+
+impl GeminiCharIndex {
+    /// The single ordered pass. `char_indices()` yields character starts in ascending byte order, so
+    /// the vector is sorted by construction — no sort, and the binary searches below are valid.
+    fn build(text: &str) -> Self {
+        let mut starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+        starts.push(text.len());
+        Self {
+            starts,
+            len: text.len(),
+        }
+    }
+
+    /// The character offset for a wire BYTE offset.
+    fn char_offset(&self, byte_idx: i64) -> i64 {
+        let target = (byte_idx.max(0) as usize).min(self.len);
+        // The count of character starts strictly BELOW `target`.
+        let before = self.starts.partition_point(|&s| s < target);
+        // `partition_point` returns the first index whose start is >= `target`, so an entry equal to
+        // `target` there proves `target` is a character boundary (the appended `len` covers the
+        // clamp-to-end case). When it is NOT a boundary, `before` has counted the character that
+        // CONTAINS `target` — whose start is earlier — so drop it to land on the nearest earlier
+        // boundary, which is what converting the offset on its own does.
+        if self.starts.get(before) == Some(&target) {
+            before as i64
+        } else {
+            before.saturating_sub(1) as i64
+        }
+    }
+}
+
 /// Convert a Gemini `startIndex`/`endIndex` BYTE offset (Google's `CitationSource` is documented
 /// measured in bytes) into a CHARACTER offset — the IR's `IrCitation::start_index`/`end_index`
 /// contract (`ir/mod.rs`). `byte_idx` is clamped to `text.len()` so an
 /// out-of-range upstream value degrades to "end of text" rather than panicking on a non-boundary
 /// slice.
+///
+/// The straightforward per-offset conversion, kept as the REFERENCE the [`GeminiCharIndex`]
+/// equivalence test measures against. Production reads go through the index, which answers the same
+/// question for a whole candidate in one pass over the text.
+#[cfg(test)]
 fn gemini_byte_offset_to_char(text: &str, byte_idx: i64) -> i64 {
     let clamped = byte_idx.max(0) as usize;
     let boundary = clamped.min(text.len());
@@ -701,15 +758,17 @@ fn read_gemini_citations(
         // grounded answer's sources on the way to a foreign client).
         return read_gemini_grounding_citations(candidate, anchor_text);
     };
+    // One pass over the anchor text for the WHOLE candidate, rather than one per offset converted.
+    let char_index = anchor_text.map(GeminiCharIndex::build);
     let mut out: Vec<crate::ir::IrCitation> = sources
         .iter()
         .map(|src| {
             let raw_start = src.get("startIndex").and_then(|v| v.as_i64());
             let raw_end = src.get("endIndex").and_then(|v| v.as_i64());
-            let (start_index, end_index) = match anchor_text {
-                Some(text) => (
-                    raw_start.map(|b| gemini_byte_offset_to_char(text, b)),
-                    raw_end.map(|b| gemini_byte_offset_to_char(text, b)),
+            let (start_index, end_index) = match char_index.as_ref() {
+                Some(idx) => (
+                    raw_start.map(|b| idx.char_offset(b)),
+                    raw_end.map(|b| idx.char_offset(b)),
                 ),
                 // Streaming path: no accumulated text to convert against. Leave as the raw wire
                 // value (bytes) rather than silently mislabeling it as characters.
@@ -799,8 +858,10 @@ fn read_gemini_grounding_citations(
     // `segment.startIndex`/`endIndex` are BYTE offsets into the candidate's full text, the same
     // convention `citationSources[]` uses — convert with the same helper, and on the streaming path
     // (no anchor text) leave the wire value rather than mislabel bytes as characters.
-    let convert = |b: Option<i64>| match anchor_text {
-        Some(text) => b.map(|b| gemini_byte_offset_to_char(text, b)),
+    // One pass over the anchor text for the whole grounding block, not one per offset converted.
+    let char_index = anchor_text.map(GeminiCharIndex::build);
+    let convert = |b: Option<i64>| match char_index.as_ref() {
+        Some(idx) => b.map(|b| idx.char_offset(b)),
         None => b,
     };
 

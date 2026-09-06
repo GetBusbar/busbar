@@ -4,12 +4,20 @@
 //! The rate card: the one place a decimal from config becomes an integer rate, and the pin that
 //! freezes a card for the life of one hold.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use busbar_caps::UsageLine;
 
 /// Convert one configured rate — micro-units per unit of quantity — into the integer nano-unit
-/// rate all later arithmetic uses. This is the ONLY place a decimal number turns into money.
+/// rate all later arithmetic uses.
+///
+/// This is the only decimal-to-money conversion IN THIS CRATE, and the only one the pricing law
+/// runs. It is not the only one in the tree: the admission unit carries a second copy of the same
+/// three lines, in its own rate projection, because that crate depends on nothing here and cannot
+/// call this. The two must agree exactly — a divergence would mean a request judged at one rate and
+/// billed at another — so a test generates ten thousand configured rates and asserts the two
+/// implementations return the same integer for every one of them. Change one of them and that test
+/// is where you will hear about it.
 ///
 /// Multiply by a thousand and round to nearest, half away from zero, exactly once. A value that is
 /// not finite, or not positive, becomes zero: config validation should already have refused it, and
@@ -68,12 +76,19 @@ impl RateCardVersion {
 /// Pricing is all-or-nothing. With no card every class prices at zero and only the flat fee counts.
 /// With a card, the card is authoritative: a lane it does not name prices at nothing AND is
 /// reported as unpriced, so an unknown lane fails closed instead of quietly serving for free.
+///
+/// The prices are keyed lane-first and then class, rather than by a composite of the two. That is a
+/// lookup shape, not a storage preference: a composite key has to be BUILT before it can be looked
+/// up, and building one out of two borrowed strings means two heap allocations per lookup, thrown
+/// away immediately, on the hot path of every priced line. Nested, both steps are asked with the
+/// borrowed text the caller already holds and neither allocates. The nesting also removes the need
+/// to carry the set of priced lanes alongside the prices: the lanes ARE the outer keys, so the two
+/// can no longer disagree about which lanes the card names.
 #[derive(Debug, Clone)]
 pub struct RateCard {
     version: RateCardVersion,
     present: bool,
-    prices: BTreeMap<LaneClass, u64>,
-    lanes: BTreeSet<String>,
+    prices: BTreeMap<String, BTreeMap<String, u64>>,
     per_request_fee_cents: i64,
 }
 
@@ -87,7 +102,6 @@ impl RateCard {
             version,
             present: false,
             prices: BTreeMap::new(),
-            lanes: BTreeSet::new(),
             // A negative configured fee is clamped here, once: no request may ever bill a negative
             // amount, which would credit a budget back toward headroom.
             per_request_fee_cents: per_request_fee_cents.max(0),
@@ -101,17 +115,17 @@ impl RateCard {
         entries: impl IntoIterator<Item = (LaneClass, f64)>,
         per_request_fee_cents: i64,
     ) -> Self {
-        let mut prices = BTreeMap::new();
-        let mut lanes = BTreeSet::new();
+        let mut prices: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
         for (cell, micro) in entries {
-            lanes.insert(cell.lane.clone());
-            prices.insert(cell, nano_rate(micro));
+            prices
+                .entry(cell.lane)
+                .or_default()
+                .insert(cell.class, nano_rate(micro));
         }
         RateCard {
             version,
             present: true,
             prices,
-            lanes,
             per_request_fee_cents: per_request_fee_cents.max(0),
         }
     }
@@ -141,7 +155,7 @@ impl RateCard {
     /// Whether a request on this lane must be refused because a card is present and has no entry
     /// for it. With no card nothing is unpriced, because there is nothing to be missing from.
     pub fn lane_unpriced(&self, lane: &str) -> bool {
-        self.present && !self.lanes.contains(lane)
+        self.present && !self.prices.contains_key(lane)
     }
 
     /// The rates for one lane. Three outcomes, and they are the whole of the pricing posture:
@@ -149,18 +163,13 @@ impl RateCard {
     /// - no card: a zero-rate view, so every class prices at nothing;
     /// - card present and the lane is named: that lane's rates;
     /// - card present and the lane is unknown: nothing at all, so the caller fails closed.
-    pub fn lane_rates<'a>(&'a self, lane: &'a str) -> Option<LaneRates<'a>> {
+    pub fn lane_rates(&self, lane: &str) -> Option<LaneRates<'_>> {
         if !self.present {
-            return Some(LaneRates { card: None, lane });
+            return Some(LaneRates { classes: None });
         }
-        if self.lanes.contains(lane) {
-            Some(LaneRates {
-                card: Some(self),
-                lane,
-            })
-        } else {
-            None
-        }
+        self.prices.get(lane).map(|classes| LaneRates {
+            classes: Some(classes),
+        })
     }
 
     /// Freeze this card for the life of one hold. The posting a pinned card prices records the
@@ -172,32 +181,31 @@ impl RateCard {
 
 /// One lane's view of the card. Built only by [`RateCard::lane_rates`], so the three outcomes above
 /// are the only ways to reach a price.
+///
+/// The lane lookup has already happened by the time this exists: the view borrows that lane's class
+/// table directly, so pricing a report is one map lookup per line and no allocation at all. `None`
+/// is the no-card deployment, where every class prices at zero and none of them is unpriced.
 #[derive(Debug, Clone, Copy)]
 pub struct LaneRates<'a> {
-    card: Option<&'a RateCard>,
-    lane: &'a str,
+    classes: Option<&'a BTreeMap<String, u64>>,
 }
 
 impl LaneRates<'_> {
     /// The nano-unit rate for one meter class on this lane. Zero when there is no card at all, and
     /// zero for a class this lane's card entry does not name.
     pub fn nanos_per_unit(&self, class: &str) -> u64 {
-        match self.card {
+        match self.classes {
             None => 0,
-            Some(card) => card
-                .prices
-                .get(&LaneClass::new(self.lane, class))
-                .copied()
-                .unwrap_or(0),
+            Some(classes) => classes.get(class).copied().unwrap_or(0),
         }
     }
 
     /// Whether this class is priced by name. With no card nothing is unpriced — every class is
     /// attribution only, and flagging them all would report a deployment-wide condition per line.
     pub fn class_priced(&self, class: &str) -> bool {
-        match self.card {
+        match self.classes {
             None => true,
-            Some(card) => card.prices.contains_key(&LaneClass::new(self.lane, class)),
+            Some(classes) => classes.contains_key(class),
         }
     }
 

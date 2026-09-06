@@ -121,8 +121,9 @@ pub use imp::{dump, dump_scoped, enabled, record, reset, scope, timer, Timer};
 #[cfg(feature = "timing")]
 mod imp {
     use std::collections::HashMap;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
     use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-    use std::sync::{Arc, Mutex, OnceLock};
+    use std::sync::{Arc, Mutex, OnceLock, Weak};
     use std::time::Instant;
 
     /// Number of log2 histogram buckets. A duration's bucket is `64 - leading_zeros(ns)` (0 for a
@@ -225,12 +226,37 @@ mod imp {
     /// per-call lock below is uncontended in steady state (contended only briefly during a [`dump`]).
     type ThreadRegistry = HashMap<&'static str, MethodStat>;
 
-    /// The set of every thread's registry, so a process-wide [`dump`] can merge them. Each thread
-    /// pushes its `Arc` here once, on first use. `Arc<Mutex<..>>` (not `RefCell`) because [`dump`]
-    /// reads another thread's data — the `Arc`/`Mutex` is what makes that sound, not `unsafe`.
-    fn threads() -> &'static Mutex<Vec<Arc<Mutex<ThreadRegistry>>>> {
-        static THREADS: OnceLock<Mutex<Vec<Arc<Mutex<ThreadRegistry>>>>> = OnceLock::new();
+    /// The set of every LIVE thread's registry, so a process-wide [`dump`] can merge them. Each
+    /// thread pushes a handle here once, on first use. `Arc<Mutex<..>>` (not `RefCell`) because
+    /// [`dump`] reads another thread's data — the `Arc`/`Mutex` is what makes that sound, not
+    /// `unsafe`.
+    ///
+    /// The handle is a `Weak`, not an `Arc`. A strong reference here would make this vector the
+    /// OWNER of every registry it ever saw, so a thread's accumulator outlived the thread and the
+    /// vector grew without bound for the life of the process — one entry per thread ever spawned,
+    /// each still holding its whole `HashMap`. A long-running server with a churning worker pool
+    /// would accumulate them indefinitely, and the diagnostic would become the leak. With `Weak`,
+    /// the thread-local `Arc` is the sole owner: the registry dies with its thread and the stale
+    /// handle is a cheap tombstone the next walk sweeps out.
+    fn threads() -> &'static Mutex<Vec<Weak<Mutex<ThreadRegistry>>>> {
+        static THREADS: OnceLock<Mutex<Vec<Weak<Mutex<ThreadRegistry>>>>> = OnceLock::new();
         THREADS.get_or_init(|| Mutex::new(Vec::new()))
+    }
+
+    /// Collect the registries of threads that are still alive, DROPPING the tombstones of those that
+    /// are not. Called from every path that already walks the vector, so the pruning costs nothing
+    /// extra and needs no reaper thread.
+    fn live_registries() -> Vec<Arc<Mutex<ThreadRegistry>>> {
+        let mut all = threads().lock().unwrap_or_else(|p| p.into_inner());
+        let mut live = Vec::with_capacity(all.len());
+        all.retain(|w| match w.upgrade() {
+            Some(a) => {
+                live.push(a);
+                true
+            }
+            None => false,
+        });
+        live
     }
 
     thread_local! {
@@ -240,7 +266,7 @@ mod imp {
             threads()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .push(a.clone());
+                .push(Arc::downgrade(&a));
             a
         };
     }
@@ -292,8 +318,13 @@ mod imp {
         }
     }
 
+    /// The `atexit(3)` handler. `atexit` takes a plain `extern "C"` fn pointer, so an unwind out of
+    /// this frame crosses into C — and the body reaches `eprintln!`, which CAN panic (a closed or
+    /// broken stderr on a shutting-down process is not exotic, and a poisoned lock elsewhere in the
+    /// dump path would do it too). Catching here keeps a failed diagnostic print at process exit a
+    /// failed diagnostic print, rather than an abort in the last moments of an otherwise clean run.
     extern "C" fn timing_atexit() {
-        dump();
+        let _ = catch_unwind(AssertUnwindSafe(dump));
     }
 
     /// Record `nanos` against `name`. No-op unless [`enabled`]. The recording cost is: a relaxed
@@ -316,15 +347,23 @@ mod imp {
     /// The RAII guard `timeit!` expands to. Holds the `&'static str` name and the start `Instant`;
     /// records its elapsed time on drop. Constructing it always takes an `Instant` (the runtime gate
     /// is re-checked on drop), so prefer it at a method's top where the whole body is the scope.
+    /// `start` is `None` when the runtime gate was off at construction, which is what makes the
+    /// module header's claim — feature ON, env OFF costs one atomic load — actually true. It was
+    /// not: the constructor read the clock unconditionally and `Drop` read it a second time, so a
+    /// build with the feature compiled in but `BUSBAR_TIMING` unset paid TWO `Instant::now()` calls
+    /// at every instrumented call site. On most platforms that is a `clock_gettime`, which is not
+    /// remotely a predictable-branch atomic load.
     pub struct Timer {
         name: &'static str,
-        start: Instant,
+        start: Option<Instant>,
     }
 
     impl Drop for Timer {
         #[inline]
         fn drop(&mut self) {
-            record(self.name, self.start.elapsed().as_nanos() as u64);
+            if let Some(start) = self.start {
+                record(self.name, start.elapsed().as_nanos() as u64);
+            }
         }
     }
 
@@ -333,16 +372,20 @@ mod imp {
     pub fn timer(name: &'static str) -> Timer {
         Timer {
             name,
-            start: Instant::now(),
+            // Gate FIRST, clock second. A disabled build must not pay for a reading it will discard.
+            start: enabled().then(Instant::now),
         }
     }
 
     /// Time `f` under `name` and return its result — the fn form of `timeit!` for one expression.
     #[inline]
     pub fn scope<T>(name: &'static str, f: impl FnOnce() -> T) -> T {
-        let start = Instant::now();
+        // Same discipline as `timer`: no clock read at all when the gate is off.
+        let start = enabled().then(Instant::now);
         let out = f();
-        record(name, start.elapsed().as_nanos() as u64);
+        if let Some(start) = start {
+            record(name, start.elapsed().as_nanos() as u64);
+        }
         out
     }
 
@@ -350,6 +393,8 @@ mod imp {
     /// [`dump_scoped`] at the end of the request to print only that request's methods.
     pub fn reset() {
         LOCAL.with(|a| a.lock().unwrap_or_else(|p| p.into_inner()).clear());
+        // Sweep the tombstones of threads that have exited since the last walk.
+        drop(live_registries());
     }
 
     /// Print the current thread's table — the per-request view (call after [`reset`] + the request).
@@ -370,9 +415,7 @@ mod imp {
             return;
         }
         let mut merged: ThreadRegistry = HashMap::new();
-        let handles: Vec<Arc<Mutex<ThreadRegistry>>> =
-            { threads().lock().unwrap_or_else(|p| p.into_inner()).clone() };
-        for h in handles {
+        for h in live_registries() {
             let g = h.lock().unwrap_or_else(|p| p.into_inner());
             for (name, stat) in g.iter() {
                 merged.entry(name).or_default().merge(stat);

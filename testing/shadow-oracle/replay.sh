@@ -178,14 +178,21 @@ if [ -n "$baseline_rows" ]; then
   while IFS=$'\t' read -r id status classes first; do
     [ -n "$id" ] || continue
     record "$id" "$status" "$classes" "$first" >/dev/null
-    baseline_ids="${baseline_ids}${id} "
+    baseline_ids="${baseline_ids}${id}
+"
   done <<<"$baseline_rows"
 fi
 
-OWED="$(tr '\n' ' ' <"${OUT}/owed.txt")"
+# ONE ID PER LINE, and the newlines are the point. These ids are cells.json ids, and 84 of them
+# contain a space (`…|GET /.well-known/agent-card.json|ok`). Flattened to a space-separated string
+# they came apart in the verdict's owed loop into fragments that owe nothing, so the oracle's own
+# gate reported hundreds of phantom `did not run` rows. verdict.sh reads a newline-separated owed
+# set line by line; keep it that way.
+OWED="$(<"${OUT}/owed.txt")"
 echo
 echo "golden gaps (recorded SKIP/FAIL on the golden, not owed): $(wc -l <"${OUT}/owed-gaps.txt" | tr -d ' ')"
-GATE_NAME="shadow oracle vs golden" EXPECTED_IDS="${OWED} ${baseline_ids}" LEDGER="$LEDGER" bash "${repo}/testing/fleet-fixtures/verdict.sh"
+GATE_NAME="shadow oracle vs golden" EXPECTED_IDS="${OWED}
+${baseline_ids}" LEDGER="$LEDGER" bash "${repo}/testing/fleet-fixtures/verdict.sh"
 rc=$?
 echo "report: ${OUT}/report.md"
 exit $rc

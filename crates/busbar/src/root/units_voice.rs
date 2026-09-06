@@ -116,7 +116,7 @@ use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
 use busbar_unit_auth::{Auth, AuthRequest};
-use busbar_unit_scope::{Scope, TRANSPORT_HANDSHAKE};
+use busbar_unit_scope::{Grants, Scope, TRANSPORT_HANDSHAKE};
 use busbar_unit_trust::net::GuardPolicy;
 
 /// Every meter class this plane declares fits in one usage report, with room to spare.
@@ -425,6 +425,13 @@ pub struct VoiceNode {
     /// The node's monotonic sequence for the audit record's second clock, so a wall clock that
     /// jumped cannot reorder one unit's own events.
     mono: AtomicU64,
+    /// The sessions whose metering lease has said there is nothing left.
+    ///
+    /// It lives on the node rather than on a unit because a unit is one frame and the answer has to
+    /// outlive it: the frame that emptied the lease is delivered and paid for, and what the
+    /// exhaustion decides is every frame after it. Audio already streamed cannot be refunded, so
+    /// the next door is the only enforcement point there is.
+    exhausted: Mutex<std::collections::BTreeSet<u64>>,
 }
 
 impl std::fmt::Debug for VoiceNode {
@@ -479,12 +486,37 @@ impl VoiceNode {
             io: parts.io,
             origin: parts.origin,
             mono: AtomicU64::new(0),
+            exhausted: Mutex::new(std::collections::BTreeSet::new()),
         }
     }
 
     /// The next reading of the node's monotonic clock.
     fn tick(&self) -> u64 {
         self.mono.fetch_add(1, Ordering::AcqRel)
+    }
+
+    /// Record that a session's lease has nothing left.
+    fn exhaust(&self, session: u64) {
+        self.exhausted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session);
+    }
+
+    /// Forget whatever a previous session on this identifier ended as.
+    fn reopened(&self, session: u64) {
+        self.exhausted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&session);
+    }
+
+    /// Whether a session's lease has already said it is dry.
+    fn is_exhausted(&self, session: u64) -> bool {
+        self.exhausted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains(&session)
     }
 }
 
@@ -645,6 +677,13 @@ pub struct VoiceUnit<'n> {
     pub arrival: ArrivalRecord,
     /// The credential the carriers presented, where one was.
     pub credential: Option<String>,
+    /// What the caller's credential is entitled to, as the auth chain resolved it.
+    ///
+    /// Held on the unit rather than looked up at the step that checks it, for the reason every other
+    /// plane holds it the same way: the grants are the CALLER's and are decided once, and a step that
+    /// went looking for them a second time would be a second place for a principal's entitlement to
+    /// be decided.
+    pub grants: Grants,
     /// Whether the credential rides the session rather than being presented per unit.
     pub from_session: bool,
     /// The dialect the decode step named.
@@ -659,6 +698,13 @@ pub struct VoiceUnit<'n> {
     accrued: AtomicU64,
     /// Whether the dial opened.
     dialed: Mutex<Option<Result<(), DialRefusal>>>,
+    /// How the audit step classified this unit's ending, once it sealed one.
+    ///
+    /// The record is sealed before the exit path settles, and the ending it sealed is one of the
+    /// facts the fee is decided from. Carrying it here is what lets the settlement read the plane's
+    /// verdict rather than a second guess at it: a record that says the turn errored and a posting
+    /// that charged for it would be two answers to one question.
+    sealed_finish: Mutex<Option<busbar_contract::FinishClass>>,
 }
 
 impl std::fmt::Debug for VoiceUnit<'_> {
@@ -691,12 +737,18 @@ impl<'n> VoiceUnit<'n> {
                 transport_chain: vec!["http", "ws"],
             },
             credential: None,
+            // The full grant until a caller says otherwise through `holding`. This is the seam's
+            // default and not a policy: no transport composes a voice unit yet, so there is no
+            // credential for a narrower value to have come from, and a default that refused would
+            // refuse a caller nobody has authenticated rather than one who was found wanting.
+            grants: Grants::of(Scope::Full),
             from_session: shape != UnitShape::SessionOpen,
             dialect: Dialect::OpenaiRealtime,
             usage: TurnUsage::default(),
             epoch,
             accrued: AtomicU64::new(0),
             dialed: Mutex::new(None),
+            sealed_finish: Mutex::new(None),
         }
     }
 
@@ -704,6 +756,13 @@ impl<'n> VoiceUnit<'n> {
     #[must_use]
     pub fn with_credential(mut self, credential: impl Into<String>) -> Self {
         self.credential = Some(credential.into());
+        self
+    }
+
+    /// What this unit's caller is entitled to.
+    #[must_use]
+    pub fn holding(mut self, grants: Grants) -> Self {
+        self.grants = grants;
         self
     }
 
@@ -719,6 +778,17 @@ impl<'n> VoiceUnit<'n> {
     pub fn reporting(mut self, usage: TurnUsage) -> Self {
         self.usage = usage;
         self
+    }
+
+    /// Whether anything the upstream produced reached the caller.
+    ///
+    /// On a duplex plane there is no headers frame to count: the first thing a caller sees of an
+    /// answer is the first token of it, so what the upstream reported having emitted is the record
+    /// of a frame having been relayed. Input the turn consumed is not an answer — a turn that was
+    /// heard and never replied to relayed nothing.
+    #[must_use]
+    fn answered(&self) -> bool {
+        self.usage.audio_tokens_out > 0 || self.usage.text_tokens_out > 0
     }
 
     /// Whether the dial was attempted and what it answered.
@@ -921,9 +991,18 @@ impl Units for VoiceUnit<'_> {
         // for a pair it was told nothing about, and reading `None` as a pass would be authorization
         // by omission — every operation class a deployment forgot to name would be open.
         let claim = ClaimKey::new(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY);
-        match busbar_unit_scope::required_scope(claim, self.shape.op_class(), &self.node.scope) {
-            Some(_) => Decision::proceed(token, ScopeFacts::default()),
-            None => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
+        let Some(needed) =
+            busbar_unit_scope::required_scope(claim, self.shape.op_class(), &self.node.scope)
+        else {
+            return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+        };
+        // And having found what the operation requires, the caller's grant is compared against it —
+        // which is the half that was missing. Finding the requirement and not checking it is a
+        // lookup, not an authorization: it refuses a class the deployment forgot to name and admits
+        // every principal for every class it did, including the read-only one opening a session.
+        match busbar_unit_scope::approve(self.grants, needed) {
+            Ok(()) => Decision::proceed(token, ScopeFacts::default()),
+            Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied)),
         }
     }
 
@@ -935,11 +1014,24 @@ impl Units for VoiceUnit<'_> {
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Decision<Admit> {
+        // A SESSION WHOSE LEASE RAN DRY GETS NO FURTHER FRAME. The turn that emptied it was
+        // delivered and settled — this is the one after it — and the refusal is raised at the door
+        // under the door's own money reason, which is what the kernel reads when it decides a
+        // refusal closes the session rather than merely ending the unit.
+        if !self.shape.is_handshake() && self.node.is_exhausted(self.session) {
+            return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
+        }
+
         // The handshake's admission: a hold that reserves nothing, drawing no request slot and
         // taking no concurrency lease. It is still an admission and it still ends at the exit path
         // with a settlement of zero — the point of the zero-priced hold is that the unit is
         // accounted for, not that it is exempt from accounting.
         if self.shape.is_handshake() {
+            // Unit zero is a NEW session, whatever ran on this identifier before it. The mark is
+            // the previous session's and is dropped here rather than left to refuse a conversation
+            // that has its own reservation to take — which is also what keeps the marks from
+            // outliving the sessions they were made for.
+            self.node.reopened(self.session);
             // The session's opening reservation is taken here, once, and it is the reservation every
             // later frame of the session is allowed against. A lease that cannot be opened is an
             // exhaustion answer at the door rather than a session that opens and then cannot pay.
@@ -1022,7 +1114,11 @@ impl Units for VoiceUnit<'_> {
         let total: u64 = lines.iter().map(|line| line.quantity).sum();
         if !self.shape.is_handshake() && !self.node.io.lease.settle(self.session, total) {
             // Not a refusal of this unit. This unit's value was delivered and is metered; what the
-            // exhausted lease decides is whether there is a next one.
+            // exhausted lease decides is whether there is a next one — and it decides no. The
+            // session is marked here and refused at the door below, which is the answer the seam's
+            // own contract asks for: a session that cannot pay for the next frame must stop
+            // receiving them, and that is the one thing metering after the fact cannot do.
+            self.node.exhaust(self.session);
         }
         match Usage::report(usage, lines) {
             Ok(report) => Decision::proceed(token, report),
@@ -1035,18 +1131,23 @@ impl Units for VoiceUnit<'_> {
     }
 
     fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
-        self.seal(token, ctx, outcome_finish(outcome))
+        self.seal(token, ctx, *outcome, outcome_finish(outcome))
     }
 
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
         ctx: &UnitCtx,
-        _refusal: &Refusal,
+        refusal: &Refusal,
     ) -> Decision<Audit> {
         // The second door: a unit that never passed the door and was charged nothing. It still gets
-        // a record, because a refusal is an event.
-        self.seal(token, ctx, busbar_contract::FinishClass::Error)
+        // a record, because a refusal is an event — and the record says which step said no and why,
+        // because a refusal nobody can name is an event with no information in it.
+        let outcome = Outcome::Refused(
+            refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+            refusal.reason(),
+        );
+        self.seal(token, ctx, outcome, busbar_contract::FinishClass::Error)
     }
 
     fn encode(
@@ -1069,7 +1170,7 @@ impl Units for VoiceUnit<'_> {
         )
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         Evidence {
             // What the upstream reported, where it reported anything.
             located: self
@@ -1091,7 +1192,12 @@ impl Units for VoiceUnit<'_> {
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
-            fee: FeeEvidence::default(),
+            fee: fee_evidence(
+                self.shape,
+                ctx.origin,
+                self.answered(),
+                *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()),
+            ),
         }
     }
 }
@@ -1168,18 +1274,45 @@ impl VoiceUnit<'_> {
         &self,
         token: &UnitToken<Audit>,
         ctx: &UnitCtx,
+        outcome: Outcome,
         finish: busbar_contract::FinishClass,
     ) -> Decision<Audit> {
         let facts = AuditFacts {
             op_class: self.shape.op_class(),
             finish,
         };
+        // Written before the record is, so the settlement that follows reads the ending this record
+        // carries rather than deciding the same question a second time.
+        *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()) = Some(finish);
+        let inputs = self.audit_inputs(ctx, outcome, finish);
         let mut durability = self
             .node
             .durability
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let inputs = busbar_unit_audit::record::AuditInputs {
+        let _record = busbar_unit_audit::record::Audit::seal(&mut durability.record, inputs, token);
+        Decision::proceed(token, facts)
+    }
+
+    /// What one record says, before the chain is touched.
+    ///
+    /// Separated from the sealing so the ending a record carries is a value this file computes and
+    /// can be read back, rather than a literal buried under a lock.
+    fn audit_inputs(
+        &self,
+        ctx: &UnitCtx,
+        outcome: Outcome,
+        finish: busbar_contract::FinishClass,
+    ) -> busbar_unit_audit::record::AuditInputs {
+        // The record does not decide the fee a second time: it reads the same evidence the exit
+        // path settles from, through the same function.
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
+            self.shape,
+            ctx.origin,
+            self.answered(),
+            Some(finish),
+        ));
+        busbar_unit_audit::record::AuditInputs {
             subject: busbar_unit_audit::record::Subject::Arrival,
             what: busbar_unit_audit::record::What {
                 unit_key: ctx.key,
@@ -1193,8 +1326,11 @@ impl VoiceUnit<'_> {
             mono: self.node.tick(),
             origin: self.node.origin,
             outcome: busbar_unit_audit::record::OutcomeFacts {
-                unit_end: Outcome::Completed,
-                step: None,
+                // How the LOOP ended this unit, and the step it ended at. Both are carried in
+                // rather than written here: a record that says every unit completed is a record
+                // that cannot tell a turn from the refusal that replaced it.
+                unit_end: outcome,
+                step: outcome.step(),
                 finish: audit_finish(finish),
                 hook_failed: false,
                 emission_delta: 0,
@@ -1205,7 +1341,7 @@ impl VoiceUnit<'_> {
                 pre_tier: 0,
                 priced: 0,
                 tier_bp: busbar_unit_admission::STANDARD_TIER_BP,
-                fee_count: 0,
+                fee_count,
                 currency: String::new(),
                 rate_card_version: 0,
                 bucket_chain_ref: String::new(),
@@ -1214,9 +1350,36 @@ impl VoiceUnit<'_> {
             // The label itself never reaches the chain — only its digest does — so what travels here
             // is what the chain hashes, and nothing a reader could resolve back to a conversation.
             correlation_label: None,
-        };
-        let _record = busbar_unit_audit::record::Audit::seal(&mut durability.record, inputs, token);
-        Decision::proceed(token, facts)
+        }
+    }
+}
+
+/// The facts this plane's flat per-request fee is decided from.
+///
+/// One function, read by the record and by the settlement, because they are two readers of ONE
+/// decision — a row that says a fee was charged over a posting that charged none is a discrepancy
+/// nothing downstream can settle.
+///
+/// A turn is the caller's own transaction and the only shape that pays: the handshake opens the
+/// session and moves no money, and a tool call is the provider pushing through the session's own
+/// upstream, which is not a caller's request. The leg is the session's upstream, which every shape
+/// but the handshake relays onto. This dialect writes no status frame of its own — the answer's
+/// first token is the first thing the caller sees — so the plane's sealed ending is the single
+/// source, and an ending it called an error posts nothing.
+fn fee_evidence(
+    shape: UnitShape,
+    origin: busbar_caps::OriginKind,
+    relayed_first_response_frame: bool,
+    finish: Option<busbar_contract::FinishClass>,
+) -> FeeEvidence {
+    FeeEvidence {
+        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client
+            && matches!(shape, UnitShape::Turn),
+        selected_upstream: !shape.is_handshake(),
+        relayed_first_response_frame,
+        status_at: None,
+        status: None,
+        finish,
     }
 }
 
@@ -1393,6 +1556,49 @@ mod tests {
         let ended = run(&kernel, &unit);
         assert!(matches!(ended, Ended::Settled { .. }));
         assert_eq!(unit.dial_outcome(), Some(Ok(())));
+    }
+
+    /// The grant a caller holds is compared against what the class requires, and a caller who holds
+    /// less is refused.
+    ///
+    /// The step used to stop one line short: it found the required scope and then proceeded on
+    /// having FOUND it, which authorizes every principal for every class a deployment did name and
+    /// refuses only the classes it forgot. On this plane every governed class requires the full
+    /// grant, so a read-only credential reached a turn — the priced operation — on the strength of a
+    /// lookup that never compared anything.
+    ///
+    /// The handshake arm is asserted beside it because it is the one thing that must NOT change: a
+    /// kernel-granted operation is answered before the policy is asked, which is what lets a node
+    /// hand shake before it has authenticated anybody.
+    #[test]
+    fn a_caller_who_holds_less_than_the_class_requires_is_refused() {
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let node = node(serviceable());
+
+        let decide = |shape: UnitShape, held: Grants| -> bool {
+            let unit = VoiceUnit::new(&node, shape, 7, 1_700_000_000).holding(held);
+            let token: UnitToken<busbar_caps::step::Approve> = UnitToken::mint(&seal);
+            unit.approve(&token, &ctx(1), &PrincipalId::new("acct:voice"), &[])
+                .into_result(&seal)
+                .is_ok()
+        };
+
+        assert!(
+            !decide(UnitShape::Turn, Grants::of(Scope::ReadOnly)),
+            "a read-only credential reached a turn, which the plane declares as full"
+        );
+        assert!(
+            !decide(UnitShape::ToolCall, Grants::of(Scope::ReadOnly)),
+            "a read-only credential reached a tool call"
+        );
+        assert!(
+            decide(UnitShape::Turn, Grants::of(Scope::Full)),
+            "a full credential was refused the operation it holds the grant for"
+        );
+        assert!(
+            decide(UnitShape::SessionOpen, Grants::of(Scope::ReadOnly)),
+            "the handshake stopped being kernel-granted"
+        );
     }
 
     /// No money moves in a handshake. It is admitted, it is audited, and it draws no request slot —
@@ -1652,6 +1858,115 @@ mod tests {
         assert_eq!(UnitShape::SessionOpen.op_class(), meta::OP_SESSION_OPEN);
     }
 
+    /// A lease that answers "nothing left" closes the session it answered for.
+    ///
+    /// The turn that emptied it is served and settled in full — audio that has already streamed
+    /// cannot be refunded, so refusing it would be a refusal of value the caller already received.
+    /// The frame AFTER it is the enforcement point, and it is refused at the door under the money
+    /// reason, which is the same one the kernel reads to close a session rather than merely to end
+    /// a unit. A session that never ran dry is untouched by any of this.
+    #[test]
+    fn a_session_whose_lease_runs_dry_is_closed_and_its_next_frame_refused() {
+        struct DryLease;
+        impl SessionLease for DryLease {
+            fn reserve(&self, _session: u64, _nanos: u64) -> Result<(), ReasonCode> {
+                Ok(())
+            }
+            fn settle(&self, _session: u64, _nanos: u64) -> bool {
+                false
+            }
+            fn close(&self, _session: u64) {}
+        }
+        let node = priced_node(VoiceIo {
+            dial: Box::new(OpenDial),
+            lease: Box::new(DryLease),
+            ..VoiceIo::default()
+        });
+        let kernel = Kernel::new();
+
+        // The turn that empties the lease runs to the end and settles.
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+            audio_tokens_out: 120,
+            audio_ms_in: 900,
+            ..TurnUsage::default()
+        });
+        let Ended::Settled { end, .. } = run(&kernel, &turn) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
+        assert_eq!(
+            end.into_posted().expect("the report fits").settled(),
+            120,
+            "the frame that emptied the lease is charged exactly what it delivered"
+        );
+
+        // And the next frame on that session does not get in.
+        let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &next) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(
+            end.outcome(),
+            Outcome::Refused(busbar_caps::StepName::Admit, ReasonCode::OverBudget),
+            "the door refuses a session that cannot pay for another frame"
+        );
+        assert_eq!(
+            busbar_kernel::inflight::hard_closes(
+                busbar_caps::OriginKind::Provider,
+                busbar_caps::StepName::Admit,
+                ReasonCode::OverBudget,
+                busbar_contract::Framing::Stream,
+                busbar_kernel::inflight::Binding::Bound,
+            ),
+            Some(busbar_kernel::inflight::HardClose::ProviderRefusedForMoney),
+            "and that refusal is the one that closes the session"
+        );
+
+        // A session that never ran dry is not caught by the mark.
+        let other = VoiceUnit::new(&node, UnitShape::Turn, 8, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &other) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
+
+        // And a NEW session on the same identifier is a new session: it takes its own reservation
+        // and is not refused for what the last one spent.
+        let reopened = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &reopened) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &turn) else {
+            panic!("the exit path settles it");
+        };
+        assert_eq!(end.outcome(), Outcome::Completed);
+    }
+
+    /// A refused unit's record says it was refused, and names the step that refused it.
+    ///
+    /// The record is the only place a refusal survives the connection it happened on, so a chain
+    /// that spells every ending "completed" is a chain an operator cannot ask why anything stopped.
+    #[test]
+    fn a_refused_units_record_carries_the_refusal_and_its_step() {
+        let node = node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let refused = Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied);
+        let inputs = unit.audit_inputs(&ctx(1), refused, busbar_contract::FinishClass::Error);
+        assert_eq!(inputs.outcome.unit_end, refused);
+        assert_eq!(inputs.outcome.step, Some(busbar_caps::StepName::Approve));
+
+        // And a turn that ran is still recorded as one: threading the ending through did not turn
+        // every record into a refusal.
+        let done = unit.audit_inputs(
+            &ctx(1),
+            Outcome::Completed,
+            busbar_contract::FinishClass::TurnComplete,
+        );
+        assert_eq!(done.outcome.unit_end, Outcome::Completed);
+        assert_eq!(done.outcome.step, None);
+    }
+
     /// The four seams refuse rather than pretend. A node whose I/O half was never installed cannot
     /// dial, cannot pump, cannot lease and has no carrier; saying so at the seam is what keeps
     /// "detached" from being reported as "broken", and keeps neither from being reported as "fine".
@@ -1750,6 +2065,69 @@ mod tests {
         );
     }
 
+    /// The flat fee is a turn's, and only a turn that answered.
+    ///
+    /// The handshake moves no money, the provider's tool call is not a caller's request, a turn
+    /// nobody was answered on relayed nothing, and an ending the plane called an error pays nothing.
+    #[test]
+    fn the_flat_fee_is_a_turn_that_answered_and_nothing_else() {
+        use busbar_caps::OriginKind;
+        use busbar_contract::FinishClass;
+        use busbar_kernel::teller::fee_count;
+
+        let turn = |finish| fee_evidence(UnitShape::Turn, OriginKind::Client, true, Some(finish));
+        assert_eq!(fee_count(&turn(FinishClass::TurnComplete)).0, 1);
+        assert_eq!(fee_count(&turn(FinishClass::Error)).0, 0);
+        assert_eq!(
+            fee_count(&fee_evidence(
+                UnitShape::Turn,
+                OriginKind::Client,
+                false,
+                Some(FinishClass::TurnComplete),
+            ))
+            .0,
+            0
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(
+                UnitShape::SessionOpen,
+                OriginKind::Handshake,
+                true,
+                Some(FinishClass::Complete),
+            ))
+            .0,
+            0
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(
+                UnitShape::ToolCall,
+                OriginKind::Provider,
+                true,
+                Some(FinishClass::TurnComplete),
+            ))
+            .0,
+            0
+        );
+    }
+
+    /// A turn that reported no output relayed no answer; one that emitted tokens did.
+    #[test]
+    fn an_answered_turn_is_one_that_emitted_something() {
+        let node = priced_node(serviceable());
+        let silent =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+                audio_tokens_in: 90,
+                ..TurnUsage::default()
+            });
+        assert!(!silent.answered());
+        let spoken =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+                audio_tokens_out: 3,
+                ..TurnUsage::default()
+            });
+        assert!(spoken.answered());
+    }
+
     /// A turn's reservation is the coarse opening magnitude at the dearest price the dialect's
     /// classes charge, and the door is what opens it. Over-sized on purpose: the residual comes
     /// straight back at settlement.
@@ -1785,6 +2163,7 @@ mod tests {
                 assert_eq!(hold.accrued(), 0, "a reservation is not a spend");
                 let _ = busbar_caps::Posted::settle(
                     hold,
+                    0,
                     &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
                         .expect("empty"),
                     &busbar_caps::LedgerToken::mint(&seal),
@@ -1921,8 +2300,12 @@ mod tests {
             }],
         )
         .expect("one line");
-        let posted =
-            busbar_caps::Posted::settle(hold, &usage, &busbar_caps::LedgerToken::mint(&seal));
+        let posted = busbar_caps::Posted::settle(
+            hold,
+            u128::from(reserved + 7_000),
+            &usage,
+            &busbar_caps::LedgerToken::mint(&seal),
+        );
         assert!(posted
             .flags()
             .contains(busbar_caps::PostingFlags::OVERDRAFT));

@@ -93,7 +93,7 @@
 use std::path::{Path, PathBuf};
 
 use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
-use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord};
+use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_unit_ledger::checkpoint::Checkpoint;
 use busbar_unit_ledger::legacy::LegacyRows;
 use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
@@ -260,12 +260,13 @@ impl Durability {
         &mut self,
         at: &Settling<'_>,
         hold: busbar_caps::Hold,
+        priced_nanos: u128,
         usage: &busbar_caps::Usage,
         ledger: &busbar_caps::LedgerToken,
     ) -> Result<Settled, DurabilityLost> {
-        let settlement = self
-            .ledger
-            .settle_recording(at.key, at.window, hold, usage, ledger);
+        let settlement =
+            self.ledger
+                .settle_recording(at.key, at.window, hold, priced_nanos, usage, ledger);
         self.journal_settlement(at, settlement)
     }
 
@@ -589,6 +590,23 @@ pub fn build(
     build_for_node(cfg, 0, shipper, legacy_rows)
 }
 
+/// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this
+/// path spells it: a clock that reads before the epoch gives zero rather than panicking.
+///
+/// It lives HERE, in the composition root, because reading the wall clock is the root's job. The
+/// audit unit takes a [`Clock`] and has no implementation of its own — a unit that could read the
+/// clock could produce a different record from the same inputs, and then replaying the inputs would
+/// no longer reproduce the record.
+struct RootWallClock;
+
+impl Clock for RootWallClock {
+    fn now(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+}
+
 /// Build the journal, the ledger and the two audit chains.
 ///
 /// The whole decision is the first `match`. Everything after it is the same on both branches, which
@@ -623,7 +641,10 @@ pub fn build_for_node(
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
         record: AuditChain::new(),
-        legacy: AuditLog::new(),
+        // The ring takes the ROOT's clock. The audit unit has none of its own to fall back on, which
+        // is the point: reading the wall clock is the composition root's job, and a unit that could
+        // do it for itself would stop being replayable from its inputs.
+        legacy: AuditLog::with(Box::new(RootWallClock), Box::new(NoSeam)),
         checkpoints: Vec::new(),
     })
 }
@@ -666,12 +687,49 @@ mod tests {
         }
 
         fn entries(&self) -> Vec<String> {
-            let mut names: Vec<String> = std::fs::read_dir(&self.path)
-                .expect("scratch directory is readable")
-                .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
-                .collect();
-            names.sort();
-            names
+            entries_of(&self.path)
+        }
+    }
+
+    /// What is in one directory now, by name and in order.
+    fn entries_of(path: &std::path::Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(path)
+            .expect("the directory is readable")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// The directory the process was started in, watched for anything that appears in it.
+    ///
+    /// This is the directory the "no file was created" claim has to be made about. A scratch
+    /// directory the builder was never told the name of is not somewhere a stray journal could
+    /// land: a journal opened at a RELATIVE path follows the PROCESS, and the process is here. The
+    /// scratch directory beside it says only that the fixture tidied up after itself, which is a
+    /// claim about the test rather than about the node.
+    ///
+    /// Nothing is changed about the process — no directory is entered and none is created — because
+    /// a test binary runs its cases on one process's threads and moving that process out from under
+    /// the others is a fixture that breaks its neighbours.
+    struct WorkingDir {
+        path: PathBuf,
+        before: Vec<String>,
+    }
+
+    impl WorkingDir {
+        fn watch() -> Self {
+            let path = std::env::current_dir().expect("the process has a working directory");
+            let before = entries_of(&path);
+            WorkingDir { path, before }
+        }
+
+        /// What is in it now that was not in it when the watch started.
+        fn appeared(&self) -> Vec<String> {
+            entries_of(&self.path)
+                .into_iter()
+                .filter(|name| !self.before.contains(name))
+                .collect()
         }
     }
 
@@ -706,6 +764,7 @@ mod tests {
     #[test]
     fn no_data_dir_creates_no_file() {
         let scratch = ScratchDir::new("unset");
+        let cwd = WorkingDir::watch();
         assert!(scratch.entries().is_empty(), "the fixture starts empty");
 
         let cfg = DurabilityConfig { data_dir: None };
@@ -719,6 +778,12 @@ mod tests {
             Vec::<String>::new(),
             "a node with no configured data directory wrote a file"
         );
+        assert_eq!(
+            cwd.appeared(),
+            Vec::<String>::new(),
+            "a node with no configured data directory wrote a file into the directory it was \
+             started in"
+        );
         assert!(
             writable_paths(&cfg).is_empty(),
             "no data directory means no writable path at all"
@@ -731,6 +796,7 @@ mod tests {
     #[test]
     fn no_data_dir_creates_no_file_even_once_every_unit_has_written() {
         let scratch = ScratchDir::new("unset-in-use");
+        let cwd = WorkingDir::watch();
         let mut durability = build(
             &DurabilityConfig { data_dir: None },
             Box::new(NullShipper::new()),
@@ -751,6 +817,11 @@ mod tests {
             scratch.entries(),
             Vec::<String>::new(),
             "writing to the journal created a file on a node with no data directory"
+        );
+        assert_eq!(
+            cwd.appeared(),
+            Vec::<String>::new(),
+            "writing to the journal created a file in the directory the node was started in"
         );
         assert!(!durability.on_disk());
     }
@@ -1249,6 +1320,7 @@ mod tests {
             .settle(
                 &settling(&key, &durability_token),
                 hold,
+                4_200,
                 &usage,
                 &LedgerToken::mint(&seal),
             )
@@ -1309,6 +1381,7 @@ mod tests {
             .settle(
                 &settling(&key, &durability_token),
                 hold,
+                4_000,
                 &usage,
                 &LedgerToken::mint(&seal),
             )
@@ -1377,6 +1450,7 @@ mod tests {
             .settle(
                 &at,
                 Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
+                4_200,
                 &usage(4_200),
                 &LedgerToken::mint(&seal),
             )
@@ -1388,6 +1462,7 @@ mod tests {
             .record_hold_opened(&key, 86_400, 5_000);
         let posted = Posted::settle(
             Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
+            4_200,
             &usage(4_200),
             &LedgerToken::mint(&seal),
         );

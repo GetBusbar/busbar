@@ -1035,6 +1035,31 @@ pub trait BudgetHost: Send + Sync {
     /// which is `false` for every name when no card is configured (there is no card to miss).
     fn cost_model_unpriced(&self, cost: &CostHandle, model: &str) -> bool;
 
+    /// PRICE `usage` for `model` against the card the caller's own handle names, in nanodollars.
+    ///
+    /// The third read over the opaque handle, and the one a plane needs to spend money rather than
+    /// merely to ask about it: a step that accrues against a nano-unit reservation has to have a
+    /// nano-unit figure, and the only honest source of one is the rate card. The plane still reads
+    /// no rate — it hands over the counts it metered and gets back a total.
+    ///
+    /// The handle is the argument for the same reason it is the argument to
+    /// [`cost_model_unpriced`](Self::cost_model_unpriced): a request's money is settled against the
+    /// card that was resolved when its hold opened, which the caller pinned onto its own sink at the
+    /// door. [`MeteringHost::price_usage`] prices against the deployment's card as it is NOW, which
+    /// is the right answer for a live carrier reading its own rates and the wrong one for a request
+    /// that opened before a reload. Same arithmetic underneath; different card.
+    ///
+    /// Semantics are the per-model rate lookup's, unchanged: no card configured ⇒ `Some(0)`, because
+    /// a deployment that prices nothing prices every model at nothing; card present and `model`
+    /// priced ⇒ `Some(nanos)`; card present and `model` unknown ⇒ `None`, which the caller must not
+    /// read as free.
+    fn cost_price_usage(
+        &self,
+        cost: &CostHandle,
+        model: &str,
+        usage: &crate::billing::Usage,
+    ) -> Option<u128>;
+
     /// LEDGER one delivered response's tier-split token usage against the key's budget chain — the
     /// host-driven form of `sink.gov.record_usage(&sink.cost, key, pool, model, tokens, now)`. `gov`
     /// and `cost` are the opaque handles the sink minted (via [`governance`](Self::governance) /

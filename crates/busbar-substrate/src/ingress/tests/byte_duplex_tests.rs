@@ -123,6 +123,177 @@ async fn mint_is_monotonic_and_never_none() {
     assert!(CallRef::NONE.is_none());
 }
 
+/// A PEER THAT NEVER TERMINATES A FRAME must not be able to spend this node's memory. One frame is
+/// one line, so a stream with no `0x0A` in it is a single frame that grows for as long as the peer
+/// keeps writing — the read has to stop somewhere, and the session ends where it stops. Every other
+/// read on the inbound path is capped; this one is the byte pipe's own.
+#[tokio::test]
+async fn an_unterminated_frame_past_the_cap_ends_the_session() {
+    let (near, far) = tokio::io::duplex(64 * 1024);
+    let (near_r, near_w) = tokio::io::split(near);
+    let pump = tokio::spawn(serve(near_r, near_w, Arc::new(EchoPlane)));
+
+    // Well past the cap, with no terminator anywhere and NO close — the peer is simply still typing.
+    let (_far_r, mut far_w) = tokio::io::split(far);
+    let flood = tokio::spawn(async move {
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut written = 0usize;
+        while written <= MAX_FRAME_BYTES + chunk.len() {
+            if far_w.write_all(&chunk).await.is_err() {
+                break;
+            }
+            written += chunk.len();
+        }
+        std::future::pending::<()>().await;
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(20), pump)
+        .await
+        .expect("the session ends on an unterminated frame instead of buffering it forever")
+        .unwrap();
+    flood.abort();
+}
+
+/// A plane whose handlers all PARK: each one records its arrival and then never finishes, so the
+/// number that got in is exactly the number of handler tasks the transport allowed to exist at once.
+struct ParkingPlane {
+    entered: Arc<AtomicU64>,
+}
+
+#[async_trait::async_trait]
+impl DuplexPlane for ParkingPlane {
+    fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
+        None
+    }
+    async fn handle(self: Arc<Self>, _frame: Vec<u8>, _out: DuplexHandle) {
+        self.entered.fetch_add(1, Ordering::Relaxed);
+        std::future::pending::<()>().await;
+    }
+}
+
+/// ONE SESSION'S HANDLERS ARE CAPPED. A peer that floods frames faster than they are handled must not
+/// be able to mint an unbounded number of handler tasks: past the cap the reader PARKS, which is what
+/// puts the flood back on the peer's own transport instead of on this node's memory. Well past the cap
+/// here, so a missing gate shows up as every frame in flight at once.
+#[tokio::test]
+async fn one_session_holds_no_more_handlers_than_its_cap() {
+    use futures::channel::mpsc;
+
+    let entered = Arc::new(AtomicU64::new(0));
+    let plane = Arc::new(ParkingPlane {
+        entered: entered.clone(),
+    });
+
+    let (mut in_tx, in_rx) = mpsc::unbounded::<Vec<u8>>();
+    let (out_tx, _out_rx) = mpsc::unbounded::<Vec<u8>>();
+    let over = MAX_INFLIGHT_HANDLERS + 32;
+    for _ in 0..over {
+        in_tx.send(b"park".to_vec()).await.unwrap();
+    }
+    let _pump = tokio::spawn(serve_messages(in_rx, out_tx, plane));
+
+    // Let every handler the transport is willing to admit get in and park.
+    for _ in 0..50 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        if entered.load(Ordering::Relaxed) as usize >= MAX_INFLIGHT_HANDLERS {
+            break;
+        }
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    assert_eq!(
+        entered.load(Ordering::Relaxed) as usize,
+        MAX_INFLIGHT_HANDLERS,
+        "the session admitted exactly its cap and parked the reader on the rest"
+    );
+}
+
+/// A plane whose handler finishes the instant it is polled — the ordinary shape of a frame answered
+/// from memory, and the one that races the dispatcher's own bookkeeping.
+struct InstantPlane;
+
+#[async_trait::async_trait]
+impl DuplexPlane for InstantPlane {
+    fn classify(&self, _frame: &[u8]) -> Option<CallRef> {
+        None
+    }
+    async fn handle(self: Arc<Self>, _frame: Vec<u8>, _out: DuplexHandle) {}
+}
+
+/// The in-flight registry must be EMPTY once the handlers are done, however fast they were. The
+/// dispatcher runs on the reader's thread while the handler runs on the runtime's, so a handler that
+/// finishes first clears a key the dispatcher has not written yet — and the dispatcher then writes it
+/// anyway. Nothing ever removes such an entry: it blocks the whole EOF drain and grows for the life
+/// of the session. Dispatched here from a thread OUTSIDE the runtime driving the handlers, which is
+/// exactly the arrangement that produces the overlap.
+#[test]
+fn a_finished_handler_leaves_the_inflight_registry_empty() {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .expect("a current-thread runtime for the handlers");
+    let handlers = rt.handle().clone();
+    // Driven on its OWN thread, so the handlers make progress concurrently with the dispatch below.
+    let driver = std::thread::spawn(move || rt.block_on(std::future::pending::<()>()));
+
+    let (_near, far) = tokio::io::duplex(64);
+    let (_r, w) = tokio::io::split(far);
+    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let handle = DuplexHandle {
+        shared: shared.clone(),
+    };
+    let plane = Arc::new(InstantPlane);
+
+    let _in_runtime = handlers.enter();
+    for _ in 0..20_000 {
+        // Driven right here, on the dispatching thread: the only await is the handler permit, and the
+        // handlers themselves run on the runtime entered above.
+        futures::executor::block_on(dispatch_frame(&shared, &handle, &plane, b"frame".to_vec()));
+    }
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !shared.inflight.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    let stranded = shared.inflight.lock().unwrap().len();
+    drop(_in_runtime);
+    drop(driver);
+    assert_eq!(
+        stranded, 0,
+        "every finished handler cleared its own in-flight slot"
+    );
+}
+
+/// An `issue` that is ABANDONED — cancelled at its await, as any caller wrapping it in a
+/// `tokio::time::timeout` does — must leave the correlation table exactly as it found it. Its
+/// registration goes in before the frame is written, so nothing but the dropped future itself can
+/// take it back out, and a channel that outlives many abandoned calls would otherwise carry one dead
+/// entry per call for the life of the session.
+#[tokio::test]
+async fn an_abandoned_issue_leaves_no_registration_behind() {
+    let (_near, far) = tokio::io::duplex(64);
+    let (_r, w) = tokio::io::split(far);
+    let shared = new_shared(Box::new(NewlineSink { writer: w }));
+    let handle = DuplexHandle {
+        shared: shared.clone(),
+    };
+
+    let call = handle.mint();
+    let abandoned = tokio::time::timeout(
+        std::time::Duration::from_millis(50),
+        handle.issue(call, b"never answered".to_vec()),
+    )
+    .await;
+    assert!(
+        abandoned.is_err(),
+        "no answer arrives, so the call times out"
+    );
+    assert!(
+        shared.pending.lock().unwrap().is_empty(),
+        "the abandoned call took its registration with it"
+    );
+}
+
 /// Drive the pump over an in-memory MESSAGE duplex (each channel item is one frame, no newline
 /// convention — the shape an already-upgraded WebSocket presents): frames sent to the near end come
 /// back echoed verbatim as whole messages, and the stream ending (close) ends the loop. Mirrors

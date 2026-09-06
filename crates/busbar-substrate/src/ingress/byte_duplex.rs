@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 /// A neutral correlation key: the identity of ONE call awaiting its answer on this channel, as a
@@ -73,6 +73,24 @@ impl CallRef {
 /// the loop open. A supervising launcher's close-then-wait-then-kill reads a bound this size as
 /// prompt.
 const EOF_DRAIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// How many of ONE session's inbound frames may be in a handler at the same time. A peer writes as
+/// fast as it likes and the handling is concurrent, so without a cap a flood mints one task per frame
+/// and the node's memory is the peer's to spend. Wide enough that ordinary interleaved work never
+/// touches it, and reached only by a peer outrunning its own answers.
+///
+/// The cap is on the HANDLER, never on the reader's routing: a classified REPLY is delivered before
+/// this gate, so a handler parked in [`DuplexHandle::issue`] is always reachable by the answer it is
+/// waiting for, however many siblings hold permits.
+const MAX_INFLIGHT_HANDLERS: usize = 256;
+
+/// The largest ONE inbound frame may be on the byte path. A frame is a line, so a peer that never
+/// writes the terminator is writing a single frame that grows for as long as it keeps typing — with
+/// no cap, until the allocation fails. The bar is the same one an inbound request body is held to
+/// ([`crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES`]): a payload this transport carries may
+/// not be larger than one the gateway would accept through its front door. Reaching it is a framing
+/// fault, not a big frame, and the session ends there.
+const MAX_FRAME_BYTES: usize = crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
 /// The two callbacks a plane supplies to bind this transport. The transport is generic over the
 /// concrete implementor, so there is no boxing on the hot per-frame path; the implementor is shared
@@ -124,18 +142,37 @@ impl DuplexHandle {
     /// The caller mints `call` with [`mint`](Self::mint) and embeds it into `frame` however its wire
     /// spells a correlation id; the registration happens BEFORE the frame is written, so a reply
     /// that races back cannot find an empty table.
+    ///
+    /// The registration is owned by THIS future for as long as it lives: dropping the future — the
+    /// ordinary end of a caller that wrapped the await in a `tokio::time::timeout`, or of any
+    /// `select!` losing arm — takes the entry back out. Nothing else can: only a routed reply or the
+    /// caller itself ever knows the call is over, so a cancelled await that left its entry in place
+    /// would strand one dead sender per abandoned call for the life of the channel.
     pub async fn issue(&self, call: CallRef, frame: Vec<u8>) -> Option<Vec<u8>> {
         let (tx, rx) = oneshot::channel();
         self.shared.pending.lock().unwrap().insert(call.0, tx);
+        let _registration = PendingCall {
+            shared: self.shared.clone(),
+            call: call.0,
+        };
         self.emit(frame).await;
-        match rx.await {
-            Ok(reply) => Some(reply),
-            Err(_) => {
-                // The channel closed (EOF dropped the sender) before an answer arrived.
-                self.shared.pending.lock().unwrap().remove(&call.0);
-                None
-            }
-        }
+        // `Err` is the channel closing (EOF dropped the sender) before an answer arrived; either way
+        // the guard clears the entry as this frame unwinds.
+        rx.await.ok()
+    }
+}
+
+/// The lifetime of ONE call's registration in the correlation table, tied to the [`DuplexHandle::issue`]
+/// future's own frame. On drop it removes the entry — whether the call was answered, the channel
+/// closed under it, or the awaiting future was cancelled.
+struct PendingCall {
+    shared: Arc<Shared>,
+    call: u64,
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        self.shared.pending.lock().unwrap().remove(&self.call);
     }
 }
 
@@ -153,10 +190,18 @@ struct Shared {
     /// The monotonic mint; starts at 1 so [`CallRef::NONE`] (`0`) is never handed out.
     next_ref: AtomicU64,
     /// In-flight per-frame handlers, keyed on a private sequence so each removes itself on
-    /// completion (bounded memory) and the loop can abort the remainder at EOF.
-    inflight: Mutex<HashMap<u64, tokio::task::AbortHandle>>,
+    /// completion (bounded memory) and the loop can abort the remainder at EOF. The slot is RESERVED
+    /// under the lock before the handler is spawned and only then filled in with its abort handle —
+    /// `None` is a handler already running whose handle has not landed yet. Reserving first is what
+    /// makes a handler's self-removal authoritative: it can only ever remove a key that exists, so
+    /// the dispatcher never writes an entry back in behind it.
+    inflight: Mutex<HashMap<u64, Option<tokio::task::AbortHandle>>>,
     /// The private sequence behind the `inflight` keys.
     next_inflight: AtomicU64,
+    /// THIS SESSION'S handler permits — [`MAX_INFLIGHT_HANDLERS`] of them. A permit is taken before
+    /// the handler is spawned and released when it finishes, so the reader parks on a saturated
+    /// session rather than spawning into it, and the flood lands back on the peer's own transport.
+    handlers: Arc<tokio::sync::Semaphore>,
 }
 
 /// THE PLUGGABLE WRITE HALF — one outbound frame in, framed onto the wire however the bound transport
@@ -218,6 +263,7 @@ fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
         next_ref: AtomicU64::new(1),
         inflight: Mutex::new(HashMap::new()),
         next_inflight: AtomicU64::new(0),
+        handlers: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_HANDLERS)),
     })
 }
 
@@ -225,7 +271,7 @@ fn new_shared(sink: Box<dyn FrameSink>) -> Arc<Shared> {
 /// handler; everything else is handled concurrently under a private key so it clears itself on
 /// completion and the EOF path can abort whatever remains. Shared by both entry points so the
 /// correlation contract is written once, regardless of framing.
-fn dispatch_frame<P: DuplexPlane>(
+async fn dispatch_frame<P: DuplexPlane>(
     shared: &Arc<Shared>,
     handle: &DuplexHandle,
     plane: &Arc<P>,
@@ -239,19 +285,32 @@ fn dispatch_frame<P: DuplexPlane>(
         // the transport has nothing to answer it with.
         return;
     }
+    // TAKE A HANDLER PERMIT FIRST. On a saturated session this parks the reader, which stops reading
+    // the socket and puts the backlog back on the peer's transport — the one place it can be held
+    // without costing this node anything. The permit rides into the task and is released when the
+    // handler finishes or is aborted. `Err` is a closed semaphore, which nothing here ever does.
+    let Ok(permit) = shared.handlers.clone().acquire_owned().await else {
+        return;
+    };
     let key = shared.next_inflight.fetch_add(1, Ordering::Relaxed);
+    // RESERVE the slot before the handler exists. The dispatcher runs on the reader's thread and the
+    // handler on the runtime's, so a handler that finishes first would otherwise clear a key not yet
+    // written — and the write would then land on a slot nobody will ever remove again, holding the
+    // EOF drain open for its full bound and growing the registry for the life of the session.
+    shared.inflight.lock().unwrap().insert(key, None);
     let plane = plane.clone();
     let handle = handle.clone();
     let for_cleanup = shared.clone();
     let running = tokio::spawn(async move {
+        let _permit = permit;
         plane.handle(frame, handle).await;
         for_cleanup.inflight.lock().unwrap().remove(&key);
     });
-    shared
-        .inflight
-        .lock()
-        .unwrap()
-        .insert(key, running.abort_handle());
+    // Fill the reservation in ONLY while it is still there: a handler that already finished has taken
+    // the slot with it, and its abort handle is of no use to anyone.
+    if let Some(slot) = shared.inflight.lock().unwrap().get_mut(&key) {
+        *slot = Some(running.abort_handle());
+    }
 }
 
 /// END OF SESSION: DRAIN the in-flight handlers under a bound, then abort the remainder and flush. A
@@ -264,7 +323,11 @@ async fn drain_and_flush(shared: &Arc<Shared>) {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     for (_, h) in shared.inflight.lock().unwrap().drain() {
-        h.abort();
+        // A reservation with no handle yet is a handler spawned moments ago; the runtime drops it
+        // with the session, and there is nothing here to abort it with.
+        if let Some(h) = h {
+            h.abort();
+        }
     }
     shared.sink.lock().await.flush().await;
 }
@@ -287,20 +350,31 @@ where
     let mut buf: Vec<u8> = Vec::new();
     loop {
         buf.clear();
-        // One frame per line, split on 0x0A. EOF — zero bytes read — ends the session; a final
-        // unterminated line is still one frame.
-        match lines.read_until(b'\n', &mut buf).await {
+        // One frame per line, split on 0x0A, and never more than one frame's worth of bytes: the read
+        // is limited to the cap plus the terminator, so a peer that never writes one cannot make this
+        // buffer grow past it. EOF — zero bytes read — ends the session; a final unterminated line is
+        // still one frame.
+        let read = (&mut lines)
+            .take((MAX_FRAME_BYTES + 1) as u64)
+            .read_until(b'\n', &mut buf)
+            .await;
+        match read {
             Ok(0) => break,
             Ok(_) => {}
             Err(_) => break,
         }
         if buf.last() == Some(&b'\n') {
             buf.pop();
+        } else if buf.len() > MAX_FRAME_BYTES {
+            // The cap was reached with no terminator in sight: these bytes are not a frame and no
+            // later byte can make them one. A framing fault ends the session — there is no plane-side
+            // meaning to refuse it with, and reading on would only buffer more of the same.
+            break;
         }
         if buf.iter().all(u8::is_ascii_whitespace) {
             continue; // a blank line is not a frame
         }
-        dispatch_frame(&shared, &handle, &plane, std::mem::take(&mut buf));
+        dispatch_frame(&shared, &handle, &plane, std::mem::take(&mut buf)).await;
     }
     drain_and_flush(&shared).await;
 }
@@ -328,7 +402,7 @@ where
     // One frame per message, no framing to strip. The stream ending (close / dropped sender) is the
     // message-duplex analogue of EOF.
     while let Some(frame) = stream.next().await {
-        dispatch_frame(&shared, &handle, &plane, frame);
+        dispatch_frame(&shared, &handle, &plane, frame).await;
     }
     drain_and_flush(&shared).await;
 }

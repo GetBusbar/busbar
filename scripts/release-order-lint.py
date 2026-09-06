@@ -428,6 +428,75 @@ def check(root: str) -> Finding:
             "it belongs to release.yml's promote-release, after the record is re-proved."
         )
 
+    # R11. NO WORKFLOW MAY PUSH A COMMIT TO A RELEASE BRANCH.
+    #
+    # ci.yml's `proof-manifest` job used to end with `git push origin "HEAD:${{ github.ref_name }}"`,
+    # i.e. it committed the refreshed proof manifest back to whichever of dev/qa/main it ran on.
+    # `qa` and `main` are protected (required status checks, linear history, enforce_admins: true), so
+    # that push is REJECTED there: the job fails, the `CI` run concludes failure, and
+    # release-stage.yml's gate 0 (REQUIRED_WORKFLOWS: "CI") refuses to stage. A documentation refresh
+    # took the release out. Had it instead SUCCEEDED it would have been worse: a new HEAD on qa/main
+    # carrying [skip ci], for which no `CI`, `qa-gate` or `Release stage` run exists, so
+    # release.yml's resolve-staged refuses that sha permanently and there is no release at all.
+    #
+    # The rule is therefore about the REFSPEC, not about intent: a branch destination that is a
+    # release branch, or a VARIABLE (which is how the destination silently became the release branch
+    # in the first place), is a violation. Publishing to a fixed, unprotected branch such as
+    # `proof-manifests` is fine, and so is pushing a tag - `promote-release` must still be able to
+    # push `vX.Y.Z`, which is the one user-facing name this whole file exists to sequence.
+    for name in sorted(os.listdir(wf)) if os.path.isdir(wf) else []:
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        # NOT the `read` helper: R9 above rebinds that name in its own loop.
+        text = strip_comments(open(os.path.join(wf, name), encoding="utf-8").read())
+        for m in re.finditer(r"^[^\n]*\bgit\s+(?:-C\s+\S+\s+)?push\b[^\n]*", text, re.M):
+            cmd = m.group(0).strip()
+            dest = re.search(r"HEAD:(?:refs/heads/)?([^\s\"']+)", cmd)
+            if dest and (dest.group(1).startswith("$") or dest.group(1) in ("main", "qa")):
+                bad.append(
+                    "R11 %s pushes a commit to `%s` (`%s`). Never push to a release branch from a "
+                    "workflow: qa and main are protected, so the push is rejected and the run goes "
+                    "red, which stops the release; and if it landed it would mint a release-branch "
+                    "HEAD that no CI, qa-gate or Release stage run covers, which resolve-staged "
+                    "refuses forever. Publish to an unprotected branch (proof-manifests) or upload "
+                    "an artifact." % (name, dest.group(1), cmd)
+                )
+            if re.search(r"\bpush\b[^\n]*\borigin\s+[\"']?\+?(?:refs/heads/)?(?:main|qa)(?![\w:/-])", cmd):
+                bad.append(
+                    "R11 %s pushes directly to a release branch (`%s`). Release branches move only "
+                    "by a human fast-forward of a green sha; a workflow that writes to them can "
+                    "create a HEAD nothing has verified." % (name, cmd)
+                )
+
+    # R12. GATE 0 MUST NOT COLLAPSE THE RUN LIST TO ONE RUN PER WORKFLOW NAME.
+    #
+    # `branch-green` judged the sha by `jq ... | unique_by(.name)`. unique_by keeps exactly ONE
+    # element per key and the Actions API returns runs newest-first, so the NEWEST run of each name
+    # won. The main push's own CI completion spawns a second `qa-gate` run on the same sha whose jobs
+    # all skip, and `skipped` was counted green -- so a genuinely red two-hour qa soak was replaced,
+    # at promote time, by an empty run of the same name. Proof:
+    #   echo '[{"name":"qa-gate","conclusion":"skipped"},{"name":"qa-gate","conclusion":"failure"}]' \
+    #     | jq -c 'unique_by(.name)'  ->  [{"name":"qa-gate","conclusion":"skipped"}]
+    # Every run on the sha must be judged, and a required workflow must be selected by the branch it
+    # ran on (the qa push) and required to have concluded success.
+    bg = rjobs.get("branch-green", "")
+    if bg:
+        if "unique_by" in bg:
+            bad.append(
+                "R12 release.yml's `branch-green` job collapses the run list with `unique_by`. That "
+                "keeps only the NEWEST run per workflow name, and a main push spawns a second, "
+                "all-skipped `qa-gate` run on the same sha - so a red qa soak reads green and the "
+                "release promotes over it. Judge every run on the sha."
+            )
+        if not re.search(r"^\s+PROMOTE_SOURCE_BRANCH:", bg, re.M):
+            bad.append(
+                "R12 release.yml's `branch-green` job no longer selects the required workflow runs "
+                "by the branch they ran on (`PROMOTE_SOURCE_BRANCH`). main's HEAD IS the qa commit, "
+                "so both the qa-push run that carries the verdict and the main-push re-run that "
+                "carries nothing are present on the sha; without the branch selection the empty one "
+                "can satisfy the gate."
+            )
+
     # R8. VERIFY-DEPLOY MUST STILL OFFER THE STAGING CONTRACT.
     # release.yml's gate is a call into this file. If the inputs go away the call breaks loudly,
     # but a rename that keeps the call syntactically valid while changing what it means would not,
@@ -553,6 +622,33 @@ MUTATIONS = [
         lambda t: t.replace("      staging_tag: ${{ needs.plan.outputs.staging_tag }}",
                             "      promote_to: 9.9.9\n      staging_tag: ${{ needs.plan.outputs.staging_tag }}"),
         "R10",
+    ),
+    (
+        "R12 gate 0 goes back to keeping one run per workflow name",
+        "release.yml",
+        lambda t: t.replace("                | map({name, status, conclusion, event",
+                            "                | unique_by(.name)\n                | map({name, status, conclusion, event"),
+        "R12",
+    ),
+    (
+        "R12 gate 0 stops selecting the required runs by the branch they ran on",
+        "release.yml",
+        lambda t: t.replace('      PROMOTE_SOURCE_BRANCH: "qa"\n', ""),
+        "R12",
+    ),
+    (
+        "R11 the proof-manifest job commits back to the branch it ran on",
+        "ci.yml",
+        lambda t: t.replace('git -C "$pub" push origin "HEAD:refs/heads/proof-manifests"',
+                            'git push origin "HEAD:${VERSION}"'),
+        "R11",
+    ),
+    (
+        "R11 a workflow pushes straight to main",
+        "ci.yml",
+        lambda t: t.replace('git -C "$pub" push origin "HEAD:refs/heads/proof-manifests"',
+                            'git push origin main'),
+        "R11",
     ),
     (
         "R8 verify-deploy drops the staging inputs",

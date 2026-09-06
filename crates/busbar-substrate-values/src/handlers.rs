@@ -359,6 +359,12 @@ pub trait TranslateCodec: OperationHandler {
                 let dropped_controls = ir.egress_dropped_controls(egress_proto);
                 // A4b: the handle owns the value-first / set-model+bytes write onto the egress dialect.
                 let wire = ir.write_egress_request(egress_proto, model);
+                // A write that could not be represented is a REFUSAL, on the same terminal the
+                // pre-write representability guard above uses: the guard answers before the write
+                // for what it can see, and this answers after it for what only the writer can.
+                if let EgressWire::Unrepresentable { reason } = wire {
+                    return Err(TranslateReqReject::Unrepresentable(reason));
+                }
                 Ok(TranslatedRequest {
                     wire,
                     dropped_controls,

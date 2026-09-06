@@ -56,7 +56,7 @@ pub mod estimate;
 pub mod price;
 pub mod window;
 
-pub use cells::{CellStore, Cells, InMemoryCells, InMemoryLocked, LedgerCell};
+pub use cells::{CellStore, Cells, InMemoryCells, InMemoryLocked, LedgerCell, MAX_MODELS_PER_CELL};
 pub use chain::{
     BucketChain, ChainBucket, ChainError, ChainGroup, GroupBucket, GroupRuntime, GroupTable,
     MissingGroup, STANDARD_TIER_BP,
@@ -122,6 +122,7 @@ pub struct AdmissionUnit<'r, S: CellStore> {
     grant: Option<AdmitGrant>,
     blocked: Option<Blocked>,
     downgraded_from: Option<&'r str>,
+    parent_accrual_refused: Option<busbar_caps::AccrualRefused>,
 }
 
 impl<'r, S: CellStore> AdmissionUnit<'r, S> {
@@ -136,6 +137,7 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
             grant: None,
             blocked: None,
             downgraded_from: None,
+            parent_accrual_refused: None,
         }
     }
 
@@ -195,6 +197,30 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
         self.blocked.as_ref()
     }
 
+    /// Why this unit's spend against its parent's reservation was refused, when the refusal was one
+    /// the caller has to know about.
+    ///
+    /// A child that could not accrue into its parent is STILL ADMITTED — the door said yes and the
+    /// counters are charged, and refusing here would refuse a unit the decision admitted. But the
+    /// three refusals do not mean the same thing, and collapsing them loses the two that are
+    /// symptoms:
+    ///
+    /// - a parent that has already exited is the ordinary race the design plans for; the child posts
+    ///   late on its own and there is nothing to report, so this stays empty;
+    /// - a parent that has not passed the door yet means the caller ran a child before its parent
+    ///   was admitted, which is an ordering defect in the caller;
+    /// - a principal mismatch means a child was attached to a parent belonging to somebody else,
+    ///   which is a misattribution and, if it ever became an accrual, would be one principal's spend
+    ///   landing on another's reservation.
+    ///
+    /// This is a read-back seam, the same shape as [`AdmissionUnit::blocked`] and
+    /// [`window::is_known_window`]: the crate has no logger, so the condition is exposed for the
+    /// caller to record rather than emitted here.
+    #[must_use]
+    pub fn parent_accrual_refused(&self) -> Option<busbar_caps::AccrualRefused> {
+        self.parent_accrual_refused
+    }
+
     /// How far this unit's reservation may still be grown, in nano-units.
     ///
     /// The other half of "the hold is accounting". The door sized the reservation off an estimate;
@@ -250,17 +276,30 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
             Ok(grant) => {
                 self.grant = Some(grant);
                 self.blocked = None;
+                self.parent_accrual_refused = None;
                 let nanos = estimate.hold_nanos(chain.tier_bp());
                 // A child spends against its parent's reservation rather than opening one of its
-                // own. If the parent has already gone, the child is still ADMITTED — the door said
+                // own. Whatever the parent's cell says, the child is still ADMITTED — the door said
                 // yes and the counters are charged — and the ledger posts it late against a
                 // synchronous draw. Refusing here would refuse a unit the decision admitted.
+                //
+                // The three refusals are not one condition, and the fall-through is only correct
+                // for one of them. A parent that has already exited is the ordinary race the design
+                // plans for, and there is nothing to report. A parent that has not passed the door
+                // yet is an ordering defect in the caller. A principal mismatch is a
+                // misattribution: had it gone through, one principal's spend would have landed on
+                // another's reservation. The last two are surfaced through the read-back seam, the
+                // way every other condition this crate cannot log is surfaced.
                 if let Some(cell) = self.parent {
-                    if let Ok(accrual) = cell.accrue_child(principal, nanos, admit_token) {
-                        return Decision::proceed(
-                            unit_token,
-                            busbar_caps::Admission::Accrual(accrual),
-                        );
+                    match cell.accrue_child(principal, nanos, admit_token) {
+                        Ok(accrual) => {
+                            return Decision::proceed(
+                                unit_token,
+                                busbar_caps::Admission::Accrual(accrual),
+                            );
+                        }
+                        Err(busbar_caps::AccrualRefused::ParentExited) => {}
+                        Err(reported) => self.parent_accrual_refused = Some(reported),
                     }
                 }
                 if nanos == 0 {
@@ -275,6 +314,9 @@ impl<S: CellStore> Admission for AdmissionUnit<'_, S> {
                 let refusal = refusal_for(&blocked);
                 self.blocked = Some(blocked);
                 self.grant = None;
+                // A refused unit never reached its parent's cell, so there is no accrual condition
+                // to report against it.
+                self.parent_accrual_refused = None;
                 Decision::refuse(unit_token, refusal)
             }
         }

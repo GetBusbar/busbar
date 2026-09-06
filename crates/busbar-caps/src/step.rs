@@ -85,14 +85,6 @@ impl StepName {
         self > StepName::Admit
     }
 
-    /// Whether the kernel keeps this step's token to itself.
-    pub fn kernel_owned(self) -> bool {
-        matches!(
-            self,
-            StepName::Arrival | StepName::Decode | StepName::Encode
-        )
-    }
-
     /// The step as it appears in refusals and audit rows.
     pub fn as_str(self) -> &'static str {
         match self {

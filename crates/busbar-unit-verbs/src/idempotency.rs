@@ -4,7 +4,7 @@
 //! The per-node, in-process idempotency-replay cache — moved verbatim from
 //! `busbar-core::admin::mod` (`IDEMPOTENCY_TTL_SECS`, `IdemState`, `IdemReservation`, and the
 //! create/rotate call sites' cache logic). Same TTL (600 s), same key shapes
-//! (`(actor, header)` for a mint, `(actor, "rotate:{id}:{k}")` for a rotate — PB-21), same
+//! (`(actor, header)` for a mint, `(actor, "rotate:{id}:{k}")` for a rotate), same
 //! semantics: no body hash, so a retry with the same key but a DIFFERENT body still replays the
 //! first response (parity clause — 1.5.5 never hashed the body either).
 //!
@@ -18,7 +18,7 @@ use std::sync::Mutex;
 /// Replay window (seconds) — 600 s, exactly `IDEMPOTENCY_TTL_SECS` in 1.5.5/1.6.0-legacy admin.
 pub const IDEMPOTENCY_TTL_SECS: u64 = 600;
 
-/// CG-40: the idempotency cache's encoder seam. This crate has no serializer of its own, so a
+/// The idempotency cache's encoder seam. This crate has no serializer of its own, so a
 /// replayable verb's cached value must be the EXACT bytes the composition root's own writer would
 /// send as the response body for a fresh call — never an intermediate representation this crate
 /// decodes back into a fresh capability. The composition root binds this to the admin plane's own

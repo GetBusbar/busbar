@@ -69,8 +69,8 @@ from pathlib import Path
 CORE = "crates/busbar-core/src"
 
 
-def plane_dir(plane: str) -> str:
-    """Locate a plane's source root wherever the tree currently keeps it.
+def plane_dir(plane: str, root: str = "crates", grammar: str = "config.rs") -> str:
+    """Locate a plane's CONFIG-GRAMMAR root wherever the tree currently keeps it.
 
     1.6.0's owner ruling R-E makes MCP and A2A PLUGIN CRATES — a crate depending on `busbar-api`
     alone, which `busbar-core` depends on — so `crates/busbar-core/src/{mcp,a2a}` is a fact about
@@ -79,28 +79,39 @@ def plane_dir(plane: str) -> str:
     the plane moves, and this gate's own SOURCES comment already records what happens when a
     grammar drops out of the set — it silently un-freezes.
 
-    So the root is FOUND, not spelled: the one directory named after the plane anywhere under
-    `crates/`. None is a hard error (the grammar left the set — the exact hole `resolve_sources`
-    refuses); more than one is also a hard error, because two directories claiming to be one plane
-    means the gate cannot say whose grammar it froze. Both are raised with the remedy in the
-    message. Nothing about WHICH files are tracked changes — only how their address is obtained.
+    So the root is FOUND, not spelled: a directory named after the plane anywhere under `crates/`.
+    None is a hard error (the grammar left the set — the exact hole `resolve_sources` refuses);
+    more than one is also a hard error, because two directories claiming to be one plane means the
+    gate cannot say whose grammar it froze. Both are raised with the remedy in the message. Nothing
+    about WHICH files are tracked changes — only how their address is obtained.
+
+    A NAME MATCH IS NOT AN OWNERSHIP CLAIM. The wire-codec split gives a plane a SECOND directory
+    under its own name — `busbar-a2a-codec/src/a2a/` beside `busbar-a2a/src/a2a/` — and that second
+    directory holds bytes-on-the-wire, not the `agents:` grammar an operator writes. Matching on the
+    name alone made the gate refuse a tree that is not actually ambiguous, and "pick the first" would
+    have been worse: it would have frozen the codec's shapes and quietly un-frozen the plane's. So a
+    candidate must also CARRY the grammar — the `config.rs` file whose contents are what SOURCES
+    tracks. The codec directory has none and is not a candidate; a real second home for the config
+    grammar would have one, and is still refused. Ambiguity is narrowed by ownership, never resolved
+    by preference order.
     """
     roots = sorted(
         str(p)
-        for p in Path("crates").glob(f"*/**/{plane}")
-        if p.is_dir() and "target" not in p.parts
+        for p in Path(root).glob(f"*/**/{plane}")
+        if p.is_dir() and "target" not in p.parts and (p / grammar).is_file()
     )
     if len(roots) == 1:
         return roots[0]
     if not roots:
         raise SystemExit(
-            f"config-schema: no directory named {plane!r} under crates/. That plane's config "
-            "grammar is the whole of its config section and it has just left the tracked set. "
-            "Point plane_dir() at its new home; do not delete the SOURCES entries."
+            f"config-schema: no directory named {plane!r} under {root}/ carries {grammar!r}. That "
+            "plane's config grammar is the whole of its config section and it has just left the "
+            "tracked set. Point plane_dir() at its new home; do not delete the SOURCES entries."
         )
     raise SystemExit(
-        f"config-schema: {plane!r} resolves to {len(roots)} directories ({', '.join(roots)}). "
-        "Two homes for one plane means this gate cannot say whose grammar it froze."
+        f"config-schema: {plane!r} resolves to {len(roots)} config-grammar directories "
+        f"({', '.join(roots)}). Two homes for one plane's grammar means this gate cannot say whose "
+        "it froze."
     )
 
 
@@ -1006,6 +1017,20 @@ def cmd_gen(argv):
     return 0
 
 
+def cmd_plane_dir(argv):
+    """`plane-dir <plane> [root]` — print where `plane_dir()` says a plane's config grammar lives.
+
+    Exists so the gate's self-test can drive the resolver over throwaway fixture trees, the same way
+    `gen <paths…>` lets it drive the fingerprinter over throwaway fixture sources. The resolver's
+    refusals are the load-bearing behaviour here (a second grammar home must be REFUSED, never
+    silently preferred), and a refusal that nothing exercises is a refusal nobody knows still fires."""
+    if not argv or len(argv) > 2:
+        print("usage: config-schema.py plane-dir <plane> [root]", file=sys.stderr)
+        return 2
+    print(plane_dir(argv[0], argv[1] if len(argv) == 2 else "crates"))
+    return 0
+
+
 def load_waivers(path: str):
     """Parse the committed break-waiver file.
 
@@ -1109,13 +1134,15 @@ def cmd_classify(argv):
 
 def main():
     if len(sys.argv) < 2:
-        print("usage: config-schema.py {gen|classify} ...", file=sys.stderr)
+        print("usage: config-schema.py {gen|classify|plane-dir} ...", file=sys.stderr)
         return 2
     cmd, rest = sys.argv[1], sys.argv[2:]
     if cmd == "gen":
         return cmd_gen(rest)
     if cmd == "classify":
         return cmd_classify(rest)
+    if cmd == "plane-dir":
+        return cmd_plane_dir(rest)
     print(f"unknown subcommand {cmd!r}", file=sys.stderr)
     return 2
 

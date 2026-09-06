@@ -112,6 +112,64 @@ impl busbar_api::SecretModule for EchoSecret {
     }
 }
 
+/// A secret module that RECORDS the advisory deadline it was handed, so the test can prove the
+/// field survives the dispatch instead of being dropped there.
+#[derive(Default)]
+struct RecordingSecret(std::sync::Mutex<Option<Option<u64>>>);
+impl busbar_api::SecretModule for RecordingSecret {
+    fn resolve(
+        &self,
+        _settings: &serde_json::Map<String, serde_json::Value>,
+    ) -> busbar_api::SecretResult<Vec<u8>> {
+        Ok(b"no-deadline".to_vec())
+    }
+
+    fn resolve_with_deadline(
+        &self,
+        _settings: &serde_json::Map<String, serde_json::Value>,
+        deadline_ms: Option<u64>,
+    ) -> busbar_api::SecretResult<Vec<u8>> {
+        *self.0.lock().unwrap() = Some(deadline_ms);
+        Ok(b"observed".to_vec())
+    }
+}
+
+/// The wire request has always carried `deadline_ms`; the dispatcher dropped it, so a module that
+/// could bound its own upstream call was never told what bound to apply. It now reaches the module.
+#[test]
+fn secret_dispatch_hands_the_advisory_deadline_to_the_module() {
+    let module = RecordingSecret::default();
+    let resp = dispatch_secret(
+        &module,
+        busbar_plugin::cold::SecretRequest::Resolve {
+            settings: serde_json::Map::new(),
+            deadline_ms: Some(500),
+        },
+    )
+    .expect("resolves");
+    match resp {
+        busbar_plugin::cold::SecretResponse::Bytes(b) => assert_eq!(b, b"observed"),
+        other => panic!("expected Bytes, got {other:?}"),
+    }
+    assert_eq!(
+        *module.0.lock().unwrap(),
+        Some(Some(500)),
+        "the module must observe the caller's advisory deadline"
+    );
+
+    // A caller that set NO bound is still distinguishable from one that set zero.
+    let module = RecordingSecret::default();
+    dispatch_secret(
+        &module,
+        busbar_plugin::cold::SecretRequest::Resolve {
+            settings: serde_json::Map::new(),
+            deadline_ms: None,
+        },
+    )
+    .expect("resolves");
+    assert_eq!(*module.0.lock().unwrap(), Some(None));
+}
+
 fn secret_ctor(_cfg: &str) -> Result<BoxedSecret, String> {
     Ok(Box::new(EchoSecret))
 }
@@ -591,7 +649,7 @@ fn outbuf_commit_null_out_drops_without_leaking_or_writing() {
     unsafe {
         // Null `out`: nothing is written, `out_len` is left untouched, no crash (Vec dropped).
         let mut len_slot: usize = 0xDEAD;
-        boundary::OutBuf::new(vec![1u8, 2, 3]).commit(ptr::null_mut(), &mut len_slot);
+        boundary::OutBuf::new(vec![1u8, 2, 3]).commit(STATUS_OK, ptr::null_mut(), &mut len_slot);
         assert_eq!(
             len_slot, 0xDEAD,
             "out_len must be untouched when out is null"
@@ -601,7 +659,7 @@ fn outbuf_commit_null_out_drops_without_leaking_or_writing() {
         // free_boundary proves the allocation is intact and owned by the same allocator).
         let mut ptr_slot: *mut u8 = ptr::null_mut();
         let mut len2: usize = 0;
-        boundary::OutBuf::new(vec![7u8, 8, 9, 10]).commit(&mut ptr_slot, &mut len2);
+        boundary::OutBuf::new(vec![7u8, 8, 9, 10]).commit(STATUS_OK, &mut ptr_slot, &mut len2);
         assert!(!ptr_slot.is_null());
         assert_eq!(len2, 4);
         assert_eq!(std::slice::from_raw_parts(ptr_slot, len2), &[7, 8, 9, 10]);
@@ -610,9 +668,9 @@ fn outbuf_commit_null_out_drops_without_leaking_or_writing() {
 }
 
 /// The new audit ABI variants dispatch through the trait: `AppendAudit` maps to `append_audit`
-/// (Unit response) and `ListAudit` to `list_audit` (Audit response). Against the memory store the
-/// trait defaults no-op, so append returns Unit and list returns an empty Audit vec — proving the
-/// ADDITIVE variants are wired end-to-end without breaking the existing dispatch.
+/// (Unit response) and `ListAudit` to `list_audit` (Audit response). The RAM default keeps what it
+/// is handed for the life of the process, so the record appended is the record listed — proving
+/// the ADDITIVE variants are wired end-to-end without breaking the existing dispatch.
 #[test]
 fn dispatch_handles_audit_variants() {
     use busbar_api::AuditRecord;
@@ -632,7 +690,10 @@ fn dispatch_handles_audit_variants() {
         other => panic!("expected Unit, got {other:?}"),
     }
     match dispatch(&store, StoreRequest::ListAudit).unwrap() {
-        StoreResponse::Audit(v) => assert!(v.is_empty(), "memory store persists no audit"),
+        StoreResponse::Audit(v) => {
+            assert_eq!(v.len(), 1, "the RAM store lists the one record it was handed");
+            assert_eq!(v[0].hash, "h");
+        }
         other => panic!("expected Audit, got {other:?}"),
     }
 }
@@ -640,9 +701,9 @@ fn dispatch_handles_audit_variants() {
 /// The neutral kind-tagged plane-record variants (1.6.0, ADDITIVE) round-trip through the ABI serde
 /// and dispatch onto the neutral trait methods. Each request is serialized to the on-wire JSON and
 /// deserialized back (proving the ABI enum carries them), then dispatched against the memory store —
-/// which does not override the neutral methods, so every one returns its DEFAULTED empty result.
-/// This proves the additive api+abi+sdk wiring compiles and is reachable end-to-end without any
-/// caller: a read comes back empty, a write comes back `Unit`, a purge `0`, a redeem `true`.
+/// whose RAM default keeps plane rows for the life of the process. This proves the additive
+/// api+abi+sdk wiring compiles and is reachable end-to-end without any caller: a write comes back
+/// `Unit` and the read that follows it finds the row, a purge and a redeem answer their counts.
 #[test]
 fn dispatch_handles_neutral_plane_variants() {
     use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector};
@@ -682,7 +743,7 @@ fn dispatch_handles_neutral_plane_variants() {
         id: "t-1".into(),
     }) {
         StoreResponse::PlaneRecord(b) => {
-            assert!(b.is_none(), "memory store persists no plane record")
+            assert!(b.is_some(), "the RAM store keeps the plane record it was handed")
         }
         other => panic!("expected PlaneRecord, got {other:?}"),
     }
@@ -702,20 +763,25 @@ fn dispatch_handles_neutral_plane_variants() {
         kind: "call".into(),
         selector: PlaneSelector::Parent("p-1".into()),
     }) {
-        StoreResponse::PlaneRecords(v) => assert!(v.is_empty(), "no records to list"),
+        StoreResponse::PlaneRecords(v) => {
+            assert_eq!(v.len(), 1, "the one record appended under this parent is listed");
+            assert_eq!(v[0], vec![9u8], "and it is the body that was appended");
+        }
         other => panic!("expected PlaneRecords, got {other:?}"),
     }
     match roundtrip(&StoreRequest::ListPlaneRecordParents {
         kind: "call".into(),
     }) {
-        StoreResponse::PlaneRecordParents(v) => assert!(v.is_empty(), "no parents to list"),
+        StoreResponse::PlaneRecordParents(v) => {
+            assert_eq!(v, vec!["p-1".to_string()], "the parent the append named is listed")
+        }
         other => panic!("expected PlaneRecordParents, got {other:?}"),
     }
     match roundtrip(&StoreRequest::PurgePlaneRecordsBefore {
         kind: "task".into(),
         before: 100,
     }) {
-        StoreResponse::Purged(n) => assert_eq!(n, 0, "nothing retained, nothing purged"),
+        StoreResponse::Purged(n) => assert_eq!(n, 1, "the terminal task row older than the cut is purged"),
         other => panic!("expected Purged, got {other:?}"),
     }
     match roundtrip(&StoreRequest::DeletePlaneRecord {

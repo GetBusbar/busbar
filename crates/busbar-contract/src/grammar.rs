@@ -114,23 +114,6 @@ pub enum SelectorFamily {
 }
 
 impl SelectorForm {
-    /// Every form, for the boot cell that walks the cross-product.
-    pub const ALL: &'static [SelectorForm] = &[
-        SelectorForm::ExactPath,
-        SelectorForm::PrefixOneLevel,
-        SelectorForm::Sni,
-        SelectorForm::ClientCertSubject,
-        SelectorForm::PathPattern,
-        SelectorForm::HeaderExact,
-        SelectorForm::HeaderPresent,
-        SelectorForm::HeaderPrefix,
-        SelectorForm::PathSuffix,
-        SelectorForm::PathContains,
-        SelectorForm::StreamName,
-        SelectorForm::Alpn,
-        SelectorForm::Port,
-    ];
-
     /// Which part of the request the form reads.
     #[must_use]
     pub const fn family(self) -> SelectorFamily {

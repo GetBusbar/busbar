@@ -486,6 +486,18 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub origin: busbar_caps::Origin,
 }
 
+/// A lock this plane holds, taken the way the root takes its locks.
+///
+/// A poisoned lock is read through rather than refused. The panic that poisoned it happened
+/// somewhere else, and what is behind these two locks is written once per field and then read — so
+/// a reader after a panic sees a prefix of the truth rather than a corrupted one. The alternative
+/// is a node whose audit chain stops sealing, and whose exit path stops settling, because one
+/// unrelated unit panicked once: a poisoned node-global lock would take every later request with
+/// it, which is a far larger failure than the one that poisoned it.
+fn read_through_poison<T>(lock: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    lock.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 /// What the steps recorded as they ran.
 ///
 /// The settlement table reads this once, at the exit. It is behind a lock because the steps take
@@ -596,11 +608,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 mono: self.bindings.now,
             },
         };
-        let mut durability = self
-            .bindings
-            .durability
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let mut durability = read_through_poison(self.bindings.durability);
         durability.settle_posted(&at, posted)
     }
 
@@ -728,8 +736,21 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     }
 
     /// The audit record one ending seals.
-    fn audit_inputs(&self, outcome: Outcome, principal: Option<&PrincipalId>) -> AuditInputs {
-        let progress = self.progress.lock().expect("progress lock");
+    fn audit_inputs(
+        &self,
+        ctx: &UnitCtx,
+        outcome: Outcome,
+        principal: Option<&PrincipalId>,
+    ) -> AuditInputs {
+        let progress = read_through_poison(&self.progress);
+        // The record does not decide the fee a second time. It reads the same evidence the exit
+        // path settles from, through the same function, so a row that says one and a posting that
+        // says none cannot both be true of one unit.
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
+            &self.draft,
+            ctx.origin,
+            progress.metered.is_some(),
+        ));
         AuditInputs {
             subject: match principal.or(progress.principal.as_ref()) {
                 Some(p) => busbar_unit_audit::Subject::PrincipalId(p.as_str().to_string()),
@@ -764,7 +785,7 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 pre_tier: 0,
                 priced: 0,
                 tier_bp: 0,
-                fee_count: u32::from(self.draft.has_upstream()),
+                fee_count,
                 currency: String::new(),
                 rate_card_version: 0,
                 bucket_chain_ref: String::new(),
@@ -773,6 +794,15 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             correlation_label: None,
         }
     }
+}
+
+/// Whether a plan's legs fit the route plan the loop carries.
+///
+/// The bound belongs to the contract and is read from it here, so a plane cannot drift from the
+/// plan it is filling: the number this compares against and the number the plan holds are the same
+/// number, and there is nowhere to write a second one.
+fn plan_fits(legs: &[Leg]) -> bool {
+    legs.len() <= busbar_contract::MAX_LEGS
 }
 
 /// The words a caller sees when the name it asked for has no configured rate.
@@ -798,6 +828,31 @@ fn audit_finish(finish: FinishClass) -> busbar_unit_audit::FinishClass {
     }
 }
 
+/// What this plane asks the authentication chain, for one draft.
+///
+/// The three open surfaces of this protocol declare no scheme, so there is nothing to narrow within
+/// and nothing to present: the chain answers for the anonymous principal or it denies, and either
+/// answer is the chain's. Everything else presents a bearer credential and is narrowed to the one
+/// alternative the claim declares.
+///
+/// It is a function rather than four lines inside the step because the authenticate CELL drives the
+/// same request the step does. A cell that rebuilt this shape by hand would be pinning its own copy,
+/// and the copy is the one that drifts — the audience in particular, which is the whole reason a
+/// token minted for another plane does not open this one.
+fn auth_request(draft: &A2aDraft, now: u64) -> AuthRequest<'_> {
+    AuthRequest {
+        candidate: draft.credential.as_deref(),
+        scheme: draft.narrowing,
+        declared_schemes: draft.declared_schemes,
+        expected_aud: draft.expected_aud.as_deref(),
+        in_handshake: false,
+        now,
+        // A bound session's principal is the cached one; an unbound session re-authenticates every
+        // unit, which is what makes revocation gate new units on this plane at all.
+        new_unit: !draft.from_session,
+    }
+}
+
 impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         // The gate itself is the kernel's, over the configured budgets, and it has already run by
@@ -820,21 +875,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         token: &UnitToken<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
-        // The three open surfaces of this protocol declare no scheme, so there is nothing to narrow
-        // within and nothing to present: the chain answers for the anonymous principal or it
-        // denies, and either answer is the chain's. Everything else presents a bearer credential
-        // and is narrowed to the one alternative the claim declares.
-        let request = AuthRequest {
-            candidate: self.draft.credential.as_deref(),
-            scheme: self.draft.narrowing,
-            declared_schemes: self.draft.declared_schemes,
-            expected_aud: self.draft.expected_aud.as_deref(),
-            in_handshake: false,
-            now: self.bindings.now,
-            // A bound session's principal is the cached one; an unbound session re-authenticates
-            // every unit, which is what makes revocation gate new units on this plane at all.
-            new_unit: !self.draft.from_session,
-        };
+        let request = auth_request(&self.draft, self.bindings.now);
         // The chain's answer is the chain's, and a decision has no reader on it by design — the only
         // thing that opens one is the loop, with the kernel's seal. So the principal the audit and
         // the settlement need is recorded at the next step, which is handed it.
@@ -862,14 +903,14 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         {
             // The first step that is handed the principal is the first that can record it. The
             // audit and the settlement both read it and neither is handed it again.
-            let mut progress = self.progress.lock().expect("progress lock");
+            let mut progress = read_through_poison(&self.progress);
             progress.principal = Some(principal.clone());
             progress.grants = Some(self.grants);
         }
         match self.verified_lanes(trust_origin(ctx.origin)) {
             Err(refusal) => Decision::refuse(token, refusal),
             Ok(lanes) => {
-                self.progress.lock().expect("progress lock").lanes = lanes.clone();
+                read_through_poison(&self.progress).lanes = lanes.clone();
                 // An empty set is a legitimate answer and is NOT a refusal here. A pool with every
                 // lane excluded proceeds through the door, draws its slot and retains it, and ends
                 // at the pool's own exhaustion terminal — refusing here would move the charge.
@@ -944,6 +985,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
+        // The plan has to FIT before any of it happens. The route plan the loop carries is bounded,
+        // and the legs are run below before they are put on it — so a plan longer than the bound
+        // used to run in full and then be trimmed to what fitted, with every leg past the bound
+        // already done and no part of the answer saying so. The bound is asked here, where the
+        // answer is still a refusal rather than a durable write to take back.
+        if !plan_fits(&self.draft.legs) {
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
+
         // The record legs, in the plan's order, before anything is dialled. They are what says
         // whether this caller may see the task at all and what the agent's own name for it is, and
         // the hop that follows carries that name.
@@ -964,7 +1014,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(LegError::Store(_)) => {
                 return Decision::refuse(token, Refusal::new(ReasonCode::DurabilityUnavailable))
             }
-            Ok(results) => self.progress.lock().expect("progress lock").legs = results,
+            Ok(results) => read_through_poison(&self.progress).legs = results,
         }
 
         // The bytes the request carried accrue as the unit runs; the answer's bytes settle at the
@@ -994,9 +1044,18 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
         let mut plan = RoutePlan::default();
         for leg in &self.draft.legs {
-            let _ = plan.legs.push(Leg {
-                destination: leg.destination,
-            });
+            // Unreachable, because the bound was asked at the top of this step. It is written as a
+            // refusal rather than ignored so that the day the two stop agreeing is a day this step
+            // says no, not a day a leg disappears off the plan it already ran.
+            if plan
+                .legs
+                .push(Leg {
+                    destination: leg.destination,
+                })
+                .is_err()
+            {
+                return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+            }
         }
         Decision::proceed(token, plan)
     }
@@ -1047,7 +1106,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         ) {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::MeterDisputed)),
             Ok(metered) => {
-                let mut progress = self.progress.lock().expect("progress lock");
+                let mut progress = read_through_poison(&self.progress);
                 progress.metered = Some(self.draft.response_bytes);
                 progress.disputed = metered.disputed();
                 Decision::proceed(token, metered.usage)
@@ -1055,18 +1114,13 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         }
     }
 
-    fn audit(
-        &self,
-        token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
-        outcome: &Outcome,
-    ) -> Decision<Audit> {
-        let inputs = self.audit_inputs(*outcome, None);
+    fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+        let inputs = self.audit_inputs(ctx, *outcome, None);
         let record = {
-            let mut durability = self.bindings.durability.lock().expect("durability lock");
+            let mut durability = read_through_poison(self.bindings.durability);
             durability.record.seal(inputs, token)
         };
-        self.progress.lock().expect("progress lock").audit_hash = Some(record.hash);
+        read_through_poison(&self.progress).audit_hash = Some(record.hash);
         // The class the plane named is the class that priced the unit, read back off the draft. A
         // different class here would be this file disputing the plane's own earlier answer.
         Decision::proceed(
@@ -1081,18 +1135,21 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn audit_refused(
         &self,
         token: &UnitToken<Audit>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
         // The second door: a unit that never passed the first one, and was charged nothing. It is
         // sealed on the same chain, because a refusal is an event with a record of its own.
-        let outcome = Outcome::Refused(refusal.step(), refusal.reason());
-        let inputs = self.audit_inputs(outcome, None);
+        let outcome = Outcome::Refused(
+            refusal.step().unwrap_or(busbar_caps::StepName::Admit),
+            refusal.reason(),
+        );
+        let inputs = self.audit_inputs(ctx, outcome, None);
         let record = {
-            let mut durability = self.bindings.durability.lock().expect("durability lock");
+            let mut durability = read_through_poison(self.bindings.durability);
             durability.record.seal(inputs, token)
         };
-        self.progress.lock().expect("progress lock").audit_hash = Some(record.hash);
+        read_through_poison(&self.progress).audit_hash = Some(record.hash);
         Decision::proceed(
             token,
             AuditFacts {
@@ -1112,7 +1169,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // nor the plane's draft, so the bytes are written where the borrow lives and this step
         // reports what left. That is a statement about the seam, not a shortcut: a root that
         // allocated a second buffer here would be writing the wire format twice.
-        let bytes = self.progress.lock().expect("progress lock").encoded;
+        let bytes = read_through_poison(&self.progress).encoded;
         Decision::proceed(
             token,
             busbar_contract::wire::Frame {
@@ -1128,8 +1185,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         )
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
-        let progress = self.progress.lock().expect("progress lock");
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        let progress = read_through_poison(&self.progress);
         Evidence {
             located: progress.metered,
             accrued_floor: self.draft.request_bytes,
@@ -1147,8 +1204,36 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // The fee's origin rule and the request slot's are the same rule: a client unit whose
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),
-            fee: busbar_kernel::teller::FeeEvidence::default(),
+            fee: fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
         }
+    }
+}
+
+/// The facts this plane's flat per-request fee is decided from.
+///
+/// Written once, as a function over the draft rather than as a table each caller fills in, because
+/// the exit path and the audit record are two readers of ONE decision: a settlement that posted a
+/// fee against a record that says none is a discrepancy nothing downstream can resolve, and the
+/// only way to make that unrepresentable is to have one place decide it.
+///
+/// The origin is the client rule the request slot is drawn under — a push the agent sent is not a
+/// caller's request and pays nothing. The upstream is the KIND of leg the plane verified, not its
+/// price: with no rate card the fee still posts. The relayed frame is the metering step's own
+/// locator, which is set when the plane read an answer to hand back; a unit that never got that far
+/// relayed nothing. This transport carries no status leg of its own — the answer document IS the
+/// response — so the plane's finish is the single source, and an error ending posts nothing.
+fn fee_evidence(
+    draft: &A2aDraft,
+    origin: busbar_caps::OriginKind,
+    relayed_first_response_frame: bool,
+) -> busbar_kernel::teller::FeeEvidence {
+    busbar_kernel::teller::FeeEvidence {
+        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
+        selected_upstream: draft.has_upstream(),
+        relayed_first_response_frame,
+        status_at: None,
+        status: None,
+        finish: Some(draft.finish),
     }
 }
 
@@ -1211,6 +1296,58 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
 mod tests {
     use super::*;
 
+    /// A panic somewhere else does not stop this plane from sealing and settling.
+    ///
+    /// The node's durability is one lock, shared by every unit on every plane. A step that took it
+    /// and refused a poisoned one would turn a single unrelated panic into a node that can no longer
+    /// seal an audit record or settle an exit — for every later request, permanently. The lock is
+    /// read through instead, which is how the rest of the root reads it.
+    #[test]
+    fn a_poisoned_lock_does_not_stop_the_audit_chain() {
+        let durability = Mutex::new(
+            crate::root::durability::build(
+                &crate::root::durability::DurabilityConfig { data_dir: None },
+                Box::new(busbar_unit_wal::NullShipper::new()),
+                Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+            )
+            .expect("a memory-buffered node cannot fail to open"),
+        );
+
+        // Poison it the only way a lock gets poisoned: a panic while it is held.
+        let poisoning = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let _held = durability.lock().expect("the lock is not yet poisoned");
+                    panic!("a unit somewhere else panicked");
+                })
+                .join()
+        });
+        assert!(poisoning.is_err(), "the thread panicked under the lock");
+        assert!(durability.is_poisoned(), "so the lock is poisoned");
+
+        // The seam the audit and settlement steps take it through still hands back the node's one
+        // durability, rather than taking the process with it.
+        assert!(!read_through_poison(&durability).on_disk());
+
+        // And the per-unit progress the exit reads is taken the same way.
+        let progress = Mutex::new(Progress::default());
+        let poisoning = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let mut held = progress.lock().expect("the lock is not yet poisoned");
+                    held.encoded = 7;
+                    panic!("a step panicked after writing");
+                })
+                .join()
+        });
+        assert!(poisoning.is_err());
+        assert_eq!(
+            read_through_poison(&progress).encoded,
+            7,
+            "what the step wrote before it panicked is still what the exit reads"
+        );
+    }
+
     /// The audit action is the word the gating rig reads.
     ///
     /// The plugin crate spells the same word crate-privately, so the pin is against the rig, which
@@ -1258,6 +1395,135 @@ mod tests {
         assert_eq!(declared_scope(ops::OP_MESSAGE_SEND), Scope::Full);
         assert_eq!(declared_scope(ops::OP_TASK_CANCEL), Scope::Full);
         assert_eq!(declared_scope(ops::OP_PUSH_EVENT), Scope::Full);
+    }
+
+    /// A bad credential is refused before Verify is ever reached, through the node's own auth seams.
+    ///
+    /// THE authenticate STEP, over the loop. The step is not this file's own opinion about a
+    /// credential — it shapes the plane's request and hands it to the chain with the three seams the
+    /// node holds one set of (the cache, the signed-key verifier, the revocation view). What this
+    /// pins is that the shaping is right and the refusal lands AT the step:
+    ///
+    /// - a forged credential is `Unauthenticated`, not an admission;
+    /// - a credential minted for a DIFFERENT plane's audience is refused here too — the audience is
+    ///   the plane boundary and the verifier is where it is enforced, so an a2a token is not an mcp
+    ///   token and the reverse;
+    /// - a revoked credential is refused on a new unit, which is the answer `new_unit` exists for;
+    /// - the one approved credential reaches its principal, so the refusals above are the arm
+    ///   deciding and not a door that was shut to everything.
+    ///
+    /// ZERO EGRESS is the other half and it is structural: the draft carries an Upstream
+    /// destination, so this unit WOULD have dialled an agent, and every refusal below is a
+    /// `Decision<Authenticate>` — the kernel's loop runs no later step on a refusal, so Verify never
+    /// seals a destination and Route never gets a plan. The assertion that the draft really does
+    /// point at an agent is what keeps that meaningful: refusing a unit that was going nowhere would
+    /// prove nothing about egress.
+    #[test]
+    fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
+        use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+        use busbar_caps::{Authenticated, KernelSeal};
+        use busbar_unit_auth::{AuthChain, ChainVerdict};
+
+        /// The audience this plane's ingress requires of a signed token.
+        const AUD: &str = "a2a";
+
+        struct OneKey;
+
+        impl VirtualKeyDirectory for OneKey {
+            fn verify(
+                &self,
+                credential: &str,
+                _now: u64,
+                expected_aud: Option<&str>,
+            ) -> Option<KeyFacts> {
+                // The audience is the plane boundary, and the verifier is where it is enforced.
+                (credential == "tok" && expected_aud == Some(AUD)).then(|| KeyFacts {
+                    id: "key-a2a-1".to_string(),
+                    name: "an approved key".to_string(),
+                })
+            }
+
+            fn revoked(&self, credential: &str) -> bool {
+                credential == "burned"
+            }
+        }
+
+        // A chain naming the signed-key arm and no boxed module: the door stays shut and the arm is
+        // the one thing that can open it, which is what makes this cell about the arm.
+        let auth = Auth::new(AuthChain::new(Vec::new(), true));
+        assert!(!auth.chain().is_open());
+        assert!(matches!(
+            auth.chain().run_chain(Some("tok")),
+            ChainVerdict::Denied
+        ));
+
+        let bindings = AuthBindings::new(std::sync::Arc::new(OneKey));
+        let seal = KernelSeal::acquire_for_kernel();
+
+        // The unit is pointed at an agent. Every refusal below is therefore a dial that did not
+        // happen, rather than a unit that had no egress to refuse.
+        let mut base = draft(ops::OP_MESSAGE_SEND);
+        base.expected_aud = Some(AUD.to_string());
+        assert!(
+            base.has_upstream(),
+            "the fixture must reach an agent or the zero-egress half proves nothing"
+        );
+
+        let decide = |credential: &str| {
+            let mut d = draft(ops::OP_MESSAGE_SEND);
+            d.expected_aud = Some(AUD.to_string());
+            d.credential = Some(credential.to_string());
+            let seams = &bindings;
+            auth.resolve(
+                &auth_request(&d, 100),
+                seams.cache(),
+                seams.keys(),
+                seams.revocations(),
+                None,
+                &UnitToken::mint(&seal),
+            )
+            .into_result(&seal)
+        };
+
+        // A credential nobody minted.
+        match decide("forged") {
+            Err(refusal) => assert_eq!(refusal.reason(), ReasonCode::Unauthenticated),
+            Ok(other) => panic!("a forged credential was admitted as {other:?}"),
+        }
+
+        // A credential that was minted, and then burned. The revocation view is asked because this
+        // is a new unit; a bound session would not have asked.
+        match decide("burned") {
+            Err(refusal) => assert_eq!(refusal.reason(), ReasonCode::Revoked),
+            Ok(other) => panic!("a revoked credential was admitted as {other:?}"),
+        }
+
+        // The approved credential, for the WRONG plane's audience: the same bytes that open this
+        // plane do not open it under another plane's expectation.
+        let mut elsewhere = draft(ops::OP_MESSAGE_SEND);
+        elsewhere.expected_aud = Some("mcp".to_string());
+        elsewhere.credential = Some("tok".to_string());
+        let seams = &bindings;
+        let crossed = auth
+            .resolve(
+                &auth_request(&elsewhere, 100),
+                seams.cache(),
+                seams.keys(),
+                seams.revocations(),
+                None,
+                &UnitToken::mint(&seal),
+            )
+            .into_result(&seal);
+        match crossed {
+            Err(refusal) => assert_eq!(refusal.reason(), ReasonCode::Unauthenticated),
+            Ok(other) => panic!("another plane's audience opened this one: {other:?}"),
+        }
+
+        // And the arm does open, for the one credential it was given.
+        match decide("tok") {
+            Ok(Authenticated::Principal(p)) => assert_eq!(p.as_str(), "key-a2a-1"),
+            other => panic!("the bound seams did not reach the arm: {other:?}"),
+        }
     }
 
     /// A read-only grant does not reach a send.
@@ -1373,6 +1639,34 @@ mod tests {
         );
     }
 
+    /// A plan longer than the route plan can carry does not fit, and the ninth leg is where it
+    /// stops fitting.
+    ///
+    /// The bound is the contract's, not this file's, and the question is asked before a leg runs.
+    /// The second half of this test is why: pushed rather than checked, the plan silently comes out
+    /// eight legs long, so the ninth leg would have happened and nothing in the answer would say it
+    /// had.
+    #[test]
+    fn a_plan_longer_than_the_route_plan_can_carry_does_not_fit() {
+        let nine: Vec<Leg> = (0..9)
+            .map(|_| leg_record(records::SCHEMA_TASK, records::OP_GET))
+            .collect();
+        assert!(!plan_fits(&nine));
+        assert!(plan_fits(&nine[..busbar_contract::MAX_LEGS]));
+
+        let mut plan = RoutePlan::default();
+        for leg in &nine {
+            let _ = plan.legs.push(Leg {
+                destination: leg.destination,
+            });
+        }
+        assert_eq!(
+            plan.legs.len(),
+            busbar_contract::MAX_LEGS,
+            "the plan truncates, which is what the check above exists to catch first"
+        );
+    }
+
     /// A store that refuses stops the plan at the leg that refused.
     #[test]
     fn a_refusing_store_stops_the_plan() {
@@ -1429,6 +1723,51 @@ mod tests {
             lane: LaneId::new("probe"),
         };
         assert!(sending.has_upstream());
+    }
+
+    /// The flat fee is decided from the caller, the leg and the answer that reached the caller.
+    ///
+    /// Four ways for a unit to reach an agent and post nothing anyway: the push the agent sent, the
+    /// request that never got an answer to relay, the plan that only touched this node's records,
+    /// and the ending the plane itself called an error. Only the fifth shape pays, and it pays once.
+    #[test]
+    fn the_flat_fee_is_decided_from_caller_leg_and_relayed_answer() {
+        use busbar_caps::OriginKind;
+        use busbar_kernel::teller::fee_count;
+
+        let served = draft(ops::OP_MESSAGE_SEND);
+        assert!(served.has_upstream());
+        assert_eq!(
+            fee_count(&fee_evidence(&served, OriginKind::Client, true)).0,
+            1
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(&served, OriginKind::Provider, true)).0,
+            0
+        );
+        assert_eq!(
+            fee_count(&fee_evidence(&served, OriginKind::Client, false)).0,
+            0
+        );
+
+        let mut failed = served.clone();
+        failed.finish = FinishClass::Error;
+        assert_eq!(
+            fee_count(&fee_evidence(&failed, OriginKind::Client, true)).0,
+            0
+        );
+
+        let mut records_only = served.clone();
+        records_only.destination = DestinationFacts::PlaneRecord {
+            schema: records::SCHEMA_TASK,
+            op: records::OP_SCAN,
+        };
+        records_only.legs = vec![leg_record(records::SCHEMA_TASK, records::OP_SCAN)];
+        assert!(!records_only.has_upstream());
+        assert_eq!(
+            fee_count(&fee_evidence(&records_only, OriginKind::Client, true)).0,
+            0
+        );
     }
 
     /// The four endings map one for one onto the audit unit's own four.

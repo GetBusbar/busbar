@@ -12,7 +12,8 @@ use super::*;
 use crate::engine::WeightedLane;
 use crate::test_support::{LaneSpec, TestApp};
 use busbar_api::{Signal, SignalValue};
-use busbar_core::hooks::{Candidate, PolicyResult, ResolvedPolicy, RoutingContext, RoutingPolicy};
+use busbar_api::{Candidate, PolicyResult, RoutingContext, RoutingPolicy};
+use busbar_substrate::hooks::ResolvedPolicy;
 use std::sync::Mutex as StdMutex;
 
 /// A no-op policy that just records the candidate projections it was handed, then Abstains.
@@ -41,14 +42,14 @@ impl RoutingPolicy for CapturingCandidatesPolicy {
 /// `hooks:` registry (never wired as the pool's actual policy) purely to populate
 /// `App::requested_signals` via `hooks::requested_signals`'s union-across-every-hook walk, exactly
 /// as an operator's real `signals:` declaration would.
-fn declaring_hook(signals: Vec<Signal>) -> busbar_core::config::HookCfg {
-    busbar_core::config::HookCfg {
-        kind: busbar_core::config::HookKind::Tap,
+fn declaring_hook(signals: Vec<Signal>) -> busbar_substrate::config::hooks::HookCfg {
+    busbar_substrate::config::hooks::HookCfg {
+        kind: busbar_substrate::config::hooks::HookKind::Tap,
         plugin: "test-hook".to_string(),
-        timeout_ms: busbar_core::config::DEFAULT_POLICY_TIMEOUT_MS,
+        timeout_ms: busbar_substrate::config::hooks::DEFAULT_POLICY_TIMEOUT_MS,
         on_error: "weighted".to_string(),
-        prompt: busbar_core::config::PromptAccess::No,
-        user: busbar_core::config::UserAccess::No,
+        prompt: busbar_substrate::config::hooks::PromptAccess::No,
+        user: busbar_substrate::config::hooks::UserAccess::No,
         priority: 0,
         at: None,
         settings: serde_json::Map::new(),

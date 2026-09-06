@@ -568,6 +568,7 @@ where
                             this.ingress_protocol,
                             this.ingress_eventstream,
                             MID_STREAM_GENERIC_DETAIL,
+                            this.translate.as_deref_mut(),
                         );
                         return Poll::Ready(Some(Ok(Bytes::from(err_bytes))));
                     } else {

@@ -9,7 +9,7 @@
 # BUSBAR_PROVIDERS specifically, the ENV VAR wins over `providers_file:`, not the config key. This
 # pins the actual precedence: two providers catalogs, config.yaml declares `providers_file:` for
 # ONE of them, BUSBAR_PROVIDERS names the OTHER; `busbar --validate`'s own success line echoes back
-# the catalog PATH it actually resolved (`providers: {path}` — ops-observability inventory §2.3), so
+# the catalog PATH it actually resolved (`providers: {path}`, per the ops-observability inventory), so
 # the golden literally names the file that won.
 #
 #   documented-providers-env-wins.sh

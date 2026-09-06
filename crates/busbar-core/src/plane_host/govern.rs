@@ -152,8 +152,8 @@ pub(super) fn admit_reason(state: &HostState, facts: &Facts) -> Result<(), GovBl
 /// bucket) and `group` (the enforcement chain) — so the reconstructed key drives the identical chain
 /// resolution; every other field is an inert default `chain_for` never consults.
 fn resolved_key(facts: &Facts) -> Option<busbar_api::VirtualKey> {
-    let id_ptr = read_sized_field!(facts, Facts, identity_id_ptr)?;
-    let id_len = read_sized_field!(facts, Facts, identity_id_len)?;
+    let id_ptr = read_sized_field!(facts, facts.size, Facts, identity_id_ptr)?;
+    let id_len = read_sized_field!(facts, facts.size, Facts, identity_id_len)?;
     let id = borrowed_str(id_ptr, id_len);
     if id.is_empty() {
         return None; // no resolved identity → the synth fallback (pre-enrichment behaviour).
@@ -161,8 +161,8 @@ fn resolved_key(facts: &Facts) -> Option<busbar_api::VirtualKey> {
     // The group is optional even when an id is present: a null/empty range is an UNGROUPED key (an
     // unlimited 1-bucket chain), exactly as `key.group == None` resolves in `chain_for`.
     let group = match (
-        read_sized_field!(facts, Facts, group_ptr),
-        read_sized_field!(facts, Facts, group_len),
+        read_sized_field!(facts, facts.size, Facts, group_ptr),
+        read_sized_field!(facts, facts.size, Facts, group_len),
     ) {
         (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => Some(borrowed_str(ptr, len)),
         _ => None,
@@ -248,22 +248,22 @@ pub(super) fn charge(state: &HostState, usage: &Usage) -> MeterOutcome {
 /// three words are exactly `record_metering`'s `(key_id, model, provider)` — so a present tail records
 /// the identical row the in-process meter does.
 fn resolved_attribution(usage: &Usage) -> Option<(String, String, String)> {
-    let key_ptr = read_sized_field!(usage, Usage, key_id_ptr)?;
-    let key_len = read_sized_field!(usage, Usage, key_id_len)?;
+    let key_ptr = read_sized_field!(usage, usage.size, Usage, key_id_ptr)?;
+    let key_len = read_sized_field!(usage, usage.size, Usage, key_id_len)?;
     let key_id = borrowed_str(key_ptr, key_len);
     if key_id.is_empty() {
         return None; // no resolved attribution → the synthetic fallback (pre-enrichment behaviour).
     }
     let model = match (
-        read_sized_field!(usage, Usage, model_ptr),
-        read_sized_field!(usage, Usage, model_len),
+        read_sized_field!(usage, usage.size, Usage, model_ptr),
+        read_sized_field!(usage, usage.size, Usage, model_len),
     ) {
         (Some(ptr), Some(len)) => borrowed_str(ptr, len),
         _ => String::new(),
     };
     let provider = match (
-        read_sized_field!(usage, Usage, provider_ptr),
-        read_sized_field!(usage, Usage, provider_len),
+        read_sized_field!(usage, usage.size, Usage, provider_ptr),
+        read_sized_field!(usage, usage.size, Usage, provider_len),
     ) {
         (Some(ptr), Some(len)) => borrowed_str(ptr, len),
         _ => String::new(),

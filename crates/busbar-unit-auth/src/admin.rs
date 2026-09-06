@@ -15,7 +15,15 @@
 use crate::principal::Principal;
 
 /// What an administrative caller may do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+///
+/// Deliberately NOT `Ord`. Under a derived ordering, satisfaction is declaration order, so a rung
+/// added to this enum acquires an answer to "does it satisfy `Full`?" from where it happens to be
+/// written rather than from a decision anybody made — and a narrow new rung declared after `Full`
+/// would silently confer every mutation. Satisfaction is spelled as an exhaustive match below
+/// instead, so adding a rung stops the build until the answer is written down. `busbar-unit-scope`
+/// is the authority for what each rung means; these arms mirror its `Scope::allows`, and a rung
+/// added there must be added here with the same answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
     /// Reads only.
     ReadOnly,
@@ -41,8 +49,16 @@ impl Grants {
     }
 
     /// Whether these grants satisfy a required scope.
+    ///
+    /// Every rung reads, so `ReadOnly` is satisfied by anything; `Full` is satisfied only by
+    /// `Full`. Written as a match on the pair rather than a comparison so neither half can gain a
+    /// meaning by being declared in a particular place.
     pub fn satisfies(&self, needed: Scope) -> bool {
-        self.scope >= needed
+        match (self.scope, needed) {
+            (_, Scope::ReadOnly) => true,
+            (Scope::Full, Scope::Full) => true,
+            (Scope::ReadOnly, Scope::Full) => false,
+        }
     }
 }
 

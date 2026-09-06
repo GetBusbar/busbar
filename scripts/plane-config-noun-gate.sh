@@ -65,8 +65,16 @@ CORE_ROOT="crates/busbar-core/src"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
+#
+# A plane may write the field as a CONSTANT rather than a literal, and one now does: the wire-codec
+# split put A2A's noun in `busbar_a2a_codec::CONFIG_SECTION` and the decl names that path. Reading
+# only the literal form silently dropped that plane from the noun set, and a gate that scans three
+# nouns instead of four reports clean on the fourth by never looking for it. So a non-literal value
+# is FOLLOWED to the constant's own declaration — in the named crate, or in this plane's own sources
+# when the path is bare — rather than skipped. A value that resolves to neither leaves the plane out,
+# which the four-noun floor below turns into a failure instead of a quiet undercount.
 section_nouns() {
-  local k dir declfile noun out=""
+  local k dir declfile noun ref refcrate out=""
   for k in $PLANE_KEYS; do
     dir="crates/busbar-${k}/src"
     # The noun is read from the file that DECLARES the plane's `pub const PLANE_DECL`, never a test
@@ -75,6 +83,20 @@ section_nouns() {
     [ -n "$declfile" ] || continue
     noun="$(grep -hoE 'config_section:[[:space:]]*"[a-z_]+"' "$declfile" 2>/dev/null \
             | head -1 | sed -E 's/.*"([a-z_]+)".*/\1/')"
+    if [ -z "$noun" ]; then
+      # `config_section: <path::>CONST,` — take the const name and the crate it is qualified with.
+      ref="$(grep -hoE 'config_section:[[:space:]]*[A-Za-z_][A-Za-z0-9_:]*' "$declfile" 2>/dev/null \
+             | head -1 | sed -E 's/.*[[:space:]]//')"
+      if [ -n "$ref" ]; then
+        case "$ref" in
+          *::*) refcrate="crates/$(printf '%s' "${ref%%::*}" | tr '_' '-')/src" ;;
+          *)    refcrate="$dir" ;;
+        esac
+        [ -d "$refcrate" ] || refcrate="$dir"
+        noun="$(grep -rhoE "const[[:space:]]+${ref##*::}:[[:space:]]*&('static[[:space:]]+)?str[[:space:]]*=[[:space:]]*\"[a-z_]+\"" \
+                  "$refcrate" 2>/dev/null | head -1 | sed -E 's/.*"([a-z_]+)".*/\1/')"
+      fi
+    fi
     [ -n "$noun" ] && out="${out:+$out }$noun"
   done
   printf '%s' "$out"

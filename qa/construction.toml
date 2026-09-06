@@ -13,8 +13,8 @@
 # Where Rust source is scanned. Globs relative to the repo root; the composition-root bin
 # (crates/busbar) is included on purpose because production installers live there.
 scan_roots = ["crates/*/src"]
-# The plane crates (the plugin side). Mirrors scripts/plane-keys.sh, spelled out here so each
-# crate can carry its own ceiling below.
+# The plane crates (the plugin side): one name per protocol plane, so each carries its own ceiling
+# below. This is the ROW KEY list, not the whole source surface — see gate.plane_codec_crates.
 plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A file at one of these path fragments is TEST code (same rule the purity lint applies), in
 # addition to any `#[cfg(test)] mod … { … }` block inside a production file.
@@ -36,6 +36,22 @@ export = ["crates/export-*"]
 transport = ["crates/busbar-transport-*"]
 loader = ["crates/plugin-loader"]
 abi = ["crates/busbar-contract"]
+
+# The OTHER half of each plane's sources. Every plane kept its I/O half under its own name and shed
+# its pure half — the codecs, the record vocabularies, the duplex IR, the dialect grammars — into a
+# `-codec` crate; scripts/plane-keys.sh's `plane_src_roots` names both halves for exactly that
+# reason. A gate that scans sources rather than manifests and knows only the first half stops
+# watching the bulk of the plane on the day of the split and still prints a green row, so the second
+# half is named here and folded into its plane's ports-only rows.
+#
+# This is deliberately NOT `plane_crates`. That list also decides which dependency is a
+# plane-names-another-plane RED in manifest-allowlist, and a plane naming its own pure codec half is
+# the intended shape, already on that rule's reviewed list.
+[gate.plane_codec_crates]
+busbar-llm = ["busbar-llm-codec"]
+busbar-mcp = ["busbar-mcp-codec"]
+busbar-a2a = ["busbar-a2a-codec"]
+busbar-voice = ["busbar-voice-codec"]
 
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
@@ -94,7 +110,7 @@ why = """The same reach from test code. Tests that name core internals pin the p
 private shape just as surely as production code does; they are reported separately so both \
 counts can trend to zero at their own pace."""
 [rules.ports-only-tests.max_per_crate]
-busbar-llm = 565
+busbar-llm = 393
 busbar-mcp = 1
 busbar-a2a = 3
 busbar-voice = 0
@@ -299,9 +315,16 @@ patterns = ["grammar.rs"]
 ceiling = 800
 
 [rules.loc-ceilings.kernel_files.ticks]
-label = "Ticks/drain/fleet"
-patterns = ["ticks.rs", "drain.rs", "fleet.rs"]
-ceiling = 500
+# The file is `tick.rs`, singular, and always was. `ticks.rs`, `drain.rs` and `fleet.rs` matched no
+# file in the tree, so this row measured the empty set and reported 0/500 -- a ceiling nothing
+# spends is a ceiling that has been abolished rather than met. The drain and the fleet sweep are
+# not separate files: they are two of the three jobs inside tick.rs, and the label says so.
+#
+# The ceiling is today's measurement, not the abolished 500: a ratchet, so the first line that
+# grows this file is the line that has to justify itself.
+label = "tick: session tick, node tick and the drain sweep"
+patterns = ["tick.rs"]
+ceiling = 200
 
 [rules.loc-ceilings.kernel_files.arena]
 label = "arena/masking"
@@ -572,9 +595,15 @@ known_sites = [
 ]
 
 # The escape list, mirroring crates/busbar-caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
-# crate asserts this table names every symbol the fixture does, so the two cannot drift apart.
-# `confined_to` empty means banned everywhere; otherwise the symbol may appear only in files whose
-# path contains the fragment.
+# crate asserts this table names every symbol the fixture does, and repeats the fixture's own
+# `confined_to` spelling, so the two cannot drift apart.
+#
+# `confined_to` is that fixture's spelling of the scope, kept verbatim for the join. It is PROSE,
+# not a matcher: as a bare substring test it also excuses `crates/other-kernel/src/tellerish.rs`, or
+# any path anywhere in the tree that happens to contain those characters, which is the opposite of
+# confining anything. `confined_to_paths` is the same scope resolved against this tree —
+# crate-relative paths, matched as prefixes, so only the files actually named are excused. An empty
+# `confined_to` (and an empty or absent `confined_to_paths`) means banned everywhere.
 [rules.hold-escapes.symbols.forget]
 symbol = "mem::forget"
 confined_to = ""
@@ -598,9 +627,48 @@ because = "aborting skips every exit path at once; the node drains instead"
 [rules.hold-escapes.symbols.assert-unwind-safe]
 symbol = "AssertUnwindSafe"
 confined_to = "kernel/src/teller"
+# The Teller loop's two homes in this tree: the kernel's own teller.rs, and the substrate teller
+# module that rules 12 and 13 above already treat as where the loop is entered.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller"]
 because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place"
 
 [rules.hold-escapes.symbols.join-abort]
 symbol = "JoinHandle::abort"
 confined_to = ""
 because = "an aborted task loses its unit's end; the sweep is the second exit, not abort"
+
+# ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────
+[rules.unit-no-wall-clock]
+why = """A unit crate decides from the values it was handed, so replaying the same inputs gives the \
+same answer. A unit that reads the wall or monotonic clock itself has an input nobody passed it: \
+its decision stops being reproducible, a test of it becomes a race, and the same request replayed \
+for an audit no longer yields the same record. Reading a clock is the composition root's job — the \
+root reads it ONCE per arrival and hands the reading down, which is also what keeps two steps of \
+one unit from landing in different seconds. Production code only: a test may read a clock to \
+measure a test."""
+# Where a unit crate's production code lives.
+scope_globs = ["crates/busbar-unit-*/src/*"]
+# The clock reads a unit crate may not perform.
+forbidden = ["SystemTime::now", "Instant::now"]
+# A helper that exists FOR the root, in a unit crate's directory, that nothing in the crate calls.
+# Each entry is a whole file, exempt because it is the root's reading living next to the unit rather
+# than a decision inside one. Adding to this list needs the same argument.
+exempt_files = ["crates/busbar-unit-breaker/src/clock.rs"]
+max_hits = 0
+
+# ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
+[rules.unit-no-finding-ids]
+why = """A comment that cites a finding identifier or a bare document section number tells a reader \
+nothing they can act on: the identifier resolves to an audit worksheet that is not in this tree, \
+and the section number moves the next time the document is edited. The rule the code follows has to \
+be stated in words, in the comment, so the comment survives the worksheet and the renumbering. RFC \
+citations are exempt by construction — they are stable, externally resolvable documents — and only \
+the identifier shapes below are searched for."""
+scope_globs = ["crates/busbar-unit-*/src/*"]
+# The shapes searched for, as regular expressions over the raw comment text.
+patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
+# The one crate whose occurrence is knowingly left in place, so the rule can hold the line on every
+# other unit crate rather than waiting for that one citation to be rewritten. Emptying this list is
+# the goal, and nothing may be added to it without the same argument.
+exempt_crates = ["busbar-unit-ledger"]
+max_hits = 0

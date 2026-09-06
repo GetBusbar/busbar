@@ -69,7 +69,7 @@ command -v "$PY" >/dev/null 2>&1 || { echo "config-stability-gate: python3 not f
 # ── SELF-TEST ──────────────────────────────────────────────────────────────────────────────────────
 selftest() {
   hdr "config-stability gate SELF-TEST (the gate proves itself before it judges the tree)"
-  local tmp rc fails=0 cases=0
+  local tmp rc out fails=0 cases=0
   tmp="$(mktemp -d)"
   trap 'rm -rf "$tmp"' RETURN
 
@@ -471,6 +471,42 @@ assert f["carried_key"] == {"type": "CarriedCfg", "optional": True}, f["carried_
   grep -q "plane_a.rs.*plane_b.rs" "$tmp/collide.err"
   verdict "the collision refusal names BOTH declaring files" 0 "$?"
 
+  # ── PLANE-GRAMMAR ADDRESSING. Two of the tracked sources are addressed by FINDING the plane's
+  # directory rather than by spelling its path, so the finder decides what half the gate covers. It
+  # is driven here over throwaway trees, because the interesting half of it is a REFUSAL: a plane
+  # whose grammar has two homes must stop the gate, not be resolved by whichever name sorts first.
+  # Picking one would freeze one home's shapes and silently un-freeze the other's — a coverage hole
+  # that reads green. The three trees below are the wire-codec split (a same-named directory that
+  # carries no grammar), the genuine two-homes case, and the vanished-grammar case.
+  hdr "self-test: plane grammar addressing (found, not spelled — and ambiguity refused)"
+
+  # A same-named sibling that carries NO config grammar is the codec split: not a second home, so the
+  # one directory that DOES carry the grammar resolves, and the gate keeps covering it.
+  mkdir -p "$tmp/addr/split/plane-x/src/x" "$tmp/addr/split/plane-x-codec/src/x"
+  : >"$tmp/addr/split/plane-x/src/x/config.rs"
+  : >"$tmp/addr/split/plane-x-codec/src/x/canonical.rs"
+  rc=0; out="$("$PY" "$GEN" plane-dir x "$tmp/addr/split" 2>/dev/null)" || rc=$?
+  verdict "addressing: a same-named codec directory carrying no grammar is not a second home" 0 "$rc"
+  [ "$out" = "$tmp/addr/split/plane-x/src/x" ]
+  verdict "addressing: the resolved home is the crate that OWNS the grammar" 0 "$?"
+
+  # TWO real homes: both carry the grammar. This MUST be refused, and the refusal must name both, so
+  # whoever reads it can see which two directories are claiming one plane.
+  mkdir -p "$tmp/addr/two/plane-y/src/y" "$tmp/addr/two/plane-y-fork/src/y"
+  : >"$tmp/addr/two/plane-y/src/y/config.rs"
+  : >"$tmp/addr/two/plane-y-fork/src/y/config.rs"
+  if "$PY" "$GEN" plane-dir y "$tmp/addr/two" >/dev/null 2>"$tmp/addr/two.err"; then rc=1; else rc=0; fi
+  verdict "addressing: TWO grammar homes for one plane is REFUSED, never silently picked" 0 "$rc"
+  grep -q "plane-y/src/y" "$tmp/addr/two.err" && grep -q "plane-y-fork/src/y" "$tmp/addr/two.err"
+  verdict "addressing: the ambiguity refusal names BOTH claiming directories" 0 "$?"
+
+  # NO home: the grammar left the tracked set entirely. A skip here would un-freeze a whole config
+  # section, so this is the same hard error a vanished tracked source is.
+  mkdir -p "$tmp/addr/none/plane-z/src/z"
+  : >"$tmp/addr/none/plane-z/src/z/canonical.rs"
+  if "$PY" "$GEN" plane-dir z "$tmp/addr/none" >/dev/null 2>&1; then rc=1; else rc=0; fi
+  verdict "addressing: NO grammar home is an error, never a skip" 0 "$rc"
+
   # ── COVERAGE: the assertions above are about fixtures. These are about the REAL tracked set, so
   # the gate cannot be capable-in-principle while covering nothing that ships.
   hdr "self-test: COVERAGE of the real tracked source set"
@@ -537,7 +573,7 @@ assert t["AuthDeployCfg"]["fields"]["policy"]["type"] == "AuthPolicyCfg", t["Aut
   # is the false green this project has already been burned by three times in one night. Assert the
   # cases actually EXECUTED, and pin the floor to the count at the time of writing so deleting
   # coverage is itself RED.
-  local want_cases=57
+  local want_cases=62
   if [ "$cases" -lt "$want_cases" ]; then
     red "  FAIL  self-test executed only $cases case(s); expected at least $want_cases."
     red "        Coverage was deleted, or the suite exited early — either way this is NOT a pass."

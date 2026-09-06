@@ -536,6 +536,51 @@ jobs:
             exit 1
           fi
 
+      # `busbar-timing`'s real implementation lives entirely behind its `timing` feature, which is
+      # OFF by default and therefore OFF under `cargo test --workspace`. So the only suite that
+      # exercises the registry, the thread accounting and the runtime gate was never compiled by any
+      # step in this workflow: the default build collects only the zero-cost-when-off proof, prints
+      # `test result: ok`, and says nothing about the code that actually runs when an operator turns
+      # timing on. The floor is the same guard the voice step uses, for the same reason — a suite
+      # that stops being collected still exits 0.
+      - name: Timing implementation tests (the `timing`-gated suite `cargo test --workspace` never runs)
+        env:
+          TIMING_MIN_TESTS: "5"
+        run: |
+          cargo test -p busbar-timing --features timing \
+                     --locked --verbose | tee "$RUNNER_TEMP/timing-test.log"
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/timing-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "timing implementation: ${total} tests passed (floor: ${TIMING_MIN_TESTS})"
+          if [ "$total" -lt "$TIMING_MIN_TESTS" ]; then
+            echo "::error::the timing implementation suite ran ${total} tests, below its floor of ${TIMING_MIN_TESTS}."
+            exit 1
+          fi
+
+      # THE LLM PLANE'S TELLER-STEP SUITE — the whole of `crates/busbar-llm/src/unit/` sits behind
+      # `#![cfg(feature = "teller-waist")]`, a flag no other step in this workflow turns on. So the
+      # workspace `cargo test` above compiles that directory to nothing and reports a green over a
+      # suite it never built: the step files, the walk carry and the flip's own rehearsal were all
+      # dark. This step is the one place the flag is up. It is exactly the voice step's situation one
+      # plane over, and it gets the same collected-count floor for the same reason — a suite that
+      # stops being collected still prints `test result: ok` and exits 0, so the count is what proves
+      # it ran rather than compiled away.
+      - name: LLM teller-step tests (the `teller-waist`-gated step suite `cargo test --workspace` never runs)
+        env:
+          LLM_UNIT_MIN_TESTS: "70"
+        run: |
+          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: | tee "$RUNNER_TEMP/llm-unit-test.log"
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/llm-unit-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "llm teller steps: ${total} tests passed (floor: ${LLM_UNIT_MIN_TESTS})"
+          if [ "$total" -lt "$LLM_UNIT_MIN_TESTS" ]; then
+            echo "::error::the llm teller-step suite ran ${total} tests, below its floor of ${LLM_UNIT_MIN_TESTS}."
+            echo "::error::A directory-wide cfg gate can erase a whole suite without erasing its green."
+            exit 1
+          fi
+
       # A test that writes into the repo is a test that can leak. The docs example harness once
       # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,
       # which put four generated artifacts in the working tree, two of them carrying the absolute
@@ -932,7 +977,7 @@ jobs:
 
   # CONCURRENCY GATES for the config-mutation transaction (choke point C). Neither of these can run
   # inside `cargo test --workspace`: the compile fence must FAIL to build (it is a negative test
-  # behind the `txn-fence-red` feature) and the loom model explores interleavings exhaustively behind
+  # behind the `txn_fence_red` rustc cfg) and the loom model explores interleavings exhaustively behind
   # `loom-model`, far too slowly for the default suite. A gate nothing runs is not a gate, so they
   # get their own job — otherwise the transaction guard could be dismantled with the tree still green.
   txn-guards:
@@ -1242,11 +1287,25 @@ jobs:
 
   # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
   # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
-  # (dev/qa/main). A push to dev writes docs/proof/dev.json; qa -> qa.json; main -> main.json. The
-  # marketing site's deploy.yml checks THIS repo out SAME-BRANCH via UPSTREAM_DIR and renders the
-  # matching manifest, so getbusbar.dev shows dev's proof, getbusbar.qa shows qa's, and getbusbar.com
-  # shows main's — Transport Option A (commit into busbar, read via UPSTREAM_DIR): zero new infra, zero
-  # new tokens, no second-copy drift.
+  # (dev/qa/main). The stage mirroring is preserved in the FILE NAME, not in the branch the file is
+  # committed to: a push to dev publishes docs/proof/dev.json; qa -> qa.json; main -> main.json.
+  #
+  # WHY THIS DOES NOT COMMIT BACK TO dev/qa/main ANY MORE, AND WHY THAT WAS A RELEASE BLOCKER.
+  # It used to end with `git commit … [skip ci]` + `git push origin HEAD:<the branch it ran on>`.
+  # `qa` and `main` are protected (required status checks, linear history, enforce_admins: true), so
+  # that push is REJECTED on exactly the two branches a release travels down: the job fails, the `CI`
+  # run concludes failure, and release-stage.yml's gate 0 refuses to stage. The release could not be
+  # cut at all. And in the counterfactual where the push succeeded it would be worse: it would mint a
+  # NEW qa/main HEAD carrying [skip ci], so no `CI`, no `qa-gate` and no `Release stage` run would
+  # exist for that sha, and release.yml's resolve-staged would refuse it forever. A manifest refresh
+  # must never be able to move a release branch's HEAD.
+  #
+  # TRANSPORT NOW: (1) every run uploads the manifest as a workflow ARTIFACT (`proof-manifest-<branch>`),
+  # which is the copy CI itself and any release job can consume without a git write anywhere; and
+  # (2) the manifest is committed to the dedicated, UNPROTECTED `proof-manifests` branch, which is
+  # never built, never released and never fast-forwarded into anything. Readers (the marketing site's
+  # deploy.yml) check THAT branch out and read `docs/proof/<stage>.json` — see docs/proof/README.md.
+  # No workflow commits to a protected branch; scripts/release-order-lint.py R11 keeps it that way.
   #
   # The collator (scripts/proof-manifest.py) changes NO gate. It re-runs the cheap grep gates
   # (plane-purity/grep/g6/abi), parses the field-coverage ledger, enumerates the golden corpus, runs the
@@ -1276,6 +1335,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      # The publication branch is checked out into RUNNER_TEMP as its OWN clone, so nothing here can
+      # stage, commit or push anything in the release-branch checkout above. If the branch does not
+      # exist yet it is created as an orphan (no history from dev/qa/main, nothing to fast-forward).
+      - name: Check out the unprotected publication branch (never dev/qa/main)
+        env:
+          PUBLISH_BRANCH: proof-manifests
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          pub="$RUNNER_TEMP/proof-pub"
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git clone --depth 1 --branch "$PUBLISH_BRANCH" "$url" "$pub" 2>/dev/null; then
+            echo "proof-manifest: updating existing ${PUBLISH_BRANCH}."
+          else
+            echo "proof-manifest: ${PUBLISH_BRANCH} does not exist yet; creating it as an orphan."
+            git clone --depth 1 "$url" "$pub"
+            git -C "$pub" checkout --orphan "$PUBLISH_BRANCH"
+            git -C "$pub" rm -rq --cached . || true
+            find "$pub" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          fi
+          mkdir -p "$pub/docs/proof"
       - name: Collate the proof manifest (verdicts + counts, public-safe)
         env:
           VERSION: ${{ github.ref_name }}
@@ -1287,7 +1367,7 @@ jobs:
           set -eu
           python3 scripts/proof-manifest.py \
             --version "$VERSION" \
-            --out "docs/proof/${VERSION}.json" \
+            --out "$RUNNER_TEMP/proof-pub/docs/proof/${VERSION}.json" \
             --index \
             --run-parity \
             --hits-dir "$RUNNER_TEMP/proof-hits" \
@@ -1305,7 +1385,18 @@ jobs:
             --mark "no-plugins-gate=${NOPLUGINS_RESULT}" \
             --mark "proto-deletion-gate=${NODEFAULT_RESULT}"
       - name: Public-safety guard (fail-closed — verdicts only, no source, no secrets)
-        run: node scripts/check-proof-manifest-public.mjs "docs/proof/${{ github.ref_name }}.json"
+        run: node scripts/check-proof-manifest-public.mjs "${{ runner.temp }}/proof-pub/docs/proof/${{ github.ref_name }}.json"
+      # TRANSPORT (1): the artifact. Public-safe by the guard above, keyed by the SOURCE branch, and
+      # available to any consumer without a git write. This upload happens whether or not the commit
+      # below does anything, so the manifest for a run always exists somewhere.
+      - name: Upload the manifest as a workflow artifact (keyed by source branch)
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-manifest-${{ github.ref_name }}
+          path: |
+            ${{ runner.temp }}/proof-pub/docs/proof/${{ github.ref_name }}.json
+            ${{ runner.temp }}/proof-pub/docs/proof/index.json
+          if-no-files-found: error
       - name: Upload hit-list evidence as a PRIVATE CI artifact (contains source; never committed)
         if: always()
         uses: actions/upload-artifact@v4
@@ -1313,20 +1404,26 @@ jobs:
           name: proof-hits-${{ github.ref_name }}
           path: ${{ runner.temp }}/proof-hits
           if-no-files-found: ignore
-      - name: Commit the manifest back to the branch
+      # TRANSPORT (2): the commit, to `proof-manifests` ONLY. Note the refspec is a LITERAL branch
+      # name that is not dev/qa/main: this step cannot be made to move a release branch's HEAD by
+      # running on a different branch, which is precisely how the old `HEAD:${{ github.ref_name }}`
+      # push became a release blocker on the two protected branches.
+      - name: Publish the manifest to the proof-manifests branch
         env:
           VERSION: ${{ github.ref_name }}
+          PUBLISH_BRANCH: proof-manifests
         run: |
           set -eu
-          git config user.name "busbar-ci"
-          git config user.email "ci@getbusbar.com"
-          git add "docs/proof/${VERSION}.json" docs/proof/index.json
-          if git diff --cached --quiet; then
-            echo "proof-manifest: no manifest change to commit."
+          pub="$RUNNER_TEMP/proof-pub"
+          git -C "$pub" config user.name "busbar-ci"
+          git -C "$pub" config user.email "ci@getbusbar.com"
+          git -C "$pub" add "docs/proof/${VERSION}.json" docs/proof/index.json
+          if git -C "$pub" diff --cached --quiet; then
+            echo "proof-manifest: no manifest change to publish."
             exit 0
           fi
-          git commit -m "ci(proof): refresh docs/proof/${VERSION}.json [skip ci]"
-          git push origin "HEAD:${VERSION}"
+          git -C "$pub" commit -m "ci(proof): refresh docs/proof/${VERSION}.json from ${VERSION}@${GITHUB_SHA}"
+          git -C "$pub" push origin "HEAD:refs/heads/proof-manifests"
 
   # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
   #
@@ -1432,17 +1529,35 @@ jobs:
       # rather than re-recorded there (a second recording would need a second release build and
       # could disagree with the one the oracle diffed). `if: always()` so a replay divergence above
       # does not withhold the recording: "differs from 1.5.5" and "violates the spec" are two
-      # independent facts about the commit. The two busbar/mock logs are left out: the validator
-      # reads only the per-cell bodies, the ledger and the metadata.
+      # independent facts about the commit.
+      #
+      # THE PATH LIST IS AN ALLOW-LIST, and that is a secrets decision, not tidiness. `raw/` is the
+      # PRE-NORMALISATION forensic tree: it holds the bodies exactly as they came off the wire, the
+      # per-cell working directories (config.yaml with the generated signing key, the admin token),
+      # the script-cell logs, and the admin key-mint responses whose `.token` is a live `bbk_…`
+      # virtual key. Uploading that whole tree published minted key material to an artifact any
+      # reader of the run can download, for seven days, on every commit. Normalisation is what
+      # strips those; `cells/` is the post-normalisation view and is safe by construction.
+      #
+      # It cannot simply be dropped, though: testing/llm-conformance/validate.py PREFERS the raw
+      # wire bytes over the normalized cell (Recording.response_bytes -> raw/body, plus raw/headers
+      # and raw/request.body), because judging a normalized body against a vendor schema judges the
+      # normalizer. Excluding raw/ outright would silently downgrade the conformance verdict to the
+      # normalized view rather than the wire. So exactly the three files it reads are carried, and
+      # only for `llm__` cells — the only ones it opens. Everything else in raw/, including every
+      # admin-plane cell, stays on the runner.
       - name: Upload the candidate recording (consumed by llm-conformance)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: shadow-oracle-candidate-recording
           path: |
-            target/oracle/recordings/candidate
-            !target/oracle/recordings/candidate/busbar.log
-            !target/oracle/recordings/candidate/mock.log
+            target/oracle/recordings/candidate/cells
+            target/oracle/recordings/candidate/ledger.tsv
+            target/oracle/recordings/candidate/meta.json
+            target/oracle/recordings/candidate/raw/llm__*/body
+            target/oracle/recordings/candidate/raw/llm__*/headers
+            target/oracle/recordings/candidate/raw/llm__*/request.body
           if-no-files-found: warn
           retention-days: 7
 

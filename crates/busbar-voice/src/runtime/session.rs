@@ -179,34 +179,36 @@ where
                         if close {
                             // Budget dry (or the lease refused / faulted / unpriced): cancel the in-flight
                             // response upstream and demand a hard close.
-                            out.push_up(
-                                self.codec.write_up(IrClientEvent::Control(
-                                    IrDuplexControl::ResponseCancel,
-                                )),
-                            );
+                            out.push_up(self.codec.write_up(
+                                IrClientEvent::Control(IrDuplexControl::ResponseCancel),
+                                &mut inner.decode,
+                            ));
                             out.close = true;
                         }
                     }
                     // ── barge-in: cancel + truncate at the audio the user actually heard (`plane4-duplex-session.md` §2.3) ────
                     IrServerEvent::SpeechStarted { item_id, .. } => {
                         let heard_ms = inner.decode.flush_playback();
-                        out.push_up(
-                            self.codec
-                                .write_up(IrClientEvent::Control(IrDuplexControl::ResponseCancel)),
-                        );
-                        out.push_up(self.codec.write_up(IrClientEvent::Control(
-                            IrDuplexControl::ItemTruncate {
+                        out.push_up(self.codec.write_up(
+                            IrClientEvent::Control(IrDuplexControl::ResponseCancel),
+                            &mut inner.decode,
+                        ));
+                        out.push_up(self.codec.write_up(
+                            IrClientEvent::Control(IrDuplexControl::ItemTruncate {
                                 item_ref: item_id.clone(),
                                 content_index: 0,
                                 audio_played_ms: heard_ms,
-                            },
-                        )));
+                            }),
+                            &mut inner.decode,
+                        ));
                         // The client still hears the barge-in acknowledgement.
-                        out.downlink
-                            .push(self.codec.write_down(IrServerEvent::SpeechStarted {
+                        out.downlink.extend(self.codec.write_down(
+                            IrServerEvent::SpeechStarted {
                                 item_id,
                                 audio_start_ms: 0,
-                            }));
+                            },
+                            &mut inner.decode,
+                        ));
                     }
                     // ── tool moat: correlate + accumulate, execute server-side on close (`plane4-duplex-session.md` §2.2) ─────
                     IrServerEvent::Tool(t) => {
@@ -254,7 +256,10 @@ where
                     | IrServerEvent::SpeechStopped { .. }
                     | IrServerEvent::SessionCreated { .. }
                     | IrServerEvent::Error { .. }) => {
-                        out.downlink.push(self.codec.write_down(ev));
+                        // A downlink event that is not a frame on its own (a held tool-argument
+                        // fragment) relays nothing — the same answer an unrepresentable uplink gives.
+                        out.downlink
+                            .extend(self.codec.write_down(ev, &mut inner.decode));
                     }
                     // Extraction-only — never client-translated (`plane4-duplex-session.md` §2.5).
                     IrServerEvent::RateLimits => {}
@@ -266,20 +271,25 @@ where
         // model to continue.
         for (call_ref, call_id, name, args) in to_exec {
             let output = self.tools.execute(&name, &args).await;
-            out.push_up(
-                self.codec
-                    .write_up(IrClientEvent::Tool(IrDuplexTool::CallResult {
-                        call_ref,
-                        call_id,
-                        // The tool the plane just ran — a dialect whose result frame requires a name
-                        // (Gemini) gets the one the model actually called for.
-                        name,
-                        output: Bytes::from(output),
-                    })),
-            );
-            out.push_up(self.codec.write_up(IrClientEvent::Control(
-                IrDuplexControl::ResponseCreate { response: None },
-            )));
+            // The write seam threads the session's decode state, so the lock is retaken AFTER the
+            // await — never held across it.
+            let mut g = self.inner.lock().expect("session inner poisoned");
+            out.push_up(self.codec.write_up(
+                IrClientEvent::Tool(IrDuplexTool::CallResult {
+                    call_ref,
+                    call_id,
+                    // The tool the plane just ran — a dialect whose result frame requires a name
+                    // (Gemini) gets the one the model actually called for.
+                    name,
+                    output: Bytes::from(output),
+                }),
+                &mut g.decode,
+            ));
+            out.push_up(self.codec.write_up(
+                IrClientEvent::Control(IrDuplexControl::ResponseCreate { response: None }),
+                &mut g.decode,
+            ));
+            drop(g);
         }
 
         if out.close {
@@ -305,14 +315,17 @@ where
                 // holds a locked config, re-apply THAT; otherwise pass the client's through.
                 IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) => {
                     let effective = self.locked_config.clone().unwrap_or(config);
-                    out.push_up(self.codec.write_up(IrClientEvent::Control(
-                        IrDuplexControl::SessionConfigure { config: effective },
-                    )));
+                    out.push_up(self.codec.write_up(
+                        IrClientEvent::Control(IrDuplexControl::SessionConfigure {
+                            config: effective,
+                        }),
+                        &mut g.decode,
+                    ));
                 }
                 // Everything else forwards verbatim (audio uplink, commits, item ops, tool results the
                 // plane itself authored are not re-authored here).
                 ev => {
-                    out.push_up(self.codec.write_up(ev));
+                    out.push_up(self.codec.write_up(ev, &mut g.decode));
                 }
             }
         }

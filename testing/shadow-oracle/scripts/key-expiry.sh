@@ -8,7 +8,7 @@
 # signed token's own `exp` claim is a live expiry check); this script records the REAL outcome
 # rather than assuming it, because the admin API also independently rejects an `expires_at` that
 # is not in the future for the token-expiry parameter of the SAME name, and the two facts must be
-# told apart on the actual binary rather than guessed from the design doc.
+# told apart on the actual binary rather than assumed from either one's description.
 #   1. mint a key in the `oracle` group with `expires_at` far in the past (Unix epoch + 1)
 #   2. if the mint succeeded (2xx, a token came back): spend once through the mock upstream
 #      3. if the mint was refused (4xx): spend is not attempted; spend_status stays null

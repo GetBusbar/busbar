@@ -158,12 +158,56 @@ fn str_field(v: &serde_json::Value, key: &str) -> Option<String> {
 /// Encode raw µ-law bytes into a Twilio outbound `media` envelope for a given `stream_sid`.
 #[must_use]
 pub fn encode_media(stream_sid: &str, mulaw: &[u8]) -> Vec<u8> {
-    let out = serde_json::json!({
-        "event": "media",
-        "streamSid": stream_sid,
-        "media": { "payload": base64_encode(mulaw) },
-    });
-    serde_json::to_vec(&out).unwrap_or_default()
+    let mut out = Vec::new();
+    encode_media_into(&mut out, stream_sid, mulaw);
+    out
+}
+
+/// The same envelope, rendered into a buffer the caller already has.
+///
+/// This is the shape the downlink writes in. The envelope is FIXED — three members, in the one
+/// order this dialect's documents are written in — and everything about it except the identifier
+/// and the payload was known when the crate was compiled. Building a document to describe it, and
+/// a string to hold the payload, and then serializing the document, spends three allocations per
+/// AUDIO FRAME to reach bytes that could have been appended. A call carries fifty frames a second.
+///
+/// The buffer is CLEARED, not appended to, so a caller may hand the same one back frame after frame
+/// and pay for its growth once.
+pub fn encode_media_into(out: &mut Vec<u8>, stream_sid: &str, mulaw: &[u8]) {
+    out.clear();
+    // An identifier that would have to be escaped is not one this dialect mints, but it is one this
+    // function may be handed. Rather than carry an escaper that would almost never run — and would
+    // be the one part of this rendering nothing exercises — the rare case goes back through the
+    // serializer, which is the authority on what those bytes are.
+    if !is_bare_json_string(stream_sid) {
+        let doc = serde_json::json!({
+            "event": "media",
+            "streamSid": stream_sid,
+            "media": { "payload": base64_encode(mulaw) },
+        });
+        out.extend_from_slice(&serde_json::to_vec(&doc).unwrap_or_default());
+        return;
+    }
+    const HEAD: &[u8] = br#"{"event":"media","media":{"payload":""#;
+    const MIDDLE: &[u8] = br#""},"streamSid":""#;
+    const TAIL: &[u8] = br#""}"#;
+    out.reserve(
+        HEAD.len() + base64_len(mulaw.len()) + MIDDLE.len() + stream_sid.len() + TAIL.len(),
+    );
+    out.extend_from_slice(HEAD);
+    base64_encode_into(mulaw, out);
+    out.extend_from_slice(MIDDLE);
+    out.extend_from_slice(stream_sid.as_bytes());
+    out.extend_from_slice(TAIL);
+}
+
+/// Whether a string is its own JSON body — nothing in it a serializer would rewrite.
+///
+/// Printable ASCII with neither of the two characters a JSON string cannot carry raw. Everything
+/// else, including every non-ASCII byte, is left to the serializer.
+fn is_bare_json_string(s: &str) -> bool {
+    s.bytes()
+        .all(|b| (0x20..0x7f).contains(&b) && b != b'"' && b != b'\\')
 }
 
 /// Encode a named playback-position mark for a given `stream_sid`.
@@ -190,27 +234,38 @@ pub fn encode_mark(stream_sid: &str, name: &str) -> Vec<u8> {
 
 const B64_ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
+/// How many characters this many bytes encode to.
+const fn base64_len(bytes: usize) -> usize {
+    bytes.div_ceil(3) * 4
+}
+
 fn base64_encode(data: &[u8]) -> String {
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    let mut out = Vec::with_capacity(base64_len(data.len()));
+    base64_encode_into(data, &mut out);
+    // Every byte appended below is one of the alphabet's, `=` included, so this is ASCII.
+    String::from_utf8(out).unwrap_or_default()
+}
+
+/// The same encoding, appended to a buffer the caller already has.
+fn base64_encode_into(data: &[u8], out: &mut Vec<u8>) {
     for chunk in data.chunks(3) {
         let b0 = u32::from(chunk[0]);
         let b1 = u32::from(*chunk.get(1).unwrap_or(&0));
         let b2 = u32::from(*chunk.get(2).unwrap_or(&0));
         let n = (b0 << 16) | (b1 << 8) | b2;
-        out.push(B64_ALPHABET[((n >> 18) & 63) as usize] as char);
-        out.push(B64_ALPHABET[((n >> 12) & 63) as usize] as char);
+        out.push(B64_ALPHABET[((n >> 18) & 63) as usize]);
+        out.push(B64_ALPHABET[((n >> 12) & 63) as usize]);
         out.push(if chunk.len() > 1 {
-            B64_ALPHABET[((n >> 6) & 63) as usize] as char
+            B64_ALPHABET[((n >> 6) & 63) as usize]
         } else {
-            '='
+            b'='
         });
         out.push(if chunk.len() > 2 {
-            B64_ALPHABET[(n & 63) as usize] as char
+            B64_ALPHABET[(n & 63) as usize]
         } else {
-            '='
+            b'='
         });
     }
-    out
 }
 
 fn base64_sextet(c: u8) -> Option<u32> {

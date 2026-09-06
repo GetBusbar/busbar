@@ -78,10 +78,10 @@ use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, Tra
 
 use busbar_voice_codec::ir::control::IrDuplexControl;
 use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, UpDown};
+use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
 use busbar_voice_codec::ir::tool::IrDuplexTool;
 use busbar_voice_codec::ir::{
-    DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireEvent,
+    DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireRef,
 };
 
 use crate::claims::{self, Dialect};
@@ -210,6 +210,8 @@ impl Plane for VoicePlane {
                             dir: UpDown::Up,
                             seq: state.codec.next_up_seq(),
                             media: bytes::Bytes::from(pcm),
+                            // A carrier media frame names no conversation item.
+                            origin: IrAudioRef::default(),
                         })
                     }
                     // Lifecycle events (`connected`/`start`/`mark`/`stop`) carry no audio and are
@@ -227,7 +229,7 @@ impl Plane for VoicePlane {
         let writer = writer_for(upstream_dialect);
         // The upstream dialect may have NO verb for this concept (the cross-dialect drop rows): then
         // nothing is relayed — the same answer a lifecycle frame handled fully at decode gives.
-        let Some(out) = writer.write_up(client_event) else {
+        let Some(out) = writer.write_up(client_event, &mut state.codec) else {
             return Ok(None);
         };
         ctx.arena()
@@ -251,9 +253,11 @@ impl Plane for VoicePlane {
         let client_dialect = client_dialect_from_session(ctx).unwrap_or(upstream_dialect);
 
         let frame = frames.next_frame().ok_or(Decode::Malformed)?;
-        let wire = WireEvent(bytes::Bytes::copy_from_slice(frame.bytes.as_slice()));
+        // The reader is handed the frame WHERE IT IS. It parses the bytes and keeps none of them, so
+        // buying them a second home first bought nothing — and a duplex session reads fifty frames a
+        // second in each direction for the length of a call.
         let reader = reader_for(upstream_dialect);
-        let events = reader.read_down(wire, &mut state.codec);
+        let events = reader.read_down_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
         let Some(event) = events.into_iter().next() else {
             return Ok(Progress::Discard {
                 reason: DiscardCode::Unsupported,
@@ -295,7 +299,13 @@ impl Plane for VoicePlane {
         // would need the immutable half of the state to still carry the negotiated dialect, which it
         // does today (`VoiceSessionState::dialect`) but this method has no path to it before Unit 0
         // completes. Flagged rather than guessed past.
-        let bytes = OpenAiRealtimeCodec.write_down(event).0;
+        // The write seam threads the session's decode state (it holds what framing cannot answer
+        // per-event); a refusal reaches none of the session's state here, and needs none — it is one
+        // self-contained frame with nothing accumulated behind it, so it is framed against a fresh one.
+        let bytes = OpenAiRealtimeCodec
+            .write_down(event, &mut DecodeState::default())
+            .ok_or(Encode::Unrepresentable)?
+            .0;
         ctx.arena()
             .alloc_bytes(&bytes)
             .map_err(|_| Encode::ArenaExhausted)
@@ -429,11 +439,9 @@ impl Plane for VoicePlane {
     fn audit<'u>(&self, u: &Unit<'u>, out: &UnitEnd, _ctx: &Ctx<'u>) -> AuditFacts {
         AuditFacts {
             op_class: u.op(),
-            finish: match out {
-                UnitEnd::Completed => FinishClass::TurnComplete,
-                UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
-                UnitEnd::Aborted(_) | UnitEnd::Stalled => FinishClass::Partial,
-            },
+            // One mapping, written once in the contract and read by every plane. Every unit this
+            // plane audits is a turn of a live session, so a completed one is `TurnComplete`.
+            finish: busbar_contract::unit::finish_class_of(out, FinishClass::TurnComplete),
         }
     }
 
@@ -591,9 +599,9 @@ fn decode_ws_frame<'u>(
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let frame = frames.next_frame().ok_or(Decode::Malformed)?;
-    let wire = WireEvent(bytes::Bytes::copy_from_slice(frame.bytes.as_slice()));
+    // Borrowed, not copied: see `decode_response`'s own note on the downlink side of this.
     let reader = reader_for(dialect);
-    let events = reader.read_up(wire, &mut state.codec);
+    let events = reader.read_up_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
     let Some(event) = events.into_iter().next() else {
         return Ok(Ingress::NeedMore);
     };
@@ -808,13 +816,28 @@ fn progress_from_server_event<'u>(
         IrServerEvent::AudioFrame(f) => {
             let writer = writer_for(client_dialect);
             let media_len = f.media.len() as u64;
-            let rendered = match client_dialect {
+            // One buffer, filled and then copied into the arena. The identifier is BORROWED from the
+            // binding the `start` event made: it is the same string on every frame of the call, and
+            // a call sends fifty frames a second, so cloning it per frame is fifty copies a second
+            // of a string that never changes.
+            //
+            // Both arms hand back the same kind of thing, so the writer's own buffer goes into the
+            // arena as it is. It used to be copied into a vector first, purely so the two arms had
+            // one type between them — a copy the arms' shapes asked for and nothing else did.
+            let rendered: bytes::Bytes = match client_dialect {
                 Dialect::TwilioMediaStreams => {
                     let mulaw = ulaw::encode_frame(&f.media);
-                    let sid = state.twilio_stream_sid.clone().unwrap_or_default();
-                    twilio::encode_media(&sid, &mulaw)
+                    let sid = state.twilio_stream_sid.as_deref().unwrap_or_default();
+                    let mut out = Vec::new();
+                    twilio::encode_media_into(&mut out, sid, &mulaw);
+                    out.into()
                 }
-                _ => writer.write_down(IrServerEvent::AudioFrame(f)).0.to_vec(),
+                _ => {
+                    writer
+                        .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
+                        .ok_or(Decode::Malformed)?
+                        .0
+                }
             };
             let bytes = ctx
                 .arena()
@@ -888,7 +911,11 @@ fn progress_from_server_event<'u>(
             })
         }
         IrServerEvent::Error { code, message } => {
-            let _ = state.close_turn();
+            // A turn that ends in an upstream error consumed the same uplink audio and ran the same
+            // tool calls as one that ends in a usage report. The kernel-side counters are the only
+            // record of either, and closing the turn is what takes them: dropping them here would
+            // meter the failed turn at zero and hand back for free every second the caller spoke.
+            let counters = state.close_turn();
             let mut facts = Facts::new();
             let code_arena = ctx.arena().alloc_str(&code).map_err(|_| Decode::Oversize)?;
             let message_arena = ctx
@@ -900,6 +927,18 @@ fn progress_from_server_event<'u>(
                 .map_err(|_| Decode::Oversize)?;
             facts
                 .set(meta::FACT_ERROR_MESSAGE, FactValue::Str(message_arena))
+                .map_err(|_| Decode::Oversize)?;
+            facts
+                .set(
+                    meta::FACT_AUDIO_MS_IN,
+                    FactValue::Int(i64::try_from(counters.audio_ms_in).unwrap_or(i64::MAX)),
+                )
+                .map_err(|_| Decode::Oversize)?;
+            facts
+                .set(
+                    meta::FACT_TOOL_CALLS,
+                    FactValue::Int(i64::try_from(counters.tool_calls).unwrap_or(i64::MAX)),
+                )
                 .map_err(|_| Decode::Oversize)?;
             Ok(Progress::Terminal {
                 for_,

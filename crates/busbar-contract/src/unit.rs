@@ -43,22 +43,6 @@ pub enum Step {
     Encode,
 }
 
-impl Step {
-    /// Every step, in loop order.
-    pub const ALL: &'static [Step] = &[
-        Step::Arrival,
-        Step::Decode,
-        Step::Authenticate,
-        Step::Verify,
-        Step::Approve,
-        Step::Admit,
-        Step::Route,
-        Step::Meter,
-        Step::Audit,
-        Step::Encode,
-    ];
-}
-
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")
@@ -100,6 +84,13 @@ pub enum Origin {
 /// These are opaque to a client: the wire rendering is the dialect's, and the code is what the
 /// journal and the exceptions report read. Adding one is a kernel change, because every code has
 /// to have a settlement row.
+///
+/// This is the contract-side spelling of the kernel's own reason vocabulary (`busbar-caps`'s
+/// `ReasonCode`), and there is exactly one bridge between them: `impl From<ReasonCode> for
+/// RefusalReason`, which is exhaustive on the kernel side. Every reason the kernel can stop a unit
+/// for therefore has a spelling here, and no two of them share one — a reason with no spelling
+/// would reach a client as some other refusal, which is worse than reaching it as an unfamiliar
+/// one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum RefusalReason {
     /// The in-flight table is full.
@@ -142,6 +133,52 @@ pub enum RefusalReason {
     DurabilityUnavailable,
     /// The chain's buckets disagree on the tier multiplier.
     TierMismatch,
+    /// The node-global body-spill budget was reached.
+    SpillBudget,
+    /// The per-unit arena was exhausted.
+    ArenaBudget,
+    /// The source is over its arrival rate.
+    RateLimited,
+    /// The plane could not make sense of the bytes.
+    DecodeFailed,
+    /// A challenge-response exchange ran past its round or byte bound.
+    ChallengeExhausted,
+    /// The principal may not reach the pool it named at all. Answered before pricing, and distinct
+    /// from a plain scope denial, so the two do not become one refusal in the record.
+    PoolNotPermitted,
+    /// The name the caller supplied has no configured rate: nothing is wrong with the caller's
+    /// budget, the name simply cannot be billed.
+    NoRate,
+    /// The idempotency key was already used; the earlier answer is replayed.
+    Replayed,
+    /// The idempotency key belongs to a unit still in flight.
+    InFlight,
+    /// The destination spent its lifetime request budget.
+    DestinationBudgetExhausted,
+    /// The circuit breaker for the destination is open.
+    BreakerOpen,
+    /// The destination could not be reached.
+    DestinationUnreachable,
+    /// Two evidence sources for the same unit disagree about what it consumed.
+    MeterDisputed,
+    /// Two legs of a handoff did not agree on what they were doing.
+    HandoffMismatch,
+    /// A plane call panicked.
+    PlanePanic,
+    /// The task running the unit disappeared without an end.
+    TaskLost,
+    /// The unit made no progress within its deadline.
+    Stalled,
+    /// A minted secret's placeholder did not appear exactly once at its declared location.
+    SecretPlaceholder,
+    /// The node is draining.
+    Drain,
+    /// A later unit superseded this one.
+    Superseded,
+    /// The client went away.
+    ClientGone,
+    /// The unit ran past its maximum duration.
+    DeadlineExceeded,
 }
 
 /// The closed reason codes a failure may carry.
@@ -241,6 +278,35 @@ pub enum FinishClass {
     Partial,
     /// The upstream reported an error.
     Error,
+}
+
+/// THE ONE MAPPING from how a unit ended to the finish class its audit record carries.
+///
+/// The audit record is fixed, required and identical for every plane, and the finish class is one of
+/// the two ids a plane contributes to it. A mapping transcribed once per plane is a mapping that
+/// disagrees per plane, which makes the same ending read differently depending on which door the
+/// request came in by -- and the whole point of a fixed record is that it does not.
+///
+/// `completed` is the only genuine per-plane choice, and it is a question about the SHAPE of the
+/// exchange rather than about the ending: a request/response plane answers `Complete`, a duplex turn
+/// answers `TurnComplete`, and a plane that is both hands in whichever the unit was. Every other
+/// ending means the same thing everywhere:
+///
+/// - a refusal and a failure are `Error`; something said no, and the answer is not coming.
+/// - a stall is `Partial`; what arrived, arrived.
+/// - an abort is `Partial`, BY EITHER PARTY. `Error` is the class for an upstream that reported an
+///   error, and a kernel abort is not that: it is this node ending a unit it was serving, for a
+///   reason of its own, over an upstream that had said nothing wrong. The record does not lose who
+///   did it -- the audit row carries the `UnitEnd` itself and its step -- so classing it as an error
+///   would only put a second, disagreeing answer beside the true one.
+pub fn finish_class_of(end: &UnitEnd<'_>, completed: FinishClass) -> FinishClass {
+    match end {
+        UnitEnd::Completed => completed,
+        UnitEnd::Refused(_) | UnitEnd::Failed { .. } => FinishClass::Error,
+        UnitEnd::Aborted(AbortBy::Client)
+        | UnitEnd::Aborted(AbortBy::Kernel { .. })
+        | UnitEnd::Stalled => FinishClass::Partial,
+    }
 }
 
 /// Where a plane found the values the metering step folds.
@@ -658,3 +724,4 @@ impl<'u> Unit<'u> {
         self.leg_results.push(result).map_err(|o| Box::new(o.item))
     }
 }
+

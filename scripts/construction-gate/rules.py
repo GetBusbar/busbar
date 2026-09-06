@@ -243,15 +243,26 @@ class Tree:
         self.test_fragments = cfg["gate"]["test_path_fragments"]
         self.files = {}   # rel path -> [Line]
         self.fns = {}     # rel path -> [Fn]
+        # THE SCAN ORDER IS SORTED, ALL THE WAY DOWN. `os.walk` hands back subdirectories in
+        # filesystem order, and the filesystem is free to change that between two runs over two
+        # freshly extracted copies of the same tree. Names inside a directory were already sorted,
+        # so this looked ordered while the DIRECTORY sequence still wandered -- and everything
+        # downstream reads `self.files` in insertion order: which offender a row names first, which
+        # of two tied files a "top offenders" list picks, which duplicate block wins. A gate whose
+        # report changes when nothing in the tree changed is a gate people stop believing, and a
+        # self-test built on it fails a different rule each run. Sorting the walk and the resulting
+        # map makes the scan a function of the tree alone.
         for pattern in cfg["gate"]["scan_roots"]:
             for d in sorted(glob.glob(os.path.join(root, pattern))):
-                for dirpath, _dirs, names in os.walk(d):
+                for dirpath, dirs, names in os.walk(d):
+                    dirs.sort()
                     for nm in sorted(names):
                         if not nm.endswith(".rs"):
                             continue
                         full = os.path.join(dirpath, nm)
                         rel = os.path.relpath(full, root)
                         self.files[rel] = scan_file(full, self.test_fragments)
+        self.files = {rel: self.files[rel] for rel in sorted(self.files)}
         for rel, lines in self.files.items():
             self.fns[rel] = find_fns(rel, lines)
 
@@ -383,9 +394,13 @@ def rule_ports_only(tree, cfg):
     prod = cfg["rules"]["ports-only"]
     test = cfg["rules"]["ports-only-tests"]
     needle = re.escape(prod["needle"])
+    codecs = cfg["gate"].get("plane_codec_crates", {})
     rows = []
     for crate in cfg["gate"]["plane_crates"]:
-        files = [rel for rel in tree.files if rel.startswith(os.path.join("crates", crate) + os.sep)]
+        # A plane is BOTH halves: the crate under its own name and the pure `-codec` crate it shed.
+        # One row per plane, over both, so the split moved files without moving them out of view.
+        prefixes = tuple(os.path.join("crates", c) + os.sep for c in [crate] + list(codecs.get(crate, [])))
+        files = [rel for rel in tree.files if rel.startswith(prefixes)]
         per_file_prod, per_file_test = {}, {}
         for rel in files:
             for l in tree.files[rel]:
@@ -643,8 +658,18 @@ def rule_token_sealed(tree, cfg):
     line spells one of the constructor patterns (`Decision::proceed(`, `Hold::`, …)."""
     c = cfg["rules"]["token-sealed"]
     root = c["allowed_root"].rstrip("/") + os.sep
+    # EACH ROW OWNS A DISJOINT SET OF SITES. `AdmitToken::mint(` appears both in this rule's
+    # `patterns` list and as the dedicated `token-sealed:admit-token-mint` row below, measured
+    # against the same root with the same ceiling of zero -- so a single forged mint was counted
+    # twice and reported as two failures. Two rows for one fact is not two proofs: it says the tree
+    # broke two promises when it broke one, and it makes the self-test's "exactly one FAIL row
+    # naming the planted rule" unprovable for either of them. The specific row wins, because it is
+    # the one that can name the seam (`Kernel::admit_token()`) the site should have used.
+    delegated = {c[k].replace("\\", "") for k in ("kernel_seal_pattern", "admit_token_mint_pattern")}
     offenders = []
     for pat in c["patterns"]:
+        if pat in delegated:
+            continue
         for rel, l in tree.grep(_word(pat)):
             if rel.startswith(root):
                 continue
@@ -1067,10 +1092,15 @@ def _xtask_denylist_hits(root):
     direct dependency list says nothing about what THAT crate pulls in). Returns {} when this tree
     is not a real cargo workspace with an xtask/ member (in particular: always {} under
     --selftest's stripped tree copy, which carries neither) so this stays additive, never
-    load-bearing for the self-test. A `cargo xtask denylist` that runs and fails for a REAL reason
-    (not "hits found" — that's a normal non-zero exit this function reads, not an error) still
-    degrades to {} with a note on stderr rather than crashing the whole gate: the own-src scan below
-    is unconditional and always runs regardless.
+    load-bearing for the self-test.
+
+    Returns None — not {} — when the subprocess ran but did not answer. The xtask exits 0 for "no
+    hits" and 1 for "hits found"; ANY other code (a compile error, a missing cargo, a panic, a
+    timeout) means the transitive-closure half of this rule did not happen. {} and None are the two
+    answers this gate must never confuse: {} says "asked, nothing found", None says "never asked".
+    A crate that fails to build has exactly the shape of a crate whose closure is clean, and the
+    silent {} turned that into a green row. The caller turns None into a red row instead; the
+    own-src scan below is unconditional and still runs either way.
     """
     if not os.path.isfile(os.path.join(root, "Cargo.toml")):
         return {}
@@ -1082,8 +1112,13 @@ def _xtask_denylist_hits(root):
             cwd=root, capture_output=True, text=True, timeout=300,
         )
     except (OSError, subprocess.SubprocessError) as e:
-        print(f"source-denylist: `cargo xtask denylist` did not run ({e}); own-src scan only", file=sys.stderr)
-        return {}
+        print(f"source-denylist: `cargo xtask denylist` did not run ({e})", file=sys.stderr)
+        return None
+    if proc.returncode not in (0, 1):
+        why = (proc.stderr or proc.stdout or "").strip().splitlines()
+        print(f"source-denylist: `cargo xtask denylist` exited {proc.returncode}: "
+              + (" / ".join(why[-3:]) if why else "no output"), file=sys.stderr)
+        return None
     hits = {}
     for line in proc.stdout.splitlines():
         parts = line.split("\t")
@@ -1099,6 +1134,9 @@ def rule_source_denylist(tree, cfg):
     pat_rx = re.compile("|".join(re.escape(p) for p in c["patterns"]))
     allow = c.get("allowlist", {})
     xtask_hits = _xtask_denylist_hits(tree.root)
+    # None = the closure half never answered (see _xtask_denylist_hits). Every row this rule writes
+    # then says so and is RED: an unproven half of an invariant is not a met one.
+    unproven = xtask_hits is None
     rows = []
     seen = []
     for kind in c["kinds"]:
@@ -1113,7 +1151,11 @@ def rule_source_denylist(tree, cfg):
                 m = pat_rx.search(l.code)
                 if m and m.group(0) not in allow.get(crate, []):
                     offenders.append(f"`{m.group(0)}` at {rel}:{l.no}")
-        offenders += xtask_hits.get(crate, [])
+        if unproven:
+            offenders.append("UNPROVEN: `cargo xtask denylist` did not answer, so no transitive "
+                             "dependency was checked (reason on stderr)")
+        else:
+            offenders += xtask_hits.get(crate, [])
         current = len(offenders)
         detail = (f"{crate} ({kind}): {current} denylisted path(s)/transitive dep(s) (ceiling 0): "
                   + ("; ".join(offenders[:5]) if offenders else "none"))
@@ -1456,12 +1498,26 @@ def rule_hold_escapes(tree, cfg):
                 return True
         return False
 
+    def confined_here(spec, rel):
+        """Is `rel` one of the files this symbol is confined to?
+
+        ANCHORED, and matched as a path prefix. `confined_to` is the busbar-caps fixture's prose
+        spelling of the scope and is kept in the toml verbatim for the join with that crate's test;
+        used as a bare substring it excuses any path that happens to contain those characters,
+        wherever in the tree it sits. `confined_to_paths` is the same scope written as crate-relative
+        paths — a file exactly, or a directory and everything under it.
+        """
+        for p in spec.get("confined_to_paths", []):
+            p = p.rstrip("/")
+            if p and (rel == p or rel.startswith(p + os.sep)):
+                return True
+        return False
+
     offenders, tracked = [], []
     for spec in c["symbols"].values():
         symbol = spec["symbol"]
         for rel, l in tree.grep(re.escape(symbol), files=files):
-            confined = spec["confined_to"]
-            if confined and confined in rel:
+            if confined_here(spec, rel):
                 continue
             f = tree.enclosing_fn(rel, l.no)
             where = f"`{symbol}` at {rel}:{l.no} ({spec['because']})"
@@ -1553,6 +1609,79 @@ def rule_no_escaped_newline_doc_comment(tree, cfg):
                 detail, current, c["max_hits"], c["why"], offenders)]
 
 
+# ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────
+
+
+def _scoped_files(tree, globs):
+    """Every scanned file whose path matches one of the globs, in path order. `fnmatch`'s `*`
+    crosses directory separators, so `crates/busbar-unit-*/src/*` reaches nested modules too."""
+    return [rel for rel in sorted(tree.files)
+            if any(fnmatch.fnmatch(rel.replace(os.sep, "/"), g) for g in globs)]
+
+
+def rule_unit_no_wall_clock(tree, cfg):
+    """No unit crate reads the clock in production code.
+
+    A unit decides from what it was handed; a clock read is an input nobody passed it. Scanned over
+    the comment-stripped code so a clock named in prose is not a finding, and over production lines
+    only so a test may still measure elapsed time."""
+    c = cfg["rules"]["unit-no-wall-clock"]
+    exempt = {p.replace("/", os.sep) for p in c["exempt_files"]}
+    files = [rel for rel in _scoped_files(tree, c["scope_globs"]) if rel not in exempt]
+    rx = "|".join(re.escape(v) for v in c["forbidden"])
+    offenders = [f"{rel}:{l.no}" for rel, l in tree.grep(rx, files=files)]
+    current = len(offenders)
+    if not files:
+        detail = VACUOUS + "no unit crate source is present in the scanned tree"
+    else:
+        detail = (f"{current} clock read(s) in unit-crate production code "
+                  f"(ceiling {c['max_hits']}): "
+                  + ("; ".join(offenders) if offenders else "none"))
+    return [row("unit-no-wall-clock", current <= c["max_hits"],
+                "no unit crate reads the wall or monotonic clock",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
+# ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
+
+
+def rule_unit_no_finding_ids(tree, cfg):
+    """No unit crate cites an audit finding identifier or a bare document section number.
+
+    Read on the RAW file text, because the citations live in comments and every other rule reads the
+    comment-stripped view. Production lines only: the test-side sweep is a separate job. RFC
+    citations are untouched — only the identifier shapes the ceilings file names are searched for."""
+    c = cfg["rules"]["unit-no-finding-ids"]
+    rx = re.compile("|".join(c["patterns"]))
+    exempt = set(c["exempt_crates"])
+    offenders = []
+    scoped = _scoped_files(tree, c["scope_globs"])
+    for rel in scoped:
+        if tree.crate_of(rel) in exempt:
+            continue
+        lines = tree.files[rel]
+        try:
+            with open(os.path.join(tree.root, rel), encoding="utf-8", errors="replace") as fh:
+                raw = fh.read().split("\n")
+        except OSError:
+            continue
+        for i, text in enumerate(raw):
+            if i < len(lines) and lines[i].intest:
+                continue
+            if rx.search(text):
+                offenders.append(f"{rel}:{i + 1}")
+    current = len(offenders)
+    if not scoped:
+        detail = VACUOUS + "no unit crate source is present in the scanned tree"
+    else:
+        detail = (f"{current} finding-identifier citation(s) in unit-crate production code "
+                  f"(ceiling {c['max_hits']}): "
+                  + ("; ".join(offenders) if offenders else "none"))
+    return [row("unit-no-finding-ids", current <= c["max_hits"],
+                "a unit crate states its rule in words, not as a finding identifier",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -1580,6 +1709,8 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_forbid_unsafe(tree, cfg)
     rows += rule_secret_carrier_debug(tree, cfg)
     rows += rule_no_escaped_newline_doc_comment(tree, cfg)
+    rows += rule_unit_no_wall_clock(tree, cfg)
+    rows += rule_unit_no_finding_ids(tree, cfg)
     return rows
 
 

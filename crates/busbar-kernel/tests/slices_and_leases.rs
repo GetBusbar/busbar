@@ -50,6 +50,65 @@ fn a_draw_that_fits_is_local_and_one_that_does_not_asks_the_store() {
     );
 }
 
+/// Every grant the node drew is handed back, and each one under its own id.
+///
+/// Topping up a bucket merged the second grant into the first and kept the first grant's id, so
+/// the second SliceId was never spoken again: the store went on accounting a slice the node had
+/// already finished with, and no other node in the fleet could draw that headroom until the window
+/// rolled. The book holds every grant it was given, and returns every one of them.
+#[test]
+fn a_topped_up_bucket_returns_every_grant_it_drew() {
+    let mut book = SliceBook::new();
+    let bucket = bucket_all("team");
+    let first = SliceGrant {
+        id: SliceId(1),
+        granted: 1_000,
+        valid_until: 60_000,
+        epoch: Epoch(1),
+    };
+    let second = SliceGrant {
+        id: SliceId(2),
+        granted: 500,
+        valid_until: 90_000,
+        epoch: Epoch(1),
+    };
+    book.install(bucket, CapDimension::NanoUnits, first);
+    book.install(bucket, CapDimension::NanoUnits, second);
+    assert_eq!(
+        book.get(&bucket, &CapDimension::NanoUnits)
+            .expect("the book holds it")
+            .grant
+            .granted,
+        1_500,
+        "the two grants spend as one"
+    );
+
+    // Twelve hundred spent: the whole of the first grant and two hundred of the second.
+    assert_eq!(
+        book.draw(
+            &bucket,
+            &CapDimension::NanoUnits,
+            1_200,
+            0,
+            Epoch(1),
+            Posture::Normal
+        ),
+        Draw::Granted
+    );
+
+    let released = book.release(&bucket, &CapDimension::NanoUnits);
+    assert_eq!(
+        released,
+        vec![(SliceId(1), 0), (SliceId(2), 300)],
+        "each grant comes back with its own unspent remainder"
+    );
+    assert!(
+        book.get(&bucket, &CapDimension::NanoUnits).is_none(),
+        "and the book no longer holds what it released"
+    );
+    assert!(book.release(&bucket, &CapDimension::NanoUnits).is_empty());
+}
+
 #[test]
 fn a_slice_behind_the_fleets_epoch_cannot_be_spent() {
     let mut book = SliceBook::new();

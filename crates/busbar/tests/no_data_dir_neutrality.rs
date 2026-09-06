@@ -130,6 +130,11 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        // The directory the assertion below reads is only the directory a stray file lands in if
+        // it is also the directory the node was started in: a journal opened at a RELATIVE path
+        // follows the process, not the config. Every path the node is given here is absolute, so
+        // moving the process into the fixture changes nothing except where a mistake would show.
+        .current_dir(&dir)
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env("MOCK_KEY", "x")

@@ -58,6 +58,26 @@ fn usage_of(k: &Kernel, quantity: u64) -> Usage {
     .expect("one line is within the bound")
 }
 
+/// Whether the kernel keeps this step's token to itself, read off the step markers' own
+/// `KERNEL_OWNED` constants rather than off a second runtime table.
+///
+/// The exhaustive match is the proof's totality check: a step added to `StepName` stops this file
+/// compiling until its marker is named here.
+fn kernel_owned_marker(name: StepName) -> bool {
+    match name {
+        StepName::Arrival => <Arrival as Step>::KERNEL_OWNED,
+        StepName::Decode => <Decode as Step>::KERNEL_OWNED,
+        StepName::Authenticate => <Authenticate as Step>::KERNEL_OWNED,
+        StepName::Verify => <Verify as Step>::KERNEL_OWNED,
+        StepName::Approve => <Approve as Step>::KERNEL_OWNED,
+        StepName::Admit => <Admit as Step>::KERNEL_OWNED,
+        StepName::Route => <Route as Step>::KERNEL_OWNED,
+        StepName::Meter => <Meter as Step>::KERNEL_OWNED,
+        StepName::Audit => <Audit as Step>::KERNEL_OWNED,
+        StepName::Encode => <Encode as Step>::KERNEL_OWNED,
+    }
+}
+
 #[test]
 fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
     assert_eq!(StepName::ALL.len(), 10);
@@ -65,9 +85,12 @@ fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
     sorted.sort();
     assert_eq!(sorted, StepName::ALL, "the list is already in loop order");
 
+    // Who owns a step's token is the marker's own constant — the production spelling, read by the
+    // teller when it decides whether to lend the token out. The list of three is the proof's, not a
+    // second runtime table on the crate's surface that could drift from the constants.
     let kernel_owned: Vec<_> = StepName::ALL
         .iter()
-        .filter(|s| s.kernel_owned())
+        .filter(|s| kernel_owned_marker(**s))
         .copied()
         .collect();
     assert_eq!(
@@ -77,15 +100,6 @@ fn the_ten_steps_are_in_order_and_three_belong_to_the_kernel() {
 
     // The marker's constant and the runtime name agree, for every step.
     assert_eq!(<Admit as Step>::NAME, StepName::Admit);
-    // The marker's constant and the runtime name agree about who owns the token, for both kinds.
-    assert_eq!(
-        <Admit as Step>::KERNEL_OWNED,
-        <Admit as Step>::NAME.kernel_owned()
-    );
-    assert_eq!(
-        <Encode as Step>::KERNEL_OWNED,
-        <Encode as Step>::NAME.kernel_owned()
-    );
 
     // Under-hold is a comparison, and it starts strictly after the door.
     assert!(!StepName::Admit.under_hold());
@@ -105,10 +119,34 @@ fn a_refusal_is_stamped_with_the_step_that_raised_it() {
     let refusal = decision
         .into_result(&k.seal)
         .expect_err("this decision refuses");
-    assert_eq!(refusal.step(), StepName::Approve);
+    assert_eq!(refusal.step(), Some(StepName::Approve));
     assert_eq!(refusal.reason(), ReasonCode::ScopeDenied);
     assert_eq!(refusal.retry_after_secs(), Some(30));
     assert!(!refusal.under_hold(), "approve runs before the door");
+}
+
+/// An unstamped refusal says it has no step, rather than naming one it never reached.
+///
+/// The step is the decision's to stamp, so between raising a refusal and turning it into a
+/// decision there is a moment where no step is known. Filling that moment with the first step of
+/// the loop makes the record claim the unit stopped at arrival, which is a claim about where money
+/// was committed: everything before the door is free, everything after it is not.
+#[test]
+fn a_refusal_that_was_never_stamped_names_no_step() {
+    let k = Kernel::new();
+    let unstamped = Refusal::new(ReasonCode::OverBudget);
+    assert_eq!(unstamped.step(), None);
+    assert!(
+        !unstamped.under_hold(),
+        "a refusal with no step cannot have been raised under a hold"
+    );
+
+    let token: UnitToken<Meter> = UnitToken::mint(&k.seal);
+    let refusal = Decision::refuse(&token, Refusal::new(ReasonCode::OverBudget))
+        .into_result(&k.seal)
+        .expect_err("this decision refuses");
+    assert_eq!(refusal.step(), Some(StepName::Meter));
+    assert!(refusal.under_hold(), "the meter runs after the door");
 }
 
 #[test]
@@ -132,7 +170,7 @@ fn the_cell_makes_the_one_transition_and_hands_back_the_arrival_hold() {
         .expect("the first admission wins");
     assert_eq!(arrival.reserved(), 0, "the arrival hold reserved nothing");
     assert_eq!(cell.state(), HoldCellState::Admitted);
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 }
 
 #[test]
@@ -143,7 +181,7 @@ fn two_holds_into_one_cell_fail_and_the_loser_comes_back() {
     let first = cell
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("first");
-    let _ = Posted::settle(first, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(first, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let rejected = cell
         .admit(Hold::open(&admit, who("acct-1"), 9_999), &admit)
@@ -159,7 +197,7 @@ fn two_holds_into_one_cell_fail_and_the_loser_comes_back() {
         HoldCellState::Admitted,
         "and the cell still holds the first one"
     );
-    let _ = Posted::settle(rejected.hold, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(rejected.hold, 0, &usage_of(&k, 0), &k.ledger_token());
 }
 
 #[test]
@@ -182,8 +220,8 @@ fn the_hold_is_taken_exactly_once_however_many_exits_race() {
         .admit(Hold::open(&admit, who("acct-1"), 1), &admit)
         .expect_err("a taken cell is final");
     assert_eq!(rejected.error, CellError::AlreadyTaken);
-    let _ = Posted::settle(rejected.hold, &usage_of(&k, 0), &k.ledger_token());
-    let _ = Posted::settle(taken, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(rejected.hold, 0, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(taken, 0, &usage_of(&k, 0), &k.ledger_token());
 }
 
 #[test]
@@ -206,7 +244,7 @@ fn two_threads_racing_the_take_produce_exactly_one_hold() {
                 let ledger = LedgerToken::mint(&seal);
                 let usage = UsageToken::mint(&seal);
                 let usage = Usage::report(&usage, Vec::new()).expect("empty is fine");
-                let _ = Posted::settle(hold, &usage, &ledger);
+                let _ = Posted::settle(hold, 0, &usage, &ledger);
             }
         }));
     }
@@ -249,7 +287,7 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
         let arrival = cell
             .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
             .expect("the parent passes the door");
-        let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+        let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
         let accrual = cell
             .accrue_child(&who("acct-1"), 250, &admit)
             .expect("an open parent takes the child's spend");
@@ -271,7 +309,7 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
             if let Some(hold) = taken {
                 let usage =
                     Usage::report(&UsageToken::mint(&seal), Vec::new()).expect("empty is fine");
-                let _ = Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+                let _ = Posted::settle(hold, 0, &usage, &LedgerToken::mint(&seal));
             }
         });
 
@@ -334,7 +372,7 @@ fn a_hold_accrues_until_the_reservation_runs_out_then_tops_up() {
     hold.record_overdraft(5);
     assert_eq!(hold.overdraft(), 5);
 
-    let posted = Posted::settle(hold, &usage_of(&k, 155), &k.ledger_token());
+    let posted = Posted::settle(hold, 155, &usage_of(&k, 155), &k.ledger_token());
     assert_eq!(posted.settled(), 155);
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
     assert!(!posted.flags().contains(PostingFlags::RECOVERED));
@@ -355,7 +393,7 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     let arrival = cell
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("admitted");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     // A stranger's child cannot spend this admission.
     assert_eq!(
@@ -391,7 +429,7 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     assert_eq!(posted.reserved(), 0);
     assert_eq!(posted.overdraft(), 10);
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
-    let _ = Posted::settle(parent, &usage_of(&k, 10), &k.ledger_token());
+    let _ = Posted::settle(parent, 10, &usage_of(&k, 10), &k.ledger_token());
 }
 
 #[test]
@@ -402,7 +440,7 @@ fn a_recovered_hold_says_so_all_the_way_onto_the_posting() {
     assert!(hold.is_recovered());
     assert_eq!(hold.accrued(), 250, "the last checkpointed accrual");
 
-    let posted = Posted::settle(hold, &usage_of(&k, 250), &k.ledger_token());
+    let posted = Posted::settle(hold, 250, &usage_of(&k, 250), &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::RECOVERED));
 }
 
@@ -423,7 +461,7 @@ fn an_estimated_usage_report_flags_the_posting() {
     .expect("within the bound");
     assert!(floor.is_estimated());
 
-    let posted = Posted::settle(hold, &floor, &k.ledger_token());
+    let posted = Posted::settle(hold, 100, &floor, &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::ESTIMATED));
     assert!(!posted.flags().is_clean());
 }
@@ -454,7 +492,7 @@ fn a_unit_end_carries_its_posting_or_the_loss_that_replaced_it() {
     let exit = k.exit_token();
 
     let hold = Hold::open(&admit, who("acct-1"), 10);
-    let posted = Posted::settle(hold, &usage_of(&k, 10), &k.ledger_token());
+    let posted = Posted::settle(hold, 10, &usage_of(&k, 10), &k.ledger_token());
     let end = UnitEnd::seal(&exit, Outcome::Completed, Ok(posted));
     assert!(end.outcome().is_completed());
     assert_eq!(end.posted().map(Posted::settled), Ok(10));
@@ -480,8 +518,12 @@ fn every_way_a_unit_can_end_names_a_step_or_deliberately_does_not() {
     ];
     let names_none = [
         Outcome::Completed,
-        Outcome::Aborted(Abort::Client),
-        Outcome::Aborted(Abort::Drain),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        }),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::Drain,
+        }),
         Outcome::Aborted(Abort::Kernel {
             reason: ReasonCode::Revoked,
         }),
@@ -492,6 +534,49 @@ fn every_way_a_unit_can_end_names_a_step_or_deliberately_does_not() {
     assert!(names_a_step.iter().all(|o| o.step().is_some()));
     assert!(names_none.iter().all(|o| o.step().is_none()));
     assert_eq!(names_a_step[0].step(), Some(StepName::Admit));
+}
+
+/// An abort names one reason, and the reason is where it is named.
+///
+/// `Client`, `Drain` and `Superseded` were spelled twice: once as an `Abort` variant and once as a
+/// `ReasonCode`, so the same event could be recorded two ways and a reader could not tell whether
+/// the two spellings meant the same thing. The variants that carried nothing the reason does not
+/// already carry are gone; the one that carries more than a reason — which unit took over — stays,
+/// and answers with its own reason like the rest.
+#[test]
+fn every_abort_names_a_reason_of_its_own() {
+    let aborts = [
+        Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        },
+        Abort::Kernel {
+            reason: ReasonCode::Drain,
+        },
+        Abort::Superseded {
+            by: UnitKey::new(7),
+        },
+    ];
+    let reasons: Vec<ReasonCode> = aborts.iter().map(|a| a.reason()).collect();
+    assert_eq!(
+        reasons,
+        vec![
+            ReasonCode::ClientGone,
+            ReasonCode::Drain,
+            ReasonCode::Superseded
+        ]
+    );
+
+    // Two aborts that answer with one reason would make two endings one row in the record.
+    let mut distinct = reasons.clone();
+    distinct.sort_unstable_by_key(|r| r.as_str());
+    distinct.dedup();
+    assert_eq!(distinct.len(), reasons.len(), "two aborts share one reason");
+
+    // The kernel arm passes its reason straight through, so an abort for any reason in the closed
+    // vocabulary is recorded as that reason and not as something near it.
+    for &code in ReasonCode::ALL {
+        assert_eq!(Abort::Kernel { reason: code }.reason(), code);
+    }
 }
 
 #[test]
@@ -711,6 +796,44 @@ fn the_construction_gate_scans_for_every_escape_this_crate_names() {
     assert!(escapes.contains("max_sites = 0"));
 }
 
+/// One vocabulary, two spellings, and a bridge that cannot be left incomplete.
+///
+/// The kernel decides in `ReasonCode`; the plane renders `RefusalReason`. While the two sets were
+/// written independently, a reason the kernel could raise had no rendering at all, and the ones
+/// that did have one were spelled differently on each side — which is how a refusal arrives at a
+/// client as some other refusal. The bridge below is the join, and it is exhaustive on purpose:
+/// a reason added to the kernel's set does not compile until it has a spelling a client can be
+/// shown.
+#[test]
+fn every_reason_code_has_a_contract_spelling() {
+    for &code in ReasonCode::ALL {
+        // The conversion is total: a code with no spelling would not compile, and there is no
+        // fallback arm for one to hide in.
+        let _: busbar_contract::unit::RefusalReason = code.into();
+    }
+}
+
+/// Two codes that render as one spelling make two refusals indistinguishable to whatever reads
+/// the record — the same defect the reason set already split `PoolNotPermitted` and `NoRate` out
+/// to avoid, so the bridge must not reintroduce it by collapsing them again on the way across.
+#[test]
+fn the_contract_spelling_of_a_reason_code_is_its_own() {
+    use busbar_contract::unit::RefusalReason;
+    let mut seen: std::collections::HashMap<RefusalReason, ReasonCode> =
+        std::collections::HashMap::new();
+    for &code in ReasonCode::ALL {
+        let reason = RefusalReason::from(code);
+        if let Some(previous) = seen.insert(reason, code) {
+            panic!("{previous:?} and {code:?} both render as {reason:?}");
+        }
+    }
+    assert_eq!(
+        seen.len(),
+        ReasonCode::ALL.len(),
+        "the bridge collapsed two reasons into one spelling"
+    );
+}
+
 #[test]
 fn a_reason_code_reads_the_same_in_the_journal_and_the_refusal() {
     assert_eq!(ReasonCode::OverBudget.to_string(), "over_budget");
@@ -750,7 +873,7 @@ fn the_doors_answer_is_one_of_three_shapes() {
     let decision = Decision::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"), 5)));
     match decision.into_result(&k.seal).expect("proceeds") {
         Admission::Own(hold) => {
-            let _ = Posted::settle(hold, &usage_of(&k, 5), &k.ledger_token());
+            let _ = Posted::settle(hold, 5, &usage_of(&k, 5), &k.ledger_token());
         }
         other => panic!("expected the unit's own hold, got {other:?}"),
     }
@@ -778,7 +901,7 @@ fn a_child_posts_inside_its_parent_while_the_parent_is_open() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let accrual = parent
         .accrue_child(&who("acct-1"), 250, &admit)
@@ -810,7 +933,7 @@ fn a_childs_spend_past_the_parents_reservation_lands_on_the_parents_hold() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let accrual = parent
         .accrue_child(&who("acct-1"), 5_000, &admit)
@@ -829,7 +952,7 @@ fn a_childs_spend_past_the_parents_reservation_lands_on_the_parents_hold() {
     assert!(child.flags().contains(PostingFlags::OVERDRAFT));
 
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let settled = Posted::settle(taken, &usage_of(&k, 5_000), &k.ledger_token());
+    let settled = Posted::settle(taken, 5_000, &usage_of(&k, 5_000), &k.ledger_token());
     assert_eq!(settled.settled(), 5_000, "the settled figure is untouched");
     assert_eq!(settled.overdraft(), 4_000);
     assert!(settled.flags().contains(PostingFlags::OVERDRAFT));
@@ -845,7 +968,7 @@ fn two_children_that_together_run_past_the_reservation_overdraw_once() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let first = parent
         .accrue_child(&who("acct-1"), 800, &admit)
@@ -862,7 +985,7 @@ fn two_children_that_together_run_past_the_reservation_overdraw_once() {
     assert!(second.flags().contains(PostingFlags::OVERDRAFT));
 
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let settled = Posted::settle(taken, &usage_of(&k, 1_600), &k.ledger_token());
+    let settled = Posted::settle(taken, 1_600, &usage_of(&k, 1_600), &k.ledger_token());
     assert_eq!(settled.settled(), 1_600);
     assert_eq!(settled.overdraft(), 600, "carried once, not twice");
     assert!(settled.flags().contains(PostingFlags::OVERDRAFT));
@@ -876,14 +999,14 @@ fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
     let accrual = parent
         .accrue_child(&who("acct-1"), 250, &admit)
         .expect("an open parent takes the child's spend");
 
     // The parent exits while the child is still running.
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let _ = Posted::settle(taken, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(taken, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let handed_back = Posted::into_parent(accrual, &parent, &k.ledger_token())
         .expect_err("a parent that has gone cannot carry it");
@@ -909,7 +1032,7 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
     let accrual = parent
         .accrue_child(&who("acct-1"), 250, &admit)
         .expect("an open parent takes the child's spend");
@@ -919,7 +1042,7 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
     let converted = accrual.convert_at_parent_exit(1_000, &admit);
     assert_eq!(converted.reserved(), 1_000);
     assert_eq!(converted.principal(), &who("acct-1"));
-    let posted = Posted::settle(converted, &usage_of(&k, 250), &k.ledger_token());
+    let posted = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
     assert_eq!(posted.settled(), 250);
     assert!(
         !posted.flags().contains(PostingFlags::LATE_ACCRUAL),
@@ -969,7 +1092,7 @@ fn a_spend_no_headroom_can_cover_is_carried_and_never_refused() {
     assert_eq!(spend.overdraft, 500);
     assert_eq!(hold.accrued(), 1_500);
     assert_eq!(hold.overdraft(), 500);
-    let posted = Posted::settle(hold, &usage_of(&k, 1_500), &k.ledger_token());
+    let posted = Posted::settle(hold, 1_500, &usage_of(&k, 1_500), &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
     assert_eq!(posted.overdraft(), 500);
     assert_eq!(posted.released(), 0);
@@ -1002,7 +1125,64 @@ fn the_residual_of_an_underspent_hold_is_what_settlement_releases() {
     let k = Kernel::new();
     let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
     hold.spend(250, u64::MAX);
-    let posted = Posted::settle(hold, &usage_of(&k, 250), &k.ledger_token());
+    let posted = Posted::settle(hold, 250, &usage_of(&k, 250), &k.ledger_token());
     assert_eq!(posted.released(), 750);
     assert_eq!(posted.overdraft(), 0);
+}
+
+/// A settlement is money, and a usage report is not.
+///
+/// The report carries one quantity per meter class, each in the class's OWN unit — seconds of
+/// audio, bytes relayed, tokens generated — and adding those together produces a number that is
+/// not a figure in any unit at all. The reservation the hold carries is nano-units. Posting the
+/// sum of the quantities against a reservation in nano-units subtracts two different units from
+/// each other, and the residual, the overdraft and every legacy row derived from them are wrong by
+/// whatever the classes happened to be.
+///
+/// So the priced total comes in at the seam, in the unit the reservation is written in, and the
+/// posting is the answer to "what does this cost", not "how much of everything was there".
+#[test]
+fn a_posting_settles_the_priced_amount_and_not_the_sum_of_the_quantities() {
+    let k = Kernel::new();
+    let hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
+    // Two classes whose quantities are in nothing comparable: two minutes of audio and three
+    // megabytes of relay. Their sum, 3_000_120, is a number with no unit.
+    let report = Usage::report(
+        &k.usage_token(),
+        vec![
+            UsageLine {
+                class: MeterClassId::new("seconds"),
+                quantity: 120,
+                source: QuantitySource::Count,
+                estimated: false,
+            },
+            UsageLine {
+                class: MeterClassId::new("bytes"),
+                quantity: 3_000_000,
+                source: QuantitySource::Count,
+                estimated: false,
+            },
+        ],
+    )
+    .expect("two lines are within the bound");
+
+    // What the cost unit priced those two lines at, in the nano-units the reservation is in.
+    let priced: u128 = 1_500;
+    let posted = Posted::settle(hold, priced, &report, &k.ledger_token());
+
+    assert_eq!(
+        posted.settled(),
+        1_500,
+        "the posting is what the lines priced at, not what they summed to"
+    );
+    assert_eq!(posted.reserved(), 1_000);
+    assert_eq!(
+        posted.released(),
+        0,
+        "a settlement above the reservation releases nothing"
+    );
+    assert!(
+        posted.flags().contains(PostingFlags::OVERDRAFT),
+        "settling above the reservation is an overdraft even when the hold's own counter is quiet"
+    );
 }

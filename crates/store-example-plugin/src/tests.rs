@@ -482,3 +482,61 @@ fn unknown_kind_stays_inert() {
         .is_empty());
     assert_eq!(s.purge_plane_records_before("nope", 100).unwrap(), 0);
 }
+
+/// A config the operator wrote and this plugin cannot read is a LOAD ERROR. Accepting it and
+/// silently opening a `MemoryStore` is the dangerous shape: one stray trailing comma in the
+/// `durable_path` line turns a durable store into an ephemeral one, the plugin loads clean, and the
+/// rows only stop existing at the next restart. An EMPTY config stays the one and only path to the
+/// wrapped RAM store, because "no config" is a thing an operator can actually mean.
+#[test]
+fn a_malformed_config_is_a_load_error_not_a_silent_demotion_to_ram() {
+    assert!(
+        open(r#"{"durable_path": "/x",}"#).is_err(),
+        "malformed JSON naming a durable path must refuse to load, not fall back to RAM"
+    );
+    assert!(open("{ not json at all").is_err());
+    // The two shapes that legitimately mean "no durable path": no config, and a parsed config that
+    // simply does not name one.
+    assert!(open("").is_ok());
+    assert!(open("{}").is_ok());
+}
+
+/// A purged task takes its event chain with it. Nothing else ever removes a `task_event` row — the
+/// chain has no retention path of its own — so keeping the events after their task is purged grows
+/// the file forever with chains whose parent no longer exists, and leaves the events outliving the
+/// retention decision just made about them.
+#[test]
+fn purging_a_terminal_task_cascades_to_its_event_chain() {
+    let s = store();
+    for (id, disposition) in [
+        ("done", PlaneDisposition::Terminal),
+        ("waiting", PlaneDisposition::Active),
+    ] {
+        s.upsert_plane_record(&task_rec(
+            id,
+            10,
+            disposition,
+            body(&SampleTask {
+                id: id.into(),
+                state: "whatever".into(),
+            }),
+        ))
+        .unwrap();
+        s.append_plane_record(&rec("task_event", id, Some(id), 1, b"event-one".to_vec()))
+            .unwrap();
+    }
+
+    assert_eq!(s.purge_plane_records_before("task", 100).unwrap(), 1);
+    assert!(
+        s.list_plane_records("task_event", &PlaneSelector::Parent("done".into()))
+            .unwrap()
+            .is_empty(),
+        "the purged task's events must go with it"
+    );
+    assert_eq!(
+        s.list_plane_records("task_event", &PlaneSelector::Parent("waiting".into()))
+            .unwrap(),
+        vec![b"event-one".to_vec()],
+        "a retained task's chain is untouched — this is a cascade, not a second retention rule"
+    );
+}

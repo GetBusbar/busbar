@@ -28,7 +28,17 @@ fn b64(bytes: &[u8]) -> String {
 /// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer may drop
 /// a concept a dialect has no word for; the OpenAI dialect names them all, so this never trips here.
 fn up<W: DuplexWriter>(codec: &W, ev: IrClientEvent) -> WireEvent {
-    codec.write_up(ev).expect("the dialect frames this concept")
+    codec
+        .write_up(ev, &mut DecodeState::default())
+        .expect("the dialect frames this concept")
+}
+
+/// Frame one server→client event, insisting this event IS a frame. Every OpenAI server event is one —
+/// the streamed shapes are this dialect's own — so this never trips here either.
+fn down<W: DuplexWriter>(codec: &W, ev: IrServerEvent) -> WireEvent {
+    codec
+        .write_down(ev, &mut DecodeState::default())
+        .expect("the dialect frames this event")
 }
 
 /// Decode one client wire event, re-encode it, and assert the JSON is stable.
@@ -48,7 +58,7 @@ fn roundtrip_down(src: &Value) -> Vec<IrServerEvent> {
     let mut st = DecodeState::default();
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
-    let back = codec.write_down(ir[0].clone());
+    let back = down(&codec, ir[0].clone());
     assert_eq!(as_value(&back), *src, "down round-trip not stable");
     ir
 }
@@ -333,12 +343,86 @@ fn downlink_audio_delta_frames_down_tracks_playback_and_bumps_seq() {
 }
 
 #[test]
+fn a_downlink_audio_delta_says_which_item_it_is_part_of() {
+    // The runtime relays EVERY downlink frame through the writer, even client-to-same-dialect. A
+    // delta stripped of `response_id`/`item_id`/`output_index`/`content_index` leaves the client
+    // unable to say WHICH item it just heard — so it cannot issue its own truncate on a barge-in.
+    let src = json!({
+        "type": "response.output_audio.delta",
+        "response_id": "resp_1",
+        "item_id": "item_1",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": b64(b"audio"),
+    });
+    let ir = roundtrip_down(&src);
+    let IrServerEvent::AudioFrame(f) = &ir[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(f.origin.response_id.as_deref(), Some("resp_1"));
+    assert_eq!(f.origin.item_id.as_deref(), Some("item_1"));
+    assert_eq!(f.origin.output_index, Some(0));
+    assert_eq!(f.origin.content_index, Some(0));
+}
+
+#[test]
+fn a_downlink_audio_delta_from_a_dialect_that_names_no_item_invents_none() {
+    // Gemini's `modelTurn` audio carries no item correlation at all; the writer must not fabricate
+    // one — an id nobody issued is worse than an absent id.
+    let codec = OpenAiRealtimeCodec;
+    let w = down(
+        &codec,
+        IrServerEvent::AudioFrame(IrAudioFrame {
+            dir: UpDown::Down,
+            seq: 0,
+            media: Bytes::from_static(b"x"),
+            origin: IrAudioRef::default(),
+        }),
+    );
+    let v = as_value(&w);
+    assert!(v["item_id"].is_null());
+    assert!(v["response_id"].is_null());
+    assert_eq!(v["type"], "response.output_audio.delta");
+}
+
+#[test]
 fn downlink_audio_delta_legacy_alias_decodes() {
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
     let src = json!({ "type": "response.audio.delta", "delta": b64(b"x") });
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
     assert!(matches!(&ir[0], IrServerEvent::AudioFrame(f) if f.dir == UpDown::Down));
+}
+
+#[test]
+fn a_faster_than_realtime_burst_reports_the_audio_relayed_not_the_audio_heard() {
+    // WHAT THE COUNTER MEANS. The upstream emits a whole turn's audio in one burst, far faster than
+    // it plays. The position is derived from BYTES RELAYED, so after the burst it reads the whole
+    // turn — an UPPER BOUND on what the user heard, not a measurement of it.
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16); // 48 B/ms
+    st.record_played(48 * 10_000); // ten seconds of audio, handed over at once
+    assert_eq!(
+        st.played_ms(),
+        10_000,
+        "the bytes relayed for this item, in ms"
+    );
+
+    // THE SEAM A CLOCK GOES THROUGH. Fed how long the item has actually been playing, the position
+    // is bounded by it: no more audio can have been heard than there has been time to hear it in.
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16);
+    st.record_played_at(48 * 10_000, Some(1_200));
+    assert_eq!(
+        st.played_ms(),
+        1_200,
+        "1.2 s of wall clock cannot have played 10 s of audio"
+    );
+    // And a clock that has run longer than the audio relayed does not invent audio.
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16);
+    st.record_played_at(48 * 100, Some(9_000));
+    assert_eq!(st.played_ms(), 100, "only the audio actually handed over");
 }
 
 // ── barge-in truncate math ───────────────────────────────────────────────────────────────────────
@@ -655,7 +739,18 @@ fn tool_call_loop_correlates_by_call_id() {
         ),
         &mut st,
     );
-    let IrServerEvent::Tool(IrDuplexTool::CallClose { call_ref, .. }) = &done[0] else {
+    // The done event STATES the complete arguments, so it yields those arguments and then the close.
+    let IrServerEvent::Tool(IrDuplexTool::CallArgs {
+        call_ref,
+        json_delta,
+        ..
+    }) = &done[0]
+    else {
+        panic!("expected the complete arguments the close states");
+    };
+    assert_eq!(*call_ref, ref_open);
+    assert_eq!(&json_delta[..], br#"{"city":"SF"}"#);
+    let IrServerEvent::Tool(IrDuplexTool::CallClose { call_ref, .. }) = &done[1] else {
         panic!("expected CallClose");
     };
     assert_eq!(*call_ref, ref_open);
@@ -869,7 +964,7 @@ fn usage_extraction_survives_reencode() {
         text_out: 2,
         cached: 0,
     };
-    let w = codec.write_down(IrServerEvent::Usage(u));
+    let w = down(&codec, IrServerEvent::Usage(u));
     let mut st = DecodeState::default();
     let ir = codec.read_down(w, &mut st);
     assert_eq!(ir[0], IrServerEvent::Usage(u));

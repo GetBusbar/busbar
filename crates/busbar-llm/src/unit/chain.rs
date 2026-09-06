@@ -278,13 +278,13 @@ mod rehearsal {
         if fixture.seeded_group_requests().is_some() {
             groups.insert(
                 group.clone(),
-                busbar_core::config::GroupCfg {
+                busbar_substrate::config::groups::GroupCfg {
                     parent: None,
                     enabled: true,
-                    limits: vec![busbar_core::config::groups::LimitCfg {
-                        metric: busbar_core::config::groups::LimitMetric::Budget,
+                    limits: vec![busbar_substrate::config::groups::LimitCfg {
+                        metric: busbar_substrate::config::groups::LimitMetric::Budget,
                         amount: 100,
-                        per: Some(busbar_core::config::groups::LimitWindow::Total),
+                        per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                         scope: None,
                         on_exhaust: None,
                         downgrade_to: None,
@@ -342,7 +342,7 @@ mod rehearsal {
             // RELAY, not retry-until-exhausted: `least_bad` is the disposition that hands the client
             // the upstream's own answer when every lane is unhealthy, which is what makes this fixture
             // a FAILED TRANSFER (the destination answered, badly) rather than a pool-empty 503.
-            builder = builder.on_exhausted(POOL, busbar_core::config::OnExhausted::LeastBad);
+            builder = builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
         }
         let app = builder.build();
 
@@ -630,9 +630,10 @@ mod rehearsal {
                 started,
                 charged_at,
             ),
-            resp,
+            audit::Served::of(resp),
         )
         .response
+        .into_response()
     }
 
     /// What one chained leg left behind at the METER step, as the rehearsal reads it back.
@@ -829,9 +830,10 @@ mod rehearsal {
                     return audit::audit_refused(
                         &UnitToken::mint(seal),
                         &audit_ctx(host, gov, &model, started, charged_at),
-                        audit::render_refusal(PROTO, &outcome),
+                        audit::Served::of(audit::render_refusal(PROTO, &outcome)),
                     )
-                    .response;
+                    .response
+                    .into_response();
                 }
             }
         };
@@ -875,9 +877,10 @@ mod rehearsal {
             return audit::audit_refused(
                 &UnitToken::mint(seal),
                 &audit_ctx(host, gov, &model, started, charged_at),
-                resp,
+                audit::Served::of(resp),
             )
-            .response;
+            .response
+            .into_response();
         }
         let hold = match admitted.decision.into_result(seal) {
             Ok(Admission::Own(hold)) => Some(hold),
@@ -936,7 +939,9 @@ mod rehearsal {
             &Outcome::Completed,
         );
         metering.reached = true;
-        metering.posted_here = metered.row.is_some();
+        // The accrual arm's own report of itself. `row` is filled whether the step posted or only
+        // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
+        metering.posted_here = metered.posted;
         metering.fee_count = metered.fee_count;
         metering.refund = metered.refund;
         // What the step was actually BOUND to, read off the facts rather than off the response: the
@@ -959,14 +964,14 @@ mod rehearsal {
         let audited = audit::audit(
             &UnitToken::mint(seal),
             &audit_ctx(host, gov, &effective, started, charged_at),
-            response,
+            audit::Served::of(response),
             charged,
         );
         // The sealed end, read back at the moment the terminal really runs — which for a stream is
         // while the body is still flowing, so it is the client-facing status the terminal names and
         // not the class the tap will report later.
         metering.finish = audited.decision.into_result(seal).ok().map(|f| f.finish);
-        audited.response
+        audited.response.into_response()
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1163,7 +1168,7 @@ mod rehearsal {
             let audited = audit::audit(
                 &UnitToken::mint(&seal),
                 &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
-                drained,
+                audit::Served::of(drained),
                 true,
             );
             let facts = audited
@@ -1179,7 +1184,8 @@ mod rehearsal {
                 FinishClass::TurnComplete,
                 "{fixture:?}: no dialect on this plane ends a turn of a continuing session"
             );
-            let _ = axum::body::to_bytes(audited.response.into_body(), usize::MAX).await;
+            let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX)
+                .await;
             rig.server.shutdown().await;
         }
     }
@@ -1715,11 +1721,12 @@ mod rehearsal {
         let audited = audit::audit(
             &token,
             &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
-            response,
+            audit::Served::of(response),
             true,
         );
-        let status = audited.response.status().as_u16();
-        let _ = axum::body::to_bytes(audited.response.into_body(), usize::MAX).await;
+        let status = audited.response.as_response().status().as_u16();
+        let _ =
+            axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
         let facts: AuditFacts = audited
             .decision
             .into_result(&seal)
@@ -1766,7 +1773,7 @@ mod rehearsal {
             .decision
             .into_result(&seal)
             .expect_err("a destination that resolves to nothing refuses");
-        assert_eq!(refusal.step(), StepName::Route);
+        assert_eq!(refusal.step(), Some(StepName::Route));
         assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
 
         rig.server.shutdown().await;

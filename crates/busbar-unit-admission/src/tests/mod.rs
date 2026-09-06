@@ -22,6 +22,7 @@ use crate::{BucketChain, InMemoryCells};
 mod cells;
 mod hold;
 mod ported;
+mod price;
 
 /// Which counter a limit caps.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -40,7 +40,8 @@ pub struct RouteRequest<'a> {
     /// The breaker unit.
     pub breaker: &'a dyn Breaker,
     /// The capability token proving the loop is at the route step for this unit right now
-    /// (`busbar-caps`'s `&UnitToken<Route>`, per CG-29 and the design's unit-trait shape). Threaded down to
+    /// (`busbar-caps`'s `&UnitToken<Route>`): a unit may only act at the step its token names, and
+    /// the token is the proof of that rather than a convention. Threaded down to
     /// every [`crate::ports::Breaker::observe`] call the walk and its terminals make.
     pub token: &'a UnitToken<Route>,
     /// The pool's permit store.

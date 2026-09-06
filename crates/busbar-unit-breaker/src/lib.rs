@@ -22,9 +22,9 @@
 //! ## What's new here, not ported
 //!
 //! - [`journal`]: a `JournalSink` trait for probe lifecycle events. 1.5.5 had no probe journal;
-//!   the architecture's ledger (§4.1) requires one, so this crate defines the seam without owning
+//!   the architecture's ledger requires one, so this crate defines the seam without owning
 //!   the actual journal writer.
-//! - The sealed [`Breaker`] trait itself (`observe`/`state`, per §3.1's unit-trait shape). 1.5.5
+//! - The sealed [`Breaker`] trait itself (`observe`/`state`, in the unit-trait shape). 1.5.5
 //!   exposed the FSM through a much larger `LaneRuntime` trait (concurrency, SWRR, `/stats`, health
 //!   snapshots — all egress/observability concerns); this crate exposes only the breaker's own two
 //!   verbs, sealed so no plugin can implement it.
@@ -44,7 +44,7 @@ use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
 use busbar_caps::{Route, UnitToken};
-use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, ProbeAdmit};
+use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
 use cfg::BreakerCfg;
 use classify::Diagnostics;
 use journal::{JournalSink, NoopJournal, ProbeEvent};
@@ -439,7 +439,10 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         }
         let cell = self.cell(pool, destination);
         match cell.acquire(now) {
-            ProbeAdmit::Denied => Err(lane_state_from_verdict(cell.verdict(now))),
+            // The refusal's own reason, not a second look at a cell a peer may have moved: a
+            // caller is entitled to read a refusal as "this would not have admitted".
+            ProbeAdmit::Denied(DeniedBy::Cooling { until }) => Err(LaneState::Suppressed { until }),
+            ProbeAdmit::Denied(DeniedBy::ProbeInFlight) => Err(LaneState::ProbeInFlight),
             ProbeAdmit::ReadyNoProbe => Ok(Admit { probe_epoch: None }),
             ProbeAdmit::ProbeWon(epoch) => {
                 self.journal.record(ProbeEvent::Won {

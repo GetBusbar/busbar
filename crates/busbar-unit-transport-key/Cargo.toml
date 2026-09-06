@@ -1,4 +1,4 @@
-# busbar-unit-transport-key — the transport-key unit (§3.4's key-material paragraph).
+# busbar-unit-transport-key — the transport-key unit: the key material a transport needs.
 #
 # WHY A SEPARATE CRATE. `listen`/`dial`/`upgrade` need key material exactly once each, and nothing
 # downstream of that point may ever see it again: the unit resolves it through a secret source,

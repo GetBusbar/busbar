@@ -82,7 +82,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
     // `delta.finish_reason: "ERROR"` and NO free-text field — a native client never sees a
     // detail string, so the cause is logged server-side instead of placed on the wire.)
     for proto in ["openai", "anthropic", "gemini", "responses"] {
-        let bytes = mid_stream_error_bytes(proto, false, MID_STREAM_GENERIC_DETAIL);
+        let bytes = mid_stream_error_bytes(proto, false, MID_STREAM_GENERIC_DETAIL, None);
         let text = String::from_utf8_lossy(&bytes);
         assert!(
             text.contains(MID_STREAM_GENERIC_DETAIL),
@@ -90,7 +90,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
         );
     }
     // Cohere: native `message-end` with ERROR finish_reason, and NO leaked detail on the wire.
-    let cohere_bytes = mid_stream_error_bytes("cohere", false, MID_STREAM_GENERIC_DETAIL);
+    let cohere_bytes = mid_stream_error_bytes("cohere", false, MID_STREAM_GENERIC_DETAIL, None);
     let cohere_text = String::from_utf8_lossy(&cohere_bytes);
     assert!(
         cohere_text.contains("message-end") && cohere_text.contains("ERROR"),
@@ -109,7 +109,7 @@ fn test_mid_stream_generic_detail_has_no_leak_markers() {
 #[test]
 fn test_bedrock_ingress_mid_stream_error_is_binary_exception_frame() {
     crate::testkit::install_test_seams();
-    let bytes = mid_stream_error_bytes("bedrock", true, "connection reset by peer");
+    let bytes = mid_stream_error_bytes("bedrock", true, "connection reset by peer", None);
     // Must NOT be SSE text.
     assert!(
         !bytes.starts_with(b"event:") && !bytes.starts_with(b"data:"),
@@ -161,7 +161,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
     // native streaming error is a bare `data:` frame — its writer returns an empty event name —
     // NOT `event: error`; emitting an event line for gemini was the pre-fix bug.)
     for proto in ["openai", "cohere", "gemini"] {
-        let bytes = mid_stream_error_bytes(proto, false, "boom");
+        let bytes = mid_stream_error_bytes(proto, false, "boom", None);
         let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
         assert!(
             text.starts_with("data: "),
@@ -189,7 +189,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
     }
 
     // anthropic: named `event: error`, payload `{"type":"error","error":{"type","message"}}`.
-    let bytes = mid_stream_error_bytes("anthropic", false, "boom");
+    let bytes = mid_stream_error_bytes("anthropic", false, "boom", None);
     let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
     assert!(
         text.starts_with("event: error\n"),
@@ -210,7 +210,7 @@ fn test_sse_ingress_mid_stream_error_uses_native_framing() {
     // responses: terminal error event is `response.failed`, and the payload MUST be the STREAM
     // shape `{"response":{...,"error":{...}}}` (the SDK reads `event.response`), NOT the
     // non-stream `{"error":{...}}` HTTP envelope.
-    let bytes = mid_stream_error_bytes("responses", false, "boom");
+    let bytes = mid_stream_error_bytes("responses", false, "boom", None);
     let text = String::from_utf8(bytes).expect("SSE error is utf-8 text");
     assert!(
         text.starts_with("event: response.failed\n"),

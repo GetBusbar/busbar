@@ -72,6 +72,112 @@ fn a_failed_tool_is_a_result_not_a_protocol_error() {
     assert_eq!(r.content[0]["text"], "no such file");
 }
 
+/// `isError` IS A BOOLEAN OR IT IS NOTHING. A peer that puts anything else there has not said the
+/// tool succeeded — it has said something this codec cannot read, and quietly reading it as `false`
+/// serves a failed tool as a successful one, which is the exact collapse the two-channel rule
+/// exists to prevent.
+#[test]
+fn a_non_boolean_tool_verdict_is_refused_rather_than_read_as_success() {
+    for verdict in [
+        serde_json::json!("true"),
+        serde_json::json!(1),
+        serde_json::json!(null),
+        serde_json::json!({}),
+    ] {
+        let wire = serde_json::to_vec(&serde_json::json!({
+            "jsonrpc": "2.0", "id": 1,
+            "result": { "content": [{ "type": "text", "text": "no such file" }], "isError": verdict }
+        }))
+        .expect("fixture");
+        assert!(
+            super::invoke::read_invoke_response(&wire).is_err(),
+            "`isError: {verdict}` is not a verdict this codec may read as success"
+        );
+    }
+}
+
+/// An ABSENT `isError` is the ordinary successful call, and stays one.
+#[test]
+fn an_absent_tool_verdict_is_a_success() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": { "content": [{ "type": "text", "text": "ok" }] }
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("reads");
+    assert!(!r.is_error);
+}
+
+/// AN ANSWER THAT IS NOT AN ANSWER YET MUST NOT BE SERVED AS ONE. A result that carries no content
+/// and declares itself unfinished is not an empty successful tool call: served as one it tells a
+/// caller their tool ran and returned nothing, and the token that would let the exchange be resumed
+/// is thrown away in the same breath.
+#[test]
+fn an_unfinished_result_is_never_served_as_an_empty_success() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {
+            "resultType": "input_required",
+            "inputRequests": { "confirm": { "type": "boolean" } },
+            "requestState": "opaque-resume-token"
+        }
+    }))
+    .expect("fixture");
+    assert!(
+        super::invoke::read_invoke_response(&wire).is_err(),
+        "an unfinished result with nothing in it is not a successful empty tool call"
+    );
+}
+
+/// The members that say an exchange is unfinished are CARRIED, under the source protocol's own
+/// namespace, so nothing downstream has to re-parse the wire to learn how to resume.
+#[test]
+fn an_unfinished_results_own_members_survive_the_read() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {
+            "content": [{ "type": "text", "text": "which file?" }],
+            "resultType": "input_required",
+            "inputRequests": { "confirm": { "type": "boolean" } },
+            "requestState": "opaque-resume-token"
+        }
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("content makes it a readable result");
+    let carried = r.extra.get("mcp").expect("kept under the source protocol");
+    assert_eq!(carried["resultType"], "input_required");
+    assert_eq!(carried["requestState"], "opaque-resume-token");
+    assert_eq!(carried["inputRequests"]["confirm"]["type"], "boolean");
+}
+
+/// A FINISHED result naming itself as one is an ordinary result: it reads, and saying so on the
+/// wire does not turn an empty answer into a refusal.
+#[test]
+fn a_complete_result_reads_even_when_it_carries_nothing() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "result": { "resultType": "complete", "content": [] }
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("a finished result reads");
+    assert!(!r.is_error);
+    assert_eq!(r.content, serde_json::json!([]));
+    assert_eq!(r.extra["mcp"]["resultType"], "complete");
+}
+
+/// A result with no `resultType` at all is every result busbar has ever read, and it stays exactly
+/// what it was — including the empty one.
+#[test]
+fn a_result_that_names_no_result_type_is_unchanged() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "result": {}
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("reads");
+    assert_eq!(r.content, serde_json::json!([]));
+    assert!(!r.is_error);
+    assert!(r.extra.is_empty());
+}
+
 #[test]
 fn the_request_round_trips_through_the_codec() {
     let wire = call_wire(serde_json::json!({
@@ -108,8 +214,9 @@ fn the_response_round_trips_through_the_codec() {
     assert_eq!(out["result"]["structuredContent"]["rows"], 2);
 }
 
-/// Structured content is CARRIED, never synthesised: busbar models no output schema, so a tool that
-/// returned none must not be given one.
+/// Structured content is CARRIED, never synthesised: this codec relays what the tool produced, so a
+/// tool that returned none must not be given one. Checking it against a published schema is
+/// `outputschema::check`'s job at the plane, not this writer's.
 #[test]
 fn structured_content_is_omitted_when_the_tool_produced_none() {
     let ir = InvokeResp {
@@ -246,14 +353,21 @@ fn the_method_is_read_from_the_top_level_member_alone() {
     );
 }
 
-/// ROUTING COSTS ONE MEMBER, NOT ONE WHOLE BODY.
+/// ROUTING BUILDS NOTHING, however large the body is.
 ///
-/// The cell this resolves to parses the body itself, so a full parse here is the SECOND complete
-/// parse of every MCP request — over a `tools/call` whose `arguments` can be as large as the caller
-/// cares to make it. `method` is the first member in the JSON-RPC shape every client sends, and
-/// answering "which operation is this" should stop there rather than walk the megabytes behind it.
+/// The cell this resolves to parses the body itself, so materialising a document here would be the
+/// SECOND complete parse of every MCP request — over a `tools/call` whose `arguments` can be as large
+/// as the caller cares to make it. The span scanner answers WHERE the member is and never builds a
+/// value, so routing a sixteen-megabyte body must cost NO HEAP AT ALL.
+///
+/// The assertion is on ALLOCATION and not on the clock, and that is the honest measurement. The scan
+/// does read every byte of the body, deliberately: a duplicated top-level member answers the LAST
+/// one, which is the reading serde_json and every provider gives it, so the answer is not final until
+/// the closing brace. A wall-clock bound therefore measures the machine rather than the code — it
+/// passed on an idle laptop and failed under load — while "did it build the document" is exactly the
+/// property the scanner exists for and is the same answer every time.
 #[test]
-fn resolving_the_operation_does_not_walk_the_whole_arguments_object() {
+fn resolving_the_operation_builds_no_document() {
     let h = McpRequestHandler;
     let blob = "x".repeat(16 * 1024 * 1024);
     let body = serde_json::to_vec(&serde_json::json!({
@@ -264,18 +378,72 @@ fn resolving_the_operation_does_not_walk_the_whole_arguments_object() {
     }))
     .expect("fixture");
 
-    let started = std::time::Instant::now();
-    let op = h.resolve_operation("/mcp", &body);
-    let elapsed = started.elapsed();
-
+    let (op, routing_bytes) = allocated_by(|| h.resolve_operation("/mcp", &body));
     assert_eq!(op, Some(Operation::INVOKE));
+    assert_eq!(
+        routing_bytes,
+        0,
+        "resolving the operation on a {} byte body allocated {routing_bytes} bytes: it is building \
+         a value to read one top-level string",
+        body.len()
+    );
+
+    // THE CONTROL, so the assertion above cannot pass because the meter is broken: the thing routing
+    // must not do, done, costs heap on the order of the body.
+    let (parsed, parsing_bytes) =
+        allocated_by(|| serde_json::from_slice::<serde_json::Value>(&body));
+    assert!(parsed.is_ok());
     assert!(
-        elapsed < std::time::Duration::from_millis(20),
-        "resolving the operation on a {} byte body took {elapsed:?}: it is materialising the whole \
-         document to read one top-level string",
+        parsing_bytes > body.len() / 2,
+        "materialising the same {} bytes allocated only {parsing_bytes}: the meter is not reading",
         body.len()
     );
 }
+
+// ── THE METER THE TEST ABOVE READS ───────────────────────────────────────────────────────────────
+
+/// How many bytes `f` asked the heap for, on THIS thread.
+///
+/// Per-thread and not global, because the test harness runs these concurrently and a global counter
+/// would report whatever the other tests happened to be doing at the same moment.
+pub(super) fn allocated_by<T>(f: impl FnOnce() -> T) -> (T, usize) {
+    let before = ALLOCATED.with(std::cell::Cell::get);
+    let out = f();
+    (out, ALLOCATED.with(std::cell::Cell::get) - before)
+}
+
+std::thread_local! {
+    static ALLOCATED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// The system allocator with a per-thread tally in front of it. It only counts; every request is
+/// served by the allocator that would have served it anyway.
+struct CountingAllocator;
+
+// SAFETY: every method forwards to `System` unchanged, so the allocator contract is whatever
+// `System`'s is. The tally is a thread-local `Cell` of a `usize` read through `try_with`, which
+// allocates nothing and answers `Err` rather than panicking once thread-local storage is being torn
+// down.
+unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        let _ = ALLOCATED.try_with(|n| n.set(n.get() + layout.size()));
+        std::alloc::System.alloc(layout)
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        std::alloc::System.dealloc(ptr, layout);
+    }
+
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        if let Some(grew) = new_size.checked_sub(layout.size()) {
+            let _ = ALLOCATED.try_with(|n| n.set(n.get() + grew));
+        }
+        std::alloc::System.realloc(ptr, layout, new_size)
+    }
+}
+
+#[global_allocator]
+static METERED: CountingAllocator = CountingAllocator;
 
 // ── THE ATTRIBUTED OUTCOME NOW SPANS OPERATIONS ──────────────────────────────────────────────────
 

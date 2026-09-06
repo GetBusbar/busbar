@@ -482,6 +482,31 @@ fn a_refusal_that_implies_a_wait_says_so() {
     assert!(value.as_object().expect("an object").contains_key("id"));
 }
 
+/// How many legs each operation class routes to.
+///
+/// The count is the shape of the plan — a call spends a grant, hops, and settles; a listing reaches
+/// one record — so a leg that appears or disappears is a change to what an operation DOES, and it is
+/// written down here rather than left to a bound that can never fail.
+const EXPECTED_LEGS: &[(&str, usize)] = &[
+    ("discover", 2),
+    ("tools_list", 2),
+    ("tool_call", 5),
+    ("prompts_list", 2),
+    ("prompt_get", 3),
+    ("resources_list", 2),
+    ("resource_templates_list", 2),
+    ("resource_read", 3),
+    ("completion", 1),
+    ("task_get", 1),
+    ("task_update", 2),
+    ("task_cancel", 2),
+    ("subscriptions_listen", 2),
+    ("sampling", 2),
+    ("roots_list", 1),
+    ("elicitation", 1),
+    ("notification", 1),
+];
+
 /// Every operation class routes to at least one leg, and every leg is one its schema declares.
 #[test]
 fn every_operation_routes_somewhere() {
@@ -505,9 +530,18 @@ fn every_operation_routes_somewhere() {
         );
         let plan = plane.route(&unit, &ctx);
         assert!(!plan.legs.is_empty(), "{op} routes nowhere");
+        let name = op.to_string();
+        let expected = EXPECTED_LEGS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, legs)| *legs)
+            .unwrap_or_else(|| panic!("{op} has no expected leg count written down"));
+        assert_eq!(plan.legs.len(), expected, "{op} routes to a different plan");
+        // A plan filled to its ceiling is one a further leg would be dropped from without a word,
+        // so the ceiling is asserted as headroom rather than as a bound that cannot fail.
         assert!(
-            plan.legs.len() <= plan.legs.capacity(),
-            "{op} routes past the leg ceiling"
+            !plan.legs.is_full(),
+            "{op} routes with no leg headroom left"
         );
         for leg in plan.legs.as_slice() {
             if let busbar_contract::dest::DestinationFacts::PlaneRecord { schema, op: rop } =

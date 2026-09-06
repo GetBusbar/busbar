@@ -121,11 +121,11 @@ fn ok_signal() -> Signal {
     Signal {
         size: core::mem::size_of::<Signal>() as u32,
         version: busbar_plugin::hot::POD_VERSION,
-        class: StatusClass::Ok,
+        class: busbar_plugin::hot::RawStatus::of(StatusClass::Ok),
         _reserved: 0,
         latency_nanos: 0,
         bytes: 0,
-        fault_class: busbar_plugin::hot::FaultClass::Unspecified,
+        fault_class: busbar_plugin::hot::RawFault::of(busbar_plugin::hot::FaultClass::Unspecified),
         fault_flags: 0,
         _reserved2: 0,
         _reserved3: 0,

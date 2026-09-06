@@ -39,7 +39,7 @@ use crate::store::Store;
 use crate::verb::{KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS};
 use busbar_caps::{AdminToken, SecretOnce, UnitKey};
 
-/// CG-39: the nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
+/// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
 /// [`SecretOnce`] is bound to — the thing that proves exactly one occurrence of the minted secret
 /// at its declared target location — must come from the composition root's own entropy (the secret
 /// plugin's CSPRNG). Deliberately has **no** `Default` impl and
@@ -77,7 +77,7 @@ pub struct MintedKeyOutcome {
 }
 
 /// The result of [`Verbs::create_key`]/[`Verbs::rotate_key`]: either a fresh mint/rotation, or the
-/// verbatim replay of a previous call's response for the same idempotency key. CG-40: a replay
+/// verbatim replay of a previous call's response for the same idempotency key. A replay
 /// carries no [`MintedKeyOutcome`] at all — there is no decode step that could reconstruct (and
 /// thereby re-mint) a fresh [`SecretOnce`]; `body` is exactly the bytes the encoder produced for the
 /// original call, byte-for-byte, for as long as the idempotency window is open.
@@ -115,8 +115,8 @@ impl MintOutcome {
     }
 
     /// The freshly minted or rotated capability, or `None` for a replay — a replay never carries
-    /// one (CG-40: there is no decode step that could reconstruct, and thereby re-mint, a fresh
-    /// `SecretOnce`).
+    /// one: there is no decode step that could reconstruct, and thereby re-mint, a fresh
+    /// `SecretOnce`.
     pub fn minted_outcome(&self) -> Option<&MintedKeyOutcome> {
         match self {
             MintOutcome::Minted { outcome, .. } => Some(outcome),
@@ -155,8 +155,8 @@ pub fn required_scope(verb: KernelVerb) -> VerbScope {
 
 /// `Verbs` — the closed kernel-verb executor. Generic over the seams the integrator binds: the
 /// [`Governance`] and [`Store`] record-store adapters, the [`NonceSource`] the secret plugin lends
-/// (CG-39), and the [`ReplayEncoder`] the admin plane's own writer implements (CG-40).
-/// `config_class_rules` (CG-38) is data rather than a fifth type parameter — a `&'static` table has
+/// and the [`ReplayEncoder`] the admin plane's own writer implements.
+/// `config_class_rules` is data rather than a fifth type parameter — a `&'static` table has
 /// no behaviour to seal behind a trait.
 pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>> {
     governance: G,
@@ -173,7 +173,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     Verbs<G, S, N, E>
 {
     /// Build a fresh executor over the four bound seams. `config_class_rules` is the composition
-    /// root's sealed CG-38 table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
+    /// root's sealed class table (see [`crate::rate::CONFIG_CLASS_RULES`] for the 1.5.5-parity
     /// default); `nonce_source` and `replay_encoder` are mandatory — there is no `Default` for
     /// either, so a caller cannot silently construct a `Verbs` with a predictable nonce or a
     /// re-minting replay path.
@@ -221,7 +221,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         }
     }
 
-    /// CG-39: mint a [`SecretOnce`] whose nonce comes from the bound [`NonceSource`] — never a
+    /// Mint a [`SecretOnce`] whose nonce comes from the bound [`NonceSource`] — never a
     /// value derivable from the unit key or the secret's own shape.
     fn to_secret_once(
         &self,

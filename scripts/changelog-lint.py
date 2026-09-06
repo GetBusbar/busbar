@@ -97,7 +97,7 @@ def parse(text: str):
     return out
 
 
-def check(text: str, today: _dt.date | None = None) -> list[str]:
+def check(text: str, today: _dt.date | None = None, require_version: str | None = None) -> list[str]:
     """Every rule. Returns a list of operator-readable failures; empty means green."""
     today = today or _dt.datetime.now(_dt.timezone.utc).date()
     problems: list[str] = []
@@ -185,6 +185,47 @@ def check(text: str, today: _dt.date | None = None) -> list[str]:
                 f"happened; this renders as a future ship date on the public changelog."
             )
 
+    # -- VERSION-HAS-NOTES (only with --require-version) ------------------------------------
+    # THE VERSION BEING TAGGED MUST HAVE RELEASE NOTES, AND THEY MUST BE THE NEWEST ONES.
+    #
+    # Everything above is about the SHAPE of the file. None of it asks the one question a release
+    # depends on: does this changelog say anything about the version that is about to be tagged?
+    # It did not, and the release body extraction is deliberately fail-soft
+    # (release-stage.yml warns and falls back to GitHub's generated notes when no `## [X.Y.Z]`
+    # section exists), so `v1.6.0` could be tagged, published, announced to every downstream repo
+    # and pinned by users with a release body that never said what changed.
+    #
+    # NEWEST, not merely present: an entry for this version buried below a higher one means the
+    # version in Cargo.toml is not the one this file thinks shipped last, and one of the two is
+    # wrong. Version, tag, `busbar --version` and the changelog are then one fact instead of four.
+    if require_version is not None:
+        if not releases:
+            problems.append(
+                f"VERSION-HAS-NOTES: {require_version} is about to be tagged and CHANGELOG.md "
+                f"contains no released entry at all. Write the notes under `{UNRELEASED}` and roll "
+                f"them over (prepare-release.yml does this) before staging."
+            )
+        else:
+            top_v, top_d = releases[0][2], releases[0][3]
+            if top_v != require_version:
+                where = next((ln for ln, _r, v, _d in releases if v == require_version), None)
+                if where is None:
+                    problems.append(
+                        f"VERSION-HAS-NOTES: CHANGELOG.md has NO `## [{require_version}], "
+                        f"YYYY-MM-DD` section, but {require_version} is the version in "
+                        f"crates/busbar/Cargo.toml - the version this run would tag and publish. "
+                        f"The release body extraction is fail-soft, so this would ship a release "
+                        f"whose notes are auto-generated commit titles and whose changelog page "
+                        f"never mentions the version. Newest entry is {top_v} ({top_d})."
+                    )
+                else:
+                    problems.append(
+                        f"VERSION-HAS-NOTES: {require_version} is the version being released but "
+                        f"its entry is at line {where}, BELOW {top_v} ({top_d}). The newest entry "
+                        f"in the changelog must be the version being tagged, or the file says a "
+                        f"different release is the current one."
+                    )
+
     return problems
 
 
@@ -264,6 +305,18 @@ def selftest() -> int:
     today = _dt.date(2026, 8, 16)
     failures = 0
 
+    # --require-version has its own fixtures because the rule is about a fact OUTSIDE the file (the
+    # version in Cargo.toml), so it cannot be expressed as a mutation of GOOD alone.
+    VERSION_CASES = [
+        (GOOD, "1.5.5", "the version being released has no section at all"),
+        (GOOD, "1.5.3", "the version being released is not the newest entry"),
+        (
+            GOOD.replace("## [1.5.4], 2026-08-14", "## [Unreleased] but stale"),
+            "1.5.4",
+            "a file whose newest heading is not a release at all",
+        ),
+    ]
+
     green = check(GOOD, today=today)
     if green:
         print("  [FAIL]   the known-good fixture does not pass. The lint rejects a correct file:")
@@ -283,8 +336,28 @@ def selftest() -> int:
             print(f"           (what did fire: {[p.split(':')[0] for p in problems] or 'nothing'})")
             failures += 1
 
+    # --require-version: RED on every way the tagged version can lack notes, GREEN on the twin that
+    # differs only in which version is being released.
+    for text, version, why in VERSION_CASES:
+        fired = [p for p in check(text, today=today, require_version=version)
+                 if p.startswith("VERSION-HAS-NOTES:")]
+        if fired:
+            print(f"  [ok]     {'VERSION-HAS-NOTES':22} fires RED on {why}")
+        else:
+            print(f"  [FAIL]   VERSION-HAS-NOTES did NOT fire on {why}")
+            failures += 1
+    twin = [p for p in check(GOOD, today=today, require_version="1.5.4")
+            if p.startswith("VERSION-HAS-NOTES:")]
+    if twin:
+        print("  [FAIL]   VERSION-HAS-NOTES fires on the version that IS the newest entry:")
+        for t in twin:
+            print("           " + t.splitlines()[0])
+        failures += 1
+    else:
+        print(f"  [ok]     {'VERSION-HAS-NOTES':22} passes when the newest entry IS the version")
+
     # A rule table that has stopped being reachable reads as green forever. Floor it.
-    covered = {rule for rule, _, _ in CASES}
+    covered = {rule for rule, _, _ in CASES} | {"VERSION-HAS-NOTES"}
     expected = {
         "CANONICAL-HEADING",
         "TOP-ENTRY-DATED",
@@ -292,6 +365,7 @@ def selftest() -> int:
         "NO-DUPLICATE-VERSION",
         "DESCENDING",
         "NO-FUTURE-DATE",
+        "VERSION-HAS-NOTES",
     }
     missing = expected - covered
     if missing:
@@ -304,7 +378,8 @@ def selftest() -> int:
     if failures:
         print(f"changelog-lint --selftest: {failures} FAILED")
         return 1
-    print(f"changelog-lint --selftest: all {len(CASES)} red cases + green twin pass")
+    print(f"changelog-lint --selftest: all {len(CASES) + len(VERSION_CASES)} red cases + green "
+          f"twins pass")
     return 0
 
 
@@ -313,6 +388,10 @@ def main() -> int:
     ap.add_argument("--root", default=".", help="repository root (default: .)")
     ap.add_argument("--file", default="CHANGELOG.md", help="changelog path, relative to --root")
     ap.add_argument("--selftest", action="store_true", help="prove every rule RED, then exit")
+    ap.add_argument("--require-version", default=None, metavar="X.Y.Z",
+                    help="additionally require that the NEWEST released entry is this version - "
+                         "the version being tagged. Used by release-stage.yml's plan job so a "
+                         "release with no notes cannot stage.")
     args = ap.parse_args()
 
     if args.selftest:
@@ -327,7 +406,7 @@ def main() -> int:
         print("An unreadable changelog is not a clean one.", file=sys.stderr)
         return 1
 
-    problems = check(text)
+    problems = check(text, require_version=args.require_version)
     if problems:
         print(f"changelog-lint: {len(problems)} problem(s) in {path}\n", file=sys.stderr)
         for p in problems:

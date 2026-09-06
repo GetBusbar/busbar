@@ -41,6 +41,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 HELPERS="$ROOT/scripts/construction-gate"
 TOML="${CONSTRUCTION_TOML:-$ROOT/qa/construction.toml}"
 OUT="${CONSTRUCTION_OUT:-$ROOT/target/construction}"
+SELFTEST_SCRATCH=""   # set by --selftest; read by its EXIT trap, so never `local`
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -49,6 +50,17 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 
 command -v python3 >/dev/null 2>&1 || { red "construction-gate: python3 is required"; exit 2; }
 [ -f "$TOML" ] || { red "construction-gate: ceilings file not found: $TOML"; exit 2; }
+
+# ── the delegated scan ───────────────────────────────────────────────────────────────────────────
+# plane-purity-lint.sh owns the dialect/plane-noun policy. --baseline always exits 0 and leaves its
+# per-hit rows where PLANE_PURITY_HITS_OUT points. Its own function because --calibrate needs it
+# exactly as much as --check does, and each needs it exactly once.
+purity_scan() {
+  mkdir -p "$OUT"
+  rm -f "$OUT/purity-hits.tsv"
+  PLANE_PURITY_HITS_OUT="$OUT/purity-hits.tsv" \
+    bash "$ROOT/scripts/plane-purity-lint.sh" --baseline >"$OUT/purity-lint.log" 2>&1 || true
+}
 
 # ── measure: the purity lint first (the delegated scanner), then every rule into the ledger ──────
 # Populates $OUT with rows.tsv, expected-ids, report.md, summary.txt, rows.json and the ledger.
@@ -61,11 +73,7 @@ measure() {
   # shellcheck source=testing/fleet-fixtures/lib.sh
   . "$ROOT/testing/fleet-fixtures/lib.sh"
 
-  # The delegated scan: plane-purity-lint.sh owns the dialect/plane-noun policy. --baseline always
-  # exits 0 and leaves its per-hit rows where PLANE_PURITY_HITS_OUT points.
-  rm -f "$OUT/purity-hits.tsv"
-  PLANE_PURITY_HITS_OUT="$OUT/purity-hits.tsv" \
-    bash "$ROOT/scripts/plane-purity-lint.sh" --baseline >"$OUT/purity-lint.log" 2>&1 || true
+  purity_scan
 
   if ! python3 "$HELPERS/rules.py" --root "$ROOT" --toml "$TOML" \
         --purity-hits "$OUT/purity-hits.tsv" --rows "$OUT/rows.tsv" \
@@ -146,9 +154,22 @@ measure() {
 # ── self-test: every rule proves it can see its own violation ────────────────────────────────────
 run_selftest() {
   hdr "construction-gate SELF-TEST (each planted violation must produce exactly one FAIL row)"
-  local scratch="$ROOT/target/construction/selftest"
+  # A PRIVATE scratch directory, not a fixed path this run first deletes. Two selftests in one
+  # checkout — a developer's and CI's, or two CI jobs sharing a workspace — planted their violations
+  # into the same tree and deleted each other's, and the loser reported on whatever the winner had
+  # planted. mktemp gives each run its own; the trap takes it away again on any exit.
+  mkdir -p "$ROOT/target/construction"
+  # SELFTEST_SCRATCH is deliberately not `local`: the EXIT trap fires after this function's frame is
+  # gone, and a trap that cannot read the path it is meant to delete deletes nothing (under `set -u`
+  # it does not even run) -- which is the leak this whole change exists to close.
+  SELFTEST_SCRATCH="$(mktemp -d "$ROOT/target/construction/selftest.XXXXXX")" || {
+    red "construction-gate: could not create a scratch directory under $ROOT/target/construction"
+    return 1
+  }
+  trap 'rm -rf "$SELFTEST_SCRATCH"' EXIT
+  local scratch="$SELFTEST_SCRATCH"
   local pristine="$scratch/pristine" tree="$scratch/tree"
-  rm -rf "$scratch"; mkdir -p "$pristine" "$tree"
+  mkdir -p "$pristine" "$tree"
   # The scratch copy carries everything the gate reads: every crate's src, every crate's Cargo.toml
   # (manifest-allowlist reads `[dependencies]` straight from disk, not from the Tree scan), the
   # scripts, the ceilings and the ledger machinery. No target/, so the copy is small and never
@@ -159,7 +180,14 @@ run_selftest() {
   # shellcheck disable=SC2086
   (cd "$ROOT" && tar -cf - $src_dirs $manifests scripts qa testing/fleet-fixtures) | tar -C "$pristine" -xf -
   (cd "$pristine" && tar -cf - .) | tar -C "$tree" -xf -
+  # THE SABOTEUR COMES FROM THE COPY, NOT THE LIVE TREE. plant.py and rules.py are one instrument in
+  # two halves -- the planter forges exactly what the scanner is looking for -- and the scanner under
+  # test is the COPY's. Running the live planter against a copied scanner means an edit landing in
+  # scripts/ while a run is in flight changes the saboteur mid-run but not its subject, and the run
+  # reports a rule "failing" that neither half is wrong about. A run is a snapshot: one tree, one set
+  # of scripts, start to finish.
   local gate="$tree/scripts/construction-gate.sh" fail=0
+  local planter="$tree/scripts/construction-gate/plant.py"
 
   # 1. Calibrate a green baseline: every ceiling equals today's measurement in the pristine copy.
   CONSTRUCTION_OUT="$scratch/out-calibrate" bash "$gate" --calibrate "$scratch/calibrated.toml" >/dev/null 2>&1
@@ -193,14 +221,15 @@ run_selftest() {
   # 3. Plant each violation and require exactly one FAIL row, naming the rule.
   local rule rc
   for rule in one-attempt-seam request-path-fn-size ports-only:busbar-voice ports-only-tests:busbar-voice \
+              ports-only:busbar-llm \
               no-uninstalled-seam neutral-no-dialect single-terminal \
               token-sealed teller-step-order one-teller-loop one-teller-loop:run_gauntlet \
               no-response-escapes-audit terminal-doors-in-audit-step one-pick-site \
-              loc-ceilings:kernel:arena manifest-allowlist:hook-test-plugin \
+              loc-ceilings:kernel:arena loc-ceilings:kernel:ticks manifest-allowlist:hook-test-plugin \
               source-denylist:busbar-plane-llm lean-core no-default-bodies sealed-unit-traits \
               hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
               token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls; do
-    python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
+    python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
     # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
     [ "$rc" -ne 3 ] || { note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }
     [ "$rc" -eq 0 ] || { fail=1; note "plant FAILED for $rule"; continue; }
@@ -218,7 +247,7 @@ run_selftest() {
   # 4. The informational rule: planting a shared block raises its duplicated-line count and still
   #    produces no FAIL row (it is a WARN, never a gate).
   rule=duplicate-dispatch
-  python3 "$HELPERS/plant.py" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
+  python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
   if [ "$rc" -eq 3 ]; then
     note "SKIP $rule: nothing to plant (a twin is absent from this tree)"
   else
@@ -265,7 +294,12 @@ case "${1:-}" in
     ;;
   --calibrate)
     [ -n "${2:-}" ] || { echo "usage: $0 --calibrate <out.toml>" >&2; exit 2; }
-    measure quiet >/dev/null
+    # ONE scan of the tree, not two. This used to run the whole measure — purity lint, rules.py,
+    # the loc-surface ceilings, the ledger and the verdict — and then throw all of it away and scan
+    # the tree a second time for the ceilings. rules.py already computes the rows and calibrates
+    # from them in a single pass, so the only thing measure was contributing was the purity hits
+    # file; that is all that runs first now. The written toml is unchanged.
+    purity_scan
     python3 "$HELPERS/rules.py" --root "$ROOT" --toml "$TOML" --purity-hits "$OUT/purity-hits.tsv" --calibrate "$2"
     note "calibrated ceilings written to $2 (every ceiling = today's measurement)"
     exit 0

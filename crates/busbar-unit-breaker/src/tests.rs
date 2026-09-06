@@ -924,6 +924,77 @@ fn a_reachable_pool_cell_is_always_reachable_by_a_hard_down() {
     );
 }
 
+/// A refused admission never names a state that would have admitted.
+///
+/// `try_admit` used to decide the refusal from a SECOND read of the cell, taken after the read that
+/// denied it: the probe owner completing recovery in that gap left the refusal describing a cell
+/// that was by then Closed and ready — a `Ready` refusal, which its callers are entitled to treat
+/// as impossible. The admit decision and the reason for it now come out of one read.
+#[test]
+fn a_refusal_never_reports_a_state_that_would_have_admitted() {
+    let cfg = consecutive_cfg(1, 5);
+    let token = route_token();
+    let destination = DestinationId::new(1);
+
+    // One cell, cycled through Open -> HalfOpen -> Closed under a crowd asking it for admission:
+    // the gap being probed is a few instructions wide, so it is walked into repeatedly rather than
+    // aimed at once.
+    const ROUNDS: usize = 40_000;
+    let unit = BreakerUnit::new();
+    let ready_refusals = std::sync::atomic::AtomicUsize::new(0);
+    let gate = std::sync::Barrier::new(4);
+
+    std::thread::scope(|scope| {
+        // The recovery side: trip the cell, and complete whatever probe an asker has since won.
+        scope.spawn(|| {
+            gate.wait();
+            for _ in 0..ROUNDS {
+                unit.observe(
+                    "pool",
+                    destination,
+                    Outcome::Transient { retry_after: None },
+                    &cfg,
+                    1_000,
+                    &token,
+                );
+                unit.observe(
+                    "pool",
+                    destination,
+                    Outcome::Success,
+                    &cfg,
+                    2_000_000,
+                    &token,
+                );
+            }
+        });
+        for _ in 0..3 {
+            scope.spawn(|| {
+                gate.wait();
+                for _ in 0..ROUNDS {
+                    // Well past the armed cooldown, so a refusal here can only be a peer's probe.
+                    match unit.try_admit("pool", destination, 2_000_000) {
+                        Ok(admit) => {
+                            if let Some(epoch) = admit.probe_epoch {
+                                unit.release_probe("pool", destination, epoch, 2_000_000);
+                            }
+                        }
+                        Err(LaneState::Ready) => {
+                            ready_refusals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        Err(_) => {}
+                    }
+                }
+            });
+        }
+    });
+
+    assert_eq!(
+        ready_refusals.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "an admission was refused with a state that would have admitted"
+    );
+}
+
 #[test]
 fn budget_spend_never_drives_the_counter_negative() {
     let budget = LifetimeBudget::limited(1);

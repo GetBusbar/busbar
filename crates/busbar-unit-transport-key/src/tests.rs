@@ -308,7 +308,7 @@ fn issue_handle_is_opaque_and_slot_addressed() {
     assert!(!debug.to_lowercase().contains("key-----"));
 }
 
-/// The handle a transport receives is the same type the unit issued. This is the whole of CG-19:
+/// The handle a transport receives is the same type the unit issued. That is the whole rule:
 /// before it, the unit produced one `TransportKeyHandle` and every transport consumed a different
 /// one, with nothing in the tree bridging them.
 #[test]

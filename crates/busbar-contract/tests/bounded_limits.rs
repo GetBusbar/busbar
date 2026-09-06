@@ -27,14 +27,52 @@ fn the_constants_are_the_designs_numbers() {
     assert_eq!(ARENA_BYTES, 4 * 1024);
 }
 
-/// The loop's step vocabulary is closed, and it is the ten named steps.
+/// Every step of the loop, in loop order.
+///
+/// The totality table lives with the proof that reads it rather than on the crate's plugin-visible
+/// surface: no plugin, unit or kernel path walks the list, so it is evidence about the enum, not a
+/// thing the enum offers. Written out by hand so a step added to `Step` without a thought for the
+/// ceiling shows up here as a row somebody had to type.
+const ALL_STEPS: &[Step] = &[
+    Step::Arrival,
+    Step::Decode,
+    Step::Authenticate,
+    Step::Verify,
+    Step::Approve,
+    Step::Admit,
+    Step::Route,
+    Step::Meter,
+    Step::Audit,
+    Step::Encode,
+];
+
+/// The table's own totality check: an exhaustive match, so a step added to the enum stops
+/// compiling here until it is given a position in the list above.
+fn position(step: Step) -> usize {
+    match step {
+        Step::Arrival => 0,
+        Step::Decode => 1,
+        Step::Authenticate => 2,
+        Step::Verify => 3,
+        Step::Approve => 4,
+        Step::Admit => 5,
+        Step::Route => 6,
+        Step::Meter => 7,
+        Step::Audit => 8,
+        Step::Encode => 9,
+    }
+}
+
+/// The loop's step vocabulary is closed, and it is the ten named steps, in loop order.
 ///
 /// There was a step ceiling here as well, asserted against its own literal. Nothing in the tree
-/// was a list of steps, so it bounded nothing and only read as though it did; it is gone, and this
-/// is what remains true — the vocabulary is closed at the ten the loop has.
+/// was a list of steps, so it bounded nothing; it is gone, and this is what remains true.
 #[test]
 fn the_loop_has_exactly_its_ten_named_steps() {
-    assert_eq!(Step::ALL.len(), 10);
+    for (index, step) in ALL_STEPS.iter().enumerate() {
+        assert_eq!(position(*step), index, "the table is in loop order");
+    }
+    assert_eq!(ALL_STEPS.len(), 10);
 }
 
 /// The kernel seals the draft's facts onto the unit, and a later step reads them back unchanged.

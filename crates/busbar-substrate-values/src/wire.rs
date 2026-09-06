@@ -69,6 +69,11 @@ pub enum EgressWire {
     Json(Value),
     /// A final egress body a non-JSON wire already serialized.
     Bytes(Bytes),
+    /// NO egress body could be written, and `reason` says why. The loud arm: a handle that cannot
+    /// write itself onto the target dialect says so, and the seam turns that into a refusal the
+    /// caller sees. The alternative — answering with an empty body — sends a request upstream that
+    /// is not the caller's request, and the first sign of it is the backend's own error.
+    Unrepresentable { reason: String },
 }
 
 /// The neutral outcome of a non-stream cross-protocol response translation. Mirrors every exit of the
@@ -100,3 +105,7 @@ pub enum TranslatedResponse {
     /// to refund — same non-delivery posture as `IngressUnsupported`.
     Untranslatable,
 }
+
+#[cfg(test)]
+#[path = "tests/egress_wire_tests.rs"]
+mod egress_wire_tests;

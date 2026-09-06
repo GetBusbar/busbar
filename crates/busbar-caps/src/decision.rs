@@ -28,6 +28,29 @@
 //! assert_eq!(decision.into_result(&seal).unwrap().total(), 0);
 //! ```
 //!
+//! The reason vocabulary is closed, and closed means a crate that renders reasons can decide
+//! something for every one of them without a fallback arm — so a reason added later is a compile
+//! error at every renderer rather than whatever the wildcard happened to say:
+//!
+//! ```
+//! use busbar_caps::ReasonCode::{self, *};
+//! fn is_the_callers_money(code: ReasonCode) -> bool {
+//!     match code {
+//!         OverBudget | OverdraftCeiling | Unpriced | NoRate => true,
+//!         InFlightCap | CursorBudget | CredentialBudget | SessionBudget | SpillBudget
+//!         | ArenaBudget | RateLimited | BodyTooLarge | OpenSlotBusy | DecodeFailed
+//!         | SchemeNotDeclared | SessionUnbound | Unauthenticated | ChallengeExhausted | Revoked
+//!         | ScopeDenied | PoolNotPermitted | HookVeto | NoDestination | GroupFrozen
+//!         | StaleSlice | DurabilityUnavailable | TierMismatch | Replayed | InFlight
+//!         | DestinationBudgetExhausted | BreakerOpen | DestinationUnreachable | MeterDisputed
+//!         | HandoffMismatch | PlanePanic | TaskLost | Stalled | SecretPlaceholder | Drain
+//!         | Superseded | ClientGone | DeadlineExceeded => false,
+//!     }
+//! }
+//! assert!(is_the_callers_money(ReasonCode::OverBudget));
+//! assert!(!is_the_callers_money(ReasonCode::Drain));
+//! ```
+//!
 //! It cannot open its own answer, because reading a decision needs the kernel's seal:
 //!
 //! ```compile_fail,E0061
@@ -46,8 +69,12 @@ macro_rules! reasons {
         /// Why a unit was stopped. A closed vocabulary: the wire may render whatever a dialect
         /// renders, but the reason a unit ended is one of these and nothing else, so the journal,
         /// the refusal and the disputes report all name the same thing.
+        ///
+        /// Closed in the language as well as in the prose: no `#[non_exhaustive]`, because a
+        /// renderer outside this crate has to be able to answer for every reason without a
+        /// fallback arm. Adding a reason is meant to break every renderer at compile time — that
+        /// is the whole value of writing the vocabulary down once.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-        #[non_exhaustive]
         pub enum ReasonCode {
             $($(#[$doc])* $name,)*
         }
@@ -161,6 +188,70 @@ reasons! {
     DeadlineExceeded => "deadline_exceeded",
 }
 
+/// The one bridge from the kernel's reason vocabulary to the contract's spelling of it.
+///
+/// The kernel decides in `ReasonCode` and the plane is handed a `RefusalReason` to render, so
+/// without a written-down join the two sets drift: a reason with no spelling on the far side
+/// reaches a client as whatever the nearest arm said, and the same reason spelled two ways on the
+/// two sides is the same defect wearing a different name. The match is exhaustive and has no
+/// fallback arm, so a reason added to the vocabulary above does not compile until a client can be
+/// told about it, and `busbar-caps`'s own tests walk `ReasonCode::ALL` to check the mapping is
+/// injective — two reasons that render as one spelling are two refusals nothing can tell apart.
+impl From<ReasonCode> for busbar_contract::unit::RefusalReason {
+    fn from(code: ReasonCode) -> Self {
+        use busbar_contract::unit::RefusalReason as R;
+        match code {
+            // The reasons both sides already named, keeping each side's existing spelling: these
+            // are what a client sees today, and the wording is not this bridge's to change.
+            ReasonCode::InFlightCap => R::InFlightCap,
+            ReasonCode::CursorBudget => R::CursorBudget,
+            ReasonCode::CredentialBudget => R::CredentialBudget,
+            ReasonCode::SessionBudget => R::SessionBudget,
+            ReasonCode::BodyTooLarge => R::BodyTooLarge,
+            ReasonCode::OpenSlotBusy => R::OpenSlotBusy,
+            ReasonCode::SchemeNotDeclared => R::SchemeNotDeclared,
+            ReasonCode::SessionUnbound => R::SessionUnbound,
+            ReasonCode::Revoked => R::Revoked,
+            ReasonCode::NoDestination => R::NoDestination,
+            ReasonCode::OverBudget => R::OverBudget,
+            ReasonCode::GroupFrozen => R::GroupFrozen,
+            ReasonCode::Unpriced => R::Unpriced,
+            ReasonCode::OverdraftCeiling => R::OverdraftCeiling,
+            ReasonCode::StaleSlice => R::StaleSlice,
+            ReasonCode::DurabilityUnavailable => R::DurabilityUnavailable,
+            ReasonCode::TierMismatch => R::TierMismatch,
+            // The three the two sides named differently. One thing, two spellings, and this is
+            // where they are joined rather than in each renderer's head.
+            ReasonCode::Unauthenticated => R::CredentialRejected,
+            ReasonCode::ScopeDenied => R::ScopeMissing,
+            ReasonCode::HookVeto => R::Vetoed,
+            // The reasons that had no spelling a client could be shown at all.
+            ReasonCode::SpillBudget => R::SpillBudget,
+            ReasonCode::ArenaBudget => R::ArenaBudget,
+            ReasonCode::RateLimited => R::RateLimited,
+            ReasonCode::DecodeFailed => R::DecodeFailed,
+            ReasonCode::ChallengeExhausted => R::ChallengeExhausted,
+            ReasonCode::PoolNotPermitted => R::PoolNotPermitted,
+            ReasonCode::NoRate => R::NoRate,
+            ReasonCode::Replayed => R::Replayed,
+            ReasonCode::InFlight => R::InFlight,
+            ReasonCode::DestinationBudgetExhausted => R::DestinationBudgetExhausted,
+            ReasonCode::BreakerOpen => R::BreakerOpen,
+            ReasonCode::DestinationUnreachable => R::DestinationUnreachable,
+            ReasonCode::MeterDisputed => R::MeterDisputed,
+            ReasonCode::HandoffMismatch => R::HandoffMismatch,
+            ReasonCode::PlanePanic => R::PlanePanic,
+            ReasonCode::TaskLost => R::TaskLost,
+            ReasonCode::Stalled => R::Stalled,
+            ReasonCode::SecretPlaceholder => R::SecretPlaceholder,
+            ReasonCode::Drain => R::Drain,
+            ReasonCode::Superseded => R::Superseded,
+            ReasonCode::ClientGone => R::ClientGone,
+            ReasonCode::DeadlineExceeded => R::DeadlineExceeded,
+        }
+    }
+}
+
 impl std::fmt::Display for ReasonCode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.as_str())
@@ -170,10 +261,12 @@ impl std::fmt::Display for ReasonCode {
 /// A unit's "stop here": the reason, and the step it was raised at.
 ///
 /// The step is stamped by the decision, not by the caller, so a unit cannot claim it stopped
-/// somewhere it never reached.
+/// somewhere it never reached. Until a decision stamps it there is no step, and the refusal says
+/// so: an unstamped refusal that named the first step of the loop would be a claim about where the
+/// unit got to, and the step is precisely what says whether money was committed before it stopped.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Refusal {
-    at: StepName,
+    at: Option<StepName>,
     reason: ReasonCode,
     retry_after: Option<u32>,
 }
@@ -182,7 +275,7 @@ impl Refusal {
     /// Raise a refusal for `reason`. The step is filled in when the refusal becomes a decision.
     pub fn new(reason: ReasonCode) -> Self {
         Refusal {
-            at: StepName::Arrival,
+            at: None,
             reason,
             retry_after: None,
         }
@@ -196,12 +289,12 @@ impl Refusal {
 
     /// Stamp the step. Crate-internal: only a decision does this.
     pub(crate) fn at(mut self, at: StepName) -> Self {
-        self.at = at;
+        self.at = Some(at);
         self
     }
 
-    /// The step the unit stopped at.
-    pub fn step(&self) -> StepName {
+    /// The step the unit stopped at, once a decision has stamped one.
+    pub fn step(&self) -> Option<StepName> {
         self.at
     }
 
@@ -215,9 +308,10 @@ impl Refusal {
         self.retry_after
     }
 
-    /// Whether the refusal was raised while a hold was open.
+    /// Whether the refusal was raised while a hold was open. False until a step is stamped: an
+    /// unstamped refusal has not reached any step, so it cannot have reached one past the door.
     pub fn under_hold(&self) -> bool {
-        self.at.under_hold()
+        self.at.is_some_and(StepName::under_hold)
     }
 }
 

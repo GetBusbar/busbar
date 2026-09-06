@@ -196,35 +196,54 @@ fn substitute_never_touches_anything_but_the_envelope_it_is_given() {
     assert!(!envelope.iter().any(|(k, _)| k == "unrelated"));
 }
 
-/// The lane cross-check: the decorated envelope's `host` must still equal the sealed destination's
-/// host, or the unit refuses with `EnvelopeDivergedFromVerifiedDestination`.
+/// The lane cross-check: the decorated envelope's `host` must still equal what the trust unit
+/// sealed, or the unit refuses with `EnvelopeDivergedFromVerifiedDestination`.
 #[test]
 fn lane_cross_check_catches_envelope_divergence_after_decoration() {
     use busbar_caps::{LaneId, TrustToken};
     let seal = KernelSeal::acquire_for_kernel();
     let trust = TrustToken::mint(&seal);
-    let verified = VerifiedDestination::seal(&trust, LaneId::new("bedrock-us-east-1"));
+    let verified =
+        VerifiedDestination::seal(&trust, LaneId::new("bedrock.us-east-1.amazonaws.com"));
 
     let matching = vec![(
         "host".to_string(),
         "bedrock.us-east-1.amazonaws.com".to_string(),
     )];
-    assert!(lane_cross_check(
-        &verified,
-        "host",
-        &matching,
-        "bedrock.us-east-1.amazonaws.com"
-    )
-    .is_ok());
+    assert!(lane_cross_check(&verified, "host", &matching).is_ok());
 
     let diverged = vec![("host".to_string(), "evil.example.com".to_string())];
     assert_eq!(
-        lane_cross_check(
-            &verified,
-            "host",
-            &diverged,
-            "bedrock.us-east-1.amazonaws.com"
-        ),
+        lane_cross_check(&verified, "host", &diverged),
+        Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
+    );
+}
+
+/// The cross-check has to be against the SEALED lane, not against a value the caller passed in
+/// alongside it. When the two disagree — the caller believes one destination, the trust unit
+/// sealed another — the envelope agreeing with the caller's belief is not enough: the sealed lane
+/// is the authority, and a mismatch against it is a refusal.
+#[test]
+fn lane_cross_check_is_against_the_sealed_lane_not_the_callers_belief() {
+    use busbar_caps::{LaneId, TrustToken};
+    let seal = KernelSeal::acquire_for_kernel();
+    let trust = TrustToken::mint(&seal);
+    let verified = VerifiedDestination::seal(&trust, LaneId::new("bedrock-us-east-1"));
+
+    // The envelope carries a lane the trust unit did NOT seal.
+    let diverged = vec![("host".to_string(), "bedrock-eu-west-1".to_string())];
+    assert_eq!(
+        lane_cross_check(&verified, "host", &diverged),
+        Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
+    );
+
+    // The envelope carrying the sealed lane is the one case that passes.
+    let matching = vec![("host".to_string(), "bedrock-us-east-1".to_string())];
+    assert!(lane_cross_check(&verified, "host", &matching).is_ok());
+
+    // A missing field is a mismatch too — there is nothing to check the seal against.
+    assert_eq!(
+        lane_cross_check(&verified, "host", &[]),
         Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
     );
 }

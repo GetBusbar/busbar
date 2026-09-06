@@ -144,7 +144,13 @@ fn parse_call_suffix(
         Ok(u64::from_be_bytes(arr))
     }
     fn take_text(content: &[u8], off: &mut usize) -> StoreResult<String> {
-        Ok(String::from_utf8_lossy(take(content, off)?).into_owned())
+        // FAILS CLOSED like `take_num`, and for a sharper reason. A lossy decode substitutes U+FFFD
+        // for a byte no UTF-8 permits, which SILENTLY CHANGES THE FIELD — and the field is part of
+        // the byte stream the record's stored digest was sealed over, so verification then fails and
+        // a flipped bit in storage reads as someone having rewritten the chain. Refusing the field
+        // reports the corruption as corruption.
+        String::from_utf8(take(content, off)?.to_vec())
+            .map_err(|_| StoreError("call suffix text field is not utf-8".to_string()))
     }
     let mut off = 0usize;
     let ts = take_num(content, &mut off)?;

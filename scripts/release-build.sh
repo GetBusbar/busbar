@@ -93,24 +93,15 @@ ARCHIVE="busbar-${TARGET}.${SPEC_ARCHIVE}"
 # to `None` when the variable is absent. There is no build error, no warning, and no runtime
 # complaint until an operator installs a signed plugin and is told the binary "embeds no busbar
 # release key". Refusing to start the build is the only moment at which that is loud.
-if ! printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'; then
-  cat >&2 <<EOF
-[release-build] ############################################################
-[release-build] # REFUSING TO BUILD $TARGET WITHOUT BUSBAR_RELEASE_PUBKEY.
-[release-build] #
-[release-build] # It must be 64 hex characters (the ed25519 PUBLIC half; the private half is the
-[release-build] # BUSBAR_SIGN_KEY secret each plugin repo signs with). Got: '${BUSBAR_RELEASE_PUBKEY:-<unset>}'
-[release-build] #
-[release-build] # Without it this artifact would compile, link, pass its tests and ship, and every
-[release-build] # correctly-signed first-party plugin would be refused on this platform with
-[release-build] # "this build embeds no busbar release key". That is exactly what
-[release-build] # busbar-aarch64-unknown-linux-gnu did in 1.5.1, 1.5.2 and 1.5.3.
-[release-build] #
-[release-build] # In CI the value is the org variable BUSBAR_RELEASE_PUBKEY (visibility: all).
-[release-build] ############################################################
-EOF
-  exit 1
-fi
+#
+# ONE IMPLEMENTATION, NOT A COPY OF ONE. This used to be an inline re-implementation of exactly
+# what scripts/release-key-guard.sh's `require` half does, while the guard itself had ZERO callers
+# anywhere in scripts/ or .github/ - a named guard nobody ran, next to a copy nobody knew was a
+# copy. Two copies of a shape check drift, and the half that drifts is the one that is never
+# exercised. The guard is the implementation now; its `assert-embedded` half is the output side,
+# re-asserted against the shipped bytes by the `release_pubkey` row of .github/artifact-contract.json.
+echo "[release-build] asserting the release key before compiling $TARGET"
+scripts/release-key-guard.sh require
 echo "[release-build] target=$TARGET triple=$SPEC_TRIPLE pgo=$SPEC_PGO baseline=$SPEC_BASELINE archive=$SPEC_ARCHIVE key=${BUSBAR_RELEASE_PUBKEY:0:12}…"
 
 # THE BASELINE SWITCH, EXPORTED ONCE, HERE, FOR BOTH ARMS. scripts/pgo-build.sh reads it (and the
@@ -143,8 +134,16 @@ if [ "$SPEC_PGO" = "true" ]; then
 else
   # Flags kept byte-identical to the ones pgo-build.sh's optimised phase passes, minus the profile:
   # the two arms must differ in PGO and in nothing else, or "same build" is a claim rather than a
-  # fact. (No `--locked`: pgo-build.sh does not pass it either, and the lockfile freshness gate is
-  # `gate`'s job, upstream of this one.)
+  # fact.
+  #
+  # `--locked`, ON BOTH ARMS AND ON EVERY PHASE OF THE PGO ONE. This used to say "no --locked:
+  # pgo-build.sh does not pass it either, and the lockfile freshness gate is `gate`'s job, upstream
+  # of this one". `gate` does run `cargo build --workspace --locked` - but on a DIFFERENT job on a
+  # DIFFERENT runner. Nothing stopped the build of the bytes that actually ship from re-resolving
+  # dependencies if the lockfile were stale or absent, and cargo does that silently: the artifact
+  # would contain versions no lockfile records and no verification would notice. --locked is free
+  # when the lockfile is fresh and a hard refusal when it is not, which is exactly the property
+  # wanted on the shipped bytes rather than on a sibling job's.
   #
   # That parity includes the BOLT prerequisite: Linux targets link with --emit-relocs, same case
   # and same flag as pgo-build.sh (see the comment at its EMIT_RELOCS definition — llvm-bolt on
@@ -172,7 +171,7 @@ else
       aarch64-*-linux-*) LSE_FLAG="-Ctarget-feature=+lse" ;;
     esac
   fi
-  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" cargo build --release -p busbar --target "$SPEC_TRIPLE"
+  RUSTFLAGS="${EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" cargo build --release --locked -p busbar --target "$SPEC_TRIPLE"
   BIN="target/${SPEC_TRIPLE}/release/${SPEC_EXE}"
 fi
 [ -f "$BIN" ] || { echo "[release-build] the build produced no binary at $BIN" >&2; exit 1; }

@@ -83,13 +83,13 @@ fn walk(v: &Value, s: &Value, path: &str, depth: usize, errors: &mut Vec<String>
 
     // `const` and `enum` are exact-value constraints, and a mismatch is unambiguous.
     if let Some(c) = obj.get("const") {
-        if c != v {
+        if !json_eq(c, v) {
             errors.push(format!("{path}: expected the constant {c}, got {v}"));
             return;
         }
     }
     if let Some(Value::Array(allowed)) = obj.get("enum") {
-        if !allowed.iter().any(|a| a == v) {
+        if !allowed.iter().any(|a| json_eq(a, v)) {
             errors.push(format!(
                 "{path}: {v} is not one of the declared enum values"
             ));
@@ -164,6 +164,33 @@ fn walk(v: &Value, s: &Value, path: &str, depth: usize, errors: &mut Vec<String>
             }
         }
         _ => {}
+    }
+}
+
+/// ARE THESE THE SAME JSON VALUE? `PartialEq` on `Value` compares a number's REPRESENTATION, so it
+/// answers no for `1` against `1.0` — but JSON has one numeric type and those are one number, which
+/// is the same fact [`type_matches`] already acts on for `integer`. Left as a representation compare,
+/// an exact-value keyword would report a violation against a conforming upstream purely because its
+/// serialiser emitted a trailing `.0`, and a FALSE violation is the one answer this module must not
+/// give. Numbers are therefore compared by value and everything else structurally — recursing so the
+/// rule reaches a number nested inside an array or object constant too.
+fn json_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Number(x), Value::Number(y)) => match (x.as_f64(), y.as_f64()) {
+            (Some(x), Some(y)) => x == y,
+            // A number too large to reach `f64` is compared as written: there is no value-level
+            // answer available, and guessing one would be the false violation again.
+            _ => x == y,
+        },
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y).all(|(x, y)| json_eq(x, y))
+        }
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, xv)| y.get(k).is_some_and(|yv| json_eq(xv, yv)))
+        }
+        _ => a == b,
     }
 }
 

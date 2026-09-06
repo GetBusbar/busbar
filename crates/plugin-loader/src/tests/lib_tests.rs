@@ -788,16 +788,40 @@ fn linux_from_bytes_load_touches_no_disk() {
 /// when the worker pool landed. A real plugin may not assume caller-thread affinity either, so the
 /// fake should not model one.
 ///
-/// The `Mutex` also serializes the tests that use it. They already could not run concurrently (they
-/// share one global fake), and the loader test binary runs them in parallel, so the lock is what
-/// makes "set, then call" atomic per test rather than a race between two tests' setups.
+/// The `Mutex` here guards the VALUE, and nothing more. It does NOT make "set, then call" atomic:
+/// a test that sets the answer and then makes the call has released this lock in between, so a
+/// second test's setup lands in the gap and the first test's call reads the second test's answer.
+/// The claim it used to carry is what [`FAKE_CALL_IN_USE`] actually provides.
 static FAKE_CALL: std::sync::Mutex<(i32, &'static [u8])> = std::sync::Mutex::new((STATUS_OK, b""));
+
+/// What makes the fake a per-test instrument rather than a shared variable: a test that touches the
+/// fake takes this and does not give it back until the test is over, so its answer is still the one
+/// standing when its calls arrive.
+///
+/// Held for the TEST, not for the `with` closure. The set and the call it answers are separate
+/// statements in every one of these tests, and the whole defect is another test's set landing
+/// between them — a lock released at the end of `set` closes no gap at all. libtest runs each test
+/// on its own thread and drops that thread's locals when the test ends, which is exactly the extent
+/// wanted: the next test to reach for the fake waits for this one to finish.
+static FAKE_CALL_IN_USE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+thread_local! {
+    /// This test's hold on the fake, taken on first use and released when the test's thread ends.
+    static FAKE_CALL_HOLD: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 
 /// Set the answer the fake `busbar_call` gives next. Named `with`-style so the call sites that used
 /// the `thread_local!` API read the same.
 struct FakeCall;
 impl FakeCall {
     fn with<R>(&self, f: impl FnOnce(&FakeCallCell) -> R) -> R {
+        FAKE_CALL_HOLD.with(|held| {
+            let mut held = held.borrow_mut();
+            if held.is_none() {
+                *held = Some(FAKE_CALL_IN_USE.lock().unwrap_or_else(|p| p.into_inner()));
+            }
+        });
         f(&FakeCallCell)
     }
 }
@@ -806,15 +830,22 @@ impl FakeCallCell {
     fn set(&self, v: (i32, &'static [u8])) {
         *FAKE_CALL.lock().unwrap_or_else(|p| p.into_inner()) = v;
     }
-    fn get(&self) -> (i32, &'static [u8]) {
-        *FAKE_CALL.lock().unwrap_or_else(|p| p.into_inner())
-    }
 }
+
+/// The answer the fake is currently holding, read WITHOUT taking [`FAKE_CALL_IN_USE`].
+///
+/// `busbar_call` runs on a loader-owned worker thread, which is not the test's thread and must
+/// never queue behind a test's hold on the fake — that would be the calls waiting on the very lock
+/// that exists to keep them answering the right test.
+fn fake_call_answer() -> (i32, &'static [u8]) {
+    *FAKE_CALL.lock().unwrap_or_else(|p| p.into_inner())
+}
+
 #[allow(non_upper_case_globals)]
 const FAKE_CALL_HANDLE: FakeCall = FakeCall;
 
-/// A fake `busbar_call`: allocate a buffer holding the thread-local body and return the
-/// thread-local status. Mimics the plugin side (plugin allocates, engine frees via `busbar_free`).
+/// A fake `busbar_call`: allocate a buffer holding the chosen body and return the chosen status.
+/// Mimics the plugin side (plugin allocates, engine frees via `busbar_free`).
 unsafe extern "C-unwind" fn fake_call(
     _handle: *mut c_void,
     _req: *const u8,
@@ -822,7 +853,7 @@ unsafe extern "C-unwind" fn fake_call(
     out: *mut *mut u8,
     out_len: *mut usize,
 ) -> i32 {
-    let (status, body) = FAKE_CALL_HANDLE.with(|c| c.get());
+    let (status, body) = fake_call_answer();
     if body.is_empty() {
         *out = std::ptr::null_mut();
         *out_len = 0;
@@ -834,6 +865,35 @@ unsafe extern "C-unwind" fn fake_call(
         *out_len = len;
     }
     status
+}
+
+/// The harness's own guard, and the reason every fake-call test below can be trusted: while one
+/// test is using the fake, another test's setup does not land on it.
+///
+/// Written as the race itself rather than as an assertion about a lock, because the race is what
+/// used to happen: with the answers held in a plain global, a sibling test starting between this
+/// test's `set` and the call it answers replaced the status under it, and the test failed — or
+/// passed — for a reason that had nothing to do with what it tests. The other thread is deliberately
+/// not joined: it is still waiting for this test to end, which is the whole claim.
+#[test]
+fn a_test_using_the_fake_call_keeps_its_answer_until_it_is_finished() {
+    FAKE_CALL_HANDLE.with(|c| c.set((STATUS_PANIC, b"this test's answer")));
+    let (landed_tx, landed) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        FAKE_CALL_HANDLE.with(|c| c.set((STATUS_OK, b"a sibling test's answer")));
+        let _ = landed_tx.send(());
+    });
+    assert!(
+        landed
+            .recv_timeout(std::time::Duration::from_millis(500))
+            .is_err(),
+        "a sibling test set the fake's answer while this test was still using it"
+    );
+    assert_eq!(
+        fake_call_answer().0,
+        STATUS_PANIC,
+        "the answer a test set must be the answer its own calls read"
+    );
 }
 
 /// Free a buffer `fake_call` allocated (reconstruct the boxed slice and drop it).

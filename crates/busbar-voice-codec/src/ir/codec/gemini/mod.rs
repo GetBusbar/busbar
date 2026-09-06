@@ -38,12 +38,12 @@
 //! because a stand-in frame carrying none of the semantics reads upstream as the concept surviving.
 
 use super::{decode_audio, encode_audio, parse, str_at, wire_of, DecodeState};
-use super::{DuplexReader, DuplexWriter, WireEvent};
+use super::{DuplexReader, DuplexWriter, WireEvent, WireRef};
 use crate::ir::config::{MaxOutputTokens, SessionConfig};
 use crate::ir::control::{IrDuplexControl, IrVad};
 use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::{AudioFormat, IrAudioFrame, UpDown};
-use crate::ir::tool::IrDuplexTool;
+use crate::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
+use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -67,11 +67,28 @@ mod wire {
     pub const USAGE_METADATA: &str = "usageMetadata";
 }
 
-/// The canonical Gemini Live PCM mime types: 16 kHz signed-16 LE for the UPLINK (the required input
-/// rate) and 24 kHz for the DOWNLINK (the model's synthesis rate). Named so the writer frames a
-/// consistent mime and the reader's format probe agrees.
-const UPLINK_MIME: &str = "audio/pcm;rate=16000";
-const DOWNLINK_MIME: &str = "audio/pcm;rate=24000";
+/// The Gemini Live mime for 24 kHz signed-16 LE PCM — the model's synthesis rate on the downlink, and
+/// the rate the shared `pcm16` format IS. Named once so the writer's mime and the reader's format
+/// probe never drift apart.
+const PCM_24K_MIME: &str = "audio/pcm;rate=24000";
+
+/// THE MIME FOR THE FORMAT THE BYTES ARE ACTUALLY IN. Gemini tags the rate per frame; the plane
+/// negotiates it per session, so the mime is derived from the negotiated format rather than fixed.
+///
+/// The uplink used to state `rate=16000` unconditionally — Gemini's REQUIRED input rate — while the
+/// bytes were the negotiated `pcm16`, which this plane defines as 24 kHz. That is a label describing
+/// audio nobody sent: the peer resamples nothing and plays 24 kHz samples at 16 kHz. The rate the
+/// plane does not convert is a real gap, recorded as a named asymmetry in the cross-dialect map; a
+/// mime that lies about it is a different, worse thing, because it makes the gap invisible.
+///
+/// `None` for a format Gemini has no PCM mime for: this dialect has no g711 mode at all (the map
+/// records the telephony codecs as having no Gemini twin), and there is no honest mime to write.
+fn pcm_mime(fmt: AudioFormat) -> Option<&'static str> {
+    match fmt {
+        AudioFormat::Pcm16 => Some(PCM_24K_MIME),
+        AudioFormat::G711Ulaw => None,
+    }
+}
 
 /// THE Gemini Live DIALECT CODEC — the plane's SECOND dialect. A unit struct: all per-session state
 /// lives in the shared [`DecodeState`], so the codec is stateless and shareable, exactly like
@@ -81,24 +98,33 @@ pub struct GeminiLiveCodec;
 
 // ── mime / audio-format helpers ───────────────────────────────────────────────────────────────────
 
-/// Map a Gemini audio `mimeType` to the shared [`AudioFormat`]. Gemini's downlink is 24 kHz signed-16
-/// PCM — exactly the shared `Pcm16` (the truncate math measures against this). Anything else the plane
-/// does not model returns `None`.
+/// Map a Gemini audio `mimeType` to the shared [`AudioFormat`], IN THE DIRECTION IT ARRIVED.
+///
+/// The two directions of this dialect run at DIFFERENT rates — 16 kHz is what Gemini requires on its
+/// uplink, 24 kHz is what the model synthesizes — and the shared `Pcm16` token carries exactly one
+/// bytes-per-millisecond constant: the 24 kHz one. That constant is what the barge-in truncate math
+/// divides by, and only DOWNLINK audio feeds it.
+///
+/// So the probe is directional. UPLINK PCM at either rate is `Pcm16` (signed-16 LE either way, and no
+/// millisecond count is taken from it). DOWNLINK PCM is accepted only at the rate the shared token
+/// actually means: a 16 kHz downlink blob is NOT `Pcm16`, and admitting it would meter 480 bytes of
+/// 16 kHz audio (30 ms) as 10 ms, cutting the user off mid-word at the next barge-in. An untagged
+/// `audio/pcm` takes the direction's own rate, which is what an untagged frame in that direction is.
 #[must_use]
-pub fn audio_format_from_mime(mime: &str) -> Option<AudioFormat> {
+pub fn audio_format_from_mime(mime: &str, dir: UpDown) -> Option<AudioFormat> {
     let m = mime.to_ascii_lowercase();
     if !m.starts_with("audio/pcm") {
         return None;
     }
-    // The downlink synthesis rate is the one the barge-in truncate math measures against.
-    if m.contains("rate=24000") || !m.contains("rate=") {
-        Some(AudioFormat::Pcm16)
-    } else if m.contains("rate=16000") {
-        // Uplink PCM: still signed-16 LE; the shared enum carries the 24 kHz constant, and uplink
-        // never feeds the (downlink-only) truncate math, so `Pcm16` is the faithful shared token.
-        Some(AudioFormat::Pcm16)
-    } else {
-        None
+    let rate_16k = m.contains("rate=16000");
+    let rate_24k = m.contains("rate=24000");
+    let untagged = !m.contains("rate=");
+    match dir {
+        // No millisecond count is taken from the uplink, so either PCM rate is the shared token.
+        UpDown::Up if rate_16k || rate_24k || untagged => Some(AudioFormat::Pcm16),
+        // The truncate math measures against THIS rate; anything else is a different format.
+        UpDown::Down if rate_24k || untagged => Some(AudioFormat::Pcm16),
+        _ => None,
     }
 }
 
@@ -149,7 +175,10 @@ fn vad_from_realtime_input_config(ric: &Value) -> Option<IrVad> {
 }
 
 /// Decode a Gemini `setup` object into the shared [`SessionConfig`] (the cross-dialect superset).
-fn session_config_from_setup(setup: &Value) -> SessionConfig {
+///
+/// A field the plane cannot model is DROPPED and RECORDED (the per-field drop-and-warn discipline the
+/// OpenAI session patch already follows) — never defaulted into a working setting nobody asked for.
+fn session_config_from_setup(setup: &Value, st: &mut DecodeState) -> SessionConfig {
     let gc = setup
         .get("generationConfig")
         .cloned()
@@ -171,11 +200,21 @@ fn session_config_from_setup(setup: &Value) -> SessionConfig {
         .and_then(|s| s.get("voiceName"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let max_output_tokens = gc
-        .get("maxOutputTokens")
-        .and_then(Value::as_u64)
-        .and_then(|n| u32::try_from(n).ok())
-        .map(MaxOutputTokens::Limit);
+    // A CAP THAT DOES NOT FIT IS NOT "NO CAP". Present-but-unreadable is a REFUSAL of that field: it
+    // is dropped and recorded, and the rest of the setup stands. Letting it fall through to `None`
+    // silently handed the session an UNBOUNDED response where the client asked for a bounded one —
+    // the one direction a limit must never move on its own. (The OpenAI dialect refuses the same
+    // narrowing on its own `max_response_output_tokens`.)
+    let max_output_tokens = match gc.get("maxOutputTokens") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+            Some(n) => Some(MaxOutputTokens::Limit(n)),
+            None => {
+                st.record_dropped_field("maxOutputTokens");
+                None
+            }
+        },
+    };
     SessionConfig {
         model: setup
             .get("model")
@@ -326,13 +365,13 @@ fn usage_to_metadata(u: &IrDuplexUsage) -> Value {
 // ── reader ──────────────────────────────────────────────────────────────────────────────────────
 
 impl DuplexReader for GeminiLiveCodec {
-    fn read_up(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrClientEvent> {
-        let Some(v) = parse(&evt) else {
+    fn read_up_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrClientEvent> {
+        let Some(v) = parse(wire) else {
             return Vec::new();
         };
 
         if let Some(setup) = v.get(wire::SETUP) {
-            let cfg = session_config_from_setup(setup);
+            let cfg = session_config_from_setup(setup, st);
             // Gemini's downlink synthesis is 24 kHz PCM — the format the truncate math measures.
             if cfg.modalities.iter().any(|m| m == "audio") || cfg.modalities.is_empty() {
                 st.set_output_format(AudioFormat::Pcm16);
@@ -357,7 +396,7 @@ impl DuplexReader for GeminiLiveCodec {
             // modeled audio format has no shared frame (drop).
             let mut out = Vec::new();
             let mut push_blob = |blob: &Value, out: &mut Vec<IrClientEvent>| {
-                if audio_format_from_mime(str_at(blob, "mimeType")).is_none() {
+                if audio_format_from_mime(str_at(blob, "mimeType"), UpDown::Up).is_none() {
                     return; // non-audio realtime input has no shared frame (drop).
                 }
                 let Some(media) = decode_audio(str_at(blob, "data")) else {
@@ -367,6 +406,8 @@ impl DuplexReader for GeminiLiveCodec {
                     dir: UpDown::Up,
                     seq: st.next_up_seq(),
                     media,
+                    // This dialect names no item on either audio direction.
+                    origin: IrAudioRef::default(),
                 }));
             };
             // Prefer the GA single blob when present so a GA peer never double-decodes; else fall back
@@ -423,8 +464,8 @@ impl DuplexReader for GeminiLiveCodec {
         Vec::new()
     }
 
-    fn read_down(&self, evt: WireEvent, st: &mut DecodeState) -> Vec<IrServerEvent> {
-        let Some(v) = parse(&evt) else {
+    fn read_down_ref(&self, wire: WireRef<'_>, st: &mut DecodeState) -> Vec<IrServerEvent> {
+        let Some(v) = parse(wire) else {
             return Vec::new();
         };
 
@@ -444,7 +485,9 @@ impl DuplexReader for GeminiLiveCodec {
                 for p in parts {
                     if let Some(inline) = p.get("inlineData") {
                         let mime = str_at(inline, "mimeType");
-                        if audio_format_from_mime(mime).is_none() {
+                        // The played-out position below is measured in the shared format's own
+                        // bytes-per-ms, so a downlink blob at any other rate has no frame here.
+                        if audio_format_from_mime(mime, UpDown::Down).is_none() {
                             continue;
                         }
                         let Some(media) = decode_audio(str_at(inline, "data")) else {
@@ -455,6 +498,9 @@ impl DuplexReader for GeminiLiveCodec {
                             dir: UpDown::Down,
                             seq: st.next_down_seq(),
                             media,
+                            // A Gemini `modelTurn` part carries no response/item correlation, and an
+                            // id nobody issued is worse than an absent one.
+                            origin: IrAudioRef::default(),
                         }));
                     }
                     // A `text` part / transcription side-channel has no shared IR home (drop+warn).
@@ -531,6 +577,38 @@ fn tool_call_frame(fc: Value) -> Value {
     json!({ wire::TOOL_CALL: { "functionCalls": [fc] } })
 }
 
+/// FRAME THE ATOMIC CALL AT ITS CLOSE — the writer half of the streamed⟷atomic asymmetry.
+///
+/// The shared IR streams a tool call's arguments (the OpenAI dialect's shape); Gemini delivers the
+/// call WHOLE. So an argument FRAGMENT is not a frame: it is accumulated on the session
+/// ([`DecodeState::push_call_args`]), and the call is framed ONCE here, when the IR closes it, with
+/// the arguments parsed as one whole. Framing each fragment instead parsed `{"loc` alone, got nothing,
+/// and dispatched the call with `args: null` — a tool invoked with arguments the model never asked
+/// for. When the accumulation does not parse, this frames NOTHING for the same reason.
+fn atomic_tool_call(call_ref: CallRef, call_id: &str, st: &mut DecodeState) -> Option<Value> {
+    let args = st.take_call_args(call_ref)?;
+    let mut fc = serde_json::Map::new();
+    fc.insert("id".into(), json!(call_id));
+    let name = st.call_name(call_id);
+    if !name.is_empty() {
+        fc.insert("name".into(), json!(name));
+    }
+    fc.insert("args".into(), args);
+    Some(tool_call_frame(Value::Object(fc)))
+}
+
+/// A TOOL PAYLOAD, AS THIS DIALECT MUST STATE IT. Gemini's `functionResponse.response` is a JSON
+/// OBJECT; the shared IR carries the tool's output as OPAQUE BYTES, because the dialect it was named
+/// from (`function_call_output.output`) is a FREE-FORM STRING — a tool that answers `OK` is answering.
+///
+/// So: JSON rides as the value it is, and anything else is WRAPPED (`{"result": "<the text>"}`) rather
+/// than flattened to `null`. `null` told the model the tool returned nothing, which is a different
+/// answer from the one the tool gave — the same confusion the argument seam above refuses.
+fn tool_payload(output: &Bytes) -> Value {
+    serde_json::from_slice::<Value>(output)
+        .unwrap_or_else(|_| json!({ "result": String::from_utf8_lossy(output).into_owned() }))
+}
+
 /// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a
 /// `functionResponse`; it is emitted whenever the plane knows it (remembered from the originating
 /// call) and omitted when it does not — an invented name would answer for a tool nobody called.
@@ -540,21 +618,21 @@ fn tool_response_frame(call_id: &str, name: &str, output: &Bytes) -> Value {
     if !name.is_empty() {
         fr.insert("name".into(), json!(name));
     }
-    fr.insert(
-        "response".into(),
-        serde_json::from_slice::<Value>(output).unwrap_or(Value::Null),
-    );
+    fr.insert("response".into(), tool_payload(output));
     json!({ wire::TOOL_RESPONSE: { "functionResponses": [Value::Object(fr)] } })
 }
 
 impl DuplexWriter for GeminiLiveCodec {
     /// Gemini has no uplink verb for several OpenAI-shaped controls, so this writer genuinely DROPS
     /// them (`None`) rather than framing a stand-in.
-    fn write_up(&self, ev: IrClientEvent) -> Option<WireEvent> {
+    fn write_up(&self, ev: IrClientEvent, st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
+            // THE GA UPLINK SHAPE: `realtimeInput.audio`, a SINGLE inline blob — the spelling this
+            // codec's own reader prefers, and the one the cross-dialect map names. The legacy
+            // `mediaChunks[]` array is still READ (a peer may speak it) but no longer written.
             IrClientEvent::AudioFrame(f) => json!({
                 wire::REALTIME_INPUT: {
-                    "mediaChunks": [ { "mimeType": UPLINK_MIME, "data": encode_audio(&f.media) } ]
+                    "audio": { "mimeType": pcm_mime(st.output_format())?, "data": encode_audio(&f.media) }
                 }
             }),
             IrClientEvent::Control(c) => match c {
@@ -591,43 +669,58 @@ impl DuplexWriter for GeminiLiveCodec {
                     ..
                 } => tool_response_frame(&call_id, &name, &output),
                 // The other tool variants are server→client; a client-side writer never authors them,
-                // but frame them symmetrically rather than panic.
-                IrDuplexTool::CallOpen { call_id, name, .. } => {
+                // but frame them symmetrically (through the same accumulate-then-frame-at-close seam)
+                // rather than panic.
+                IrDuplexTool::CallOpen {
+                    call_ref,
+                    call_id,
+                    name,
+                } => {
+                    st.remember_call_name(&call_id, &name);
+                    let _ = call_ref;
                     tool_call_frame(json!({ "id": call_id, "name": name }))
                 }
                 IrDuplexTool::CallArgs {
-                    call_id,
+                    call_ref,
                     json_delta,
                     ..
-                } => tool_call_frame(json!({
-                    "id": call_id,
-                    "args": serde_json::from_slice::<Value>(&json_delta).unwrap_or(Value::Null),
-                })),
-                IrDuplexTool::CallClose { call_id, .. } => {
-                    tool_call_frame(json!({ "id": call_id }))
+                } => {
+                    st.push_call_args(call_ref, &json_delta);
+                    return None;
+                }
+                IrDuplexTool::CallClose { call_ref, call_id } => {
+                    atomic_tool_call(call_ref, &call_id, st)?
                 }
             },
         };
         Some(wire_of(&v))
     }
 
-    fn write_down(&self, ev: IrServerEvent) -> WireEvent {
+    fn write_down(&self, ev: IrServerEvent, st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
             IrServerEvent::SessionCreated { session } => json!({ wire::SETUP_COMPLETE: session }),
             IrServerEvent::Tool(t) => match t {
-                IrDuplexTool::CallOpen { call_id, name, .. } => {
+                IrDuplexTool::CallOpen {
+                    call_ref,
+                    call_id,
+                    name,
+                } => {
+                    // The announcement names the tool; the ARGUMENTS follow as fragments and the call
+                    // is framed whole at its close, so the name is remembered for that frame.
+                    st.remember_call_name(&call_id, &name);
+                    let _ = call_ref;
                     tool_call_frame(json!({ "id": call_id, "name": name }))
                 }
                 IrDuplexTool::CallArgs {
-                    call_id,
+                    call_ref,
                     json_delta,
                     ..
-                } => tool_call_frame(json!({
-                    "id": call_id,
-                    "args": serde_json::from_slice::<Value>(&json_delta).unwrap_or(Value::Null),
-                })),
-                IrDuplexTool::CallClose { call_id, .. } => {
-                    tool_call_frame(json!({ "id": call_id }))
+                } => {
+                    st.push_call_args(call_ref, &json_delta);
+                    return None;
+                }
+                IrDuplexTool::CallClose { call_ref, call_id } => {
+                    atomic_tool_call(call_ref, &call_id, st)?
                 }
                 IrDuplexTool::CallResult {
                     call_id,
@@ -645,7 +738,7 @@ impl DuplexWriter for GeminiLiveCodec {
             IrServerEvent::AudioFrame(f) => json!({
                 wire::SERVER_CONTENT: {
                     "modelTurn": { "parts": [ { "inlineData": {
-                        "mimeType": DOWNLINK_MIME, "data": encode_audio(&f.media)
+                        "mimeType": PCM_24K_MIME, "data": encode_audio(&f.media)
                     } } ] }
                 }
             }),
@@ -660,7 +753,7 @@ impl DuplexWriter for GeminiLiveCodec {
                 wire::SERVER_CONTENT: { "error": { "code": code, "message": message } }
             }),
         };
-        wire_of(&v)
+        Some(wire_of(&v))
     }
 }
 

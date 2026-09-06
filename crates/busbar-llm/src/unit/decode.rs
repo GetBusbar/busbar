@@ -159,7 +159,9 @@ pub fn model_from<'a>(
     let model = if let Some(m) = model_hint {
         Some(m.to_string())
     } else if content_type.starts_with("multipart/") {
-        crate::native_ingress::multipart_model(body)
+        // The content type is handed on rather than dropped: it carries the boundary, and a
+        // multipart body has no parts without one. Rung 2 reads a document, not a byte pattern.
+        crate::native_ingress::multipart_model(content_type, body)
     } else {
         parsed.and_then(|v| {
             v.probe()
@@ -425,7 +427,8 @@ mod tests {
             None,
         );
         // The live arm, run here on the same bytes.
-        let live = crate::native_ingress::multipart_model(&body);
+        let live =
+            crate::native_ingress::multipart_model("multipart/form-data; boundary=zz", &body);
         assert_eq!(
             step.as_deref().ok(),
             live.as_deref(),

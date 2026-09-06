@@ -154,23 +154,59 @@ pub const fn field_present(advertised_size: u32, field_end: usize) -> bool {
     advertised_size as usize >= field_end
 }
 
-/// Read a `Copy` field from a sized POD struct ONLY if its `size` proves the sender wrote it,
-/// yielding `Option<FieldTy>`. This is the mechanical form of the append-only rule: a field appended
-/// in a later minor is `None` when read from an older sender's struct, never undefined.
+/// The byte size of whatever `p` points at — the type-level companion to [`field_present`], used to
+/// compute a field's END offset from a raw field pointer without ever dereferencing one.
+#[inline]
+#[must_use]
+pub const fn pointee_size<T>(_p: *const T) -> usize {
+    core::mem::size_of::<T>()
+}
+
+/// Read a `Copy` field from a sized POD struct ONLY if its advertised `size` proves the sender wrote
+/// it, yielding `Option<FieldTy>`. This is the mechanical form of the append-only rule: a field
+/// appended in a later minor is `None` when read from an older sender's struct, never undefined.
+///
+/// Takes a RAW POINTER and the advertised size, never a reference. The whole point of the guard is
+/// that the peer's buffer may be SHORTER than the struct it describes — an older sender's `Usage` is
+/// genuinely fewer bytes than this build's — and forming a `&Usage` over such a buffer asserts the
+/// full struct is there and dereferenceable the instant the reference exists, which is precisely the
+/// claim the guard was written to avoid making. The field is reached with `addr_of!` and copied with
+/// `read_unaligned` only AFTER [`field_present`] says the advertised size covers it, so nothing past
+/// the sender's own bytes is ever touched and no alignment the peer did not promise is assumed.
+///
+/// # Safety
+/// The macro expands inline, so its obligation is documented rather than compiler-enforced: `ptr`
+/// must address at least `size` live, initialized bytes laid out as the leading prefix of `$struct`.
+/// It need not be aligned, and it need NOT be a whole `$struct` — that latitude is the entire reason
+/// the guard takes a pointer.
 ///
 /// ```
 /// use busbar_plugin::{read_sized_field, hot::Facts};
 /// let g = Facts::new(10, 100, 1, 0, 0, b"pool");
 /// // `tokens` lives within every non-truncated `Facts`, so it reads as `Some`.
-/// assert_eq!(read_sized_field!(&*g, Facts, tokens), Some(10));
+/// assert_eq!(read_sized_field!(&*g, g.size, Facts, tokens), Some(10));
 /// ```
 #[macro_export]
 macro_rules! read_sized_field {
-    ($val:expr, $struct:ty, $field:ident) => {{
-        let v = $val;
-        let end = ::core::mem::offset_of!($struct, $field) + ::core::mem::size_of_val(&v.$field);
-        if $crate::field_present(v.size, end) {
-            ::core::option::Option::Some(v.$field)
+    ($ptr:expr, $size:expr, $struct:ty, $field:ident) => {{
+        let p: *const $struct = $ptr;
+        let advertised: u32 = $size;
+        // The field's END offset, derived WITHOUT touching `p`: a full-size `MaybeUninit` probe is a
+        // real, correctly-sized, correctly-aligned allocation, and `addr_of!` only computes an
+        // address — it never reads the uninitialized bytes. Const-folds to a literal.
+        let probe = ::core::mem::MaybeUninit::<$struct>::uninit();
+        let end = ::core::mem::offset_of!($struct, $field)
+            + $crate::pointee_size(
+                // SAFETY: `probe` is a whole, aligned `$struct`; `addr_of!` performs no read.
+                unsafe { ::core::ptr::addr_of!((*probe.as_ptr()).$field) },
+            );
+        if $crate::field_present(advertised, end) {
+            // SAFETY: `field_present` just proved the sender's advertised size reaches THROUGH this
+            // field, so the projection lands inside the caller-guaranteed live prefix, and
+            // `read_unaligned` copies it out without forming a reference or assuming alignment.
+            ::core::option::Option::Some(unsafe {
+                ::core::ptr::read_unaligned(::core::ptr::addr_of!((*p).$field))
+            })
         } else {
             ::core::option::Option::None
         }

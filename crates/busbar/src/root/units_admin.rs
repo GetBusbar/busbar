@@ -54,7 +54,8 @@ use busbar_unit_scope::Scope;
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_unit_verbs::{
-    KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
+    ApprovalState, KernelVerb, PostureCtx, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS,
 };
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
@@ -141,7 +142,7 @@ impl AdminAnswer {
         let mut cursor = 0usize;
         let status = u16::from_be_bytes(take(bytes, &mut cursor, 2)?.try_into().ok()?);
         let count = u32::from_be_bytes(take(bytes, &mut cursor, 4)?.try_into().ok()?);
-        let mut headers = Vec::with_capacity(count as usize);
+        let mut headers = Vec::with_capacity(header_capacity(count, bytes.len() - cursor));
         for _ in 0..count {
             let name = String::from_utf8(pull_bytes(bytes, &mut cursor)?.to_vec()).ok()?;
             let value = String::from_utf8(pull_bytes(bytes, &mut cursor)?.to_vec()).ok()?;
@@ -157,6 +158,19 @@ impl AdminAnswer {
             body,
         })
     }
+}
+
+/// How much room to make for a frame's headers, given the bytes still in hand.
+///
+/// The count is a claim the frame makes about itself, and the loop reading the headers is what
+/// checks it. Reserving on the claim alone hands an arbitrary allocation size to whoever wrote the
+/// bytes — a truncated or corrupt row asking for billions of headers, which is not a parse failure
+/// but a failed allocation, and a failed allocation is the process leaving rather than a `None`
+/// coming back. Every header costs at least its two length prefixes on the wire, so the remaining
+/// bytes bound how many there can actually be.
+fn header_capacity(count: u32, remaining: usize) -> usize {
+    const MIN_HEADER_BYTES: usize = 8;
+    (count as usize).min(remaining / MIN_HEADER_BYTES)
 }
 
 fn push_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
@@ -984,6 +998,11 @@ struct AdminInFlight {
     request: AdminRequest,
     verb: Option<ResolvedVerb>,
     granted: Option<VerbScope>,
+    /// Who the auth unit said is calling, as the loop sealed it. Kept here rather than re-derived
+    /// downstream because the credential that was presented is NOT the identity that was resolved:
+    /// the identity is what a record attributes to, and the credential is a secret that must not
+    /// travel past the step that verified it.
+    principal: Option<PrincipalId>,
     answer: Option<AdminAnswer>,
 }
 
@@ -1011,6 +1030,7 @@ impl AdminUnits {
                 request,
                 verb: None,
                 granted: None,
+                principal: None,
                 answer: None,
             },
         );
@@ -1075,6 +1095,17 @@ impl AdminUnits {
         }
     }
 
+    /// Keep the identity the auth step resolved, for the two steps downstream that attribute to it.
+    fn set_principal(&self, key: UnitKey, principal: PrincipalId) {
+        if let Some(unit) = self.lock().get_mut(&key) {
+            unit.principal = Some(principal);
+        }
+    }
+
+    fn principal(&self, key: UnitKey) -> Option<PrincipalId> {
+        self.lock().get(&key).and_then(|u| u.principal.clone())
+    }
+
     fn answer(&self, key: UnitKey) -> Option<AdminAnswer> {
         self.lock().get(&key).and_then(|u| u.answer.clone())
     }
@@ -1101,8 +1132,61 @@ pub struct AdminBinding {
     /// figures that surface never kept, so they need somewhere else to reach, and giving them their
     /// own read-only seam is what stops the dispatch from acquiring a way to read money.
     pub ledger: Arc<dyn LedgerView>,
+    /// Where the money-governance posture is read from.
+    ///
+    /// A third seam, and it has to be one: the two gates the 17 verbs are checked against are sealed
+    /// state, not request state, so nothing on the request can answer them and nothing this file
+    /// holds is entitled to decide them. Bound to [`UnsealedPosture`] until a root binds a reader for
+    /// the journal the ceremony writes.
+    pub posture: Arc<dyn PostureView>,
     /// The requests currently being walked.
     pub units: AdminUnits,
+}
+
+/// Where the two sealed gates a money-governance verb is checked against are read from.
+///
+/// The verbs unit takes both as plain values and says so: resolving them is the integrator's, which
+/// is this file. What the integrator may NOT do is invent them — a posture invented at the call site
+/// is a gate that reports whatever the call site wrote rather than what the fleet sealed, which is
+/// the same thing as no gate at all in one direction and an unliftable refusal in the other.
+///
+/// So the answer is an option, and `None` means "this node cannot read what the fleet sealed". A
+/// verb whose posture is unresolved is refused by the verbs unit rather than admitted under a
+/// guessed one, which is the only safe reading: a reader that has stopped working must not look like
+/// a fleet that never ran a ceremony.
+pub trait PostureView: Send + Sync {
+    /// The posture this verb is checked against, and this actor's approval standing for it.
+    ///
+    /// The actor is named because the approval half is per-maker: whether an `approve` exists for a
+    /// pending mutation, and whether its approver is somebody other than the principal now asking,
+    /// is a question about this caller and not about the node.
+    fn resolve(&self, verb: KernelVerb, actor: &str) -> Option<(PostureCtx, ApprovalState)>;
+}
+
+/// The posture of a node that has sealed no policy at all.
+///
+/// Exactly what the design says a fresh install and an upgrade are, said as data rather than assumed
+/// at the call site: no operator ceremony has run, so the irreducible verbs that need one are
+/// refused, and dual control is single, so every other mutation applies immediately. The approval
+/// standing is `NotYetApproved` because nothing has approved anything — under `Single` it is never
+/// consulted, and stating the true value rather than a convenient one is what stops this default
+/// from becoming a pass the moment a real posture is bound beside it.
+///
+/// This is a statement about a node with no journal, NOT a fallback for one whose journal could not
+/// be read. That case answers `None` and is refused.
+#[derive(Debug, Default)]
+pub struct UnsealedPosture;
+
+impl PostureView for UnsealedPosture {
+    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
+        Some((
+            PostureCtx {
+                operator: busbar_unit_verbs::OperatorState::Unset,
+                dual_control: busbar_unit_verbs::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        ))
+    }
 }
 
 impl std::fmt::Debug for AdminBinding {
@@ -1126,6 +1210,7 @@ impl AdminBinding {
         AdminBinding {
             dispatch,
             ledger: Arc::new(UnopenedLedger),
+            posture: Arc::new(UnsealedPosture),
             units: AdminUnits::new(),
         }
     }
@@ -1134,6 +1219,13 @@ impl AdminBinding {
     #[must_use]
     pub fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
         self.ledger = ledger;
+        self
+    }
+
+    /// Bind the money-governance gates to the posture a fleet actually sealed.
+    #[must_use]
+    pub fn with_posture_view(mut self, posture: Arc<dyn PostureView>) -> Self {
+        self.posture = posture;
         self
     }
 }
@@ -1325,8 +1417,12 @@ pub(crate) fn verify(
     binding: &AdminBinding,
     token: &UnitToken<Verify>,
     ctx: &UnitCtx,
-    _principal: &PrincipalId,
+    principal: &PrincipalId,
 ) -> Decision<Verify> {
+    // The first step the loop hands the resolved identity to, so it is the step that keeps it. Every
+    // later step that has to say WHO reads it from here rather than from the request, because the
+    // request carries the presented credential and a credential is not an identity.
+    binding.units.set_principal(ctx.key, principal.clone());
     match binding.units.verb(ctx.key) {
         None => Decision::refuse(token, Refusal::new(ReasonCode::NoDestination)),
         Some(_resolved) => Decision::proceed(token, Vec::new()),
@@ -1454,17 +1550,28 @@ pub(crate) fn route(
         CONFIG_CLASS_RULES,
     );
 
+    // The same identity the record attributes to, so the rate-limit bucket, the audit row and the
+    // maker half of the maker-checker rule all name one actor. Keying any of them on the credential
+    // instead let one principal be two by presenting a second token.
+    let actor = actor_of(binding, ctx.key);
+    // Both gates come from the seam, together, because they are one question about one fleet asked
+    // at one moment. An unresolvable posture travels as `None` and the verbs unit refuses the verb
+    // for it: the two gates exist to stop an irreversible money operation, so a node that cannot say
+    // what its fleet sealed must not run one.
+    let resolved_posture = binding.posture.resolve(verb, &actor);
+    let (posture, approval) = match resolved_posture {
+        Some((posture, approval)) => (Some(posture), approval),
+        None => (None, busbar_unit_verbs::ApprovalState::NotYetApproved),
+    };
+
     match verbs.execute(
         verb,
         admin,
-        request.credential.as_deref().unwrap_or("admin"),
+        &actor,
         granted,
         request.at,
-        Some(busbar_unit_verbs::PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Unset,
-            dual_control: busbar_unit_verbs::DualControl::Single,
-        }),
-        busbar_unit_verbs::ApprovalState::Approved,
+        posture,
+        approval,
         &request.body,
     ) {
         Ok(packed) => match AdminAnswer::unpack(&packed) {
@@ -1496,6 +1603,27 @@ pub(crate) fn route(
 fn mints_its_own_identity(verb: KernelVerb) -> bool {
     matches!(verb, KernelVerb::PostKeys | KernelVerb::PostKeysIdRotate)
 }
+
+/// The identity an administrative record attributes this unit to.
+///
+/// The resolved principal the auth step produced, and NEVER the bytes the caller presented. A record
+/// written from the credential is a record that publishes a live bearer secret to everyone entitled
+/// to read the administrative history — which is a wider set than the set entitled to hold the
+/// secret — and it also attributes two callers sharing one token to two different actors while
+/// attributing one caller rotating a token to one actor per rotation.
+///
+/// The fallback is a literal rather than the credential for the same reason: a unit refused before
+/// the identity was resolved has no actor to name, and saying so is the honest record.
+fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
+    binding
+        .units
+        .principal(key)
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| UNRESOLVED_ACTOR.to_string())
+}
+
+/// What an administrative record names when no identity was resolved for the unit.
+const UNRESOLVED_ACTOR: &str = "admin";
 
 /// The verbs unit's refusal vocabulary, said in the kernel's.
 ///
@@ -1560,7 +1688,7 @@ pub(crate) fn audit(
             resolved.verb,
             &request.path,
             outcome_word(outcome),
-            request.credential.as_deref().unwrap_or("admin"),
+            &actor_of(binding, ctx.key),
         );
     }
     Decision::proceed(
@@ -1597,7 +1725,7 @@ pub(crate) fn audit_refused(
             resolved.verb,
             &request.path,
             busbar_unit_audit::OUTCOME_REJECTED,
-            request.credential.as_deref().unwrap_or("admin"),
+            &actor_of(binding, ctx.key),
         );
     }
     Decision::proceed(
@@ -1765,19 +1893,37 @@ fn mix_arrival(material: [u8; 16], at: u64) -> [u8; 16] {
 }
 
 /// Draw unpredictable bytes from the node's own source.
+///
+/// The source is the substrate's, which is the operating system's: the same fail-closed draw a key
+/// secret and a plane's replay nonce are minted from. Reaching it rather than re-deriving one here
+/// is the whole point — a composition root that mints its own entropy has a second entropy source to
+/// get wrong, and this one had.
+///
+/// What it had been was a keyed hash of a STACK ADDRESS. That is not entropy: the address is the
+/// same on every call from the same frame, so the only thing varying was the hasher's key, and the
+/// second half was the first half hashed again — 64 bits of source, presented as 128.
+///
+/// The material arrives hex-encoded and is read back a byte at a time rather than through a decoder,
+/// because the one thing wanted from it is 16 bytes and adding a crate edge to a composition root to
+/// halve a string is a poor trade. A pair of digits that does not parse cannot happen — the encoder
+/// on the other side of the call writes hex — and if it ever did, the byte is left as the source's
+/// own zero rather than silently substituted.
 fn getrandom_into(buf: &mut [u8; 16]) {
-    use std::hash::{BuildHasher, Hasher};
-    // `RandomState` seeds itself from the operating system once per process and mixes a per-instance
-    // counter, so two hashers built here never agree. It is the one source in the standard library
-    // that is seeded from the OS without pulling a dependency into the composition root.
-    let a = std::collections::hash_map::RandomState::new();
-    let b = std::collections::hash_map::RandomState::new();
-    let mut ha = a.build_hasher();
-    let mut hb = b.build_hasher();
-    ha.write_usize(std::ptr::addr_of!(buf) as usize);
-    hb.write_u64(ha.finish());
-    buf[..8].copy_from_slice(&ha.finish().to_be_bytes());
-    buf[8..].copy_from_slice(&hb.finish().to_be_bytes());
+    let Ok(drawn) = busbar_substrate::plane::approvals::nonce() else {
+        // The OS source refusing is not survivable for a secret this binds, and it is also not
+        // something this root can refuse from: the seam it fills is infallible. So the buffer is
+        // left as the caller's zeroes and the epoch below is what still distinguishes it — an
+        // unmistakably degraded nonce rather than a plausible-looking one that is not random.
+        return;
+    };
+    let (pairs, _) = drawn.as_bytes().as_chunks::<2>();
+    for (slot, pair) in buf.iter_mut().zip(pairs) {
+        let hi = (pair[0] as char).to_digit(16);
+        let lo = (pair[1] as char).to_digit(16);
+        if let (Some(hi), Some(lo)) = (hi, lo) {
+            *slot = ((hi << 4) | lo) as u8;
+        }
+    }
 }
 
 /// The replay encoder.
@@ -1861,6 +2007,7 @@ impl AdminNode {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival,
+            now: busbar_substrate::store::now_ms(),
         });
 
         let answer = match entered {
@@ -1881,7 +2028,7 @@ impl AdminNode {
                 };
                 let mut leases = busbar_kernel::slice::LeaseSet::new();
                 let meter = busbar_kernel::teller::AccrualMeter::new();
-                let _ended = busbar_kernel::teller::run_unit(
+                let ended = busbar_kernel::teller::run_unit(
                     &self.kernel,
                     &self.units,
                     &ctx,
@@ -1901,7 +2048,7 @@ impl AdminNode {
                     .admin
                     .units
                     .answer(key)
-                    .unwrap_or_else(refused_answer)
+                    .unwrap_or_else(|| refused_answer(&ended))
             }
         };
 
@@ -1915,13 +2062,57 @@ impl AdminNode {
 /// What a unit that never reached Route answers with.
 ///
 /// The plane's own error envelope, which is the previous release's: the caller is the same caller
-/// and the shape is pinned.
+/// and the shape is pinned. What is NOT pinned to one value is the status — the surface has ten of
+/// them and the loop knows which one this unit earned, so the ending is read rather than replaced
+/// by a single word.
 #[cfg(feature = "root-admin")]
-fn refused_answer() -> AdminAnswer {
+fn refused_answer(ended: &busbar_kernel::teller::Ended) -> AdminAnswer {
+    match ended {
+        busbar_kernel::teller::Ended::Settled { end, .. } => answer_for(end.outcome()),
+        // The node's own sweep took the hold first, which means this unit is not going to produce an
+        // answer at all. That is the node being unable to serve the request, not the caller being
+        // told no.
+        busbar_kernel::teller::Ended::AlreadySettled => unavailable_answer(),
+    }
+}
+
+/// The surface's answer for one ending.
+///
+/// The vocabulary is the previous release's admin envelope and nothing here invents a status: each
+/// arm is a reason the loop can end on paired with the status that release already gave the same
+/// condition. `forbidden` stays the answer for the two authorization endings AND for an ending this
+/// table does not name, so an ending nobody has mapped cannot quietly become a new status on a
+/// surface a caller has pinned.
+#[cfg(feature = "root-admin")]
+fn answer_for(outcome: Outcome) -> AdminAnswer {
+    let (status, code) = match outcome {
+        Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => match reason {
+            // A body or a verb the plane could not read is a bad request, not a denied one.
+            ReasonCode::DecodeFailed => (400, "invalid_request"),
+            // Nothing on this surface answers that method and path.
+            ReasonCode::NoDestination => (404, "not_found"),
+            // The caller is inside its rights and the node is over a limit.
+            ReasonCode::OverBudget | ReasonCode::InFlightCap => (429, "rate_limited"),
+            // The node cannot record what the operation would do, so it does not do it. An
+            // administrative write that cannot be journalled is unavailability, not refusal.
+            ReasonCode::DurabilityUnavailable | ReasonCode::StaleSlice => (503, "unavailable"),
+            _ => (403, "forbidden"),
+        },
+        _ => (403, "forbidden"),
+    };
+    error_answer(status, code)
+}
+
+/// One error answer in the surface's envelope.
+///
+/// The single construction site, so a status and its code cannot be paired differently in two
+/// places — which is the shape the previous release's own admin error rendering has.
+#[cfg(feature = "root-admin")]
+fn error_answer(status: u16, code: &str) -> AdminAnswer {
     AdminAnswer {
-        status: 403,
+        status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: br#"{"error":{"code":"forbidden","message":"forbidden"}}"#.to_vec(),
+        body: format!(r#"{{"error":{{"code":"{code}","message":"{code}"}}}}"#).into_bytes(),
     }
 }
 
@@ -1995,7 +2186,10 @@ async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
         builder = builder.header(name.as_str(), value.as_str());
     }
     let Ok(http) = builder.body(axum::body::Body::from(request.body.clone())) else {
-        return refused_answer();
+        // A method, path or header the http types themselves will not carry. That is a request
+        // this surface cannot make sense of, which is the 400 answer and not the 403 one: nothing
+        // here was denied, it was unreadable.
+        return error_answer(400, "invalid_request");
     };
 
     // The router's own error type is uninhabited: a mounted axum router answers, and failing is not
@@ -2003,9 +2197,13 @@ async fn call(inner: axum::Router, request: &AdminRequest) -> AdminAnswer {
     // would be a branch that can never be taken pretending to be a fallback that could be.
     let response = inner.oneshot(http).await.unwrap_or_else(|e| match e {});
     let (parts, body) = response.into_parts();
-    let bytes = axum::body::to_bytes(body, usize::MAX)
-        .await
-        .unwrap_or_default();
+    // The surface answered and its body did not come back. Serving the status with an EMPTY body
+    // was the worst of the available answers: a 200 whose document is missing reads, to every
+    // client and every operator dashboard, as an operation that succeeded and returned nothing.
+    // The node could not produce the answer, and that is what it says.
+    let Ok(bytes) = axum::body::to_bytes(body, usize::MAX).await else {
+        return unavailable_answer();
+    };
     AdminAnswer {
         status: parts.status.as_u16(),
         headers: header_pairs(&parts.headers),
@@ -2045,6 +2243,26 @@ fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
+/// One answer as the response this listener writes.
+///
+/// Written once because two paths reach it: the request that ran and the one this wrap refused
+/// before the loop was entered. A second builder would be a second chance for the two to differ.
+#[cfg(feature = "root-admin")]
+fn http_response(answer: AdminAnswer) -> axum::http::Response<axum::body::Body> {
+    let mut response = axum::http::Response::builder().status(answer.status);
+    for (name, value) in &answer.headers {
+        response = response.header(name.as_str(), value.as_str());
+    }
+    response
+        .body(axum::body::Body::from(answer.body))
+        .unwrap_or_else(|_| {
+            axum::http::Response::builder()
+                .status(500)
+                .body(axum::body::Body::empty())
+                .expect("an empty 500 always builds")
+        })
+}
+
 /// Wrap a mounted admin surface so every request on it travels through the kernel.
 ///
 /// The router that goes in is the one that already answers; the router that comes out answers the
@@ -2055,10 +2273,16 @@ fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
 /// await inside it — the inner router's own — is driven on the runtime this was handed. That is the
 /// honest ordering: Route drives the seam, the seam drives the surface, and the answer comes back
 /// through the steps that are still to run.
+///
+/// `request_body_max_bytes` is the operator's own ingress cap, the same figure the mounted router's
+/// body limit was built with. It is a parameter rather than a constant because this wrap reads the
+/// body BEFORE that limit gets a chance to: a cap written down twice is a cap that can differ, and
+/// the one that matters is the one the deployment configured.
 #[cfg(feature = "root-admin")]
 pub fn mount(
     inner: axum::Router,
     kernel: busbar_kernel::teller::Kernel,
+    request_body_max_bytes: usize,
     build_units: impl FnOnce(Arc<dyn AdminDispatch>) -> crate::root::kernel::ProductionUnits,
 ) -> axum::Router {
     let runtime = tokio::runtime::Handle::current();
@@ -2099,10 +2323,29 @@ pub fn mount(
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
                 }
 
+                // A BODY BIGGER THAN THE OPERATOR'S CAP IS NOT THIS WRAP'S TO ANSWER. The mounted
+                // surface carries that cap and the answer release pinned for exceeding it, and
+                // this wrap reads the body first — so a request that DECLARES more than the cap
+                // goes straight there rather than being buffered into this node's memory on the
+                // way to being rejected anyway.
+                let declared = req
+                    .headers()
+                    .get(axum::http::header::CONTENT_LENGTH)
+                    .and_then(|value| value.to_str().ok())
+                    .and_then(|value| value.parse::<usize>().ok());
+                if declared.is_some_and(|len| len > request_body_max_bytes) {
+                    return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
+                }
+
                 let (parts, body) = req.into_parts();
-                let bytes = axum::body::to_bytes(body, usize::MAX)
-                    .await
-                    .unwrap_or_default();
+                // AND A BODY THAT COULD NOT BE READ IS NOT AN EMPTY ONE. Read to the same cap, so
+                // an undeclared length cannot buffer without bound either; and where the read does
+                // not finish, the request is refused. It used to become an empty body — which a
+                // mutating verb would go on to execute, with whatever an empty document means to
+                // it, on a request the caller never finished sending.
+                let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
+                    return http_response(error_answer(400, "invalid_request"));
+                };
                 let request = AdminRequest {
                     method: parts.method.as_str().to_string(),
                     path: parts
@@ -2124,18 +2367,7 @@ pub fn mount(
                     .await
                     .unwrap_or_else(|_| unavailable_answer());
 
-                let mut response = axum::http::Response::builder().status(answer.status);
-                for (name, value) in &answer.headers {
-                    response = response.header(name.as_str(), value.as_str());
-                }
-                let response = response
-                    .body(axum::body::Body::from(answer.body))
-                    .unwrap_or_else(|_| {
-                        axum::http::Response::builder()
-                            .status(500)
-                            .body(axum::body::Body::empty())
-                            .expect("an empty 500 always builds")
-                    });
+                let response = http_response(answer);
 
                 // THE END OF THE EXIT PATH: whatever this unit asked to outlive its response is
                 // released HERE, with the response built and handed back and nothing left that can
@@ -2155,6 +2387,15 @@ pub fn mount(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The legacy ring binds no clock of its own; a pinned one keeps records comparable.
+    #[derive(Debug)]
+    struct PinnedClock;
+    impl busbar_unit_audit::Clock for PinnedClock {
+        fn now(&self) -> u64 {
+            1_700_000_000
+        }
+    }
 
     fn a_request() -> AdminRequest {
         AdminRequest {
@@ -2183,6 +2424,100 @@ mod tests {
         assert_eq!(AdminAnswer::unpack(&packed), Some(answer));
     }
 
+    /// A body this wrap cannot read is refused, and one too big for the operator's cap is not read
+    /// here at all.
+    ///
+    /// Both used to end in the same place: an empty body, handed to whichever mutating verb the
+    /// path named, which then executed whatever an empty document means to it on a request the
+    /// caller never finished sending. And the read was unbounded, so the cap the deployment
+    /// configured was applied by a layer this wrap had already buffered past.
+    #[cfg(feature = "root-admin")]
+    #[tokio::test]
+    async fn a_body_the_wrap_will_not_read_is_refused_rather_than_emptied() {
+        use tower::ServiceExt;
+
+        let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+        let wrapped = mount(
+            inner,
+            busbar_kernel::teller::Kernel::new(),
+            4,
+            crate::root::kernel::ProductionUnits::admin_only,
+        );
+
+        // Longer than the cap and no declared length: the read stops at the cap and the request is
+        // refused, rather than becoming a document nobody sent.
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/keys")
+            .body(axum::body::Body::from(b"0123456789".to_vec()))
+            .expect("the request builds");
+        let response = wrapped
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("the router answers");
+        assert_eq!(response.status(), 400);
+
+        // A declared length past the cap is the mounted surface's own answer to give, and this wrap
+        // does not buffer the body to find that out.
+        let request = axum::http::Request::builder()
+            .method("POST")
+            .uri("/api/v1/admin/keys")
+            .header(axum::http::header::CONTENT_LENGTH, "10")
+            .body(axum::body::Body::from(b"0123456789".to_vec()))
+            .expect("the request builds");
+        let response = wrapped.oneshot(request).await.expect("the router answers");
+        assert_eq!(
+            response.status(),
+            200,
+            "the request reached the surface below, which is where the cap is enforced"
+        );
+    }
+
+    /// A unit that reached no answer is rendered under the status its ending earned.
+    ///
+    /// One 403 for every ending told an operator that a journal it could not write, a body it could
+    /// not read and a scope it did not hold were the same thing, and told a client that a request
+    /// worth retrying was one that never would be. The two authorization endings keep the answer
+    /// they had, and so does an ending this table does not name.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_refused_units_status_is_the_one_its_ending_earned() {
+        let status = |reason| answer_for(Outcome::Refused(busbar_caps::StepName::Admit, reason));
+        assert_eq!(status(ReasonCode::DecodeFailed).status, 400);
+        assert_eq!(status(ReasonCode::NoDestination).status, 404);
+        assert_eq!(status(ReasonCode::InFlightCap).status, 429);
+        assert_eq!(status(ReasonCode::OverBudget).status, 429);
+        assert_eq!(status(ReasonCode::DurabilityUnavailable).status, 503);
+        assert_eq!(status(ReasonCode::ScopeDenied).status, 403);
+        assert_eq!(status(ReasonCode::Unauthenticated).status, 403);
+        assert_eq!(
+            status(ReasonCode::PlanePanic).status,
+            403,
+            "an ending nobody mapped keeps the pinned answer rather than inventing one"
+        );
+
+        // A failure past the door renders the same way a refusal before it does: what the caller is
+        // owed is the reason, and the side of the door it happened on is not the caller's business.
+        assert_eq!(
+            answer_for(Outcome::Failed(
+                busbar_caps::StepName::Route,
+                ReasonCode::DurabilityUnavailable
+            )),
+            error_answer(503, "unavailable")
+        );
+
+        // And the envelope is the surface's, whatever the status.
+        assert_eq!(
+            status(ReasonCode::NoDestination).body,
+            br#"{"error":{"code":"not_found","message":"not_found"}}"#.to_vec()
+        );
+        assert_eq!(
+            status(ReasonCode::NoDestination).headers,
+            vec![("content-type".to_string(), "application/json".to_string())]
+        );
+    }
+
     /// The only producer of the framing is the packer. Anything else is this file being wrong, and
     /// a lenient parse would turn that into a silently wrong answer.
     #[test]
@@ -2197,6 +2532,210 @@ mod tests {
         .pack();
         trailing.push(0);
         assert_eq!(AdminAnswer::unpack(&trailing), None);
+    }
+
+    /// A count is a claim about bytes that are not there, not an instruction to go and find room
+    /// for them. The frame below says it carries four billion headers in three bytes: the answer is
+    /// `None`, and no room is made for the claim on the way to it.
+    #[test]
+    fn a_header_count_larger_than_the_frame_is_refused_not_reserved() {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&200u16.to_be_bytes());
+        frame.extend_from_slice(&u32::MAX.to_be_bytes());
+        frame.extend_from_slice(&[0, 0, 0]);
+        assert_eq!(AdminAnswer::unpack(&frame), None);
+
+        // What the frame could actually be carrying, not what it says it is.
+        assert_eq!(header_capacity(u32::MAX, 3), 0);
+        assert_eq!(header_capacity(u32::MAX, 4_096), 512);
+        // An honest count is still reserved for in full.
+        assert_eq!(header_capacity(2, 4_096), 2);
+    }
+
+    /// A mutation's record names the caller, and never the bytes the caller presented.
+    ///
+    /// Both doors are walked, because both write a row and either one leaking is the whole leak: the
+    /// completed mutation and the refused one. The credential in the fixture is deliberately not a
+    /// substring of the identity, so "the row does not contain the credential" and "the row is the
+    /// identity" are two independent assertions rather than one restated.
+    ///
+    /// The chain this writes to is the one an operator's audit page reads and a store persists, so a
+    /// row carrying a live bearer token publishes it to everybody entitled to read history — a wider
+    /// set than the set entitled to hold the token.
+    #[test]
+    fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let binding = AdminBinding::new(Arc::new(RefusingDispatch));
+
+        let rows = |completed: bool| -> Vec<busbar_unit_audit::legacy::AuditEntry> {
+            let log = busbar_unit_audit::AuditLog::with(
+                Box::new(PinnedClock),
+                Box::new(busbar_unit_audit::NoSeam),
+            );
+            let key = UnitKey::new(1);
+            let mut request = a_request();
+            request.method = "PUT".to_string();
+            request.path = "/api/v1/admin/config/settings".to_string();
+            request.credential = Some("sk-live-the-presented-secret".to_string());
+            binding.units.open(key, request);
+            let ctx = UnitCtx {
+                key,
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: true,
+                kernel_verb_only: true,
+            };
+            let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+            let _ = decode(&binding, &decode_token, &ctx).into_result(&seal);
+            let verify_token: UnitToken<Verify> = UnitToken::mint(&seal);
+            let _ = verify(
+                &binding,
+                &verify_token,
+                &ctx,
+                &PrincipalId::new("key_operator_7"),
+            )
+            .into_result(&seal);
+
+            let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
+            if completed {
+                let _ = audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed)
+                    .into_result(&seal);
+            } else {
+                let _ = audit_refused(
+                    &binding,
+                    &log,
+                    &audit_token,
+                    &ctx,
+                    &Refusal::new(ReasonCode::ScopeDenied),
+                )
+                .into_result(&seal);
+            }
+            binding.units.close(key);
+            log.export()
+        };
+
+        for completed in [true, false] {
+            let entries = rows(completed);
+            assert_eq!(entries.len(), 1, "the mutation was not recorded");
+            assert_eq!(
+                entries[0].principal, "key_operator_7",
+                "the record does not name the identity the auth step resolved"
+            );
+            assert!(
+                !entries[0]
+                    .principal
+                    .contains("sk-live-the-presented-secret"),
+                "the presented credential reached the administrative chain"
+            );
+        }
+    }
+
+    /// The two money-governance gates are the fleet's, and the route step reads them rather than
+    /// writing them.
+    ///
+    /// Three postures over the same step, and each one is a different failure if the seam is not
+    /// consulted. Under a fleet that sealed dual control, one principal's export is REFUSED — a step
+    /// that wrote `approved` for itself would let a single operator take the keyset out of a node
+    /// whose whole reason for sealing the posture was that no single operator can. Under a fleet that
+    /// HAS run the ceremony, a disaster-recovery verb is ADMITTED — a step that wrote `unset` for
+    /// itself refused the very operators who ran the ceremony, permanently and with no way to lift
+    /// it. And a posture the node cannot read at all is refused rather than guessed.
+    #[test]
+    #[cfg(feature = "root-admin")]
+    fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
+        struct Sealed(Option<(PostureCtx, ApprovalState)>);
+        impl PostureView for Sealed {
+            fn resolve(
+                &self,
+                _verb: KernelVerb,
+                _actor: &str,
+            ) -> Option<(PostureCtx, ApprovalState)> {
+                self.0
+            }
+        }
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admin = crate::root::kernel::new_kernel().admin_token();
+
+        let under = |path: &str, sealed: Sealed| -> Result<(), ReasonCode> {
+            let binding =
+                AdminBinding::new(Arc::new(AnsweringDispatch)).with_posture_view(Arc::new(sealed));
+            let key = UnitKey::new(1);
+            let mut request = a_request();
+            request.method = "POST".to_string();
+            request.path = path.to_string();
+            binding.units.open(key, request);
+            let ctx = UnitCtx {
+                key,
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: true,
+                kernel_verb_only: true,
+            };
+            let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+            decode(&binding, &decode_token, &ctx)
+                .into_result(&seal)
+                .expect("the plane's table declares this operation");
+            binding.units.set_granted(key, VerbScope::Full);
+            let token: UnitToken<Route> = UnitToken::mint(&seal);
+            let outcome = route(
+                &binding,
+                Arc::new(RefusingStore),
+                &admin,
+                &token,
+                &ctx,
+                &busbar_kernel::teller::AccrualMeter::new(),
+            )
+            .into_result(&seal);
+            binding.units.close(key);
+            outcome.map(|_| ()).map_err(|refusal| refusal.reason())
+        };
+
+        let required = Sealed(Some((
+            PostureCtx {
+                operator: busbar_unit_verbs::OperatorState::Unset,
+                dual_control: busbar_unit_verbs::DualControl::Required,
+            },
+            ApprovalState::NotYetApproved,
+        )));
+        assert!(
+            under("/api/v1/admin/export-keyset", required).is_err(),
+            "one principal exported the keyset out of a fleet that sealed dual control"
+        );
+
+        let ceremony_run = Sealed(Some((
+            PostureCtx {
+                operator: busbar_unit_verbs::OperatorState::Set,
+                dual_control: busbar_unit_verbs::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        )));
+        assert_eq!(
+            under("/api/v1/admin/chain-break", ceremony_run),
+            Ok(()),
+            "a fleet that ran the ceremony was still refused for not having run it"
+        );
+
+        assert_eq!(
+            under("/api/v1/admin/adjust", Sealed(None)),
+            Err(ReasonCode::DecodeFailed),
+            "a verb whose posture the node cannot read was admitted under a guessed one"
+        );
+    }
+
+    /// The posture a node with no sealed journal is in is the one the design names for a fresh
+    /// install, and it is that node's TRUE state rather than a permissive default: the ceremony has
+    /// not run, so the irreducible verbs that need one are still refused.
+    #[test]
+    fn an_unsealed_node_reports_the_posture_a_fresh_install_is_actually_in() {
+        let (posture, approval) = UnsealedPosture
+            .resolve(KernelVerb::Adjust, "admin")
+            .expect("a node with no journal knows what it has not sealed");
+        assert_eq!(posture.operator, busbar_unit_verbs::OperatorState::Unset);
+        assert_eq!(posture.dual_control, busbar_unit_verbs::DualControl::Single);
+        assert_eq!(approval, ApprovalState::NotYetApproved);
     }
 
     /// Both tables were extracted from the same pinned tag. Every row the plane decodes to has to
@@ -2348,6 +2887,40 @@ mod tests {
         source.fill(&mut second);
         assert_ne!(first, second);
         assert_ne!(first, [0u8; 16]);
+    }
+
+    /// Both halves of the nonce are drawn, and the second is not the first said again.
+    ///
+    /// The source it replaced hashed a stack address — the same address on every call from the same
+    /// frame — and then hashed its own first output to make the second half, so a 128-bit nonce
+    /// carried at most 64 bits of source and the back half was a function of the front. This walks
+    /// enough draws that either half repeating, or the two halves agreeing, would show.
+    ///
+    /// What this cannot assert is unpredictability, which is a property of the SOURCE and not of any
+    /// finite sample: it is held by reaching the substrate's own operating-system draw — the one a
+    /// key secret is minted from — rather than by anything checkable here.
+    #[test]
+    fn both_halves_of_a_nonce_are_drawn_and_neither_repeats() {
+        use busbar_unit_verbs::NonceSource;
+        use std::collections::HashSet;
+
+        let source = ArrivalNonce(1_700_000_000);
+        let mut fronts = HashSet::new();
+        let mut backs = HashSet::new();
+        for _ in 0..512 {
+            let mut drawn = [0u8; 16];
+            source.fill(&mut drawn);
+            assert_ne!(drawn, [0u8; 16], "the source handed back nothing");
+            assert_ne!(
+                drawn[..8],
+                drawn[8..],
+                "the two halves of one nonce agree, so one of them is the other"
+            );
+            fronts.insert(drawn[..8].to_vec());
+            backs.insert(drawn[8..].to_vec());
+        }
+        assert_eq!(fronts.len(), 512, "a front half repeated across draws");
+        assert_eq!(backs.len(), 512, "a back half repeated across draws");
     }
 
     /// The other half of the nonce, and the half a random draw cannot be asserted about: the arrival
@@ -2562,7 +3135,167 @@ mod tests {
         );
         let refused = answer_under_denylist(true);
         assert_eq!(refused.status, 403);
-        assert_eq!(refused, refused_answer());
+        assert_eq!(refused, error_answer(403, "forbidden"));
+    }
+
+    /// A binding holding one open unit, with the decode step run so the verb is resolved exactly as
+    /// the loop resolves it. Returns the binding and the context every later step reads the unit
+    /// through, so a cell drives the real steps rather than a table it filled in by hand.
+    #[cfg(feature = "root-admin")]
+    fn a_bound_unit(request: AdminRequest) -> (AdminBinding, UnitCtx, busbar_caps::KernelSeal) {
+        let binding = AdminBinding::new(Arc::new(AnsweringDispatch));
+        let key = UnitKey::new(1);
+        binding.units.open(key, request);
+        let ctx = UnitCtx {
+            key,
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: true,
+            kernel_verb_only: true,
+        };
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        // Decode is what puts the verb in the table. A cell that called `set_verb` itself would be
+        // asserting over a row the loop never wrote.
+        let _ = decode(&binding, &UnitToken::mint(&seal), &ctx);
+        (binding, ctx, seal)
+    }
+
+    /// Where an admin unit may go, and what that costs it.
+    ///
+    /// THE verify STEP, over the loop. The gating contract is that a destination the caller cannot
+    /// reach is refused before Admit draws a bucket, and this plane answers it in a shape worth
+    /// pinning precisely BECAUSE the admin principal is exempt and full: there is no scope to cap,
+    /// so the only destination question left is whether the verb resolved at all — and the step
+    /// still refuses, with `NoDestination`, for a path the table never named.
+    ///
+    /// The other half is the one the money path reads. A resolved verb proceeds with an EMPTY
+    /// verified set, and that emptiness is not an oversight: a sealed destination carries a LANE,
+    /// the priced axis a charge sits on, and a kernel verb is not dialled and not billed. So the
+    /// empty set IS the fact that makes the admin unit draw no request slot and post no fee,
+    /// whatever the deployment configured the fee to be. A verify that returned one destination
+    /// would put an admin request on the priced axis, and nothing downstream would object.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere_priced() {
+        let principal = PrincipalId::new("admin");
+
+        // A path no row names: the unit has nowhere to go at all, and is refused here.
+        let mut unknown = a_request();
+        unknown.path = "/api/v1/admin/not-a-real-operation".to_string();
+        let (binding, ctx, seal) = a_bound_unit(unknown);
+        assert!(
+            binding.units.verb(ctx.key).is_none(),
+            "the fixture must be a path the table never resolved"
+        );
+        let refusal = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+            .into_result(&seal)
+            .expect_err("a verb that resolved to nothing has nowhere to go");
+        assert_eq!(refusal.reason(), ReasonCode::NoDestination);
+
+        // A real operation: it proceeds, and it proceeds to nowhere PRICED.
+        let (binding, ctx, seal) = a_bound_unit(a_request());
+        assert!(
+            binding.units.verb(ctx.key).is_some(),
+            "the fixture must be a path the table did resolve"
+        );
+        let destinations = verify(&binding, &UnitToken::mint(&seal), &ctx, &principal)
+            .into_result(&seal)
+            .expect("a resolved verb has somewhere to go");
+        assert!(
+            destinations.is_empty(),
+            "an admin unit that sealed a destination would sit on the priced axis"
+        );
+    }
+
+    /// One admin unit seals exactly one entry on the chain, and a read seals none.
+    ///
+    /// THE audit STEP, over the loop. The rig column reads the fresh four-op chain from the outside;
+    /// this reads the same chain from the step that writes it, which is where "exactly one" is
+    /// actually decided. Three answers, and each is a different way the step could be wrong:
+    ///
+    /// - a mutating verb appends exactly ONE entry, under the operation's own name and the applied
+    ///   outcome — not zero, and not one per step that ran;
+    /// - a READ appends none, because the chain is a record of what changed and a listing changed
+    ///   nothing. A chain that grew on every GET would bury the mutations an operator came to find;
+    /// - a unit refused before Admit still appends one, under the rejected outcome, because the
+    ///   attempt happened and a chain that recorded only successes is the one an attacker wants.
+    ///
+    /// The chain is verified after each, so the entries are linked rather than merely counted.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
+        let legacy = busbar_unit_audit::AuditLog::with(
+            Box::new(PinnedClock),
+            Box::new(busbar_unit_audit::NoSeam),
+        );
+
+        // A mutation: an operator-key write, on the mutating side of the closed split.
+        let mut mutating = a_request();
+        mutating.method = "POST".to_string();
+        mutating.path = "/api/v1/admin/operator-key".to_string();
+        let (binding, ctx, seal) = a_bound_unit(mutating);
+        let resolved = binding
+            .units
+            .verb(ctx.key)
+            .expect("the operator-key write is a row the table names");
+        assert!(!resolved.read_only, "the fixture must be a mutation");
+
+        let before = legacy.len();
+        let _ = audit(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Outcome::Completed,
+        );
+        assert_eq!(legacy.len(), before + 1, "one unit, one entry");
+        let entry = legacy.list(1).pop().expect("the entry just sealed");
+        assert_eq!(entry.action, resolved.verb);
+        assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_APPLIED);
+        // The fixture never ran Verify, so the record names the unresolved actor -- never the
+        // credential the request presented, which is a secret and stays out of the chain.
+        assert_eq!(entry.principal, UNRESOLVED_ACTOR);
+        assert!(!entry.principal.contains("admin-token"));
+        assert!(legacy.verify(), "the chain is linked");
+
+        // A read changes nothing and records nothing.
+        let (binding, ctx, seal) = a_bound_unit(a_request());
+        assert!(
+            binding
+                .units
+                .verb(ctx.key)
+                .expect("the audit listing is a row the table names")
+                .read_only,
+            "the fixture must be a read"
+        );
+        let before = legacy.len();
+        let _ = audit(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Outcome::Completed,
+        );
+        assert_eq!(legacy.len(), before, "a read is not a mutation");
+
+        // A refused mutation is recorded as an attempt, not dropped.
+        let mut mutating = a_request();
+        mutating.method = "POST".to_string();
+        mutating.path = "/api/v1/admin/operator-key".to_string();
+        let (binding, ctx, seal) = a_bound_unit(mutating);
+        let before = legacy.len();
+        let _ = audit_refused(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::OverBudget),
+        );
+        assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
+        let entry = legacy.list(1).pop().expect("the entry just sealed");
+        assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_REJECTED);
+        assert!(legacy.verify(), "the chain is still linked");
     }
 
     // ── the five ledger views ───────────────────────────────────────────────────────────────────
@@ -2998,6 +3731,7 @@ mod tests {
                     PrincipalId::new(bucket),
                     nanos,
                 ),
+                u128::from(nanos),
                 &usage,
                 &LedgerToken::mint(&seal),
             )

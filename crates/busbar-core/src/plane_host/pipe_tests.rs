@@ -36,7 +36,7 @@ fn subprocess_desc(command: &[u8]) -> EgressDesc {
     EgressDesc {
         size: std::mem::size_of::<EgressDesc>() as u32,
         version: POD_VERSION,
-        kind: EgressKind::Subprocess,
+        kind: busbar_plugin::hot::RawEgressKind::of(EgressKind::Subprocess),
         _reserved: 0,
         allowlist_scope: 0,
         _reserved2: 0,

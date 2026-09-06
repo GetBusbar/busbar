@@ -1978,6 +1978,8 @@ mod tests {
         );
         let _ = busbar_caps::Posted::settle(
             hold,
+            // The unit is only admitted here, never run, so it priced at nothing.
+            0,
             &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
                 .expect("empty"),
             &busbar_caps::LedgerToken::mint(&seal),
@@ -2010,7 +2012,9 @@ mod tests {
             }],
         )
         .expect("one line");
-        let posted = busbar_caps::Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+        // The line's class is `nano_units`, so its quantity IS the money — the same shape the
+        // kernel's exit path builds, and the same figure passed on both sides.
+        let posted = busbar_caps::Posted::settle(hold, 400, &usage, &LedgerToken::mint(&seal));
 
         let settled = settle(
             &mut durability,
@@ -2073,7 +2077,9 @@ mod tests {
             }],
         )
         .expect("one line");
-        let posted = busbar_caps::Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+        // Money on both sides again: the spend ran 3_000 past a 1_000 reservation with no slice to
+        // draw on, so the hold's own counter raises the flag and the settlement agrees with it.
+        let posted = busbar_caps::Posted::settle(hold, 4_000, &usage, &LedgerToken::mint(&seal));
         assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
 
         let settled = settle(

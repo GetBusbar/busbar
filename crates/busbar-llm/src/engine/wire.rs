@@ -403,10 +403,32 @@ pub(crate) fn translate_request_cross_protocol(
             return match translated.wire {
                 busbar_substrate::wire::EgressWire::Bytes(b) => Ok(b),
                 // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
-                // serialize it rather than panic on the request path.
-                busbar_substrate::wire::EgressWire::Json(v) => Ok(Bytes::from(
-                    busbar_substrate::json::to_vec(&v).unwrap_or_default(),
-                )),
+                // serialize it rather than panic on the request path — and answer the FAILURE the
+                // way the serialize arm at the end of this function answers its own. An
+                // `unwrap_or_default()` here sent the upstream an EMPTY body under a content type
+                // promising a request, so a serializer failure became a provider-side error about a
+                // request busbar never meant to make, charged to the caller and unreadable in the
+                // log. A shaped 500 says whose fault it was and stops before the wire.
+                busbar_substrate::wire::EgressWire::Json(v) => {
+                    match busbar_substrate::json::to_vec(&v) {
+                        Ok(p) => Ok(Bytes::from(p)),
+                        Err(_) => Err(Box::new(ingress_error(
+                            ingress_protocol,
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            KIND_API_ERROR,
+                            DETAIL_INTERNAL_ERROR,
+                        ))),
+                    }
+                }
+                // The handle could not write itself onto the egress dialect. REFUSE, on the same
+                // terminal an unrepresentable request already takes — forwarding an empty body
+                // would send a request the caller never made.
+                busbar_substrate::wire::EgressWire::Unrepresentable { reason } => {
+                    Err(Box::new(map_translate_req_reject(
+                        ingress_protocol,
+                        busbar_substrate::handlers::TranslateReqReject::Unrepresentable(reason),
+                    )))
+                }
             };
         }
         // Same-protocol opaque relay: the retained bytes go upstream verbatim — refcount bump only.
@@ -497,6 +519,15 @@ pub(crate) fn translate_request_cross_protocol(
             // in-band, and the JSON-only post-shaping below (shim strips, model rewrite) does not
             // apply — emit the handler's bytes directly.
             busbar_substrate::wire::EgressWire::Bytes(b) => return Ok(b),
+            // The translate entrypoint already turns an unrepresentable write into its reject, so
+            // this arm is not reachable through it; it refuses rather than forwarding anything,
+            // because the one thing that must never happen here is an empty body going upstream.
+            busbar_substrate::wire::EgressWire::Unrepresentable { reason } => {
+                return Err(Box::new(map_translate_req_reject(
+                    ingress_protocol,
+                    busbar_substrate::handlers::TranslateReqReject::Unrepresentable(reason),
+                )))
+            }
         }
         // The body was fully rebuilt from the IR (read_request → write_request), so it bears no fixed
         // relationship to `hop_bytes` — a cross-protocol hop is NEVER pristine and must serialize the
@@ -704,10 +735,22 @@ pub(crate) const GENERIC_RESPONSE_ERROR_DETAIL: &str =
 ///     `event: response.failed` for responses whose payload is the SDK-required
 ///     `{"response":{...,"error":{...}}}` STREAM shape (NOT the non-stream `{"error":...}` HTTP
 ///     envelope), so the official SDK's stream decoder finds `event.response` instead of crashing.
+///
+/// `translate` is the LIVE translator for this stream when there is one. Its ingress writer is the
+/// one that framed every event the client has already received, so it holds this stream's identity
+/// (a Responses ingress latches the response id, `created_at`, `model` and the monotonic
+/// `sequence_number`). Asking it for the terminal frame keeps the failure event CONTINUOUS with the
+/// stream; resolving a fresh dialect writer here restarts all of that, and the client gets a
+/// `response.failed` numbered 0 for a response it never opened. The dialect seam stays as the
+/// fallback for a stream with no translator (and for a translator that frames no in-band error).
 pub(crate) fn mid_stream_error_bytes(
     ingress_protocol: &str,
     ingress_eventstream: bool,
     message: &str,
+    // `+ 'static` explicitly: the streaming body holds a `Box<dyn StreamTranslator>` (whose object
+    // lifetime is `'static`), and `&mut` is invariant in its pointee, so the elided `&'a mut (dyn _ +
+    // 'a)` this would otherwise mean cannot accept that borrow.
+    translate: Option<&mut (dyn busbar_substrate::proto::StreamTranslator + 'static)>,
 ) -> Vec<u8> {
     // The error is a mid-stream transport failure ≈ internal/5xx. Resolve the ingress protocol
     // ONCE. An unknown ingress resolves to no writer at all and takes the dialect-free terminal
@@ -755,7 +798,10 @@ pub(crate) fn mid_stream_error_bytes(
     // Every SSE-framed writer (openai/anthropic/gemini/cohere/responses) returns `Some`; the `None`
     // fallback only guards a hypothetical future writer that declines to frame errors in-band, in
     // which case we still emit a decodable bare `data:` error.
-    match dialect.write_error_frame(&err) {
+    let frame = translate
+        .and_then(|t| t.terminal_error_frame(&err))
+        .or_else(|| dialect.write_error_frame(&err));
+    match frame {
         Some((event_type, data)) => {
             let data = busbar_substrate::json::to_string(&data).unwrap_or_else(|_| {
                 serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })

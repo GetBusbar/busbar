@@ -3105,6 +3105,66 @@ fn test_translate_anthropic_egress_to_responses_ingress() {
     );
 }
 
+/// A mid-stream terminal error must be framed by the writer that has been driving THIS stream, not
+/// by a freshly-resolved one. On a Responses ingress that writer latches the response id and a
+/// monotonic `sequence_number`; a fresh writer restarts both, so the `response.failed` event lands
+/// with `sequence_number: 0` and an id the client has never seen — irreconcilable with the
+/// `response.created` its SDK opened on.
+#[test]
+fn responses_ingress_terminal_error_continues_the_live_stream_identity() {
+    let mut t =
+        StreamTranslate::new("responses", "anthropic").expect("responses ingress translator");
+    let mut out = String::new();
+    for frame in [
+        "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"id\":\"msg_live\",\"model\":\"m\"}}\n\n",
+        "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\"}}\n\n",
+        "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+    ] {
+        out.push_str(&String::from_utf8_lossy(&t.feed(frame.as_bytes())));
+    }
+    let payloads = data_payloads(&out);
+    let last_seq = payloads
+        .iter()
+        .filter_map(|p| p.get("sequence_number").and_then(|s| s.as_u64()))
+        .max()
+        .expect("the frames already sent carry sequence numbers");
+    let created_id = payloads
+        .iter()
+        .find(|p| p.get("type").and_then(|v| v.as_str()) == Some("response.created"))
+        .and_then(|p| p.pointer("/response/id"))
+        .and_then(|v| v.as_str())
+        .expect("response.created carries the stream's response id")
+        .to_string();
+
+    // The upstream connection drops here; the transport asks the translator for its terminal frame.
+    let err = IrError {
+        class: busbar_substrate_values::breaker::StatusClass::ServerError,
+        provider_signal: Some("The response stream was interrupted.".to_string()),
+        retry_after: None,
+    };
+    let (event_type, data) = t
+        .terminal_error_frame(&err)
+        .expect("a Responses ingress frames its terminal error in band");
+
+    assert_eq!(
+        event_type, "response.failed",
+        "the terminal error rides the Responses failure event; got {event_type}"
+    );
+    let seq = data
+        .get("sequence_number")
+        .and_then(|s| s.as_u64())
+        .expect("the failure event carries a sequence number");
+    assert!(
+        seq > last_seq,
+        "the failure event must CONTINUE the stream's sequence (last {last_seq}), got {seq}: {data}"
+    );
+    assert_eq!(
+        data.pointer("/response/id").and_then(|v| v.as_str()),
+        Some(created_id.as_str()),
+        "the failure event must carry the id the stream opened on: {data}"
+    );
+}
+
 // Conformance (proto/mod.rs fan-out): OpenAI egress with `stream_options.include_usage`
 // splits its terminal info across TWO chunks — a finish_reason chunk with NO usage, then a
 // usage-only chunk. A native ConverseStream emits EXACTLY ONE `metadata` frame; the pre-fix

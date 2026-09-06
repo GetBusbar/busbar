@@ -13,8 +13,10 @@ qa/design-bindings.json carrying the checks that PROVE it today:
   test            a Rust test fn (bare name, or `path/to/file.rs::name` when the name is not
                   unique across the tree); existence = the fn is declared under a test attribute
   oracle-cell     one shadow-oracle cell id (testing/shadow-oracle/cells.json) that diffs the
-                  published 1.5.5 binary on that surface
-  oracle-family   a whole cell family (every cell in it cites the binding)
+                  published 1.5.5 binary on that surface, AND that the pinned golden actually
+                  RECORDED (PASS on golden/1.5.5/ledger.tsv). A cell the golden could not record
+                  is a cell nothing is compared against; naming it proves nothing.
+  oracle-family   a whole cell family, at least one of whose cells the golden recorded
   lint            a scripts/*-lint.sh style static check
   conformance     a row of a conformance rig (testing/*-conformance)
   gate            a scripts/*.sh or testing/*.sh gate
@@ -53,6 +55,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 ARCH = ROOT / "docs" / "design" / "ARCHITECTURE.md"
 CELLS = ROOT / "testing" / "shadow-oracle" / "cells.json"
+GOLDEN_LEDGER = ROOT / "testing" / "shadow-oracle" / "golden" / "1.5.5" / "ledger.tsv"
 OUT_JSON = ROOT / "qa" / "design-bindings.json"
 OUT_MD = ROOT / "qa" / "DESIGN-BINDINGS.md"
 CRATES = ROOT / "crates"
@@ -767,7 +770,7 @@ SUGGEST: dict[str, str] = {
 # A default suggestion when a binding has no hand-written one: pick by the inventory column.
 def default_suggestion(b: dict) -> str:
     inv = b.get("inventory", "")
-    if "config" in inv and ("BOOT" in inv or "CFG" in inv):
+    if "config" in inv and ("BOOT" in inv or "CONF" in inv):
         return "oracle cell in family boot.refusal / boot.warning (config mutation fixture), plus a unit test on the parse"
     if "routes-admin" in inv:
         return "oracle cell in family admin.ops or http.crosscut, plus an axum handler test asserting the literal body"
@@ -870,6 +873,84 @@ def public_surface(text: str) -> str:
     return _BARE_AUDIT_ID.sub(repl, text) if text else text
 
 
+# ── The `inventory` column, reduced to the part that is load-bearing ─────────────────────────────
+# Appendix B writes a binding's `inventory` column as a file-prefix word plus whatever within-file
+# anchor the author had to hand: a section number, a row id, a source line span. Only the FILE
+# PREFIX is checkable — scripts/inventory-ref-lint.py says so in terms and deliberately resolves
+# nothing finer, because section numbers and row ids are renumbered by every refactor and Appendix
+# B's formatting for them is not consistent enough to parse without false positives. So the finer
+# anchors buy a public reader nothing: a section number or a row id in a file anyone can fetch
+# resolves only inside a document they are not reading. They are dropped HERE, at the point the row
+# becomes a public artifact, rather than in ARCHITECTURE.md — that file is exactly where an author
+# should keep writing the precise anchor, and qa/design-bindings.json is its public projection.
+#
+# What is dropped: a section reference, with or without its sign, alone or as a comma- or
+# slash-joined run, and with or without a lettered sub-part; and a row id or coverage-matrix id of
+# any family other than the parity bindings themselves.
+# What stays: the file-prefix word, any backticked source path, and a bare `:1055-1082`, which is a
+# SOURCE line span rather than a document anchor — it points into the shipped tree, which the
+# reader has. `PB-N` also stays: it names a row of Appendix B, which is the artifact this file IS,
+# and cited_cells() derives every binding's proof checks from those tokens.
+#
+# The column is redacted SEGMENT BY SEGMENT rather than by patching up punctuation afterwards: a
+# reference list is `;`- and `,`-separated, so a segment whose whole content was an anchor is
+# dropped entire and leaves no comma behind. The split is nesting-aware, because a source-path
+# segment legitimately carries both separators inside its own parentheses and backticks.
+_SECTION_RUN = re.compile(
+    r"§\s*\d+(?:\.\d+)*(?:\s*[/,–—-]\s*(?:§\s*)?\d+(?:\.\d+)*)*(?:\s*\(\s*[a-z]\s*\))?")
+_BARE_SECTION = re.compile(r"(?<![\w.\-])\d+(?:\.\d+)+(?![\w\-.])")
+_FAMILY_ROW_ID = re.compile(
+    r"(?<![\w-])(?!PB-)[A-Z]{2,8}-(?:\*|[A-Z]?\d{1,3}(?:\s*(?:/|\.\.)\s*\d{1,3})*)"
+    r"|(?<![\w-])[A-Z]\d{1,3}(?![\w-])")
+_ALNUM = re.compile(r"[A-Za-z0-9]")
+
+
+def _split_top(text: str, sep: str) -> list[str]:
+    """Split on `sep` only where it is not inside parentheses or a backtick span."""
+    parts, buf, depth, tick = [], [], 0, False
+    for ch in text:
+        if ch == "`":
+            tick = not tick
+        elif not tick and ch == "(":
+            depth += 1
+        elif not tick and ch == ")":
+            depth = max(0, depth - 1)
+        if ch == sep and depth == 0 and not tick:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def _redact_part(part: str) -> str:
+    p = _FAMILY_ROW_ID.sub("", _BARE_SECTION.sub("", _SECTION_RUN.sub("", part)))
+    p = re.sub(r"\(\s*[;,/–—-]*\s*\)", "", p)          # parenthetical emptied of its only anchor
+    p = re.sub(r"(?<![\w`])/+\s*", "", p)              # a separator whose operands are gone
+    p = re.sub(r"\s+", " ", p).strip(" ,;")
+    p = re.sub(r"\s*[–—]$", "", p)                     # the dangling half of a stripped range
+    p = re.sub(r"\s+(?:rows?|steps?)$", "", p)         # `rows` with its numbers gone
+    return p.strip(" ,;")
+
+
+def public_inventory(text: str) -> str:
+    """The `inventory` column as a public reader can actually use it: the file-prefix word (and any
+    bare source path beside it), with the within-file anchors removed."""
+    if not text:
+        return text
+    segments = []
+    for seg in _split_top(text, ";"):
+        parts = [_redact_part(p) for p in _split_top(seg, ",")]
+        parts = [p for p in parts if _ALNUM.search(p)]
+        if parts:
+            segments.append(", ".join(parts))
+    out = "; ".join(segments)
+    # A prefix word left alone by its own anchor reads better joined to the source span that
+    # followed it: `config, (:267)` was one citation, not two.
+    return re.sub(r"(?<=[A-Za-z]),\s*(?=[(:])", " ", out)
+
+
 def merge_checks(*lists: list[dict]) -> list[dict]:
     seen: set[tuple[str, str]] = set()
     out: list[dict] = []
@@ -903,6 +984,9 @@ def build(arch_text: str, cells_doc: dict, existing: dict | None) -> dict:
         checks = merge_checks(derive_oracle_checks(pb, cited, all_cells), seed, hand)
         entry = dict(b)
         entry["surface"] = public_surface(entry.get("surface", ""))
+        # Only the emitted copy is redacted; default_suggestion() below still keys off `b`, the
+        # raw Appendix B row, because its heuristic reads the family prefix this drops.
+        entry["inventory"] = public_inventory(entry.get("inventory", ""))
         if pb in NOTES:
             entry["note"] = NOTES[pb]
         if checks:
@@ -988,9 +1072,33 @@ def test_index(crates: Path) -> dict[str, set[str]]:
     return idx
 
 
-def verify(doc: dict, cells_doc: dict, crates: Path, root: Path) -> list[tuple[str, str, str, str]]:
+def golden_recorded(ledger: Path) -> set[str]:
+    """The cell ids the pinned golden actually recorded a comparable answer for (status PASS).
+
+    Roughly a third of cells.json is protocol surface the 1.5.5 binary never served, and the golden
+    carries those as SKIP rows. Existence in cells.json is therefore not evidence of anything: a
+    binding could name a cell that has been SKIP since the day it was written, and read PASS forever
+    on a comparison that has never once run. Only a PASS row on this ledger means the golden holds
+    bytes for that cell. An absent ledger yields an empty set, which is honest: nothing is proven.
+    """
+    out: set[str] = set()
+    if not ledger.is_file():
+        return out
+    for line in ledger.read_text(encoding="utf-8", errors="replace").splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 2 and parts[1] == "PASS":
+            out.add(parts[0])
+    return out
+
+
+def verify(doc: dict, cells_doc: dict, crates: Path, root: Path,
+           ledger: Path = GOLDEN_LEDGER) -> list[tuple[str, str, str, str]]:
     idx = test_index(crates) if crates.exists() else {}
     cell_ids = {c["id"] for c in cells_doc.get("cells", [])}
+    recorded = golden_recorded(ledger)
+    fam_cells: dict[str, list[str]] = defaultdict(list)
+    for c in cells_doc.get("cells", []):
+        fam_cells[c.get("family") or c.get("plane") or "?"].append(c["id"])
     families = Counter((c.get("family") or c.get("plane") or "?") for c in cells_doc.get("cells", []))
     rows: list[tuple[str, str, str, str]] = []
     for b in doc.get("bindings", []):
@@ -1010,9 +1118,15 @@ def verify(doc: dict, cells_doc: dict, crates: Path, root: Path) -> list[tuple[s
                 else:
                     ok = r in idx
             elif k == "oracle-cell":
-                ok = r in cell_ids
+                ok = r in cell_ids and r in recorded
+                if r in cell_ids and not ok:
+                    missing.append(f"{k}:{r} (in cells.json, but the golden never recorded it)")
+                    continue
             elif k == "oracle-family":
-                ok = families.get(r, 0) > 0
+                ok = any(i in recorded for i in fam_cells.get(r, []))
+                if families.get(r, 0) > 0 and not ok:
+                    missing.append(f"{k}:{r} (cells exist, but the golden recorded none of them)")
+                    continue
             elif k in ("lint", "gate", "conformance"):
                 ok = (root / r).exists()
             if not ok:
@@ -1086,6 +1200,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--out-json", default=str(OUT_JSON))
     ap.add_argument("--out-md", default=str(OUT_MD))
     ap.add_argument("--crates", default=str(CRATES))
+    ap.add_argument("--golden-ledger", default=str(GOLDEN_LEDGER),
+                    help="the pinned golden's ledger.tsv; an oracle check is only proven by a PASS row here")
     a = ap.parse_args(argv)
 
     cells_doc = json.loads(Path(a.cells).read_text()) if Path(a.cells).exists() else {"cells": []}
@@ -1096,7 +1212,7 @@ def main(argv: list[str]) -> int:
         if existing is None:
             print(f"design-bindings: {a.bindings} missing -- run --write first", file=sys.stderr)
             return 2
-        for r in verify(existing, cells_doc, Path(a.crates), ROOT):
+        for r in verify(existing, cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger)):
             print("\t".join(x.replace("\t", " ") for x in r))
         return 0
 

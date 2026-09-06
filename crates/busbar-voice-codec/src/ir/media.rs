@@ -83,15 +83,40 @@ impl AudioFormat {
     }
 }
 
-/// THE PURE BARGE-IN TRUNCATE HELPER (`plane4-duplex-session.md`). Given the total bytes of downlink audio the plane has
-/// actually PLAYED OUT to the client for one item, compute the `audio_played_ms` truncate point — the
-/// audio the user genuinely heard. On WebSocket the upstream emits audio faster than realtime, so this
-/// count is the plane's own playback-position bookkeeping ([`crate::ir::codec::DecodeState`]), never a
-/// field copied off the wire. The runtime that ACTS on this (cancel + truncate) is the next layer;
-/// this function is the arithmetic only.
+/// THE PURE BARGE-IN TRUNCATE HELPER (`plane4-duplex-session.md`). Given the bytes of downlink audio the plane has
+/// RELAYED to the client for one item, compute the `audio_played_ms` truncate point.
+///
+/// SAY WHAT THIS IS. It is the audio HANDED OVER, not the audio heard: on WebSocket the upstream emits
+/// a turn far faster than it plays, so straight after a burst this is the whole turn while the user is
+/// still on its first syllable. That makes it an UPPER BOUND on what was heard — the safe direction for
+/// a truncate (never cut before the user got there) and the wrong number to call a measurement. The
+/// count is the plane's own bookkeeping ([`crate::ir::codec::DecodeState`]), never a field copied off
+/// the wire, and it narrows toward the truth as the runtime feeds a clock through
+/// [`crate::ir::codec::DecodeState::record_played_at`]. The runtime that ACTS on this (cancel +
+/// truncate) is the next layer; this function is the arithmetic only.
 #[must_use]
 pub fn truncate_point_ms(bytes_played: u64, fmt: AudioFormat) -> u64 {
     fmt.bytes_to_ms(bytes_played)
+}
+
+/// WHICH ITEM THIS AUDIO IS PART OF — an OPAQUE correlation the plane carries but never interprets.
+///
+/// A downlink frame belongs to one response, one output item, one content part. The plane's own
+/// barge-in bookkeeping does not need those ids (it counts bytes), but the CLIENT does: every downlink
+/// frame is relayed through the writer, and a client handed audio with no item named cannot issue its
+/// own truncate when the user interrupts. Each field is `None` when the source dialect never said it —
+/// Gemini's `modelTurn` audio names no item at all, and an id nobody issued is worse than an absent
+/// one, so nothing here is ever invented.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IrAudioRef {
+    /// The response this audio belongs to.
+    pub response_id: Option<String>,
+    /// The conversation item this audio belongs to — the id a truncate names.
+    pub item_id: Option<String>,
+    /// Which output of that response.
+    pub output_index: Option<u32>,
+    /// Which content part of that output.
+    pub content_index: Option<u32>,
 }
 
 /// THE NEUTRAL AUDIO-FRAME IR (`plane4-duplex-session.md`). `media` is OPAQUE — the identity transform by default; the IR
@@ -104,4 +129,6 @@ pub struct IrAudioFrame {
     pub seq: u64,
     /// The audio payload — opaque bytes, relayed verbatim under the identity transform by default.
     pub media: Bytes,
+    /// Which item this audio is part of, as the source dialect named it (absent when it named none).
+    pub origin: IrAudioRef,
 }

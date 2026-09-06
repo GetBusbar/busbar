@@ -33,4 +33,13 @@ if command -v gh >/dev/null 2>&1; then gh release download "$TAG" --repo "GetBus
 [ -s "${tmp}/${ASSET}" ] || curl -fsSL -m 300 -o "${tmp}/${ASSET}" "https://github.com/GetBusbar/${NAME}/releases/download/${TAG}/${ASSET}" || { echo "fetch-plugin: download failed" >&2; exit 4; }
 got="$(sha256_of "${tmp}/${ASSET}")"
 [ "$got" = "$WANT" ] || { echo "fetch-plugin: DIGEST MISMATCH for ${ASSET}: expected ${WANT} actual ${got}" >&2; exit 3; }
-install -m 0644 "${tmp}/${ASSET}" "$OUT"; declaw "$OUT"; echo "$OUT"
+# PUBLISH BY RENAME. `install` into $OUT writes the bytes in place, so a reader arriving mid-write
+# sees a SHORT tarball at the path the cache-hit test above accepts — and the oracle runs its cells
+# concurrently against a shared cache, so that reader exists. The cache-hit test would reject the
+# partial file on digest, but the cell that opens it directly gets a truncated archive and reports a
+# plugin defect. Write beside the target, then rename: on the same filesystem that is atomic, so the
+# path either holds nothing or holds the whole verified tarball. The digest is still checked BEFORE
+# the rename, so what becomes visible is only ever the asset that matched the pin.
+install -m 0644 "${tmp}/${ASSET}" "${OUT}.tmp.$$" && mv -f "${OUT}.tmp.$$" "$OUT" || {
+  rm -f "${OUT}.tmp.$$"; echo "fetch-plugin: could not publish ${OUT}" >&2; exit 4; }
+declaw "$OUT"; echo "$OUT"

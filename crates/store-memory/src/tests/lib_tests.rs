@@ -626,3 +626,130 @@ fn put_credential_sweeps_stale_revoked_creds() {
         "a credential revoked within the retention window must survive"
     );
 }
+
+/// A pure READ must not queue behind another pure read. `list_keys` over a large table clones every
+/// row while holding the `keys` lock, and on the governance hot path a `get_key` arriving in that
+/// window is an admit decision waiting: if both take the WRITE side of the `RwLock`, the point read
+/// blocks for the whole listing pass, and a big enough table turns an admin listing into a latency
+/// spike on every request.
+///
+/// The listing's guard is parked here for the whole check (a stand-in for "a very large table"), so
+/// the assertion is deterministic rather than a timing race: with a shared read guard the concurrent
+/// `get_key` completes immediately; with an exclusive one it cannot complete at all until the
+/// listing lets go, and the bounded wait below fails rather than hanging the suite.
+#[test]
+fn a_parked_listing_read_does_not_block_a_concurrent_point_read() {
+    use std::sync::mpsc;
+    let store = std::sync::Arc::new(MemoryStore::new());
+    store.put_key(&key("k1")).unwrap();
+
+    // Exactly the guard `list_keys` holds while it clones the table.
+    let parked = store.keys.read().unwrap_or_else(|e| e.into_inner());
+
+    let (tx, rx) = mpsc::channel();
+    let reader = std::sync::Arc::clone(&store);
+    let handle = std::thread::spawn(move || {
+        let found = reader.get_key("k1").expect("point read").is_some();
+        let _ = tx.send(found);
+    });
+
+    let answered = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or(false);
+    drop(parked);
+    handle.join().expect("the point read thread");
+    assert!(
+        answered,
+        "a concurrent get_key did not complete while a listing read was in flight — the point \
+         read is serialized behind the whole listing pass"
+    );
+}
+
+/// A credential may only hang off a LIVE key. `delete_key` tombstones the key and cascades away
+/// every credential it owned precisely so the secret material stops resolving; a `put_credential`
+/// arriving afterwards (an in-flight rotation, a retry, a hydrating replica) put the material
+/// straight back under a key an operator had just revoked, and `lookup_credential_secret` resolved
+/// it — the tombstone cascade undone through the other door.
+#[test]
+fn put_credential_refuses_a_tombstoned_or_absent_key() {
+    let s = MemoryStore::new();
+
+    // No such key at all: nothing to own the credential.
+    assert!(
+        s.put_credential(&credential("orphan", "ghost", "AKIA_GHOST"))
+            .is_err(),
+        "a credential whose owning key names no row must be refused"
+    );
+
+    s.put_key(&key("a")).unwrap();
+    s.delete_key("a").unwrap();
+    assert!(
+        s.put_credential(&credential("c1", "a", "AKIA1")).is_err(),
+        "a credential minted onto a TOMBSTONED key must be refused"
+    );
+    assert!(
+        s.lookup_credential_secret("sigv4", "AKIA1")
+            .unwrap()
+            .is_none(),
+        "the refused credential must not resolve — that is the whole point of the cascade"
+    );
+}
+
+/// The key+credential mint is ATOMIC or it is nothing. The trait's default is the two-call sequence
+/// (`put_key` then `put_credential`), and the credential leg fails on an ordinary operator mistake —
+/// a `public_id` already in use. Under the default the key leg has already committed by then, so the
+/// mint reports failure while leaving a live bearer key with no credential behind it: a row the
+/// caller does not know exists and will never clean up.
+#[test]
+fn put_key_with_credential_leaves_no_key_behind_when_the_credential_is_refused() {
+    let s = MemoryStore::new();
+    s.put_key(&key("incumbent")).unwrap();
+    s.put_credential(&credential("c-incumbent", "incumbent", "AKIA_TAKEN"))
+        .unwrap();
+
+    // The mint the operator asks for, colliding on the global (kind, public_id) handle.
+    let mut minted = credential("c-new", "fresh", "AKIA_TAKEN");
+    minted.meta.key_id = "fresh".to_string();
+    assert!(
+        s.put_key_with_credential(&key("fresh"), &minted).is_err(),
+        "a mint whose credential collides on public_id must fail"
+    );
+    assert!(
+        s.get_key("fresh").unwrap().is_none(),
+        "the failed mint left the key committed — the pair went in one leg at a time"
+    );
+    assert!(
+        s.list_credentials("fresh").unwrap().is_empty(),
+        "and no credential row may survive the refusal either"
+    );
+
+    // The success path still writes BOTH rows.
+    let ok = credential("c-ok", "fresh", "AKIA_FREE");
+    s.put_key_with_credential(&key("fresh"), &ok)
+        .expect("a clean mint writes both rows");
+    assert!(s.get_key("fresh").unwrap().is_some());
+    assert_eq!(s.list_credentials("fresh").unwrap().len(), 1);
+}
+
+/// The spent-token ledger is bounded by the tokens' own expiry: a row past its `expires_at` can
+/// never be presented again, so redeeming anything sweeps the lapsed rows out in the same call.
+/// The ledger is keyed by `(kind, token)`, so the same nonce under a different kind is its own
+/// single-use grant rather than a collision.
+#[test]
+fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "n1", 100, 50).unwrap());
+    assert!(!s.redeem_plane_token("ask", "n1", 100, 50).unwrap());
+
+    // Same nonce, different kind: a separate grant, not the same spent row.
+    assert!(s.redeem_plane_token("other", "n1", 100, 50).unwrap());
+
+    // Past its own expiry the row is dropped — nothing upstream can present it again anyway, and
+    // keeping it only grows the map.
+    assert!(s.redeem_plane_token("ask", "n2", 300, 200).unwrap());
+    assert_eq!(
+        s.plane_tokens.read().unwrap().len(),
+        1,
+        "the two lapsed rows must be swept by the redemption that came after them"
+    );
+}

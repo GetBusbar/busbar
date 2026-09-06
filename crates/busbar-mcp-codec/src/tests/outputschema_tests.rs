@@ -9,8 +9,8 @@
 //! DOES model there is a test that it catches a violation, and for the keywords it does NOT model
 //! there is a test that it stays silent rather than guessing.
 
-use crate::outputschema::check;
-use serde_json::json;
+use crate::outputschema::{check, MAX_ERRORS};
+use serde_json::{json, Value};
 
 #[test]
 fn a_conforming_object_passes() {
@@ -125,6 +125,23 @@ fn enum_and_const_are_exact() {
     assert!(check(&json!({ "k": 8 }), &c).is_err());
 }
 
+/// JSON HAS ONE NUMERIC TYPE, and `const`/`enum` must read it the way `type` already does. `1` and
+/// `1.0` are the same number, so a schema that pins one and an upstream that serialised the other
+/// agree — and reporting that as a violation would fail a conforming tool over its serialiser's
+/// formatting, which is exactly the false violation this module promises never to produce.
+#[test]
+fn an_integral_float_and_an_integer_are_the_same_constant() {
+    let c = json!({ "type": "object", "properties": { "k": { "const": 1.0 } } });
+    assert!(check(&json!({ "k": 1 }), &c).is_ok());
+    let c = json!({ "type": "object", "properties": { "k": { "const": 1 } } });
+    assert!(check(&json!({ "k": 1.0 }), &c).is_ok());
+    let e = json!({ "type": "object", "properties": { "k": { "enum": [1.0, 2.0] } } });
+    assert!(check(&json!({ "k": 1 }), &e).is_ok());
+    assert!(check(&json!({ "k": 2 }), &e).is_ok());
+    // And a number that is genuinely a different number is still a violation.
+    assert!(check(&json!({ "k": 3 }), &e).is_err());
+}
+
 #[test]
 fn a_self_referential_value_cannot_exhaust_the_stack() {
     // The depth bound STOPS CHECKING; it never manufactures a violation.
@@ -135,6 +152,72 @@ fn a_self_referential_value_cannot_exhaust_the_stack() {
         s = json!({ "type": "array", "items": s });
     }
     assert!(check(&v, &s).is_ok());
+}
+
+/// THE VIOLATION LIST IS BOUNDED, and the bound is a defence rather than a tidiness rule: without
+/// it an upstream returning a thousand unexpected properties makes busbar build a thousand-clause
+/// string on the request path and hand it to an operator who reads the first few.
+#[test]
+fn the_violation_list_stops_at_the_cap() {
+    let closed = json!({
+        "type": "object",
+        "properties": { "a": { "type": "string" } },
+        "additionalProperties": false,
+    });
+    let mut value = serde_json::Map::new();
+    value.insert("a".to_string(), json!("x"));
+    for i in 0..100 {
+        value.insert(format!("extra{i}"), json!(i));
+    }
+    let e = check(&Value::Object(value), &closed).unwrap_err();
+    assert_eq!(
+        e.split("; ").count(),
+        MAX_ERRORS,
+        "a hundred unexpected properties must report the cap's worth and stop: {e}"
+    );
+}
+
+/// THE TYPE UNION IS A DISJUNCTION. `["string", "null"]` is how a schema says "a string, or nothing"
+/// — the commonest optional-field shape there is — and reading it as a conjunction would reject
+/// every value, which is the false violation this module must never produce.
+#[test]
+fn a_type_union_accepts_any_of_its_members() {
+    let schema = json!({
+        "type": "object",
+        "properties": { "note": { "type": ["string", "null"] } },
+    });
+    assert!(check(&json!({ "note": "x" }), &schema).is_ok());
+    assert!(check(&json!({ "note": null }), &schema).is_ok());
+    let e = check(&json!({ "note": 1 }), &schema).unwrap_err();
+    assert!(e.contains("$.note"), "{e}");
+    assert!(e.contains("expected type"), "{e}");
+}
+
+/// THE DEPTH BOUND IS A STATEMENT ABOUT THIS WALKER, NEVER ABOUT THE DOCUMENT — so it must fire
+/// nowhere near ordinary nesting, and where it does fire it must go SILENT rather than report.
+/// A schema and a value nested ten deep are entirely ordinary and are still checked; the same pair
+/// nested a hundred deep is past what this walker will follow, and it says nothing at all.
+#[test]
+fn a_violation_inside_the_depth_bound_is_reported_and_one_beyond_it_is_silent() {
+    /// A value that is `"not an integer"` under `n` nested arrays, and the matching `n`-deep schema
+    /// that declares the innermost item an integer. The pair violates at exactly depth `n`.
+    fn nested(n: usize) -> (Value, Value) {
+        let mut v = json!("not an integer");
+        let mut s = json!({ "type": "integer" });
+        for _ in 0..n {
+            v = json!([v]);
+            s = json!({ "type": "array", "items": s });
+        }
+        (v, s)
+    }
+    let (v, s) = nested(10);
+    let e = check(&v, &s).unwrap_err();
+    assert!(e.contains("expected type"), "{e}");
+    let (v, s) = nested(100);
+    assert!(
+        check(&v, &s).is_ok(),
+        "past the bound the walk STOPS; it never manufactures a violation"
+    );
 }
 
 #[test]

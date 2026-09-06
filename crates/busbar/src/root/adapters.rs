@@ -244,11 +244,11 @@ impl Breaker for BreakerAdapter {
                 }
                 busbar_unit_breaker::LaneState::ProbeInFlight => Unavailable::ProbeInFlight,
                 busbar_unit_breaker::LaneState::BudgetExhausted => Unavailable::BudgetExhausted,
-                // The unit errs only on a non-ready state, so this arm is unreachable by
-                // construction rather than by convention.
-                busbar_unit_breaker::LaneState::Ready => {
-                    unreachable!("the breaker unit does not refuse a ready cell")
-                }
+                // The unit refuses only from a state that would not have admitted, so this arm
+                // does not arise. It still answers with a refusal rather than by aborting: a
+                // routing step holding a dispatch open is the wrong place to discover that an
+                // invariant of another crate has drifted, and the caller has a shed for it.
+                busbar_unit_breaker::LaneState::Ready => Unavailable::ProbeInFlight,
             }),
         }
     }

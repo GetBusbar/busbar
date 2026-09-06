@@ -40,7 +40,7 @@ fn test_finish_emits_request_metrics() {
     let resp = (StatusCode::OK, "ok").into_response();
     let out = finish(
         &minimal_app(),
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         "openai",
         "mypool",
         Instant::now(),
@@ -213,7 +213,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -286,7 +286,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -335,7 +335,7 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
     let resp = (StatusCode::SERVICE_UNAVAILABLE, "x").into_response();
     let _ = finish(
         &minimal_app(),
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         "anthropic",
         "p2",
         Instant::now(),
@@ -386,7 +386,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
-    let govctx = busbar_core::governance::GovCtx {
+    let govctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -478,13 +478,13 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
         std::sync::Arc::new(GovState::new(store.clone(), Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "daycap".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 30,
-                per: Some(busbar_core::config::groups::LimitWindow::Day),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -517,7 +517,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
-    let govctx = busbar_core::governance::GovCtx {
+    let govctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -2119,7 +2119,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     let store = StdArc::new(MemoryStore::new());
     let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let auth_cfg =
-        busbar_core::config::AuthCfg::with_chain(vec![busbar_core::config::AuthChainEntry::bare(
+        busbar_substrate::config::auth::AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
             "test-groups-module",
         )]);
     let mut app = TestApp::new()
@@ -2145,7 +2145,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         let mut table = std::collections::BTreeMap::new();
         table.insert(
             "llm-users".to_string(),
-            busbar_core::config::RoleBindingCfg {
+            busbar_substrate::config::auth::RoleBindingCfg {
                 allowed_pools: Some(vec!["gpool-a".to_string()]),
                 ..Default::default()
             },
@@ -2153,12 +2153,12 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         // OMITTED allowed_pools = ALL pools.
         table.insert(
             "batch".to_string(),
-            busbar_core::config::RoleBindingCfg::default(),
+            busbar_substrate::config::auth::RoleBindingCfg::default(),
         );
         // Explicit [] = NO pools (the empty set, fail closed).
         table.insert(
             "locked".to_string(),
-            busbar_core::config::RoleBindingCfg {
+            busbar_substrate::config::auth::RoleBindingCfg {
                 allowed_pools: Some(vec![]),
                 ..Default::default()
             },
@@ -3289,7 +3289,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -3339,7 +3339,7 @@ async fn test_governance_guard_passes_when_allowed() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let passed = governance_guard(
@@ -3365,7 +3365,7 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = 1_700_000_000;
@@ -3417,7 +3417,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
 
     // --- 403: pool not allowed ---
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let resp =
@@ -3430,7 +3430,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // body-model protocols surface this as 429 (native OpenAI/Gemini quota semantics); no
     // vendor returns 402 here. ---
     let (app2, key2) = governed_app_over_budget();
-    let gov2 = busbar_core::governance::GovCtx {
+    let gov2 = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2.clone())),
     };
     let resp = admit_check(&app2, &gov2, "openai", "", busbar_substrate::store::now())
@@ -3442,7 +3442,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // Bedrock ingress maps the same over-budget condition to a 400-class
     // ServiceQuotaExceededException (the native AWS shape), NOT 429.
     let (app2b, key2b) = governed_app_over_budget();
-    let gov2b = busbar_core::governance::GovCtx {
+    let gov2b = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2b.clone())),
     };
     let resp = admit_check(
@@ -3464,7 +3464,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
 
     // --- 429: rate limited. A group with `requests: 0, per: minute` blocks the first request. ---
     let (app3, key3) = governed_app_rate_limited();
-    let gov3 = busbar_core::governance::GovCtx {
+    let gov3 = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key3.clone())),
     };
     let resp = admit_check(&app3, &gov3, "openai", "", busbar_substrate::store::now())
@@ -3531,13 +3531,13 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
     // A ZERO-cap GROUP budget: the very first request is over budget (keys carry no caps).
     let groups = std::collections::BTreeMap::from([(
         "empty".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 0,
-                per: Some(busbar_core::config::groups::LimitWindow::Total),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -3576,13 +3576,13 @@ fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
     inner.auth = crate::test_support::keys_chain_auth();
     let groups = std::collections::BTreeMap::from([(
         "closed".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Requests,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Requests,
                 amount: 0,
-                per: Some(busbar_core::config::groups::LimitWindow::Minute),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Minute),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -5363,7 +5363,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
         .fallback_pool("B", &[(1, 1)])
         .on_exhausted(
             "A",
-            busbar_core::config::OnExhausted::FallbackPool("B".to_string()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -5454,7 +5454,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
         .fallback_pool("B", &[(1, 1)])
         .on_exhausted(
             "A",
-            busbar_core::config::OnExhausted::FallbackPool("B".to_string()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("B".to_string()),
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -5915,7 +5915,7 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 async fn governed_limit_router(
     over: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_core::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_substrate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
     use busbar_core::governance::{GovState, MemoryStore};
     let store = StdArc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
@@ -5959,7 +5959,7 @@ async fn governed_limit_router(
     };
     let groups = std::collections::BTreeMap::from([(
         "tripped".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
             limits: vec![tripping],
@@ -6283,13 +6283,13 @@ fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "finance".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 0,
-                per: Some(busbar_core::config::groups::LimitWindow::Total),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Total),
                 scope: None,
                 on_exhaust: None,
                 downgrade_to: None,
@@ -6326,7 +6326,7 @@ async fn test_group_blocked_429_names_the_budget_group() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_group_blocked();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6363,7 +6363,7 @@ async fn test_missing_group_fails_closed_at_ingress() {
     let (app, key) = governed_app_group_blocked();
     let mut orphan = key.clone();
     orphan.group = Some("ghost".to_string());
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(orphan)),
     };
     let resp = admit_check(&app, &gov, "openai", "", busbar_substrate::store::now())
@@ -6402,7 +6402,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         .unwrap();
     let rate_card = std::collections::BTreeMap::from([(
         "m".to_string(),
-        busbar_core::config::RateEntryCfg::default(),
+        busbar_substrate::config::sections::RateEntryCfg::default(),
     )]);
     let cost = busbar_core::cost::CostModel::resolve_parts(
         Some(&rate_card),
@@ -6416,7 +6416,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = std::sync::Arc::new(cost);
     }
-    let gov_ctx = busbar_core::governance::GovCtx {
+    let gov_ctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     // An arbitrary passthrough model string (not a pool, not a by-model lane, not priced).
@@ -6462,15 +6462,15 @@ fn governed_app_downgrade(
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
-            limits: vec![busbar_core::config::groups::LimitCfg {
-                metric: busbar_core::config::groups::LimitMetric::Budget,
+            limits: vec![busbar_substrate::config::groups::LimitCfg {
+                metric: busbar_substrate::config::groups::LimitMetric::Budget,
                 amount: 25,
-                per: Some(busbar_core::config::groups::LimitWindow::Day),
+                per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                 scope: Some(busbar_api::ScopeRef::pool("frontier")),
-                on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
+                on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
                 downgrade_to: Some(busbar_api::ScopeRef::pool("value")),
             }],
             ..Default::default()
@@ -6512,7 +6512,7 @@ fn governed_app_downgrade(
 async fn test_budget_exhaustion_downgrades_pool() {
     crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(None);
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6550,35 +6550,35 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
-        busbar_core::config::GroupCfg {
+        busbar_substrate::config::groups::GroupCfg {
             parent: None,
             enabled: true,
             limits: vec![
                 // a: 1 request budget (10c cap, 10c fee) -> downgrades to b on exhaustion.
-                busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 10,
-                    per: Some(busbar_core::config::groups::LimitWindow::Day),
+                    per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("a")),
-                    on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
                 },
                 // b: budget is ALREADY exhausted (cap 0) -> downgrades to c.
-                busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 0,
-                    per: Some(busbar_core::config::groups::LimitWindow::Day),
+                    per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("b")),
-                    on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("c")),
                 },
                 // c: budget is ALSO already exhausted -> downgrades back to b, the CYCLE.
-                busbar_core::config::groups::LimitCfg {
-                    metric: busbar_core::config::groups::LimitMetric::Budget,
+                busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
                     amount: 0,
-                    per: Some(busbar_core::config::groups::LimitWindow::Day),
+                    per: Some(busbar_substrate::config::groups::LimitWindow::Day),
                     scope: Some(busbar_api::ScopeRef::pool("c")),
-                    on_exhaust: Some(busbar_core::config::groups::OnExhaust::Downgrade),
+                    on_exhaust: Some(busbar_substrate::config::groups::OnExhaust::Downgrade),
                     downgrade_to: Some(busbar_api::ScopeRef::pool("b")),
                 },
             ],
@@ -6616,7 +6616,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
         .pools
         .insert("c".to_string(), vec![]);
 
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6661,7 +6661,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
 async fn test_downgrade_never_bypasses_pool_acl() {
     crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(Some(vec!["frontier".to_string()]));
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();

@@ -6,7 +6,7 @@
 use busbar_caps::{Authenticate, KernelSeal, ReasonCode, StepName, UnitToken};
 
 use super::{entry, Canned};
-use crate::admin::{admin_grants, kernel_verb_scope_satisfied, Scope};
+use crate::admin::{admin_grants, kernel_verb_scope_satisfied, Grants, Scope};
 use crate::chain::AuthChain;
 use crate::challenge::{Challenge, ChallengeBounds};
 use crate::module::AuthOutcome;
@@ -64,7 +64,7 @@ fn a_denied_chain_refuses_at_the_authenticate_step() {
     assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
     assert_eq!(
         refusal.step(),
-        StepName::Authenticate,
+        Some(StepName::Authenticate),
         "the step is stamped by the decision, not claimed by the unit"
     );
     assert!(!refusal.under_hold(), "nothing is charged this early");
@@ -267,5 +267,85 @@ fn the_kernel_verb_scope_check_is_satisfied_for_anonymous_on_the_open_posture() 
     assert!(
         !kernel_verb_scope_satisfied(true, &Principal::from_id("alice")),
         "a resolved principal is judged on its own scopes"
+    );
+}
+
+/// The satisfaction table, pinned pair by pair.
+///
+/// Pinned rather than derived from an ordering: a comparison would answer for a rung nobody has
+/// decided about yet, and the answer it invents comes from where the variant was written. Every
+/// pair below is a decision, and adding a rung to `Scope` fails to compile until its pairs are
+/// added here too — which is the whole point of spelling satisfaction as a match.
+#[test]
+fn satisfaction_is_a_decided_table_not_a_declaration_order() {
+    let cases = [
+        (Scope::ReadOnly, Scope::ReadOnly, true),
+        (Scope::ReadOnly, Scope::Full, false),
+        (Scope::Full, Scope::ReadOnly, true),
+        (Scope::Full, Scope::Full, true),
+    ];
+    for (held, needed, expected) in cases {
+        assert_eq!(
+            Grants::of(held).satisfies(needed),
+            expected,
+            "held {held:?} against needed {needed:?}"
+        );
+    }
+}
+
+/// The reserved-id rule is about MODULES, and applies only to them.
+///
+/// A virtual key's own id starts with `vk_` — that prefix is reserved precisely so that nothing
+/// BUT the key directory can mint an id in it. Applying the rule to the engine's own signed-key arm
+/// therefore refuses every real key: the arm does not synthesize an identity, it resolves the one
+/// the directory issued. A boxed module, which cannot resolve a key, is still refused.
+#[test]
+fn the_reserved_id_rule_binds_modules_and_not_the_engines_own_key_arm() {
+    struct Resolves;
+    impl crate::chain::KeyVerifier for Resolves {
+        fn verify_token(
+            &self,
+            _token: &str,
+            _now: u64,
+            _expected_aud: Option<&str>,
+        ) -> Option<crate::chain::ResolvedKey> {
+            Some(crate::chain::ResolvedKey {
+                id: "vk_live".to_string(),
+                name: "live".to_string(),
+            })
+        }
+    }
+
+    // The keys arm: a `vk_` id is the key's OWN id, and it is admitted.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(Vec::new(), true));
+    let d = auth.resolve(&request(), None, Some(&Resolves), None, None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect("a resolved key is an identity the directory issued")
+            .principal()
+            .expect("and it settles on that identity")
+            .as_str(),
+        "vk_live"
+    );
+
+    // A boxed module claiming the same id is still refused: it synthesized it.
+    let (seal, token) = seal_and_token();
+    let auth = Auth::new(AuthChain::new(
+        vec![entry(
+            "a",
+            Box::new(Canned::new(
+                "a",
+                AuthOutcome::Identify(Principal::from_id("vk_live")),
+            )),
+        )],
+        false,
+    ));
+    let d = auth.resolve(&request(), None, None, None, None, &token);
+    assert_eq!(
+        d.into_result(&seal)
+            .expect_err("a module may not name a key")
+            .reason(),
+        ReasonCode::Unauthenticated
     );
 }

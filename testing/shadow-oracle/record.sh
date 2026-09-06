@@ -56,6 +56,18 @@ CONTROL="$WORK/mock.control"
 
 fail_setup() { record "setup" FAIL "$1" "${2:-}"; exit 1; }
 
+# exec and script cells do not boot the recording busbar, so nothing on their path rewrites
+# "$WORK/config.yaml" — they read whatever variant the LAST http/llm cell's boot happened to leave
+# there. Under `--plane all` the ordering makes that the baseline already, but under `--filter` a
+# hooks/queue-timeout/inbound-concurrency-2 cell can strand its config on disk and every later
+# `exec.config: baseline` / `mutation:` cell is then recorded against THAT config (a mutation
+# applied to the wrong baseline is a different cell). Called before any such cell reads the file.
+ensure_baseline_config() {
+  [ -n "${DISK_VARIANT:-}" ] || return 0
+  ORACLE_VARIANT="" oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || return 1
+  DISK_VARIANT=""
+}
+
 # ── port ownership: the ONLY evidence that what answers is what we started ───────────────────────
 # This script has no `set -e`, so an unchecked `assert_port_free` is a no-op — and every readiness
 # probe below is a bare HTTP answer, which a stale busbar or a parallel recording on the same port
@@ -134,12 +146,15 @@ if ORACLE_VARIANT=hooks oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT"
   oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || fail_setup "oracle config could not be written"
 fi
 
-BUSBAR_PID="" CUR_VARIANT=""
+# DISK_VARIANT is the variant the config FILE currently on disk was written for — a property of
+# "$WORK/config.yaml", not of any process. "is a busbar running" is BUSBAR_PID, and only that; the
+# two must never be conflated (see stop_busbar).
+BUSBAR_PID="" DISK_VARIANT=""
 boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three keys, prime the BROKE key
   local variant="${1:-}"
-  if [ "$variant" != "$CUR_VARIANT" ]; then
+  if [ "$variant" != "$DISK_VARIANT" ]; then
     ORACLE_VARIANT="$variant" oracle_write_config "$WORK" "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT" || return 3
-    CUR_VARIANT="$variant"
+    DISK_VARIANT="$variant"
   fi
   # PROVE THE PORTS FREE IMMEDIATELY BEFORE THE SPAWN. Without this the /healthz poll below adopts
   # whatever answers first — including a busbar left behind by a crashed run — and every cell after
@@ -170,10 +185,13 @@ stop_busbar() {  # stop the current busbar and wait until BOTH its ports are fre
   [ -n "$BUSBAR_PID" ] || return 0
   local dead="$BUSBAR_PID"
   kill "$dead" 2>/dev/null || true; wait "$dead" 2>/dev/null || true; BUSBAR_PID=""
-  # THE CONFIG THIS BUSBAR WAS BOOTED UNDER IS NO LONGER RUNNING ANYWHERE. Leaving CUR_VARIANT set
-  # tells the next boot_busbar "the config on disk already matches", and under --shared-state the
-  # next cells then run against a variant nothing is serving — a dead port read as that variant.
-  CUR_VARIANT=""
+  # DO NOT clear DISK_VARIANT here. Stopping a process does not rewrite a file: the config still on
+  # disk is still the one this busbar was booted under, and DISK_VARIANT is the only record of which
+  # variant that is. Clearing it made the baseline variant (the empty string) indistinguishable from
+  # "unknown", so the next `boot_busbar ""` saw ""=="" and SKIPPED oracle_write_config — every
+  # baseline cell after the first hooks/queue-timeout/inbound-concurrency-2 cell then booted, and was
+  # recorded against, the leftover variant config. "Is a busbar running" is BUSBAR_PID, cleared just
+  # above, and the per-cell guard below reboots on it.
   # Wait for the PID to be reaped AND for both listeners to go: handing only the data port to a
   # script cell (which takes LISTEN_PORT *and* ADMIN_PORT) leaves it racing the admin socket's close,
   # and its own assert_port_free then reports "port busy" for a process that is already exiting.
@@ -247,7 +265,8 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
   while IFS= read -r envkv; do [ -n "$envkv" ] && envs+=("$envkv"); done < <(jq -r '.exec.env // {} | to_entries[] | "\(.key)=\(.value)"' <<<"$cell")
   local xwork="$raw/work"; mkdir -p "$xwork"
   case "$cfg" in
-    baseline) cfgfile="$WORK/config.yaml" ;;
+    baseline) ensure_baseline_config || { record "$id" FAIL "could not restore the baseline oracle config" ""; return; }
+      cfgfile="$WORK/config.yaml" ;;
     none) cfgfile="" ;;
     missing) cfgfile="$xwork/does-not-exist.yaml" ;;
     migrated:*) # the corpus file migrated by THIS binary, then validated against ITS OWN catalog.
@@ -266,7 +285,8 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
       while IFS= read -r envname; do
         [ -n "$envname" ] && envs+=("${envname}=$(printf 'a%.0s' {1..64})")
       done < <(grep -o 'env:[[:space:]]*[A-Za-z0-9_]\+' "$cfgfile" | sed -E 's/env:[[:space:]]*//' | sort -u) ;;
-    mutation:*) python3 "${here}/apply-mutation.py" --baseline "$WORK/config.yaml" --providers "$WORK/providers.yaml" \
+    mutation:*) ensure_baseline_config || { record "$id" FAIL "could not restore the baseline oracle config" ""; return; }
+      python3 "${here}/apply-mutation.py" --baseline "$WORK/config.yaml" --providers "$WORK/providers.yaml" \
         --mutation "${cfg#mutation:}" --out "$xwork" >"$xwork/mutation.env" 2>"$xwork/mutation.err" \
         || { record "$id" SKIP "UNSUPPORTED: $(tr '\n' ' ' <"$xwork/mutation.err" | cut -c1-200)" "mutation could not be applied (named gap)"; return; }
       cfgfile="$xwork/config.yaml"
@@ -524,9 +544,12 @@ while IFS= read -r cell; do
     sname="$(jq -r .script.name <<<"$cell")"
     local_args=(); while IFS= read -r a; do [ -n "$a" ] && local_args+=("$a"); done < <(jq -r '.script.args[]? // empty' <<<"$cell")
     # a script cell never needs the recording busbar; free its ports and CPU. stop_busbar clears
-    # CUR_VARIANT as well, so the next cell reboots instead of assuming the variant it wanted is
-    # still being served here — under --shared-state that assumption was a dead port.
+    # BUSBAR_PID, so the next cell reboots instead of assuming the variant it wanted is still being
+    # served here — under --shared-state that assumption was a dead port.
     stop_busbar
+    # a script cell drives its own busbar off "$WORK/config.yaml": that must be the baseline, not
+    # whatever variant an earlier cell's boot left there (see ensure_baseline_config).
+    ensure_baseline_config || { record "$id" FAIL "could not restore the baseline oracle config" ""; continue; }
     # the script reuses this recording's own (now free) listen/admin ports so two recordings never
     # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
     # the port after the admin one (inside this recording's own block)
@@ -544,9 +567,9 @@ while IFS= read -r cell; do
   # `fresh: true` — this cell must not see state (breaker, budgets) left by earlier cells.
   variant="$(jq -r '.config_variant // empty' <<<"$cell")"
   # `-z "$BUSBAR_PID"` is not redundant: a script cell just before this one stopped the recording
-  # busbar, and with --shared-state a following cell whose variant equals CUR_VARIANT would
+  # busbar, and with --shared-state a following cell whose variant equals DISK_VARIANT would
   # otherwise skip the boot and drive every request at a port nothing is listening on.
-  if [ -z "$BUSBAR_PID" ] || [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$CUR_VARIANT" ]; then
+  if [ -z "$BUSBAR_PID" ] || [ "$FRESH_ALL" = 1 ] || [ "$(jq -r '.fresh // false' <<<"$cell")" = true ] || [ "$variant" != "$DISK_VARIANT" ]; then
     stop_busbar
     boot_busbar "$variant" || { record "$id" FAIL "fresh boot before cell failed (variant '${variant}')" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 300)"; continue; }
   fi

@@ -9,6 +9,7 @@ impl BearerToken {
     pub(crate) fn with_token_for_test(token: &str) -> Self {
         BearerToken {
             token: RwLock::new(Arc::new(CachedToken::new(token.to_string(), 0))),
+            _alive: None,
         }
     }
 }
@@ -74,6 +75,7 @@ fn cached_token_new_omits_header_for_bytes_invalid_in_a_header_value() {
             "tok\nwith-newline".to_string(),
             0,
         ))),
+        _alive: None,
     };
     assert!(bad.headers_for("k", &ctx()).is_empty());
 }
@@ -155,5 +157,42 @@ fn now_epoch_returns_the_real_current_time() {
     assert!(
         got >= before && got <= after,
         "now_epoch() = {got}, expected within [{before}, {after}]"
+    );
+}
+
+/// A LANE THAT IS RELOADED AWAY TAKES ITS REFRESHER WITH IT. The wait between mints is most of a
+/// token lifetime, and the provider check used to happen only after it — so a dropped lane kept a
+/// task alive for the rest of that lifetime and then minted one more token, a real request to the
+/// operator's token endpoint on behalf of a lane that no longer exists. The refresher holds the only
+/// other reference to the minter, so its own death is what this reads.
+#[tokio::test]
+async fn dropping_the_provider_ends_its_refresher() {
+    let minter: Minter = Arc::new(|| {
+        // A long-lived token: the refresher settles into a wait measured in most of an hour.
+        Box::pin(async { Ok(CachedToken::new("tok-live".to_string(), now_epoch() + 3600)) })
+            as MintFuture
+    });
+    let refresher_holds = Arc::downgrade(&minter);
+    let provider = spawn(minter);
+
+    // Let the first mint land, so the task is in its wait and not mid-request.
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if provider.is_ready() {
+            break;
+        }
+    }
+    assert!(provider.is_ready(), "the refresher minted its first token");
+
+    drop(provider);
+    for _ in 0..50 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        if refresher_holds.upgrade().is_none() {
+            break;
+        }
+    }
+    assert!(
+        refresher_holds.upgrade().is_none(),
+        "the refresher ended with the lane instead of waiting out the token lifetime"
     );
 }

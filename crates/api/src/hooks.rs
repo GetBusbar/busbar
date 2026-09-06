@@ -292,8 +292,20 @@ pub enum TransformOutcome {
     Rewrite(RewriteReply),
     /// Reject the request outright — same clamped/sanitized semantics as a decide-path reject.
     Reject { status: u16, message: String },
-    /// No opinion / unsupported / any transport failure (proceed with the ORIGINAL body).
+    /// No opinion / unsupported (proceed with the ORIGINAL body). A genuine "nothing to say".
     Abstain,
+    /// The hook COULD NOT ANSWER: its own dependency failed, timed out, or it refuses to act on what
+    /// it got. The rewrite-path twin of `HookReply::Failed` on the decide path.
+    ///
+    /// This arm did not exist, so a `prompt: rw` gate's transport failure collapsed into `Abstain` —
+    /// indistinguishable from a compressor that looked at the body and had no changes to make. The
+    /// request then proceeded with its original body and the operator's `on_error` chain, whose
+    /// terminal can be `reject`, never fired. A gate deliberately configured to fail CLOSED failed
+    /// OPEN, silently. `decide` has had this distinction since `HookReply::Failed` landed; the
+    /// rewrite pass simply had no arm to carry it into.
+    ///
+    /// The message is for the operator's log. It must not carry request content.
+    Failed { message: String },
 }
 
 /// A hook's self-reported OBSERVED state — the `status` management reply (control plane): the

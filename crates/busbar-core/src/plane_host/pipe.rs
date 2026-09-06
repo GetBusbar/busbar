@@ -253,8 +253,8 @@ fn read_len_prefixed<'a>(bytes: &'a [u8], i: &mut usize) -> Option<&'a [u8]> {
 /// was written, `None` (⇒ inherit the host's cwd) when the field is absent or empty. Read only behind
 /// the sized-struct guard so a sender that predates the tail leaves the host's cwd untouched.
 fn read_child_cwd(d: &EgressDesc) -> Option<String> {
-    let ptr = read_sized_field!(d, EgressDesc, cwd_ptr)?;
-    let len = read_sized_field!(d, EgressDesc, cwd_len)?;
+    let ptr = read_sized_field!(d, d.size, EgressDesc, cwd_ptr)?;
+    let len = read_sized_field!(d, d.size, EgressDesc, cwd_len)?;
     if ptr.is_null() || len == 0 {
         return None;
     }
@@ -305,8 +305,8 @@ pub(super) fn open_subprocess(
     // SAFETY: `(env_ptr, env_len)`, when present, is a live borrowed range for the call (ABI).
     let env = match unsafe {
         resolve_child_env(
-            read_sized_field!(d, EgressDesc, env_ptr).unwrap_or(std::ptr::null()),
-            read_sized_field!(d, EgressDesc, env_len).unwrap_or(0),
+            read_sized_field!(d, d.size, EgressDesc, env_ptr).unwrap_or(std::ptr::null()),
+            read_sized_field!(d, d.size, EgressDesc, env_len).unwrap_or(0),
         )
     } {
         EnvOutcome::Ready(env) => env,
@@ -317,7 +317,7 @@ pub(super) fn open_subprocess(
     // them), both read only behind the sized-struct guard so a sender that predates the tail keeps the
     // pre-enrichment shape (an empty environment, the host's cwd, a discarded stderr).
     let cwd = read_child_cwd(d);
-    let stderr = if read_sized_field!(d, EgressDesc, stderr_inherit) == Some(1) {
+    let stderr = if read_sized_field!(d, d.size, EgressDesc, stderr_inherit) == Some(1) {
         Stdio::inherit()
     } else {
         Stdio::null()

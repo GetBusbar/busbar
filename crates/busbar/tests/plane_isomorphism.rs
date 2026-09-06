@@ -348,21 +348,41 @@ fn installed_plane_decls_are_behaviourally_isomorphic_or_declared() {
     );
 }
 
-/// THE ROOT LEG, JOINED TO THE SAME LEDGER — cfg-gated on all five `root-*` features for the reason
-/// spelled out in `capability_equality.rs`: the legs carry no config key, no environment variable
-/// and no boot line, so the only way to ask a build which legs it has is to compile the question in.
+/// The `root-*` legs THIS BUILD CARRIES, reflected one feature at a time. See the twin in
+/// `capability_equality.rs`: the legs carry no config key, no environment variable and no boot line,
+/// so the only way to ask a build which legs it has is to compile the question in — but the question
+/// must be asked per leg, not as a five-way conjunction, because the planes are switched onto the
+/// root one at a time and every partially-switched build is an ordinary build.
+fn compiled_legs() -> BTreeSet<&'static str> {
+    #[allow(unused_mut)]
+    let mut legs: BTreeSet<&'static str> = BTreeSet::new();
+    #[cfg(feature = "root-a2a")]
+    legs.insert("root-a2a");
+    #[cfg(feature = "root-admin")]
+    legs.insert("root-admin");
+    #[cfg(feature = "root-llm")]
+    legs.insert("root-llm");
+    #[cfg(feature = "root-mcp")]
+    legs.insert("root-mcp");
+    #[cfg(feature = "root-voice")]
+    legs.insert("root-voice");
+    legs
+}
+
+/// THE ROOT LEG, JOINED TO THE SAME LEDGER — on EVERY build.
 ///
 /// Isomorphism has always been about the SHIPPED decls. This adds the other path: every plane the
 /// binary installs must also be answered by a root leg in `qa/capability-equality.json`, on every one
 /// of its directional ledger columns. A plane installed into the binary and driven through the loop
 /// by no leg would be a plane whose loop nobody is judging — the same silent hole one axis over.
-#[cfg(all(
-    feature = "root-llm",
-    feature = "root-mcp",
-    feature = "root-a2a",
-    feature = "root-voice",
-    feature = "root-admin"
-))]
+///
+/// This used to be cfg-gated on all five `root-*` features at once, which meant it ran in exactly one
+/// build configuration and in no other — not the default build, and not `--features
+/// root-a2a,root-voice,root-llm` either. The join it performs is over DATA (the installed decls and
+/// the ledger), so it is answerable on every build and is asked on every build. What the features
+/// decide is which legs are COMPILED, and that is asserted separately below: a plane installed into
+/// this build whose answering leg this build also carries must be driven through the loop by a leg
+/// that proves at least one cell.
 #[test]
 fn every_installed_plane_is_answered_by_a_root_leg() {
     let decls = installed_decls();
@@ -384,6 +404,18 @@ fn every_installed_plane_is_answered_by_a_root_leg() {
             );
         }
     }
+    // Which legs prove at least one cell over the loop, read off the same ledger.
+    let mut leg_proven: BTreeMap<String, usize> = BTreeMap::new();
+    for cell in ledger["cells"].as_array().expect("`cells` is an array") {
+        let r = &cell["root"];
+        if r["state"].as_str() == Some("proven") {
+            if let Some(leg) = r["leg"].as_str() {
+                *leg_proven.entry(leg.to_string()).or_default() += 1;
+            }
+        }
+    }
+
+    let compiled = compiled_legs();
     let columns = columns_map();
     for (key, _) in &decls {
         let cols = columns
@@ -397,9 +429,30 @@ fn every_installed_plane_is_answered_by_a_root_leg() {
                      judging."
                 )
             });
-            println!("  {key:<6} {col:<13} -> {leg}");
+            // THE FEATURE-DEPENDENT HALF. If this build INSTALLS the plane and also CARRIES the leg
+            // that answers it, then the loop for that plane is live in this binary and must be
+            // witnessed: a leg that is compiled in and proves nothing on the column it owns is a
+            // plane running through a loop nobody is judging, which is the same hole this test
+            // refuses one level up.
+            if compiled.contains(leg.as_str()) {
+                let proven = leg_proven.get(leg).copied().unwrap_or(0);
+                assert!(
+                    proven > 0,
+                    "installed plane `{key}` answers to column `{col}` through leg `{leg}`, which \
+                     THIS BUILD COMPILES, and that leg proves ZERO cells over the loop. A plane \
+                     installed and switched onto a leg nobody drove is a loop nobody is judging."
+                );
+                println!("  {key:<6} {col:<13} -> {leg} [compiled, {proven} cell(s) proven]");
+            } else {
+                println!("  {key:<6} {col:<13} -> {leg} [leg off in this build]");
+            }
         }
     }
+    println!(
+        "ROOT-LEG ANSWERS: {} installed plane(s); legs compiled here: {:?}",
+        decls.len(),
+        compiled
+    );
 }
 
 /// I1 / floor guard: the reflected hook set and the doctrine constants cannot silently shrink.

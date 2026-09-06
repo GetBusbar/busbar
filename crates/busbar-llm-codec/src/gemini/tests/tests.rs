@@ -5776,6 +5776,63 @@ fn gemini_citation_offsets_correct_across_multiple_text_parts() {
     assert_eq!(&text_blocks[1].0[0..5], "Paris");
 }
 
+/// Gemini's candidate-level `citationSources[]` is CUMULATIVE: each chunk restates every source
+/// seen so far. Reading the whole list per chunk therefore re-emitted the earlier sources as fresh
+/// deltas, so a client assembling the stream saw the first citation N times. Only the sources this
+/// chunk ADDED belong in a delta.
+#[test]
+fn stream_gemini_cumulative_citation_sources_emit_only_the_new_ones() {
+    let source_a = serde_json::json!({
+        "startIndex": 0,
+        "endIndex": 5,
+        "uri": "https://example.com/a",
+        "title": "A"
+    });
+    let source_b = serde_json::json!({
+        "startIndex": 6,
+        "endIndex": 11,
+        "uri": "https://example.com/b",
+        "title": "B"
+    });
+    let events = collect_stream(&[
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": "alpha"}]},
+                "citationMetadata": {"citationSources": [source_a]}
+            }]
+        }),
+        // The SAME source restated, plus one new one.
+        serde_json::json!({
+            "candidates": [{
+                "content": {"role": "model", "parts": [{"text": " beta"}]},
+                "citationMetadata": {"citationSources": [source_a, source_b]},
+                "finishReason": GEMINI_FINISH_STOP
+            }],
+            "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 4}
+        }),
+    ]);
+
+    let deltas: Vec<Vec<String>> = events
+        .iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockDelta {
+                delta: crate::ir::IrDelta::CitationsDelta(cs),
+                ..
+            } => Some(
+                cs.iter()
+                    .map(|c| c.title.clone().unwrap_or_default())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        deltas,
+        vec![vec!["A".to_string()], vec!["B".to_string()]],
+        "each chunk must carry only the citations it ADDED, got {deltas:?}"
+    );
+}
+
 /// STREAMING citations, cross-protocol: a Gemini stream chunk carrying candidate-level
 /// `citationMetadata.citationSources[]` must read into an `IrDelta::CitationsDelta` on the answer
 /// text block, and a cross-protocol Anthropic egress must re-emit it as a native
@@ -6720,5 +6777,62 @@ fn gemini_schema_ref_flat_chain_depth_is_capped() {
     assert!(
         depth <= 256,
         "chained refs must be depth-capped, got depth {depth}"
+    );
+}
+
+/// The byte→char offset INDEX must answer every offset exactly as converting that offset on its own
+/// does — including the two degradations the contract promises: a mid-codepoint offset resolves to
+/// the nearest earlier boundary, and a past-the-end (or negative) offset clamps. Driven over a
+/// multibyte text with the offsets SHUFFLED, since the index is built in ascending order and a
+/// lookup must not depend on the order the citations happen to arrive in.
+#[test]
+fn gemini_char_index_matches_per_offset_conversion() {
+    // ASCII, 2-byte, 3-byte and 4-byte codepoints, so most offsets land mid-character.
+    let text = "abc é ✓ 𝄞 déjà vu ✓✓ 𝄞𝄞 end";
+    let index = GeminiCharIndex::build(text);
+
+    // Every byte position, a couple past the end, and a negative — visited out of order.
+    let mut offsets: Vec<i64> = (-3..=(text.len() as i64 + 5)).collect();
+    // A deterministic shuffle: walk the range with a stride coprime to its length.
+    let n = offsets.len();
+    let shuffled: Vec<i64> = (0..n).map(|i| offsets[(i * 7 + 3) % n]).collect();
+    offsets = shuffled;
+
+    for b in offsets {
+        assert_eq!(
+            index.char_offset(b),
+            gemini_byte_offset_to_char(text, b),
+            "byte offset {b} must convert identically in {text:?}"
+        );
+    }
+
+    // An empty text is the degenerate case: every offset resolves to 0.
+    let empty = GeminiCharIndex::build("");
+    for b in [-1, 0, 1, 99] {
+        assert_eq!(empty.char_offset(b), gemini_byte_offset_to_char("", b));
+    }
+}
+
+/// The writer's `open_tools` accumulator grows one entry per distinct tool-block index a backend
+/// opens, and lives for the whole stream. The per-block byte cap bounds how LARGE one entry grows;
+/// nothing bounded how MANY there were, so an upstream streaming an unbounded run of distinct tool
+/// indices could grow the Vec until the process is OOM-killed. It must hold the same
+/// `MAX_GEMINI_TOOL_FRAMES` line the reader's `open_tools` does.
+#[test]
+fn test_writer_open_tools_capped_in_entry_count() {
+    let writer = GeminiWriter;
+    for index in 0..(MAX_GEMINI_TOOL_FRAMES + 50) {
+        writer.write_response_event(&IrStreamEvent::BlockStart {
+            index,
+            block: IrBlockMeta::ToolUse {
+                id: String::new(),
+                name: "t".to_string(),
+            },
+        });
+    }
+    let held = writer.open_tools.lock().unwrap().len();
+    assert_eq!(
+        held, MAX_GEMINI_TOOL_FRAMES,
+        "open_tools must admit exactly the cap and refuse past it, got {held}"
     );
 }

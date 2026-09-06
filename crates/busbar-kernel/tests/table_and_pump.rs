@@ -31,6 +31,7 @@ fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
         provider_of_open_session: false,
         zero_hold_tick: false,
         arrival: arrival_hold(kernel, &TestDoor, principal()),
+        now: 0,
     }
 }
 
@@ -385,6 +386,56 @@ fn any_other_shape_forgives_the_frames_that_asked_for_more() {
     }
 }
 
+/// A closed session takes its run of "not yet" with it.
+///
+/// The run lived in a node-global map keyed by session id, and nothing ever took an entry out of
+/// it: connect, send one byte, disconnect, repeat, and the map grew for as long as the node ran.
+/// It also outlived the connection it described — a later session on the same id inherited the
+/// dead one's stalling run and was refused for frames it never sent. The run belongs to the
+/// session, so it ends when the session does.
+#[test]
+fn a_run_of_asks_ends_with_the_session_that_made_them() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(8, 0);
+    let sessions = Sessions::new(4);
+    let scheduler = Scheduler::default();
+    let id = kernel.session_id(13);
+
+    let stalling = sessions
+        .open(id, Binding::Bound, 0)
+        .expect("under the session budget");
+    for _ in 0..MAX_NEEDMORE_FRAMES {
+        assert_eq!(
+            scheduler.dispatch(
+                Some(&stalling),
+                &table,
+                StreamId(1),
+                Direction::Inbound,
+                Shape::NeedMore,
+            ),
+            Dispatch::Wait
+        );
+    }
+    sessions.remove(id);
+    drop(stalling);
+
+    // A new connection on the same id starts from nothing.
+    let fresh = sessions
+        .open(id, Binding::Bound, 0)
+        .expect("the slot came back with the close");
+    assert_eq!(
+        scheduler.dispatch(
+            Some(&fresh),
+            &table,
+            StreamId(1),
+            Direction::Inbound,
+            Shape::NeedMore,
+        ),
+        Dispatch::Wait,
+        "the new session was charged the old one's run"
+    );
+}
+
 #[test]
 fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction() {
     let kernel = Kernel::new();
@@ -481,19 +532,30 @@ fn k_parents_blocked_on_children_wait_rather_than_deadlock() {
     let second = pool.enter(0).expect("a permit");
     assert_eq!(pool.available(), 0);
 
-    // Two more parents want children and there are none to be had. They are counted as blocked,
-    // which is the number that says the pool is the bottleneck, and neither of them deadlocks.
+    // Two more parents want children and there are none to be had. Neither deadlocks, and both
+    // refusals are COUNTED — a refusal is a thing that happened, not a parent still standing in
+    // the pool: the refused parent is already back with its caller and will never call `leave`.
+    // Counted as a gauge it only ever went up, and the number an operator reads as "the pool is
+    // the bottleneck right now" was really "the pool has ever been the bottleneck".
     assert_eq!(pool.enter(0), Err(ReasonCode::InFlightCap));
     assert_eq!(pool.enter(0), Err(ReasonCode::InFlightCap));
-    assert_eq!(pool.blocked(), 2);
+    assert_eq!(pool.refusals(), 2);
 
     pool.leave(first);
     assert_eq!(pool.available(), 1);
-    assert_eq!(pool.blocked(), 1);
+    assert_eq!(
+        pool.refusals(),
+        2,
+        "giving a permit back un-refuses nothing"
+    );
     pool.leave(second);
+    // Every permit is back, so the pool is whole again however many refusals it made.
+    assert_eq!(pool.available(), pool.size());
 
-    // And nesting past the depth bound is refused whatever the pool looks like.
+    // And nesting past the depth bound is refused whatever the pool looks like — for want of
+    // depth, which is not the pool having nothing to give.
     assert_eq!(pool.enter(4), Err(ReasonCode::ScopeDenied));
+    assert_eq!(pool.refusals(), 2);
 }
 
 #[test]
@@ -534,6 +596,35 @@ fn pacing_pushes_back_on_a_stream_and_drops_on_a_datagram() {
         Emission::Unemitted,
         "there is nowhere to push back to, so the frame is dropped and journaled"
     );
+}
+
+/// A queue that fills has to empty again, and the thing that empties it is a frame leaving.
+///
+/// The clock depth was only ever pushed UP by a test: `emitted` was declared and never called, so
+/// nothing proved that a connection draining its queue takes the backpressure off. A queue that
+/// only fills is a connection throttled for the rest of its life.
+#[test]
+fn a_queue_that_drains_takes_the_backpressure_off() {
+    let mut clock = EmissionClock::new(1_000, 2, TransportKind::Stream);
+    assert_eq!(clock.offer(0), Emission::Send);
+    assert_eq!(clock.depth(), 0, "the first frame went straight out");
+
+    assert!(matches!(clock.offer(0), Emission::Backpressure { .. }));
+    assert!(matches!(clock.offer(0), Emission::Backpressure { .. }));
+    assert_eq!(clock.depth(), 2, "both are queued behind the pace");
+
+    // The connection takes them.
+    clock.emitted();
+    clock.emitted();
+    assert_eq!(clock.depth(), 0);
+
+    // And the next frame, offered past the pace the queued ones bought, goes out unpaced.
+    assert_eq!(clock.offer(3_000), Emission::Send);
+    assert_eq!(clock.depth(), 0);
+
+    // A frame that never queued cannot be emitted into a negative depth.
+    clock.emitted();
+    assert_eq!(clock.depth(), 0);
 }
 
 #[test]
@@ -621,6 +712,35 @@ fn the_session_budget_bounds_the_table() {
     );
 }
 
+/// The session budget is a bound, so asking it and spending it have to be one step.
+///
+/// The table's own cap already took its slot atomically; the session table asked "is there room?",
+/// built the slot, and only then counted it, which is three steps a peer can arrive in the middle
+/// of. Sixteen connections racing for four session slots must open four, however they interleave —
+/// a node that opens more sessions than its budget is a node whose budget is a suggestion.
+#[test]
+fn the_session_budget_holds_when_everything_connects_at_once() {
+    let kernel = Kernel::new();
+    for _ in 0..200 {
+        let sessions = std::sync::Arc::new(Sessions::new(4));
+        let mut racers = Vec::new();
+        for id in 0..16u64 {
+            let sessions = std::sync::Arc::clone(&sessions);
+            let session = kernel.session_id(id);
+            racers.push(std::thread::spawn(move || {
+                sessions.open(session, Binding::Bound, 0).is_ok()
+            }));
+        }
+        let opened = racers
+            .into_iter()
+            .map(|racer| racer.join().expect("the thread finished"))
+            .filter(|ok| *ok)
+            .count();
+        assert_eq!(opened, 4, "the node opened {opened} sessions over 4");
+        assert_eq!(sessions.len(), 4);
+    }
+}
+
 #[test]
 fn a_canary_over_the_table_is_still_balanced_when_nothing_ran() {
     let canary = Canary::new();
@@ -644,7 +764,8 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
             OriginKind::Client,
             StepName::Decode,
             ReasonCode::DecodeFailed,
-            Framing::Stream
+            Framing::Stream,
+            Binding::Unbound,
         ),
         Some(HardClose::DecodeFailedOnStream),
         "a stream that has lost sync cannot be trusted to resynchronise"
@@ -654,7 +775,8 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
             OriginKind::Client,
             StepName::Decode,
             ReasonCode::DecodeFailed,
-            Framing::Datagram
+            Framing::Datagram,
+            Binding::Unbound,
         ),
         None,
         "one unreadable datagram says nothing about the next one"
@@ -682,6 +804,57 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
     assert_eq!(table.len(), 0, "and nothing entered the table to be posted");
 }
 
+/// A bound session whose cached principal stops authenticating is closed, and an unbound one is not.
+///
+/// This is what BINDING is for. On a bound session the cached principal is the thing every later
+/// unit runs as; when the re-check refuses it, there is nothing left on that connection to be — the
+/// session is standing on a fact that is no longer true, so it closes. On an unbound session every
+/// unit authenticates for itself, and "wrong credential, try again" is an ordinary thing for a
+/// client to do on a connection that stays up. The decision could not see the binding at all, so
+/// one of the two answers was unreachable and the other was given to both.
+#[test]
+fn a_bound_session_closes_when_its_cached_principal_stops_authenticating() {
+    use busbar_contract::Framing;
+    use busbar_kernel::inflight::{hard_closes, HardClose};
+
+    for framing in [Framing::Stream, Framing::Datagram] {
+        assert_eq!(
+            hard_closes(
+                OriginKind::Client,
+                StepName::Authenticate,
+                ReasonCode::Unauthenticated,
+                framing,
+                Binding::Bound,
+            ),
+            Some(HardClose::BoundPrincipalFailed),
+            "the session is running as somebody it can no longer prove it is"
+        );
+        assert_eq!(
+            hard_closes(
+                OriginKind::Client,
+                StepName::Authenticate,
+                ReasonCode::Unauthenticated,
+                framing,
+                Binding::Unbound,
+            ),
+            None,
+            "an unbound session authenticates per unit and survives a bad one"
+        );
+    }
+
+    // A refusal somewhere other than the re-check is not the cached principal failing.
+    assert_eq!(
+        hard_closes(
+            OriginKind::Client,
+            StepName::Admit,
+            ReasonCode::Unauthenticated,
+            Framing::Stream,
+            Binding::Bound,
+        ),
+        None
+    );
+}
+
 /// A handoff neither leg declared closes the session it happened on, on either framing.
 ///
 /// The variant was declared and nothing produced it, which made it a comment. An upgrade the
@@ -698,7 +871,8 @@ fn a_handoff_mismatch_closes_the_session_on_either_framing() {
                 OriginKind::Client,
                 StepName::Verify,
                 ReasonCode::HandoffMismatch,
-                framing
+                framing,
+                Binding::Bound,
             ),
             Some(HardClose::HandoffMismatch),
             "the stack the session stands on is not a per-frame question"

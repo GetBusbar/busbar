@@ -23,12 +23,12 @@
 //! truncated there. A torn tail is normal. A torn record in the MIDDLE is not, and says so.
 
 use busbar_caps::{
-    Canary, Hold, LedgerToken, MeterClassId, Outcome, Posted, PrincipalId, QuantitySource,
-    ReasonCode, RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
+    Canary, Hold, LedgerToken, Outcome, Posted, PrincipalId, QuantitySource, ReasonCode,
+    RecoveryToken, StepName, UnitKey, Usage, UsageLine, UsageToken,
 };
 
 use crate::slice::Epoch;
-use crate::teller::{settle_amount, Evidence, Kernel};
+use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
 
 /// A hold as the journal wrote it.
 ///
@@ -83,7 +83,7 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
     let usage = Usage::estimate(
         &UsageToken::mint(kernel.seal()),
         vec![UsageLine {
-            class: MeterClassId::new("nano_units"),
+            class: KERNEL_ACCRUAL_CLASS,
             quantity: amount,
             // The sweep never saw a destination report anything: this figure is the accrual the
             // journal recorded, which is the kernel's own count, and the whole report is an
@@ -93,7 +93,16 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
         }],
     )
     .expect("one usage line is always within the record's bound");
-    let posted = Posted::settle(hold, &usage, &LedgerToken::mint(kernel.seal())).flagged(flags);
+    // The settlement table's `amount` IS the money figure, in the nano-units the hold reserved
+    // in; the single usage line above carries the same number as its own class's quantity because
+    // that class IS nano-units. The posting takes the money figure from where it is money.
+    let posted = Posted::settle(
+        hold,
+        u128::from(amount),
+        &usage,
+        &LedgerToken::mint(kernel.seal()),
+    )
+    .flagged(flags);
     canary.settled();
     posted
 }
@@ -130,6 +139,25 @@ pub enum TailVerdict {
     Clean,
     /// The last record was cut off mid-write. Normal after a crash: truncate and carry on.
     Torn,
+    /// A record is all there — its length fits the file — and its payload does not match its
+    /// checksum. Nothing about that is a machine dying mid-write, and there may be whole records
+    /// after it. It is raised rather than cut away.
+    Corrupt {
+        /// Where the offending record begins.
+        at: usize,
+    },
+}
+
+impl TailVerdict {
+    /// Whether this verdict is one the caller answers by truncating the file.
+    ///
+    /// The question lives on the verdict rather than in each caller, because "everything that is
+    /// not clean is a torn tail" is exactly the habit that turned a corrupted record into the
+    /// silent loss of every good record behind it.
+    #[must_use]
+    pub fn truncates(self) -> bool {
+        matches!(self, TailVerdict::Torn)
+    }
 }
 
 /// What the reader found.
@@ -146,9 +174,13 @@ pub struct Tail {
 /// Read the journal's frames and stop at the first one that does not check out.
 ///
 /// A record is a four-byte length, a four-byte checksum, and that many bytes of payload. A tail
-/// that is short, or whose checksum fails, is a machine that died mid-write: the file is truncated
-/// to the last good record and the node carries on. That is the whole recovery of a torn tail, and
-/// it is deliberately the simplest thing that can be right.
+/// that runs out of bytes mid-record is a machine that died mid-write: the file is truncated to the
+/// last good record and the node carries on. That is the whole recovery of a torn tail, and it is
+/// deliberately the simplest thing that can be right.
+///
+/// A record whose bytes are ALL PRESENT and whose checksum fails is the other answer. The scan
+/// stops in the same place — nothing past a record it cannot trust is read — but the verdict says
+/// which of the two happened, because only one of them is a file the caller may cut down.
 pub fn truncate_torn_tail(bytes: &[u8]) -> Tail {
     let mut at = 0usize;
     let mut records = 0usize;
@@ -180,10 +212,15 @@ pub fn truncate_torn_tail(bytes: &[u8]) -> Tail {
             };
         }
         if crc32(&bytes[at + RECORD_HEADER_BYTES..payload_end]) != expected {
+            // Every byte the header promised is here and the payload still does not check out. That
+            // is not a write the power cut short — it is a record something else changed — and the
+            // records behind it may be perfectly good. Reporting it as a torn tail would hand the
+            // caller a verdict whose whole meaning is "truncate", and every later record would go
+            // with it without anybody being told.
             break Tail {
                 records,
                 valid_bytes: at,
-                verdict: TailVerdict::Torn,
+                verdict: TailVerdict::Corrupt { at },
             };
         }
         records += 1;

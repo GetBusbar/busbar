@@ -2175,7 +2175,7 @@
     ],
     "path": "/api/v1/admin/identity-providers/does-not-exist"
    },
-   "notes": "200 NamedDefView; creates a second admin-tokens provider `oracle-idp2` (an unreferenced definition is legal). Upsert: an unknown name CREATES it, so the not_found probe returns 200 (skip or delete afterwards). bad_body: `token:` on a module other than admin-tokens is refused (CFG-212) \u21d2 400; unknown keys are 400 (deny_unknown_fields); unknown module 400 Cond::UnknownModule. Stale If-Match 409.",
+   "notes": "200 NamedDefView; creates a second admin-tokens provider `oracle-idp2` (an unreferenced definition is legal). Upsert: an unknown name CREATES it, so the not_found probe returns 200 (skip or delete afterwards). bad_body: `token:` on a module other than admin-tokens is refused (CONF-212) \u21d2 400; unknown keys are 400 (deny_unknown_fields); unknown module 400 Cond::UnknownModule. Stale If-Match 409.",
    "ok": {
     "body": {
      "module": "admin-tokens",

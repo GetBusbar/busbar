@@ -21,8 +21,10 @@
 //! `x-busbar-secret` schema vocabulary entry's `oneOf` (the reference shape busbar-ui composes for a
 //! secret field) must be generated FROM this real type, not hand-written as a parallel copy that can
 //! drift from the actual deserializer. [`oneof_schema`] is that derivation, straight from the same
-//! `Deserialize` impl `busbar`'s engine uses to parse a live config — so it is structurally
-//! impossible for the derived shape to accept something the engine would reject, or vice versa.
+//! `Deserialize` impl `busbar`'s engine uses to parse a live config. The two are written by hand
+//! against each other, not generated one from the other, so what actually keeps them in step is the
+//! round-trip test that runs the same table of shapes through both and demands the same verdict —
+//! the drift it caught first was a whitespace-only value the schema accepted and the visitor did not.
 //!
 //! `{ literal: <value> }` (the escape hatch for a plugin whose own legitimately-shaped config field
 //! collides with a reference shape) is **not** part of `SecretRef` and never was — it is handled one
@@ -46,6 +48,13 @@ pub const SECRET_MODULE_FILE: &str = "file";
 pub const SECRET_ENV_SETTING_KEY: &str = "key";
 /// The `file` module's settings key naming the file path.
 pub const SECRET_FILE_SETTING_PATH: &str = "path";
+
+/// "At least one non-whitespace character", as [`oneof_schema`] states the non-empty rule. The
+/// visitor's own check is `value.trim().is_empty()`, and `minLength: 1` is NOT that: a string of
+/// three spaces has length three, so the schema accepted `{ env: "   " }` while the engine refused
+/// it — a form that validates in busbar-ui and then fails at boot. This pattern says what the
+/// deserializer means.
+const NON_BLANK: &str = r"\S";
 
 /// A reference to a secret, resolved through a secret MODULE. See the crate docs for the accepted
 /// YAML/JSON spellings. `settings` is the module's own (opaque) config — busbar passes it through
@@ -127,6 +136,18 @@ impl<'de> Deserialize<'de> for SecretRef {
     {
         struct RefVisitor;
 
+        impl RefVisitor {
+            /// The one refusal message every inline-scalar spelling shares. Names the accepted
+            /// shapes and NEVER echoes what it was handed — the value it was handed is the secret.
+            fn inline_literal<E: de::Error>() -> E {
+                E::custom(
+                    "a secret value must be a REFERENCE, never an inline literal (the value is \
+                     not echoed): use { env: <VAR> }, { file: <path> }, or \
+                     { module: <secret-module>, settings: {…} }",
+                )
+            }
+        }
+
         impl<'de> Visitor<'de> for RefVisitor {
             type Value = SecretRef;
 
@@ -137,19 +158,56 @@ impl<'de> Deserialize<'de> for SecretRef {
                 )
             }
 
-            // A bare string here is almost always a LITERAL SECRET pasted inline (the exact
+            // A bare scalar here is almost always a LITERAL SECRET pasted inline (the exact
             // mistake this type exists to prevent). Reject it with a message that NEVER echoes
-            // the value — serde's default invalid-type error would print the string verbatim
+            // the value — serde's default invalid-type error would print the value verbatim
             // into boot logs.
             fn visit_str<E>(self, _v: &str) -> Result<SecretRef, E>
             where
                 E: de::Error,
             {
-                Err(E::custom(
-                    "a secret value must be a REFERENCE, never an inline literal (the value is \
-                     not echoed): use { env: <VAR> }, { file: <path> }, or \
-                     { module: <secret-module>, settings: {…} }",
-                ))
+                Err(Self::inline_literal())
+            }
+
+            // Every OTHER scalar form, for the same reason and with the same non-echoing message.
+            // A secret is not always quoted: `api_key: 483920175534` and `api_key: true` are
+            // perfectly ordinary YAML, and each one landed on serde's default `invalid type`
+            // error — which prints the value it received. The one path this type exists to keep a
+            // secret off (the boot log) is exactly where it went, and unquoted is the spelling
+            // nobody thinks to check.
+            fn visit_u64<E>(self, _v: u64) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_i64<E>(self, _v: i64) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_f64<E>(self, _v: f64) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_bool<E>(self, _v: bool) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
+            }
+
+            fn visit_bytes<E>(self, _v: &[u8]) -> Result<SecretRef, E>
+            where
+                E: de::Error,
+            {
+                Err(Self::inline_literal())
             }
 
             fn visit_map<A>(self, mut map: A) -> Result<SecretRef, A::Error>
@@ -249,20 +307,25 @@ impl<'de> Deserialize<'de> for SecretRef {
 /// / `{ file }` sugar. This is the schema busbar-ui composes a secret reference against — never a
 /// bare string.
 ///
-/// Because this is generated from the SAME three shapes [`SecretRef`]'s `Deserialize` impl accepts —
-/// not a hand-maintained parallel copy — `{ "literal": <value> }` is excluded correctly with NO
-/// special-casing: `literal` was never one of `SecretRef`'s accepted shapes in the first place (it is
-/// handled one layer above `SecretRef` parsing, inside busbar's `resolve_settings()`, as an escape
-/// hatch for a plugin whose own config happens to collide with a reference shape). A full, faithful
-/// derivation from the real type is exactly what keeps `literal` out; there is no future "just derive
-/// it fully" refactor that could reintroduce it.
+/// This fragment is WRITTEN OUT here rather than mechanically generated from the `Deserialize` impl
+/// — serde exposes no schema to generate one from — so "it cannot drift" is not something the code
+/// makes true on its own. What pins it is the round-trip test in this crate's own suite: one table
+/// of shapes, each fed to BOTH the validator built from this fragment and `SecretRef::deserialize`,
+/// with the two verdicts asserted equal. Change either side alone and that test says so. It was
+/// added because the two HAD drifted: `minLength: 1` accepted a whitespace-only `{ env: "   " }`
+/// that the visitor's `trim().is_empty()` check refuses.
+///
+/// `{ "literal": <value> }` is excluded, and needs no special-casing to be: `literal` was never one
+/// of `SecretRef`'s accepted shapes in the first place (it is handled one layer above `SecretRef`
+/// parsing, inside busbar's `resolve_settings()`, as an escape hatch for a plugin whose own config
+/// happens to collide with a reference shape).
 pub fn oneof_schema() -> serde_json::Value {
     serde_json::json!({
         "oneOf": [
             {
                 "type": "object",
                 "properties": {
-                    "module": {"type": "string", "minLength": 1},
+                    "module": {"type": "string", "pattern": NON_BLANK},
                     "settings": {"type": "object"},
                 },
                 "required": ["module"],
@@ -270,13 +333,13 @@ pub fn oneof_schema() -> serde_json::Value {
             },
             {
                 "type": "object",
-                "properties": {"env": {"type": "string", "minLength": 1}},
+                "properties": {"env": {"type": "string", "pattern": NON_BLANK}},
                 "required": ["env"],
                 "additionalProperties": false,
             },
             {
                 "type": "object",
-                "properties": {"file": {"type": "string", "minLength": 1}},
+                "properties": {"file": {"type": "string", "pattern": NON_BLANK}},
                 "required": ["file"],
                 "additionalProperties": false,
             },

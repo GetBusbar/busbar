@@ -129,8 +129,8 @@ fn chat_body(pool: &str) -> Vec<u8> {
 // Pool-hook facade (money-path Phase 3-4 C): the per-pool `failover:` override is a NEUTRAL pool spec
 // now (the fixture lowers it through `PlaneBuildInput` → `build_runtime`), so this returns the config the
 // `.pool_failover(...)` setter takes instead of a hand-built `PoolRuntime`.
-fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> busbar_core::config::FailoverCfg {
-    busbar_core::config::FailoverCfg {
+fn pool_runtime_with_exclusions(excl: Option<Vec<String>>) -> busbar_substrate::config::pools::FailoverCfg {
+    busbar_substrate::config::pools::FailoverCfg {
         timeout_secs: 120,
         exclusions: excl,
         max_hops: 3,
@@ -170,7 +170,7 @@ async fn least_bad_never_reaches_an_excluded_member() {
             "pe",
             pool_runtime_with_exclusions(Some(vec!["beta".into()])),
         )
-        .on_exhausted("pe", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("pe", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -235,7 +235,7 @@ async fn least_bad_ranks_only_admissible_lanes() {
         )
         .pool("pl", &[(0, 1), (1, 1)])
         .pool_failover("pl", pool_runtime_with_exclusions(None))
-        .on_exhausted("pl", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("pl", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -288,7 +288,7 @@ async fn least_bad_still_serves_the_only_member_after_it_was_tried() {
         )
         .pool("ps", &[(0, 1)])
         .pool_failover("ps", pool_runtime_with_exclusions(None))
-        .on_exhausted("ps", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("ps", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -355,7 +355,7 @@ async fn a_fallback_pool_applies_its_own_exclusions() {
         .pool_failover("pf", pool_runtime_with_exclusions(None))
         .on_exhausted(
             "pf",
-            busbar_core::config::OnExhausted::FallbackPool("spill".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("spill".into()),
         )
         .fallback_pool("spill", &[(1, 1), (2, 1)])
         .pool_failover(
@@ -421,8 +421,8 @@ use std::time::Duration;
 
 /// A failover budget long enough that an at-capacity park cannot masquerade as a fast shed: a park
 /// runs to this deadline (300s), well past [`SHED_BUDGET`].
-fn long_failover() -> busbar_core::config::FailoverCfg {
-    busbar_core::config::FailoverCfg {
+fn long_failover() -> busbar_substrate::config::pools::FailoverCfg {
+    busbar_substrate::config::pools::FailoverCfg {
         timeout_secs: 300,
         exclusions: None,
         max_hops: 3,
@@ -511,7 +511,7 @@ async fn at_capacity_reject_sheds_503_not_queued() {
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -579,7 +579,7 @@ async fn at_capacity_fallback_spills_to_fast_member() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -617,7 +617,7 @@ async fn at_capacity_least_bad_sheds_when_saturated() {
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -656,7 +656,7 @@ async fn at_capacity_bounded_burst_all_spill_not_serialized() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -711,7 +711,7 @@ async fn at_capacity_all_members_busy_two_member_pool_spills() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(2, 1)])
         .build();
@@ -750,7 +750,7 @@ async fn at_capacity_plus_tripped_member_rejects_503() {
         ) // idx 1 — will be forced Open
         .pool("p", &[(0, 1), (1, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -787,12 +787,12 @@ async fn at_capacity_fallback_chain_spills_through_to_third_pool() {
         .failover(long_failover())
         .on_exhausted(
             "pa",
-            busbar_core::config::OnExhausted::FallbackPool("pb".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("pb".into()),
         )
         .fallback_pool("pb", &[(1, 1)])
         .on_exhausted(
             "pb",
-            busbar_core::config::OnExhausted::FallbackPool("pc".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("pc".into()),
         )
         .fallback_pool("pc", &[(2, 1)])
         .build();
@@ -824,7 +824,7 @@ async fn at_capacity_self_referential_fallback_stays_503() {
         .failover(long_failover())
         .on_exhausted(
             "loop",
-            busbar_core::config::OnExhausted::FallbackPool("loop".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("loop".into()),
         )
         .fallback_pool("loop", &[(0, 1)])
         .build();
@@ -854,7 +854,7 @@ async fn at_capacity_fallback_to_also_exhausted_pool_cascades_to_503() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         // No on_exhausted for "overflow" → default Status503 when it too is exhausted.
@@ -903,7 +903,7 @@ async fn tripped_member_still_falls_back_to_overflow() {
         .failover(long_failover())
         .on_exhausted(
             "primary",
-            busbar_core::config::OnExhausted::FallbackPool("overflow".into()),
+            busbar_substrate::config::pools::OnExhausted::FallbackPool("overflow".into()),
         )
         .fallback_pool("overflow", &[(1, 1)])
         .build();
@@ -950,7 +950,7 @@ async fn least_bad_skips_saturated_soonest_and_serves_free_sibling() {
         .pool("p", &[(0, 1), (1, 1)])
         .pool_failover("p", pool_runtime_with_exclusions(None))
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1010,7 +1010,7 @@ async fn retry_after_reflects_cooldown_when_a_member_is_tripped() {
         ) // idx 1 — tripped
         .pool("p", &[(0, 1), (1, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1039,7 +1039,7 @@ async fn retry_after_has_saturation_floor_when_purely_at_capacity() {
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::Status503)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Status503)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1155,7 +1155,7 @@ async fn queue_dispatches_when_permit_frees_before_deadline() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_core::config::OnExhausted::Queue { max_ms: 5000 },
+            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 5000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1224,7 +1224,7 @@ async fn queue_dropped_dispatch_future_releases_probe() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_core::config::OnExhausted::Queue { max_ms: 30_000 },
+            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 30_000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1315,7 +1315,7 @@ async fn least_bad_dropped_dispatch_never_reverts_a_peers_probe() {
         )
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::LeastBad)
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::LeastBad)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1418,7 +1418,7 @@ async fn queue_two_waiters_one_freed_permit_wakes_exactly_one() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_core::config::OnExhausted::Queue { max_ms: 30_000 },
+            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 30_000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1493,7 +1493,7 @@ async fn queue_times_out_to_503_when_capacity_never_frees() {
         .lane(saturated_lane("busy", &sem))
         .pool("p", &[(0, 1)])
         .failover(long_failover())
-        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 300 })
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 300 })
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1560,7 +1560,7 @@ async fn queue_skips_wait_and_rejects_when_no_candidate_at_capacity() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_core::config::OnExhausted::Queue { max_ms: 3000 },
+            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 3000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1614,7 +1614,7 @@ async fn queue_no_lost_wakeup_when_permit_freed_in_the_window() {
         .pool("p", &[(0, 1)])
         .failover(long_failover())
         // SHORT bound: if the freed-permit wake were lost, this would time out to 503 within 400ms.
-        .on_exhausted("p", busbar_core::config::OnExhausted::Queue { max_ms: 400 })
+        .on_exhausted("p", busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 400 })
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1657,7 +1657,7 @@ async fn queue_won_permit_but_breaker_now_open_never_dispatches() {
         .failover(long_failover())
         .on_exhausted(
             "p",
-            busbar_core::config::OnExhausted::Queue { max_ms: 2000 },
+            busbar_substrate::config::pools::OnExhausted::Queue { max_ms: 2000 },
         )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);

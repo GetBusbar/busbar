@@ -1166,7 +1166,17 @@ impl ProtocolReader for GeminiReader {
             // accumulate (it carries `text_index`, an index, not text). Adding a full-text
             // accumulator to this hot streaming path for an offset correction would fail the
             // layering test; the non-stream path (which HAS the full text) does convert.
-            let citations = read_gemini_citations(candidate, None);
+            // The list Gemini restates here is CUMULATIVE — every chunk that carries
+            // `citationMetadata` repeats every source seen so far — so emit only the tail past the
+            // watermark. Carrying the whole list each time made a client assembling the stream see
+            // the first citation once per chunk. A shorter-than-watermark list (an upstream that
+            // resets rather than accumulates) yields an empty tail and no delta, never a panic.
+            let all_citations = read_gemini_citations(candidate, None);
+            let citations: Vec<crate::ir::IrCitation> = all_citations
+                .get(state.citations_emitted..)
+                .unwrap_or_default()
+                .to_vec();
+            state.citations_emitted = state.citations_emitted.max(all_citations.len());
             if !citations.is_empty() {
                 // Claim the text block's index from the monotone counter (see `claim_ir_index`),
                 // exactly like the text-part arm — otherwise a citation/logprobs delta arriving

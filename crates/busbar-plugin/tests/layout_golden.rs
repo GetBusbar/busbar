@@ -450,9 +450,69 @@ fn compute_layout() -> String {
     record!(s, EmitHandle, [kind, _reserved, id]);
     record!(s, WorkItem, [size, version, _reserved, inbound, emit]);
 
-    // The two vtable headers (preamble + sized header). Slot offsets follow deterministically from
+    // The two vtable headers (preamble + sized header), then the slots themselves. (Slot offsets do
+    // NOT "follow deterministically" from the header — every slot is one pointer wide, so the
+    // offsets are identical under any permutation and only the recorded NAME→offset pairing
+    // distinguishes them.)
     // `__size`/`__align`; pinning the header offsets + total size catches any reshuffle.
-    record!(s, PlaneHostVtable, [abi, size, version]);
+    // The host vtable: the two headers AND every fn-pointer slot. Pinning only the headers left the
+    // gate blind to the one drift a golden is uniquely able to catch — two slots of the SAME
+    // signature swapping places. Sizes and offsets are then identical, every build still compiles,
+    // and a published plugin silently calls the wrong host capability through the right-looking
+    // slot. Recording each slot's own offset by NAME is what makes that a failure.
+    record!(
+        s,
+        PlaneHostVtable,
+        [
+            abi,
+            size,
+            version,
+            govern_admit,
+            meter_charge,
+            breaker_admit,
+            breaker_settle,
+            verify_lookup,
+            verify_store,
+            egress_open,
+            egress_poll,
+            egress_write,
+            egress_close,
+            journal_append,
+            journal_read,
+            nested_dispatch,
+            workhandle_open,
+            workhandle_resume,
+            drift_quarantine,
+            approval_redeem,
+            metrics_emit,
+            clock_now,
+            auth_resolve,
+            trust_evaluate,
+            entitlement_check,
+            gate_scan,
+            breaker_admit_reason,
+            verify_decide,
+            approval_redeem_q,
+            govern_admit_reason,
+            pipe_read,
+            pipe_write,
+            egress_fault,
+            journal_register,
+            journal_append_scoped,
+            journal_read_scoped,
+            journal_restore,
+            journal_seed,
+            journal_forget,
+            journal_compact,
+            journal_verify_scoped,
+            subkey_sign,
+            guard_url,
+            identity_admit,
+            gate_decide,
+            cost_reserve,
+            cost_settle
+        ]
+    );
     record!(
         s,
         BuildCtx,
@@ -485,7 +545,16 @@ fn compute_layout() -> String {
             label_ptr,
             label_len,
             provided_carriers,
-            _reserved
+            _reserved,
+            // The export slots, for the same reason as the host vtable's: `build`/`hydrate`/`start`
+            // share a shape, and swapping two of them is invisible to every other check.
+            config_validate,
+            build,
+            hydrate,
+            start,
+            admin_routes,
+            openapi,
+            dispatch
         ]
     );
 
@@ -501,13 +570,23 @@ fn abi_layout_matches_golden() {
     );
 
     let existing = std::fs::read_to_string(path).unwrap_or_default();
-    let update = std::env::var_os("BUSBAR_UPDATE_GOLDEN").is_some();
 
-    if update || existing.trim().is_empty() {
+    if std::env::var_os("BUSBAR_UPDATE_GOLDEN").is_some() {
         std::fs::write(path, &actual).expect("write golden");
         // On a seed run, do not also assert (the file was just written to match).
         return;
     }
+
+    // A missing or empty golden is a FAILURE, not an invitation to self-seed. Seeding on absence
+    // means deleting the file is a way to make this gate pass — the check would bless whatever
+    // layout it found and report success, which is the opposite of what a golden is for.
+    assert!(
+        !existing.trim().is_empty(),
+        "\nABI LAYOUT GOLDEN MISSING: {path}\n\
+         This gate has nothing to compare against. If the golden was lost, restore it from version \
+         control; if this layout is genuinely the intended one, seed it DELIBERATELY with \
+         `BUSBAR_UPDATE_GOLDEN=1 cargo test -p busbar-plugin`.\n"
+    );
 
     assert_eq!(
         existing, actual,

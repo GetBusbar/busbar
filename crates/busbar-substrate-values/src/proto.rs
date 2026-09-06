@@ -585,6 +585,17 @@ pub trait StreamTranslator: Send {
     /// writer never runs; the original bytes are relayed verbatim). Default no-op: every ingress
     /// writer without such a requirement ignores it.
     fn set_request_echo(&mut self, _ingress_request_body: &serde_json::Value) {}
+    /// Frame a TERMINAL mid-stream error through the ingress writer THIS translator has been driving
+    /// all stream, rather than through a freshly-resolved dialect writer. A writer that carries
+    /// per-stream identity (the OpenAI Responses writer latches the response id, `created_at`, `model`
+    /// and a monotonic `sequence_number`) produces a frame that CORRELATES with the frames the client
+    /// already received; a fresh writer restarts every one of those from its default, so the failure
+    /// event arrives with `sequence_number: 0` and an unrelated response id — a stream a strict SDK
+    /// cannot reconcile with the `response.created` it opened on. `None` when this translator has no
+    /// in-band error frame to offer, in which case the caller falls back to the dialect seam.
+    fn terminal_error_frame(&mut self, _err: &IrError) -> Option<(String, serde_json::Value)> {
+        None
+    }
 }
 
 /// How tightly a protocol CLAIMS an inbound request, for the generic detection fold. A LOWER value
