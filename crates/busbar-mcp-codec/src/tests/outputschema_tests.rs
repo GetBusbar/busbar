@@ -125,6 +125,23 @@ fn enum_and_const_are_exact() {
     assert!(check(&json!({ "k": 8 }), &c).is_err());
 }
 
+/// JSON HAS ONE NUMERIC TYPE, and `const`/`enum` must read it the way `type` already does. `1` and
+/// `1.0` are the same number, so a schema that pins one and an upstream that serialised the other
+/// agree — and reporting that as a violation would fail a conforming tool over its serialiser's
+/// formatting, which is exactly the false violation this module promises never to produce.
+#[test]
+fn an_integral_float_and_an_integer_are_the_same_constant() {
+    let c = json!({ "type": "object", "properties": { "k": { "const": 1.0 } } });
+    assert!(check(&json!({ "k": 1 }), &c).is_ok());
+    let c = json!({ "type": "object", "properties": { "k": { "const": 1 } } });
+    assert!(check(&json!({ "k": 1.0 }), &c).is_ok());
+    let e = json!({ "type": "object", "properties": { "k": { "enum": [1.0, 2.0] } } });
+    assert!(check(&json!({ "k": 1 }), &e).is_ok());
+    assert!(check(&json!({ "k": 2 }), &e).is_ok());
+    // And a number that is genuinely a different number is still a violation.
+    assert!(check(&json!({ "k": 3 }), &e).is_err());
+}
+
 #[test]
 fn a_self_referential_value_cannot_exhaust_the_stack() {
     // The depth bound STOPS CHECKING; it never manufactures a violation.
