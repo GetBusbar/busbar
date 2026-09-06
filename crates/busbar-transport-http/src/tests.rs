@@ -1992,3 +1992,32 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
         }
     }
 }
+
+/// The arrival record names the port the connection actually arrived on.
+///
+/// `Port` is a selector form, and a claim by port reads this field: zero here made every arrival on
+/// every listener look alike, so a node bound to two ports could not tell them apart. The port is
+/// the ACCEPTED SOCKET's local port, which is what the sibling `tcp`, `tls` and `ws` crates report
+/// and the only place the fact exists on an ephemeral (`:0`) bind.
+#[tokio::test]
+async fn an_arrival_names_the_port_it_arrived_on() {
+    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = served.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let bound_port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    let accept_fut = tokio::spawn({
+        let served = served.clone();
+        async move { served.accept(&listener).await.unwrap() }
+    });
+    let _client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    assert_eq!(
+        served.arrival(&conn).port,
+        bound_port,
+        "an arrival on a listener bound to {bound_port} must say so"
+    );
+}
