@@ -50,6 +50,26 @@ pub struct Outbound {
     pub refused_reply: bool,
 }
 
+/// The error code a refused client tool reply is rendered under, downlink.
+///
+/// Named once, publicly, because the client that has to recognise it and the test that pins it are
+/// two readers of one literal.
+pub const REFUSED_TOOL_REPLY_CODE: &str = "busbar.voice.tool_reply_refused";
+
+/// What a refusal says to the client. The two kinds are told apart because they are different
+/// mistakes: one is a reply on a session this node holds nothing for, the other a reply naming a
+/// call this node is not — or is no longer — waiting on.
+fn refusal_message(refusal: crate::runtime::ReplyRefusal) -> &'static str {
+    match refusal {
+        crate::runtime::ReplyRefusal::NoSuchSession => {
+            "this session holds no tool calls; the reply was not forwarded"
+        }
+        crate::runtime::ReplyRefusal::UnknownCall => {
+            "no open tool call carries that call_id; the reply was not forwarded"
+        }
+    }
+}
+
 impl Outbound {
     /// Queue one framed uplink event, honoring a DIALECT DROP: the writer answers `None` when the
     /// upstream dialect has no verb for the concept (a Gemini upstream has no `response.cancel`), and
@@ -418,7 +438,21 @@ where
                                 &mut g.decode,
                             ));
                         }
-                        Err(_) => out.refused_reply = true,
+                        Err(refusal) => {
+                            out.refused_reply = true;
+                            // AND THE CLIENT IS TOLD. A refusal that put nothing upstream and
+                            // nothing downlink is a stall: the client sent an answer, the model
+                            // was never asked to continue, and no frame on either wire says why.
+                            // So the refusal is rendered as this dialect's own error event, which
+                            // is the one downlink shape a client already knows how to read.
+                            out.downlink.extend(self.codec.write_down(
+                                IrServerEvent::Error {
+                                    code: REFUSED_TOOL_REPLY_CODE.to_string(),
+                                    message: refusal_message(refusal).to_string(),
+                                },
+                                &mut g.decode,
+                            ));
+                        }
                     }
                 }
                 // Everything else forwards verbatim (audio uplink, commits, item ops, tool results the
@@ -578,6 +612,24 @@ where
         for up in plan.upstream {
             // Funnel to the single upstream writer shared with the downlink-facing plane.
             let _ = self.upstream.unbounded_send(up.0.to_vec());
+        }
+        // THE OTHER HALF OF THE PLAN, which this leg used to drop on the floor. A client frame can
+        // produce a downlink of its own — a refused tool reply is the case that matters, and the
+        // plan says so in `refused_reply` — and a plan whose downlink is discarded is a client that
+        // sent an answer, got no error, and waits for a continuation nobody asked the model for.
+        // Every stall this leg can author is a silent one until these frames are written.
+        debug_assert!(
+            !plan.refused_reply || !plan.downlink.is_empty(),
+            "a refused reply is reported to the client or it is a silent stall"
+        );
+        if plan.refused_reply {
+            tracing::warn!("voice: a client tool reply named no open call; the client was told");
+        }
+        for down in plan.downlink {
+            self.core.carrier.send_downlink(down.0.to_vec());
+        }
+        if plan.close {
+            self.core.carrier.hard_close();
         }
     }
 }
