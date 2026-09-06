@@ -1149,3 +1149,39 @@ jobs:
       contents: read
       actions: read
     secrets: inherit
+
+  # ── THE FINAL JOB: the downstream fan-out, against the release THIS RUN just promoted ────────────
+  # release-fleet.yml's header has always claimed "release.yml's FINAL job calls this". It did not.
+  # The workflow ran itself off `push: main` and a daily `schedule:` instead, which meant it asserted
+  # whatever release happened to be latest at the time, on a commit that had nothing to do with it,
+  # and NOTHING connected a red fan-out to the release run that caused it. Those triggers are gone and
+  # this job is the claim made true: the version is the one `plan` resolved and `promote-release`
+  # published, so `release gate` going red turns THIS run red, on the release's own status page.
+  #
+  # It is deliberately NOT a branch-protection required check (see .github/required-status-checks.md):
+  # it asserts published bytes, not the code under review. This call is where it gets its teeth.
+  #
+  # `!cancelled()` and the promote/rc guards are the same three clauses `consumer-verification`
+  # carries, for the same three reasons: a `needs:` on a failed job skips the dependent by default; a
+  # release that was never promoted has no bytes to fan out over; and after an rc promote no public
+  # channel moved, so the whole fan-out would report that an unpublished release is unpublished.
+  #
+  # `needs: consumer-verification` orders it LAST without gating on it: `!cancelled()` means a red
+  # consumer sweep still lets the fleet fan-out run, so one release run produces BOTH verdicts
+  # instead of the first red hiding the second.
+  release-fleet:
+    name: release fleet (every downstream on the promoted version)
+    needs: [plan, promote-release, consumer-verification]
+    if: ${{ !cancelled() && needs['promote-release'].result == 'success' && needs['promote-release'].outputs.is_rc != '1' }}
+    uses: ./.github/workflows/release-fleet.yml
+    with:
+      version: ${{ needs.plan.outputs.version }}
+    # Job-level permissions REPLACE the workflow-level block for a called workflow. These are exactly
+    # release-fleet.yml's own declared needs and no more: it reads the repo and the published assets,
+    # reads build-provenance attestations, and mints an OIDC token for keyless Sigstore verification.
+    # `contents: write` is withheld — a verifier must never be able to move what it is verifying.
+    permissions:
+      contents: read
+      attestations: read
+      id-token: write
+    secrets: inherit
