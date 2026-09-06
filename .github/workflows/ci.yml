@@ -723,7 +723,7 @@ jobs:
   # generator that has quietly stopped deriving anything cannot pass vacuously. Pure stdlib python
   # over tracked files — no toolchain, no build — so it is FAST TIER and runs on every push.
   generated-artifact-drift:
-    name: generated-artifact drift (field · method inventories regen-clean)
+    name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -750,6 +750,12 @@ jobs:
         run: python3 scripts/method-inventory.py --selftest
       - name: method-inventory drift (committed == fresh derivation)
         run: python3 scripts/method-inventory.py --check
+      # cells.json is a THIRD generated artifact of the same shape, and the one with the widest
+      # blast radius: the shadow oracle's recorder and replayer iterate it, so a stale or hand-edited
+      # cell list silently changes what the whole 1.5.5 parity battery even asks. It derives from the
+      # two inventories checked immediately above, which is exactly why it can fall behind them.
+      - name: shadow-oracle cells drift (committed == fresh derivation)
+        run: python3 testing/shadow-oracle/enumerate-cells.py --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
