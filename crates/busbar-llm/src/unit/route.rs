@@ -175,10 +175,27 @@ pub(crate) fn candidates<'a>(
 /// The plan a resolved destination names: one leg per candidate lane, in the order the walk takes
 /// them.
 ///
-/// A candidate the tables no longer hold is skipped rather than guessed at, and the leg count is
-/// bounded by the contract (`MAX_LEGS`) because a unit is one authorization — a pool wider than the
-/// bound plans the legs it is allowed to plan and the walk still walks every candidate it was
-/// handed, because the walk is driven by the candidate list and not by this value.
+/// A candidate the tables no longer hold is skipped rather than guessed at.
+///
+/// # A pool wider than the plan
+///
+/// The leg count is bounded by the contract (`MAX_LEGS`), and a configured pool is not: the contract
+/// bounds a plan because a unit is one authorization, and it deliberately leaves candidate sets
+/// unbounded because bounding them would refuse a configuration the previous release accepted. Those
+/// two facts do not meet in the middle, so a pool with more members than the bound produces a plan
+/// that does not name every lane the walk may serve from.
+///
+/// REFUSING at the seal is the answer this cannot give. A ninth member is a configuration the shipped
+/// release serves, and turning it away here would be this plane refusing a deployment on the strength
+/// of a record-keeping limit — the caller's request would fail for a reason the caller cannot see,
+/// act on, or be at fault for. Sizing the plan from the pool is not available either: the plan's width
+/// is the contract's and the contract is what the kernel reads it through.
+///
+/// What is left is to make the overflow LOUD. The walk still walks every candidate it was handed —
+/// it is driven by the candidate list and not by this value, which is why the truncation costs a
+/// caller nothing — but the plan an operator reads is then not the whole of what could be dialled,
+/// and an operator who is never told cannot know that. So the shortfall is named once, at the seal,
+/// with the numbers that explain it.
 ///
 /// The two names a leg is written in are READ, not derived: the lane row carries its dial target and
 /// its lane name already seated as the node's interned statics, put there when the generation's
@@ -189,10 +206,13 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
     let tables = EngineTables::new(rt);
     let all = tables.lanes();
     let mut plan = RoutePlan::default();
+    let mut planned = 0usize;
+    let mut resolved = 0usize;
     for c in cands {
         let Some(lane) = all.get(c.idx) else {
             continue;
         };
+        resolved += 1;
         let facts = DestinationFacts::Upstream {
             // The family that dials an LLM lane. A lane's `protocol` is its DIALECT, which is a
             // different question from which transport carries it.
@@ -204,9 +224,21 @@ fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
             },
             lane: LaneId::new(lane.lane_id),
         };
-        if plan.legs.push(Leg { destination: facts }).is_err() {
-            break;
+        // NOT a break. Counting the rest is what turns "the plan is short" into "the plan is short by
+        // this many", and the loop's remaining work is a table lookup per candidate over a set the
+        // deployment's own configuration bounds.
+        if plan.legs.push(Leg { destination: facts }).is_ok() {
+            planned += 1;
         }
+    }
+    if resolved > planned {
+        tracing::warn!(
+            resolved,
+            planned,
+            bound = busbar_contract::MAX_LEGS,
+            "route plan is narrower than the pool: the walk may serve from a lane the plan does not \
+             name"
+        );
     }
     plan
 }
