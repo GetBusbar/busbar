@@ -158,7 +158,7 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: busbarAI
           # workflow_run doesn't check out the triggering commit by default (it defaults to the
@@ -193,8 +193,8 @@ jobs:
       # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
       # already names this exact drift as the history it exists to prevent, and every job in ci.yml
       # follows it; this file was the one that did not.
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: actions/download-artifact@v4
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: /tmp
@@ -217,7 +217,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: busbarAI
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
@@ -229,11 +229,11 @@ jobs:
       # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
       # already names this exact drift as the history it exists to prevent, and every job in ci.yml
       # follows it; this file was the one that did not.
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       # rust-cache still earns its place HERE: it makes this one build faster run-over-run by
       # restoring the dependency graph. It cannot replace the artifact below, because it
       # deliberately drops workspace-member artifacts, and `busbar` IS where fat LTO is paid.
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           workspaces: busbarAI
 
@@ -241,7 +241,7 @@ jobs:
         working-directory: busbarAI
         run: ./scripts/qa-gate-run.sh build "$TARBALL"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: ${{ env.TARBALL }}
@@ -267,7 +267,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.fast.outputs.matrix) }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: busbarAI
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
@@ -279,9 +279,9 @@ jobs:
       # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
       # already names this exact drift as the history it exists to prevent, and every job in ci.yml
       # follows it; this file was the one that did not.
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: /tmp
@@ -313,7 +313,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           path: busbarAI
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
@@ -325,9 +325,9 @@ jobs:
       # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
       # already names this exact drift as the history it exists to prevent, and every job in ci.yml
       # follows it; this file was the one that did not.
-      - uses: dtolnay/rust-toolchain@1.98.0
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ env.BUILD_ARTIFACT }}
           path: /tmp

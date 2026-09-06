@@ -13,10 +13,31 @@ updates:
 
   # GitHub Actions used by the CI / release / pages / security workflows.
   # A compromised action is itself a supply-chain vector, so these are tracked too.
+  #
+  # EVERY `uses:` IN .github/workflows IS PINNED TO A COMMIT SHA, and this entry is what keeps that
+  # true instead of freezing it. A tag is not a pin: `actions/checkout@v7` is a ref the owner can
+  # force-move, so a compromised or simply changed action reaches our runners — which hold
+  # `packages: write`, `id-token: write` and `attestations: write` — with no diff on our side. A sha
+  # cannot move, so the bytes that run are the bytes that were reviewed.
+  #
+  # The pins carry the tag in a TRAILING COMMENT, e.g.
+  #     uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+  # That comment is not decoration and must not be dropped. Dependabot reads it to learn which
+  # version constraint the sha stands for; with it, Dependabot bumps BOTH the sha and the comment and
+  # the pin stays a pin. WITHOUT it, Dependabot cannot tell what the sha is and silently stops
+  # updating that action — the pin then rots into a permanently stale, un-patched version, which is
+  # the failure mode people cite when they argue against sha-pinning at all. Keep the comment, and
+  # keep it as the plain tag (`# v7`), not prose.
+  #
+  # `cooldown` holds a freshly-published action version for a few days before Dependabot proposes
+  # it: the highest-risk window for a hijacked action is the hours right after the malicious tag is
+  # pushed, and a bot that upgrades instantly is the fastest path from their push to our runner.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    cooldown:
+      default-days: 3
     commit-message:
       prefix: "ci"
