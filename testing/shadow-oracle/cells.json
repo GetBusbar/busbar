@@ -14421,10 +14421,7 @@
         "config": "baseline",
         "env": {}
       },
-      "why": "random key: only the exit code is a contract",
-      "compare": [
-        "status"
-      ]
+      "why": "prints one ed25519 key (normalized to <HASH>) on stdout and the wiring guidance on stderr; exit 0"
     },
     {
       "id": "cli|--help",

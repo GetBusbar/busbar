@@ -22,8 +22,14 @@ Sources (GENERATED or pinned, all already gated):
 Cell drivers (record.sh dispatches on `driver`; absent = the LLM wire builder):
   http   an explicit {method, path, headers, body, auth: ok|broke|noscope|admin|none, listener: data|admin}
   exec   run the binary: {args, env, config: baseline|<mutation>, mode: validate|boot|cli}
-Cells may carry `compare: [classes]` when part of their output is inherently random (a generated
-signing key) — the differ then judges only those classes; `fresh: true` boots a new busbar first.
+Cells may carry `compare: [classes]` when part of their output is inherently random — the differ
+then judges only those classes; `fresh: true` boots a new busbar first. `compare` is POLICED, in
+diff-cells.py's check_compare_policy(): it is a whitelist, so what it drops is everything it does
+not name, and it may only drop classes OUTSIDE MONEY_CLASSES and never effects.files/effects.script;
+the cell must carry a `why`; and the dropped classes are printed on the cell's report row as
+`narrowed: [...]` so a narrow PASS never reads as a whole one. If output is merely non-deterministic,
+normalize it in normalize.py (which is how the signing key stopped needing a `compare` at all) —
+reach for `compare` only when there is nothing left to normalize.
 
 A cell may also carry `bindings: [PB-N, ...]`: the Appendix B parity rows it proves. That list is
 READ BY A PROGRAM — scripts/design-bindings.py scans each cell for its `PB-N` tokens and derives
@@ -251,8 +257,19 @@ def cli_cells() -> list[dict]:
         exec_("cli|--list-plugins", F, args=["--list-plugins"], mode="cli", why="plugins block listing; exit 0"),
         exec_("cli|--migrate-config|missing-path", F, args=["--migrate-config"], mode="cli", why="missing path; exit 2"),
         exec_("cli|--migrate-config|unreadable", F, args=["--migrate-config", "/nonexistent/old.yaml"], mode="cli", why="unreadable; exit 1"),
+        # NO `compare` HERE. It carried `compare: ["status"]` — "random key: only the exit code is a
+        # contract" — and that was wrong twice over. (1) The key is not random by the time the differ
+        # sees it: normalize.py's `audit.hash` rule already rewrites any hex run >= 32 to `<HASH>`,
+        # so the golden's body for this cell is the literal `<HASH>\n` and compares exactly. (2) The
+        # rest of the cell was never random at all, and status-only threw all of it away: the
+        # operator guidance block this verb prints on stderr (the wiring instructions, and the
+        # promise that the key itself is NOT echoed there so a CI log stays secret-free), the file
+        # set the run left behind — a build that WRITES the key to disk instead of only printing it
+        # would be a secret leak visible in `effects.files` and in nothing else — the egress, the
+        # readback and the normalizer rules that fired. A `compare` list on the one verb that mints
+        # a secret is the last place to be generous.
         exec_("cli|--generate-signing-key", F, args=["--generate-signing-key"], mode="cli",
-              compare=["status"], why="random key: only the exit code is a contract"),
+              why="prints one ed25519 key (normalized to <HASH>) on stdout and the wiring guidance on stderr; exit 0"),
         exec_("cli|--print-metadata-blocklist", F, args=["--print-metadata-blocklist"], mode="cli", why="built-in denylist ∪ security.blocked_metadata_hosts"),
         exec_("cli|unknown-flag", F, args=["--definitely-not-a-flag"], mode="cli", why="unrecognized argument; exit 2"),
         exec_("cli|--safe-mode|first-arg", F, args=["--safe-mode"], mode="cli", why="1.5.5: unrecognized as a FIRST argument; exit 2", bindings=["PB-23"]),

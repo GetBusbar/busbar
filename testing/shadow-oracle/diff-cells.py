@@ -112,6 +112,59 @@ def allowed_classes(kind: str, classes: set) -> set:
     return set(CLASS_ORDER) - MONEY_CLASSES - {"missing.golden"}
 
 
+# A cell's `compare: [classes]` is a per-cell waiver with none of the register's ceremony: no owner,
+# no kind, no changelog line, no rationale, and — until this guard — no limit on what it threw away.
+# It is a WHITELIST, so everything it does not name is dropped, which makes it the widest instrument
+# in the oracle and the easiest one to write by accident. `cli|--generate-signing-key` carried
+# `compare: ["status"]` for a random key that normalize.py already hashes to `<HASH>`: the exit code
+# was compared and the whole rest of the cell — the operator guidance block on stderr, the file set
+# the run left behind (effects.files), the script evidence, the egress, the readback, the normalizer
+# rules that fired — was discarded, on a verb whose entire job is to MINT A SECRET.
+#
+# So the DROPPED set is policed the same way the register's is. `compare` may only give up classes
+# that are cheap to be wrong about; it may never give up money, and never `effects.files` or
+# `effects.script` (a binary writing a keyset file where 1.5.5 wrote nothing is invisible in every
+# other class, which is exactly why those two are rated 10). And it must say WHY in the cell's own
+# `why`, because "part of this output is random" is a claim about the recording that a reader has to
+# be able to check.
+COMPARE_MAY_NEVER_DROP = MONEY_CLASSES | {"effects.files", "effects.script"}
+# missing.* is never dropped by a `compare` list (the differ keeps it unconditionally): an owed cell
+# the candidate did not serve is not a narrowing question.
+COMPARE_ALWAYS_KEPT = {"missing.golden", "missing.candidate"}
+
+
+def compare_narrowed(only) -> list:
+    """The classes a cell's `compare` list DROPS, in CLASS_ORDER. Printed on the cell's report row."""
+    keep = set(only) | COMPARE_ALWAYS_KEPT
+    return [k for k in CLASS_ORDER if k not in keep]
+
+
+def check_compare_policy(cells: list, path: str) -> None:
+    """Refuse the whole run if any cell's `compare` list drops a class it may not, or carries no
+    `why`. Checked at LOAD, over every cell in the corpus, whether or not the run selects it — a
+    policy that only bites on the cells a filtered run happens to touch is not a policy."""
+    for c in cells:
+        only = c.get("compare")
+        if only is None:
+            continue
+        if not isinstance(only, list) or not only:
+            sys.exit(f"{os.path.basename(path)}: cell {c['id']!r} has a `compare` that is not a non-empty list of classes")
+        unknown = sorted(set(only) - set(CLASS_ORDER))
+        if unknown:
+            sys.exit(f"{os.path.basename(path)}: cell {c['id']!r} names unknown compare class(es) {unknown}; "
+                     f"a typo here silently drops the class it meant to keep")
+        if not (c.get("why") or "").strip():
+            sys.exit(f"{os.path.basename(path)}: cell {c['id']!r} narrows `compare` to {sorted(only)} but carries no `why`. "
+                     f"A per-cell waiver with no stated reason is the one kind this oracle does not accept.")
+        forbidden = sorted(set(compare_narrowed(only)) & COMPARE_MAY_NEVER_DROP)
+        if forbidden:
+            sys.exit(f"{os.path.basename(path)}: cell {c['id']!r} narrows `compare` to {sorted(only)}, which DROPS "
+                     f"{forbidden}. `compare` may only give up classes outside MONEY_CLASSES, and never "
+                     f"effects.files/effects.script. If the output really is non-deterministic, normalize it in "
+                     f"normalize.py so the class can still be compared; if it is a deliberate behavioural change, "
+                     f"it belongs in accepted-differences.json where it needs an owner and a changelog line.")
+
+
 def safe_name(cell_id: str) -> str:
     return cell_id.replace("|", "__")
 
@@ -336,6 +389,7 @@ def main() -> int:
     with open(a.cells, encoding="utf-8") as f:
         cells_doc = json.load(f)
     all_cell_ids = [c["id"] for c in cells_doc["cells"]]
+    check_compare_policy(cells_doc["cells"], a.cells)
 
     accepted, transforms = [], []
     if os.path.exists(a.accepted):
@@ -528,6 +582,11 @@ def main() -> int:
             fam_stats[fam]["accepted"] += 1
         results.append({"id": cid, "family": fam, "plane": c.get("plane"), "weight": owed_w,
                         "classes": classes, "first_diff": first_diff_text(classes, detail), "detail": detail if classes else {},
+                        # A narrowed cell says so ON ITS OWN ROW. `PASS  identical` on a cell that
+                        # compared four of sixteen classes is a true sentence that reads as a
+                        # different, larger one; the reader of the ledger is the person who has to
+                        # know the row is narrow.
+                        **({"narrowed": compare_narrowed(c["compare"])} if c.get("compare") else {}),
                         **({"accepted": {"id": acc["id"], "kind": acc["kind"], "rationale": acc["rationale"], "by": acc["by"]}} if acc else {})})
 
     fam_table = {}
@@ -585,12 +644,22 @@ def main() -> int:
     with open(os.path.join(a.out, "report.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines) + "\n")
 
+    narrowed_rows = [r for r in results if "narrowed" in r]
+    if narrowed_rows:
+        lines += ["", "## Cells compared narrowly (`compare`)", ""] + \
+                 [f"- `{r['id']}` narrowed: [{', '.join(r['narrowed'])}]" for r in narrowed_rows]
+        with open(os.path.join(a.out, "report.md"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+
     for r in results:
+        # `narrowed: [...]` rides on the row itself. The ledger is what a human reads and what
+        # verdict.sh folds, and a narrowed cell's verdict covers less than the row's shape implies.
+        narrow = f" narrowed: [{','.join(r['narrowed'])}]" if "narrowed" in r else ""
         if "accepted" in r:
-            sys.stdout.write(f"{r['id']}\tPASS\tACCEPTED {r['accepted']['kind']} ({r['accepted']['id']}): {','.join(r['classes'])}\t{r['first_diff']}\n")
+            sys.stdout.write(f"{r['id']}\tPASS\tACCEPTED {r['accepted']['kind']} ({r['accepted']['id']}): {','.join(r['classes'])}\t{r['first_diff']}{narrow}\n")
             continue
         st = "FAIL" if r["classes"] else "PASS"
-        sys.stdout.write(f"{r['id']}\t{st}\t{','.join(r['classes']) or 'identical'}\t{r['first_diff']}\n")
+        sys.stdout.write(f"{r['id']}\t{st}\t{','.join(r['classes']) or 'identical'}\t{r['first_diff']}{narrow}\n")
     if a.strict:
         # The strict exit is for callers that use this file as a gate on a subset (land.sh); the full
         # verdict over every owed cell is still verdict.sh's. Zero owed cells is red: a filter that
