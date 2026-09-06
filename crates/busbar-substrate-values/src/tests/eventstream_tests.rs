@@ -207,6 +207,33 @@ fn test_event_type_exception_frame_returns_normalized_exception_name() {
     assert_eq!(event_type_for_frame(&h2), "throttlingException");
 }
 
+/// The UNMODELED sibling of an exception frame: `:message-type: error` carrying `:error-code` /
+/// `:error-message` and NO `:event-type`. It resolved to `""` and was silently dropped, so a stream
+/// that FAILED mid-flight was indistinguishable from one that simply ended. It must normalize
+/// through the same namespace-strip + first-letter-lowercase walk the exception arm uses.
+#[test]
+fn test_event_type_error_frame_returns_normalized_error_code() {
+    let mut h = string_header(HDR_MESSAGE_TYPE, MSG_TYPE_ERROR);
+    h.extend_from_slice(&string_header(HDR_ERROR_CODE, "InternalFailure"));
+    h.extend_from_slice(&string_header(
+        HDR_ERROR_MESSAGE,
+        "upstream terminated the stream",
+    ));
+    assert_eq!(event_type_for_frame(&h), "internalFailure");
+
+    // Header order must not matter, and a namespace-qualified code strips to the bare name.
+    let mut h2 = string_header(
+        HDR_ERROR_CODE,
+        "com.amazon.coral.service#ThrottlingException",
+    );
+    h2.extend_from_slice(&string_header(HDR_MESSAGE_TYPE, MSG_TYPE_ERROR));
+    assert_eq!(event_type_for_frame(&h2), "throttlingException");
+
+    // An error frame with no `:error-code` falls through to the empty string, no panic.
+    let h3 = string_header(HDR_MESSAGE_TYPE, MSG_TYPE_ERROR);
+    assert_eq!(event_type_for_frame(&h3), "");
+}
+
 /// AWS may qualify the `:exception-type`
 /// header with a Smithy namespace / shape-ARN prefix (e.g. `com.amazon.coral.service#ThrottlingException`).
 /// The prefix must be stripped before lowercasing — mirroring `extract_error`'s

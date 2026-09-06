@@ -168,6 +168,7 @@ struct FrameHeaders {
     event_type: Option<String>,
     message_type: Option<String>,
     exception_type: Option<String>,
+    error_code: Option<String>,
 }
 
 /// Resolve the event-type token `drain_frames_checked` returns for one frame.
@@ -184,6 +185,18 @@ fn event_type_for_frame(headers: &[u8]) -> String {
     // An exception frame is identified by `:message-type: exception`. Prefer its `:exception-type`
     // (AWS does not set `:event-type` on these), normalized to the union-member token the reader
     // matches. This is what was previously lost: such a frame yielded `""` and was silently dropped.
+    // An UNMODELED mid-stream failure arrives as `:message-type: error` carrying `:error-code` and
+    // `:error-message` and NO `:event-type` — the same "typeless frame" shape the exception arm
+    // above was written for, one discriminator value over. Without this arm such a frame resolved to
+    // `""` and was silently dropped, so a stream that FAILED mid-flight looked to the reader like a
+    // stream that simply stopped. Normalize the code through the SAME namespace-strip + first-letter
+    // lowercase walk, so `internalFailure` reaches the reader's error arms exactly as an exception
+    // name does.
+    if parsed.message_type.as_deref() == Some(MSG_TYPE_ERROR) {
+        if let Some(code) = parsed.error_code {
+            return normalize_error_token(&code);
+        }
+    }
     if parsed.message_type.as_deref() == Some(MSG_TYPE_EXCEPTION) {
         if let Some(exc) = parsed.exception_type {
             // AWS may qualify the `:exception-type` with a Smithy namespace / shape ARN prefix
@@ -199,14 +212,28 @@ fn event_type_for_frame(headers: &[u8]) -> String {
             // skips that trailing-delimiter empty and recovers the bare name. The `unwrap_or(&exc)`
             // guards the all-delimiter case (e.g. `"#"`/`"/"`), where every token is empty: fall
             // back to the raw value rather than panicking or yielding `""`.
-            let bare = exc
-                .rsplit(['#', '/'])
-                .find(|s| !s.is_empty())
-                .unwrap_or(&exc);
-            return lowercase_first(bare);
+            return normalize_error_token(&exc);
         }
     }
     parsed.event_type.unwrap_or_default()
+}
+
+/// Normalize an AWS failure-name header (`:exception-type` on an exception frame, `:error-code` on
+/// an error frame) to the Smithy union-member token the reader's error arms key off: drop any
+/// namespace / shape-ARN qualification, then lowercase the first letter.
+///
+/// Use the last NON-EMPTY token, not `.next()`: a value that ENDS with a delimiter (e.g.
+/// `ThrottlingException#` or `aws.bedrock/`) makes `rsplit` yield an empty leading token, which
+/// `.next()` would return verbatim — dropping the classification to `""` and re-sinking the
+/// mid-stream error into the no-op arm. `.find(|s| !s.is_empty())` skips that trailing-delimiter
+/// empty and recovers the bare name. The `unwrap_or(raw)` guards the all-delimiter case (e.g.
+/// `"#"`/`"/"`), where every token is empty: fall back to the raw value rather than yielding `""`.
+fn normalize_error_token(raw: &str) -> String {
+    let bare = raw
+        .rsplit(['#', '/'])
+        .find(|s| !s.is_empty())
+        .unwrap_or(raw);
+    lowercase_first(bare)
 }
 
 /// Lowercase only the FIRST character of an exception name (`InternalServerException` →
@@ -289,6 +316,7 @@ fn parse_frame_headers(mut h: &[u8]) -> FrameHeaders {
                 n if n == HDR_EXCEPTION_TYPE.as_bytes() => {
                     found.exception_type = Some(v.to_string())
                 }
+                n if n == HDR_ERROR_CODE.as_bytes() => found.error_code = Some(v.to_string()),
                 _ => {}
             }
         }
@@ -420,6 +448,20 @@ const MSG_TYPE_EVENT: &str = "event";
 
 /// `:message-type` value for an AWS mid-stream modeled-exception frame.
 const MSG_TYPE_EXCEPTION: &str = "exception";
+
+/// `:message-type` value for an AWS mid-stream ERROR frame — the UNMODELED sibling of an exception
+/// frame. It carries `:error-code` / `:error-message` instead of `:exception-type`, and no
+/// `:event-type` at all.
+const MSG_TYPE_ERROR: &str = "error";
+
+/// AWS event-stream header name for the error code (error frames only).
+const HDR_ERROR_CODE: &str = ":error-code";
+
+/// AWS event-stream header name for the human-readable error text an error frame carries alongside
+/// its code. The decoder does not read it — the CODE is the classification, and the message rides in
+/// the frame the reader goes on to build — but it is part of the frame shape the tests construct.
+#[cfg(test)]
+const HDR_ERROR_MESSAGE: &str = ":error-message";
 
 /// AWS event-stream value-type byte for a UTF-8 string header (type 7 per the spec).
 const HDR_TYPE_STRING: u8 = 7;
