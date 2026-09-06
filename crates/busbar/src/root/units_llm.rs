@@ -151,25 +151,26 @@ struct LaneNames {
 /// So the clock is read ONCE, here, and every figure is spelled out of that one reading. Being a
 /// value rather than a call is also what lets a test name the instant a unit arrived at, which is
 /// the only way to drive the case that matters — the last millisecond of a window.
+/// It carries the node's MONOTONIC reading beside the wall one, because the audit record and the
+/// posting stamp each want both and they want different things from them. A wall clock is
+/// steppable — an operator sets it, NTP corrects it, a leap second repeats it — so it DATES a record
+/// and cannot order one. The monotonic reading only ever goes up, so it ORDERS the record and
+/// cannot date it. Stamped from the wall clock twice, the second field is a copy rather than a
+/// reading, and two units of one second become unorderable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Arrived {
     /// Milliseconds since the epoch: the reading, at the finest resolution either caller needs.
     ms: u64,
+    /// The node's monotonic reading at the same arrival.
+    mono: u64,
 }
 
 impl Arrived {
-    /// Read the node's clock, once. The ONE call on the request path.
+    /// A named arrival, for a caller that already holds both readings — the node below, and a test
+    /// that needs to place a unit at an instant of its choosing.
     #[must_use]
-    pub fn now() -> Self {
-        Self {
-            ms: busbar_substrate::store::now_ms(),
-        }
-    }
-
-    /// A named instant, for a caller that already has one.
-    #[must_use]
-    pub fn at_ms(ms: u64) -> Self {
-        Self { ms }
+    pub fn at(ms: u64, mono: u64) -> Self {
+        Self { ms, mono }
     }
 
     /// The window every charge and every refund this unit makes lands in.
@@ -185,6 +186,12 @@ impl Arrived {
     #[must_use]
     pub fn ms(self) -> u64 {
         self.ms
+    }
+
+    /// The reading that ORDERS this unit against the others the node ran.
+    #[must_use]
+    pub fn mono(self) -> u64 {
+        self.mono
     }
 }
 
@@ -237,6 +244,12 @@ pub struct LlmNode {
     /// them through it again.
     lane_names: Mutex<LaneNames>,
     next_key: AtomicU64,
+    /// THE NODE'S MONOTONIC CLOCK, for the second stamp on every audit record and every posting
+    /// this node writes: a counter that only ever goes up, whatever the wall clock does.
+    ///
+    /// It lives on the node rather than in a unit because ordering is a statement about a SET of
+    /// units, and a per-unit source could only ever order a unit against itself.
+    mono: AtomicU64,
     /// THE BOOK THIS NODE SETTLES ONTO, once the composition root has bound one. See [`bind_book`].
     ///
     /// A cell rather than a field, because the node is reached through a `static` — a bare `fn` is
@@ -320,7 +333,20 @@ impl LlmNode {
                 consulted: 0,
             }),
             next_key: AtomicU64::new(1),
+            mono: AtomicU64::new(0),
         }
+    }
+
+    /// WHEN A UNIT ARRIVED, taken once: this node's two clocks, read together.
+    ///
+    /// The one place on the request path either clock is read. Everything a unit is judged by — the
+    /// window it is charged in, the stamp the in-flight table enters it under, and the pair the
+    /// audit record and the posting are dated and ordered by — is spelled out of this one value.
+    fn arrived(&self) -> Arrived {
+        Arrived::at(
+            busbar_substrate::store::now_ms(),
+            self.mono.fetch_add(1, Ordering::AcqRel),
+        )
     }
 
     /// The interner, as the walk borrows it for the length of one unit.
@@ -370,7 +396,7 @@ impl LlmNode {
     fn settle_end(
         &self,
         principal: &PrincipalId,
-        charged_at: u64,
+        arrived: Arrived,
         ended: busbar_kernel::teller::Ended,
     ) {
         let Some(book) = self.book.get() else {
@@ -386,7 +412,7 @@ impl LlmNode {
         let _settled = settle(
             &mut durability,
             principal,
-            charged_at,
+            arrived,
             &self.durability_token,
             posted,
         );
@@ -420,7 +446,7 @@ impl LlmNode {
         model_hint: Option<String>,
         seats: &[&(dyn approve::VetoSeat + Sync)],
     ) -> Response {
-        self.answer_arriving_at(arrival, model_hint, seats, Arrived::now())
+        self.answer_arriving_at(arrival, model_hint, seats, self.arrived())
             .await
     }
 
@@ -523,8 +549,7 @@ impl LlmNode {
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
-                let charged_at = unit.charged_at;
-                self.settle_end(&principal, charged_at, ended);
+                self.settle_end(&principal, arrived, ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -538,7 +563,7 @@ impl LlmNode {
                 // plane that is the record a unit ran and ended and nothing else: the money is in a
                 // cell the response's own body fills when it DRAINS, which has not happened yet. So
                 // the body goes out wrapped, and the figure lands when it arrives.
-                self.attach_late_accrual(response, walk, &principal, charged_at)
+                self.attach_late_accrual(response, walk, &principal, arrived)
             }
         }
     }
@@ -558,7 +583,7 @@ impl LlmNode {
         response: Response,
         walk: Walk,
         principal: &PrincipalId,
-        charged_at: u64,
+        arrived: Arrived,
     ) -> Response {
         let Some(book) = self.book.get() else {
             return response;
@@ -583,11 +608,13 @@ impl LlmNode {
             ledger_token: self.kernel.ledger_token(),
             usage_token: self.kernel.usage_token(),
             principal: principal.clone(),
-            // The unit's PINNED arrival epoch, not a clock read at drain time. The late posting lands
-            // on the same balance and in the same window the terminal settled in, which is the whole
-            // of what makes it the same row: a body that drained past midnight would otherwise open a
-            // second day's row for a request the node admitted, priced and billed in the first.
-            charged_at,
+            // The unit's PINNED ARRIVAL, not a clock read at drain time. The late posting lands on
+            // the same balance and in the same window the terminal settled in, which is the whole of
+            // what makes it the same row: a body that drained past midnight would otherwise open a
+            // second day's row for a request the node admitted, priced and billed in the first. The
+            // monotonic half travels with it for the same reason: the late posting and the terminal's
+            // are two postings OF one unit, and they order beside it rather than beside each other.
+            arrived,
             walk,
             tap,
         };
@@ -669,7 +696,7 @@ struct LateAccrual {
     ledger_token: busbar_caps::LedgerToken,
     usage_token: busbar_caps::UsageToken,
     principal: PrincipalId,
-    charged_at: u64,
+    arrived: Arrived,
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
     /// table the walk resolved and the facts the Route and Meter steps left, and both live here.
     walk: Walk,
@@ -688,7 +715,7 @@ impl LateAccrual {
             ledger_token,
             usage_token,
             principal,
-            charged_at,
+            arrived,
             walk,
             tap,
         } = self;
@@ -742,7 +769,7 @@ impl LateAccrual {
         let _settled = settle(
             &mut durability,
             &principal,
-            charged_at,
+            arrived,
             &durability_token,
             posted,
         );
@@ -1420,7 +1447,7 @@ fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
 pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
-    charged_at: u64,
+    arrived: Arrived,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
@@ -1429,16 +1456,20 @@ pub fn settle(
         key: &key,
         window: busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,
-            charged_at,
+            arrived.secs(),
         ),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.
         step: busbar_caps::StepName::Meter,
+        // The posting's two clocks, and they are two READINGS of the one arrival: the wall epoch
+        // DATES the posting, the monotonic reading ORDERS it. Stamped from the wall clock twice, the
+        // second field is a copy — and two postings of one second become unorderable, which is
+        // exactly what the field exists to prevent.
         stamp: crate::root::durability::PostingStamp {
             rate_card_version: 0,
-            wall: charged_at,
-            mono: charged_at,
+            wall: arrived.secs(),
+            mono: arrived.mono(),
         },
     };
     durability.settle_posted(&at, posted)
@@ -2225,7 +2256,7 @@ mod tests {
     #[test]
     fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
         const LAST_MILLISECOND: u64 = 1_700_000_000_999;
-        let arrived = Arrived::at_ms(LAST_MILLISECOND);
+        let arrived = Arrived::at(LAST_MILLISECOND, 0);
         assert_eq!(arrived.ms(), LAST_MILLISECOND, "the reading, unmodified");
         assert_eq!(
             arrived.secs(),
@@ -2237,6 +2268,87 @@ mod tests {
             arrived.secs(),
             "the two figures are one instant: neither can be on the far side of a boundary the \
              other is on the near side of"
+        );
+    }
+
+    /// **Two units of one second are ordered by the monotonic stamp, not by the wall clock.**
+    ///
+    /// The node's two clocks answer two different questions and the audit record and the posting
+    /// stamp each want both. The wall clock DATES: it says which window a unit belongs to, and it is
+    /// steppable, so an operator, an NTP correction or a leap second can hand two events timestamps
+    /// that run backwards. The monotonic reading ORDERS: it only goes up, whatever the wall clock
+    /// does.
+    ///
+    /// So: units taken from one node inside one second — indistinguishable by the wall reading, and
+    /// on a stepped clock possibly backwards by it — still come out of the monotonic reading in the
+    /// order they were taken. Stamped from the wall clock twice, as this leg's postings were, the
+    /// second field is a copy of the first and this ordering does not exist.
+    #[test]
+    fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
+        let node = LlmNode::new();
+        let taken: Vec<Arrived> = (0..4).map(|_| node.arrived()).collect();
+
+        for pair in taken.windows(2) {
+            let (before, after) = (pair[0], pair[1]);
+            assert!(
+                after.mono() > before.mono(),
+                "the reading that orders them only goes up: {} then {}",
+                before.mono(),
+                after.mono()
+            );
+        }
+        // Four units off one node inside one second is the ordinary case, not a contrived one — and
+        // it is exactly the case a wall clock cannot resolve, whichever direction it was stepped.
+        assert!(
+            taken
+                .iter()
+                .all(|a| a.secs() == taken[0].secs() || a.secs() == taken[0].secs() + 1),
+            "the four were taken within a second of each other"
+        );
+        // Two readings, not one written twice: a monotonic counter is a SEQUENCE and an epoch is a
+        // date, so the day they compare equal is the day one of them stopped being what it is.
+        assert_ne!(taken[0].mono(), taken[0].secs());
+
+        // AND THE STAMP CARRIES IT. Two postings settled at one wall second, taken through the real
+        // settle path onto a real journal, come back off it in the order they were written — which
+        // is the ordering the record is FOR, and which does not exist if the second field is the
+        // first one copied.
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let mut durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        let who = PrincipalId::new("acct:llm");
+        for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
+            let ledger_token = busbar_caps::LedgerToken::mint(&seal);
+            let accrual = busbar_caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
+            let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+            settle(
+                &mut durability,
+                &who,
+                arrived,
+                &busbar_caps::DurabilityToken::mint(&seal),
+                posted,
+            )
+            .expect("the memory-buffered journal takes it");
+        }
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(replayed.len(), 2, "two postings, two records");
+        assert_eq!(
+            replayed[0].wall, replayed[1].wall,
+            "settled at one wall second, so the date cannot separate them"
+        );
+        assert!(
+            replayed[1].mono > replayed[0].mono,
+            "and the stamp that can does: {} then {}",
+            replayed[0].mono,
+            replayed[1].mono
         );
     }
 
@@ -2258,7 +2370,7 @@ mod tests {
         // instead of from this arrival lands somewhere visibly different — in the live bucket,
         // which is the one asserted empty below.
         let arrival_secs = metering_bucket(rig.charged_at) - 1;
-        let arrived = Arrived::at_ms(arrival_secs * 1_000 + 999);
+        let arrived = Arrived::at(arrival_secs * 1_000 + 999, 0);
         assert_eq!(
             arrived.secs(),
             arrival_secs,
@@ -2365,7 +2477,7 @@ mod tests {
         let settled = settle(
             &mut durability,
             &who,
-            EPOCH,
+            Arrived::at(EPOCH * 1_000, 0),
             &busbar_caps::DurabilityToken::mint(&seal),
             posted,
         )
