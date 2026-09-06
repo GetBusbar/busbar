@@ -1069,6 +1069,16 @@ pub fn strip_top_level_usage_member(json: &str) -> Option<String> {
     // `true` once we are positioned at the start of a member (just after `{` or a top-level `,`) and
     // expect a key next; used to only treat a string at depth 0 as a KEY, never a value.
     let mut expect_key = true;
+    // Did the scan actually reach the top-level object's closing `}`? The loop below has TWO exits
+    // and only ONE of them is well-formed: the `depth == 0` `break` on `}`, and falling off the end
+    // of the buffer. Nothing downstream distinguished them, so a TRUNCATED object whose members all
+    // parsed — `{"a":1,"usage":{"x":1}`, exactly the shape a cut-off upstream SSE chunk has, and
+    // busbar forces `include_usage` upstream so `usage` is on every chunk — produced a `usage_range`
+    // and spliced, returning `Some("{\"a\":1")`: an unclosed object the verbatim writer emits to
+    // the client as valid framing over invalid JSON. The doc above promises `None` for "any shape
+    // the scanner does not fully understand", which is what routes the caller to its
+    // parse-reserialize fallback (and, when that also fails, to the untouched original bytes).
+    let mut closed = false;
 
     while i < n {
         let b = bytes[i];
@@ -1115,6 +1125,7 @@ pub fn strip_top_level_usage_member(json: &str) -> Option<String> {
                     if b == b']' {
                         return None; // shape mismatch - top level was not an object after all
                     }
+                    closed = true;
                     break;
                 }
                 depth -= 1;
@@ -1132,6 +1143,9 @@ pub fn strip_top_level_usage_member(json: &str) -> Option<String> {
         }
     }
 
+    if !closed {
+        return None; // ran off the end of a truncated object - never splice an unclosed shape
+    }
     let (start, end) = usage_range?;
     // Remove the member together with exactly ONE adjacent comma so the object stays well-formed:
     // prefer the comma BEFORE the member (and any whitespace between that comma and the key); if the
@@ -1858,3 +1872,7 @@ mod boot_fold_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/proto_strip_tests.rs"]
+mod proto_strip_tests;
