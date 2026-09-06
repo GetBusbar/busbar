@@ -114,11 +114,11 @@ fn setup_maps_to_session_config_fields() {
         "Gemini functionDeclarations carried verbatim"
     );
     match &config.turn_detection {
-        Some(IrVad::ServerVad {
+        Some(Some(IrVad::ServerVad {
             prefix_padding_ms,
             silence_duration_ms,
             ..
-        }) => {
+        })) => {
             assert_eq!(*prefix_padding_ms, 300);
             assert_eq!(*silence_duration_ms, 200);
         }
@@ -190,11 +190,11 @@ fn out_of_range_vad_timings_fall_back_to_their_documented_defaults() {
     let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) = &ir[0] else {
         panic!("expected SessionConfigure");
     };
-    let Some(IrVad::ServerVad {
+    let Some(Some(IrVad::ServerVad {
         prefix_padding_ms,
         silence_duration_ms,
         ..
-    }) = config.turn_detection
+    })) = config.turn_detection
     else {
         panic!("expected server VAD");
     };
@@ -338,8 +338,9 @@ fn setup_disabled_activity_detection_maps_to_no_vad() {
         panic!();
     };
     assert_eq!(
-        config.turn_detection, None,
-        "disabled AAD ⇒ client-driven turns"
+        config.turn_detection,
+        Some(None),
+        "disabled AAD is an EXPLICIT disable (client-driven turns), not an absent field"
     );
 }
 

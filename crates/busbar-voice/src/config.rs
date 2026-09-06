@@ -51,13 +51,15 @@ fn default_max_output_tokens() -> u32 {
 /// `turn_detection`) rather than by changing the IR's own default, keeping the two distinct.
 fn default_session() -> SessionConfig {
     SessionConfig {
-        turn_detection: Some(IrVad::ServerVad {
+        // `Some(Some(..))` — a CONFIGURED detector. The outer `Some` says the operator default names
+        // turn detection at all (see `SessionConfig::turn_detection`'s three states).
+        turn_detection: Some(Some(IrVad::ServerVad {
             threshold: 0.5,
             prefix_padding_ms: 300,
             silence_duration_ms: 500,
             create_response: true,
             interrupt_response: true,
-        }),
+        })),
         ..SessionConfig::default()
     }
 }

@@ -23,10 +23,10 @@ fn defaults_are_the_dod_values() {
     assert_eq!(c.context_window_tokens, 32_768);
     assert_eq!(c.max_output_tokens, 4096);
     match c.session.turn_detection {
-        Some(IrVad::ServerVad {
+        Some(Some(IrVad::ServerVad {
             silence_duration_ms,
             ..
-        }) => assert_eq!(silence_duration_ms, 500),
+        })) => assert_eq!(silence_duration_ms, 500),
         other => panic!("expected synthesized server_vad, got {other:?}"),
     }
 }

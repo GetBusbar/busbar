@@ -145,16 +145,22 @@ fn system_instruction_text(si: &Value) -> Option<String> {
     }
 }
 
-/// Map Gemini `realtimeInputConfig.automaticActivityDetection` to the shared VAD IR. `disabled: true`
-/// (or an absent config) means the client drives turns → `None`. Gemini's sensitivity enums have no
-/// shared home (dropped); OpenAI-only knobs (`threshold` / `create_response` / `interrupt_response`)
-/// take their shared defaults.
-fn vad_from_realtime_input_config(ric: &Value) -> Option<IrVad> {
+/// Map Gemini `realtimeInputConfig.automaticActivityDetection` onto the shared VAD IR's THREE states
+/// (see `SessionConfig::turn_detection`), which Gemini's own wire also distinguishes:
+///
+/// - a config that names no `automaticActivityDetection` says nothing about turn detection → `None`
+///   (absent), so re-framing it does not invent a setting the caller never asked for;
+/// - `disabled: true` is Gemini's explicit "the client drives turns" → `Some(None)`;
+/// - anything else is a configured detector → `Some(Some(..))`.
+///
+/// Gemini's sensitivity enums have no shared home (dropped); OpenAI-only knobs (`threshold` /
+/// `create_response` / `interrupt_response`) take their shared defaults.
+fn vad_from_realtime_input_config(ric: &Value) -> Option<Option<IrVad>> {
     let aad = ric.get("automaticActivityDetection")?;
     if aad.get("disabled").and_then(Value::as_bool) == Some(true) {
-        return None;
+        return Some(None);
     }
-    Some(IrVad::ServerVad {
+    Some(Some(IrVad::ServerVad {
         threshold: 0.5,
         // A timing that does not fit in the shared IR's `u32` takes the SAME documented default an
         // absent field takes. Narrowing with `as` would turn a nonsense value into "no padding at
@@ -171,7 +177,7 @@ fn vad_from_realtime_input_config(ric: &Value) -> Option<IrVad> {
             .unwrap_or(200),
         create_response: true,
         interrupt_response: true,
-    })
+    }))
 }
 
 /// Decode a Gemini `setup` object into the shared [`SessionConfig`] (the cross-dialect superset).
@@ -280,25 +286,37 @@ fn setup_from_session_config(cfg: &SessionConfig) -> Value {
     if !cfg.tools.is_empty() {
         setup.insert("tools".into(), Value::Array(cfg.tools.clone()));
     }
-    if let Some(IrVad::ServerVad {
-        prefix_padding_ms,
-        silence_duration_ms,
-        ..
-    }) = &cfg.turn_detection
-    {
-        setup.insert(
-            "realtimeInputConfig".into(),
-            json!({ "automaticActivityDetection": {
-                "prefixPaddingMs": prefix_padding_ms,
-                "silenceDurationMs": silence_duration_ms,
-            }}),
-        );
-    } else if let Some(IrVad::SemanticVad { .. }) = &cfg.turn_detection {
-        // Semantic VAD has no Gemini knob set; enable automatic detection generically.
-        setup.insert(
-            "realtimeInputConfig".into(),
-            json!({ "automaticActivityDetection": {} }),
-        );
+    // Three-state (see `SessionConfig::turn_detection`): an ABSENT turn_detection names no setting,
+    // so no `realtimeInputConfig` is written at all and the session keeps what it had. Only an
+    // explicit `null` writes Gemini's own disable marker.
+    match &cfg.turn_detection {
+        None => {}
+        Some(None) => {
+            setup.insert(
+                "realtimeInputConfig".into(),
+                json!({ "automaticActivityDetection": { "disabled": true } }),
+            );
+        }
+        Some(Some(IrVad::ServerVad {
+            prefix_padding_ms,
+            silence_duration_ms,
+            ..
+        })) => {
+            setup.insert(
+                "realtimeInputConfig".into(),
+                json!({ "automaticActivityDetection": {
+                    "prefixPaddingMs": prefix_padding_ms,
+                    "silenceDurationMs": silence_duration_ms,
+                }}),
+            );
+        }
+        Some(Some(IrVad::SemanticVad { .. })) => {
+            // Semantic VAD has no Gemini knob set; enable automatic detection generically.
+            setup.insert(
+                "realtimeInputConfig".into(),
+                json!({ "automaticActivityDetection": {} }),
+            );
+        }
     }
     json!({ wire::SETUP: Value::Object(setup) })
 }
