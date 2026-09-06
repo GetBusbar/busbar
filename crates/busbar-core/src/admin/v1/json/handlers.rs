@@ -5211,15 +5211,84 @@ pub(crate) async fn openapi(headers: axum::http::HeaderMap) -> Response {
 
 /// The `POST /api/v1/admin/config/validate` request body: a full proposed config — the `config.yaml`
 /// deploy block + the `providers.yaml` definitions — mirroring the two files busbar loads at boot.
-#[derive(serde::Deserialize)]
 pub(crate) struct ValidateConfigReq {
     /// The deploy config (operator-owned `config.yaml` shape).
     config: crate::config::DeployCfg,
     /// The provider definitions (`providers.yaml` shape), keyed by provider name. Optional: a config
     /// that references no providers.yaml entries validates against an empty def set (and reports the
     /// dangling references as errors).
-    #[serde(default)]
     providers: std::collections::HashMap<String, crate::config::ProviderDef>,
+}
+
+/// The `config:` member, read through THE document entry point — `config::deploy_from_deserializer`,
+/// the one function boot and `--validate` turn config text into a `DeployCfg` with.
+///
+/// A derived `Deserialize` on the enclosing struct would hand the member straight to the FROZEN
+/// 1.5.5-shaped struct, skipping the 1.6.0 key pre-pass. That is not a smaller parse, it is a
+/// DIFFERENT grammar: every top-level section the pre-pass lifts (`tools:`, `agents:`, `oauth_as:`,
+/// `mcp:`, `streams:`) reaches a `deny_unknown_fields` struct that refuses it, so the endpoint 400s a
+/// document the CLI and boot accept — and the same document with those sections deleted answers
+/// `ok: true` for sections nothing validated. Seeding the member with the shared entry point makes
+/// "does this config parse?" ONE answer for all three callers.
+struct DeployDoc;
+
+impl<'de> serde::de::DeserializeSeed<'de> for DeployDoc {
+    type Value = crate::config::DeployCfg;
+
+    fn deserialize<D: serde::Deserializer<'de>>(self, de: D) -> Result<Self::Value, D::Error> {
+        crate::config::deploy_from_deserializer(de)
+    }
+}
+
+/// Hand-written because the `config:` member needs the seeded document parse above, and a derived
+/// impl has no way to seed a field. Everything else matches what the derive produced byte for byte —
+/// an unknown member is IGNORED (no `deny_unknown_fields`), a repeated member is `duplicate field`,
+/// an absent `config:` is `missing field` raised after the map ends (so the position serde_json
+/// appends is the one it always was), and an absent `providers:` defaults to the empty def set.
+impl<'de> serde::Deserialize<'de> for ValidateConfigReq {
+    fn deserialize<D: serde::Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+        use serde::de::{Error as _, MapAccess, Visitor};
+
+        struct ReqVisitor;
+
+        impl<'de> Visitor<'de> for ReqVisitor {
+            type Value = ValidateConfigReq;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("struct ValidateConfigReq")
+            }
+
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Self::Value, M::Error> {
+                let mut config = None;
+                let mut providers = None;
+                while let Some(key) = map.next_key::<String>()? {
+                    match key.as_str() {
+                        "config" => {
+                            if config.is_some() {
+                                return Err(M::Error::duplicate_field("config"));
+                            }
+                            config = Some(map.next_value_seed(DeployDoc)?);
+                        }
+                        "providers" => {
+                            if providers.is_some() {
+                                return Err(M::Error::duplicate_field("providers"));
+                            }
+                            providers = Some(map.next_value()?);
+                        }
+                        _ => {
+                            map.next_value::<serde::de::IgnoredAny>()?;
+                        }
+                    }
+                }
+                Ok(ValidateConfigReq {
+                    config: config.ok_or_else(|| M::Error::missing_field("config"))?,
+                    providers: providers.unwrap_or_default(),
+                })
+            }
+        }
+
+        de.deserialize_map(ReqVisitor)
+    }
 }
 
 /// `POST /api/v1/admin/config/validate` — dry-run validate a proposed config. A malformed body is an
