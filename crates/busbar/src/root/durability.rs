@@ -1487,6 +1487,7 @@ mod tests {
             .settle(
                 &settling(&key, &durability_token),
                 hold,
+                4_000,
                 &usage,
                 &LedgerToken::mint(&seal),
             )
