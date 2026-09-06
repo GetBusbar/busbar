@@ -261,6 +261,47 @@ jobs:
         run: scripts/blocking-ffi-lint.sh --selftest
       - name: Blocking-FFI lint
         run: scripts/blocking-ffi-lint.sh
+      # THE FOUR GATES BELOW EACH SHIPPED WITH A --selftest AND A --check AND WERE INVOKED BY
+      # NOTHING: no workflow step, no qa/segments.toml row, and so nothing scripts/full-gate.sh could
+      # discover. A gate nobody runs measures nothing — it is a script with the SHAPE of a gate, which
+      # is worse than no gate at all, because its existence reads as coverage. All four are GREEN on
+      # this tree today, which is exactly why they are being wired now rather than after a regression
+      # makes one of them red. Each runs its --selftest FIRST, the discipline every lint above uses.
+      #
+      # KERNEL TOKEN-WIRE PURITY: the kernel never re-derives a usage token class from a raw provider
+      # wire field; it reads the plane-normalized locator. The whole point of the plane extraction is
+      # that a provider's wire vocabulary stops short of the kernel, and this is the only thing that
+      # checks it.
+      - name: Kernel token-wire purity self-test (the scanner cannot be lied to)
+        run: scripts/kernel-token-wire-purity-lint.sh --selftest
+      - name: Kernel token-wire purity (BLOCKING — no raw provider wire token field reaches the kernel)
+        run: scripts/kernel-token-wire-purity-lint.sh --check
+      # NO-DEFERRAL: every reachable unimplemented!()/todo!() (Class A) and every self-declared debt
+      # label (Class B) in shipped source must be a floor-checked entry in the committed
+      # scripts/no-deferral.waivers allowlist. verify-1.6.0-done.sh runs the stricter --strict-done
+      # form as part of the DONE claim; that is a release-time question. THIS is the per-push posture
+      # that stops a NEW unwaived deferral landing in the first place, and it was the half nothing ran.
+      - name: No-deferral self-test (the deferral scanner cannot be lied to)
+        run: scripts/no-deferral-gate.sh --selftest
+      - name: No-deferral gate (BLOCKING — every deferral marker is a floor-checked waiver)
+        run: scripts/no-deferral-gate.sh --check
+      # INVENTORY-REF LINT: the companion to the design-bindings job below. design-bindings proves
+      # every Appendix B binding's CHECKS still exist; this proves every binding's INVENTORY citation
+      # still resolves to a docs/design inventory file that exists, so a renamed or deleted inventory
+      # cannot leave a binding pointing at nothing while still reading as mapped.
+      - name: Inventory-ref lint self-test
+        run: python3 scripts/inventory-ref-lint.py --selftest
+      - name: Inventory-ref lint (BLOCKING — every binding's inventory column resolves)
+        run: python3 scripts/inventory-ref-lint.py --check
+      # CHANGELOG REGISTER: the second half of the shadow-oracle register's money rule. diff-cells.py
+      # refuses at LOAD time to let an `improvement` entry forgive a status or a billing figure — only
+      # a `kind: breaking` entry carrying a changelog line may. This proves that changelog line is not
+      # a string nobody ever read: it must appear VERBATIM in CHANGELOG.md. Without it an accepted
+      # breaking difference could cite a line that was reworded, or never written at all.
+      - name: Changelog register self-test
+        run: scripts/changelog-register-check.sh --selftest
+      - name: Changelog register (BLOCKING — every accepted `breaking` names a real CHANGELOG line)
+        run: scripts/changelog-register-check.sh --check
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
@@ -1646,6 +1687,43 @@ jobs:
   # the verdict as information rather than counting it. THE FLIP: when `--check` is green on HEAD
   # (every row within its ceiling), delete `continue-on-error: true` from this job and move
   # `construction-gate` into the umbrella's RESULTS list as a `fast` row. Nothing else changes.
+  # TELLER STEPS — tracker H2's claim in executable form: "conformance rigs carry one cell per Teller
+  # step per plane". Three assertions, each doing something the other two cannot:
+  #   1. --selftest  the matrix LOADER refuses a matrix that lies — root evidence borrowed from
+  #      another leg's file, a root verdict carrying a label instead of an argument, a plane no root
+  #      leg answers to, a leg that proves zero steps over the loop.
+  #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
+  #      not "none". This reads the JSON.
+  #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
+  #      all five root legs on (root-admin,root-mcp,root-a2a,root-voice,root-llm) and EXECUTES every
+  #      named root-leg cell. A matrix can only be verified against cells that run; verified against
+  #      itself it is a spreadsheet.
+  # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
+  # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
+  # is a per-run fact instead. (There is no `--root-legs-gating` flag: the script dispatches on
+  # `--selftest` and `--root-legs` and silently ignores anything else, so spelling one would quietly
+  # run plain `--root-legs` while reading as though it had asked for more.)
+  teller-steps:
+    name: teller steps (one cell per Teller step per plane, and the cells RUN)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # FULL TIER. --root-legs compiles the binary crate under a feature combination no other job
+    # builds, so it cannot ride a warm cache from the `check` job; it runs on every pull request, on
+    # dev/qa/main and on workflow_dispatch, not on every branch push. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Teller-steps self-test (a lying matrix is refused)
+        run: python3 scripts/teller-steps-check.py --selftest
+      - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)
+        run: python3 scripts/teller-steps-check.py --check
+      - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
+        run: python3 scripts/teller-steps-check.py --root-legs
+
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)
     runs-on: ubuntu-latest
@@ -1746,6 +1824,7 @@ jobs:
       - shadow-oracle
       - llm-conformance
       - design-bindings
+      - teller-steps
       # In `needs` so the umbrella waits for it and can print its verdict, but NOT in RESULTS below:
       # the job is report-only (continue-on-error) until its check is green on HEAD. See the job.
       - construction-gate
@@ -1779,6 +1858,7 @@ jobs:
         timing|full|${{ needs.timing.result }}
         windows|full|${{ needs.windows.result }}
         perf-build-gate|full|${{ needs.perf-build-gate.result }}
+        teller-steps|full|${{ needs.teller-steps.result }}
     steps:
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |

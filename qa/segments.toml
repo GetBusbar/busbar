@@ -315,3 +315,114 @@ tier   = "fast"
 # claim). Regen-cleanliness of the committed ledger is asserted in ci.yml's design-bindings job. The
 # --selftest (one bogus ref exactly one FAIL, empty table vacuous-red, strict vs plain on a gap) runs FIRST.
 run    = "scripts/design-bindings.sh --selftest && scripts/design-bindings.sh --check"
+
+[[segment]]
+id     = "kernel-token-wire-purity"
+status = "active"
+tier   = "fast"
+# THE KERNEL TOKEN-WIRE PURITY LINT (scripts/kernel-token-wire-purity-lint.sh) — the kernel never
+# re-derives a usage token class from a raw provider wire field; it reads the plane-normalized
+# locator. A gate that carried a --selftest and a --check but was invoked by nothing: not by a
+# workflow, not by this manifest, not by verify-1.6.0-done.sh. A gate nobody runs measures nothing,
+# and this one is GREEN on the tree today, so wiring it here is what keeps it green. The --selftest
+# (a planted raw wire field flagged exactly once, plane-normalized reads and comment-only mentions
+# left clean, a /tests/ hit excluded) runs FIRST, as everywhere else in this file.
+run    = "scripts/kernel-token-wire-purity-lint.sh --selftest && scripts/kernel-token-wire-purity-lint.sh --check"
+
+[[segment]]
+id     = "no-deferral"
+status = "active"
+tier   = "fast"
+# THE NO-DEFERRAL GATE (scripts/no-deferral-gate.sh) — nothing known-and-deferred in shipped source:
+# every reachable `unimplemented!()`/`todo!()` (Class A) and every self-declared debt label
+# (Class B, e.g. SKELETON) must be a floor-checked entry in the committed scripts/no-deferral.waivers
+# allowlist. verify-1.6.0-done.sh runs the stricter `--strict-done` form as part of its DONE claim;
+# the per-push posture that keeps a NEW unwaived deferral from landing in the first place is this
+# `--check`, which no workflow and no segment ran. The --selftest (a planted Class-A macro and a
+# Class-B label each flagged, the anti-marker prose / cfg(test) / tests-file fixtures each left
+# clean, plus a discovery floor over the real tree) runs FIRST.
+run    = "scripts/no-deferral-gate.sh --selftest && scripts/no-deferral-gate.sh --check"
+
+[[segment]]
+id     = "inventory-ref-lint"
+status = "active"
+tier   = "fast"
+# THE INVENTORY-REFERENCE LINT (scripts/inventory-ref-lint.py) — every ARCHITECTURE.md Appendix B
+# binding's `inventory` column names a docs/design inventory file that EXISTS. It is the companion
+# to the design-bindings gate above: design-bindings proves each binding's CHECKS still exist, this
+# proves each binding's INVENTORY citation still resolves, so a renamed or deleted inventory file
+# cannot leave a binding pointing at nothing. Green on the tree today and run by nothing until now.
+# The --selftest (a real prefix clean, an unrecognized prefix exactly one problem, a bare source
+# backtick and a PB-N self-reference correctly not flagged) runs FIRST.
+run    = "python3 scripts/inventory-ref-lint.py --selftest && python3 scripts/inventory-ref-lint.py --check"
+
+[[segment]]
+id     = "changelog-register"
+status = "active"
+tier   = "fast"
+# THE CHANGELOG REGISTER GATE (scripts/changelog-register-check.sh) — every `kind: breaking` entry in
+# the shadow-oracle accepted-differences register names a CHANGELOG.md line that is present VERBATIM.
+# This is the second half of the register's money rule: diff-cells.py refuses at LOAD time to let an
+# `improvement` entry forgive a status or a billing figure (only a `breaking` entry with a changelog
+# field may), and this gate proves that changelog field is not a string nobody ever read. Without it
+# an accepted breaking difference could cite a CHANGELOG line that was reworded or never written.
+# verify-1.6.0-done.sh runs it; no per-push workflow or segment did. The --selftest (a breaking entry
+# with no changelog field FAILs, zero breaking entries is zero rows not a false green, a missing
+# register file FAILs rather than crashes, a line wrapped across two source lines still PASSes)
+# runs FIRST.
+run    = "scripts/changelog-register-check.sh --selftest && scripts/changelog-register-check.sh --check"
+
+[[segment]]
+id     = "teller-steps"
+status = "active"
+tier   = "fast"
+# THE TELLER-STEPS MATRIX (scripts/teller-steps-check.py) — "conformance rigs carry one cell per
+# Teller step per plane" (tracker H2). `--check` proves every GATING plane x step cell in
+# qa/teller-steps.json names a real scenario rather than "none"; `--root-legs` goes further and
+# actually RUNS every root-leg proof cell the matrix names, with all five root legs compiled in, so
+# the matrix is verified against executed cells and not against its own JSON. Both were run only by
+# verify-1.6.0-done.sh — the DONE claim, not the per-push gate — so a cell that stopped running
+# would have been invisible until release. `--root-legs` builds the binary crate with
+# root-admin,root-mcp,root-a2a,root-voice,root-llm, which is why it is the slowest row in this
+# manifest; it is worth it, because it is the only one that proves the cells execute.
+# NOTE: there is no `--root-legs-gating` flag — teller-steps-check.py dispatches on `--selftest` and
+# `--root-legs` alone and silently ignores anything else, so spelling one would run plain
+# `--root-legs` while reading as if it had asked for more. The --selftest (a matrix with borrowed
+# root evidence, a labelled root verdict, an unanswered plane, and a leg proving zero steps each
+# REFUSED) runs FIRST.
+run    = "python3 scripts/teller-steps-check.py --selftest && python3 scripts/teller-steps-check.py --check && python3 scripts/teller-steps-check.py --root-legs"
+
+# ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate
+# that cannot pass is a red that teaches people to ignore the manifest. Each names exactly what has
+# to become true, and arming is the documented status flip with no other edit.
+
+[[segment]]
+id     = "plane-config-noun"
+status = "reserved"   # -> active when the gate's own self-test passes (see below)
+tier   = "fast"
+# THE FOUR-NOUN CONFIG-PARSE DEBT METER (scripts/plane-config-noun-gate.sh). Its `--check` is
+# report-only by design (GREP_GATE_REPORT_ONLY=1: prints the debt, exits 0) and would therefore be
+# harmless to run — but its `--selftest` is RED on the tip, and a gate whose self-test fails has no
+# verdict worth wiring. The failing case is the LAST one: `section_nouns` resolves the four config
+# section nouns from each plane crate's `pub const PLANE_DECL` and finds only THREE (pools, tools,
+# streams). The `agents` noun's declaring crate carries no matching `config_section:` literal, so the
+# meter would scan for three nouns while calling itself a four-noun gate — the self-test is doing
+# exactly its job by refusing. Arming: make the fourth noun resolve (or teach section_nouns where it
+# lives), confirm `--selftest` green, flip status to "active".
+run    = "scripts/plane-config-noun-gate.sh --selftest && GREP_GATE_REPORT_ONLY=1 scripts/plane-config-noun-gate.sh --check"
+
+[[segment]]
+id     = "inventory-coverage"
+status = "reserved"   # -> active when the three unnamed ids are covered or named (see below)
+tier   = "fast"
+# THE INVENTORY COVERAGE SCOREBOARD (scripts/inventory-coverage.sh, a thin wrapper over
+# scripts/inventory-coverage.py — the wrapper is what is named here on purpose: a second row for the
+# .py would be a second copy of the same gate, the drift this manifest's template rule exists to make
+# unrepresentable). Every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or
+# is a NAMED gap in qa/inventory-gaps.json; an id with neither is red. Its `--selftest` is GREEN
+# (dropping a cell flips its id covered -> none; naming an id as a gap keeps it out of the failure
+# list), but `--check` is RED on the tip: CFG-220, RT-003 and RT-014 have no citing cell and are not
+# named in qa/inventory-gaps.json. That is a real finding, not a broken gate — which is why this slot
+# is reserved and NAMED in the umbrella's scope line rather than armed into a standing red.
+# Arming: cover or name those three ids, confirm `--check` green, flip status to "active".
+run    = "scripts/inventory-coverage.sh --selftest && scripts/inventory-coverage.sh --check"
