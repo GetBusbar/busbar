@@ -413,6 +413,44 @@ async fn an_unpinned_registration_issues_nothing() {
     assert_eq!(peer.mcp_hits(), 0);
 }
 
+/// A SECRET THAT WILL NOT RESOLVE IS AN OPERATOR'S PROBLEM, AND ITS DETAIL IS THE OPERATOR'S ALONE.
+///
+/// `SetupRefusal::Credential` is rendered verbatim into the body busbar's own caller reads, and the
+/// secret resolver's error names the SOURCE it could not read — the env-var name, or the absolute
+/// path of the secret file. So any authenticated caller holding a grant on a registration whose
+/// secret was rotated out, unset or moved learned the operator's env-var names and filesystem layout
+/// by issuing one call. The value is not the only thing worth withholding; where the value LIVES is
+/// reconnaissance.
+#[tokio::test]
+async fn a_secret_that_cannot_resolve_names_the_server_to_the_caller_and_the_source_to_nobody() {
+    let (_peer, app) = rig(Behaviour::Result).await;
+    let mut entry = crate::mcp::runtime(&app)
+        .catalogue
+        .server(SERVER)
+        .expect("the registration under test is in the built snapshot")
+        .clone();
+    // A path nothing will ever write. The resolver's own error quotes it; the refusal must not.
+    let missing = "/nonexistent/busbar-operator-secret-store/idp-subject";
+    entry
+        .upstream
+        .token_exchange
+        .as_mut()
+        .expect("the fixture registration configures an exchange")
+        .subject_token = busbar_api::SecretRef::file(missing.to_string());
+
+    let err = crate::mcp::upstream::credential_mode(&entry)
+        .expect_err("a subject token that cannot resolve refuses the call");
+
+    assert!(
+        !err.contains(missing),
+        "the caller must not be told where the operator keeps its secrets: {err}"
+    );
+    assert!(
+        err.contains(SERVER),
+        "and it must still name WHICH registration is misconfigured: {err}"
+    );
+}
+
 /// AN AUTHORIZATION SERVER IS NOT FULLY TRUSTED EITHER, AND ITS BODY IS CAPPED.
 ///
 /// The exchange reaches a token endpoint over the network on busbar's OWN subject token, and the
