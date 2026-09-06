@@ -136,10 +136,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
-# SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a` and `root-voice`
-# are the additions, and all four are paths rather than surfaces — the operations, their bytes and
-# their features are unchanged.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice"]
+# SAME default set the monolithic crate had; `root-admin`, `root-mcp`, `root-a2a`, `root-voice` and
+# `root-llm` are the additions, and all five are paths rather than surfaces — the operations, their
+# bytes and their features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin", "root-mcp", "root-a2a", "root-voice", "root-llm"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -189,9 +189,20 @@ plane-voice = ["dep:busbar-voice", "dep:busbar-transport-ws", "busbar-voice?/run
 # thing it mounts needs the plane's own crate edge to exist — and `plane-voice` is what carries the
 # WS transport edge, so `--no-default-features` still drops plane and transport together.
 root-voice = ["plane-voice"]
-# THE LLM PLANE THROUGH THE COMPOSITION ROOT, default OFF: the loop over the nine step files instead
-# of the shell over the engine. Same six dialects under the same six names. No config key, no
-# environment variable, no boot line; the oracle answers identically either way.
+# THE LLM PLANE THROUGH THE COMPOSITION ROOT, DEFAULT ON: the loop over the nine step files instead
+# of the shell over the engine. Same six dialects under the same six names. Default-off was the
+# ordering, not the destination — the root is BUILT before any plane is SWITCHED onto it — and the
+# ordering is done: the leg was proved byte-identical on and off over the request-path families
+# first, and then the whole owed golden was re-run with it on and moved no cell — every money class
+# byte-identical, the llm, billing, route-failover and admin families at zero. That last measurement
+# is the one the default was waiting for, because the LLM plane is the one leg the golden records in
+# bulk: every dialect, every money class, every refusal shape.
+#
+# It carries no config key, no environment variable and no boot line. A deployment cannot turn it on
+# by editing a config file and cannot tell from the logs which way it was built, which is what keeps
+# the neutrality cells answering the same on both legs. The leg stays switchable — off, the binary
+# is the shell over the engine again and nothing else changes.
+#
 # The plane-crate edge is written `busbar-llm?/…`, the same optional form `plane-voice` uses for
 # `busbar-voice?/runtime`: it turns the feature on when the crate is there, and says nothing when it
 # is not. `busbar-llm/teller-waist` (no `?`) would have re-declared the optional dependency, so the
