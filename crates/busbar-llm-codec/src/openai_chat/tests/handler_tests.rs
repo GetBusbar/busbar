@@ -331,8 +331,16 @@ fn transcription_egress_audio_cannot_smuggle_a_second_model_part() {
     };
     let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
     let text = String::from_utf8_lossy(&out);
-    assert!(
-        text.matches("name=\"model\"").count() <= 1,
+    // The smuggled text may still sit INSIDE the audio bytes — harmless, since it is no longer
+    // introduced by a delimiter the upstream parser recognises. What must not exist is a SECOND
+    // part: exactly one `model` field may be framed by the live boundary.
+    let model_part = format!(
+        "--{}\r\nContent-Disposition: form-data; name=\"model\"",
+        transcription_boundary()
+    );
+    assert_eq!(
+        text.matches(&model_part).count(),
+        1,
         "audio bytes must not be able to append a second model part: {text}"
     );
 }

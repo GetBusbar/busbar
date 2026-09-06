@@ -255,8 +255,12 @@ impl OperationHandler for OpenAiTranscription {
         super::super::proto_codec::protocol_error("openai", status, body)
     }
     fn egress_request_content_type(&self) -> &'static str {
-        // write_request rebuilds the multipart form with this FIXED boundary.
-        "multipart/form-data; boundary=----busbaraudioMIME"
+        // write_request rebuilds the multipart form around `transcription_boundary()`, which is
+        // drawn from entropy rather than hard-coded. Both sides read the same value, so the header
+        // always names the boundary the body is actually framed with.
+        static CT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+        CT.get_or_init(|| format!("multipart/form-data; boundary={}", transcription_boundary()))
+            .as_str()
     }
 
     fn read_request(
@@ -277,16 +281,77 @@ impl OperationHandler for OpenAiTranscription {
     }
 }
 
-/// IR → openai multipart transcription request wire (the body of
-/// [`OpenAiTranscription::write_request`], moved behind the `(transcription, openai)` key — G6 A4b
-/// option-a). OpenAI-as-egress rebuilds the multipart form (fixed boundary — no randomness needed);
-/// not on the harness path (openai is always ingress there), kept for cross-protocol symmetry.
-/// Byte-identical to the pre-cutover inline write.
 /// The multipart boundary the transcription egress form is framed with.
+///
+/// It CANNOT be a literal in the source. The audio part carries raw client-controlled bytes, so a
+/// client that knows the delimiter can embed `\r\n--<boundary>` in its audio, close the file part
+/// early, and append parts of its own — e.g. a second `model` field, which a last-occurrence-wins
+/// multipart parser upstream honours while busbar bills the model the lane resolved. That reaches
+/// busbar cross-protocol (a Gemini-dialect transcription ingress accepts base64 audio and this
+/// writer re-frames it for OpenAI egress), so the bytes are attacker-chosen in practice.
+///
+/// So the suffix is drawn from the crate's entropy seam ([`crate::synth_rng::fill_entropy`], the
+/// same OS-CSPRNG pool the synthesized wire ids use). 16 random bytes → 32 hex chars, giving a
+/// 42-char boundary: inside RFC 2046's 70-char limit and drawn only from its `bchars` set.
+///
+/// PER PROCESS, NOT PER REQUEST. [`OperationHandler::egress_request_content_type`] declares the
+/// Content-Type as a `&'static str` and is called by the engine independently of the body write, so
+/// the two can only agree on a boundary that outlives the request — and if they disagree the
+/// upstream cannot parse the form at all. A per-process draw already denies the attacker a
+/// delimiter they can compute from the source; unpredictability is not the guarantee, though —
+/// [`part_carries_delimiter`] fails the request closed even if the value were somehow known.
 pub fn transcription_boundary() -> &'static str {
-    "----busbaraudioMIME"
+    static BOUNDARY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BOUNDARY
+        .get_or_init(|| {
+            let mut raw = [0u8; 16];
+            // Entropy failure is not fatal here: the delimiter check below is what makes the body
+            // safe, and this value's only other job is to be a legal, unlikely-to-collide token.
+            // Mix the clock in so a broken CSPRNG does not pin every process to one known string.
+            if !crate::synth_rng::fill_entropy(&mut raw) {
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                raw.copy_from_slice(&nanos.to_le_bytes());
+            }
+            let mut s = String::with_capacity(42);
+            s.push_str("----busbar");
+            for b in raw {
+                s.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0'));
+                s.push(char::from_digit((b & 0x0f) as u32, 16).unwrap_or('0'));
+            }
+            s
+        })
+        .as_str()
 }
 
+/// Does `part` contain the multipart delimiter, i.e. can splicing it into a body framed with
+/// `boundary` terminate its own part and start a new one?
+///
+/// Two framings count. A delimiter mid-payload is `\r\n--<boundary>`. A payload that STARTS with
+/// `--<boundary>` is equally dangerous: the blank line that ends the part's headers supplies the
+/// leading `\r\n`, so the delimiter is complete without the payload containing one.
+fn part_carries_delimiter(part: &[u8], boundary: &str) -> bool {
+    let head = format!("--{boundary}");
+    let head = head.as_bytes();
+    if part.starts_with(head) {
+        return true;
+    }
+    let needle = [b"\r\n".as_slice(), head].concat();
+    part.windows(needle.len()).any(|w| w == needle)
+}
+
+/// IR → openai multipart transcription request wire (the body of
+/// [`OpenAiTranscription::write_request`], moved behind the `(transcription, openai)` key — G6 A4b
+/// option-a). OpenAI-as-egress rebuilds the multipart form around [`transcription_boundary`]; not on
+/// the harness path (openai is always ingress there), kept for cross-protocol symmetry.
+///
+/// Returns an EMPTY body if any part carries the delimiter. The seam types this write as infallible
+/// (`-> Bytes`), so there is no error to return; an empty body is the fail-closed answer — the
+/// upstream rejects it as a malformed form, which is exactly the outcome a smuggling attempt
+/// deserves. It is never truncated or silently sanitized: a request that tried to inject parts does
+/// not go upstream at all.
 pub fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
     let boundary = transcription_boundary();
     let mut out: Vec<u8> = Vec::new();
@@ -331,6 +396,16 @@ pub fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
         // only at ingress left the gemini->openai transcription path exposed to CR/LF header
         // injection. This is the one place the outgoing header is built, so it covers all paths.
         let safe_mime = sanitize_mime_type(&blob.mime_type);
+        // The audio is raw client bytes — the ONE part that is not text-sanitized, because
+        // rewriting it would corrupt the media. If it carries the delimiter, refuse the whole
+        // request rather than emit a body whose parts the client chose.
+        if part_carries_delimiter(&bytes, boundary) {
+            tracing::warn!(
+                "openai transcription egress: audio part carries the multipart delimiter; \
+                 refusing the request rather than emitting a body it could inject parts into"
+            );
+            return Bytes::new();
+        }
         out.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio\"\r\nContent-Type: {safe_mime}\r\n\r\n").as_bytes());
         out.extend_from_slice(&bytes);
         out.extend_from_slice(b"\r\n");
