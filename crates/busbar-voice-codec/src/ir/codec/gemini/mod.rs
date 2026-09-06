@@ -335,19 +335,24 @@ fn setup_from_session_config(cfg: &SessionConfig) -> Value {
 // ── usage ↔ usageMetadata ─────────────────────────────────────────────────────────────────────────
 
 /// Pull a per-modality token count out of a Gemini `*TokensDetails` array (`[{modality, tokenCount}]`).
+///
+/// EVERY ROW OF THE MODALITY COUNTS, not the first one. The breakdown is a LIST, and Gemini states a
+/// modality across several rows when a turn has several content parts of it; taking the first row is
+/// taking one part's cost for the whole turn's, which under-meters the audio that is most of the
+/// charge on this plane. The sum saturates for the reason the totals beside it do: these are
+/// untrusted upstream counts, and a wrapped total is a small number that is false.
 fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
     details
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .find(|d| {
+        .filter(|d| {
             d.get("modality")
                 .and_then(Value::as_str)
-                .map(str::to_ascii_uppercase)
-                == Some(modality.to_string())
+                .is_some_and(|m| m.eq_ignore_ascii_case(modality))
         })
-        .and_then(|d| d.get("tokenCount").and_then(Value::as_u64))
-        .unwrap_or_default()
+        .filter_map(|d| d.get("tokenCount").and_then(Value::as_u64))
+        .fold(0u64, u64::saturating_add)
 }
 
 /// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` — audio vs text are
