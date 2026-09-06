@@ -5253,7 +5253,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteExportName|if-match-stale",
@@ -5283,7 +5283,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteExportName|not-found",
@@ -5382,7 +5382,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteGroupsName|if-match-stale",
@@ -5412,7 +5412,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteGroupsName|not-found",
@@ -5499,7 +5499,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)",
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -5518,7 +5518,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)",
+      "why": "If-Match stale: [409] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -5607,7 +5607,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteIdentityProvidersName|if-match-stale",
@@ -5637,7 +5637,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteIdentityProvidersName|not-found",
@@ -5724,7 +5724,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteKeysId|if-match-stale",
@@ -5742,7 +5742,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteKeysId|not-found",
@@ -5829,7 +5829,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteOverlaySection|if-match-stale",
@@ -5859,7 +5859,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|DeleteOverlaySection|not-found",
@@ -7354,7 +7354,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchExportNameSettings|if-match-stale",
@@ -7385,7 +7385,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchExportNameSettings|not-found",
@@ -7509,7 +7509,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchGroupsName|if-match-stale",
@@ -7540,7 +7540,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchGroupsName|not-found",
@@ -7652,7 +7652,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)",
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -7672,7 +7672,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)",
+      "why": "If-Match stale: [409] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -7786,7 +7786,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchIdentityProvidersNameSettings|if-match-stale",
@@ -7817,7 +7817,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchIdentityProvidersNameSettings|not-found",
@@ -7929,7 +7929,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchKeysId|if-match-stale",
@@ -7948,7 +7948,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PatchKeysId|not-found",
@@ -8102,7 +8102,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PostConfigApply|if-match-stale",
@@ -8121,7 +8121,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PostConfigApply|ok",
@@ -8273,7 +8273,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PostConfigRollback|if-match-stale",
@@ -8304,7 +8304,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PostConfigRollback|ok",
@@ -8452,7 +8452,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PostGroups|if-match-stale",
@@ -8471,7 +8471,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PostGroups|ok",
@@ -8553,7 +8553,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)",
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -8573,7 +8573,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)",
+      "why": "If-Match stale: [409] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -8995,7 +8995,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)",
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -9015,7 +9015,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)",
+      "why": "If-Match stale: [409] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -9249,7 +9249,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutAdminAuth|if-match-stale",
@@ -9268,7 +9268,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutAdminAuth|ok",
@@ -9350,7 +9350,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutConfigSettings|if-match-stale",
@@ -9369,7 +9369,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutConfigSettings|ok",
@@ -9451,7 +9451,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutExportName|if-match-stale",
@@ -9470,7 +9470,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutExportName|not-found",
@@ -9582,7 +9582,7 @@
           }
         ]
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutGroupsName|if-match-stale",
@@ -9613,7 +9613,7 @@
           }
         ]
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutGroupsName|not-found",
@@ -9725,7 +9725,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)",
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -9745,7 +9745,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)",
+      "why": "If-Match stale: [409] (per the admin wire-details rule)",
       "config_variant": "hooks"
     },
     {
@@ -9791,7 +9791,7 @@
           }
         ]
       },
-      "why": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (CFG-220); the compiled-in `weighted`/`first` words are",
+      "why": "ok: null \u2014 1.5.5 `hooks.<h>.module` must name a loaded `kind: hook` plugin by signed-manifest name/alias (per the config inventory's hook-module row); the compi",
       "config_variant": "hooks"
     },
     {
@@ -9847,7 +9847,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match malformed: [400] (PB-100)"
+      "why": "If-Match malformed: [400] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutIdentityProvidersName|if-match-stale",
@@ -9866,7 +9866,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "If-Match stale: [409] (PB-100)"
+      "why": "If-Match stale: [409] (per the admin wire-details rule)"
     },
     {
       "id": "admin.ops|PutIdentityProvidersName|not-found",
@@ -9959,7 +9959,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "minting a key with expires_at in the past (Unix epoch + 1): 1.5.5 never enforces a stored key-level expiry on the request path, only a signed token's own exp claim, so the admin API's own expires_at-must-be-future validation makes this expiry path unreachable through the admin API (400 at mint, spend never attempted) \u2014 recorded as the real outcome rather than assumed from the design doc"
+      "why": "minting a key with expires_at in the past (Unix epoch + 1): 1.5.5 never enforces a stored key-level expiry on the request path, only a signed token's own exp claim, so the admin API's own expires_at-must-be-future validation makes this expiry path unreachable through the admin API (400 at mint, spend never attempted) \u2014 recorded as the real outcome rather than assumed from the plan"
     },
     {
       "id": "auth.lifecycle|key-revoke",
@@ -16958,7 +16958,7 @@
       },
       "outcome": "ok",
       "weight": 10,
-      "why": "PARTIALLY CONTRADICTED: CHANGELOG:134-137 (1.5.3) says of the deprecated env vars '\u2026 and the config key wins if you set both.' For BUSBAR_PROVIDERS specifically the doc is wrong \u2014 the ENV VAR wins over `providers_file:` (main.rs:1645-1647 in the 1.5.5 tag). Two providers catalogs, config.yaml declares `providers_file:` for one, BUSBAR_PROVIDERS names the other; `--validate`'s own success line echoes back which path it actually resolved (ops-observability \u00a72.3) \u2014 the golden names the env-set file, pinning the code's actual precedence as the parity target."
+      "why": "PARTIALLY CONTRADICTED: CHANGELOG:134-137 (1.5.3) says of the deprecated env vars '\u2026 and the config key wins if you set both.' For BUSBAR_PROVIDERS specifically the doc is wrong \u2014 the ENV VAR wins over `providers_file:` (main.rs:1645-1647 in the 1.5.5 tag). Two providers catalogs, config.yaml declares `providers_file:` for one, BUSBAR_PROVIDERS names the other; `--validate`'s own success line echoes back which path it actually resolved (the ops-observability env-set inventory) \u2014 the golden names the env-set file, pinning the code's actual precedence as the parity target."
     },
     {
       "id": "documented|changelog|docker-boots-and-mutation-refused",
@@ -17429,7 +17429,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (A15)",
+      "why": "registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (the legacy-hook-spelling rule)",
       "config_variant": "hooks"
     },
     {
@@ -17448,7 +17448,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (A15)",
+      "why": "a non-boolean `persist:` is refused naming `persist`+`boolean`, not `unknown field` (the legacy-hook-spelling rule)",
       "config_variant": "hooks"
     },
     {
@@ -17467,7 +17467,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "1.5.5 `persist:` boolean control key \u2014 accepted (boolean-validated) then ignored, never an unknown-field 400 (A15)",
+      "why": "1.5.5 `persist:` boolean control key \u2014 accepted (boolean-validated) then ignored, never an unknown-field 400 (the legacy-hook-spelling rule)",
       "config_variant": "hooks"
     },
     {
@@ -17484,7 +17484,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "an embedded system-role turn folded out of `messages` by the IR \u2014 message_count parity (A16)",
+      "why": "an embedded system-role turn folded out of `messages` by the IR \u2014 message_count parity (the folded-system-turn parity rule)",
       "config_variant": "hooks"
     },
     {
@@ -17571,7 +17571,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` \u2014 must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (A15)",
+      "why": "1.5.5 `hooks.<h>.plugin` back-compat alias for `module:` \u2014 must still register, and the 201 body's `module` must resolve to `busbar-webrequest` (the legacy-hook-spelling rule)",
       "config_variant": "hooks"
     },
     {
@@ -17687,7 +17687,7 @@
         "auth": "none",
         "listener": "data"
       },
-      "why": "no CORS layer ever; OPTIONS => None (PB-100)"
+      "why": "no CORS layer ever; OPTIONS => None (per the admin wire-details rule)"
     },
     {
       "id": "http.crosscut|admin-outside-prefix|admin",
@@ -17799,7 +17799,7 @@
         "auth": "none",
         "listener": "data"
       },
-      "why": "flat {\"error\":\u2026} envelope (PB-100)"
+      "why": "flat {\"error\":\u2026} envelope (per the admin wire-details rule)"
     },
     {
       "id": "http.crosscut|bearer-and-x-api-key",
@@ -17901,7 +17901,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "405 protocol-native (RT-014)"
+      "why": "405 protocol-native (the protocol-native-status-code rule)"
     },
     {
       "id": "http.crosscut|x-api-key-only|bad",
@@ -29831,7 +29831,7 @@
         "auth": "none",
         "listener": "admin"
       },
-      "why": "same on the admin listener (RT-003)"
+      "why": "same on the admin listener (the admin-listener parity rule)"
     },
     {
       "id": "ops.scrape|healthz|data",
@@ -30026,7 +30026,7 @@
         "auth": "ok",
         "listener": "data"
       },
-      "why": "openai envelope by fingerprint (no x-api-key rung, PB-100)"
+      "why": "openai envelope by fingerprint (no x-api-key rung, per the admin wire-details rule)"
     },
     {
       "id": "ops.scrape|v1models|x-api-key",
