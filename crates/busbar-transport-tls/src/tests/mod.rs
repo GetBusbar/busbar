@@ -1640,3 +1640,37 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_session() {
         "the refused connection's session must close"
     );
 }
+
+/// An address on a network nothing routes: the connect is sent and no answer of any kind comes
+/// back. See the same constant in the `tcp` battery — the two dial paths share the defect and the
+/// budget that closes it.
+const BLACKHOLE: &str = "10.255.255.1:9";
+
+/// A TLS DIAL GIVES UP ON A PEER THAT NEVER ANSWERS THE CONNECT.
+///
+/// `HANDSHAKE_TIMEOUT`'s own doc says ten seconds is "the same budget the egress connector's own
+/// connect timeout is set to, so the two ends of this crate's tolerance for a peer that will not
+/// talk are one number rather than two". There was no connect timeout: the budget covered the
+/// ServerHello and not the SYN, so an upstream that never answered the connect at all — the earlier
+/// and cheaper way of not talking — was outside the number that claimed to cover it, and held the
+/// unit's hold, its in-flight slot and its concurrency lease for as long as the operating system
+/// did.
+#[tokio::test]
+async fn a_dial_gives_up_on_a_peer_that_never_answers_the_connect() {
+    let (_server_cfg, client_cfg) = self_signed();
+    let client = TlsTransport::new().with_handshake_timeout(std::time::Duration::from_millis(200));
+    client.register_client_config(0, client_cfg);
+    let started = std::time::Instant::now();
+    // The outer bound is what makes an unbudgeted connect a RED TEST rather than a hung CI job.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.dial(&upstream_dest(BLACKHOLE), &fixture_key(0)),
+    )
+    .await
+    .expect("an unbudgeted connect parks here until the operating system gives up");
+    assert_eq!(outcome.unwrap_err(), TransportError::Timeout);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the budget ended it, not the outer bound"
+    );
+}

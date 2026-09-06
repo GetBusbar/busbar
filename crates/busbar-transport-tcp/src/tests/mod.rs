@@ -735,3 +735,36 @@ async fn a_unit0_refusal_ends_a_live_frame_stream_and_drops_the_socket() {
         "the refused connection's socket must close"
     );
 }
+
+/// An address on a network nothing routes: the connect is sent and no answer of any kind comes
+/// back, which is the "peer that will not talk" the design's one budget is written for. Not a
+/// refused port — a refusal is an answer, and answers arrive at once.
+const BLACKHOLE: &str = "10.255.255.1:9";
+
+/// A DIAL GIVES UP ON A PEER THAT NEVER ANSWERS THE CONNECT.
+///
+/// `accept` has run under a budget since the listener could be taken out of service by one silent
+/// client. The dial had none: `TcpStream::connect` was awaited bare, so an upstream on a black-holed
+/// address parked the caller until the operating system's own connect timeout — minutes, on the
+/// platforms this runs on, and not a number this node chose. The dial happens inside the route step,
+/// under the unit's hold, so those minutes are an in-flight slot and a concurrency lease held by a
+/// peer that has not sent a byte.
+///
+/// The design gives ONE budget for a peer that will not talk. This is the other end of it.
+#[tokio::test]
+async fn a_dial_gives_up_on_a_peer_that_never_answers_the_connect() {
+    let client = TcpTransport::new().with_connect_timeout(std::time::Duration::from_millis(200));
+    let started = std::time::Instant::now();
+    // The outer bound is what makes an unbudgeted connect a RED TEST rather than a hung CI job.
+    let outcome = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        client.dial(&upstream_dest(BLACKHOLE), &fixture_key()),
+    )
+    .await
+    .expect("an unbudgeted connect parks here until the operating system gives up");
+    assert_eq!(outcome.unwrap_err(), TransportError::Timeout);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "the budget ended it, not the outer bound"
+    );
+}
