@@ -945,14 +945,16 @@ fn test_key_gauge_limit_truncation() {
         .filter(|l| l.contains("vk_limit_"))
         .count();
 
-    assert!(
-            spend_series_count <= LIMIT,
-            "refresh_scrape_gauges must emit at most key_gauge_limit ({LIMIT}) per-key series; got {spend_series_count}"
-        );
-    // Also assert we got at least 1 series (sanity — something was emitted).
-    assert!(
-        spend_series_count > 0,
-        "at least one key spend series must be emitted; got 0"
+    // Exactly LIMIT, not "at most LIMIT". The fixture seeds LIMIT + 1 keys that each have usage, so
+    // the truncation branch has to drop exactly one. A bound of `<= LIMIT` also held for a gauge
+    // that emitted a single series, or none at all, which is the opposite regression from the one
+    // this test is named for.
+    assert_eq!(
+        spend_series_count,
+        LIMIT,
+        "refresh_scrape_gauges must emit exactly key_gauge_limit ({LIMIT}) per-key series out of \
+         the {} seeded; got {spend_series_count}",
+        LIMIT + 1
     );
 }
 
