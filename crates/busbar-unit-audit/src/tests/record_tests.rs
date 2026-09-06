@@ -108,7 +108,7 @@ fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
     for pair in records.windows(2) {
         assert_eq!(pair[1].prev_hash, pair[0].hash);
     }
-    assert!(AuditChain::verify(&records).is_ok());
+    assert!(AuditChain::verify_chain(&records).is_ok());
     assert_eq!(chain.head(), records[3].hash);
     assert_eq!(chain.sealed(), 4);
 }
@@ -198,7 +198,7 @@ fn editing_any_recorded_fact_is_caught() {
     for (what, edit) in edits {
         let mut edited = records.clone();
         edit(&mut edited[1]);
-        let brk = AuditChain::verify(&edited)
+        let brk = AuditChain::verify_chain(&edited)
             .unwrap_err_or_else(|| panic!("editing {what} went undetected"));
         assert_eq!(brk.kind, AuditBreakKind::DigestMismatch, "editing {what}");
         assert_eq!(brk.at_index, 2);
@@ -206,7 +206,7 @@ fn editing_any_recorded_fact_is_caught() {
 
     // And a record removed from the middle breaks the link rather than the digest.
     records.remove(1);
-    let brk = AuditChain::verify(&records).unwrap_err();
+    let brk = AuditChain::verify_chain(&records).unwrap_err();
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
 }
 
@@ -253,14 +253,94 @@ fn a_chain_resumed_from_a_persisted_tail_continues_it() {
 
     let mut all = first;
     all.push(third);
-    assert!(AuditChain::verify(&all).is_ok());
+    assert!(AuditChain::verify_chain(&all).is_ok());
+}
+
+/// A record carries WHERE it sits, and the position is digested — so a run cannot be renumbered to
+/// hide a hole, and a walk can tell a contiguous run from one with records taken out of it.
+#[test]
+fn a_record_carries_its_position_and_the_position_is_digested() {
+    let mut chain = AuditChain::new();
+    let records: Vec<_> = (1..=3).map(|i| chain.seal(inputs(i), &token())).collect();
+    assert_eq!(
+        records.iter().map(|r| r.seq).collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    // Renumbering is caught twice over: the walk sees a position that is not the next one, and the
+    // record no longer hashes to its own fields — so nobody can close a hole by renumbering what is
+    // left of a run.
+    let mut renumbered = records.clone();
+    renumbered[1].seq = 7;
+    assert_eq!(
+        AuditChain::verify_chain(&renumbered).unwrap_err().kind,
+        AuditBreakKind::LinkMismatch
+    );
+    assert_ne!(
+        AuditChain::digest_of(&renumbered[1]),
+        renumbered[1].hash,
+        "the position is inside the digest"
+    );
+}
+
+/// HEAD truncation: the oldest records dropped. What is left links and numbers perfectly among
+/// itself, and the only thing that says anything is missing is that the run does not begin where
+/// the chain does — which is exactly what the genesis-anchored entry point requires.
+#[test]
+fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
+    let mut chain = AuditChain::new();
+    let records: Vec<_> = (1..=4).map(|i| chain.seal(inputs(i), &token())).collect();
+
+    let brk = AuditChain::verify_chain(&records[1..]).unwrap_err();
+    assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
+    assert_eq!(brk.at_index, 1, "the break is at the record that should be the genesis");
+
+    // The same run read as a WINDOW of a longer chain is fine: a bounded store's oldest retained
+    // record has legitimately lost its predecessor.
+    assert!(AuditChain::verify_window(&records[1..]).is_ok());
+}
+
+/// A cut INSIDE a window is still caught, so the window anchor excuses the missing head and
+/// nothing else.
+#[test]
+fn a_window_verifies_a_contiguous_middle_run_and_not_a_gapped_one() {
+    let mut chain = AuditChain::new();
+    let records: Vec<_> = (1..=6).map(|i| chain.seal(inputs(i), &token())).collect();
+
+    assert!(AuditChain::verify_window(&records[2..5]).is_ok());
+
+    let mut gapped = records[2..5].to_vec();
+    gapped.remove(1);
+    let brk = AuditChain::verify_window(&gapped).unwrap_err();
+    assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
+}
+
+/// TAIL truncation: the newest records dropped. Nothing in the surviving records can say so — they
+/// link, they number from one, they hash — so it takes the chain's own head to notice, which is
+/// what verifying AGAINST THE HEAD is for.
+#[test]
+fn a_run_missing_its_newest_records_does_not_verify_against_the_head() {
+    let mut chain = AuditChain::new();
+    let records: Vec<_> = (1..=4).map(|i| chain.seal(inputs(i), &token())).collect();
+
+    assert!(chain.verify_to_head(&records).is_ok());
+
+    let cut = &records[..3];
+    let brk = chain.verify_to_head(cut).unwrap_err();
+    assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
+    assert_eq!(brk.at_index, 3);
+
+    // And the limit this makes explicit: reading only the records, a cut tail is a whole chain.
+    assert!(AuditChain::verify_chain(cut).is_ok());
+
+    // Emptied entirely, against a chain that has sealed records, is a truncation too.
+    assert!(chain.verify_to_head(&[]).is_err());
 }
 
 #[test]
 fn an_empty_run_verifies_and_the_limit_is_deliberate() {
     // Nothing in the records themselves can tell "no records" from "every record deleted", so
     // claiming otherwise would be claiming a guarantee this cannot provide.
-    assert!(AuditChain::verify(&[]).is_ok());
+    assert!(AuditChain::verify_chain(&[]).is_ok());
 }
 
 /// EVERY FROZEN TAG STILL SPELLS WHAT THE CHAIN FROZE.

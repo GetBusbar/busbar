@@ -195,6 +195,13 @@ pub struct AuditRecord {
     pub controls: Controls,
     /// The digest of the correlation label, never the label itself.
     pub correlation_hash: Option<String>,
+    /// WHERE this record sits in the chain, counting from one.
+    ///
+    /// The link alone says a record's neighbour is the one it names; it cannot say that the record
+    /// at the END was the last one sealed, because a run whose tail was cut still links perfectly.
+    /// The position is what makes a truncation visible: it is digested, so it cannot be renumbered,
+    /// and it is contiguous, so a hole has nowhere to hide.
+    pub seq: u64,
     /// The preceding record's digest.
     pub prev_hash: String,
     /// This record's own digest.
@@ -294,6 +301,7 @@ impl AuditChain {
         // is only safe while no field can contain the separator. Length prefixes make the boundary
         // unforgeable whatever the fields hold.
         d.text(&record.prev_hash);
+        d.num(record.seq);
         d.text(subject_tag(&record.subject));
         d.text(&subject_value(&record.subject));
         d.num(record.what.unit_key.get());
@@ -351,14 +359,46 @@ impl AuditChain {
         d.finish()
     }
 
-    /// Whether a run of records links and digests correctly, oldest first.
-    pub fn verify(records: &[AuditRecord]) -> Result<(), AuditBreak> {
-        let mut expected_prev = records
-            .first()
-            .map(|r| r.prev_hash.clone())
-            .unwrap_or_default();
+    /// VERIFY A WHOLE CHAIN: `records` is oldest-first and starts at the chain's genesis, so the
+    /// first position must be one and the first previous hash must be empty.
+    ///
+    /// That is what catches a HEAD truncation. A run whose oldest records were dropped links
+    /// perfectly to itself — every remaining record still names the one before it — and the only
+    /// thing that says records are missing is that the run does not begin where the chain does.
+    ///
+    /// An EMPTY run verifies, deliberately and for the same reason the previous release's chain
+    /// says so: "this chain has no records" and "every record was deleted" are indistinguishable
+    /// from the records alone, and claiming otherwise would claim a guarantee this cannot provide.
+    pub fn verify_chain(records: &[AuditRecord]) -> Result<(), AuditBreak> {
+        Self::walk(records, Anchor::Genesis)
+    }
+
+    /// VERIFY A WINDOW of a chain: the same walk, but the first record's position and link are
+    /// taken as given rather than required to be the genesis.
+    ///
+    /// This is for a run read out of a bounded store, where the oldest retained record's
+    /// predecessor was legitimately pruned. Everything after that first record is checked exactly
+    /// as [`Self::verify_chain`] checks it — contiguous positions, matching links, matching
+    /// digests — so a cut anywhere INSIDE the window is still caught. It is a separate entry point
+    /// rather than a lenient default: a caller holding a whole chain that called this would be
+    /// silently excusing a missing head.
+    pub fn verify_window(records: &[AuditRecord]) -> Result<(), AuditBreak> {
+        Self::walk(records, Anchor::Window)
+    }
+
+    fn walk(records: &[AuditRecord], anchor: Anchor) -> Result<(), AuditBreak> {
+        let Some(first) = records.first() else {
+            return Ok(());
+        };
+        let (mut expected_prev, mut expected_seq) = match anchor {
+            Anchor::Genesis => (String::new(), 1u64),
+            Anchor::Window => (first.prev_hash.clone(), first.seq),
+        };
         for (i, record) in records.iter().enumerate() {
-            if record.prev_hash != expected_prev {
+            // The link and the position are one judgement: either says a record was inserted,
+            // removed or reordered, and the position is the half that a cut at either END cannot
+            // satisfy by re-linking what is left.
+            if record.prev_hash != expected_prev || record.seq != expected_seq {
                 return Err(AuditBreak {
                     at_index: i + 1,
                     kind: AuditBreakKind::LinkMismatch,
@@ -371,9 +411,39 @@ impl AuditChain {
                 });
             }
             expected_prev = record.hash.clone();
+            expected_seq = expected_seq.saturating_add(1);
         }
         Ok(())
     }
+
+    /// Whether a run of records ENDING AT THIS CHAIN'S HEAD is whole: the walk from the genesis,
+    /// plus the check the walk cannot make on its own — that the last record in the run is the last
+    /// record the chain sealed. A tail truncation is invisible to any verifier reading only the
+    /// records, because the survivors link and number correctly among themselves; it takes the
+    /// chain's own head to notice.
+    pub fn verify_to_head(&self, records: &[AuditRecord]) -> Result<(), AuditBreak> {
+        Self::verify_chain(records)?;
+        let (tail_hash, tail_seq) = records
+            .last()
+            .map(|r| (r.hash.as_str(), r.seq))
+            .unwrap_or(("", 0));
+        if tail_hash != self.tail_hash || tail_seq.saturating_add(1) != self.next_seq {
+            return Err(AuditBreak {
+                at_index: records.len(),
+                kind: AuditBreakKind::LinkMismatch,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Where a walk over a run of records starts from.
+enum Anchor {
+    /// The chain's beginning: position one and an empty previous hash are required.
+    Genesis,
+    /// A window into a longer chain: the first record's position and link are taken as given, and
+    /// only its own digest is checked.
+    Window,
 }
 
 impl Audit for AuditChain {
@@ -397,6 +467,7 @@ impl Audit for AuditChain {
                 .correlation_label
                 .as_deref()
                 .map(|label| crate::legacy::sha256_hex(label.as_bytes())),
+            seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
             hash: String::new(),
         };
