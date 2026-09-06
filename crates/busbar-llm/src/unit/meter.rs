@@ -394,11 +394,25 @@ pub fn meter(
     }
     let usage = Usage::report(usage_token, lines).expect("four tiers fit any record");
 
-    // The hold, accrued against and handed straight back. Nothing settles here.
+    // The hold, spent against and handed straight back. Nothing settles here.
     let hold = hold.map(|mut h| {
         // Nano-units against a reservation in nano-units. The report's own quantity sum is still
         // there to be read and is still not a money figure.
-        let _ = h.accrue(u64::try_from(priced_nanos).unwrap_or(u64::MAX));
+        //
+        // `spend` rather than `accrue`, and with ZERO headroom. The difference between them is what
+        // happens when the spend runs past the reservation: `accrue` reports it and `spend` records
+        // it. The reservation was sized by a guess made at the door before a single upstream token
+        // existed, and the value has been delivered by the time this step prices it — so a guess
+        // that came in low is a normal outcome, not an error, and the excess is carried out on the
+        // hold into the next window's admissible budget. Dropping it would settle the unit as one
+        // that fitted.
+        //
+        // The headroom is zero because this step has none to offer. Drawing a top-up from the
+        // principal's slice of the bucket window is the admission unit's act against a slice this
+        // plane does not hold; claiming headroom here would mean growing a reservation against
+        // budget nobody checked. So the whole shortfall is carried, which is the conservative half
+        // of the same accounting.
+        h.spend(u64::try_from(priced_nanos).unwrap_or(u64::MAX), 0);
         h
     });
 
