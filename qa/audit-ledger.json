@@ -483,13 +483,17 @@
    "paths": [
     "crates/busbar-substrate/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2,
+    "LOW": 3,
+    "NIT": 2
+   },
+   "report": "pass 2 fresh eyes, plane_host+plane+teller only: mutate splits a durable write with no compensation; identity/trust-anchor registries hold private keys with no removal path; cancelled unit at route/meter never posted; all 15 production files and 5 test files read, teller/tests.rs unread; no fix shipped, fix agent dispatched",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-substrate/src/tests"
