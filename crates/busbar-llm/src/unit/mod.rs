@@ -24,7 +24,9 @@
 
 /// Step 4 — the charge: the admission door, then the hold and the meter half it opens.
 pub mod admit;
-/// Step 3 — whether the caller may do this at all: the migrated hook seats' veto.
+/// Step 3 — whether the caller may do this at all: the one native veto seat, which nothing
+/// installs today. The migrated hooks are NOT seated here — they fire after the door on the live
+/// path, and a hook that runs after a charge cannot veto before one.
 pub mod approve;
 /// Step 0 — what arrived: the body read and the path-carried model splice.
 pub mod arrival;
