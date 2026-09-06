@@ -363,6 +363,21 @@ fn form_urlencoded_pairs(query: &str) -> Vec<(String, String)> {
         .collect()
 }
 
+#[cfg(test)]
+#[path = "tests/routes_tests.rs"]
+mod routes_tests;
+
+/// One hex digit's value, or `None` for any other byte. Byte-wise on purpose: the caller must never
+/// index into the `&str` (see the `%` arm below).
+fn hex_nibble(b: u8) -> Option<u8> {
+    match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn percent_decode(s: &str) -> String {
     let bytes = s.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
@@ -373,15 +388,21 @@ fn percent_decode(s: &str) -> String {
                 out.push(b' ');
                 i += 1;
             }
+            // Decoded from the BYTES, never by slicing the `&str`. `&s[i + 1..i + 3]` panicked
+            // whenever the byte after the `%` began a multi-byte UTF-8 character: `i + 1` is always
+            // a char boundary (it follows the ASCII `%`) but `i + 3` lands INSIDE that character,
+            // and `&str` indexing is a hard panic there. A caller-supplied query string is
+            // arbitrary UTF-8 — `consent?return=/authorize?x=%€` reached here — so this had to be
+            // a 400 page, not an unwound handler task.
             b'%' if i + 2 < bytes.len() => {
-                match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                    Ok(b) => {
-                        out.push(b);
+                match (hex_nibble(bytes[i + 1]), hex_nibble(bytes[i + 2])) {
+                    (Some(hi), Some(lo)) => {
+                        out.push(hi << 4 | lo);
                         i += 3;
                     }
                     // A stray `%` is kept verbatim rather than dropped: dropping it would let two
                     // different query strings decode to one value.
-                    Err(_) => {
+                    _ => {
                         out.push(b'%');
                         i += 1;
                     }
