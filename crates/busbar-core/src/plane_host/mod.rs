@@ -857,6 +857,23 @@ impl busbar_substrate::plane_host::BudgetHost for EngineHostImpl {
             .is_ok_and(|c| c.model_unpriced(model))
     }
 
+    fn cost_price_usage(
+        &self,
+        cost: &busbar_substrate::plane_host::CostHandle,
+        model: &str,
+        usage: &busbar_substrate::billing::Usage,
+    ) -> Option<u128> {
+        // The SAME `price_usage_nanos` the neutral `MeteringHost::price_usage` reader drives — a new
+        // entry point over one function, not a second pricer — but against the card the CALLER's
+        // handle names rather than this host's bound snapshot. A handle that is not a cost model is
+        // not a card, so it prices nothing and says so.
+        cost.0
+            .clone()
+            .downcast::<crate::cost::CostModel>()
+            .ok()
+            .and_then(|c| c.price_usage_nanos(model, usage))
+    }
+
     fn meter_ledger(
         &self,
         gov: &busbar_substrate::plane_host::GovHandle,

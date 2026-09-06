@@ -60,6 +60,13 @@
 //! cell — the exit and the node's sweep — and a third would be a unit that could post twice. So
 //! this step takes the hold, accrues against it, and hands it straight back for the exit to close;
 //! it never builds a `Posted`. What it does own is the report the posting is made against.
+//!
+//! **What it accrues is MONEY.** A reservation is in nano-units, so the spend has to be too. The
+//! report's lines are quantities in four different meter classes and their sum is a figure in no
+//! unit at all; the money is what the rate CARD makes of those quantities. The card is the one the
+//! unit's sink pinned at the door, so a request that opened before a config reload is priced on the
+//! rates it was admitted under rather than on today's — and the plane still reads no rate of its
+//! own, it hands over the counts it metered and is told a total.
 
 use std::sync::Arc;
 
@@ -293,15 +300,34 @@ pub fn meter(
     // SEALS that unit: it reports the same row and the same figures, and it does not accrue them a
     // second time. Where the walk held no sink, this step is the accrual and makes the call itself.
     let mut row = None;
+    // What the response is WORTH, in the nano-units a reservation is in. Zero until a card prices
+    // it, which is the honest figure for a unit that reached no lane and for one that billed none.
+    let mut priced_nanos: u128 = 0;
     if bills {
         if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
+            // The tier split, projected once and read twice: the ledger accrues against it, and the
+            // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
+            // posted still prices what it delivered — sealing is not a reason to spend nothing.
+            let tier = reported
+                .map(crate::engine::usage::tier_usage)
+                .unwrap_or_default();
             if !ctx.accrued {
-                let tier = reported
-                    .map(crate::engine::usage::tier_usage)
-                    .unwrap_or_default();
                 crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
             }
             row = Some(metering_row(sink, lane, reported));
+            // THE MONEY. Priced against the card the SINK carries — the one resolved when this
+            // unit's hold opened at the door — and keyed by the serving lane's config name, which
+            // is the key space a rate card is written in and the same key the metering row above
+            // attributes to. Pricing against the deployment's card as it is now would reprice a
+            // request that opened before a reload on rates it never agreed to.
+            //
+            // `None` is a present card that does not know this model, and the Verify step's pricing
+            // guard has already turned that unit away before it could reach here; there is no
+            // figure to invent at this point, so nothing is spent.
+            priced_nanos = ctx
+                .host
+                .cost_price_usage(&sink.cost, &lane.model, &tier)
+                .unwrap_or(0);
         }
     }
 
@@ -329,7 +355,9 @@ pub fn meter(
 
     // The hold, accrued against and handed straight back. Nothing settles here.
     let hold = hold.map(|mut h| {
-        let _ = h.accrue(usage.total());
+        // Nano-units against a reservation in nano-units. The report's own quantity sum is still
+        // there to be read and is still not a money figure.
+        let _ = h.accrue(u64::try_from(priced_nanos).unwrap_or(u64::MAX));
         h
     });
 

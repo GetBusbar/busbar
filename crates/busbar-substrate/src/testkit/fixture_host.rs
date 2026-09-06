@@ -529,6 +529,10 @@ impl BudgetHost for FixtureHost {
     fn cost_model_unpriced(&self, _cost: &CostHandle, _model: &str) -> bool {
         false
     }
+    // And with no card, every model prices at nothing — the posture, not a missing answer.
+    fn cost_price_usage(&self, _cost: &CostHandle, _model: &str, _usage: &Usage) -> Option<u128> {
+        Some(0)
+    }
     fn meter_ledger(
         &self,
         _gov: &GovHandle,
