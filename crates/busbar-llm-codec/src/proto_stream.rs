@@ -991,6 +991,20 @@ impl StreamTranslate {
         self.terminal_error.as_deref()
     }
 
+    /// Frame a TERMINAL mid-stream error through the LIVE ingress writer this translator has been
+    /// driving since the first frame — the writer that latched this stream's identity. The transport
+    /// path used to resolve a FRESH writer from the dialect registry for this frame, which restarts
+    /// every per-stream cell the ingress writer owns: on a Responses ingress the failure event then
+    /// carries `sequence_number: 0` (behind, not after, every frame the client already read) and a
+    /// response id unrelated to the `response.created` the SDK opened on, so a strict decoder cannot
+    /// reconcile the failure with the stream it is holding. Asking the live writer replays the latched
+    /// identity and advances the same counter, exactly as the in-band abort frame `finish()` emits
+    /// already does. `None` when the ingress writer frames no in-band error; the caller then falls
+    /// back to the dialect seam.
+    pub fn terminal_error_frame(&mut self, err: &IrError) -> Option<(String, serde_json::Value)> {
+        self.ingress.writer().write_error_frame(err)
+    }
+
     /// Abandon the stream as unrecoverable: release the reassembly buffer, set `aborted` so every
     /// subsequent `feed()` is a no-op, and let `finish()` emit the ingress-native terminal error
     /// frame. The two abandonment triggers are a reassembly buffer that grew past [`Self::MAX_BUF`]
@@ -1138,6 +1152,9 @@ impl StreamTranslator for StreamTranslate {
     }
     fn set_request_echo(&mut self, ingress_request_body: &serde_json::Value) {
         self.set_request_echo(ingress_request_body)
+    }
+    fn terminal_error_frame(&mut self, err: &IrError) -> Option<(String, serde_json::Value)> {
+        self.terminal_error_frame(err)
     }
 }
 

@@ -134,7 +134,7 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
 #[test]
 fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
     crate::testkit::install_test_seams();
-    let bytes = mid_stream_error_bytes("no-such-protocol", false, "upstream vanished");
+    let bytes = mid_stream_error_bytes("no-such-protocol", false, "upstream vanished", None);
     let s = String::from_utf8(bytes).expect("utf8 frame");
     assert!(
         s.starts_with("data: ") && s.ends_with("\n\n"),

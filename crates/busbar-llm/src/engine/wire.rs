@@ -704,10 +704,22 @@ pub(crate) const GENERIC_RESPONSE_ERROR_DETAIL: &str =
 ///     `event: response.failed` for responses whose payload is the SDK-required
 ///     `{"response":{...,"error":{...}}}` STREAM shape (NOT the non-stream `{"error":...}` HTTP
 ///     envelope), so the official SDK's stream decoder finds `event.response` instead of crashing.
+///
+/// `translate` is the LIVE translator for this stream when there is one. Its ingress writer is the
+/// one that framed every event the client has already received, so it holds this stream's identity
+/// (a Responses ingress latches the response id, `created_at`, `model` and the monotonic
+/// `sequence_number`). Asking it for the terminal frame keeps the failure event CONTINUOUS with the
+/// stream; resolving a fresh dialect writer here restarts all of that, and the client gets a
+/// `response.failed` numbered 0 for a response it never opened. The dialect seam stays as the
+/// fallback for a stream with no translator (and for a translator that frames no in-band error).
 pub(crate) fn mid_stream_error_bytes(
     ingress_protocol: &str,
     ingress_eventstream: bool,
     message: &str,
+    // `+ 'static` explicitly: the streaming body holds a `Box<dyn StreamTranslator>` (whose object
+    // lifetime is `'static`), and `&mut` is invariant in its pointee, so the elided `&'a mut (dyn _ +
+    // 'a)` this would otherwise mean cannot accept that borrow.
+    translate: Option<&mut (dyn busbar_substrate::proto::StreamTranslator + 'static)>,
 ) -> Vec<u8> {
     // The error is a mid-stream transport failure ≈ internal/5xx. Resolve the ingress protocol
     // ONCE. An unknown ingress resolves to no writer at all and takes the dialect-free terminal
@@ -755,7 +767,10 @@ pub(crate) fn mid_stream_error_bytes(
     // Every SSE-framed writer (openai/anthropic/gemini/cohere/responses) returns `Some`; the `None`
     // fallback only guards a hypothetical future writer that declines to frame errors in-band, in
     // which case we still emit a decodable bare `data:` error.
-    match dialect.write_error_frame(&err) {
+    let frame = translate
+        .and_then(|t| t.terminal_error_frame(&err))
+        .or_else(|| dialect.write_error_frame(&err));
+    match frame {
         Some((event_type, data)) => {
             let data = busbar_substrate::json::to_string(&data).unwrap_or_else(|_| {
                 serde_json::json!({ "error": { "message": message, "type": KIND_API_ERROR } })
