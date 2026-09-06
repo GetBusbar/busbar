@@ -277,66 +277,79 @@ mod tests {
         }
     }
 
-    /// Every row of the ratified table is in the module's own documentation.
+    /// Every row of the ratified table is what the documentation says AND what the code does.
     ///
     /// The mapping is lossy on purpose and the table is where that is decided, so a row that exists
-    /// in code and not in the table is a decision nobody agreed to. Read out of this file's own
-    /// source, because the property is "these two spellings agree".
+    /// in code and not in the table is a decision nobody agreed to — and a row in the table that
+    /// `code_for` does not render is a promise to an operator that the wire breaks. Both directions
+    /// are checked off the same twenty rows: the documented row is read out of this file's own
+    /// source, and the rendered code is read out of `code_for` for the very same reason value.
     #[test]
-    fn every_ratified_row_is_documented() {
+    fn every_ratified_row_is_documented_and_rendered() {
         let source = include_str!("refusal.rs");
         let table = source
             .split("//! | `RefusalReason` | `code` | Why |")
             .nth(1)
             .expect("the ratified table is still in the module header");
-        for (reason, code) in [
-            ("InFlightCap", "rate_limited"),
-            ("CursorBudget", "invalid_request"),
-            ("CredentialBudget", "invalid_request"),
-            ("SessionBudget", "unavailable"),
-            ("BodyTooLarge", "invalid_request"),
-            ("OpenSlotBusy", "conflict"),
-            ("SchemeNotDeclared", "unauthorized"),
-            ("CredentialRejected", "unauthorized"),
-            ("SessionUnbound", "unauthorized"),
-            ("Revoked", "forbidden"),
-            ("ScopeMissing", "forbidden"),
-            ("Vetoed", "forbidden"),
-            ("NoDestination", "not_found"),
-            ("OverBudget", "rate_limited"),
-            ("GroupFrozen", "forbidden"),
-            ("Unpriced", "invalid_request"),
-            ("OverdraftCeiling", "rate_limited"),
-            ("StaleSlice", "unavailable"),
-            ("DurabilityUnavailable", "unavailable"),
-            ("TierMismatch", "internal"),
-            ("SpillBudget", "unavailable"),
-            ("ArenaBudget", "unavailable"),
-            ("RateLimited", "rate_limited"),
-            ("DecodeFailed", "invalid_request"),
-            ("ChallengeExhausted", "unauthorized"),
-            ("PoolNotPermitted", "forbidden"),
-            ("NoRate", "invalid_request"),
-            ("Replayed", "conflict"),
-            ("InFlight", "conflict"),
-            ("DestinationBudgetExhausted", "unavailable"),
-            ("BreakerOpen", "unavailable"),
-            ("DestinationUnreachable", "unavailable"),
-            ("MeterDisputed", "internal"),
-            ("HandoffMismatch", "internal"),
-            ("PlanePanic", "internal"),
-            ("TaskLost", "internal"),
-            ("SecretPlaceholder", "internal"),
-            ("Stalled", "unavailable"),
-            ("Drain", "unavailable"),
-            ("Superseded", "conflict"),
-            ("ClientGone", "conflict"),
-            ("DeadlineExceeded", "unavailable"),
-        ] {
-            let row = format!("| `{reason}` | `{code}` |");
+        let rows = [
+            (RefusalReason::InFlightCap, "rate_limited"),
+            (RefusalReason::CursorBudget, "invalid_request"),
+            (RefusalReason::CredentialBudget, "invalid_request"),
+            (RefusalReason::SessionBudget, "unavailable"),
+            (RefusalReason::BodyTooLarge, "invalid_request"),
+            (RefusalReason::OpenSlotBusy, "conflict"),
+            (RefusalReason::SchemeNotDeclared, "unauthorized"),
+            (RefusalReason::CredentialRejected, "unauthorized"),
+            (RefusalReason::SessionUnbound, "unauthorized"),
+            (RefusalReason::Revoked, "forbidden"),
+            (RefusalReason::ScopeMissing, "forbidden"),
+            (RefusalReason::Vetoed, "forbidden"),
+            (RefusalReason::NoDestination, "not_found"),
+            (RefusalReason::OverBudget, "rate_limited"),
+            (RefusalReason::GroupFrozen, "forbidden"),
+            (RefusalReason::Unpriced, "invalid_request"),
+            (RefusalReason::OverdraftCeiling, "rate_limited"),
+            (RefusalReason::StaleSlice, "unavailable"),
+            (RefusalReason::DurabilityUnavailable, "unavailable"),
+            (RefusalReason::TierMismatch, "internal"),
+            (RefusalReason::SpillBudget, "unavailable"),
+            (RefusalReason::ArenaBudget, "unavailable"),
+            (RefusalReason::RateLimited, "rate_limited"),
+            (RefusalReason::DecodeFailed, "invalid_request"),
+            (RefusalReason::ChallengeExhausted, "unauthorized"),
+            (RefusalReason::PoolNotPermitted, "forbidden"),
+            (RefusalReason::NoRate, "invalid_request"),
+            (RefusalReason::Replayed, "conflict"),
+            (RefusalReason::InFlight, "conflict"),
+            (RefusalReason::DestinationBudgetExhausted, "unavailable"),
+            (RefusalReason::BreakerOpen, "unavailable"),
+            (RefusalReason::DestinationUnreachable, "unavailable"),
+            (RefusalReason::MeterDisputed, "internal"),
+            (RefusalReason::HandoffMismatch, "internal"),
+            (RefusalReason::PlanePanic, "internal"),
+            (RefusalReason::TaskLost, "internal"),
+            (RefusalReason::SecretPlaceholder, "internal"),
+            (RefusalReason::Stalled, "unavailable"),
+            (RefusalReason::Drain, "unavailable"),
+            (RefusalReason::Superseded, "conflict"),
+            (RefusalReason::ClientGone, "conflict"),
+            (RefusalReason::DeadlineExceeded, "unavailable"),
+        ];
+        assert_eq!(
+            rows.len(),
+            42,
+            "the contract's reason set changed and this table did not"
+        );
+        for (reason, code) in rows {
+            let row = format!("| `{reason:?}` | `{code}` |");
             assert!(
                 table.contains(&row),
                 "the ratified table has no row reading {row}"
+            );
+            assert_eq!(
+                code_for(reason),
+                code,
+                "{reason:?} renders a code the ratified table does not promise"
             );
         }
     }
