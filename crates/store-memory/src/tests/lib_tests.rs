@@ -694,3 +694,39 @@ fn put_credential_refuses_a_tombstoned_or_absent_key() {
         "the refused credential must not resolve — that is the whole point of the cascade"
     );
 }
+
+/// The key+credential mint is ATOMIC or it is nothing. The trait's default is the two-call sequence
+/// (`put_key` then `put_credential`), and the credential leg fails on an ordinary operator mistake —
+/// a `public_id` already in use. Under the default the key leg has already committed by then, so the
+/// mint reports failure while leaving a live bearer key with no credential behind it: a row the
+/// caller does not know exists and will never clean up.
+#[test]
+fn put_key_with_credential_leaves_no_key_behind_when_the_credential_is_refused() {
+    let s = MemoryStore::new();
+    s.put_key(&key("incumbent")).unwrap();
+    s.put_credential(&credential("c-incumbent", "incumbent", "AKIA_TAKEN"))
+        .unwrap();
+
+    // The mint the operator asks for, colliding on the global (kind, public_id) handle.
+    let mut minted = credential("c-new", "fresh", "AKIA_TAKEN");
+    minted.meta.key_id = "fresh".to_string();
+    assert!(
+        s.put_key_with_credential(&key("fresh"), &minted).is_err(),
+        "a mint whose credential collides on public_id must fail"
+    );
+    assert!(
+        s.get_key("fresh").unwrap().is_none(),
+        "the failed mint left the key committed — the pair went in one leg at a time"
+    );
+    assert!(
+        s.list_credentials("fresh").unwrap().is_empty(),
+        "and no credential row may survive the refusal either"
+    );
+
+    // The success path still writes BOTH rows.
+    let ok = credential("c-ok", "fresh", "AKIA_FREE");
+    s.put_key_with_credential(&key("fresh"), &ok)
+        .expect("a clean mint writes both rows");
+    assert!(s.get_key("fresh").unwrap().is_some());
+    assert_eq!(s.list_credentials("fresh").unwrap().len(), 1);
+}

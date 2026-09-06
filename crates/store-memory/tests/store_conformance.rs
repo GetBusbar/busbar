@@ -37,3 +37,8 @@ fn revoke_credential_unknown_id_is_an_error() {
 fn put_credential_requires_a_live_key() {
     conf::assert_put_credential_requires_a_live_key(&MemoryStore::new(), "conf");
 }
+
+#[test]
+fn put_key_with_credential_is_atomic() {
+    conf::assert_put_key_with_credential_is_atomic(&MemoryStore::new(), "conf");
+}

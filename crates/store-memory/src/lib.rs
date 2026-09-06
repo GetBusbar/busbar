@@ -114,6 +114,45 @@ impl MemoryStore {
             pinned => pinned,
         }
     }
+    /// The two credential-table preconditions, factored out of `put_credential` so the ATOMIC
+    /// `put_key_with_credential` can run the identical rules under its own single critical section
+    /// rather than a second, drifting copy of them. Takes the map (not the guard) so either caller's
+    /// guard serves.
+    fn credential_preconditions(
+        creds: &HashMap<String, CredentialSecret>,
+        secret: &CredentialSecret,
+    ) -> StoreResult<()> {
+        // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
+        // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
+        // operator mistake, not an intended rotation.
+        let occupied = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.key_id == secret.meta.key_id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.slot == secret.meta.slot
+                && c.meta.revoked_at.is_none()
+        });
+        if occupied {
+            return Err(StoreError(format!(
+                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
+                secret.meta.slot, secret.meta.key_id, secret.meta.kind
+            )));
+        }
+        // UNIQUE(kind, public_id): a public_id must never resolve to two different credentials,
+        // even across keys (an AccessKeyId is a global lookup handle).
+        let public_id_taken = creds.values().any(|c| {
+            c.meta.id != secret.meta.id
+                && c.meta.kind == secret.meta.kind
+                && c.meta.public_id == secret.meta.public_id
+        });
+        if public_id_taken {
+            return Err(StoreError(format!(
+                "put_credential: public_id '{}' is already in use for kind '{}'",
+                secret.meta.public_id, secret.meta.kind
+            )));
+        }
+        Ok(())
+    }
     /// Test-only: pin `self.now()` to `t` so the sweep's retention ceiling is deterministic.
     #[cfg(test)]
     fn pin_clock(&self, t: u64) {
@@ -353,35 +392,7 @@ impl Store for MemoryStore {
                 secret.meta.key_id
             )));
         }
-        // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
-        // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
-        // operator mistake, not an intended rotation.
-        let occupied = creds.values().any(|c| {
-            c.meta.id != secret.meta.id
-                && c.meta.key_id == secret.meta.key_id
-                && c.meta.kind == secret.meta.kind
-                && c.meta.slot == secret.meta.slot
-                && c.meta.revoked_at.is_none()
-        });
-        if occupied {
-            return Err(StoreError(format!(
-                "put_credential: slot {} for key '{}' kind '{}' holds a live credential; revoke it first",
-                secret.meta.slot, secret.meta.key_id, secret.meta.kind
-            )));
-        }
-        // UNIQUE(kind, public_id): a public_id must never resolve to two different credentials,
-        // even across keys (an AccessKeyId is a global lookup handle).
-        let public_id_taken = creds.values().any(|c| {
-            c.meta.id != secret.meta.id
-                && c.meta.kind == secret.meta.kind
-                && c.meta.public_id == secret.meta.public_id
-        });
-        if public_id_taken {
-            return Err(StoreError(format!(
-                "put_credential: public_id '{}' is already in use for kind '{}'",
-                secret.meta.public_id, secret.meta.kind
-            )));
-        }
+        Self::credential_preconditions(&creds, secret)?;
         let mut secret = secret.clone();
         secret.meta.revision = self.next_revision();
         creds.insert(secret.meta.id.clone(), secret);
@@ -408,6 +419,52 @@ impl Store for MemoryStore {
                 Some(revoked_at) => revoked_at.saturating_add(MAX_RETENTION_SECS) > n,
             });
         }
+        Ok(())
+    }
+
+    fn put_key_with_credential(
+        &self,
+        key: &VirtualKey,
+        secret: &CredentialSecret,
+    ) -> StoreResult<()> {
+        // The trait calls this mint ATOMIC, and the DEFAULT it inherits is `put_key` followed by
+        // `put_credential` — two independent critical sections. When the credential leg fails (a
+        // reused `public_id` is the ordinary way it does), the key leg has already committed, so the
+        // caller is told the mint failed while a bearer key with no credential is left live in the
+        // table: a row nobody will ever clean up, and a `put_key` the operator never asked for. Both
+        // rows go in under ONE acquisition of the same two guards `delete_key` takes, in the same
+        // fixed order, with every precondition tested before anything is written.
+        let mut keys = self.keys();
+        let mut creds = self.creds();
+        if key.deleted_at.is_none() {
+            if let Some(existing) = keys.get(&key.id) {
+                if existing.deleted_at.is_some() {
+                    return Err(StoreError(format!(
+                        "put_key_with_credential: '{}' is tombstoned and its id is never reissued",
+                        key.id
+                    )));
+                }
+            }
+        }
+        // The credential must name the key being minted alongside it — a mint that quietly hung its
+        // secret material off some OTHER key is not the operation the caller asked for, and the
+        // tombstone/existence check `put_credential` makes cannot apply to a key that does not exist
+        // until this call commits.
+        if secret.meta.key_id != key.id {
+            return Err(StoreError(format!(
+                "put_key_with_credential: the credential names key '{}', not the key '{}' being \
+                 minted with it",
+                secret.meta.key_id, key.id
+            )));
+        }
+        Self::credential_preconditions(&creds, secret)?;
+
+        let mut key = key.clone();
+        key.revision = self.next_revision();
+        keys.insert(key.id.clone(), key);
+        let mut secret = secret.clone();
+        secret.meta.revision = self.next_revision();
+        creds.insert(secret.meta.id.clone(), secret);
         Ok(())
     }
 
