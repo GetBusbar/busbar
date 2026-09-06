@@ -1,5 +1,5 @@
 # testing/fleet-fixtures/service-images.tsv — THE pinned service-image list for the durable-store QA
-# cycle (docs/design/store-qa-cycle.md §2.1).
+# cycle. See docs/design/store-qa-cycle.md.
 #
 # WHY THIS FILE EXISTS. The provisioning of the four backend services the store plugins need was
 # written FIVE times — .github/workflows/ci.yml's `check` and `coverage` jobs, release-stage.yml's
@@ -24,7 +24,7 @@
 #   digest       sha256:… — the pin. A workflow `image:` line must read exactly `<image>@<digest>`
 #   ready_probe  the command run INSIDE the container to prove readiness, or `-` when the service
 #                has no local runner here. Readiness is PROVEN, never slept on
-#                (docs/design/store-qa-cycle.md §6.2: polling decides whether the test can BEGIN,
+#                (polling decides whether the test can BEGIN,
 #                never whether it passed)
 #   port         the port the service listens on inside the container
 #   local_port   the host port store-services.sh publishes it on, DELIBERATELY OFFSET from the

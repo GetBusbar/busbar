@@ -827,7 +827,7 @@ jobs:
       - name: Public-hygiene gate
         run: python3 scripts/public-hygiene-lint.py --root .
 
-  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/store-qa-cycle.md §2.1) rests on the
+  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/store-qa-cycle.md) rests on the
   # four backend services being the SAME BYTES everywhere they are stood up. They were not: the
   # service containers were provisioned in five places — this file's `check` and `coverage` jobs,
   # release-stage.yml's `gate`, plugin-ci.yml's `build-test-signoff`, and scripts/release-check.sh.

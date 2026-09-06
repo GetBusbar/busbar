@@ -4,7 +4,8 @@
 #
 # testing/fleet-fixtures/store-services.sh — the one-command way to stand the durable-store backends
 # up on a laptop, and the namespace machinery the shadow oracle needs to record two binaries against
-# them at once. docs/design/store-qa-cycle.md §2.3 and §2.5.
+# them at once. See docs/design/store-qa-cycle.md, "Local docker for developers and unattended
+# agents" and "Namespacing — the concurrency hazard the oracle creates".
 #
 # THE GAP THIS CLOSES. busbar has FOUR published durable stores (sqlite, postgres, mysql, valkey) and
 # three of them need a server. Every provisioner of that server lived inside CI — four workflows and
@@ -30,20 +31,20 @@
 #   store-services.sh status                             one line per service: up / down
 #   store-services.sh --selftest                         prove this script's own rules, no docker
 #
-# PORTS — OFFSET, ON PURPOSE, TWICE OVER (§2.3)
+# PORTS — OFFSET, ON PURPOSE, TWICE OVER
 #   15432 / 13306 / 16379, read from service-images.tsv, exactly the offsets release-check.sh uses.
 #   They avoid a developer's OWN postgres on 5432 (the thing that makes a local run destructive), and
 #   they are nowhere near the shadow oracle's own 487xx/488xx band (record.sh's 48811/48812/48781,
 #   48813 for script cells, 48821/48822 for boot cells, and store-persist.sh's 48831/48832/48791).
 #   Those two bands are disjoint and MUST STAY disjoint; --selftest asserts it rather than trusting it.
 #
-# READINESS IS PROVEN, NEVER SLEPT ON (§6.2)
+# READINESS IS PROVEN, NEVER SLEPT ON
 #   pg_isready / mysqladmin ping / valkey-cli ping INSIDE the container, capped at the seconds
 #   service-images.tsv pins (mysql's is 120, not 60: MySQL 8's first boot initialises the datadir and
 #   restarts once). A poll that decides WHETHER THE TEST CAN BEGIN is not a retry; exceeding a cap is
 #   a red that names the service and dumps `docker logs`, never a silent skip and never a re-run.
 #
-# NAMESPACES — THE CONCURRENCY HAZARD THE ORACLE CREATES (§2.5)
+# NAMESPACES — THE CONCURRENCY HAZARD THE ORACLE CREATES
 #   The shadow-oracle job records the golden AND the candidate in the same job against the same
 #   services. Postgres and mysql are shared, non-reset databases, so two recordings writing the same
 #   tables make each other's failure — and, worse, the candidate could READ THE GOLDEN'S ROWS and
@@ -54,7 +55,7 @@
 #   valkey's teardown is FLUSHDB on that index. Never FLUSHALL: one recording must not be able to
 #   erase another's.
 #
-# CREDENTIALS (§2.4)
+# CREDENTIALS
 #   `busbar:busbar` against a throwaway container is not a credential and is not treated as one. What
 #   IS enforced: `url` and `ns` print to STDOUT for command substitution and log nothing, `set -x` is
 #   never used on any path here, and no DSN is ever written to a file this repository tracks.
@@ -129,7 +130,7 @@ need_docker() {
   command -v docker >/dev/null 2>&1 \
     || die "docker is not on PATH. This is the one dependency; there is no way to prove a store
 persists across a process death without a server to persist into. On a host without docker the
-oracle's store cells record a NAMED GAP (SKIP), never a pass — see docs/design/store-qa-cycle.md §3.1."
+oracle's store cells record a NAMED GAP (SKIP), never a pass — see docs/design/store-qa-cycle.md."
 }
 
 # A TOKEN GOES INTO DDL, SO IT IS VALIDATED, NOT TRUSTED. The token is a recording's output-directory
@@ -192,7 +193,7 @@ do_up() {
       waited=$((waited + 1))
       if [ "$waited" -ge "$secs" ]; then
         docker logs "$name" >&2 2>/dev/null || true
-        die "${svc} did not become ready within ${secs}s. A service that did not come up is a HARD RED on any promotion branch or PR (docs/design/store-qa-cycle.md §1.4): a store that could not be tested has not been tested."
+        die "${svc} did not become ready within ${secs}s. A service that did not come up is a HARD RED on any promotion branch or PR: a store that could not be tested has not been tested."
       fi
       sleep 1
     done
@@ -207,7 +208,7 @@ do_down() {
     name="$(container "$svc")"
     docker rm -f "$name" >/dev/null 2>&1 && say "  ${svc}: removed ${name}" || say "  ${svc}: nothing to remove"
   done
-  # THE THIRD TEARDOWN LAYER (§2.6). A container that SURVIVED and answers the next run's probe with
+  # THE THIRD TEARDOWN LAYER. A container that SURVIVED and answers the next run's probe with
   # someone else's data is the failure that matters, so `down all` sweeps every container this file's
   # naming scheme could have produced — including a $BUSBAR_STORE_QA_TAG or `-$$` suffixed one left
   # by a caller that died before its own trap fired.
@@ -349,7 +350,7 @@ run_selftest() {
     record "fixtures|every-row-digest-pinned" FAIL "a row is not pinned by digest" "unpinned: ${unpinned}"
   fi
 
-  # 3. THE TWO PORT BANDS ARE DISJOINT (§2.3). The oracle derives its ports in 48781–48899; every
+  # 3. THE TWO PORT BANDS ARE DISJOINT. The oracle derives its ports in 48781–48899; every
   #    local_port here must sit outside it, and outside the default ports a developer's own servers
   #    use. This is the check that stops a well-meaning "just use 5432" from eating somebody's data.
   local bad_ports=""

@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # scripts/service-images-check.sh — every `image:` in .github/workflows/ is the digest
-# testing/fleet-fixtures/service-images.tsv pins. docs/design/store-qa-cycle.md §2.1.
+# testing/fleet-fixtures/service-images.tsv pins. See docs/design/store-qa-cycle.md.
 #
 # THE DRIFT THIS EXISTS TO STOP, measured before it was written. The service containers busbar's
 # durable stores need were provisioned in FIVE places: ci.yml's `check` job, ci.yml's `coverage` job,
