@@ -729,6 +729,21 @@ jobs:
 
       - name: Resolve version under test
         id: ver
+        # EVENT-SUPPLIED VALUES REACH THE SHELL AS ENV, NEVER SPLICED INTO THE SCRIPT TEXT. This
+        # step used to paste `inputs.version`, `github.event.release.tag_name` and
+        # `github.event.workflow_run.head_branch` straight into the `run:` body. Expression
+        # interpolation happens BEFORE bash sees a single byte, so the X.Y.Z regex at the bottom of
+        # this step — which is the only validation there is — runs long after a crafted value would
+        # already have executed. A branch name is attacker-influenced (anyone who can push a branch
+        # picks it) and GitHub allows plenty of shell metacharacters in one, so this was the exact
+        # seam the `pointers` job above hoists into `env:` for, and the reason it gives there
+        # ("an event-supplied value reaches the shell as an environment variable rather than being
+        # pasted into the script text") applies here verbatim. As env vars they are inert data.
+        env:
+          IN_VERSION: ${{ inputs.version || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || '' }}
+          WORKFLOW_RUN_HEAD_BRANCH: ${{ github.event.workflow_run.head_branch || '' }}
         run: |
           set -euo pipefail
           # `inputs.version` first, and deliberately NOT keyed on `github.event_name`: inside a
@@ -737,10 +752,10 @@ jobs:
           # for the very invocation that makes this the release's last step. The input is set by
           # exactly two triggers (workflow_dispatch and workflow_call) and empty for the rest, which
           # is a direct, non-inferred signal.
-          if [ -n "${{ inputs.version || '' }}" ]; then
-            V="${{ inputs.version }}"
+          if [ -n "${IN_VERSION:-}" ]; then
+            V="$IN_VERSION"
             V="${V#v}"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
+          elif [ "$EVENT_NAME" = "schedule" ]; then
             # ROT CHECK: no tag in hand, so resolve "the current latest release" the way an
             # unauthenticated user's shell would — the plain HTTP 302 on github.com's
             # /releases/latest, which needs no token and is not rate-limited the way the API is.
@@ -756,11 +771,11 @@ jobs:
                 exit 1
                 ;;
             esac
-          elif [ "${{ github.event_name }}" = "release" ]; then
-            V="${{ github.event.release.tag_name }}"
+          elif [ "$EVENT_NAME" = "release" ]; then
+            V="$RELEASE_TAG"
             V="${V#v}"
           else
-            V="${{ github.event.workflow_run.head_branch }}"
+            V="$WORKFLOW_RUN_HEAD_BRANCH"
             V="${V#v}"
           fi
           echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "::error::not a plain X.Y.Z version: '$V'"; exit 1; }
