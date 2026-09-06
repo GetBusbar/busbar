@@ -143,13 +143,23 @@ fn key_of(pairs: &[(&str, &str)]) -> busbar_api::VirtualKey {
     }
 }
 
-/// THE ORACLE: the decision `Catalogue::resolve` used to make INLINE, restated verbatim.
+/// THE ORACLE: the decision `Catalogue::resolve` used to make INLINE, restated.
 ///
-/// It reads the raw registration fields exactly as the deleted code did — "the mechanism is not
-/// `unpinned`" and "an approved hash is present" — and it is the only place in the tree those two
-/// facts are still turned into an admission answer. It lives in a test so that it can be COMPARED
-/// against the routed gate; it decides nothing in production, which is the whole point of the
-/// deletion it licensed.
+/// It reads the raw registration fields as the deleted code did — "the mechanism is not `unpinned`"
+/// and "an approved hash is present" — and it is the only place in the tree those two facts are
+/// still turned into an admission answer. It lives in a test so that it can be COMPARED against the
+/// routed gate; it decides nothing in production, which is the whole point of the deletion it
+/// licensed.
+///
+/// ## ONE DELIBERATE DIVERGENCE FROM THE DELETED CODE: A BLANK HASH IS NO HASH
+///
+/// The inline decision tested `schema_hash.is_none()`, so `Some("")` read as "approved". That was
+/// the inline decision being WRONG rather than the gate being different: `Catalogue::build` put the
+/// empty string into the approval map, `ToolEntry::dispatch_digest` offered the empty string, and
+/// the two matched — a tool dispatching against an approval of nothing, on the one comparison that
+/// exists to catch a rug-pull. The build now drops a blank (or all-whitespace) hash, so the tool is
+/// `pending` exactly as one with no hash at all is, and the oracle is corrected to say so. An
+/// equivalence oracle that preserved the defect would only pin it.
 fn deleted_inline_decision(
     mechanism: McpPinMechanism,
     schema_hash: Option<&str>,
@@ -157,7 +167,7 @@ fn deleted_inline_decision(
     if matches!(mechanism, McpPinMechanism::Unpinned) {
         return Err(DispatchRefusal::NotPinned("fs".to_string()));
     }
-    if schema_hash.is_none() {
+    if schema_hash.is_none_or(|h| h.trim().is_empty()) {
         return Err(DispatchRefusal::NotApproved("fs_read".to_string()));
     }
     Ok(())
