@@ -558,6 +558,88 @@ fn twilio_unknown_event_fails_closed() {
         .is_err());
 }
 
+/// A turn the upstream ends with an error consumed exactly as much of the caller's time and ran
+/// exactly as many tools as one it ends with a usage report, and the two counters this plane derives
+/// itself are the only record of either. Forty seconds of uplink and two tool calls, then an error
+/// frame: both figures must still reach the meter.
+#[test]
+fn an_upstream_error_still_meters_the_turn_it_ended() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    // PCM16 at 24 kHz is 48 bytes per millisecond, so a second of uplink is 48 000 bytes. Forty of
+    // them is the forty seconds the caller spoke.
+    let one_second = vec![0u8; 48_000];
+    for _ in 0..40 {
+        let append = serde_json::to_vec(&json!({
+            "type": "input_audio_buffer.append",
+            "audio": base64_of(&one_second),
+        }))
+        .expect("audio fixture serializes");
+        let frames = [frame(&append)];
+        let mut cursor = FrameCursor::new(&frames);
+        plane
+            .decode_ingress(&mut cursor, Some(&mut state), &c)
+            .expect("an uplink audio frame decodes");
+    }
+
+    for call_id in ["call_1", "call_2"] {
+        let opened = serde_json::to_vec(&json!({
+            "type": "response.output_item.added",
+            "item": { "type": "function_call", "call_id": call_id, "name": "lookup" },
+        }))
+        .expect("tool-call fixture serializes");
+        let frames = [frame(&opened)];
+        let mut cursor = FrameCursor::new(&frames);
+        plane
+            .decode_response(
+                &mut cursor,
+                &destination("api.openai.com", LaneId::new("realtime")),
+                Some(&mut state),
+                &c,
+            )
+            .expect("a tool-call open decodes");
+    }
+
+    let err = serde_json::to_vec(&json!({
+        "type": "error",
+        "error": { "code": "rate_limit_exceeded", "message": "slow down" },
+    }))
+    .expect("error fixture serializes");
+    let frames = [frame(&err)];
+    let mut cursor = FrameCursor::new(&frames);
+    let unit_dest = destination("api.openai.com", LaneId::new("realtime"));
+    let progress = plane
+        .decode_response(&mut cursor, &unit_dest, Some(&mut state), &c)
+        .expect("an error frame decodes");
+    let Progress::Terminal { r, .. } = progress else {
+        panic!("expected Progress::Terminal, got {progress:?}");
+    };
+    assert_eq!(r.finish, busbar_contract::unit::FinishClass::Error);
+
+    let unit = crate::tests::harness::unit(
+        busbar_contract::ids::OpClassId::new("duplex_turn"),
+        r.ir,
+        Facts::new(),
+    );
+    let locators = plane.meter(&unit, &r, &c);
+    let quantity = |class: &str| {
+        locators
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == class)
+            .and_then(|l| l.quantity)
+    };
+    assert_eq!(quantity("audio_seconds_in"), Some(40_000));
+    assert_eq!(quantity("tool_calls"), Some(2));
+}
+
 /// A tiny standard base64 encoder, independent of the one this crate's `twilio` module carries, so
 /// the test fixtures above do not depend on that module's own correctness to construct their input.
 fn base64_of(bytes: &[u8]) -> String {

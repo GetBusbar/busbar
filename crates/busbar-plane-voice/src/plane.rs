@@ -913,7 +913,11 @@ fn progress_from_server_event<'u>(
             })
         }
         IrServerEvent::Error { code, message } => {
-            let _ = state.close_turn();
+            // A turn that ends in an upstream error consumed the same uplink audio and ran the same
+            // tool calls as one that ends in a usage report. The kernel-side counters are the only
+            // record of either, and closing the turn is what takes them: dropping them here would
+            // meter the failed turn at zero and hand back for free every second the caller spoke.
+            let counters = state.close_turn();
             let mut facts = Facts::new();
             let code_arena = ctx.arena().alloc_str(&code).map_err(|_| Decode::Oversize)?;
             let message_arena = ctx
@@ -925,6 +929,18 @@ fn progress_from_server_event<'u>(
                 .map_err(|_| Decode::Oversize)?;
             facts
                 .set(meta::FACT_ERROR_MESSAGE, FactValue::Str(message_arena))
+                .map_err(|_| Decode::Oversize)?;
+            facts
+                .set(
+                    meta::FACT_AUDIO_MS_IN,
+                    FactValue::Int(i64::try_from(counters.audio_ms_in).unwrap_or(i64::MAX)),
+                )
+                .map_err(|_| Decode::Oversize)?;
+            facts
+                .set(
+                    meta::FACT_TOOL_CALLS,
+                    FactValue::Int(i64::try_from(counters.tool_calls).unwrap_or(i64::MAX)),
+                )
                 .map_err(|_| Decode::Oversize)?;
             Ok(Progress::Terminal {
                 for_,
