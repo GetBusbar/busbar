@@ -125,9 +125,11 @@ pub(crate) struct Routed {
     pub(crate) response: Response,
     /// What the Meter step is bound to.
     pub(crate) facts: MeterFacts,
-    /// The admission's meter half, handed BACK unspent when this step never reached the walk. A
-    /// walk that ran took it, and its taps own the accrual; a candidate miss never dispatched, so
-    /// the sink returns for the Meter step to decide about.
+    /// The admission's meter half, for the Meter step to price against. It rides back on EVERY end
+    /// the step has: a candidate miss never dispatched and hands it back unspent, and a walk that ran
+    /// hands back the same half its taps accrued through — the accrual is the walk's and the pricing
+    /// is the step's, and [`MeterFacts::accrued`] is what tells the step which of the two it is
+    /// doing.
     pub(crate) meter_sink: Option<UsageSink>,
 }
 
@@ -330,6 +332,19 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // — see the Meter step's header for why a streamed answer's usage can become known nowhere
     // else. Recorded here, before the move, because after it there is nothing left to ask.
     let accrued = usage_sink.is_some();
+    // THE SEALING HALF OF THE SAME METER HALF. The walk takes the sink to ACCRUE against; the Meter
+    // step needs it to seal what the walk accrued, and sealing is not accruing — it reads the card the sink was
+    // opened with and the cell it was opened on, and posts nothing. Handing the step nothing here
+    // was what made the whole priced arm of that step unreachable on every routed unit: no sink
+    // meant no rate card, so the hold accrued zero for a response that had already been delivered
+    // and paid for, and the row the record reports was never built.
+    //
+    // A CLONE is what makes both true at once, and it is safe for the one thing a clone of this
+    // value affects: the admission's in-flight gauges release when the LAST clone drops, and this
+    // one is dropped at the Meter step while the walk's own lives on to stream end. So the release
+    // instant is the walk's, unchanged — a clone that outlived it would hold a concurrency slot open
+    // past the response, and this one cannot.
+    let sealing_half = usage_sink.clone();
 
     let span = tracing::span!(
         HOTPATH_LEVEL,
@@ -466,8 +481,9 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     }
     RouteParts {
         facts,
-        // The walk took it.
-        meter_sink: None,
+        // The walk took it TO ACCRUE WITH; this is the same half, for the Meter step to price
+        // against. `accrued` above is what keeps the step from posting a second time.
+        meter_sink: sealing_half,
         // The plan the walk ran, for the token to seal as the step's answer.
         refusal: None,
         plan: Some(plan),
