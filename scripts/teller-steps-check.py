@@ -7,6 +7,7 @@ per plane' (docs/design/1.6.0-TRACKER.md), matrix at qa/teller-steps.json.
     python3 scripts/teller-steps-check.py             # print the matrix, exit 0 or 1
     python3 scripts/teller-steps-check.py --check     # same as above (the flag CI wires in)
     python3 scripts/teller-steps-check.py --root-legs # RUN every root-leg proof cell the matrix names
+    python3 scripts/teller-steps-check.py --root-legs-gating  # the SHIPPED legs owe every gating step
     python3 scripts/teller-steps-check.py --selftest  # prove a broken matrix is refused
 
 RED RULE. For every plane and every GATING step (qa/teller-steps.json's steps.<step>.gating ==
@@ -25,6 +26,15 @@ GAPS are printed and named but do not fail --check by themselves: the legs are d
 being switched over plane by plane, so the gating rule is about the shipped path and the root gaps
 are the switch-over queue. `--root-legs` goes the other way and EXECUTES every named cell (through
 scripts/capability-equality-summary.py's one runner), so "proven" means watched, not merely present.
+
+THE SHIPPED-LEG RULE (`--root-legs-gating`). "Default-off" is what makes a root gap a queue entry
+rather than a hole, so the moment a leg enters `default` in crates/busbar/Cargo.toml that excuse
+expires: the loop IS the shipped path for that plane, and a gating step nobody drives over it is the
+same half-answer the rig column's gating rule exists to refuse. So this flag applies the rig
+column's own RED RULE to the root column, for exactly the legs the binary ships on — read out of the
+manifest rather than listed here, so a flip cannot turn the bar off by forgetting to update a second
+list. `--check` is deliberately unchanged: it is the shipped-PATH ledger and its semantics are what
+CI has been reading, so the new bar is its own flag and its own exit code.
 
 This mirrors scripts/capability-equality-summary.py's own doctrine exactly: a printer that RE-CHECKS
 what it prints (parseable, every declared plane x step cell present, no unknown status), so a
@@ -225,6 +235,80 @@ def root_cells(matrix):
     return out
 
 
+def default_root_legs(manifest=None):
+    """The root legs the shipped binary is BUILT with, read out of crates/busbar/Cargo.toml.
+
+    Read rather than listed because a second list is a second answer: the `default = [...]` line IS
+    the flip, so a leg that becomes default and a leg this bar applies to are the same fact, and a
+    flip cannot quietly escape the bar by leaving a copy here un-updated.
+
+    Deliberately a narrow parse of one line rather than a TOML dependency: this script runs anywhere
+    python3 does, and the shape it reads is a single-line array the manifest has always written.
+    """
+    p = manifest or (ROOT / "crates" / "busbar" / "Cargo.toml")
+    text = Path(p).read_text()
+    in_features = False
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            in_features = stripped == "[features]"
+            continue
+        if not in_features or not stripped.startswith("default"):
+            continue
+        head, _, rest = stripped.partition("=")
+        if head.strip() != "default":
+            continue
+        if "[" not in rest or "]" not in rest:
+            raise ValueError("crates/busbar/Cargo.toml: `default` is not a single-line array")
+        body = rest[rest.index("[") + 1 : rest.rindex("]")]
+        feats = [f.strip().strip('"') for f in body.split(",") if f.strip()]
+        return {f for f in feats if f.startswith("root-")}
+    raise ValueError("crates/busbar/Cargo.toml: no `default` line under [features]")
+
+
+def root_legs_gating(steps, matrix, shipped):
+    """The shipped legs owe a driven cell for every gating step. Returns (text, red-cells)."""
+    red, considered = [], 0
+    for plane in sorted(matrix):
+        for step, cell in matrix[plane].items():
+            if not steps[step]["gating"]:
+                continue
+            r = cell.get("root") or {}
+            if r.get("leg") not in shipped:
+                continue
+            considered += 1
+            if r.get("state") != "proven":
+                red.append(f"{plane}.{step} ({r.get('leg')})")
+    legs = ", ".join(sorted(shipped)) if shipped else "(none)"
+    out = [
+        f"ROOT-GATING: the shipped legs are {legs}; {considered} gating plane x step cell(s) "
+        "are theirs to drive."
+    ]
+    if red:
+        out.append("  not driven: " + ", ".join(sorted(red)))
+    return "\n".join(out), red
+
+
+def run_root_legs_gating():
+    try:
+        _, steps, matrix = load()
+        shipped = default_root_legs()
+    except (ValueError, OSError, json.JSONDecodeError) as e:
+        print(f"ROOT-GATING: cannot read the bar's two inputs: {e}", file=sys.stderr)
+        return 1
+    text, red = root_legs_gating(steps, matrix, shipped)
+    print(text)
+    if red:
+        print(
+            f"RED: {len(red)} gating step(s) on a leg the binary SHIPS have no cell over the loop. "
+            "A default leg is the shipped path for its plane; a gating step nobody drives over it "
+            "is a half-answer, not a queue entry."
+        )
+        return 1
+    print("GREEN: every gating step on every shipped root leg is driven over the loop.")
+    return 0
+
+
 def run_root_legs():
     import os
 
@@ -365,6 +449,46 @@ def selftest() -> int:
         print(f"  MISS: the root line miscounted -- {text.splitlines()[0]}")
         failures += 1
 
+    # THE SHIPPED-LEG BAR. Three properties, because the bar is worth exactly as much as its
+    # ability to go red: a gating gap on a SHIPPED leg is red, the same gap on a leg the binary does
+    # not ship is NOT (that is the switch-over queue the flag deliberately leaves alone), and the
+    # shipped set is really read out of a manifest rather than assumed.
+    steps = {"gate": {"gating": True}, "info": {"gating": False}}
+    gap = {"state": "none", "leg": "root-llm", "note": note}
+    driven = {"state": "proven", "leg": "root-llm", "test": "x::y", "note": note}
+    matrix = {"llm": {"gate": {"root": gap}, "info": {"root": gap}}}
+
+    _, red = root_legs_gating(steps, matrix, {"root-llm"})
+    if [r.split(" ")[0] for r in red] == ["llm.gate"]:
+        print("  ok: a gating gap on a shipped leg is red, and a non-gating one is not")
+    else:
+        print(f"  MISS: the shipped-leg bar named {red}")
+        failures += 1
+
+    _, red = root_legs_gating(steps, matrix, set())
+    if not red:
+        print("  ok: the same gap on a leg the binary does not ship is left to the queue")
+    else:
+        print(f"  MISS: the bar judged an unshipped leg -- {red}")
+        failures += 1
+
+    matrix_ok = {"llm": {"gate": {"root": driven}, "info": {"root": gap}}}
+    _, red = root_legs_gating(steps, matrix_ok, {"root-llm"})
+    if not red:
+        print("  ok: a driven gating step on a shipped leg is green")
+    else:
+        print(f"  MISS: the bar refused a driven cell -- {red}")
+        failures += 1
+
+    with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False) as f:
+        f.write('[features]\ndefault = ["proto-llm", "root-admin", "root-mcp"]\nroot-a2a = []\n')
+        manifest = f.name
+    if default_root_legs(manifest) == {"root-admin", "root-mcp"}:
+        print("  ok: the shipped set is read out of the manifest's own default line")
+    else:
+        print(f"  MISS: read {default_root_legs(manifest)} out of the manifest")
+        failures += 1
+
     if failures:
         print(f"teller-steps-check self-test: {failures} FAILURE(S)")
         return 1
@@ -375,8 +499,14 @@ def selftest() -> int:
 def main() -> int:
     if "--selftest" in sys.argv:
         return selftest()
-    if "--root-legs" in sys.argv:
-        return run_root_legs()
+    # The two root flags compose: `--root-legs --root-legs-gating` executes every named cell AND
+    # applies the shipped-leg bar, and the run is red if either half is. Neither touches --check.
+    if "--root-legs" in sys.argv or "--root-legs-gating" in sys.argv:
+        rc = run_root_legs() if "--root-legs" in sys.argv else 0
+        if "--root-legs-gating" in sys.argv:
+            print()
+            rc = run_root_legs_gating() or rc
+        return rc
     try:
         doc, steps, matrix = load()
     except (ValueError, OSError, json.JSONDecodeError) as e:

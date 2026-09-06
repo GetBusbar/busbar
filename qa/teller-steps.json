@@ -339,9 +339,10 @@
         "status": "mapped",
         "note": "testing/a2a-supplement/a2asup/checks_auth.py; anonymous/forged credentials refused -- reported SEPARATELY per its own README and never added to the a2a.tck count, so this mapping is non-gating evidence until it is also a ledgered a2a.tck|* or a2a.battery|* row",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-a2a",
-          "note": "the leg's authenticate binding takes the node's auth seams, but no root-a2a cell drives a credential refusal through them; the rig column's AUTH-SERVER-002 is the evidence and it is reported separately"
+          "test": "crates/busbar/src/root/units_a2a.rs::a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams",
+          "note": "a bad credential refused before Verify is ever reached, through the node's own three auth seams: a forged credential is unauthenticated, a burned one is revoked (the revocation view is asked because an unbound a2a unit is a new unit), and another plane's audience does not open this one. Zero egress is structural and asserted as such -- the fixture carries an Upstream destination, so every refusal is a dial that did not happen. The rig column's AUTH-SERVER-002 stays the separately-reported evidence it always was"
         }
       },
       "verify": {
@@ -570,9 +571,10 @@
         "status": "new",
         "note": "the operator admin credential presented at the DATA listener is not a valid signed vkey on the `keys` chain; refused before Admit ever draws a budget bucket -- the credential cannot reach a destination it was never scoped to reach",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-admin",
-          "note": "busbar-core's admin-tokens principal is exempt and full by definition and cannot be capped, so this leg has no destination-scope cell to drive -- the same limit the rig column names for admin verify/approve"
+          "test": "crates/busbar/src/root/units_admin.rs::a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere_priced",
+          "note": "the admin-tokens principal is exempt and full, so there is no destination scope to cap -- but the step still answers two things and both are driven: a path the verb table never named is refused NoDestination before Admit draws a bucket, and a resolved verb proceeds with an EMPTY verified set, which is the fact the money path reads to post no fee and draw no request slot. A verify that sealed a destination would put every admin request on the priced axis"
         }
       },
       "approve": {
@@ -624,9 +626,10 @@
         "status": "mapped",
         "note": "the fresh 4-op chain (mint, rotate, revoke, config/settings write): each mutating op seals exactly one new audit entry, right action/outcome, chain-linked",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-admin",
-          "note": "the leg's cells cover the verb seam, the rate class, the nonce and the settlement; none of them asserts that one admin unit seals exactly one entry on the chain through the loop"
+          "test": "crates/busbar/src/root/units_admin.rs::one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none",
+          "note": "the same chain the rig column reads from outside, read from the step that writes it: a mutating verb appends exactly one entry under its own name and the applied outcome, a read appends none because the chain records what changed, and a unit refused before Admit still appends one under the rejected outcome. The chain is verified after each, so the entries are linked and not merely counted"
         }
       },
       "exit": {
