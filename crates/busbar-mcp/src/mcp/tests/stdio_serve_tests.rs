@@ -438,6 +438,96 @@ async fn a_cancelled_request_is_aborted_and_never_answered() {
     client.eof().await;
 }
 
+/// A CLIENT THAT REUSES AN ID WHILE THE FIRST REQUEST IS STILL OPEN DOES NOT COST THE FIRST ITS ANSWER.
+///
+/// The cancellation gate is a map keyed by caller id, and a second frame arriving under a live key
+/// is the one input that can end a request nobody cancelled: displacing the gate drops the first
+/// request's sender, and a dropped sender resolves its receiver exactly the way a real cancel does —
+/// so the parked dispatch is abandoned silently, with no answer, no error and no `notifications/
+/// cancelled` to explain it. Duplicate ids are client non-conformance; abandoning the request the
+/// client is actually waiting on is not the answer to it.
+#[tokio::test]
+async fn a_reused_in_flight_id_does_not_cancel_the_request_already_open_under_it() {
+    metrics_init();
+    // The same parked-on-a-live-ask fixture the cancel battery uses: it is the honest way to hold one
+    // request open long enough for a second frame to land on its key.
+    let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
+    let mut cfg = server_cfg(
+        &peer,
+        &[(TOOL, Some(approved_hash(TOOL, DESCRIPTION, schema())))],
+    );
+    {
+        let entry = cfg.tools_allow.get_mut(TOOL).unwrap();
+        entry.description = Some(DESCRIPTION.to_string());
+        entry.input_schema = Some(schema());
+        let mut round = crate::mcp::config::AskRoundCfg::new();
+        round.insert(
+            "confirm".to_string(),
+            crate::mcp::config::AskEntryCfg {
+                method: "elicitation/create".to_string(),
+                params: Some(serde_json::json!({
+                    "message": "Proceed?",
+                    "requestedSchema": { "type": "object", "properties": { "ok": { "type": "boolean" } } },
+                })),
+            },
+        );
+        entry.ask_caller = vec![round];
+    }
+    let app = test_app()
+        .mcp(&mcp_cfg())
+        .mcp_server("ws", cfg)
+        .governance(signing_governance())
+        .build();
+    let gov = gov_with_key("vk_dup", &[("mcp_server", "ws"), ("mcp_tool", NAMESPACED)]);
+    let mut client = Client::open(app, gov);
+
+    client
+        .send(&frame(
+            "call-1",
+            "tools/call",
+            serde_json::json!({ "name": NAMESPACED, "arguments": { "path": "src" } }),
+        ))
+        .await;
+    let ask = client.recv().await;
+    assert_eq!(
+        ask.get("method").and_then(|m| m.as_str()),
+        Some("elicitation/create"),
+        "{ask}"
+    );
+
+    // THE SECOND FRAME ON THE SAME ID, while the first is still parked on its ask.
+    client
+        .send(&frame("call-1", "ping", serde_json::json!({})))
+        .await;
+    let pong = client.recv().await;
+    assert_eq!(
+        pong["id"], "call-1",
+        "the duplicate is answered on its own: {pong}"
+    );
+
+    // Redeem the ask the FIRST request is parked on. A request still alive proceeds to the upstream
+    // from here; a request the duplicate silently cancelled proceeds nowhere at all.
+    client
+        .send(&serde_json::json!({
+            "jsonrpc": "2.0", "id": ask["id"],
+            "result": { "action": "accept", "content": { "ok": true } },
+        }))
+        .await;
+    let answer = client.recv().await;
+    assert_eq!(
+        answer["id"], "call-1",
+        "the first request answered after its ask was redeemed: {answer}"
+    );
+    assert_eq!(
+        peer.calls(),
+        1,
+        "the request the client is waiting on reached the upstream; a displaced gate would have \
+         abandoned it mid-dispatch with nothing written back"
+    );
+
+    client.eof().await;
+}
+
 fn signing_governance() -> Arc<dyn GovKit> {
     engine()
         .governance(

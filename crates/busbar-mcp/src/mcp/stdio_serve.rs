@@ -360,12 +360,34 @@ impl DuplexPlane for Session {
         match caller_id.as_ref().map(id_key) {
             Some(key) => {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-                self.inflight.lock().unwrap().insert(key.clone(), cancel_tx);
+                // THE GATE IS CLAIMED, NEVER DISPLACED. Inserting over a key a request is still
+                // running under would DROP that request's sender, and a dropped sender resolves its
+                // receiver — firing the cancel arm of a request nobody cancelled, dropping its
+                // dispatch mid-flight and leaving its caller waiting on an answer that will never be
+                // written. A client that reuses an id while the first is still open is
+                // non-conformant, and what that costs is the SECOND frame its cancellability, not
+                // the first frame its answer.
+                //
+                // The sender is handed over ONLY on a claim; unclaimed it stays owned by this arm's
+                // own frame and drops when the arm ends — after the `select!`, never before it, or
+                // the duplicate would fire its own cancel arm the instant it was refused the gate.
+                let mut owns_gate = false;
+                {
+                    let mut gates = self.inflight.lock().unwrap();
+                    if !gates.contains_key(&key) {
+                        gates.insert(key.clone(), cancel_tx);
+                        owns_gate = true;
+                    }
+                }
                 tokio::select! {
                     () = self.handle_frame(frame, caller_id) => {}
                     _ = cancel_rx => {} // cancelled: the dispatch future is dropped, its answer suppressed
                 }
-                self.inflight.lock().unwrap().remove(&key);
+                // Only the frame that claimed the gate clears it: a duplicate that removed a key it
+                // never owned would strip the live request of the cancel it is entitled to.
+                if owns_gate {
+                    self.inflight.lock().unwrap().remove(&key);
+                }
             }
             // A notification or an id-less frame cannot be cancelled — nothing names it.
             None => self.handle_frame(frame, caller_id).await,
