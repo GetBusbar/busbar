@@ -230,6 +230,10 @@ async fn cancel_mid_frame_fences_the_connection() {
     assert_eq!(frame.bytes.as_slice(), b"after the cancel");
 }
 
+/// Backpressure, in BOTH directions — the name the cell has always carried, now with the second
+/// direction actually driven. One direction proves only that this end's writer stalls; the claim is
+/// that either end's writer stalls against a peer that is not reading, and a duplex is two
+/// independent buffers, so a transport could get one right and the other wrong.
 #[tokio::test]
 async fn backpressure_is_bidirectional() {
     // An 8-byte duplex: a write larger than the capacity cannot complete until a reader drains
@@ -241,11 +245,14 @@ async fn backpressure_is_bidirectional() {
 
     // Drive the write and the drain concurrently, and assert the write only finishes once bytes
     // are actually read off the other end — the observable shape of backpressure.
-    let t2 = t.clone();
-    let payload2 = payload.clone();
-    let writer = tokio::spawn(async move {
-        t2.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload2))
-            .await
+    let writer = tokio::spawn({
+        let t = t.clone();
+        let payload = payload.clone();
+        let a = a.clone_for_test();
+        async move {
+            t.write(&a, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+                .await
+        }
     });
     // Give the writer a moment to fill the 8-byte duplex and block.
     tokio::time::sleep(Duration::from_millis(20)).await;
@@ -253,10 +260,90 @@ async fn backpressure_is_bidirectional() {
         !writer.is_finished(),
         "an oversized write must block on a full duplex"
     );
-    let mut frames = t.frames(b);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let mut b_frames = t.frames(b.clone_for_test());
+    let (_s, frame) = b_frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.len(), payload.len());
     writer.await.unwrap().unwrap();
+
+    // And the other direction, over the SAME pair: `b` writes, `a` reads. A duplex is two
+    // independent buffers and this transport holds a separate lock per side, so proving one says
+    // nothing about the other.
+    let back = tokio::spawn({
+        let t = t.clone();
+        let payload = payload.clone();
+        async move {
+            t.write(&b, busbar_contract::StreamId(0), ArenaBytes::new(&payload))
+                .await
+        }
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert!(
+        !back.is_finished(),
+        "the answering direction must stall on a full duplex too"
+    );
+    let mut a_frames = t.frames(a);
+    let (_s, frame) = a_frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.len(), payload.len());
+    back.await.unwrap().unwrap();
+}
+
+/// A line of nothing but spaces is a PAYLOAD, and this transport declares it decodes none — so
+/// which payloads are worth delivering is not its judgement to make. It was dropped as "blank",
+/// which broke the round trip in one direction only: `write` puts a line of spaces on the wire
+/// quite happily, and the reader then swallowed it. A truly blank line — nothing between two
+/// delimiters — still carries no frame.
+#[tokio::test]
+async fn a_line_of_whitespace_is_a_frame_but_an_empty_line_is_not() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    aw.write_all(b"\n   \nafter\n").await.unwrap();
+
+    let mut frames = t.frames(b);
+    let (_s, first) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        first.bytes.as_slice(),
+        b"   ",
+        "the empty line carries no frame; the line of spaces is the first frame"
+    );
+    let (_s, second) = frames.next().await.unwrap().unwrap();
+    assert_eq!(second.bytes.as_slice(), b"after");
+}
+
+/// A SECOND pump on one connection is told so, rather than handed an empty stream.
+///
+/// A connection is read by exactly one pump. The second caller used to get a bare end-of-stream,
+/// which on a session transport is what the PEER CLOSING looks like — so a caller that had asked
+/// for a reader it may not have was told its peer had gone.
+#[tokio::test]
+async fn a_second_pump_on_one_connection_is_reported_not_handed_a_clean_end() {
+    let t = Arc::new(StdioTransport::new());
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    // Silent and held open, so the first pump stays PARKED on the read — which is when it is
+    // actually holding the connection's reader.
+    let _silent_peer = end_a;
+
+    let mut first = t.frames(b.clone_for_test());
+    let parked = tokio::spawn(async move { first.next().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(
+        !parked.is_finished(),
+        "the fixture is only honest while the first pump holds the reader"
+    );
+
+    let mut second = t.frames(b);
+    let err = tokio::time::timeout(Duration::from_secs(5), second.next())
+        .await
+        .expect("a second pump is answered rather than parked")
+        .expect("and answered with a REASON, not an empty stream")
+        .expect_err("a reader it may not have is not a clean end of stream");
+    assert_eq!(err, TransportError::Closed);
+    parked.abort();
 }
 
 #[tokio::test]

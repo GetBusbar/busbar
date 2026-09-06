@@ -170,11 +170,14 @@ fn the_resegmentation_scan_costs_one_pass_over_the_frame_not_one_per_chunk() {
         batch.is_empty(),
         "a buffer of nothing but complete frames is left empty"
     );
-    assert!(
-        moved <= 2 * batch_len,
-        "carving {frames_in_batch} frames out of a {batch_len}-byte buffer relocated {moved} \
-         bytes; a read offset makes that O(buffer), removing each frame as it is found makes it \
-         O(frames x buffer)"
+    // ONE buffer's worth, not two: the single compaction at the end of the carve relocates only
+    // what is left of the last incomplete frame, and a buffer of nothing but complete frames leaves
+    // nothing at all. A `2 *` allowance was slack enough to pass a carve that compacted twice per
+    // call, which is the shape the read offset exists to rule out.
+    assert_eq!(
+        moved, 0,
+        "carving {frames_in_batch} frames out of a {batch_len}-byte buffer of nothing but complete \
+         frames leaves no tail to relocate, so it must move no bytes at all; it moved {moved}"
     );
 }
 
