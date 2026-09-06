@@ -567,13 +567,25 @@ while IFS= read -r cell; do
     repeat="$(jq -r '.request.repeat // 1' <<<"$cell")"
     body_spec="$(jq -r '.request.body // empty' <<<"$cell")"
     case "$body_spec" in
-      @oversize:*) python3 - "${body_spec#@oversize:}" >"$raw/request.body" <<'PY'
+      @oversize:*) python3 - "${body_spec#@oversize:}" >"$raw/request.body" 2>"$raw/oversize.err" <<'PY'
 import sys
 spec = sys.argv[1]
-n = int(spec[:-3]) * 1024 * 1024 if spec.endswith("MiB") else int(spec)
+# An unparseable spec must be LOUD. A bare int() raising here used to leave request.body empty and
+# the exit status unchecked, so the cell POSTed nothing at all and recorded whatever busbar says to
+# an empty body -- a PASS for a request that was never the one the cell is about.
+try:
+    n = int(spec[:-3]) * 1024 * 1024 if spec.endswith("MiB") else int(spec)
+except ValueError:
+    sys.exit("bad @oversize spec %r: expected <bytes> or <N>MiB" % spec)
+if n <= 0:
+    sys.exit("bad @oversize spec %r: size must be positive" % spec)
 sys.stdout.write('{"model":"m-openai-chat","messages":[{"role":"user","content":"' + "x" * n + '"}]}')
 PY
-        ;;
+        oversize_rc=$?
+        if [ "$oversize_rc" -ne 0 ] || [ ! -s "$raw/request.body" ]; then
+          record "$id" FAIL "could not build the @oversize body for ${body_spec}" \
+            "$(tail -c 200 "$raw/oversize.err" | tr '\n' ' ')"; continue
+        fi ;;
       "") : >"$raw/request.body" ;;
       *) printf '%s' "$body_spec" >"$raw/request.body" ;;
     esac
