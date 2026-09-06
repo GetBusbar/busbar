@@ -1463,6 +1463,15 @@ impl ResponsesWriter {
         if let Ok(mut map) = self.output_items.lock() {
             map.clear();
         }
+        // Clear the per-stream citation and logprob buffers for the same reason: an entry left under
+        // an index the new stream reuses would attach a previous stream's sources and token
+        // logprobs to this stream's text part.
+        if let Ok(mut map) = self.citation_accum.lock() {
+            map.clear();
+        }
+        if let Ok(mut map) = self.logprob_accum.lock() {
+            map.clear();
+        }
         // Clear the per-stream reasoning open-set and text accumulator so a reused/cloned writer does
         // not leak a previous stream's reasoning into a new stream's output.
         if let Ok(mut set) = self.open_reasoning_indices.lock() {

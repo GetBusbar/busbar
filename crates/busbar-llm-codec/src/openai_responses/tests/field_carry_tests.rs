@@ -1129,6 +1129,74 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
     );
 }
 
+/// The per-stream reset clears every accumulator a reused or cloned writer could otherwise leak
+/// into the next stream — including the citation and logprob buffers, which it used to skip. A
+/// stale entry under an index the new stream reuses would attach a previous stream's sources and
+/// token logprobs to this stream's text part.
+#[test]
+fn responses_reset_clears_citation_and_logprob_accumulators() {
+    let w = ResponsesWriter;
+    // State left over from a previous stream, under the index the new stream will reuse.
+    w.append_citations(
+        0,
+        &[crate::ir::IrCitation {
+            kind: Some("web_search_result_location".to_string()),
+            cited_text: None,
+            title: Some("stale".to_string()),
+            url: Some("https://stale".to_string()),
+            document_index: None,
+            start_index: Some(0),
+            end_index: Some(2),
+            encrypted_index: None,
+            raw: None,
+        }],
+    );
+    w.append_logprobs(
+        0,
+        &[crate::ir::IrTokenLogprob {
+            token: "stale".into(),
+            logprob: -0.25,
+            bytes: None,
+            top: Vec::new(),
+        }],
+    );
+
+    // The new stream opens, which is what performs the reset.
+    let mut frames: Vec<(String, serde_json::Value)> =
+        w.write_response_events(&crate::ir::IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: Some("resp_reset".to_string()),
+            created: Some(1_700_000_000),
+            model: Some("gpt-reset".to_string()),
+        });
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Text,
+        }),
+    );
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta("fresh".to_string()),
+        }),
+    );
+    frames.extend(w.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 }));
+
+    for (name, data) in &frames {
+        let blob = data.to_string();
+        assert!(
+            !blob.contains("https://stale"),
+            "a previous stream's citation must not reach {name}: {data}"
+        );
+        assert!(
+            !blob.contains("\"stale\""),
+            "a previous stream's logprob token must not reach {name}: {data}"
+        );
+    }
+}
+
 /// responses/response/stream:response.incomplete
 #[test]
 fn responses_stream_incomplete_event_emitted() {
