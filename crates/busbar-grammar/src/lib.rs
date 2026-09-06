@@ -35,7 +35,24 @@
 /// A half-open range of bytes in someone else's buffer.
 ///
 /// The scanner's whole answer, and the reason it never allocates: it says WHERE, never WHAT.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, serde::Serialize)]
+///
+/// BOTH DIRECTIONS OF THE SEAL. A resolved span is written into the policy journal and READ BACK
+/// out of it, which is the whole reason this crate names serde; a derive that only writes is half
+/// of that, and the half that is missing is the one a settlement needs. Without it the way back out
+/// is a second reading of this shape, spelled somewhere else — a fourth copy of one grammar, which
+/// is the thing the crate exists to abolish.
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 pub struct Span {
     /// First byte.
     pub start: usize,
