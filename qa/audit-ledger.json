@@ -219,13 +219,15 @@
    "paths": [
     "crates/busbar-contract-transport/src"
    ],
-   "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "97b62ddfb154ce554e9956bd11c186ff347497e271b487b5b58a5d542e7ce4ed",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1
+   },
+   "report": "pass 3: transport_registry.rs real-stack copy drifted from production (ws over http,tcp,tls; grpc over http); read fully",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract-transport/src/tests"
@@ -282,16 +284,15 @@
     "crates/busbar-kernel/src"
    ],
    "tree_hash": "46d22124c992709e046a8b7cd23cdc7c1dd0ff62afd7bf8b59ef8096d97b39ca",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 3,
-    "LOW": 2,
-    "NIT": 3
+    "HIGH": 3,
+    "MEDIUM": 4
    },
-   "report": "pass 2 fresh eyes: duplicate key displaced a live slot (fixed 907b54f8), third take site and no fixture (fixed d8af7663), permit-less one-shot answered Wait (fixed fe6d85ee); challenge round skips Verify/Approve/Admit and sweep/exit class mismatch reported; all ten src modules read, 3100 test lines unread",
-   "auditor": "opus-pass2",
+   "report": "pass 3 fresh eyes on the batteries (14 plants red): credential masking and SliceBook are dead code with zero production callers; no-early-exits lint misses return;; loop battery blind to fee/requests wiring; challenge round skips three steps (design ruling); sweep posts against a different class than exit (needs a Posted accessor); all test files read fully",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel/src/tests"
@@ -644,11 +645,13 @@
    ],
    "tree_hash": "31c9932fbaca8aa2338d79f2b5086860d6745d9164b93a12fb7ee70031abd1a9",
    "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
-   "result": "zero",
-   "counts": {},
-   "report": "pass 2 fresh eyes: lib.rs read fully, zero; tests.rs unread",
-   "auditor": "opus-pass2",
+   "round": 7,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "pass 3: tests.rs read fully; half_close test performs a full close; connect timeout absent; RawStream::from constant-fold survived a plant",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
@@ -662,14 +665,14 @@
    ],
    "tree_hash": "d3cadadde498bc0df2de6f0a78a7211d823c0e0e33a4f84d1a461638126eb4ac",
    "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
-    "LOW": 1
+    "HIGH": 1,
+    "MEDIUM": 1
    },
-   "report": "pass 2 fresh eyes: close_notify unbounded (fixed 206af31a); dial handshake bound unverified; tests.rs partially read",
-   "auditor": "opus-pass2",
+   "report": "pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed f376a5e1); tcp connect has no timeout on tcp and tls dial; tests.rs read fully",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tls/src/tests"
@@ -683,13 +686,13 @@
    ],
    "tree_hash": "f5b37edf1ae00860916b06c3b7617ae6199ffc84115c77be407f93b4c006ea2d",
    "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "MEDIUM": 1
    },
-   "report": "pass 2 fresh eyes: close does not wake a pump parked in the read, socket leaked per silent peer (fixed 98e22dbf); battery.rs partially read",
-   "auditor": "opus-pass2",
+   "report": "pass 3: battery.rs read fully; userinfo guard, max_frame_size and poisoned-arm plants survived; timing constants asserted against themselves",
+   "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
