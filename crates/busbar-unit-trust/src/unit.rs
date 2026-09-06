@@ -55,8 +55,10 @@ impl Trust {
             .iter()
             .filter(|d| kind_permitted(req.origin, d))
             .filter(|d| kind_rule_passes(d, facts))
-            // A destination whose kind carries no lane is not priced on one; the seal records
-            // that rather than inventing a name for it.
+            // A destination whose kind carries no lane is not priced on one and does not enter the
+            // sealed set. That is not an exclusion and nothing is lost by it: such a destination is
+            // reached through the route plan rather than through this pool walk, so a seal here
+            // would have to invent a lane name to price it against.
             .filter_map(|d| d.lane())
             .map(|lane| VerifiedDestination::seal(trust, lane))
             .collect();

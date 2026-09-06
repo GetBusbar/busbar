@@ -172,3 +172,34 @@ fn an_unpriced_name_refuses_for_having_no_rate() {
     // caller's budget here, the name they supplied simply cannot be billed.
     assert_eq!(refusal.reason(), ReasonCode::NoRate);
 }
+
+/// A DESTINATION WITH NO LANE IS NOT AN EXCLUSION AND NOT A REFUSAL — it is simply not priced on a
+/// lane, and the sealed set is the set of things that are.
+///
+/// A kernel verb is reached through the route plan rather than through this pool walk, so there is
+/// no lane to seal it against and inventing one would be inventing a price. The step still
+/// proceeds, and the lane-carrying candidate beside it seals exactly as it would alone.
+#[test]
+fn a_lane_less_destination_leaves_the_sealed_set_without_refusing_the_step() {
+    let (seal, trust, token) = kernel();
+    let candidates = vec![
+        super::destination_tests::kinds::upstream(),
+        super::destination_tests::kinds::kernel_verb(),
+    ];
+    let sealed = Trust
+        .verify(
+            &request(&candidates, "p"),
+            &Pools::default(),
+            &AllYes::default(),
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the step proceeds: a lane-less destination is not a refusal");
+    assert_eq!(
+        sealed.len(),
+        1,
+        "only the lane-carrying candidate is priced on a lane"
+    );
+    assert_eq!(sealed[0].lane(), &LaneId::new("lane-a"));
+}
