@@ -791,10 +791,42 @@ fn the_session_budget_holds_when_everything_connects_at_once() {
     }
 }
 
+/// The canary balances a quiet table, balances a table that ran, and breaks when a side is short.
+///
+/// A fresh canary is all zeroes, so `balanced()` on it reads `0 == 0 && 0 == 0` — true no matter
+/// what the comparison says. Asserting only that case proves nothing about the relation the canary
+/// exists to check: replacing the whole body of `balanced()` with an unconditional `Ok(())` left
+/// the empty-canary assertion green. So the quiet case is kept and the two cases that actually
+/// pin the relation are asserted beside it — a draft matched by a hold and a settlement balances,
+/// and a draft whose settlement never arrived is reported as the break it is.
 #[test]
-fn a_canary_over_the_table_is_still_balanced_when_nothing_ran() {
+fn a_canary_over_the_table_balances_only_when_both_sides_agree() {
+    // Nothing ran: the quiet table is balanced.
     let canary = Canary::new();
     assert_eq!(canary.balanced(), Ok(()));
+
+    // A whole unit went through: drafted, held, settled. Both sides agree.
+    canary.draft_accepted();
+    canary.hold_opened();
+    canary.settled();
+    assert_eq!(canary.balanced(), Ok(()));
+
+    // An accrual settles into a parent's hold and posts its own settlement: still agreeing.
+    canary.draft_accepted();
+    canary.accrual_taken();
+    canary.settled();
+    assert_eq!(canary.balanced(), Ok(()));
+
+    // A draft that opened a hold but never settled: the canary reports the break, with the counts.
+    canary.draft_accepted();
+    canary.hold_opened();
+    let broken = canary
+        .balanced()
+        .expect_err("the unsettled hold is a break");
+    assert_eq!(broken.drafts, 3);
+    assert_eq!(broken.holds, 2);
+    assert_eq!(broken.accruals, 1);
+    assert_eq!(broken.settlements, 2);
 }
 
 /// A forged datagram is one datagram: it is discarded, it posts nothing, and the session stands.
