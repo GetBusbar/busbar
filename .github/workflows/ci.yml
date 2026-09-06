@@ -1414,7 +1414,7 @@ jobs:
       # look up the tag's commit (`gh api repos/codecov/codecov-action/git/ref/tags/v5.x.y`) and
       # replace both the sha and the version comment together.
       - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac # v5
         with:
           # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
           # "Token required because branch is protected". This org-level secret authenticates
