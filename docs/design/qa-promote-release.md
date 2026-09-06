@@ -287,6 +287,102 @@ All repo lints pass on this branch: `release-order-lint.py` (check, `--selftest`
 `ci-images.py` (`--list`, `--selftest`), `structure-lint.sh`, `release-script-lint.sh`,
 `no-self-filed-issues-lint.sh`, `qa-gate-dispatch-lint.py`.
 
+## The PR era
+
+Everything above describes what happens *after* a commit is on `dev`. This section describes how it
+gets there, and it replaces the local-proof landing path entirely.
+
+The old shape was `scripts/land.sh`: cherry-pick onto the integration branch, run a hand-picked
+subset of the gate on the integrator's laptop, read its `GREEN` as the verdict, push. That verdict
+was always a claim about one machine — one toolchain, one set of services, one cache — and branch
+protection never read it. **CI is the judge now.** The three commands below move commits and report
+what CI said; not one of them renders a verdict of its own.
+
+### The three commands
+
+| command | what it does | what it never does |
+| --- | --- | --- |
+| `scripts/pr-land.sh <hash>… [--title T] [--base dev] [--wait]` | cuts `land/<date>-<first-hash>` from `origin/<base>`, cherry-picks with `-x`, pushes, opens a PR whose body lists every picked commit and its trailer, and arms **auto-merge with the rebase strategy**. `--wait` polls the required contexts and prints the verdict with run URLs. | resolve a conflict; squash; merge by hand; call anything green. |
+| `scripts/pr-queue.sh [--parallel N]` | consumes `land-queue.txt` in the same line grammar as before, one PR at a time by default, and writes the done ledger to `land-queue.done`. | honour the local proof flags — `--tests`/`--families`/`--gate` are accepted and **ignored, out loud, per line**. |
+| `scripts/promote.sh <from> --to <qa\|main>` | fast-forwards the **exact SHA** onto the destination: `git push origin <sha>:refs/heads/<to>`. | promote a SHA whose required contexts are not all `success`; read those contexts from anywhere but the destination branch's protection. |
+
+Three properties are worth stating rather than discovering:
+
+* **Rebase, never squash.** Each picked commit is a reviewed unit with its own message and its own
+  `(cherry picked from commit …)` trailer, and that trailer is the only durable link between what an
+  agent wrote on a worktree and what CI judged. A squash fuses N of them into one synthetic commit
+  and throws the trailers away.
+* **Fail closed on the tooling.** Unauthenticated `gh`, a repository with auto-merge disabled, a
+  conflicting pick, unreadable branch protection — each is a refusal with a named reason. Under
+  `--dry-run` the refusal is *printed as part of the plan* and carried in the exit code, so a dry run
+  that would refuse never reads as a rehearsal that would work.
+* **`--parallel N` batches only disjoint pick sets.** Overlap is computed from
+  `git diff-tree --name-only` over the hashes. Correctness never depends on this — GitHub's merge
+  queue serialises the merges and re-tests each on the updated base — but two PRs that touch the same
+  file will predictably conflict on rebase after the first merges, which is more human work than a
+  serial batch, not less. Queue order is preserved; a line never overtakes the line above it.
+
+### What CI judges on each branch
+
+| branch | how a commit arrives | what judges it | what a green means |
+| --- | --- | --- | --- |
+| `land/*` | `pr-land.sh` pushes it | ci.yml's full tier (a PR always gets the full tier) plus the three conformance workflows | the change is healthy on CI's machines, not on yours |
+| `dev` | GitHub's auto-merge rebases the PR once the required contexts are green | the same required contexts, re-run on the merge result | the integration branch is healthy |
+| `qa` | `promote.sh dev --to qa` | ci.yml + qa-gate.yml + release-stage.yml (§ *Push to `qa`*) | everything is built, verified and recorded; the release exists, unnamed |
+| `main` | `promote.sh qa --to main` | release.yml, promote-only (§ *Push to `main`*) | the qa-built bytes now have their names |
+
+The required contexts today are `ci umbrella` and the three conformance verdicts
+(`A2A conformance verdict`, `MCP conformance verdict`, `Voice conformance verdict`) on the PR, and
+whatever `qa`/`main` protection lists at promote time. `pr-land.sh` names its four in one place
+(`PR_LAND_CHECKS`, overridable); `promote.sh` **reads the destination's contexts from branch
+protection by name, every run, never from a list in the script**. If protection is renamed or
+tightened, the promote follows it in the same breath — and if protection cannot be read at all, that
+is a refusal, not an empty loop that passes.
+
+A context that is *missing* is a refusal exactly like a red one. A required name that nothing can
+report is the `windows build · test` trap — protection required a context that `dev` had already
+renamed, so every PR hung forever on a check that could no longer exist. "Not red" is not green.
+
+### When it goes red
+
+1. **A pick conflicts.** `pr-land.sh` aborts the cherry-pick, deletes the branch, pushes nothing and
+   opens nothing, and names the conflicting paths. It never resolves silently: a resolution invents
+   bytes that no commit message describes and no reviewer asked for, and CI would then be judging a
+   merge nobody wrote. Rebase the source commit onto `origin/<base>` and hand back a clean hash.
+2. **A required check fails on the PR.** The PR is **left open** and auto-merge stays armed.
+   `pr-land.sh --wait` exits non-zero with the failing job names, each one's run URL, and the first
+   failing line from `gh run view --log-failed`. Push a fix onto the same `land/*` branch; CI
+   re-judges and auto-merge fires on its own. Nothing is closed, nothing is force-pushed, nothing is
+   merged by hand.
+3. **A queue line goes red.** `pr-queue.sh` stops there. Its PR stays open, a `RED` row goes to the
+   ledger, and every line below it stays queued — the queue is resumable, not restartable.
+4. **A promote refuses.** The refusal names the context and its conclusion. The remedy is always on
+   the source branch: get the context green on that SHA, or (for `qa → main`) re-run the stage on the
+   same SHA — idempotent — and promote again. Never force-push, never promote a different SHA.
+
+### `full-gate.sh` is a pre-check, never the verdict
+
+`scripts/full-gate.sh` runs the same commands CI runs. That is exactly what makes it useful before
+opening a PR and exactly what makes it worthless as a verdict: it runs them on your machine, with
+your toolchain, your services and your cache, and branch protection does not read its exit code. Run
+it to find the cheap failures early. Then open the PR and let CI say so.
+
+The rule, stated once so it is not re-litigated per landing: **a local green is a prediction; the
+required contexts on the SHA are the fact.** No script in this repository may print a landing verdict
+derived from a local run, and `pr-queue.sh` therefore ignores `--tests`, `--families` and `--gate`
+rather than honouring them — *and says it is ignoring them on every line*, because silently dropping
+a flag would leave the operator believing a proof happened that did not.
+
+### Proving the tools themselves
+
+Each of the three carries a `--selftest` that runs against a throwaway repository with `gh` stubbed
+by a recording shim on `PATH`, so the refusals are proven rather than asserted: `pr-land.sh`
+(conflict aborts, the body lists the hashes and trailers, red leaves the PR open, green reports, the
+dry run touches nothing), `pr-queue.sh` (flags ignored aloud, `STOP` honoured, disjoint-file
+batching, the ledger), `promote.sh` (exact-SHA fast-forward, red/missing/blind/non-fast-forward/
+local-drift/disallowed-pair all refuse). These are cheap, and `land.sh`'s gate-tree leg runs the
+self-test of every gate script a landing touches — so a change to these files is judged by them.
+
 ## Open questions for the owner
 
 1. **Branch protection on `main`** — turn on "require linear history" (and optionally restrict
