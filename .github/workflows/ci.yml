@@ -1242,11 +1242,25 @@ jobs:
 
   # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
   # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
-  # (dev/qa/main). A push to dev writes docs/proof/dev.json; qa -> qa.json; main -> main.json. The
-  # marketing site's deploy.yml checks THIS repo out SAME-BRANCH via UPSTREAM_DIR and renders the
-  # matching manifest, so getbusbar.dev shows dev's proof, getbusbar.qa shows qa's, and getbusbar.com
-  # shows main's — Transport Option A (commit into busbar, read via UPSTREAM_DIR): zero new infra, zero
-  # new tokens, no second-copy drift.
+  # (dev/qa/main). The stage mirroring is preserved in the FILE NAME, not in the branch the file is
+  # committed to: a push to dev publishes docs/proof/dev.json; qa -> qa.json; main -> main.json.
+  #
+  # WHY THIS DOES NOT COMMIT BACK TO dev/qa/main ANY MORE, AND WHY THAT WAS A RELEASE BLOCKER.
+  # It used to end with `git commit … [skip ci]` + `git push origin HEAD:<the branch it ran on>`.
+  # `qa` and `main` are protected (required status checks, linear history, enforce_admins: true), so
+  # that push is REJECTED on exactly the two branches a release travels down: the job fails, the `CI`
+  # run concludes failure, and release-stage.yml's gate 0 refuses to stage. The release could not be
+  # cut at all. And in the counterfactual where the push succeeded it would be worse: it would mint a
+  # NEW qa/main HEAD carrying [skip ci], so no `CI`, no `qa-gate` and no `Release stage` run would
+  # exist for that sha, and release.yml's resolve-staged would refuse it forever. A manifest refresh
+  # must never be able to move a release branch's HEAD.
+  #
+  # TRANSPORT NOW: (1) every run uploads the manifest as a workflow ARTIFACT (`proof-manifest-<branch>`),
+  # which is the copy CI itself and any release job can consume without a git write anywhere; and
+  # (2) the manifest is committed to the dedicated, UNPROTECTED `proof-manifests` branch, which is
+  # never built, never released and never fast-forwarded into anything. Readers (the marketing site's
+  # deploy.yml) check THAT branch out and read `docs/proof/<stage>.json` — see docs/proof/README.md.
+  # No workflow commits to a protected branch; scripts/release-order-lint.py R11 keeps it that way.
   #
   # The collator (scripts/proof-manifest.py) changes NO gate. It re-runs the cheap grep gates
   # (plane-purity/grep/g6/abi), parses the field-coverage ledger, enumerates the golden corpus, runs the
@@ -1276,6 +1290,27 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+      # The publication branch is checked out into RUNNER_TEMP as its OWN clone, so nothing here can
+      # stage, commit or push anything in the release-branch checkout above. If the branch does not
+      # exist yet it is created as an orphan (no history from dev/qa/main, nothing to fast-forward).
+      - name: Check out the unprotected publication branch (never dev/qa/main)
+        env:
+          PUBLISH_BRANCH: proof-manifests
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          pub="$RUNNER_TEMP/proof-pub"
+          url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git clone --depth 1 --branch "$PUBLISH_BRANCH" "$url" "$pub" 2>/dev/null; then
+            echo "proof-manifest: updating existing ${PUBLISH_BRANCH}."
+          else
+            echo "proof-manifest: ${PUBLISH_BRANCH} does not exist yet; creating it as an orphan."
+            git clone --depth 1 "$url" "$pub"
+            git -C "$pub" checkout --orphan "$PUBLISH_BRANCH"
+            git -C "$pub" rm -rq --cached . || true
+            find "$pub" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          fi
+          mkdir -p "$pub/docs/proof"
       - name: Collate the proof manifest (verdicts + counts, public-safe)
         env:
           VERSION: ${{ github.ref_name }}
@@ -1287,7 +1322,7 @@ jobs:
           set -eu
           python3 scripts/proof-manifest.py \
             --version "$VERSION" \
-            --out "docs/proof/${VERSION}.json" \
+            --out "$RUNNER_TEMP/proof-pub/docs/proof/${VERSION}.json" \
             --index \
             --run-parity \
             --hits-dir "$RUNNER_TEMP/proof-hits" \
@@ -1305,7 +1340,18 @@ jobs:
             --mark "no-plugins-gate=${NOPLUGINS_RESULT}" \
             --mark "proto-deletion-gate=${NODEFAULT_RESULT}"
       - name: Public-safety guard (fail-closed — verdicts only, no source, no secrets)
-        run: node scripts/check-proof-manifest-public.mjs "docs/proof/${{ github.ref_name }}.json"
+        run: node scripts/check-proof-manifest-public.mjs "${{ runner.temp }}/proof-pub/docs/proof/${{ github.ref_name }}.json"
+      # TRANSPORT (1): the artifact. Public-safe by the guard above, keyed by the SOURCE branch, and
+      # available to any consumer without a git write. This upload happens whether or not the commit
+      # below does anything, so the manifest for a run always exists somewhere.
+      - name: Upload the manifest as a workflow artifact (keyed by source branch)
+        uses: actions/upload-artifact@v4
+        with:
+          name: proof-manifest-${{ github.ref_name }}
+          path: |
+            ${{ runner.temp }}/proof-pub/docs/proof/${{ github.ref_name }}.json
+            ${{ runner.temp }}/proof-pub/docs/proof/index.json
+          if-no-files-found: error
       - name: Upload hit-list evidence as a PRIVATE CI artifact (contains source; never committed)
         if: always()
         uses: actions/upload-artifact@v4
@@ -1313,20 +1359,26 @@ jobs:
           name: proof-hits-${{ github.ref_name }}
           path: ${{ runner.temp }}/proof-hits
           if-no-files-found: ignore
-      - name: Commit the manifest back to the branch
+      # TRANSPORT (2): the commit, to `proof-manifests` ONLY. Note the refspec is a LITERAL branch
+      # name that is not dev/qa/main: this step cannot be made to move a release branch's HEAD by
+      # running on a different branch, which is precisely how the old `HEAD:${{ github.ref_name }}`
+      # push became a release blocker on the two protected branches.
+      - name: Publish the manifest to the proof-manifests branch
         env:
           VERSION: ${{ github.ref_name }}
+          PUBLISH_BRANCH: proof-manifests
         run: |
           set -eu
-          git config user.name "busbar-ci"
-          git config user.email "ci@getbusbar.com"
-          git add "docs/proof/${VERSION}.json" docs/proof/index.json
-          if git diff --cached --quiet; then
-            echo "proof-manifest: no manifest change to commit."
+          pub="$RUNNER_TEMP/proof-pub"
+          git -C "$pub" config user.name "busbar-ci"
+          git -C "$pub" config user.email "ci@getbusbar.com"
+          git -C "$pub" add "docs/proof/${VERSION}.json" docs/proof/index.json
+          if git -C "$pub" diff --cached --quiet; then
+            echo "proof-manifest: no manifest change to publish."
             exit 0
           fi
-          git commit -m "ci(proof): refresh docs/proof/${VERSION}.json [skip ci]"
-          git push origin "HEAD:${VERSION}"
+          git -C "$pub" commit -m "ci(proof): refresh docs/proof/${VERSION}.json from ${VERSION}@${GITHUB_SHA}"
+          git -C "$pub" push origin "HEAD:refs/heads/proof-manifests"
 
   # ── ci umbrella: the SINGLE required status for branch protection on `qa` and `main`.
   #
