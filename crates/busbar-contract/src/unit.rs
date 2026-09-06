@@ -43,22 +43,6 @@ pub enum Step {
     Encode,
 }
 
-impl Step {
-    /// Every step, in loop order.
-    pub const ALL: &'static [Step] = &[
-        Step::Arrival,
-        Step::Decode,
-        Step::Authenticate,
-        Step::Verify,
-        Step::Approve,
-        Step::Admit,
-        Step::Route,
-        Step::Meter,
-        Step::Audit,
-        Step::Encode,
-    ];
-}
-
 impl fmt::Display for Step {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{self:?}")
