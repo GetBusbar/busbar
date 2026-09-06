@@ -1565,11 +1565,51 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
     let cached = u
         .and_then(|u| u.get(FIELD_CACHED_CONTENT_TOKEN_COUNT))
         .and_then(|v| v.as_u64());
+    let candidates = u
+        .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+    let thoughts = u
+        .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
+        .and_then(|v| v.as_u64());
+    let tool_use_prompt = u
+        .and_then(|u| u.get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT))
+        .and_then(|v| v.as_u64());
+    // TOOL-USE PROMPT TOKENS ARE INPUT TOKENS. The discovery document types `promptTokenCount` as
+    // the prompt total that folds in exactly ONE other member — "when `cached_content` is set, this
+    // is still the total effective prompt size meaning this includes the number of tokens in the
+    // cached content" — while `toolUsePromptTokenCount` is its own top-level `UsageMetadata` member
+    // ("Number of tokens present in tool-use prompt(s)"). On a tool turn it is therefore an ADDITIVE
+    // bucket that Google bills at the input rate, and reading it only as attribution ledgered every
+    // one of those tokens as zero.
+    //
+    // CROSS-CHECK against the wire's own `totalTokenCount` (which this reader never used to look at
+    // at all): an upstream that reports a total leaving no room for an additive tool-use bucket has
+    // already folded it into `promptTokenCount`, and adding it again would DOUBLE-BILL. The
+    // provider's own total is the authority, so we only add when the total confirms the split.
+    let wire_total = u
+        .and_then(|u| u.get(FIELD_TOTAL_TOKEN_COUNT))
+        .and_then(|v| v.as_u64());
+    let tool_use_billable = match (tool_use_prompt, wire_total) {
+        (Some(t), Some(total))
+            if total
+                < prompt
+                    .saturating_add(candidates)
+                    .saturating_add(thoughts.unwrap_or(0))
+                    .saturating_add(t) =>
+        {
+            0
+        }
+        (Some(t), _) => t,
+        (None, _) => 0,
+    };
     crate::ir::IrUsage {
         // NORMALIZE to the additive-cache convention: Gemini's `promptTokenCount` is a TOTAL that
         // already INCLUDES `cachedContentTokenCount`, so subtract the cached tokens to leave only
         // the uncached input. `saturating_sub` guards an odd upstream where cached > prompt.
-        input_tokens: prompt.saturating_sub(cached.unwrap_or(0)),
+        input_tokens: prompt
+            .saturating_sub(cached.unwrap_or(0))
+            .saturating_add(tool_use_billable),
         // THINKING TOKENS ARE OUTPUT TOKENS. `candidatesTokenCount` counts only the VISIBLE answer;
         // the 2.5-series models' reasoning tokens arrive in the separate, ADDITIVE
         // `thoughtsTokenCount` (Google's own `totalTokenCount` is prompt + candidates + thoughts).
@@ -1590,15 +1630,7 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // before), which is the number clients reconcile against a bill. Same-protocol Gemini
         // traffic passes through byte-for-byte and never reaches the writer, so no native client
         // sees a reshaped `usageMetadata`.
-        output_tokens: u
-            .and_then(|u| u.get(FIELD_CANDIDATES_TOKEN_COUNT))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            .saturating_add(
-                u.and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-            ),
+        output_tokens: candidates.saturating_add(thoughts.unwrap_or(0)),
         cache_creation_input_tokens: None,
         cache_read_input_tokens: cached,
         // The thinking tokens are ALSO recorded as the reasoning sub-bucket. They are already folded
@@ -1607,16 +1639,11 @@ fn gemini_usage(data: &serde_json::Value) -> crate::ir::IrUsage {
         // total: it is what lets a Gemini-backed request answer "how many of those output tokens
         // were thinking?" on an OpenAI-dialect egress, which previously returned a hard 0.
         detail: crate::ir::IrUsageDetail {
-            reasoning_tokens: u
-                .and_then(|u| u.get(FIELD_THOUGHTS_TOKEN_COUNT))
-                .and_then(|v| v.as_u64()),
-            // busbar 1.6.x field-coverage carry: Gemini's `toolUsePromptTokenCount` is the
-            // tool/function-calling slice of the prompt tokens — pure ATTRIBUTION (a sub-bucket of
-            // the prompt total), recorded so a Gemini-backed request can answer "how many prompt
-            // tokens were tool-use?" and so a same-protocol read→write re-emits it.
-            tool_use_prompt_tokens: u
-                .and_then(|u| u.get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT))
-                .and_then(|v| v.as_u64()),
+            reasoning_tokens: thoughts,
+            // Gemini's `toolUsePromptTokenCount`, recorded as ATTRIBUTION for the slice of
+            // `input_tokens` that is tool-use prompt, so a Gemini-backed request can answer "how
+            // many input tokens were tool-use?" and so the writer can reconstruct the native split.
+            tool_use_prompt_tokens: tool_use_prompt,
             ..Default::default()
         },
     }

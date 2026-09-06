@@ -1096,11 +1096,18 @@ impl ProtocolWriter for GeminiWriter {
                 // full prompt total + candidates.
                 let cache_read = usage.cache_read_input_tokens.unwrap_or(0);
                 // cache_creation is ALSO part of the TOTAL prompt count (cross-protocol ingress only).
+                // The tool-use prompt bucket is a SLICE OF `input_tokens` that the wire reports as its
+                // OWN top-level member alongside `promptTokenCount`, so subtract it back out here and
+                // count it in `totalTokenCount` — the exact inverse of what the reader does.
+                let tool_use_prompt = usage.detail.tool_use_prompt_tokens.unwrap_or(0);
                 let prompt_total = usage
                     .input_tokens
                     .saturating_add(cache_read)
-                    .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0));
-                let total = prompt_total.saturating_add(usage.output_tokens);
+                    .saturating_add(usage.cache_creation_input_tokens.unwrap_or(0))
+                    .saturating_sub(tool_use_prompt);
+                let total = prompt_total
+                    .saturating_add(usage.output_tokens)
+                    .saturating_add(tool_use_prompt);
                 let mut usage_metadata = serde_json::Map::new();
                 usage_metadata.insert(
                     FIELD_PROMPT_TOKEN_COUNT.to_string(),
@@ -1307,11 +1314,16 @@ impl ProtocolWriter for GeminiWriter {
         // shape — no spurious field on a no-cache roundtrip).
         let cache_read = resp.usage.cache_read_input_tokens.unwrap_or(0);
         // cache_creation is ALSO part of the TOTAL prompt count (cross-protocol ingress only).
+        // The tool-use prompt bucket is a SLICE OF `input_tokens` that the wire reports as its OWN
+        // top-level member alongside `promptTokenCount`, so subtract it back out here and count it in
+        // `totalTokenCount` — the exact inverse of what the reader does.
+        let tool_use_prompt = resp.usage.detail.tool_use_prompt_tokens.unwrap_or(0);
         let prompt_total = resp
             .usage
             .input_tokens
             .saturating_add(cache_read)
-            .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0));
+            .saturating_add(resp.usage.cache_creation_input_tokens.unwrap_or(0))
+            .saturating_sub(tool_use_prompt);
         let mut usage_metadata = serde_json::Map::new();
         usage_metadata.insert(
             FIELD_PROMPT_TOKEN_COUNT.to_string(),
@@ -1338,7 +1350,9 @@ impl ProtocolWriter for GeminiWriter {
             );
         }
         if resp.created.is_some() || resp.model.is_some() {
-            let total = prompt_total.saturating_add(resp.usage.output_tokens);
+            let total = prompt_total
+                .saturating_add(resp.usage.output_tokens)
+                .saturating_add(tool_use_prompt);
             usage_metadata.insert(
                 FIELD_TOTAL_TOKEN_COUNT.to_string(),
                 serde_json::json!(total),
