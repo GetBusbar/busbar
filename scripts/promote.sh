@@ -141,6 +141,12 @@ fi
 # Not a constant in this file, not a list in a doc: the thing branch protection will actually
 # enforce on the push. If protection is renamed, tightened or loosened, this follows it in the same
 # breath — and if it cannot be read at all, that is a refusal, never an empty loop that passes.
+#
+# The `while read` append below is deliberate and must stay: `mapfile`/`readarray` is bash 4, and
+# macOS ships bash 3.2.57 as /bin/bash, which `/usr/bin/env bash` finds first on a stock Mac. On 3.2
+# `mapfile` is "command not found", `set -e` aborts, and the promote dies before it has said
+# anything about the SHA -- and an UNSET array under `set -u` would make the "no required checks"
+# refusal below unprintable too. `while read` into an append and `< <(...)` are both bash 3.2.
 if ! REQUIRED_CHECKS_JSON="$(gh api "repos/${REPO}/branches/${TO}/protection/required_status_checks" --jq '.contexts' 2>/dev/null)"; then
   echo "error: cannot read branch protection for '$TO' on $REPO; refusing to promote blind" >&2
   exit 1
