@@ -880,6 +880,10 @@ fn compose_voice_governed_calls() {
             &std::collections::BTreeMap::new(),
         ),
         pricer: busbar_unit_admission::Pricer::flat(0),
+        // No card, so the version a posting is stamped with is the one that means "no card": the
+        // switch that threads the deployment's real rate cards in is the one that names a version
+        // here, and it fails to compile until it does.
+        rate_card_version: 0,
         auth: busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
         auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
         scope: root::units_voice::scope_policy(),

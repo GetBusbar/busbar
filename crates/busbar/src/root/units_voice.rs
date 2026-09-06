@@ -742,6 +742,16 @@ pub struct VoiceNode {
     /// Node-held rather than passed in, because nothing configuration decides is in it: it is empty
     /// at boot and its whole contents are what the sessions running on this node have opened since.
     pub tool_calls: OpenToolCalls,
+    /// **WHICH RATE CARD PRICED THIS NODE'S UNITS**, carried into every posting stamp and every
+    /// record's amount.
+    ///
+    /// Composed rather than restated at the two stamp sites, which both used to write a literal
+    /// zero. A zero is the honest answer for a deployment with no card configured and a WRONG one
+    /// for a deployment with a card, and the two were indistinguishable: a recompute reads the
+    /// version off the posting to find the card that produced it, so every voice posting ever
+    /// written claimed to have been priced by a card that does not exist. One value on the node,
+    /// beside the pricer it names, because the card and its version are one fact.
+    pub rate_card_version: u64,
     /// The origin every unit of this plane carries into its audit record, minted once at boot.
     ///
     /// A sealed origin cannot be constructed outside the kernel, and the audit step is lent its own
@@ -804,6 +814,9 @@ pub struct VoiceNodeParts {
     pub durability: crate::root::durability::Durability,
     /// The I/O half, behind its four seams.
     pub io: VoiceIo,
+    /// The version of the rate card `pricer` is built from — what a posting is stamped with and
+    /// what a recompute looks the card up by.
+    pub rate_card_version: u64,
     /// The sealed origin every unit of this plane carries into its record.
     pub origin: busbar_caps::Origin,
 }
@@ -824,6 +837,7 @@ impl VoiceNode {
             durability: Mutex::new(parts.durability),
             io: parts.io,
             tool_calls: OpenToolCalls::new(),
+            rate_card_version: parts.rate_card_version,
             origin: parts.origin,
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
@@ -2015,11 +2029,7 @@ impl VoiceUnit<'_> {
             // The loop has no exit step of its own; the figure this posting is OF is the metering
             // step's, and that is the step a durability loss here is attributed to.
             step: busbar_caps::StepName::Meter,
-            stamp: crate::root::durability::PostingStamp {
-                rate_card_version: 0,
-                wall: self.epoch,
-                mono: self.node.tick(),
-            },
+            stamp: self.posting_stamp(),
         };
         let mut durability = self
             .node
@@ -2027,6 +2037,21 @@ impl VoiceUnit<'_> {
             .lock()
             .unwrap_or_else(|e| e.into_inner());
         durability.settle_posted(&at, posted)
+    }
+
+    /// **HOW ONE POSTING IS STAMPED**: which card priced it, and the two clocks it happened on.
+    ///
+    /// Its own function because the version is a fact about this node and not a literal, and
+    /// because a value a test can read is the difference between a stamp that is checked and one
+    /// that is merely written. See [`VoiceNode::rate_card_version`]: a recompute finds the card by
+    /// that number, and a posting stamped with a version no card has is a settlement nothing can
+    /// re-derive.
+    fn posting_stamp(&self) -> crate::root::durability::PostingStamp {
+        crate::root::durability::PostingStamp {
+            rate_card_version: self.node.rate_card_version,
+            wall: self.epoch,
+            mono: self.node.tick(),
+        }
     }
 
     /// Seal one record onto the record chain.
@@ -2131,7 +2156,9 @@ impl VoiceUnit<'_> {
                 tier_bp: busbar_unit_admission::STANDARD_TIER_BP,
                 fee_count,
                 currency: String::new(),
-                rate_card_version: 0,
+                // The same number the posting stamp carries, off the same field. The record and
+                // the posting priced under one card, so they name one card.
+                rate_card_version: self.node.rate_card_version,
                 bucket_chain_ref: String::new(),
             },
             controls: busbar_unit_audit::record::Controls::default(),
