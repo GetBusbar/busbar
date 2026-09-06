@@ -242,32 +242,56 @@ oracle_spawn() {  # <log-file> <bin> [args...]
   echo $!
 }
 
-_oracle_mint() {  # <admin_port> <json-body>  -> prints "id token akid secret"
+_oracle_mint() {  # <admin_port> <json-body>  -> prints "id<US>token<US>akid<US>secret" (US = 0x1f)
   local out
   # -m: a mint that hangs is neither red nor green until the whole job times out, and every OTHER
   # call in this harness already carries a bound. Without it a wedged admin listener stalls the run.
   out="$(curl -fsS -m 10 -X POST "http://127.0.0.1:$1/api/v1/admin/keys" \
     -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" -H "Content-Type: application/json" \
     -d "$2" 2>/dev/null || true)"
-  printf '%s %s %s %s\n' "$(printf '%s' "$out" | jq -r '.id // empty')" "$(printf '%s' "$out" | jq -r '.token // empty')" \
+  # UNIT-SEPARATOR-SEPARATED (0x1f), AND EMPTY FIELDS STAY EMPTY. The four values were joined with SPACES and split by
+  # the callers with an unquoted `set -- $r`, which is word splitting: an empty id or token
+  # contributes NO word, so every later field shifts left by one. A mint that answered without an
+  # `id` therefore produced $1=<the token>, and a mint that answered with neither id nor token
+  # produced $1="-" and $2="-" from the AWS placeholders — and `-` is a non-empty string, so the
+  # `[ -n "$ORACLE_TOKEN_OK" ]` guard at the end of oracle_mint_keys passed. The recorder then ran a
+  # whole plane sending `Authorization: Bearer -`, every request 401'd, and each of those 401s was
+  # recorded as the cell's honest answer. The separator must not be IFS WHITESPACE:
+  # `IFS=$'\t' read` still collapses runs of tabs and strips leading ones, because a tab IS
+  # whitespace to `read` — that would have reproduced the very same bug, one delimiter later. 0x1f is
+  # not whitespace, so `read` keeps every field, empty or not, in its own position; and it cannot
+  # occur inside a key id or a bearer secret.
+  printf '%s\037%s\037%s\037%s\n' "$(printf '%s' "$out" | jq -r '.id // empty')" "$(printf '%s' "$out" | jq -r '.token // empty')" \
     "$(printf '%s' "$out" | jq -r '.aws_access_key_id // "-"')" "$(printf '%s' "$out" | jq -r '.aws_secret_access_key // "-"')"
+}
+
+# A minted principal is either COMPLETE or the run stops. `-` is the AWS placeholder this file emits
+# for a key minted without SigV4 credentials; it is never a valid id or bearer secret, and it is the
+# exact value the old word-splitting bug served up. Rejected explicitly so the same shape can never
+# be mistaken for a credential again, whatever produced it.
+_oracle_take_mint() {  # <label> <0x1f-separated-row> -> sets _M_ID _M_TOKEN _M_AKID _M_SECRET
+  local label="$1" row="$2"
+  IFS=$'\037' read -r _M_ID _M_TOKEN _M_AKID _M_SECRET <<<"$row"
+  _M_ID="${_M_ID:-}"; _M_TOKEN="${_M_TOKEN:-}"; _M_AKID="${_M_AKID:-}"; _M_SECRET="${_M_SECRET:-}"
+  case "$_M_ID" in ""|"-") echo "oracle-config: minting '${label}' returned no key id (got '${_M_ID}')" >&2; return 1 ;; esac
+  case "$_M_TOKEN" in ""|"-") echo "oracle-config: minting '${label}' returned no bearer token (got '${_M_TOKEN}')" >&2; return 1 ;; esac
+  return 0
 }
 
 oracle_mint_keys() {  # <admin_port>
   # Every principal also carries an AWS-style credential (issue_aws_credential) so the bedrock
   # ingress door — inbound SigV4 — records the same outcome classes as the bearer doors.
-  local a="$1" r
-  r="$(_oracle_mint "$a" '{"name":"oracle-ok","group":"oracle","issue_aws_credential":true}')"
-  set -- $r; ORACLE_KEY_OK="${1:-}"; ORACLE_TOKEN_OK="${2:-}"; ORACLE_AWS_AKID_OK="${3:-}"; ORACLE_AWS_SECRET_OK="${4:-}"
-  r="$(_oracle_mint "$a" '{"name":"oracle-broke","group":"broke","issue_aws_credential":true}')"
-  set -- $r; ORACLE_KEY_BROKE="${1:-}"; ORACLE_TOKEN_BROKE="${2:-}"; ORACLE_AWS_AKID_BROKE="${3:-}"; ORACLE_AWS_SECRET_BROKE="${4:-}"
-  r="$(_oracle_mint "$a" '{"name":"oracle-quota","group":"broke-quota","issue_aws_credential":true}')"
-  set -- $r; ORACLE_KEY_QUOTA="${1:-}"; ORACLE_TOKEN_QUOTA="${2:-}"; ORACLE_AWS_AKID_QUOTA="${3:-}"; ORACLE_AWS_SECRET_QUOTA="${4:-}"
-  r="$(_oracle_mint "$a" '{"name":"oracle-noscope","group":"oracle","allowed_pools":["oracle-unused"],"issue_aws_credential":true}')"
-  set -- $r; ORACLE_KEY_NOSCOPE="${1:-}"; ORACLE_TOKEN_NOSCOPE="${2:-}"; ORACLE_AWS_AKID_NOSCOPE="${3:-}"; ORACLE_AWS_SECRET_NOSCOPE="${4:-}"
+  local a="$1"
+  _oracle_take_mint oracle-ok "$(_oracle_mint "$a" '{"name":"oracle-ok","group":"oracle","issue_aws_credential":true}')" || return 1
+  ORACLE_KEY_OK="$_M_ID"; ORACLE_TOKEN_OK="$_M_TOKEN"; ORACLE_AWS_AKID_OK="$_M_AKID"; ORACLE_AWS_SECRET_OK="$_M_SECRET"
+  _oracle_take_mint oracle-broke "$(_oracle_mint "$a" '{"name":"oracle-broke","group":"broke","issue_aws_credential":true}')" || return 1
+  ORACLE_KEY_BROKE="$_M_ID"; ORACLE_TOKEN_BROKE="$_M_TOKEN"; ORACLE_AWS_AKID_BROKE="$_M_AKID"; ORACLE_AWS_SECRET_BROKE="$_M_SECRET"
+  _oracle_take_mint oracle-quota "$(_oracle_mint "$a" '{"name":"oracle-quota","group":"broke-quota","issue_aws_credential":true}')" || return 1
+  ORACLE_KEY_QUOTA="$_M_ID"; ORACLE_TOKEN_QUOTA="$_M_TOKEN"; ORACLE_AWS_AKID_QUOTA="$_M_AKID"; ORACLE_AWS_SECRET_QUOTA="$_M_SECRET"
+  _oracle_take_mint oracle-noscope "$(_oracle_mint "$a" '{"name":"oracle-noscope","group":"oracle","allowed_pools":["oracle-unused"],"issue_aws_credential":true}')" || return 1
+  ORACLE_KEY_NOSCOPE="$_M_ID"; ORACLE_TOKEN_NOSCOPE="$_M_TOKEN"; ORACLE_AWS_AKID_NOSCOPE="$_M_AKID"; ORACLE_AWS_SECRET_NOSCOPE="$_M_SECRET"
   export ORACLE_KEY_OK ORACLE_TOKEN_OK ORACLE_KEY_BROKE ORACLE_TOKEN_BROKE ORACLE_KEY_QUOTA ORACLE_TOKEN_QUOTA ORACLE_KEY_NOSCOPE ORACLE_TOKEN_NOSCOPE
   export ORACLE_AWS_AKID_OK ORACLE_AWS_SECRET_OK ORACLE_AWS_AKID_BROKE ORACLE_AWS_SECRET_BROKE ORACLE_AWS_AKID_QUOTA ORACLE_AWS_SECRET_QUOTA ORACLE_AWS_AKID_NOSCOPE ORACLE_AWS_SECRET_NOSCOPE
-  [ -n "$ORACLE_TOKEN_OK" ] && [ -n "$ORACLE_TOKEN_BROKE" ] && [ -n "$ORACLE_TOKEN_QUOTA" ] && [ -n "$ORACLE_TOKEN_NOSCOPE" ]
 }
 
 # Scrape /metrics into <out>, retrying through the boot window in which the recorder is not yet
@@ -289,3 +313,68 @@ oracle_scrape_metrics() {  # <listen-port> <token> <out-file>
   done
   rm -f "$out"; return 1
 }
+
+# ── selftest ─────────────────────────────────────────────────────────────────────────────────────
+# This file is SOURCED by record.sh and replay.sh, so running it does nothing to a recording. Run
+# directly it proves the one thing in it that is pure logic and was silently wrong: how a mint
+# response is split into a principal.
+if [ "${BASH_SOURCE[0]}" = "${0}" ] && [ "${1:-}" = "--selftest" ]; then
+  _oc_fails=0
+  _oc() { printf '%s  %s\n' "$1" "$2"; [ "$1" = PASS ] || _oc_fails=$((_oc_fails+1)); }
+
+  # A COMPLETE MINT IS TAKEN, FIELD FOR FIELD.
+  if _oracle_take_mint t "$(printf 'vk_abc\037bbk_secret\037AKIA1\037wow')" 2>/dev/null \
+      && [ "$_M_ID" = vk_abc ] && [ "$_M_TOKEN" = bbk_secret ] && [ "$_M_AKID" = AKIA1 ] && [ "$_M_SECRET" = wow ]; then
+    _oc PASS "a complete mint row is split into id/token/akid/secret"
+  else
+    _oc FAIL "a complete mint row was mis-split (id=${_M_ID:-} token=${_M_TOKEN:-} akid=${_M_AKID:-} secret=${_M_SECRET:-})"
+  fi
+
+  # THE BUG. A mint that answered with no id and no token used to word-split down to the AWS
+  # PLACEHOLDERS: `set -- $r` on "  - -" gives $1="-" and $2="-", and `[ -n "-" ]` is true, so the
+  # recorder went on to send `Authorization: Bearer -` for a whole plane and recorded every 401 as
+  # the cell's answer. Both halves are proven: the fields no longer shift, and `-` is refused.
+  if _oracle_take_mint t "$(printf '\037\037-\037-')" 2>/dev/null; then
+    _oc FAIL "a mint with no id and no token was accepted as a principal (id='${_M_ID:-}' token='${_M_TOKEN:-}') — this is the 'Bearer -' run"
+  else
+    _oc PASS "a mint with no id and no token is refused, not shifted onto the AWS placeholders"
+  fi
+  case "${_M_TOKEN:-unset}" in
+    "-") _oc FAIL "the empty token still collapsed onto the AWS placeholder '-'" ;;
+    *)   _oc PASS "an empty token stays empty (fields do not shift left)" ;;
+  esac
+
+  # A MISSING ID ALONE SHIFTED EVERY LATER FIELD: the token landed in the id and the akid in the
+  # token, so the run authenticated with a placeholder while looking entirely well-formed.
+  if _oracle_take_mint t "$(printf '\037bbk_secret\037AKIA1\037wow')" 2>/dev/null; then
+    _oc FAIL "a mint with no id was accepted (id='${_M_ID:-}')"
+  else
+    [ "${_M_TOKEN:-}" = bbk_secret ] \
+      && _oc PASS "a mint with no id is refused, and the token did not shift into the id" \
+      || _oc FAIL "a mint with no id shifted its fields (token read as '${_M_TOKEN:-}')"
+  fi
+
+  # A LITERAL '-' IN EITHER CREDENTIAL IS REFUSED WHATEVER PRODUCED IT.
+  if _oracle_take_mint t "$(printf -- '-\037bbk_secret\037-\037-')" 2>/dev/null; then
+    _oc FAIL "'-' was accepted as a key id"
+  else
+    _oc PASS "'-' is never a key id"
+  fi
+  if _oracle_take_mint t "$(printf -- 'vk_abc\037-\037-\037-')" 2>/dev/null; then
+    _oc FAIL "'-' was accepted as a bearer token"
+  else
+    _oc PASS "'-' is never a bearer token"
+  fi
+
+  # AN AWS-LESS MINT IS STILL A VALID PRINCIPAL: '-' is legal in the AWS columns (it is this file's
+  # own placeholder), so the refusal above must be about the credentials, not about the character.
+  if _oracle_take_mint t "$(printf -- 'vk_abc\037bbk_secret\037-\037-')" 2>/dev/null; then
+    _oc PASS "a key minted without SigV4 credentials is still a valid principal"
+  else
+    _oc FAIL "a key with no AWS credential was refused — the guard is refusing the placeholder, not a missing credential"
+  fi
+
+  echo
+  [ "$_oc_fails" -eq 0 ] && { echo "oracle-config selftest: GREEN"; exit 0; } \
+    || { echo "oracle-config selftest: RED ($_oc_fails)"; exit 1; }
+fi
