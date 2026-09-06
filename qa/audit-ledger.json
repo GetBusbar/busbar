@@ -377,13 +377,17 @@
    "paths": [
     "crates/busbar-plane-admin/src"
    ],
-   "tree_hash": "c13aa2c2aa56cb545a849661328ae2eed61304db77de3760ab1712373146a846",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "edaf330cd71ad44575ca6aa8ea702e228204d71ab52f5e8c7683358894cc3774",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "NIT": 4
+   },
+   "report": "pass 2 fresh eyes: unauthenticated admin caller answered 403 not 401 (fixed 7013d093, root arm); split envelope never decodes (fixed efb41039); all src read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-admin/src/tests"
