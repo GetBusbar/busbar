@@ -340,8 +340,14 @@ pub fn id_value(raw: &[u8]) -> Result<serde_json::Value, Encode> {
 /// answered with a demand for the caller's authority would otherwise have that demand handed on
 /// under this node's name and this node's authentication.
 ///
+/// A result that has nowhere to PUT the member — anything that is not an object — is refused rather
+/// than written without one. The stamping is the safety property, and a result with no discriminator
+/// reads as finished to a peer and to this plane's own reader; writing one silently would turn "this
+/// asks the caller for something" into "this is the answer" for every shape but an object.
+///
 /// # Errors
-/// Returns an encode error when the result bytes are not a document.
+/// Returns an encode error when the result bytes are not a document, or are a document with no
+/// member the discriminator can be written to.
 pub fn success(
     id: Option<&serde_json::Value>,
     result_bytes: &[u8],
@@ -349,9 +355,8 @@ pub fn success(
 ) -> Result<Vec<u8>, Encode> {
     let mut result: serde_json::Value =
         serde_json::from_slice(result_bytes).map_err(|_| Encode::Unrepresentable)?;
-    if let Some(object) = result.as_object_mut() {
-        object.insert("resultType".into(), result_type.into());
-    }
+    let object = result.as_object_mut().ok_or(Encode::Unrepresentable)?;
+    object.insert("resultType".into(), result_type.into());
     let mut envelope = serde_json::Map::new();
     envelope.insert("jsonrpc".into(), VERSION.into());
     // OMITTED when there is none: on the success path the member is written only if there is one.
@@ -540,6 +545,34 @@ mod tests {
             core::str::from_utf8(&bytes).unwrap(),
             r#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete","tools":[]}}"#
         );
+    }
+
+    /// A result that cannot CARRY the discriminator is refused, never written without one.
+    ///
+    /// The discriminator is what this node says about its own answer, and the caller-facing decode
+    /// step reads it back: a result with none reads as finished. A result that is not an object has
+    /// nowhere to put the member, and the write used to notice that and go on regardless — so a
+    /// composed answer that meant "this asks the caller for something" left here saying nothing,
+    /// and a peer, and this plane's own reader, took it as complete. There is no spelling of the
+    /// member for these shapes, so the honest answer is that the result cannot be written.
+    #[test]
+    fn a_result_that_cannot_carry_the_discriminator_is_refused() {
+        let id = id_value(b"1").expect("a number is a value");
+        for result in [
+            &b"[]"[..],
+            &b"[{\"a\":1}]"[..],
+            &b"\"done\""[..],
+            &b"7"[..],
+            &b"true"[..],
+            &b"null"[..],
+        ] {
+            assert_eq!(
+                success(Some(&id), result, RESULT_TYPE_COMPLETE),
+                Err(busbar_contract::wire::Encode::Unrepresentable),
+                "{} was written with no discriminator",
+                core::str::from_utf8(result).unwrap()
+            );
+        }
     }
 
     /// A discriminator a server put on its own result is REPLACED, never passed through.
