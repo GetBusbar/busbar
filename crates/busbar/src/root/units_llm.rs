@@ -509,13 +509,6 @@ impl std::fmt::Debug for LlmUnit<'_> {
 }
 
 impl LlmUnit<'_> {
-    /// What the Meter step priced this unit at, in nano-units, narrowed to the width a posting
-    /// holds. Saturating rather than wrapping: a figure too large for the record is the largest one
-    /// the record can hold, never a small one it silently became.
-    fn priced(&self) -> u64 {
-        u64::try_from(self.walk.priced_nanos()).unwrap_or(u64::MAX)
-    }
-
     /// The model the caller named.
     fn model(&self) -> String {
         self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -831,13 +824,13 @@ impl Units for LlmUnit<'_> {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
-        let decision = self.walk.meter(token, usage);
-        // THE ACCRUAL, once the step has priced what came back. `spend` on the plane's own hold and
-        // `accrue` on the kernel's are the same figure landing in two places, which is what the dual
-        // write is: the exit applies this total to the reservation the door opened at zero, and what
-        // nothing backs is carried out as an overdraft beside the settlement rather than refused.
-        self.meter.accrue(self.priced());
-        decision
+        // THE ACCRUAL IS NOT MADE HERE, and the reason is a fact about this plane rather than a
+        // choice. What the unit is worth is what the response's tap reports, and the tap fills its
+        // cell when the BODY is consumed — which on this surface is after the loop's terminal has
+        // handed the client its bytes. At this step the cell is on the response and empty, so a
+        // figure read here would be zero on every delivered unit and a meter accruing it would be
+        // accruing a zero it could not tell from a free request.
+        self.walk.meter(token, usage)
     }
 
     fn audit(
@@ -894,17 +887,19 @@ impl Units for LlmUnit<'_> {
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
         let status = self.walk.served_status();
         Evidence {
-            // WHAT THIS UNIT IS WORTH, as the Meter step priced it against the card its sink pinned
-            // at the door — the figure the settlement table posts, and the same one the walk's tap
-            // put on the governance ledger. Read rather than re-derived: pricing the same usage a
-            // second time here would price it against whatever card the deployment holds by now, and
-            // a unit that settles two different amounts on two books is the discrepancy the
-            // reconciliation exists to report, manufactured by the thing that reports it.
+            // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, and the settlement table therefore posts
+            // zero. The figure exists — the walk's tap prices it and puts it on the governance
+            // ledger — but it exists LATER: the tap fills its cell when the response body is
+            // consumed, which is after this unit has ended. So there is no reading of it a unit's
+            // own evidence could take, and a floor invented in its place would be a number the
+            // books could not defend.
             //
-            // `None` here used to make every posting zero, which is why the root's ledger answered
-            // with no rows on a node whose legacy rows carried a day's spend: a settlement of
-            // nothing is not a row, so the identity held over an empty table and said so.
-            located: Some(self.priced()),
+            // This is what keeps the root's ledger empty for this plane. A settlement of zero is not
+            // a row, so the totals view answers over nothing and the identity holds vacuously; the
+            // exit arm below is bound and does reach the book, and what it carries is the kernel's
+            // record that a unit ran and ended. Carrying the money as well needs the settlement to
+            // happen where the figure is, which is past this unit's terminal.
+            located: None,
             accrued_floor: self.meter.total(),
             locator_required: false,
             terminal_error: status.is_some_and(|s| !(200..300).contains(&s)),
@@ -955,16 +950,13 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         // Dispatching through the pool the client asked for after charging a different one is the
         // bug this ordering makes impossible.
         let destination = self.walk.effective_pool(&self.model());
-        // THE METER IS BOUND — at the Meter step, not here, and the argument this arm declines names
-        // the very meter that step accrues onto: the node holds one per unit and lends the same one
-        // to the loop's `Run`. The binding is late because the figure is: what this unit is worth
-        // does not exist until the step after this one has priced what came back, so a leg that
-        // accrued here could only accrue nothing.
+        // THE METER IS NOT ACCRUED ON THIS LEG, and it is the plane's timing that says so rather
+        // than a policy: what this unit is worth is what the response's tap reports, and the tap
+        // reports when the BODY is consumed, which is after the unit has ended. There is nothing for
+        // a leg to accrue at this point that would not be a zero.
         //
-        // What it accrues is not a second charge. It is the SAME charge the walk's tap put on the
-        // governance ledger, written down on the root's book as well, which is the whole of what the
-        // dual write claims — and a meter left reading zero is what made that book answer with no
-        // rows at all for a node that had been serving all day.
+        // The unit still holds the loop's own meter — the same one this argument names — so that
+        // the figure has somewhere to land when the settlement moves to where the tap is.
         Box::pin(async move { self.walk.route(token, &destination).await })
     }
 }
@@ -1848,9 +1840,11 @@ mod tests {
         };
         let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
         let principal = authenticate::principal_id(&arrival.gov);
+        let meter = Arc::new(AccrualMeter::new());
         let unit = LlmUnit {
             node,
             seats,
+            meter: Arc::clone(&meter),
             op_class: OpClassId::new(arrival.operation.name()),
             model_hint: None,
             started: Instant::now(),
@@ -1881,7 +1875,6 @@ mod tests {
             admin_listener: false,
             kernel_verb_only: false,
         };
-        let meter = AccrualMeter::new();
         let ended = busbar_kernel::teller::run_unit_async(
             &node.kernel,
             &unit,
