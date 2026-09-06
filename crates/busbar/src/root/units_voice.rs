@@ -38,10 +38,25 @@
 //! so a burst of them cannot starve the conversation.
 //!
 //! **A tool call waits, and the wait has a table.** A provider-pushed tool call's leg is a client
-//! await-reply: the unit is not finished when the call is delivered, it is finished when the answer
+//! await-reply: the call is not finished when it is delivered, it is finished when the answer
 //! carrying that call's identifier comes back. Two of them open at once is the ordinary shape of a
-//! turn that asks for two tools, so which answer finishes which unit is a decision, and
-//! [`OpenToolCalls`] is where it is made. Three moments, and each of them is a real call site:
+//! turn that asks for two tools, so which answer finishes which call is a decision, and
+//! [`OpenToolCalls`] is where it is made.
+//!
+//! **And one call is TWO UNITS under one key**, because a unit is one frame through the pump and a
+//! wait spans frames. The first delivers the question and ends still waiting; the second is the one
+//! the pump runs when the answer — or the sweep's ending — comes back, and it is the one that
+//! finishes the call. The key is shared on purpose: it is what makes the second unit able to find
+//! the ending the first one's wait left, and what makes the pair one call in the record rather than
+//! two unrelated frames.
+//!
+//! The two halves are told apart at [`Units::route`], by whether an ending is there to read, and
+//! ONLY THE SECOND METERS. The delivering half reports no usage and settles nothing against the
+//! session's lease, however much usage the frame it rode in on happened to carry — because a
+//! resumed unit that carries the same figure would otherwise post it twice, under one key, against
+//! one hold, with nothing downstream able to tell the two rows apart.
+//!
+//! Three moments, and each of them is a real call site:
 //!
 //! - **Planned.** The wait is entered at [`Units::route`] — the step that HANDS THE CALL OVER, not
 //!   the earlier one that merely plans its leg. A wait is a claim that some client was asked a
@@ -121,7 +136,7 @@
 //! plane is what turned bytes into either.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use busbar_caps::{
@@ -1157,6 +1172,13 @@ pub struct VoiceUnit<'n> {
     /// subject, and a paid unit whose subject is "an arrival" names nobody at all: a bill nobody
     /// can be shown, and a revocation nobody can be traced through.
     principal: Mutex<Option<PrincipalId>>,
+    /// Whether this unit HANDED A TOOL CALL OVER and is now the half that is waiting.
+    ///
+    /// One provider tool call is two units under one key: the one that delivers the question, and
+    /// the one the pump resumes when the answer — or the sweep's ending — comes back. Only the
+    /// second is finished, so only the second meters and settles. This bit is what the metering step
+    /// reads to know which of the two it is on, and it is written by the step that made it true.
+    awaiting: AtomicBool,
 }
 
 impl std::fmt::Debug for VoiceUnit<'_> {
@@ -1205,6 +1227,7 @@ impl<'n> VoiceUnit<'n> {
             dialed: Mutex::new(None),
             sealed_finish: Mutex::new(None),
             principal: Mutex::new(None),
+            awaiting: AtomicBool::new(false),
         }
     }
 
@@ -1711,6 +1734,20 @@ impl Units for VoiceUnit<'_> {
                         // not a wait with a wildcard in it.
                         return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
                     }
+                    // **AND THIS HALF IS NOT FINISHED**, which is the whole reason the call has two
+                    // units under one key. The call has been handed to the client and the answer is
+                    // out there somewhere; what this unit delivered is the question, and the
+                    // question is not what the conversation pays for. So it stops here: no accrual,
+                    // no headroom, and — read off this same bit at the metering step — no usage and
+                    // no settlement against the session's lease.
+                    //
+                    // That is what makes a double settle impossible rather than merely unlikely. If
+                    // both halves metered what the unit was carrying, a resumed unit that carries
+                    // the turn's usage would post the same figure the delivering half already
+                    // posted, against one hold, under one key, and nothing downstream could tell
+                    // the two rows apart.
+                    self.awaiting.store(true, Ordering::Release);
+                    return Decision::proceed(token, RoutePlan::default());
                 }
             }
         }
@@ -1749,12 +1786,23 @@ impl Units for VoiceUnit<'_> {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
-        let lines = self.usage.lines();
+        // **THE HALF THAT IS STILL WAITING METERS NOTHING.** This unit handed a tool call over and
+        // the answer has not come back; the unit that reads the ending is the one that finishes the
+        // call, and it is the one that carries what the call cost. Reporting the same usage on both
+        // halves would settle one figure twice, under one key, against one hold.
+        let lines = if self.awaiting.load(Ordering::Acquire) {
+            Vec::new()
+        } else {
+            self.usage.lines()
+        };
         // The turn's exact figure settles against the session's reservation. An exhausted lease is
         // reported and acted on — the session hard-closes — rather than swallowed: audio already
         // streamed cannot be refunded, so the only enforcement point is the next frame.
         let total = self.usage.total();
-        if !self.shape.is_handshake() && !self.node.io.lease.settle(self.session, total) {
+        if !self.shape.is_handshake()
+            && !self.awaiting.load(Ordering::Acquire)
+            && !self.node.io.lease.settle(self.session, total)
+        {
             // Not a refusal of this unit. This unit's value was delivered and is metered; what the
             // exhausted lease decides is whether there is a next one — and it decides no. The
             // session is marked here and refused at the door below, which is the answer the seam's
@@ -1824,7 +1872,15 @@ impl Units for VoiceUnit<'_> {
             // the emitted audio posted nothing for a completed turn whose lease had already been
             // drawn down by the whole report. Nothing located is `None` and not a zero, because the
             // two are different rows of the settlement table.
-            located: Some(self.usage.total()).filter(|total| *total > 0),
+            // AND NOTHING AT ALL ON THE HALF OF A TOOL CALL THAT IS STILL WAITING. That half
+            // delivered the question; whatever figure it happens to be carrying belongs to the unit
+            // that finishes the call, and locating it here would post it a second time on the
+            // resume.
+            located: if self.awaiting.load(Ordering::Acquire) {
+                None
+            } else {
+                Some(self.usage.total()).filter(|total| *total > 0)
+            },
             // What the kernel counted while the unit ran, IN THE UNIT OF THE CLASS IT IS COUNTED
             // UNDER. The counter is milliseconds of uplink audio; the class the plane declares for
             // the audio a turn takes in is denominated in seconds, and the label is what says which
