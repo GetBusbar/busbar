@@ -595,9 +595,15 @@ known_sites = [
 ]
 
 # The escape list, mirroring crates/busbar-caps/fixtures/lint_rules.rs HOLD_ESCAPES. A test in that
-# crate asserts this table names every symbol the fixture does, so the two cannot drift apart.
-# `confined_to` empty means banned everywhere; otherwise the symbol may appear only in files whose
-# path contains the fragment.
+# crate asserts this table names every symbol the fixture does, and repeats the fixture's own
+# `confined_to` spelling, so the two cannot drift apart.
+#
+# `confined_to` is that fixture's spelling of the scope, kept verbatim for the join. It is PROSE,
+# not a matcher: as a bare substring test it also excuses `crates/other-kernel/src/tellerish.rs`, or
+# any path anywhere in the tree that happens to contain those characters, which is the opposite of
+# confining anything. `confined_to_paths` is the same scope resolved against this tree —
+# crate-relative paths, matched as prefixes, so only the files actually named are excused. An empty
+# `confined_to` (and an empty or absent `confined_to_paths`) means banned everywhere.
 [rules.hold-escapes.symbols.forget]
 symbol = "mem::forget"
 confined_to = ""
@@ -621,6 +627,9 @@ because = "aborting skips every exit path at once; the node drains instead"
 [rules.hold-escapes.symbols.assert-unwind-safe]
 symbol = "AssertUnwindSafe"
 confined_to = "kernel/src/teller"
+# The Teller loop's two homes in this tree: the kernel's own teller.rs, and the substrate teller
+# module that rules 12 and 13 above already treat as where the loop is entered.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-substrate/src/teller"]
 because = "it is what lets a hold cross a catch_unwind; the loop needs it in exactly one place"
 
 [rules.hold-escapes.symbols.join-abort]

@@ -1477,12 +1477,26 @@ def rule_hold_escapes(tree, cfg):
                 return True
         return False
 
+    def confined_here(spec, rel):
+        """Is `rel` one of the files this symbol is confined to?
+
+        ANCHORED, and matched as a path prefix. `confined_to` is the busbar-caps fixture's prose
+        spelling of the scope and is kept in the toml verbatim for the join with that crate's test;
+        used as a bare substring it excuses any path that happens to contain those characters,
+        wherever in the tree it sits. `confined_to_paths` is the same scope written as crate-relative
+        paths — a file exactly, or a directory and everything under it.
+        """
+        for p in spec.get("confined_to_paths", []):
+            p = p.rstrip("/")
+            if p and (rel == p or rel.startswith(p + os.sep)):
+                return True
+        return False
+
     offenders, tracked = [], []
     for spec in c["symbols"].values():
         symbol = spec["symbol"]
         for rel, l in tree.grep(re.escape(symbol), files=files):
-            confined = spec["confined_to"]
-            if confined and confined in rel:
+            if confined_here(spec, rel):
                 continue
             f = tree.enclosing_fn(rel, l.no)
             where = f"`{symbol}` at {rel}:{l.no} ({spec['because']})"
