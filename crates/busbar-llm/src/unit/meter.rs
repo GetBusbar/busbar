@@ -175,8 +175,10 @@ impl MeterFacts {
 /// "who made the accrual" is not a question it branches on any more. `MeterFacts` still carries
 /// `accrued` for the Route step's own assertions, which is where the fact belongs.
 pub struct MeterCtx<'a> {
-    /// The admission's meter half, where the walk handed it back. Kept only so the step can CHECK
-    /// that it never arrives beside a lane — see the assertion in [`meter`].
+    /// The admission's meter half, as the walk holds it. The step no longer branches on it — the
+    /// accrual belongs to the walk's own tap — and it is carried so the two constructors keep
+    /// describing the whole of what Route observed rather than a filtered view of it.
+    #[allow(dead_code)]
     sink: Option<&'a crate::engine::UsageSink>,
     lane: Option<&'a crate::engine::Lane>,
     usage: Option<&'a busbar_substrate::billing::TokenUsage>,
@@ -356,15 +358,15 @@ pub fn meter(
     // where a streamed answer's usage becomes known, and making the call again here would post the
     // same tokens twice. So this step SEALS that unit rather than accruing it.
     //
-    // The arm that used to accrue here, for "the walk held no sink", is gone because no unit can
-    // reach it: Route hands the meter half BACK on exactly one exit — the candidate miss — and that
-    // exit resolves no lane, so a sink and a lane never arrive together. The assertion is what keeps
-    // that true rather than merely true today: a Route step that handed both back would be opening
-    // the door to a second accrual, and it stops here instead of posting one.
-    debug_assert!(
-        !(ctx.sink.is_some() && ctx.lane.is_some()),
-        "the walk holds the meter half on every routed unit; a sink beside a lane is a second accrual"
-    );
+    // The arm that used to accrue here, for "the walk held no sink", is gone: the walk's own tap is
+    // the one accrual site for a unit that reached a lane, so a second call here would post the same
+    // tokens twice whatever the half beside it says.
+    //
+    // NOT ASSERTED as "a sink never arrives beside a lane". On this tree the walk keeps HOLDING the
+    // admission's meter half while it drives the legs (`walk.rs`'s `MeterCtx::bind(carry.meter_sink
+    // …, lane, …)`), so both do arrive together on every routed unit; the half being present is not
+    // the thing that would make a second accrual, the second CALL would be, and there is no longer
+    // one to make.
     // WHAT THE UNIT CONSUMED, assembled for whoever keeps the books. `None` until there is a lane to
     // attribute it to, which is the honest statement that there is nothing to price.
     //
