@@ -26,6 +26,10 @@ use crate::{Admit, Breaker, BreakerUnit, DestinationId, LaneState, Outcome};
 use busbar_caps::{KernelSeal, Route, UnitToken};
 use std::collections::HashMap;
 
+/// A fixed "now" for the tests that need one but are not ABOUT it — the kernel supplies this value
+/// on the real path, and a unit crate has no other source for it.
+const NOW: u64 = 1_700_000_000;
+
 fn err_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
     pairs
         .iter()
@@ -189,26 +193,47 @@ fn test_unmapped_structured_type_falls_through_to_http() {
 
 #[test]
 fn retry_after_accepts_the_http_date_form() {
-    // A hand-written IMF-fixdate ~120s in the future (see module doc: no `httpdate` dependency to
-    // format one, so the string is written out directly).
-    let secs = parse_retry_after("Sun, 06 Nov 2286 08:49:37 GMT");
+    // A hand-written IMF-fixdate (see module doc: no `httpdate` dependency to format one, so the
+    // string is written out directly), read against a `now` the caller supplies.
+    let secs = parse_retry_after("Sun, 06 Nov 2286 08:49:37 GMT", NOW);
     let n = secs.expect("HTTP-date Retry-After must parse");
     assert!(n > 0);
 }
 
 #[test]
 fn retry_after_accepts_delay_seconds() {
-    assert_eq!(parse_retry_after("120"), Some(120));
+    assert_eq!(parse_retry_after("120", NOW), Some(120));
 }
 
 #[test]
 fn a_past_http_date_retry_after_floors_at_zero() {
-    assert_eq!(parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT"), Some(0));
+    assert_eq!(
+        parse_retry_after("Mon, 01 Jan 1990 00:00:00 GMT", NOW),
+        Some(0)
+    );
 }
 
 #[test]
 fn a_missing_retry_after_is_none() {
-    assert_eq!(parse_retry_after(""), None);
+    assert_eq!(parse_retry_after("", NOW), None);
+}
+
+/// An HTTP-date `Retry-After` is "how long until that instant", which needs a NOW — and the now is
+/// the kernel's, handed in, not one this crate reads for itself. Stated as the arithmetic it is: the
+/// answer is exactly the remaining seconds against the supplied `now`, and moving `now` moves the
+/// answer by the same amount, with no reference to the wall clock at all.
+#[test]
+fn an_http_date_retry_after_is_a_pure_function_of_the_supplied_now() {
+    // 2286-11-20T17:46:40Z == 10_000_000_000 seconds since the epoch.
+    const DATE: &str = "Thu, 20 Nov 2286 17:46:40 GMT";
+    const INSTANT: u64 = 10_000_000_000;
+    assert_eq!(parse_retry_after(DATE, INSTANT - 300), Some(300));
+    assert_eq!(parse_retry_after(DATE, INSTANT - 1), Some(1));
+    assert_eq!(parse_retry_after(DATE, INSTANT), Some(0));
+    assert_eq!(parse_retry_after(DATE, INSTANT + 5_000), Some(0));
+    // The delay-seconds form ignores `now` entirely, whatever it is.
+    assert_eq!(parse_retry_after("120", 0), Some(120));
+    assert_eq!(parse_retry_after("120", u64::MAX), Some(120));
 }
 
 #[test]
@@ -456,7 +481,7 @@ fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
     };
     // A 500s Retry-After floors a would-be-15s cooldown up to (at least) 500s, well past
     // max_cooldown_secs — the server's explicit hint is honored past the configured cap.
-    let duration = cell.compute_cooldown_with_retry_after(&cfg, Some(500), 86_400);
+    let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, Some(500), 86_400);
     assert!(
         duration >= 500,
         "Retry-After floor was not applied: {duration}"
@@ -464,8 +489,59 @@ fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
 
     // The ceiling still applies: a hostile 10_000_000s Retry-After is clamped to
     // max_honored_retry_after_secs, never honored past it.
-    let duration = cell.compute_cooldown_with_retry_after(&cfg, Some(10_000_000), 86_400);
+    let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, Some(10_000_000), 86_400);
     assert_eq!(duration, 86_400);
+}
+
+/// THE TRIP IS A FUNCTION OF THE `now` IT WAS HANDED, not of the wall clock underneath it.
+///
+/// A unit crate answers from its arguments. The cooldown's jitter seed used to mix
+/// `SystemTime::now()` even though the caller had already handed the trip its `now`, so the same
+/// cell, driven from the same `now` with the same cfg, streak and Retry-After, armed a DIFFERENT
+/// `cooldown_until` depending on which wall second the process happened to be in — a replayed
+/// decision could not be reproduced, and the crate read a clock it is not allowed to read.
+///
+/// The two trips are deliberately separated by a wall-second boundary, because that is the only
+/// thing that distinguishes "seeded from the argument" from "seeded from the clock". The base is
+/// large so the jitter band (±10%, ~20001 distinct draws) makes a coincidental match negligible.
+#[test]
+fn the_armed_cooldown_is_a_function_of_the_now_the_caller_supplied() {
+    let cfg = BreakerCfg {
+        base_cooldown_secs: 100_000,
+        max_cooldown_secs: 1_000_000,
+        honor_retry_after: true,
+        trip: TripConfig::default(),
+        bench_below_trip_threshold: true,
+    };
+    let cell = BreakerCell::new();
+    let now = 1_700_000_000_u64;
+
+    let arm = || {
+        cell.open(now, &cfg, Some(7), 86_400);
+        let BreakerState::Open { until } = cell.state() else {
+            panic!("expected Open immediately after the trip");
+        };
+        until
+    };
+
+    let first = arm();
+    // Cross a wall-second boundary: the argument `now` has not changed, so nothing about the
+    // decision may change either.
+    let start = std::time::SystemTime::now();
+    while std::time::SystemTime::now()
+        .duration_since(start)
+        .unwrap_or_default()
+        .as_millis()
+        < 1_100
+    {
+        std::thread::yield_now();
+    }
+    let second = arm();
+
+    assert_eq!(
+        first, second,
+        "the same cell armed from the same `now` must arm the same cooldown a second later"
+    );
 }
 
 #[test]
