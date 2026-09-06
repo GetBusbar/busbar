@@ -77,13 +77,26 @@ const fn claim(selector: Selector) -> Claim {
 /// A path pattern that matches a model-scoped invoke path.
 const MODEL_INVOKE: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Var, PathSeg::Lit("invoke")];
 
-/// A path pattern that matches the whole model-scoped surface of one API version.
-const V1_MODELS: &[PathSeg] = &[PathSeg::Lit("v1"), PathSeg::Lit("models"), PathSeg::Tail];
+/// A path pattern that matches the model-scoped surface of one API version.
+///
+/// The variable segment before the tail is what makes this ONE model rather than the collection.
+/// A tail swallows whatever remains including NOTHING, so a pattern that ended at the collection
+/// name claimed the bare listing target too — a route with no model in it, no operation class here
+/// for it, and no request document for this plane to read.
+const V1_MODELS: &[PathSeg] = &[
+    PathSeg::Lit("v1"),
+    PathSeg::Lit("models"),
+    PathSeg::Var,
+    PathSeg::Tail,
+];
 
-/// A path pattern that matches the whole model-scoped surface of the preview API version.
+/// A path pattern that matches the model-scoped surface of the preview API version.
+///
+/// Named one model at a time for the same reason as the stable version above.
 const V1BETA_MODELS: &[PathSeg] = &[
     PathSeg::Lit("v1beta"),
     PathSeg::Lit("models"),
+    PathSeg::Var,
     PathSeg::Tail,
 ];
 
