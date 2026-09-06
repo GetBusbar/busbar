@@ -96,7 +96,18 @@ use crate::{twilio, ulaw, VoicePlane};
 const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
 
 /// The fact key a tool call's provider-origin `OneShot` correlates on.
-const FACT_TOOL_CORRELATION: &str = "call_id";
+///
+/// Public because it is half of a correlation and the other half is entered somewhere else: the leg
+/// this plane plans names this key, and whatever holds the waiting table has to name the same one
+/// for a reply to match. Two spellings of one key is exactly the drift that makes a wait unmatchable
+/// while both sides look right on their own.
+pub const FACT_TOOL_CORRELATION: &str = meta::FACT_CALL_ID;
+
+/// How long a tool call's reply leg waits, in seconds.
+///
+/// Declared here, beside the leg that names it, so the table that has to end an unanswered call at
+/// this deadline reads the plane's own figure rather than restating it.
+pub const TOOL_REPLY_DEADLINE_SECS: u32 = 30;
 
 /// Both duplex dialects' reader, boxed so the same call site works for either without a generic
 /// parameter leaking into every method signature. Cheap: both codecs are zero-sized.
@@ -353,7 +364,7 @@ impl Plane for VoicePlane {
                 selector: "*",
                 mode: ClientMode::AwaitReply {
                     correlation_key: FACT_TOOL_CORRELATION,
-                    deadline_secs: 30,
+                    deadline_secs: TOOL_REPLY_DEADLINE_SECS,
                 },
             };
         }
@@ -771,6 +782,28 @@ fn ingress_from_client_event<'u>(
     dialect: Dialect,
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
+    // A tool RESULT is not a frame of the conversation; it is the answer to a call the upstream
+    // opened, and it belongs to that call's own unit. Relayed onto the open turn — which is what
+    // every client tool event did — it arrived under the turn's hold naming the turn's correlation,
+    // so the one unit actually waiting for it could not be told it had been answered, and the reply
+    // and the wait passed each other on the same session.
+    if let IrClientEvent::Tool(IrDuplexTool::CallResult { call_id, .. }) = &event {
+        let id = ctx.arena().alloc_str(call_id).map_err(|_| Decode::Oversize)?;
+        let mut facts = Facts::new();
+        facts
+            .set(meta::FACT_CALL_ID, FactValue::Str(id))
+            .map_err(|_| Decode::Oversize)?;
+        return Ok(Ingress::Frame {
+            // The identifier as itself, under the key the leg named. Whole value, because the pair
+            // this has to tell apart is two calls open on one session at one moment.
+            for_: Some(CorrelationRef {
+                fact_key: FACT_TOOL_CORRELATION,
+                value: CorrelationValue::Str(id),
+            }),
+            relay: ArenaBytes::new(&[]),
+            facts,
+        });
+    }
     let (relay, interrupt_ms) = match &event {
         IrClientEvent::AudioFrame(f) => {
             // See the module doc comment: the uplink format is assumed PCM16 for this estimate.

@@ -378,6 +378,73 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
     );
 }
 
+/// A tool reply names the call it answers, not the turn it arrived on.
+///
+/// The reply is the other half of the leg the call planned. Decoded as an ordinary frame of the
+/// open turn it named the turn's correlation, so the identifier the waiting unit was entered under
+/// never reached the frame at all — the wait and its answer went past each other on one session,
+/// and the call expired holding a reservation for an answer that had already come back.
+#[test]
+fn a_client_tool_reply_names_the_call_it_answers() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    // The turn is open first, so "it relayed onto the turn" is a live alternative rather than
+    // something the fixture ruled out.
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let opened = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the turn opens");
+    let Ingress::Open(turn) = opened else {
+        panic!("expected Ingress::Open, got {opened:?}");
+    };
+    let turn_correlation = turn.correlation_out.expect("a turn correlates");
+
+    let reply = serde_json::to_vec(&json!({
+        "type": "conversation.item.create",
+        "item": {
+            "type": "function_call_output",
+            "call_id": "call_2",
+            "output": "{\"tide\":\"out\"}",
+        },
+    }))
+    .expect("the reply fixture serializes");
+    let frames = [frame(&reply)];
+    let mut cursor = FrameCursor::new(&frames);
+    let answered = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("a tool reply decodes");
+    let Ingress::Frame { for_, facts, .. } = answered else {
+        panic!("expected Ingress::Frame, got {answered:?}");
+    };
+    let for_ = for_.expect("a reply carries the correlation it answers");
+    assert_eq!(
+        for_.fact_key,
+        crate::plane::FACT_TOOL_CORRELATION,
+        "under the key the call's own leg named"
+    );
+    assert_eq!(
+        for_.value,
+        busbar_contract::ids::CorrelationValue::Str("call_2"),
+        "and carrying the identifier itself"
+    );
+    assert_ne!(
+        for_.value, turn_correlation.value,
+        "a reply that named the turn would wake no tool call at all"
+    );
+    assert_eq!(
+        facts.get(crate::meta::FACT_CALL_ID),
+        Some(FactValue::Str("call_2"))
+    );
+}
+
 #[test]
 fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     let plane = openai_plane();
