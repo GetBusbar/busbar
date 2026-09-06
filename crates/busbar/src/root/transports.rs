@@ -48,6 +48,7 @@
 //! belongs in the transport, and until it lands a deployment with two TLS listeners is exposed.
 
 use busbar_contract::{ConfigView, Listener, Transport, TransportConfigView, TransportError};
+use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
 
 use std::sync::Arc;
 
@@ -195,16 +196,26 @@ pub fn provision_servers(
 /// thing it needs to know is where to bind and the one thing it must not be able to do is read
 /// anything else. Every other key it asks for answers `None`, which is the honest answer: this
 /// listener declares an address and nothing more.
+///
+/// The one exception is the message ceiling, named by [`MESSAGE_MAX_BYTES_KEY`]. That key is the
+/// transport crate's own constant rather than a second spelling of the same string here, because
+/// the two sides of a key are exactly where a literal drifts: the crate that asks and the root that
+/// answers.
 #[derive(Debug)]
 pub struct ListenerView {
     bind: String,
+    /// The deployment's request-body cap, as resolved configuration carries it.
+    request_body_max_bytes: usize,
 }
 
 impl ListenerView {
-    /// A view over one bind address.
+    /// A view over one bind address and the message ceiling the deployment resolved.
     #[must_use]
-    pub fn new(bind: impl Into<String>) -> Self {
-        ListenerView { bind: bind.into() }
+    pub fn new(bind: impl Into<String>, request_body_max_bytes: usize) -> Self {
+        ListenerView {
+            bind: bind.into(),
+            request_body_max_bytes,
+        }
     }
 }
 
@@ -239,10 +250,11 @@ impl TransportConfigView for ListenerView {
 pub async fn listen_all(
     transport: &dyn Transport,
     provisioned: &[ProvisionedListener],
+    request_body_max_bytes: usize,
 ) -> Result<Vec<Listener>, TransportError> {
     let mut listeners = Vec::with_capacity(provisioned.len());
     for p in provisioned {
-        let view = ListenerView::new(&p.bind);
+        let view = ListenerView::new(&p.bind, request_body_max_bytes);
         listeners.push(transport.listen(&view, &p.handle).await?);
     }
     Ok(listeners)
@@ -540,7 +552,7 @@ mod tests {
             .build()
             .expect("a runtime");
         let bound = runtime
-            .block_on(listen_all(&tls, &provisioned))
+            .block_on(listen_all(&tls, &provisioned, 1024))
             .expect("the listener binds against its own slot");
         assert_eq!(bound.len(), 1);
     }
@@ -550,11 +562,34 @@ mod tests {
     /// what a plane or a unit is for.
     #[test]
     fn the_listener_view_offers_the_address_and_nothing_else() {
-        let view = ListenerView::new("127.0.0.1:8080");
+        let view = ListenerView::new("127.0.0.1:8080", 1024);
         assert_eq!(view.bind(), Some("127.0.0.1:8080"));
         assert_eq!(view.get_str("cert"), None);
         assert_eq!(view.get_int("port"), None);
         assert_eq!(view.get_bool("tls"), None);
+    }
+
+    /// And the one key it DOES answer is the message ceiling, because a transport that assembles a
+    /// message before anything above it can see a byte has no other place to learn the number.
+    ///
+    /// The `ws` transport reads this at `listen`. A view that answered `None` for it would leave
+    /// the ceiling at the WebSocket library's own default — 64 MiB, a number this project never
+    /// chose — while the operator's configuration said something four orders of magnitude smaller,
+    /// and every other listener on the node honoured it. That is not a refusal to disclose: it is a
+    /// limit the node states everywhere else silently not applying here.
+    #[test]
+    fn the_listener_view_answers_the_operators_message_ceiling() {
+        const CAP: usize = 1024;
+        let view = ListenerView::new("127.0.0.1:8080", CAP);
+        assert_eq!(
+            view.get_int(MESSAGE_MAX_BYTES_KEY),
+            Some(CAP as i64),
+            "a transport that asks for the operator's cap must be told it, not left on a default"
+        );
+        // Still nothing else. The ceiling is one answer, not an opening.
+        assert_eq!(view.get_int("limits.request_body_max_bytes.other"), None);
+        assert_eq!(view.get_int("port"), None);
+        assert_eq!(view.bind(), Some("127.0.0.1:8080"));
     }
 
     /// The handle carries a slot and a fingerprint, and its debug output says as much rather than
