@@ -6204,7 +6204,8 @@ fn test_cache_write_tokens_mapping() {
     );
 
     // The write-back reconstructs the wire totals unchanged.
-    let out = ResponsesWriter.write_response(&ir);
+    let writer = ResponsesWriter;
+    let out = writer.write_response(&ir);
     assert_eq!(out["usage"]["input_tokens"], 1000);
     assert_eq!(
         out["usage"]["input_tokens_details"]["cache_write_tokens"],
