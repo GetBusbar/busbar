@@ -17,6 +17,15 @@
 // contract: Estimate { per_class } is a type the contract crate owns. It is declared here so the
 // door has something to size against while the crates land side by side.
 
+/// How many basis points make one whole unit — the divisor that turns a tier expressed in basis
+/// points back into a multiplier. A tier of 10 000 basis points is a multiplier of one, so a hold
+/// sized at the full tier is the pre-tier sum unchanged.
+///
+/// Named rather than written at the divide, because a bare ten thousand at the bottom of a
+/// money calculation is indistinguishable from a rounding scale or a percentage-times-hundred, and
+/// the three are not interchangeable.
+const BASIS_POINTS_PER_UNIT: u128 = 10_000;
+
 /// One meter class's contribution to the estimate: how much of it the unit is expected to consume,
 /// and the highest price any destination it may reach charges for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,7 +73,7 @@ impl Estimate {
     pub fn hold_nanos(&self, tier_bp: u32) -> u64 {
         let pre = self.pre_tier_nanos();
         let scaled = pre.saturating_mul(tier_bp as u128);
-        let ceil = scaled.div_ceil(10_000);
+        let ceil = scaled.div_ceil(BASIS_POINTS_PER_UNIT);
         u64::try_from(ceil).unwrap_or(u64::MAX)
     }
 }

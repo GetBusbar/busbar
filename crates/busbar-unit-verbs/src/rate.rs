@@ -3,8 +3,8 @@
 
 //! The per-principal admin-mutation rate limiter, moved verbatim from
 //! `busbar-core::admin::rate` (fixed one-minute windows, `Config` class at 10/min, `Crud` class at
-//! 60/min, `PluginInspect` at 30/min, failed attempts count too, opportunistic per-window sweep —
-//! PB-32). [`MutationClass::for_verb`] takes the migrated `CONFIG_CLASS_RULES` table as DATA — a
+//! 60/min, `PluginInspect` at 30/min, failed attempts count too, opportunistic per-window sweep).
+//! [`MutationClass::for_verb`] takes the migrated `CONFIG_CLASS_RULES` table as DATA — a
 //! `&'static [ConfigClassRule]` the composition root supplies from the sealed policy — because this
 //! crate has no `NamedMapSection`/config-section registry of its own (that lives in `busbar-core`'s
 //! config module, which this crate does not depend on) and must not hard-code the blast-radius

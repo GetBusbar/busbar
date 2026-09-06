@@ -74,8 +74,9 @@ pub struct LegacyVerbRow {
     /// 1.5.5's own `operationId` for this path+method, kept so the conformance test can report a
     /// mismatch by the name an operator would recognise.
     pub operation_id: &'static str,
-    /// The scope `required_scope(method, path)` resolves to for this row (PB-62: pinned, derived
-    /// from method alone except the two stateless dry-run POSTs named in [`READ_ONLY_POST_PATHS`]).
+    /// The scope `required_scope(method, path)` resolves to for this row: pinned here rather than
+    /// recomputed, and derived from the method alone except for the two stateless dry-run POSTs
+    /// named in [`READ_ONLY_POST_PATHS`].
     pub scope: VerbScope,
 }
 

@@ -604,3 +604,39 @@ because = "it is what lets a hold cross a catch_unwind; the loop needs it in exa
 symbol = "JoinHandle::abort"
 confined_to = ""
 because = "an aborted task loses its unit's end; the sweep is the second exit, not abort"
+
+# ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────
+[rules.unit-no-wall-clock]
+why = """A unit crate decides from the values it was handed, so replaying the same inputs gives the \
+same answer. A unit that reads the wall or monotonic clock itself has an input nobody passed it: \
+its decision stops being reproducible, a test of it becomes a race, and the same request replayed \
+for an audit no longer yields the same record. Reading a clock is the composition root's job — the \
+root reads it ONCE per arrival and hands the reading down, which is also what keeps two steps of \
+one unit from landing in different seconds. Production code only: a test may read a clock to \
+measure a test."""
+# Where a unit crate's production code lives.
+scope_globs = ["crates/busbar-unit-*/src/*"]
+# The clock reads a unit crate may not perform.
+forbidden = ["SystemTime::now", "Instant::now"]
+# A helper that exists FOR the root, in a unit crate's directory, that nothing in the crate calls.
+# Each entry is a whole file, exempt because it is the root's reading living next to the unit rather
+# than a decision inside one. Adding to this list needs the same argument.
+exempt_files = ["crates/busbar-unit-breaker/src/clock.rs"]
+max_hits = 0
+
+# ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
+[rules.unit-no-finding-ids]
+why = """A comment that cites a finding identifier or a bare document section number tells a reader \
+nothing they can act on: the identifier resolves to an audit worksheet that is not in this tree, \
+and the section number moves the next time the document is edited. The rule the code follows has to \
+be stated in words, in the comment, so the comment survives the worksheet and the renumbering. RFC \
+citations are exempt by construction — they are stable, externally resolvable documents — and only \
+the identifier shapes below are searched for."""
+scope_globs = ["crates/busbar-unit-*/src/*"]
+# The shapes searched for, as regular expressions over the raw comment text.
+patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
+# The one crate whose occurrence is knowingly left in place, so the rule can hold the line on every
+# other unit crate rather than waiting for that one citation to be rewritten. Emptying this list is
+# the goal, and nothing may be added to it without the same argument.
+exempt_crates = ["busbar-unit-ledger"]
+max_hits = 0

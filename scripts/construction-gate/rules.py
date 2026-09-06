@@ -1553,6 +1553,79 @@ def rule_no_escaped_newline_doc_comment(tree, cfg):
                 detail, current, c["max_hits"], c["why"], offenders)]
 
 
+# ── 25. unit-no-wall-clock ───────────────────────────────────────────────────────────────────────
+
+
+def _scoped_files(tree, globs):
+    """Every scanned file whose path matches one of the globs, in path order. `fnmatch`'s `*`
+    crosses directory separators, so `crates/busbar-unit-*/src/*` reaches nested modules too."""
+    return [rel for rel in sorted(tree.files)
+            if any(fnmatch.fnmatch(rel.replace(os.sep, "/"), g) for g in globs)]
+
+
+def rule_unit_no_wall_clock(tree, cfg):
+    """No unit crate reads the clock in production code.
+
+    A unit decides from what it was handed; a clock read is an input nobody passed it. Scanned over
+    the comment-stripped code so a clock named in prose is not a finding, and over production lines
+    only so a test may still measure elapsed time."""
+    c = cfg["rules"]["unit-no-wall-clock"]
+    exempt = {p.replace("/", os.sep) for p in c["exempt_files"]}
+    files = [rel for rel in _scoped_files(tree, c["scope_globs"]) if rel not in exempt]
+    rx = "|".join(re.escape(v) for v in c["forbidden"])
+    offenders = [f"{rel}:{l.no}" for rel, l in tree.grep(rx, files=files)]
+    current = len(offenders)
+    if not files:
+        detail = VACUOUS + "no unit crate source is present in the scanned tree"
+    else:
+        detail = (f"{current} clock read(s) in unit-crate production code "
+                  f"(ceiling {c['max_hits']}): "
+                  + ("; ".join(offenders) if offenders else "none"))
+    return [row("unit-no-wall-clock", current <= c["max_hits"],
+                "no unit crate reads the wall or monotonic clock",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
+# ── 26. unit-no-finding-ids ──────────────────────────────────────────────────────────────────────
+
+
+def rule_unit_no_finding_ids(tree, cfg):
+    """No unit crate cites an audit finding identifier or a bare document section number.
+
+    Read on the RAW file text, because the citations live in comments and every other rule reads the
+    comment-stripped view. Production lines only: the test-side sweep is a separate job. RFC
+    citations are untouched — only the identifier shapes the ceilings file names are searched for."""
+    c = cfg["rules"]["unit-no-finding-ids"]
+    rx = re.compile("|".join(c["patterns"]))
+    exempt = set(c["exempt_crates"])
+    offenders = []
+    scoped = _scoped_files(tree, c["scope_globs"])
+    for rel in scoped:
+        if tree.crate_of(rel) in exempt:
+            continue
+        lines = tree.files[rel]
+        try:
+            with open(os.path.join(tree.root, rel), encoding="utf-8", errors="replace") as fh:
+                raw = fh.read().split("\n")
+        except OSError:
+            continue
+        for i, text in enumerate(raw):
+            if i < len(lines) and lines[i].intest:
+                continue
+            if rx.search(text):
+                offenders.append(f"{rel}:{i + 1}")
+    current = len(offenders)
+    if not scoped:
+        detail = VACUOUS + "no unit crate source is present in the scanned tree"
+    else:
+        detail = (f"{current} finding-identifier citation(s) in unit-crate production code "
+                  f"(ceiling {c['max_hits']}): "
+                  + ("; ".join(offenders) if offenders else "none"))
+    return [row("unit-no-finding-ids", current <= c["max_hits"],
+                "a unit crate states its rule in words, not as a finding identifier",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -1580,6 +1653,8 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_forbid_unsafe(tree, cfg)
     rows += rule_secret_carrier_debug(tree, cfg)
     rows += rule_no_escaped_newline_doc_comment(tree, cfg)
+    rows += rule_unit_no_wall_clock(tree, cfg)
+    rows += rule_unit_no_finding_ids(tree, cfg)
     return rows
 
 

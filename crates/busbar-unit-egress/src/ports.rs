@@ -225,7 +225,8 @@ pub trait Breaker: Send + Sync {
     ///
     /// `token` is the capability token that proves the loop is at the route step for this unit
     /// right now (per `busbar-caps`'s `&UnitToken<Route>`, mirroring the breaker unit's own sealed
-    /// `Breaker::observe`, CG-29) — this unit's `route` entry point already receives one; every
+    /// `Breaker::observe`) — a unit may only act at the step its token names, and the token is the
+    /// proof of that rather than a convention. This unit's `route` entry point already receives one; every
     /// call down through the walk to this port threads the same borrow.
     fn observe(
         &self,
