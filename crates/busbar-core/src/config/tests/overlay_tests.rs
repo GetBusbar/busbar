@@ -929,3 +929,78 @@ fn read_drops_at_when_phase_is_already_present() {
     );
     std::fs::remove_file(&path).ok();
 }
+
+/// THE OVERLAY DOES NOT INTERPOLATE `${VAR}`, SO IT REFUSES ONE — at the WRITE, naming the path.
+///
+/// config.yaml expands `${VAR}` on its raw TEXT before parse, guarded by a control-character reject
+/// and a structural re-parse that exist only because of that splice. The overlay is a JSON document
+/// this process serialized: there is no text stage, so neither guard applies and a second mechanism
+/// for the same spelling would be a second set of rules for what `${}` means. The overlay's
+/// credentials already have the documented idiom — a secret REFERENCE, `{ env: NAME }`, which it
+/// DOES resolve. So a literal `${VAR}` here is always a mistake, and its silent outcome was the bad
+/// one: the eleven characters stored verbatim, merged verbatim, and presented to an upstream as a
+/// credential.
+///
+/// Refused at the write and not at the read, so no already-persisted overlay is bricked by the rule.
+#[test]
+fn an_overlay_value_holding_an_interpolation_marker_is_refused_at_the_write() {
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-overlay-interp-{}-{}",
+        std::process::id(),
+        crate::store::now()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("overlay.json");
+
+    // The shape that actually hurts: a credential-bearing settings bag under the `root` section.
+    let mut doc = crate::config::overlay::OverlayDoc::default();
+    let mut settings = serde_json::Map::new();
+    settings.insert(
+        "url".to_string(),
+        serde_json::Value::String("postgres://u:${DB_PASSWORD}@db:5432/busbar".to_string()),
+    );
+    let store: crate::config::StoreCfg = serde_json::from_value(serde_json::json!({
+        "module": "postgres",
+        "settings": settings,
+    }))
+    .expect("the store block builds");
+    doc.root = Some(crate::config::overlay::RootSettings {
+        store: Some(store),
+        ..Default::default()
+    });
+
+    let err = crate::config::overlay::write(&path, &doc)
+        .expect_err("an interpolation marker in an overlay value must refuse the write");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("root.store.settings.url"),
+        "the refusal must name the exact value's path so it is actionable: {msg}"
+    );
+    assert!(
+        msg.contains("env:"),
+        "and must point at the secret REFERENCE the overlay does resolve: {msg}"
+    );
+    assert!(
+        !path.exists(),
+        "a refused write must publish nothing at all"
+    );
+
+    // THE CONTROL: the same document with a real secret reference writes fine. A guard that refused
+    // the documented idiom too would just have moved the problem.
+    let mut settings = serde_json::Map::new();
+    settings.insert("url".to_string(), serde_json::json!({ "env": "DB_URL" }));
+    let store: crate::config::StoreCfg = serde_json::from_value(serde_json::json!({
+        "module": "postgres",
+        "settings": settings,
+    }))
+    .expect("the store block builds");
+    doc.root = Some(crate::config::overlay::RootSettings {
+        store: Some(store),
+        ..Default::default()
+    });
+    crate::config::overlay::write(&path, &doc)
+        .expect("a secret reference is the supported spelling");
+    assert!(path.exists(), "the control write published");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -1034,6 +1034,36 @@ fn migrate_legacy_hook_keys(value: &mut serde_json::Value) {
 /// decoy to occupy in the first place — the anti-pre-plant posture would add no protection here.
 pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
     let json = serde_json::to_vec_pretty(doc).map_err(std::io::Error::other)?;
+    // `${VAR}` IS NOT INTERPOLATED HERE, AND IS THEREFORE REFUSED AT THE WRITE.
+    //
+    // config.yaml and providers.yaml expand `${VAR}` because they are TEXT read off disk: the
+    // expansion happens on the raw bytes before the parser sees them, and it is guarded by two
+    // defenses that exist only because of that — `reject_yaml_unsafe_value` and the
+    // structural-equivalence re-parse. The overlay has no text stage at all: it is a JSON document
+    // this process serialized, so there is nothing to splice into and neither defense applies.
+    // Adding interpolation would mean inventing a second, differently-guarded mechanism for the same
+    // spelling, which is how two config surfaces come to disagree about what `${VAR}` means.
+    //
+    // The overlay does not need one. Its secret-bearing fields — a `store.settings.url`, a hook's
+    // `settings`, an identity provider's `browser_login.client_secret` under `named_maps` — already
+    // take the documented idiom for a credential in busbar config: a SECRET REFERENCE, `{ env: NAME
+    // }`, resolved at boot through the same resolver every other reference goes through. So a
+    // literal `${VAR}` written into an overlay value is never the thing to do; it is an operator
+    // reaching for the config.yaml spelling in the wrong document, and the outcome without this
+    // guard was silent and bad: the eleven bytes `${MY_TOKEN}` stored verbatim, merged verbatim into
+    // the running config, and presented verbatim to an upstream as a credential.
+    //
+    // REFUSED AT THE WRITE, not at the read, so the operator learns at the API call that produced it
+    // and no already-persisted overlay can be bricked by this rule.
+    if let Some(found) = first_interpolation_marker(doc) {
+        return Err(std::io::Error::other(format!(
+            "overlay value at `{found}` contains `${{…}}`, which the overlay does NOT interpolate \
+             (only config.yaml and providers.yaml do, on their raw text before parse). It would be \
+             stored and used as those literal characters. For a credential use a secret REFERENCE — \
+             `{{ env: VAR }}` or `{{ file: /path }}` — which the overlay does resolve, exactly as \
+             config.yaml does; for a literal value, write the value."
+        )));
+    }
     crate::durable::write_with(
         path,
         &json,
@@ -1042,6 +1072,43 @@ pub(crate) fn write(path: &Path, doc: &OverlayDoc) -> std::io::Result<()> {
             ..Default::default()
         },
     )
+}
+
+/// The first overlay STRING value containing a `${` … `}` interpolation marker, as a dotted path
+/// into the document (`root.store.settings.url`, `hooks.audit.settings.token`, …), or `None`.
+///
+/// Walks the SERIALIZED document rather than the typed one, so it reaches every string a section can
+/// hold — including the opaque `settings` bags and the raw `named_maps` definitions, which are
+/// exactly where a credential lives and where a typed walk would have to stop. KEYS are not
+/// inspected: a key is a name, not a value, and a section named `${x}` is a different (already
+/// refused) problem.
+fn first_interpolation_marker(doc: &OverlayDoc) -> Option<String> {
+    fn walk(v: &serde_json::Value, path: &str) -> Option<String> {
+        match v {
+            serde_json::Value::String(s) => {
+                // The same marker `interpolate_env_with` recognizes: a `${` with a closing `}`.
+                let open = s.find("${")?;
+                s[open..].find('}')?;
+                Some(path.to_string())
+            }
+            serde_json::Value::Array(items) => items
+                .iter()
+                .enumerate()
+                .find_map(|(i, x)| walk(x, &format!("{path}[{i}]"))),
+            serde_json::Value::Object(map) => map.iter().find_map(|(k, x)| {
+                walk(
+                    x,
+                    &if path.is_empty() {
+                        k.clone()
+                    } else {
+                        format!("{path}.{k}")
+                    },
+                )
+            }),
+            _ => None,
+        }
+    }
+    walk(&serde_json::to_value(doc).ok()?, "")
 }
 
 /// Build an overlay from a hook state (registry + global-hook names), no tombstones — a test helper
