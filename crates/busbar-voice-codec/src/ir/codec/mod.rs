@@ -26,7 +26,7 @@
 use crate::ir::config::SessionConfig;
 use crate::ir::control::IrDuplexControl;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::{AudioFormat, IrAudioFrame, UpDown};
+use crate::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
@@ -324,6 +324,29 @@ fn u64_at(v: &Value, key: &str) -> u64 {
     v.get(key).and_then(Value::as_u64).unwrap_or_default()
 }
 
+/// Read the item correlation this dialect states on a downlink audio event. Each field is carried only
+/// when the wire actually said it — an absent field stays absent rather than becoming an empty string
+/// or a zero index, which name a different (real) item.
+fn audio_ref_of(v: &Value) -> IrAudioRef {
+    let text = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    };
+    let index = |k: &str| {
+        v.get(k)
+            .and_then(Value::as_u64)
+            .and_then(|n| u32::try_from(n).ok())
+    };
+    IrAudioRef {
+        response_id: text("response_id"),
+        item_id: text("item_id"),
+        output_index: index("output_index"),
+        content_index: index("content_index"),
+    }
+}
+
 /// base64-decode a wire audio string to opaque media bytes (the identity IR is the decoded bytes).
 ///
 /// `None` on a payload that is not base64, and every read path must DROP that frame rather than
@@ -455,6 +478,9 @@ impl DuplexReader for OpenAiRealtimeCodec {
                     dir: UpDown::Up,
                     seq: st.next_up_seq(),
                     media,
+                    // The uplink append names no item — the item does not exist until the server
+                    // makes one.
+                    origin: IrAudioRef::default(),
                 })]
             }
             wire::INPUT_AUDIO_COMMIT => {
@@ -544,6 +570,7 @@ impl DuplexReader for OpenAiRealtimeCodec {
                     dir: UpDown::Down,
                     seq: st.next_down_seq(),
                     media,
+                    origin: audio_ref_of(&v),
                 })]
             }
             wire::OUTPUT_AUDIO_DONE | wire::OUTPUT_AUDIO_DONE_LEGACY => {
@@ -783,10 +810,29 @@ impl DuplexWriter for OpenAiRealtimeCodec {
                 "audio_end_ms": audio_end_ms,
                 "item_id": item_id,
             }),
-            IrServerEvent::AudioFrame(f) => json!({
-                "type": wire::OUTPUT_AUDIO_DELTA,
-                "delta": encode_audio(&f.media),
-            }),
+            IrServerEvent::AudioFrame(f) => {
+                // The item correlation the source dialect named rides back out — the client relays
+                // through this writer even same-dialect, and a client that cannot name the item it is
+                // hearing cannot truncate it when the user interrupts. What no source named is not
+                // invented here.
+                let mut o = json!({
+                    "type": wire::OUTPUT_AUDIO_DELTA,
+                    "delta": encode_audio(&f.media),
+                });
+                if let Some(id) = &f.origin.response_id {
+                    o["response_id"] = json!(id);
+                }
+                if let Some(id) = &f.origin.item_id {
+                    o["item_id"] = json!(id);
+                }
+                if let Some(i) = f.origin.output_index {
+                    o["output_index"] = json!(i);
+                }
+                if let Some(i) = f.origin.content_index {
+                    o["content_index"] = json!(i);
+                }
+                o
+            }
             IrServerEvent::AudioDone { item_id } => json!({
                 "type": wire::OUTPUT_AUDIO_DONE,
                 "item_id": item_id,

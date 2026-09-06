@@ -42,7 +42,7 @@ use super::{DuplexReader, DuplexWriter, WireEvent};
 use crate::ir::config::{MaxOutputTokens, SessionConfig};
 use crate::ir::control::{IrDuplexControl, IrVad};
 use crate::ir::event::{IrClientEvent, IrServerEvent};
-use crate::ir::media::{AudioFormat, IrAudioFrame, UpDown};
+use crate::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
@@ -406,6 +406,8 @@ impl DuplexReader for GeminiLiveCodec {
                     dir: UpDown::Up,
                     seq: st.next_up_seq(),
                     media,
+                    // This dialect names no item on either audio direction.
+                    origin: IrAudioRef::default(),
                 }));
             };
             // Prefer the GA single blob when present so a GA peer never double-decodes; else fall back
@@ -496,6 +498,9 @@ impl DuplexReader for GeminiLiveCodec {
                             dir: UpDown::Down,
                             seq: st.next_down_seq(),
                             media,
+                            // A Gemini `modelTurn` part carries no response/item correlation, and an
+                            // id nobody issued is worse than an absent one.
+                            origin: IrAudioRef::default(),
                         }));
                     }
                     // A `text` part / transcription side-channel has no shared IR home (drop+warn).

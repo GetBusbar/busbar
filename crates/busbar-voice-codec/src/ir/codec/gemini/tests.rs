@@ -10,7 +10,7 @@
 use super::*;
 use crate::ir::config::MaxOutputTokens;
 use crate::ir::control::IrVad;
-use crate::ir::media::UpDown;
+use crate::ir::media::{IrAudioRef, UpDown};
 use crate::ir::tool::CallRef;
 
 // ── helpers ──────────────────────────────────────────────────────────────────────────────────────
@@ -475,6 +475,7 @@ fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
                 dir: UpDown::Up,
                 seq: 0,
                 media: Bytes::from_static(b"uplink-pcm"),
+                origin: IrAudioRef::default(),
             }),
             &mut st,
         )

@@ -78,7 +78,7 @@ use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, Tra
 
 use busbar_voice_codec::ir::control::IrDuplexControl;
 use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
-use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, UpDown};
+use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, IrAudioRef, UpDown};
 use busbar_voice_codec::ir::tool::IrDuplexTool;
 use busbar_voice_codec::ir::{
     DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireEvent,
@@ -210,6 +210,8 @@ impl Plane for VoicePlane {
                             dir: UpDown::Up,
                             seq: state.codec.next_up_seq(),
                             media: bytes::Bytes::from(pcm),
+                            // A carrier media frame names no conversation item.
+                            origin: IrAudioRef::default(),
                         })
                     }
                     // Lifecycle events (`connected`/`start`/`mark`/`stop`) carry no audio and are

@@ -94,6 +94,26 @@ pub fn truncate_point_ms(bytes_played: u64, fmt: AudioFormat) -> u64 {
     fmt.bytes_to_ms(bytes_played)
 }
 
+/// WHICH ITEM THIS AUDIO IS PART OF — an OPAQUE correlation the plane carries but never interprets.
+///
+/// A downlink frame belongs to one response, one output item, one content part. The plane's own
+/// barge-in bookkeeping does not need those ids (it counts bytes), but the CLIENT does: every downlink
+/// frame is relayed through the writer, and a client handed audio with no item named cannot issue its
+/// own truncate when the user interrupts. Each field is `None` when the source dialect never said it —
+/// Gemini's `modelTurn` audio names no item at all, and an id nobody issued is worse than an absent
+/// one, so nothing here is ever invented.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IrAudioRef {
+    /// The response this audio belongs to.
+    pub response_id: Option<String>,
+    /// The conversation item this audio belongs to — the id a truncate names.
+    pub item_id: Option<String>,
+    /// Which output of that response.
+    pub output_index: Option<u32>,
+    /// Which content part of that output.
+    pub content_index: Option<u32>,
+}
+
 /// THE NEUTRAL AUDIO-FRAME IR (`plane4-duplex-session.md`). `media` is OPAQUE — the identity transform by default; the IR
 /// exists for the meter/audit tap, not the reshape.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -104,4 +124,6 @@ pub struct IrAudioFrame {
     pub seq: u64,
     /// The audio payload — opaque bytes, relayed verbatim under the identity transform by default.
     pub media: Bytes,
+    /// Which item this audio is part of, as the source dialect named it (absent when it named none).
+    pub origin: IrAudioRef,
 }

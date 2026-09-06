@@ -343,6 +343,49 @@ fn downlink_audio_delta_frames_down_tracks_playback_and_bumps_seq() {
 }
 
 #[test]
+fn a_downlink_audio_delta_says_which_item_it_is_part_of() {
+    // The runtime relays EVERY downlink frame through the writer, even client-to-same-dialect. A
+    // delta stripped of `response_id`/`item_id`/`output_index`/`content_index` leaves the client
+    // unable to say WHICH item it just heard — so it cannot issue its own truncate on a barge-in.
+    let src = json!({
+        "type": "response.output_audio.delta",
+        "response_id": "resp_1",
+        "item_id": "item_1",
+        "output_index": 0,
+        "content_index": 0,
+        "delta": b64(b"audio"),
+    });
+    let ir = roundtrip_down(&src);
+    let IrServerEvent::AudioFrame(f) = &ir[0] else {
+        panic!("expected AudioFrame");
+    };
+    assert_eq!(f.origin.response_id.as_deref(), Some("resp_1"));
+    assert_eq!(f.origin.item_id.as_deref(), Some("item_1"));
+    assert_eq!(f.origin.output_index, Some(0));
+    assert_eq!(f.origin.content_index, Some(0));
+}
+
+#[test]
+fn a_downlink_audio_delta_from_a_dialect_that_names_no_item_invents_none() {
+    // Gemini's `modelTurn` audio carries no item correlation at all; the writer must not fabricate
+    // one — an id nobody issued is worse than an absent id.
+    let codec = OpenAiRealtimeCodec;
+    let w = down(
+        &codec,
+        IrServerEvent::AudioFrame(IrAudioFrame {
+            dir: UpDown::Down,
+            seq: 0,
+            media: Bytes::from_static(b"x"),
+            origin: IrAudioRef::default(),
+        }),
+    );
+    let v = as_value(&w);
+    assert!(v["item_id"].is_null());
+    assert!(v["response_id"].is_null());
+    assert_eq!(v["type"], "response.output_audio.delta");
+}
+
+#[test]
 fn downlink_audio_delta_legacy_alias_decodes() {
     let codec = OpenAiRealtimeCodec;
     let mut st = DecodeState::default();
