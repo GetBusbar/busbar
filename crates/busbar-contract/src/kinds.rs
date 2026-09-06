@@ -212,10 +212,17 @@ pub trait EgressAuthScheme: Plugin + Send + Sync + 'static {
     ) -> AuthDecoration<'u>;
 
     /// Continue a multi-round exchange with the upstream's challenge.
+    ///
+    /// The context is what the unit's lifetime is bound to, and it is here for the same reason
+    /// `decorate` takes a body: without an argument carrying it, the only decoration a second
+    /// round could return was one that borrowed nothing, so a scheme that wanted to answer a
+    /// challenge with bytes it had built could not be written at all. The arena the context
+    /// carries is where those bytes come from.
     fn continue_handshake<'u>(
         &self,
         state: &ChallengeState,
         frame: &Frame,
+        ctx: &crate::unit::Ctx<'u>,
         signer: &dyn Signer,
     ) -> AuthDecoration<'u>;
 }
