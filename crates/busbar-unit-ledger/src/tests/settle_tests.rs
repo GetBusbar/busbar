@@ -18,7 +18,14 @@ fn settling_moves_the_reservation_out_and_the_amount_in() {
     ledger.record_slice_spent(&k, 1, 600);
     assert_eq!(ledger.book().get(&k, 1).open_holds, 600);
 
-    let posted = ledger.settle(&k, 1, hold("alice", 600), &usage("tokens", 450), &token);
+    let posted = ledger.settle(
+        &k,
+        1,
+        hold("alice", 600),
+        450,
+        &usage("tokens", 450),
+        &token,
+    );
     assert_eq!(posted.settled(), 450);
     assert_eq!(posted.reserved(), 600);
     let figures = ledger.book().get(&k, 1);
@@ -45,7 +52,14 @@ fn two_dimensions_on_one_bucket_are_two_independent_balances() {
     ledger.record_draw(&money, 1, 500);
     ledger.record_hold_opened(&money, 1, 500);
     ledger.record_slice_spent(&money, 1, 500);
-    ledger.settle(&money, 1, hold("a", 500), &usage("tokens", 500), &token);
+    ledger.settle(
+        &money,
+        1,
+        hold("a", 500),
+        500,
+        &usage("tokens", 500),
+        &token,
+    );
 
     assert_eq!(ledger.book().get(&money, 1).settled, 500);
     assert_eq!(
@@ -64,7 +78,7 @@ fn a_pool_scope_is_a_different_balance_from_the_whole_bucket() {
     ledger.record_draw(&pool, 1, 300);
     ledger.record_hold_opened(&pool, 1, 300);
     ledger.record_slice_spent(&pool, 1, 300);
-    ledger.settle(&pool, 1, hold("a", 300), &usage("tokens", 300), &token);
+    ledger.settle(&pool, 1, hold("a", 300), 300, &usage("tokens", 300), &token);
 
     assert_eq!(ledger.book().get(&pool, 1).settled, 300);
     assert_eq!(ledger.book().get(&all, 1).settled, 0);
@@ -79,7 +93,7 @@ fn every_settlement_reaches_the_previous_releases_rows() {
     ledger.record_draw(&k, 42, 1_000);
     ledger.record_hold_opened(&k, 42, 700);
     ledger.record_slice_spent(&k, 42, 700);
-    ledger.settle(&k, 42, hold("bob", 700), &usage("tokens", 690), &token);
+    ledger.settle(&k, 42, hold("bob", 700), 690, &usage("tokens", 690), &token);
 
     assert_eq!(
         rows.written(),
@@ -112,7 +126,7 @@ fn a_legacy_row_that_will_not_write_does_not_fail_the_settlement() {
     let token = ledger_token();
     let k = key("b");
     ledger.record_hold_opened(&k, 1, 10);
-    let posted = ledger.settle(&k, 1, hold("a", 10), &usage("tokens", 10), &token);
+    let posted = ledger.settle(&k, 1, hold("a", 10), 10, &usage("tokens", 10), &token);
     assert_eq!(posted.settled(), 10);
     assert_eq!(ledger.book().get(&k, 1).settled, 10);
 }
@@ -127,7 +141,7 @@ fn a_ledger_with_no_dual_write_settles_the_same_way() {
         ledger.record_draw(&k, 1, 100);
         ledger.record_hold_opened(&k, 1, 100);
         ledger.record_slice_spent(&k, 1, 100);
-        ledger.settle(&k, 1, hold("a", 100), &usage("tokens", 80), &token);
+        ledger.settle(&k, 1, hold("a", 100), 80, &usage("tokens", 80), &token);
     }
     assert_eq!(plain.book().get(&k, 1), dual.book().get(&k, 1));
 }
@@ -165,8 +179,14 @@ fn an_underspent_reservation_reports_the_residual_it_releases_and_no_overdraft()
     ledger.record_hold_opened(&k, 1, 600);
     ledger.record_slice_spent(&k, 1, 600);
 
-    let settlement =
-        ledger.settle_recording(&k, 1, hold("alice", 600), &usage("tokens", 450), &token);
+    let settlement = ledger.settle_recording(
+        &k,
+        1,
+        hold("alice", 600),
+        450,
+        &usage("tokens", 450),
+        &token,
+    );
     assert_eq!(settlement.released, 150);
     assert!(
         settlement.overdraft.is_none(),
@@ -188,7 +208,7 @@ fn a_unit_that_ran_past_everything_reservable_leaves_a_note_naming_who_and_how_m
     let spend = h.spend(400, 0);
     assert_eq!(spend.overdraft, 300);
 
-    let settlement = ledger.settle_recording(&k, 1, h, &usage("tokens", 400), &token);
+    let settlement = ledger.settle_recording(&k, 1, h, 400, &usage("tokens", 400), &token);
     let note = settlement
         .overdraft
         .expect("running past everything reservable is what a note is for");
@@ -214,7 +234,7 @@ fn a_reservation_that_grew_to_cover_the_spend_leaves_no_note_at_all() {
     assert_eq!(h.spend(400, 1_000).topped_up, 300);
     ledger.record_hold_opened(&k, 1, 400);
 
-    let settlement = ledger.settle_recording(&k, 1, h, &usage("tokens", 400), &token);
+    let settlement = ledger.settle_recording(&k, 1, h, 400, &usage("tokens", 400), &token);
     assert!(settlement.overdraft.is_none());
     assert_eq!(ledger.book().get(&k, 1).overdraft_carried_out, 0);
     assert_eq!(ledger.book().get(&k, 1).open_holds, 0);
@@ -230,11 +250,19 @@ fn posting_an_already_built_settlement_moves_the_same_books_as_settling_a_hold()
 
     let mut through_hold = Ledger::new();
     through_hold.record_hold_opened(&k, 1, 600);
-    through_hold.settle(&k, 1, hold("alice", 600), &usage("tokens", 450), &token);
+    through_hold.settle(
+        &k,
+        1,
+        hold("alice", 600),
+        450,
+        &usage("tokens", 450),
+        &token,
+    );
 
     let mut through_posting = Ledger::new();
     through_posting.record_hold_opened(&k, 1, 600);
-    let posted = busbar_caps::Posted::settle(hold("alice", 600), &usage("tokens", 450), &token);
+    let posted =
+        busbar_caps::Posted::settle(hold("alice", 600), 450, &usage("tokens", 450), &token);
     let settlement = through_posting.post(&k, 1, posted);
     assert_eq!(settlement.released, 150);
 

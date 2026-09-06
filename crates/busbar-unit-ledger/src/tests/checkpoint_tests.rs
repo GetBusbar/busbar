@@ -39,7 +39,7 @@ fn book_with_a_settlement() -> Ledger {
     ledger.record_draw(&k, 1, 1_000);
     ledger.record_hold_opened(&k, 1, 600);
     ledger.record_slice_spent(&k, 1, 600);
-    ledger.settle(&k, 1, hold("a", 600), &usage("tokens", 450), &token);
+    ledger.settle(&k, 1, hold("a", 600), 450, &usage("tokens", 450), &token);
     ledger
 }
 
@@ -172,7 +172,7 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     let k = key("b");
     ledger.record_hold_opened(&k, 1, 200);
     ledger.record_slice_spent(&k, 1, 200);
-    ledger.settle(&k, 1, hold("a", 200), &usage("tokens", 200), &token);
+    ledger.settle(&k, 1, hold("a", 200), 200, &usage("tokens", 200), &token);
     assert!(verify(&checkpoint, &ledger.book().snapshot(), &AllWindowsOpen).is_empty());
 
     // One figure edited by hand: does not.

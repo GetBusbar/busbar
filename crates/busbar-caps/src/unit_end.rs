@@ -26,7 +26,7 @@
 //! let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
 //! let hold = Hold::open(&admit, PrincipalId::new("acct-1"), 10);
 //! let usage = Usage::report(&UsageToken::mint(&seal), Vec::new()).unwrap();
-//! let posted = Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+//! let posted = Posted::settle(hold, 0, &usage, &LedgerToken::mint(&seal));
 //! let end = UnitEnd::seal(&ExitToken::mint(&seal), Outcome::Completed, Ok(posted));
 //! assert!(end.outcome().is_completed());
 //! ```

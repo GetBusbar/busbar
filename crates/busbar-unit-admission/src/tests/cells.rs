@@ -732,6 +732,7 @@ fn the_door_opens_the_arrival_hold_and_it_reserves_nothing() {
     assert_eq!(hold.principal(), &PrincipalId::new("acct-1"));
     let _ = busbar_caps::Posted::settle(
         hold,
+        0,
         &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
             .expect("an empty report is within the bound"),
         &busbar_caps::LedgerToken::mint(&seal),

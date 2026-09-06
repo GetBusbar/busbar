@@ -407,10 +407,15 @@ mod tests {
             ledger.record_draw(&totals_key(s.bucket), DAY, i128::from(reserved));
             ledger.record_hold_opened(&totals_key(s.bucket), DAY, reserved);
             ledger.record_slice_spent(&totals_key(s.bucket), DAY, i128::from(reserved));
+            // The priced amount is what settles, and the report is what it was priced FROM: the
+            // lines here are raw token counts and their sum is not money at all. The legacy row
+            // accumulator below is the one place that still adds the raw quantities up, which is
+            // exactly where the previous release added them.
             ledger.settle(
                 &totals_key(s.bucket),
                 DAY,
                 Hold::open(&admit_token(), PrincipalId::new(s.bucket), reserved),
+                posting.priced_amount(),
                 &usage,
                 &token,
             );

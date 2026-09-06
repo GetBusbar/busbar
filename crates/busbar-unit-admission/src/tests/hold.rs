@@ -131,6 +131,7 @@ fn the_door_sizes_the_reservation_off_the_estimate() {
             assert_eq!(hold.accrued(), 0);
             let _ = busbar_caps::Posted::settle(
                 hold,
+                0,
                 &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
                     .expect("no lines"),
                 &busbar_caps::LedgerToken::mint(&seal),
@@ -213,7 +214,8 @@ fn a_unit_the_door_admits_is_never_refused_by_hold_sizing() {
         }],
     )
     .expect("one line");
-    let posted = busbar_caps::Posted::settle(hold, &usage, &busbar_caps::LedgerToken::mint(&seal));
+    let posted =
+        busbar_caps::Posted::settle(hold, 9_000, &usage, &busbar_caps::LedgerToken::mint(&seal));
     assert_eq!(posted.settled(), 9_000, "the unit ran and posted in full");
     assert_eq!(posted.overdraft(), 8_999);
     assert!(posted
@@ -244,6 +246,7 @@ fn a_reservation_that_can_grow_grows_instead_of_carrying() {
     assert_eq!(hold.reserved(), 5_000);
     let _ = busbar_caps::Posted::settle(
         hold,
+        0,
         &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
             .expect("no lines"),
         &busbar_caps::LedgerToken::mint(&seal),

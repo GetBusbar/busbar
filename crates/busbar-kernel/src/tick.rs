@@ -299,8 +299,15 @@ pub fn sweep_settle(
                         Usage::report(&token, lines)
                     }
                     .expect("one usage line is always within the record's bound");
-                    let posted = Posted::settle(hold, &usage, &LedgerToken::mint(kernel.seal()))
-                        .flagged(flags);
+                    // As every other settling site: the table's `amount` is the money, and the
+                    // one line is the evidence it was derived from.
+                    let posted = Posted::settle(
+                        hold,
+                        u128::from(amount),
+                        &usage,
+                        &LedgerToken::mint(kernel.seal()),
+                    )
+                    .flagged(flags);
                     canary.settled();
                     Some(UnitEnd::seal(
                         &ExitToken::mint(kernel.seal()),

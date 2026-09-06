@@ -260,12 +260,13 @@ impl Durability {
         &mut self,
         at: &Settling<'_>,
         hold: busbar_caps::Hold,
+        priced_nanos: u128,
         usage: &busbar_caps::Usage,
         ledger: &busbar_caps::LedgerToken,
     ) -> Result<Settled, DurabilityLost> {
-        let settlement = self
-            .ledger
-            .settle_recording(at.key, at.window, hold, usage, ledger);
+        let settlement =
+            self.ledger
+                .settle_recording(at.key, at.window, hold, priced_nanos, usage, ledger);
         self.journal_settlement(at, settlement)
     }
 
@@ -1269,6 +1270,7 @@ mod tests {
             .settle(
                 &settling(&key, &durability_token),
                 hold,
+                4_200,
                 &usage,
                 &LedgerToken::mint(&seal),
             )
@@ -1329,6 +1331,7 @@ mod tests {
             .settle(
                 &settling(&key, &durability_token),
                 hold,
+                4_000,
                 &usage,
                 &LedgerToken::mint(&seal),
             )
@@ -1397,6 +1400,7 @@ mod tests {
             .settle(
                 &at,
                 Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
+                4_200,
                 &usage(4_200),
                 &LedgerToken::mint(&seal),
             )
@@ -1408,6 +1412,7 @@ mod tests {
             .record_hold_opened(&key, 86_400, 5_000);
         let posted = Posted::settle(
             Hold::open(&admit, PrincipalId::new("vk_both"), 5_000),
+            4_200,
             &usage(4_200),
             &LedgerToken::mint(&seal),
         );

@@ -132,7 +132,7 @@ fn the_cell_makes_the_one_transition_and_hands_back_the_arrival_hold() {
         .expect("the first admission wins");
     assert_eq!(arrival.reserved(), 0, "the arrival hold reserved nothing");
     assert_eq!(cell.state(), HoldCellState::Admitted);
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn two_holds_into_one_cell_fail_and_the_loser_comes_back() {
     let first = cell
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("first");
-    let _ = Posted::settle(first, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(first, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let rejected = cell
         .admit(Hold::open(&admit, who("acct-1"), 9_999), &admit)
@@ -159,7 +159,7 @@ fn two_holds_into_one_cell_fail_and_the_loser_comes_back() {
         HoldCellState::Admitted,
         "and the cell still holds the first one"
     );
-    let _ = Posted::settle(rejected.hold, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(rejected.hold, 0, &usage_of(&k, 0), &k.ledger_token());
 }
 
 #[test]
@@ -182,8 +182,8 @@ fn the_hold_is_taken_exactly_once_however_many_exits_race() {
         .admit(Hold::open(&admit, who("acct-1"), 1), &admit)
         .expect_err("a taken cell is final");
     assert_eq!(rejected.error, CellError::AlreadyTaken);
-    let _ = Posted::settle(rejected.hold, &usage_of(&k, 0), &k.ledger_token());
-    let _ = Posted::settle(taken, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(rejected.hold, 0, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(taken, 0, &usage_of(&k, 0), &k.ledger_token());
 }
 
 #[test]
@@ -206,7 +206,7 @@ fn two_threads_racing_the_take_produce_exactly_one_hold() {
                 let ledger = LedgerToken::mint(&seal);
                 let usage = UsageToken::mint(&seal);
                 let usage = Usage::report(&usage, Vec::new()).expect("empty is fine");
-                let _ = Posted::settle(hold, &usage, &ledger);
+                let _ = Posted::settle(hold, 0, &usage, &ledger);
             }
         }));
     }
@@ -249,7 +249,7 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
         let arrival = cell
             .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
             .expect("the parent passes the door");
-        let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+        let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
         let accrual = cell
             .accrue_child(&who("acct-1"), 250, &admit)
             .expect("an open parent takes the child's spend");
@@ -271,7 +271,7 @@ fn a_child_posting_racing_the_sweep_answers_under_one_guard() {
             if let Some(hold) = taken {
                 let usage =
                     Usage::report(&UsageToken::mint(&seal), Vec::new()).expect("empty is fine");
-                let _ = Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+                let _ = Posted::settle(hold, 0, &usage, &LedgerToken::mint(&seal));
             }
         });
 
@@ -334,7 +334,7 @@ fn a_hold_accrues_until_the_reservation_runs_out_then_tops_up() {
     hold.record_overdraft(5);
     assert_eq!(hold.overdraft(), 5);
 
-    let posted = Posted::settle(hold, &usage_of(&k, 155), &k.ledger_token());
+    let posted = Posted::settle(hold, 155, &usage_of(&k, 155), &k.ledger_token());
     assert_eq!(posted.settled(), 155);
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
     assert!(!posted.flags().contains(PostingFlags::RECOVERED));
@@ -355,7 +355,7 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     let arrival = cell
         .admit(Hold::open(&admit, who("acct-1"), 1_000), &admit)
         .expect("admitted");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     // A stranger's child cannot spend this admission.
     assert_eq!(
@@ -391,7 +391,7 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
     assert_eq!(posted.reserved(), 0);
     assert_eq!(posted.overdraft(), 10);
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
-    let _ = Posted::settle(parent, &usage_of(&k, 10), &k.ledger_token());
+    let _ = Posted::settle(parent, 10, &usage_of(&k, 10), &k.ledger_token());
 }
 
 #[test]
@@ -402,7 +402,7 @@ fn a_recovered_hold_says_so_all_the_way_onto_the_posting() {
     assert!(hold.is_recovered());
     assert_eq!(hold.accrued(), 250, "the last checkpointed accrual");
 
-    let posted = Posted::settle(hold, &usage_of(&k, 250), &k.ledger_token());
+    let posted = Posted::settle(hold, 250, &usage_of(&k, 250), &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::RECOVERED));
 }
 
@@ -423,7 +423,7 @@ fn an_estimated_usage_report_flags_the_posting() {
     .expect("within the bound");
     assert!(floor.is_estimated());
 
-    let posted = Posted::settle(hold, &floor, &k.ledger_token());
+    let posted = Posted::settle(hold, 100, &floor, &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::ESTIMATED));
     assert!(!posted.flags().is_clean());
 }
@@ -454,7 +454,7 @@ fn a_unit_end_carries_its_posting_or_the_loss_that_replaced_it() {
     let exit = k.exit_token();
 
     let hold = Hold::open(&admit, who("acct-1"), 10);
-    let posted = Posted::settle(hold, &usage_of(&k, 10), &k.ledger_token());
+    let posted = Posted::settle(hold, 10, &usage_of(&k, 10), &k.ledger_token());
     let end = UnitEnd::seal(&exit, Outcome::Completed, Ok(posted));
     assert!(end.outcome().is_completed());
     assert_eq!(end.posted().map(Posted::settled), Ok(10));
@@ -750,7 +750,7 @@ fn the_doors_answer_is_one_of_three_shapes() {
     let decision = Decision::proceed(&token, Admission::Own(Hold::open(&admit, who("acct-1"), 5)));
     match decision.into_result(&k.seal).expect("proceeds") {
         Admission::Own(hold) => {
-            let _ = Posted::settle(hold, &usage_of(&k, 5), &k.ledger_token());
+            let _ = Posted::settle(hold, 5, &usage_of(&k, 5), &k.ledger_token());
         }
         other => panic!("expected the unit's own hold, got {other:?}"),
     }
@@ -778,7 +778,7 @@ fn a_child_posts_inside_its_parent_while_the_parent_is_open() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let accrual = parent
         .accrue_child(&who("acct-1"), 250, &admit)
@@ -876,14 +876,14 @@ fn a_child_whose_parent_exited_gets_its_accrual_back_and_posts_late() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
     let accrual = parent
         .accrue_child(&who("acct-1"), 250, &admit)
         .expect("an open parent takes the child's spend");
 
     // The parent exits while the child is still running.
     let taken = parent.take(&k.exit_token()).expect("the parent's own exit");
-    let _ = Posted::settle(taken, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(taken, 0, &usage_of(&k, 0), &k.ledger_token());
 
     let handed_back = Posted::into_parent(accrual, &parent, &k.ledger_token())
         .expect_err("a parent that has gone cannot carry it");
@@ -909,7 +909,7 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
     let arrival = parent
         .admit(Hold::open(&admit, who("acct-1"), 5_000), &admit)
         .expect("the parent passes the door");
-    let _ = Posted::settle(arrival, &usage_of(&k, 0), &k.ledger_token());
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
     let accrual = parent
         .accrue_child(&who("acct-1"), 250, &admit)
         .expect("an open parent takes the child's spend");
@@ -919,7 +919,7 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
     let converted = accrual.convert_at_parent_exit(1_000, &admit);
     assert_eq!(converted.reserved(), 1_000);
     assert_eq!(converted.principal(), &who("acct-1"));
-    let posted = Posted::settle(converted, &usage_of(&k, 250), &k.ledger_token());
+    let posted = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
     assert_eq!(posted.settled(), 250);
     assert!(
         !posted.flags().contains(PostingFlags::LATE_ACCRUAL),
@@ -969,7 +969,7 @@ fn a_spend_no_headroom_can_cover_is_carried_and_never_refused() {
     assert_eq!(spend.overdraft, 500);
     assert_eq!(hold.accrued(), 1_500);
     assert_eq!(hold.overdraft(), 500);
-    let posted = Posted::settle(hold, &usage_of(&k, 1_500), &k.ledger_token());
+    let posted = Posted::settle(hold, 1_500, &usage_of(&k, 1_500), &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::OVERDRAFT));
     assert_eq!(posted.overdraft(), 500);
     assert_eq!(posted.released(), 0);
@@ -1002,7 +1002,7 @@ fn the_residual_of_an_underspent_hold_is_what_settlement_releases() {
     let k = Kernel::new();
     let mut hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
     hold.spend(250, u64::MAX);
-    let posted = Posted::settle(hold, &usage_of(&k, 250), &k.ledger_token());
+    let posted = Posted::settle(hold, 250, &usage_of(&k, 250), &k.ledger_token());
     assert_eq!(posted.released(), 750);
     assert_eq!(posted.overdraft(), 0);
 }

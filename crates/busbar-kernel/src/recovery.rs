@@ -93,7 +93,16 @@ pub fn settle(kernel: &Kernel, record: &HoldRecord, canary: &Canary) -> Posted {
         }],
     )
     .expect("one usage line is always within the record's bound");
-    let posted = Posted::settle(hold, &usage, &LedgerToken::mint(kernel.seal())).flagged(flags);
+    // The settlement table's `amount` IS the money figure, in the nano-units the hold reserved
+    // in; the single usage line above carries the same number as its own class's quantity because
+    // that class IS nano-units. The posting takes the money figure from where it is money.
+    let posted = Posted::settle(
+        hold,
+        u128::from(amount),
+        &usage,
+        &LedgerToken::mint(kernel.seal()),
+    )
+    .flagged(flags);
     canary.settled();
     posted
 }

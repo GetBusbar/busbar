@@ -998,7 +998,13 @@ pub fn exit<U: Units>(
             };
             let posted = match usage {
                 Ok(usage) => {
-                    Ok(Posted::settle(hold, &usage, &LedgerToken::mint(seal)).flagged(flags))
+                    // `amount` is the settlement table's money figure, in nano-units; the line
+                    // above carries it as a quantity against whichever class the unit metered on.
+                    // The posting settles the money, and reads the report for its evidence.
+                    Ok(
+                        Posted::settle(hold, u128::from(amount), &usage, &LedgerToken::mint(seal))
+                            .flagged(flags),
+                    )
                 }
                 // A usage report the record cannot hold is a durability failure, not a discount:
                 // the unit delivered value it cannot prove it recorded.

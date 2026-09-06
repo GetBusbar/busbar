@@ -26,7 +26,7 @@
 //! let hold = Hold::open(&admit, PrincipalId::new("acct-1"), 1_000);
 //! assert_eq!(hold.remaining(), 1_000);
 //! let usage = Usage::report(&UsageToken::mint(&seal), Vec::new()).unwrap();
-//! let posted = Posted::settle(hold, &usage, &LedgerToken::mint(&seal));
+//! let posted = Posted::settle(hold, 0, &usage, &LedgerToken::mint(&seal));
 //! assert_eq!(posted.settled(), 0);
 //! ```
 //!
@@ -618,11 +618,36 @@ pub struct Posted {
 }
 
 impl Posted {
-    /// Settle a hold against what the unit actually used. Takes the hold by value: a hold that has
-    /// been settled no longer exists, so a second settlement of the same hold cannot be written.
-    pub fn settle(hold: Hold, usage: &Usage, _token: &LedgerToken) -> Self {
+    /// Settle a hold against what the unit's usage priced at. Takes the hold by value: a hold that
+    /// has been settled no longer exists, so a second settlement of the same hold cannot be
+    /// written.
+    ///
+    /// `priced_nanos` is the money figure — the cost unit's priced total for `usage`, in the same
+    /// nano-units the hold reserved in. It is a separate argument rather than something derived
+    /// from `usage` here because a usage report is not money: each of its lines is a quantity in
+    /// its own meter class's unit, and summing seconds of audio and bytes relayed produces a number
+    /// that is in no unit at all. Subtracting that from a reservation in nano-units is what the
+    /// residual, the overdraft carried out and every legacy row derived from the two used to do.
+    /// The report is still taken, because the lines are what the posting is evidence FOR, and
+    /// because whether the destination confirmed them or the node floored them travels from here
+    /// onto the record.
+    ///
+    /// A priced total wider than the reservation's own width settles at the ceiling rather than
+    /// wrapping: there is no amount above it to post, and a wrap would post nearly nothing for the
+    /// most expensive unit the node has ever run.
+    pub fn settle(hold: Hold, priced_nanos: u128, usage: &Usage, _token: &LedgerToken) -> Self {
+        // Read the figures out before the principal moves: the hold is owned here, has no Drop,
+        // and its two sibling constructors both move theirs.
+        let reserved = hold.reserved();
+        let overdraft = hold.overdraft();
+        let settled = u64::try_from(priced_nanos).unwrap_or(u64::MAX);
+
         let mut flags = PostingFlags::NONE;
-        if hold.overdraft() > 0 {
+        // Two ways to be overdrawn, and the posting has to say so for both. The hold's counter
+        // knows what the unit spent against a slice that would not grow; the comparison knows what
+        // the unit's usage priced at against what was ever held back for it. A settlement above the
+        // reservation is value delivered with nothing behind it whether or not the door noticed.
+        if overdraft > 0 || settled > reserved {
             flags = flags.with(PostingFlags::OVERDRAFT);
         }
         if hold.is_recovered() {
@@ -631,14 +656,10 @@ impl Posted {
         if usage.is_estimated() {
             flags = flags.with(PostingFlags::ESTIMATED);
         }
-        // Read the two figures out before the principal moves: the hold is owned here, has no
-        // Drop, and its two sibling constructors both move theirs.
-        let reserved = hold.reserved();
-        let overdraft = hold.overdraft();
         Posted {
             principal: hold.principal,
             reserved,
-            settled: usage.total(),
+            settled,
             overdraft,
             flags,
         }

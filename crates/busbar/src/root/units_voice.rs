@@ -1785,6 +1785,7 @@ mod tests {
                 assert_eq!(hold.accrued(), 0, "a reservation is not a spend");
                 let _ = busbar_caps::Posted::settle(
                     hold,
+                    0,
                     &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
                         .expect("empty"),
                     &busbar_caps::LedgerToken::mint(&seal),
@@ -1921,8 +1922,12 @@ mod tests {
             }],
         )
         .expect("one line");
-        let posted =
-            busbar_caps::Posted::settle(hold, &usage, &busbar_caps::LedgerToken::mint(&seal));
+        let posted = busbar_caps::Posted::settle(
+            hold,
+            u128::from(reserved + 7_000),
+            &usage,
+            &busbar_caps::LedgerToken::mint(&seal),
+        );
         assert!(posted
             .flags()
             .contains(busbar_caps::PostingFlags::OVERDRAFT));
