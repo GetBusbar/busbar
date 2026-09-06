@@ -671,6 +671,22 @@ impl Transport for HttpTransport {
         let method = field("method").unwrap_or(b"POST");
         let path = field("path").unwrap_or(b"/");
 
+        // A CR, an LF or a NUL anywhere in a name, a value, the method or the path is a byte that
+        // ENDS a line on this wire. Writing one through means the caller chooses where this
+        // transport's header block ends and what comes after it: a value of
+        // `x\r\nauthorization: bearer ...` is not a header value, it is a second header, injected.
+        // The check is before the first byte is written, so nothing half-built ever reaches the
+        // arena.
+        let clean = |v: &[u8]| !v.iter().any(|b| matches!(b, b'\r' | b'\n' | 0));
+        if !clean(method) || !clean(path) {
+            return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+        }
+        for (name, value) in fields {
+            if !clean(name.as_bytes()) || !clean(value) {
+                return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+            }
+        }
+
         let mut out = Vec::with_capacity(body.len() + 128);
         out.extend_from_slice(method);
         out.push(b' ');

@@ -866,6 +866,41 @@ fn the_envelope_encodes_as_an_http_message() {
     assert_eq!(parsed.body, b"{\"model\":\"m\"}");
 }
 
+/// A CR or an LF in a field is not data on this wire: it ENDS the line. A caller that can put one
+/// in a value chooses where this transport's header block ends and what stands after it — a second
+/// header, a body boundary, a whole second request. NUL is refused with them: nothing on this wire
+/// carries one, and a reader that stops at it reads a different message than the one written.
+#[test]
+fn a_field_cannot_smuggle_a_line_ending_into_the_header_block() {
+    let transport = HttpTransport::new(ClientSettings::default());
+    let arena = TestArena;
+    let poisoned: &[(&str, &[u8])] = &[
+        ("x-note", b"ok\r\nauthorization: bearer stolen".as_slice()),
+        ("x-note", b"ok\nauthorization: bearer stolen".as_slice()),
+        ("x-note", b"ok\rmore".as_slice()),
+        ("x-note", b"ok\0more".as_slice()),
+        ("bad\r\nname", b"ok".as_slice()),
+        ("method", b"GET / HTTP/1.1\r\nHost: elsewhere".as_slice()),
+        ("path", b"/a\r\nHost: elsewhere".as_slice()),
+    ];
+    for field in poisoned {
+        let err = transport
+            .encode_envelope(std::slice::from_ref(field), b"body", &arena)
+            .expect_err("a field carrying a line ending is not encodable");
+        assert_eq!(
+            err,
+            busbar_contract_transport::wire::Encode::Unrepresentable,
+            "field {:?} was written through",
+            field.0
+        );
+    }
+    // And an ordinary envelope beside them still encodes, so the check refuses injection rather
+    // than refusing headers.
+    transport
+        .encode_envelope(&[("x-note", b"ok".as_slice())], b"body", &arena)
+        .expect("a clean field still encodes");
+}
+
 /// A test arena that hands back what it was given. The real one is the kernel's per-unit one;
 /// what this stands in for is only "the bytes come back with the arena's lifetime".
 struct TestArena;
