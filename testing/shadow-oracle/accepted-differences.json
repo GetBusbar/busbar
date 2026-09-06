@@ -65,10 +65,20 @@
       "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
       "classes": [
         "body",
-        "effects.readback",
         "headers"
       ],
-      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. The same fields appear in the readback of a hook write."
+      "rationale": "Hook views gain fires_at/groups/phase; the overlay-section 404 lists the new sections; openapi.json adds the mcp/a2a endpoints. Every 1.5.5 field is unchanged. SPLIT 2026-09-05 (round-3 audit): effects.readback moved out of this improvement entry into F-011r. effects.readback is now a MONEY class (diff-cells.py rates it 10: it is the proof that the write the cell made actually persisted, and as what), and the readback half is not purely additive — the hook view's always-null `at` field is REMOVED in favour of fires_at, which is a declared breaking change and needs a changelog line."
+    },
+    {
+      "id": "F-011r hook write readback: `at` gives way to `fires_at`",
+      "kind": "breaking",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage; split out 2026-09-05 (round-3 audit)",
+      "cells": "^admin\\.ops\\|(PostHooks|PutHooksName|PatchHooksNameSettings|DeleteHooksName)\\|ok$",
+      "classes": [
+        "effects.readback"
+      ],
+      "rationale": "The follow-up GET a hook write's cell performs reads the same hook view the GET cells read: it gains fires_at/groups/phase and LOSES the always-null `at` field. The additive half is F-011's; the removal is a declared 1.6.0 break named in the CHANGELOG's rewritten-spellings paragraph, so the readback class it moves is registered here as kind=breaking rather than folded into an improvement. Scoped to exactly the four cells that HAVE an effects.readback in the golden (admin.ops|PostHooks|ok, |PutHooksName|ok, |PatchHooksNameSettings|ok, |DeleteHooksName|ok); admin.ops|PostHooks|if-match-stale and every hooks|* cell record no readback at all. The readback's status and path are unchanged in all four — only the view's field set moves.",
+      "changelog": "1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for you by --migrate-config)"
     },
     {
       "id": "F-013 validation wording",

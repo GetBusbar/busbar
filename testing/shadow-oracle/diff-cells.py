@@ -55,9 +55,18 @@ CLASS_WEIGHT = {"missing.golden": 10, "missing.candidate": 10, "status": 10, "ef
                 "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1, "effects.egress": 10, "effects.readback": 10, "effects.files": 10}
 # The classes that are MONEY: an accepted difference may only carry one of these if it is a declared
 # breaking change with a changelog line. Usage that a restart did not preserve, and a store the
-# binary could not write to, are both money — the request statuses look fine either way.
+# binary could not write to, are both money — the request statuses look fine either way. This set is
+# kept in lockstep with CLASS_WEIGHT: every class this file rates 10 is a class no `improvement`
+# entry may forgive. effects.egress (what busbar SENT upstream — a changed egress body is a changed
+# bill and a changed prompt), effects.readback (whether the write the cell made actually persisted,
+# and as what) and effects.files (a binary writing a WAL/keyset/probe file where 1.5.5 wrote nothing,
+# invisible in every other class) were rated 10 but omitted here, so a plain `improvement` entry
+# could waive them.
 MONEY_CLASSES = {"status", "effects.usage", "effects.usage_after_restart", "effects.store_errors",
-                 "missing.candidate"}
+                 "missing.candidate", "effects.egress", "effects.readback", "effects.files"}
+assert MONEY_CLASSES <= set(CLASS_ORDER)
+assert {k for k, w in CLASS_WEIGHT.items() if w == 10} == MONEY_CLASSES | {"missing.golden"}, \
+    "MONEY_CLASSES must name every class CLASS_WEIGHT rates 10 (missing.golden is a recorder bug, never acceptable at all)"
 # Families where BODY bytes are the contract itself (admin responses, boot messages, CLI output).
 BODY_IS_CONTRACT = {"admin.ops", "boot.refusal", "boot.warning", "config.migrate", "cli", "ops.scrape"}
 
