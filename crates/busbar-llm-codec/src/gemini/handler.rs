@@ -729,44 +729,59 @@ pub fn read_speech_request(
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
 pub fn read_speech_response(wire: &[u8]) -> Result<crate::ir::audio::SpeechResp, CodecError> {
     // Real Gemini → JSON with inline base64 audio; mock/raw → binary body. Try JSON, fall back.
+    //
+    // WHICH BODY THE RAW FALLBACK IS FOR: a body that is NOT JSON at all. A body that DOES parse as
+    // JSON claims to be a Gemini response, and the only Gemini response shape that carries synthesis
+    // is the `inlineData` one — so a JSON body without it is a response this parse cannot read, not
+    // an audio container. Handing those bytes back as `audio/mpeg` served a JSON object to a client
+    // that asked for audio: an error envelope, a safety block, or a candidate with no audio part all
+    // arrived as a 200 whose body a player cannot open, with the upstream's own explanation buried
+    // inside bytes labelled as an MP3. It is refused here instead, and the buffered seam turns that
+    // refusal into the upstream-shaped error the caller can actually read.
     if let Ok(v) = serde_json::from_slice::<Value>(wire) {
-        if let Some(data) = v
+        let Some(data) = v
             .pointer("/candidates/0/content/parts/0/inlineData/data")
             .and_then(Value::as_str)
-        {
-            let mime = v
-                .pointer("/candidates/0/content/parts/0/inlineData/mimeType")
-                .and_then(Value::as_str)
-                .unwrap_or("audio/L16;codec=pcm;rate=24000")
-                .to_string();
-            let pcm = mime
-                .contains("pcm")
-                .then_some(busbar_substrate_values::media::PcmParams {
-                    sample_rate: 24000,
-                    channels: 1,
-                    bit_depth: 16,
-                });
-            // Validate the backend's base64 at this trust boundary: a corrupt payload must fail
-            // loud here (CodecError) rather than reach the egress writer, where a decode failure
-            // would silently become an empty 200 audio body. This is the response-side twin of
-            // the ingress inline_data validation.
-            if busbar_substrate_values::media::base64_decode(data).is_none() {
-                return Err(CodecError::Malformed(
-                    "gemini speech inlineData.data is not valid base64".into(),
-                ));
-            }
-            return Ok(SpeechResp {
-                audio: Some(MediaBlob {
-                    payload: MediaPayload::B64(data.to_string()),
-                    mime_type: mime,
-                    pcm,
-                }),
-                // Mark the synthesis billable so `billing()` is not `None` (see the raw-body arm).
-                usage: Some(busbar_substrate_values::billing::Billing::Flat),
-                ..Default::default()
+        else {
+            return Err(CodecError::Malformed(
+                "gemini speech response carries no candidates[0].content.parts[0].inlineData"
+                    .into(),
+            ));
+        };
+        let mime = v
+            .pointer("/candidates/0/content/parts/0/inlineData/mimeType")
+            .and_then(Value::as_str)
+            .unwrap_or("audio/L16;codec=pcm;rate=24000")
+            .to_string();
+        let pcm = mime
+            .contains("pcm")
+            .then_some(busbar_substrate_values::media::PcmParams {
+                sample_rate: 24000,
+                channels: 1,
+                bit_depth: 16,
             });
+        // Validate the backend's base64 at this trust boundary: a corrupt payload must fail
+        // loud here (CodecError) rather than reach the egress writer, where a decode failure
+        // would silently become an empty 200 audio body. This is the response-side twin of
+        // the ingress inline_data validation.
+        if busbar_substrate_values::media::base64_decode(data).is_none() {
+            return Err(CodecError::Malformed(
+                "gemini speech inlineData.data is not valid base64".into(),
+            ));
         }
+        return Ok(SpeechResp {
+            audio: Some(MediaBlob {
+                payload: MediaPayload::B64(data.to_string()),
+                mime_type: mime,
+                pcm,
+            }),
+            // Mark the synthesis billable so `billing()` is not `None` (see the raw-body arm).
+            usage: Some(busbar_substrate_values::billing::Billing::Flat),
+            ..Default::default()
+        });
     }
+    // NOT JSON at all — a raw audio container, which is what the mock and a direct-passthrough
+    // upstream deliver. These bytes really are the audio.
     Ok(SpeechResp {
         audio: Some(MediaBlob {
             payload: MediaPayload::Bytes(Bytes::copy_from_slice(wire)),

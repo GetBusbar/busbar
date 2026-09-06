@@ -438,6 +438,18 @@
         "headers"
       ],
       "rationale": "Spec fidelity: published include_usage says the token counts ride an ADDITIONAL final chunk whose choices array is always EMPTY. The Chat writer cannot emit two frames for one IR MessageDelta, so it folds the counts onto the chunk it does write and a downstream seam un-folds them into that trailing chunk. The writer folds whenever the terminal counts are nonzero -- NOT only when the delta carries a stop reason -- but both un-fold seams additionally required a non-null finish_reason beside the folded object. A backend that ends a stream with no stop reason (an incomplete Responses stream whose incomplete_details.reason the published spec does not name) produces exactly the chunk neither seam looked at: a client that asked for usage never received it, and a client that opted OUT was sent usage it had not asked for. Both seams now key on the folded object itself, which is only ever present because the writer put it there. Cross-dialect stream bodies only; the same-dialect byte-exact passthrough never reaches these seams, and no usage or billing class is waived -- busbar's own metering reads the IR-side tap upstream of this seam and never moved. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-14 a gemini speech response with no audio part is refused, not served as an mp3",
+      "kind": "improvement",
+      "changelog": "**A Gemini speech response that carries no audio is no longer served as an MP3.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|[a-z]+\\|gemini\\|speech\\|",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: Gemini returns synthesis as JSON with the audio at candidates[0].content.parts[0].inlineData; a mock or a direct passthrough returns the raw audio container instead, so the reader tries JSON and falls back to the bytes. 1.5.5's fallback caught the wrong bodies too: ANY body that parsed as JSON but carried no inlineData -- an error envelope, a SAFETY-blocked candidate, a text-only answer -- was handed back as a 200 whose Content-Type said audio/mpeg and whose bytes were a JSON object. A player could not open it and the upstream's own explanation was unreachable behind an audio label. 1.6.0 refuses a JSON body with no audio part (CodecError::Malformed, which the buffered seam turns into the upstream-shaped error) and leaves the not-JSON-at-all arm exactly as it was, so every real audio container reads byte-identically. This entry matches no cell in today's enumeration -- the llm cells all carry op=chat and no fixture drives the TTS leaf -- and is registered ahead of any speech fixture that would make it visible, the same posture S-8's caveat requires. No status or usage class is waived: the refusal REPLACES a 200 that was already the wrong answer. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
     }
   ]
 }

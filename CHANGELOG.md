@@ -150,6 +150,15 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `response.output_item.done` ever followed and the item was missing from the terminal `output[]`
   as well. The frame and the open are now decided together, as the text and reasoning items always
   did. A stream within the bound is unchanged. See [Spec fidelity](#spec-fidelity).
+- **A Gemini speech response that carries no audio is no longer served as an MP3.** Gemini returns
+  synthesis as JSON with the audio inline; the mock and a direct passthrough return the raw
+  container instead, so Busbar tries JSON and falls back to the bytes. 1.5.5's fallback also caught
+  every JSON body that parsed but carried no `inlineData` — an error envelope, a safety-blocked
+  candidate, a text-only answer — and handed it to the caller as a 200 labelled `audio/mpeg`, so a
+  player opened a JSON object and the upstream's own explanation was buried inside bytes claiming to
+  be audio. A JSON body without the audio part is now refused, and the error the upstream sent
+  reaches the caller as an error. A raw container still reads exactly as before.
+  See [Spec fidelity](#spec-fidelity).
 - **A Bedrock `Converse` response always carries `metrics`.** The published Converse output shape
   requires the member; 1.5.5's same-dialect passthrough dropped it when the upstream's own response
   did not carry one. 1.6.0 always emits it, with the normalized `latencyMs` for the call.
