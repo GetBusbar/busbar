@@ -228,7 +228,7 @@ run_selftest() {
               loc-ceilings:kernel:arena loc-ceilings:kernel:ticks manifest-allowlist:hook-test-plugin \
               source-denylist:busbar-plane-llm lean-core no-default-bodies sealed-unit-traits \
               hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
-              token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls; do
+              token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls seal-sites; do
     python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
     # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
     [ "$rc" -ne 3 ] || { note "SKIP $rule: nothing to plant (subject absent from this tree)"; continue; }

@@ -677,3 +677,53 @@ patterns = ["PB-[0-9]", "CG-[0-9]", "ARCHITECTURE\\.md §"]
 # the goal, and nothing may be added to it without the same argument.
 exempt_crates = ["busbar-unit-ledger"]
 max_hits = 0
+
+# ── 27. seal-sites ───────────────────────────────────────────────────────────────────────────────
+[rules.seal-sites]
+why = """busbar-caps writes down two lists of rules the compiler cannot carry: the hold escapes, \
+scanned above, and the seal sites -- the symbols that decide who may build a capability at all. \
+Its honesty table said CI scanned for both. It scanned for one. The three seal-site symbols are \
+the seal every token constructor needs, the recovery token that materialises a hold from a journal \
+record with no admission behind it, and the take that empties a hold cell; each is a crate boundary \
+Rust cannot police, so each is one audited name and this is the scan that audits it. Same shape as \
+hold-escapes and the same code path: literal substrings, `confined_to` scoping, one reviewed \
+known_sites ratchet, over production sources only."""
+scan_globs = ["crates/*/src"]
+max_sites = 0
+# The reviewed sites, each read before it was written down.
+#
+#   busbar-caps is the crate that DECLARES these capabilities: its own token, hold and unit-end
+#   modules necessarily spell their names, and its module documentation shows a kernel acquiring
+#   the seal so a reader can see what the sealed constructors are for. Declaring a capability is
+#   not minting one; what the rule is about is who may CALL these outside their one home.
+#
+#   The composition root (crates/busbar/src/root/) is where the process assembles its one kernel,
+#   so it is the second place that legitimately holds a seal: durability, the ledger identity, the
+#   migration and the per-dialect unit wirings are all root-side construction, not unit code.
+#
+#   busbar-llm's unit modules and busbar-unit-breaker's port carry the same seal spelling in
+#   fixtures that build a sealed token to show a step's shape.
+known_sites = [
+  "crates/busbar-caps/src/",
+  "crates/busbar/src/root/",
+  "crates/busbar-llm/src/unit/",
+  "crates/busbar-unit-breaker/src/port.rs",
+]
+
+# The seal-site list, mirroring crates/busbar-caps/fixtures/lint_rules.rs SEAL_SITES. A test in that
+# crate walks `lint::all()` and asserts this file names every symbol either list carries, with the
+# same scope both ways round, so the specification and the scan cannot drift apart.
+[rules.seal-sites.symbols.kernel-seal]
+symbol = "KernelSeal::acquire_for_kernel"
+confined_to = "kernel/src"
+because = "the seal is what mints every token; only the kernel may obtain one"
+
+[rules.seal-sites.symbols.recovery-token]
+symbol = "RecoveryToken"
+confined_to = "recovery"
+because = "it materialises a hold from a journal record with no admission behind it"
+
+[rules.seal-sites.symbols.hold-cell-take]
+symbol = "take(&ExitToken::mint("
+confined_to = "kernel/src"
+because = "there are three take sites -- the exit path, the sweep and the tick -- and no fourth"

@@ -1504,6 +1504,31 @@ def rule_hold_escapes(tree, cfg):
     path one file, and a path ending in `/` one directory.
     """
     c = cfg["rules"]["hold-escapes"]
+    return _symbol_table_scan(
+        tree, c, "hold-escapes",
+        "no production source deliberately forgets, leaks or unwind-smuggles a hold",
+        "deliberate hold escape(s)")
+
+
+def rule_seal_sites(tree, cfg):
+    """The symbols that decide who may build a capability at all, scanned for the same way.
+
+    busbar-caps names three of them in the same honesty table as the hold escapes -- the seal every
+    token constructor needs, the recovery token that materialises a hold with no admission behind
+    it, and the take that empties a hold cell -- and the table said CI scanned for them while
+    nothing did. This is that scan, sharing the escape scan's implementation exactly: the same
+    literal-substring reading, the same `confined_to` scoping and the same reviewed-site ratchet,
+    so the two rules cannot drift into meaning different things by the same words.
+    """
+    c = cfg["rules"]["seal-sites"]
+    return _symbol_table_scan(
+        tree, c, "seal-sites",
+        "no production source outside its one reviewed home names a capability-minting symbol",
+        "capability-minting symbol(s) out of place")
+
+
+def _symbol_table_scan(tree, c, rid, title, noun):
+    """One literal-substring scan over a `[rules.*.symbols]` table, shared by the two rules above."""
     files = [rel for d in _dirs_for_globs(tree.root, c["scan_globs"])
              for rel in tree.files if rel.startswith(os.path.relpath(d, tree.root) + os.sep)]
     known = list(c.get("known_sites", []))
@@ -1551,10 +1576,9 @@ def rule_hold_escapes(tree, cfg):
         parts.append("; ".join(offenders))
     if tracked:
         parts.append("reviewed escapes (qa/construction.toml known_sites): " + "; ".join(tracked))
-    detail = (f"{current} deliberate hold escape(s) in production source (ceiling {c['max_sites']}): "
+    detail = (f"{current} {noun} in production source (ceiling {c['max_sites']}): "
               + ("; ".join(parts) if parts else "none"))
-    return [row("hold-escapes", current <= c["max_sites"],
-                "no production source deliberately forgets, leaks or unwind-smuggles a hold",
+    return [row(rid, current <= c["max_sites"], title,
                 detail, current, c["max_sites"], c["why"], offenders)]
 
 
@@ -1728,6 +1752,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_sealed_unit_traits(tree, cfg)
     rows += rule_hold_discipline(tree, cfg)
     rows += rule_hold_escapes(tree, cfg)
+    rows += rule_seal_sites(tree, cfg)
     rows += rule_kernel_seal_impls(tree, cfg)
     rows += rule_forbid_unsafe(tree, cfg)
     rows += rule_secret_carrier_debug(tree, cfg)
@@ -1842,6 +1867,7 @@ def calibrate(rows, cfg, path):
         rules["loc-ceilings"]["kernel_files"][key]["ceiling"] = by_id[f"loc-ceilings:kernel:{key}"]["current"]
     rules["sealed-unit-traits"]["max_unsealed"] = by_id["sealed-unit-traits"]["current"]
     rules["hold-escapes"]["max_sites"] = by_id["hold-escapes"]["current"]
+    rules["seal-sites"]["max_sites"] = by_id["seal-sites"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(

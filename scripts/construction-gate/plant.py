@@ -193,11 +193,18 @@ def plant(rule, pristine, scratch, cfg, baseline):
         append(scratch, "crates/busbar-llm/src/engine/select.rs",
                "async fn planted_pick() { let _ = pick_among(a, b, c, d, e, f, g).await; }")
     elif rule == "token-sealed:kernel-seal":
-        # A unit crate's PRODUCTION source (not its own test module) minting the kernel seal
-        # directly -- the forged-seal case the unit test modules are allowed but production never
-        # is.
-        append(scratch, "crates/busbar-unit-admission/src/cells.rs",
+        # A plane's PRODUCTION unit source (not its test module) minting the kernel seal directly --
+        # the forged-seal case the unit test modules are allowed but production never is. The site
+        # is one the seal-sites ratchet already reviews, so this plant proves the token-sealed rule
+        # alone; seal-sites has its own plant below.
+        append(scratch, "crates/busbar-llm/src/unit/route.rs",
                "pub(crate) fn planted_forge_seal() { let _ = busbar_caps::KernelSeal::acquire_for_kernel(); }")
+    elif rule == "seal-sites":
+        # The recovery token is the seal-site symbol no other rule scans for: it materialises a hold
+        # from a journal record with no admission behind it, so naming it outside the recovery path
+        # is the whole violation. A unit crate's production source is nowhere near recovery.
+        append(scratch, "crates/busbar-unit-admission/src/cells.rs",
+               "pub(crate) fn planted_recovery() { let _: Option<busbar_caps::RecoveryToken> = None; }")
     elif rule == "token-sealed:admit-token-mint":
         append(scratch, "crates/busbar-unit-admission/src/cells.rs",
                "pub(crate) fn planted_forge_admit(seal: &busbar_caps::KernelSeal) { "

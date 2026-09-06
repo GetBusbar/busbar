@@ -82,13 +82,18 @@ pub const SEAL_SITES: &[LintRule] = &[
     },
     LintRule {
         symbol: "RecoveryToken",
-        scope: LintScope::ConfinedTo("kernel/src/recovery"),
-        because: "it materialises a hold from a journal record with no admission behind it",
+        scope: LintScope::ConfinedTo("recovery"),
+        because: "it materialises a hold from a journal record with no admission behind it, so \
+                  only the recovery path may name it; the capability crate that declares it is the \
+                  one reviewed exception, and the gate names that exception by file",
     },
     LintRule {
-        symbol: "HoldCell::take",
+        // The take is spelled on a `HoldCell` value rather than through the type, so the literal
+        // that finds every take site is the exit token the take demands.
+        symbol: "take(&ExitToken::mint(",
         scope: LintScope::ConfinedTo("kernel/src"),
-        because: "there are exactly two take sites, the exit path and the sweep, and no third",
+        because: "there are three take sites -- the exit path, the sweep and the tick -- all in \
+                  the kernel, and no fourth anywhere",
     },
 ];
 

@@ -748,7 +748,7 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
         "AssertUnwindSafe",
         "KernelSeal::acquire_for_kernel",
         "RecoveryToken",
-        "HoldCell::take",
+        "take(&ExitToken::mint(",
     ] {
         assert!(
             symbols.contains(&expected),
@@ -765,35 +765,58 @@ fn the_lint_hooks_name_every_escape_the_compiler_cannot_close() {
     }
 }
 
-/// The escape list is a specification; the gate is the enforcement. This is the join between them.
+/// The rule list is a specification; the gate is the enforcement. This is the join between them.
 ///
 /// The crate's honesty table says a CI scan looks for these symbols. That claim is only true while
-/// the gate's own table names every one of them: a symbol written down here and absent there is a
-/// rule nobody runs, which is exactly the shape of claim this crate exists to refuse to make.
+/// the gate's own tables name every one of them: a symbol written down here and absent there is a
+/// rule nobody runs, which is exactly the shape of claim this crate exists to refuse to make. The
+/// walk is over `lint::all()`, not over one of the two lists — the seal-site rules were the half
+/// that no gate rule named, so a test that only read the escape list said nothing about them.
+///
+/// The scope is checked both ways round. A rule confined to a path that the gate bans outright is
+/// a gate that will fail on the one site the rule exists to permit; a rule banned everywhere that
+/// the gate confines to a path is a hole the size of that path.
 #[test]
-fn the_construction_gate_scans_for_every_escape_this_crate_names() {
+fn the_construction_gate_scans_for_every_symbol_this_crate_names() {
     let toml = include_str!("../../../qa/construction.toml");
-    let (_, escapes) = toml
-        .split_once("[rules.hold-escapes]")
-        .expect("the gate carries a hold-escapes rule");
 
-    for rule in lint::HOLD_ESCAPES {
+    for rule in lint::all() {
         let named = format!("symbol = {:?}", rule.symbol);
-        assert!(
-            escapes.contains(&named),
-            "qa/construction.toml does not scan for {}",
-            rule.symbol
-        );
-        if let lint::LintScope::ConfinedTo(path) = rule.scope {
-            assert!(
-                escapes.contains(&format!("confined_to = {path:?}")),
-                "{} is confined here but banned outright in the gate",
+        let (_, after) = toml
+            .split_once(&named)
+            .unwrap_or_else(|| panic!("qa/construction.toml does not scan for {}", rule.symbol));
+        // One symbol's entry is the lines up to the next blank line: its own scope and no other's.
+        let entry = after
+            .split("\n\n")
+            .next()
+            .expect("the entry ends somewhere");
+        match rule.scope {
+            lint::LintScope::ConfinedTo(path) => assert!(
+                entry.contains(&format!("confined_to = {path:?}")),
+                "{} is confined to {path} here and scoped otherwise in the gate",
                 rule.symbol
-            );
+            ),
+            lint::LintScope::BannedEverywhere => assert!(
+                entry.contains("confined_to = \"\""),
+                "{} is banned everywhere here and confined to somewhere in the gate",
+                rule.symbol
+            ),
         }
     }
-    // A ceiling above zero would let the scan pass with an escape in the tree.
-    assert!(escapes.contains("max_sites = 0"));
+
+    // A ceiling above zero would let either scan pass with an offending site in the tree.
+    for rule_name in ["[rules.hold-escapes]", "[rules.seal-sites]"] {
+        let (_, body) = toml
+            .split_once(rule_name)
+            .unwrap_or_else(|| panic!("the gate carries a {rule_name} rule"));
+        assert!(
+            body.split("\n[rules.")
+                .next()
+                .expect("the rule body ends somewhere")
+                .contains("max_sites = 0"),
+            "{rule_name} does not hold its ceiling at zero"
+        );
+    }
 }
 
 /// One vocabulary, two spellings, and a bridge that cannot be left incomplete.
