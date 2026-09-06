@@ -116,6 +116,17 @@ jobs:
   structure-lint:
     name: structure lint
     runs-on: ubuntu-latest
+    # 20 MINUTES, MEASURED. This job had no `timeout-minutes` and so inherited GitHub's 360-minute
+    # default: a hung step here would have burned six hours of runner time and, worse, left the
+    # required `ci umbrella` pending for six hours rather than reporting. Ten recent GREEN runs of
+    # this job (33740329183 … 33832446681) took 2m50s min / ~4m05s median / 4m30s max, and those
+    # commits ran 37 steps against this file's 46 — the six added gates (duplex-ws, ci-umbrella
+    # membership, kernel token-wire purity, no-deferral, inventory-ref, changelog register) put the
+    # realistic current ceiling near 6 minutes. 20 is ~3x that, and is already a house value
+    # (`llm-conformance`). The cost centre is `plane deletion test` (~2m50s of the run, a cargo
+    # build per plane crate), which grows with the plane count — so raise this deliberately when a
+    # plane is added rather than letting a real regression read as a hang.
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
