@@ -90,6 +90,7 @@ use busbar_plane_a2a::A2aPlane;
 use busbar_plane_admin::AdminPlane;
 use busbar_plane_llm::LlmPlane;
 use busbar_plane_mcp::McpPlane;
+#[cfg(feature = "plane-voice")]
 use busbar_plane_voice::VoicePlane;
 use busbar_transport_grpc::GrpcTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
@@ -97,6 +98,9 @@ use busbar_transport_sse::SseTransport;
 use busbar_transport_stdio::StdioTransport;
 use busbar_transport_tcp::TcpTransport;
 use busbar_transport_tls::TlsTransport;
+// The WS transport is the voice plane's edge and the one transport that leaves with its plane, so
+// its crate — and everything below it — is compiled only when voice is.
+#[cfg(feature = "plane-voice")]
 use busbar_transport_ws::WsTransport;
 
 /// Why a node will not boot.
@@ -158,6 +162,7 @@ pub struct ComposedTransports {
     pub sse: Arc<SseTransport>,
     /// WebSocket for ingress, built over HTTP — never over nothing. This is the instance an in-band
     /// upgrade arrives on, and the one registered under the `ws` key.
+    #[cfg(feature = "plane-voice")]
     pub ws: Arc<WsTransport>,
     /// WebSocket for a secure dial, built over TLS — the same key, composed a second way.
     ///
@@ -165,6 +170,7 @@ pub struct ComposedTransports {
     /// root's own handle, reached through [`ComposedTransports::dialer`], because the composition a
     /// `wss://` destination needs is not the composition an upgrade arrives on and one instance
     /// cannot be both.
+    #[cfg(feature = "plane-voice")]
     pub ws_tls: Arc<WsTransport>,
     /// gRPC, built over HTTP — never over nothing.
     pub grpc: Arc<GrpcTransport>,
@@ -183,6 +189,9 @@ impl ComposedTransports {
     /// which is a fact of the dial rather than of the registry.
     #[must_use]
     pub fn dialer(&self, key: &str, address: &UpstreamAddress) -> Option<Arc<dyn Transport>> {
+        #[cfg(not(feature = "plane-voice"))]
+        let _ = address;
+        #[cfg(feature = "plane-voice")]
         let secure = address
             .authority()
             .is_some_and(|authority| authority.starts_with("wss://"));
@@ -191,9 +200,11 @@ impl ComposedTransports {
             TlsTransport::KEY => Arc::clone(&self.tls) as Arc<dyn Transport>,
             HttpTransport::KEY => Arc::clone(&self.http) as Arc<dyn Transport>,
             SseTransport::KEY => Arc::clone(&self.sse) as Arc<dyn Transport>,
+            #[cfg(feature = "plane-voice")]
             <WsTransport as TransportMeta>::KEY if secure => {
                 Arc::clone(&self.ws_tls) as Arc<dyn Transport>
             }
+            #[cfg(feature = "plane-voice")]
             <WsTransport as TransportMeta>::KEY => Arc::clone(&self.ws) as Arc<dyn Transport>,
             GrpcTransport::KEY => Arc::clone(&self.grpc) as Arc<dyn Transport>,
             StdioTransport::KEY => Arc::clone(&self.stdio) as Arc<dyn Transport>,
@@ -235,12 +246,18 @@ pub fn plane_claims() -> Vec<PlaneClaim> {
         })
     }
 
-    claims_of::<LlmPlane>()
+    // Declaration order is what breaks precedence ties, so the planes are appended in the order the
+    // table has always read: llm, mcp, a2a, voice, admin. Voice's row is present exactly when its
+    // crate edge is — a claim from a plane this build does not register would name a plane, and a
+    // transport, that no request could ever reach.
+    let mut claims: Vec<PlaneClaim> = claims_of::<LlmPlane>()
         .chain(claims_of::<McpPlane>())
         .chain(claims_of::<A2aPlane>())
-        .chain(claims_of::<VoicePlane>())
-        .chain(claims_of::<AdminPlane>())
-        .collect()
+        .collect();
+    #[cfg(feature = "plane-voice")]
+    claims.extend(claims_of::<VoicePlane>());
+    claims.extend(claims_of::<AdminPlane>());
+    claims
 }
 
 /// Build the seven transports, bottom-up, composing the two that are only serviceable composed.
@@ -252,11 +269,13 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
     // continuation frames before anything above the transport sees it, so the ceiling has to be
     // stated at the handshake or it is not stated at all — and a node that refuses a body of a
     // given size over HTTP has no basis for holding a larger one over a socket it upgraded.
+    #[cfg(feature = "plane-voice")]
     let max_message_bytes = client_settings.request_body_max_bytes;
     let tcp = Arc::new(TcpTransport::new());
     let tls = Arc::new(TlsTransport::new());
     let http = Arc::new(HttpTransport::new(client_settings));
     let sse = Arc::new(SseTransport::new(Arc::clone(&http)));
+    #[cfg(feature = "plane-voice")]
     let ws = Arc::new(WsTransport::over_with_max_message_bytes(
         Arc::clone(&http) as Arc<dyn Transport>,
         max_message_bytes,
@@ -266,6 +285,7 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
     // the dial otherwise rather than put a cleartext upgrade on a wire the caller was told was
     // secure. Every realtime upstream this deployment reaches is `wss`, so without this instance
     // the refusal is the whole voice plane's answer.
+    #[cfg(feature = "plane-voice")]
     let ws_tls = Arc::new(WsTransport::over_with_max_message_bytes(
         Arc::clone(&tls) as Arc<dyn Transport>,
         max_message_bytes,
@@ -277,7 +297,9 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
         tls,
         http,
         sse,
+        #[cfg(feature = "plane-voice")]
         ws,
+        #[cfg(feature = "plane-voice")]
         ws_tls,
         grpc,
         stdio,
@@ -291,7 +313,7 @@ fn compose_transports(client_settings: ClientSettings) -> ComposedTransports {
 /// about what it did, because a check that re-derived its own inputs would agree with itself for
 /// free.
 fn registered_rows() -> Vec<Registered> {
-    vec![
+    let mut rows = vec![
         Registered {
             key: TcpTransport::KEY,
             composes_over: TcpTransport::COMPOSES_OVER,
@@ -316,22 +338,26 @@ fn registered_rows() -> Vec<Registered> {
             composes_over: SseTransport::COMPOSES_OVER,
             composed_over: Some(HttpTransport::KEY),
         },
-        Registered {
-            key: WsTransport::KEY,
-            composes_over: WsTransport::COMPOSES_OVER,
-            composed_over: Some(HttpTransport::KEY),
-        },
-        Registered {
-            key: GrpcTransport::KEY,
-            composes_over: GrpcTransport::COMPOSES_OVER,
-            composed_over: Some(HttpTransport::KEY),
-        },
-        Registered {
-            key: StdioTransport::KEY,
-            composes_over: StdioTransport::COMPOSES_OVER,
-            composed_over: None,
-        },
-    ]
+    ];
+    // WS goes in beside the others when the voice plane is compiled, and leaves with it: a row for a
+    // transport this build does not carry would be the root stating a composition it did not make.
+    #[cfg(feature = "plane-voice")]
+    rows.push(Registered {
+        key: WsTransport::KEY,
+        composes_over: WsTransport::COMPOSES_OVER,
+        composed_over: Some(HttpTransport::KEY),
+    });
+    rows.push(Registered {
+        key: GrpcTransport::KEY,
+        composes_over: GrpcTransport::COMPOSES_OVER,
+        composed_over: Some(HttpTransport::KEY),
+    });
+    rows.push(Registered {
+        key: StdioTransport::KEY,
+        composes_over: StdioTransport::COMPOSES_OVER,
+        composed_over: None,
+    });
+    rows
 }
 
 /// Register every axis and answer both boot checks.
@@ -409,27 +435,34 @@ fn check_claim_transports(
 fn register_all(transports: &ComposedTransports) -> Result<Registry, BootRefusal> {
     let mut registry = Registry::new();
 
-    for transport in [
+    let mut to_register = vec![
         Arc::clone(&transports.tcp) as Arc<dyn Plugin>,
         Arc::clone(&transports.tls) as Arc<dyn Plugin>,
         Arc::clone(&transports.http) as Arc<dyn Plugin>,
         Arc::clone(&transports.sse) as Arc<dyn Plugin>,
-        Arc::clone(&transports.ws) as Arc<dyn Plugin>,
-        Arc::clone(&transports.grpc) as Arc<dyn Plugin>,
-        Arc::clone(&transports.stdio) as Arc<dyn Plugin>,
-    ] {
+    ];
+    #[cfg(feature = "plane-voice")]
+    to_register.push(Arc::clone(&transports.ws) as Arc<dyn Plugin>);
+    to_register.push(Arc::clone(&transports.grpc) as Arc<dyn Plugin>);
+    to_register.push(Arc::clone(&transports.stdio) as Arc<dyn Plugin>);
+    for transport in to_register {
         registry
             .register(transport)
             .map_err(BootRefusal::Registry)?;
     }
 
-    for plane in [
+    let mut planes = vec![
         Arc::new(LlmPlane::EMPTY) as Arc<dyn Plugin>,
         Arc::new(McpPlane::EMPTY) as Arc<dyn Plugin>,
         Arc::new(A2aPlane::EMPTY) as Arc<dyn Plugin>,
-        Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>,
-        Arc::new(AdminPlane::new()) as Arc<dyn Plugin>,
-    ] {
+    ];
+    // The voice plane goes in with its own crate edge and leaves with it. It is the only plane that
+    // claims bytes on `ws`, so registering it in a build with no WS transport would be the root
+    // mounting a plane whose claims name a layer this binary does not carry.
+    #[cfg(feature = "plane-voice")]
+    planes.push(Arc::new(VoicePlane::EMPTY) as Arc<dyn Plugin>);
+    planes.push(Arc::new(AdminPlane::new()) as Arc<dyn Plugin>);
+    for plane in planes {
         registry.register(plane).map_err(BootRefusal::Registry)?;
     }
 
@@ -446,6 +479,7 @@ mod tests {
     ///
     /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
     /// the test that reads it for what a change to this array means.
+    #[cfg(feature = "plane-voice")]
     const SEALED_ORDER: &[&str] = &[
         "mcp ExactPath(\"/.well-known/oauth-protected-resource/mcp\")",
         "a2a ExactPath(\"/.well-known/oauth-protected-resource/a2a\")",
@@ -497,31 +531,53 @@ mod tests {
         "mcp StreamName(\"mcp\")",
     ];
 
+    /// Whether this build carries the voice plane — and therefore its WS transport, its registry row
+    /// and its four claims. Every pinned number below is a statement about ONE composition, and the
+    /// shipped one (voice on, since `plane-voice` is in `default`) is the one they are pinned
+    /// against; a build that compiled voice out is a different composition, not a smaller one.
+    const VOICE: bool = cfg!(feature = "plane-voice");
+
     /// Every transport and every plane goes into one registry, and both counts are what the design
     /// says they are. This is the half of the seal that does not depend on the claims.
     #[test]
     fn seven_transports_and_five_planes_register() {
         let transports = compose_transports(ClientSettings::default());
         let registry = register_all(&transports).expect("nothing collides on a key");
-        assert_eq!(registry.count(PluginKind::Transport), 7);
-        assert_eq!(registry.count(PluginKind::Plane), 5);
-        for key in ["tcp", "tls", "http", "sse", "ws", "grpc", "stdio"] {
+        assert_eq!(
+            registry.count(PluginKind::Transport),
+            if VOICE { 7 } else { 6 }
+        );
+        assert_eq!(registry.count(PluginKind::Plane), if VOICE { 5 } else { 4 });
+        for key in ["tcp", "tls", "http", "sse", "grpc", "stdio"] {
             assert!(
                 registry.resolve(PluginKind::Transport, key).is_some(),
                 "transport `{key}` is not registered"
             );
         }
-        for key in ["llm", "mcp", "a2a", "voice", "admin"] {
+        for key in ["llm", "mcp", "a2a", "admin"] {
             assert!(
                 registry.resolve(PluginKind::Plane, key).is_some(),
                 "plane `{key}` is not registered"
             );
         }
+        // The voice plane and its transport are present exactly together: neither is a thing this
+        // root registers without the other.
+        assert_eq!(
+            registry.resolve(PluginKind::Transport, "ws").is_some(),
+            VOICE
+        );
+        assert_eq!(
+            registry.resolve(PluginKind::Plane, "voice").is_some(),
+            VOICE
+        );
     }
 
     /// The measured claim total, one row per plane. It is pinned as a number because the number is
     /// what a reader checks the design's own table against; a plane that gains or loses a claim
     /// should have to say so here.
+    // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
+    // because the numbers below are that composition's, not a subset of it.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn the_planes_declare_forty_eight_claims() {
         let claims = plane_claims();
@@ -544,6 +600,9 @@ mod tests {
     /// constraints they are, rather than as fragments that overlap anything, takes them from 119 to
     /// 65 without ever answering "disjoint" for a pair one arrival satisfies, and naming the audio
     /// surface one path at a time rather than as a prefix took it from 65 to 63.
+    // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
+    // because the numbers below are that composition's, not a subset of it.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn one_hundred_and_fifty_three_cross_plane_pairs_overlap() {
         use busbar_kernel::grammar::family;
@@ -582,6 +641,9 @@ mod tests {
     ///
     /// A pair that fits none of these would be the interesting one: a conservative answer with no
     /// account of itself. There is none, and the assertion is that there is none.
+    // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
+    // because the numbers below are that composition's, not a subset of it.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
         use busbar_contract::grammar::PathSeg;
@@ -627,6 +689,9 @@ mod tests {
     /// silently: a pair that stops being resolved has either stopped overlapping or become a tie,
     /// and each of those is a different thing to have to explain. The refusal list is pinned empty,
     /// which is the whole claim of this file — the declared set of five planes seals.
+    // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
+    // because the numbers below are that composition's, not a subset of it.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
         let claims = plane_claims();
@@ -665,6 +730,9 @@ mod tests {
     /// answers which request. Each row is the plane and the selector, so a diff of this array reads
     /// as a routing change rather than as a permutation of opaque indices. A claim added, removed or
     /// respelled has to update it, on purpose, with the new order visible in the same diff.
+    // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
+    // because the numbers below are that composition's, not a subset of it.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn the_sealed_order_of_the_forty_eight_claims_is_pinned() {
         let claims = plane_claims();
@@ -839,7 +907,9 @@ mod tests {
         };
         // The two transports whose `new()` yields something that refuses every connection are the
         // two that must be built through `over`, and the rows say they were.
-        assert_eq!(composed_over("ws"), Some("http"));
+        if VOICE {
+            assert_eq!(composed_over("ws"), Some("http"));
+        }
         assert_eq!(composed_over("grpc"), Some("http"));
         assert_eq!(composed_over("sse"), Some("http"));
     }
@@ -938,6 +1008,9 @@ mod tests {
     /// seal answers. This is the assertion the previous shape of the test above could not make —
     /// the claims sealed, and the one transport gap was all that stood between the declared
     /// composition and a node that boots.
+    // Pinned against the SHIPPED composition (voice on). Compiled out with the voice plane
+    // because the numbers below are that composition's, not a subset of it.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
         let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
@@ -1013,6 +1086,7 @@ mod tests {
     /// on, and a dial-side instance over `tls`, which is the only composition under which `wss` is
     /// honest. A `ws://` destination still resolves to the ingress instance, so nothing that worked
     /// over cleartext quietly moved onto a different stack.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn a_secure_realtime_upstream_resolves_to_the_tls_composed_instance() {
         let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");

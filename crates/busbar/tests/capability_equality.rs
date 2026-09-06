@@ -725,11 +725,11 @@ fn the_root_leg_matrix_runs_once_per_leg() {
     // declare the module the leg's evidence lives in, or the leg is on and its cells are not there.
     let mod_rs = std::fs::read_to_string(root.join("crates/busbar/src/root/mod.rs"))
         .expect("the composition root's mod.rs must be readable");
-    let legs_obj = doc["root_legs"].as_object().expect("`root_legs` is an object");
+    let legs_obj = doc["root_legs"]
+        .as_object()
+        .expect("`root_legs` is an object");
     for leg in &compiled {
-        let file = legs_obj[*leg]["file"]
-            .as_str()
-            .expect("a leg names a file");
+        let file = legs_obj[*leg]["file"].as_str().expect("a leg names a file");
         let module = Path::new(file)
             .file_stem()
             .and_then(|s| s.to_str())
