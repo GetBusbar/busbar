@@ -783,6 +783,15 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     }
 }
 
+/// Whether a plan's legs fit the route plan the loop carries.
+///
+/// The bound belongs to the contract and is read from it here, so a plane cannot drift from the
+/// plan it is filling: the number this compares against and the number the plan holds are the same
+/// number, and there is nowhere to write a second one.
+fn plan_fits(legs: &[Leg]) -> bool {
+    legs.len() <= busbar_contract::MAX_LEGS
+}
+
 /// The words a caller sees when the name it asked for has no configured rate.
 ///
 /// Carried as one static because the trust unit takes it as one: the text names what was asked for
@@ -952,6 +961,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
+        // The plan has to FIT before any of it happens. The route plan the loop carries is bounded,
+        // and the legs are run below before they are put on it — so a plan longer than the bound
+        // used to run in full and then be trimmed to what fitted, with every leg past the bound
+        // already done and no part of the answer saying so. The bound is asked here, where the
+        // answer is still a refusal rather than a durable write to take back.
+        if !plan_fits(&self.draft.legs) {
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
+
         // The record legs, in the plan's order, before anything is dialled. They are what says
         // whether this caller may see the task at all and what the agent's own name for it is, and
         // the hop that follows carries that name.
@@ -1002,9 +1020,18 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
         let mut plan = RoutePlan::default();
         for leg in &self.draft.legs {
-            let _ = plan.legs.push(Leg {
-                destination: leg.destination,
-            });
+            // Unreachable, because the bound was asked at the top of this step. It is written as a
+            // refusal rather than ignored so that the day the two stop agreeing is a day this step
+            // says no, not a day a leg disappears off the plan it already ran.
+            if plan
+                .legs
+                .push(Leg {
+                    destination: leg.destination,
+                })
+                .is_err()
+            {
+                return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+            }
         }
         Decision::proceed(token, plan)
     }
@@ -1433,6 +1460,34 @@ mod tests {
                 format!("put {}", records::SCHEMA_TASK),
                 format!("append {}", records::SCHEMA_TASK_EVENT),
             ]
+        );
+    }
+
+    /// A plan longer than the route plan can carry does not fit, and the ninth leg is where it
+    /// stops fitting.
+    ///
+    /// The bound is the contract's, not this file's, and the question is asked before a leg runs.
+    /// The second half of this test is why: pushed rather than checked, the plan silently comes out
+    /// eight legs long, so the ninth leg would have happened and nothing in the answer would say it
+    /// had.
+    #[test]
+    fn a_plan_longer_than_the_route_plan_can_carry_does_not_fit() {
+        let nine: Vec<Leg> = (0..9)
+            .map(|_| leg_record(records::SCHEMA_TASK, records::OP_GET))
+            .collect();
+        assert!(!plan_fits(&nine));
+        assert!(plan_fits(&nine[..busbar_contract::MAX_LEGS]));
+
+        let mut plan = RoutePlan::default();
+        for leg in &nine {
+            let _ = plan.legs.push(Leg {
+                destination: leg.destination,
+            });
+        }
+        assert_eq!(
+            plan.legs.len(),
+            busbar_contract::MAX_LEGS,
+            "the plan truncates, which is what the check above exists to catch first"
         );
     }
 
