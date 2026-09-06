@@ -47,6 +47,11 @@ pub(crate) struct ConnState {
     pub(crate) reader: AsyncMutex<Option<SplitStream<Sock>>>,
     pub(crate) writer: AsyncMutex<SplitSink<Sock, Message>>,
     pub(crate) poisoned: AtomicBool,
+    /// Set by `close`, before anything is spawned. The frame pump holds its own handle on this
+    /// state, so removing the connection from the registry does not reach a pump already suspended
+    /// in a read: this is the fence that does, and it is what makes a close the end of the session
+    /// for the read side too rather than only for the registry.
+    pub(crate) closed: AtomicBool,
     /// The composed stack this connection stands on, bottom layer first, ending in `ws`. It is what
     /// the layer below reported plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
@@ -61,12 +66,17 @@ impl ConnState {
             reader: AsyncMutex::new(Some(reader)),
             writer: AsyncMutex::new(writer),
             poisoned: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
             chain,
         })
     }
 
     pub(crate) fn is_poisoned(&self) -> bool {
         self.poisoned.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 }
 

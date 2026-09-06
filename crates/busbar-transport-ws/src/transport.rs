@@ -445,7 +445,7 @@ impl Transport for WsTransport {
         Box::pin(futures::stream::unfold(
             (state, false),
             move |(state, done)| async move {
-                if done || state.is_poisoned() {
+                if done || state.is_poisoned() || state.is_closed() {
                     return None;
                 }
                 let mut slot = state.reader.lock().await;
@@ -513,6 +513,12 @@ impl Transport for WsTransport {
                     }
                 };
                 drop(held);
+                // Checked again on the way out, not only on the way in: this pump was already
+                // suspended in the read when the close was decided, and a frame that arrived
+                // afterwards belongs to a session the layer above has been told is over.
+                if state.is_closed() {
+                    return None;
+                }
                 match item {
                     None => None,
                     Some(result) => {
@@ -612,6 +618,10 @@ impl Transport for WsTransport {
     fn close(&self, conn: Conn, _reason: CloseReason) {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
+            // The fence goes up before anything is spawned, and before the courtesy frame goes
+            // out: leaving the registry is invisible to a pump that already holds this state, and
+            // a frame delivered after the close is one nothing upstream still owns.
+            state.closed.store(true, Ordering::Release);
             // The Close frame is a courtesy, and the connection is already finalised: the state has
             // left the registry, so nothing can cancel the task that sends it. It therefore cancels
             // itself. A peer whose receive window is full never accepts the frame, and without this

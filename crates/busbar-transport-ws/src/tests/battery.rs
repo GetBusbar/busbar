@@ -427,6 +427,42 @@ async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connectio
     assert_eq!(frame.bytes.as_slice(), b"after the queue");
 }
 
+/// Closing a connection ends it for the frame pump too. The pump holds its own handle on the
+/// connection state, so removing that state from the registry does not reach a pump already
+/// suspended in a read: without a fence the peer's next message is delivered to a session the
+/// kernel has already been told is over, and the layer above has nowhere to put it.
+#[tokio::test]
+async fn a_frame_arriving_after_the_close_ends_the_pump_rather_than_being_delivered() {
+    let t = Arc::new(WsTransport::new());
+    let (a, b) = pair(&t, 64 * 1024).await;
+
+    let pump = {
+        let (t, b) = (t.clone(), b.clone());
+        tokio::spawn(async move {
+            let mut frames = t.frames(b);
+            frames.next().await
+        })
+    };
+    // The pump is suspended in the read before the close, which is the case a fence set only at
+    // the top of the loop never sees.
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    t.close(b, CloseReason::Normal);
+
+    // The peer writes anyway — a message already in flight when the close was decided.
+    t.write(&a, StreamId(0), ArenaBytes::new(b"after the close"))
+        .await
+        .unwrap();
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), pump)
+        .await
+        .expect("the pump must end rather than hang")
+        .unwrap();
+    assert!(
+        ended.is_none(),
+        "a frame that arrived after the close must end the pump, not be delivered: {ended:?}"
+    );
+}
+
 #[tokio::test]
 async fn backpressure_is_bidirectional() {
     let t = Arc::new(WsTransport::new());
