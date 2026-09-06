@@ -70,9 +70,87 @@ if ! (cd "$here" && cargo build -p busbar-hook-test-plugin -p busbar-auth-static
   echo "land.sh: RED — example plugin cdylibs did not build (log: $plog)" >&2; exit 1
 fi
 
+# WHAT THE PICKS ACTUALLY TOUCHED. Used twice: to pick the cargo packages, and — the part that was
+# missing — to prove the picks that touch NO crate at all.
+picked_range="HEAD~$#"
+[ "$#" -gt 0 ] || picked_range="HEAD~1"
+touched="$(git -C "$here" diff --name-only "$picked_range" HEAD 2>/dev/null || true)"
+
 if [ -z "$tests" ] && [ $# -gt 0 ]; then
-  tests="$(git -C "$here" diff --name-only "HEAD~$#" HEAD | grep -o '^crates/[^/]*' | sort -u \
+  tests="$(printf '%s\n' "$touched" | grep -o '^crates/[^/]*' | sort -u \
     | while read -r d; do grep -m1 '^name = ' "$here/$d/Cargo.toml" 2>/dev/null | sed 's/name = "\(.*\)"/\1/'; done | tr '\n' ' ')"
+fi
+
+# ── THE GATE-TREE LEGS ────────────────────────────────────────────────────────────────────────────
+# A landing whose picks touch only `scripts/`, `.github/` or `testing/` selects NO cargo package —
+# the crate-directory grep above matches nothing — so `$tests` is empty, the test and clippy legs are
+# skipped, and with no `--gate` and no `--families` this script reached its final line having
+# executed not one check. It then printed `land.sh: GREEN — landed N commit(s)`, which is the exact
+# sentence an integrator reads as "these commits were proven". Landing a change to the GATES
+# THEMSELVES was the one case with no proof at all, which is precisely backwards: a broken gate
+# script is invisible to every other leg here, because every other leg is about the crates.
+#
+# So every touched shell/python/workflow file is parsed, and every touched script that advertises a
+# `--selftest` runs it. These are cheap (seconds) and they catch the two failures that actually
+# happen to a picked gate script: it no longer parses, and its own red-before-green cases no longer
+# hold. What ran is NAMED in the GREEN line at the bottom, so the word "green" carries its scope.
+proof_notes=""
+gate_files="$(printf '%s\n' "$touched" | grep -E '^(scripts|testing|\.github)/.*\.(sh|py|mjs|yml|yaml)$' || true)"
+n_parsed=0; n_selftests=0
+if [ -n "$gate_files" ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] && [ -f "$here/$f" ] || continue
+    case "$f" in
+      *.sh)
+        bash -n "$here/$f" || { echo "land.sh: RED — $f does not parse (bash -n)" >&2; exit 1; }
+        n_parsed=$((n_parsed + 1)) ;;
+      *.py)
+        python3 -m py_compile "$here/$f" || { echo "land.sh: RED — $f does not compile (py_compile)" >&2; exit 1; }
+        n_parsed=$((n_parsed + 1)) ;;
+      *.yml|*.yaml)
+        case "$f" in
+          .github/workflows/*)
+            if command -v actionlint >/dev/null 2>&1; then
+              (cd "$here" && actionlint "$f") || { echo "land.sh: RED — actionlint $f" >&2; exit 1; }
+              n_parsed=$((n_parsed + 1))
+            else
+              python3 -c 'import sys,yaml; yaml.safe_load(open(sys.argv[1]))' "$here/$f" \
+                || { echo "land.sh: RED — $f is not valid YAML" >&2; exit 1; }
+              n_parsed=$((n_parsed + 1))
+            fi ;;
+        esac ;;
+      *.mjs)
+        if command -v node >/dev/null 2>&1; then
+          node --check "$here/$f" || { echo "land.sh: RED — $f does not parse (node --check)" >&2; exit 1; }
+          n_parsed=$((n_parsed + 1))
+        fi ;;
+    esac
+    # …and its own self-test, where it has one. A gate script that has stopped discriminating is
+    # worse than one that fails to parse: it lands green and goes on reporting green forever.
+    slog="$here/target/land-selftest-$stamp.log"
+    case "$f" in
+      *.sh)
+        if grep -q -- '--selftest' "$here/$f"; then
+          if ! (cd "$here" && bash "$f" --selftest >"$slog" 2>&1); then
+            tail -20 "$slog" >&2
+            echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; exit 1
+          fi
+          n_selftests=$((n_selftests + 1))
+        fi ;;
+      *.py)
+        if grep -q -- '--selftest' "$here/$f"; then
+          if ! (cd "$here" && python3 "$f" --selftest >"$slog" 2>&1); then
+            tail -20 "$slog" >&2
+            echo "land.sh: RED — $f --selftest failed (log: $slog)" >&2; exit 1
+          fi
+          n_selftests=$((n_selftests + 1))
+        fi ;;
+    esac
+  done <<EOF
+$gate_files
+EOF
+  proof_notes="${n_parsed} gate file(s) parsed, ${n_selftests} self-test(s) green"
+  echo "land.sh: $proof_notes"
 fi
 if [ -n "$tests" ]; then
   args=""; for p in $tests; do args="$args -p $p"; done
@@ -134,4 +212,20 @@ if [ -n "$families" ]; then
     || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; exit 1; }
   echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed)"
 fi
+# ── THE GREEN LINE NAMES ITS SCOPE ────────────────────────────────────────────────────────────────
+# It used to read "GREEN — landed N commit(s)" whatever had run, including nothing. A verdict that
+# does not say what it measured is read as having measured everything.
+proved=""
+[ -n "$tests" ]       && proved="$proved cargo test+clippy ($tests);"
+[ -n "$proof_notes" ] && proved="$proved $proof_notes;"
+[ -n "$gate" ]        && proved="$proved construction rows ($gate);"
+[ -n "$families" ]    && proved="$proved oracle families ($families);"
+if [ -z "$proved" ]; then
+  echo "land.sh: RED — nothing was proven. The picks touched no crate, no gate script, no workflow" >&2
+  echo "land.sh:       and no oracle family, and no --tests/--gate/--families was given, so every" >&2
+  echo "land.sh:       leg above was skipped. A landing that ran no check is not a green landing —" >&2
+  echo "land.sh:       name what should have proven it, or say why the picks need proving by nothing." >&2
+  exit 1
+fi
 echo "land.sh: GREEN — landed $# commit(s) at $(git -C "$here" rev-parse --short HEAD)"
+echo "land.sh: proven by:$proved and nothing else. A green here is exactly that list."
