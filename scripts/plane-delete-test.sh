@@ -266,14 +266,64 @@ strip_workspace_edges() {
   done
 }
 
+# strip_feature_edges — remove any [features]-table entry that NAMES the removed plane crate, in EVERY
+# manifest in the scratch (root + every crate, including the bin): the hard forward
+# `"busbar-<P>/<feature>"`, the optional forward `"busbar-<P>?/<feature>"`, and the bare optional-dep
+# token `"dep:busbar-<P>"`. This is the dangle strip_workspace_edges (path deps only) cannot see: a
+# NEUTRAL crate can name the plane in its OWN feature table without the plane ever being a normal
+# dependency of that crate — busbar-core's `openapi-schema` forwards to
+# `busbar-llm/openapi-schema`, `busbar-mcp/openapi-schema`, `busbar-a2a/openapi-schema` while busbar-core
+# depends on those crates only as DEV-dependencies (which strip_workspace_edges already severs). Once the
+# crate is gone and its back-edge dep line is stripped, that feature string names a package that is no
+# longer ANY dependency of the manifest declaring it, and cargo refuses to load the manifest before a
+# single line compiles — the same manifest-load refusal strip_workspace_edges exists to prevent, one
+# table over. Removing a now-dangling feature ref is mechanical `git rm -r` cleanup, not a design change;
+# the crates that carried one are RECORDED in FEATURE_EDGE_CRATES and reported as residual coupling
+# exactly like EDGE_CRATES.
+FEATURE_EDGE_CRATES=""
+strip_feature_edges() {
+  local s="$1" p="$2" f t hit
+  FEATURE_EDGE_CRATES=""
+  for f in "$s/Cargo.toml" "$s"/crates/*/Cargo.toml; do
+    [ -f "$f" ] || continue
+    hit="$(grep -c -E "\"busbar-$p\\??/[^\"]*\"|\"dep:busbar-$p\"" "$f" 2>/dev/null)"; hit="${hit:-0}"
+    [ "$hit" -eq 0 ] && continue
+    FEATURE_EDGE_CRATES="$FEATURE_EDGE_CRATES $(basename "$(dirname "$f")")"
+    t="$f.plane-delete.tmp"
+    awk -v p="$p" '
+      function norm(line) {
+        gsub(/,[[:space:]]*,/, ", ", line)
+        gsub(/\[[[:space:]]*,/, "[", line)
+        gsub(/,[[:space:]]*\]/, "]", line)
+        gsub(/\[[[:space:]]*\]/, "[]", line)
+        return line
+      }
+      BEGIN {
+        hardpat = "\"busbar-" p "/[^\"]*\""
+        optpat  = "\"busbar-" p "\\?/[^\"]*\""
+        deptok  = "\"dep:busbar-" p "\""
+      }
+      {
+        line = $0
+        gsub(optpat, "", line)
+        gsub(hardpat, "", line)
+        gsub(deptok, "", line)
+        print norm(line)
+      }
+    ' "$f" >"$t" && mv "$t" "$f"
+  done
+}
+
 # apply_removal — the literal `git rm -r` reversal for one plane, in one scratch: (a) the crate dir,
-# (b) the workspace member, (c) the bin dep + feature, (d) any dangling path-dep back-edge elsewhere.
+# (b) the workspace member, (c) the bin dep + feature, (d) any dangling path-dep back-edge elsewhere,
+# (e) any dangling feature-table reference (hard/optional forward or bare `dep:` token) elsewhere.
 apply_removal() {
   local s="$1" p="$2"
   remove_crate_dir     "$s" "$p"
   drop_member          "$s" "$p"
   neutralise_bin       "$s" "$p"
   strip_workspace_edges "$s" "$p"
+  strip_feature_edges   "$s" "$p"
 }
 
 # ── PICKING A FREE PORT PAIR ─────────────────────────────────────────────────────────────────────
@@ -455,6 +505,10 @@ strong_form() {
     ylw "  residual manifest back-edge: neutral/other crate(s) declared a path-dep on busbar-$p —${EDGE_CRATES}"
     note "    (stripped as part of the removal; a bare \`git rm -r\` would dangle it)"
   fi
+  if [ -n "$FEATURE_EDGE_CRATES" ]; then
+    ylw "  residual feature-table back-edge: manifest(s) named busbar-$p in a [features] entry —${FEATURE_EDGE_CRATES}"
+    note "    (stripped as part of the removal; a bare \`git rm -r\` would dangle the feature string)"
+  fi
 
   # Leg 1 — the NEUTRAL crates (the owner's literal requirement).
   log="$CACHE_TARGET/.plane-delete-$p-neutral.log"; mkdir -p "$CACHE_TARGET"
@@ -521,10 +575,27 @@ strong_form() {
   return "$fail"
 }
 
+# plant_feature_ref — SELF-TEST ONLY: insert a synthetic `plant-feature-ref = [...]` entry naming plane
+# $2 (both the hard and optional forward forms) into the `[features]` table of manifest $1 — NOT
+# appended at end-of-file, which would land it in whatever table happens to be LAST in the manifest
+# (busbar-core's last table is `[dev-dependencies]`, where an array value is a TOML type error of its
+# own and would mask the thing being tested).
+plant_feature_ref() {
+  local f="$1" rp="$2" t
+  t="$f.plane-delete.tmp"
+  awk -v rp="$rp" '
+    { print }
+    /^\[features\]/ && !done {
+      printf "plant-feature-ref = [\"busbar-%s/plant\", \"busbar-%s?/plant\"]\n", rp, rp
+      done = 1
+    }
+  ' "$f" >"$t" && mv "$t" "$f"
+}
+
 # ── SELF-TEST — the harness cannot be lied to ─────────────────────────────────────────────────────
 run_selftest() {
   hdr "plane-delete-test SELF-TEST (the removal + verdict machinery proves itself)"
-  local fail=0 p s
+  local fail=0 p s core_toml
 
   # (1) REMOVAL EVIDENCE for EVERY plane (fast, no compile): the mutation really removes the crate dir,
   #     the members entry, and the bin dependency line. This is the unfakeable mechanism proof.
@@ -573,6 +644,47 @@ run_selftest() {
   else
     fail=1; note "FAIL  GREEN control: neutral crates did not compile after a clean removal of busbar-$rp"
     grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+  fi
+  rm -rf "$s"
+
+  # (4) FEATURE-REF PLANT — the manifest-level bug strip_feature_edges exists to close: a NEUTRAL crate's
+  #     OWN [features] table can name the removed plane without the plane ever being a normal dependency
+  #     of that crate (busbar-core's `openapi-schema` does exactly this for llm/mcp/a2a via a
+  #     dev-dependency back-edge). Plant a synthetic feature entry onto busbar-core naming $rp in BOTH
+  #     forms — hard `busbar-<rp>/plant` and optional `busbar-<rp>?/plant` — and prove: (RED) the removal
+  #     WITHOUT strip_feature_edges leaves it dangling and cargo refuses to load the manifest; (GREEN) the
+  #     real apply_removal (which calls strip_feature_edges) strips it and the neutral crate compiles.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  core_toml="$s/crates/busbar-core/Cargo.toml"
+  plant_feature_ref     "$core_toml" "$rp"
+  remove_crate_dir      "$s" "$rp"
+  drop_member           "$s" "$rp"
+  neutralise_bin        "$s" "$rp"
+  strip_workspace_edges "$s" "$rp"     # strip_feature_edges DELIBERATELY OMITTED
+  log="$CACHE_TARGET/.plane-delete-selftest-featref-red.log"
+  run_check "$s" "$log" -- -p busbar-core --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
+  if [ "$rc" -ne 0 ]; then
+    note "PASS  FEATURE-REF RED control: a planted busbar-$rp feature ref, left unstripped, → harness check returns non-zero"
+  else
+    fail=1; note "FAIL  FEATURE-REF RED control: a planted busbar-$rp feature ref compiled without being stripped — the gate would miss this class of coupling"
+  fi
+  rm -rf "$s"
+
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  core_toml="$s/crates/busbar-core/Cargo.toml"
+  plant_feature_ref "$core_toml" "$rp"
+  apply_removal "$s" "$rp"
+  if grep -qE "\"busbar-$rp/plant\"|\"busbar-$rp\\?/plant\"" "$core_toml"; then
+    fail=1; note "FAIL  FEATURE-REF GREEN control: apply_removal left the planted busbar-$rp feature ref in place"
+  else
+    log="$CACHE_TARGET/.plane-delete-selftest-featref-green.log"
+    run_check "$s" "$log" -- -p busbar-core --no-default-features --features "$(neutral_keep "$rp")"; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      note "PASS  FEATURE-REF GREEN control: apply_removal strips the planted busbar-$rp feature ref, neutral crate compiles"
+    else
+      fail=1; note "FAIL  FEATURE-REF GREEN control: planted-then-stripped feature ref still fails to compile"
+      grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+    fi
   fi
   rm -rf "$s"
 
