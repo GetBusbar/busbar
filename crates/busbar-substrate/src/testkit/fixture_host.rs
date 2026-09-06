@@ -212,6 +212,21 @@ impl FixtureHost {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
+    /// The ADMIT step's per-request FEE, landed on the presenting key's ledger row — the write side of
+    /// [`LedgerUsage::requests`]. Governance off, or a request that carries no resolved key, is charged
+    /// nothing (the ungoverned posture: there is no key to bill). Called once per admission decision,
+    /// so a plane that runs the door twice for one request reads back two fees, exactly as a
+    /// double-charging deployment would.
+    fn charge_request_fee(&self, gov: &PlaneRequestCtx) {
+        if !self.governed {
+            return;
+        }
+        let Some(key) = gov.key() else { return };
+        let mut inner = self.lock();
+        let entry = inner.ledger.entry(key.id.clone()).or_default();
+        entry.requests = entry.requests.saturating_add(1);
+    }
+
     fn now() -> u64 {
         crate::store::now()
     }
@@ -675,21 +690,23 @@ impl AdmissionHost for FixtureHost {
     }
     fn admission_door(
         &self,
-        _gov: &PlaneRequestCtx,
+        gov: &PlaneRequestCtx,
         _proto: &'static str,
         _pool: &str,
         _started: std::time::Instant,
         _charged_at: u64,
     ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>> {
+        self.charge_request_fee(gov);
         Ok((None, None))
     }
     fn admission_check(
         &self,
-        _gov: &PlaneRequestCtx,
+        gov: &PlaneRequestCtx,
         _proto: &'static str,
         _pool: &str,
         _charged_at: u64,
     ) -> Result<(Option<AdmitHandle>, Option<String>), Box<axum::response::Response>> {
+        self.charge_request_fee(gov);
         Ok((None, None))
     }
     fn finish_admitted(
@@ -899,3 +916,7 @@ impl LaneRuntime for InertLanes {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+#[path = "tests/fixture_host_tests.rs"]
+mod tests;
