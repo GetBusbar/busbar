@@ -3041,9 +3041,13 @@ fn test_sequence_number_monotonic_from_zero() {
     );
 }
 
-/// Regression: a SECOND stream (its own `response.created`) must restart its `sequence_number`
-/// from 0 — the counter is per-stream, not per-process. Exercises the reset-on-MessageStart
-/// contract so one stream's numbering never bleeds into the next on the same worker.
+/// Regression: a SECOND stream must restart its `sequence_number` from 0 — the counter is
+/// per-stream, not per-process, so one stream's numbering never bleeds into the next on the same
+/// worker. A new stream is a new writer: `ResponsesWriter` is an interior-mutable const, so each
+/// use inlines a fresh zeroed instance. Reusing ONE writer would no longer express this, because
+/// the reset is latched to the stream's FIRST `MessageStart` — a duplicate `MessageStart` inside a
+/// stream continues it rather than restarting it (see
+/// `responses_duplicate_message_start_does_not_restart_stream`).
 #[test]
 fn test_sequence_number_resets_per_stream() {
     let writer = ResponsesWriter;
@@ -3065,9 +3069,10 @@ fn test_sequence_number_resets_per_stream() {
     assert_eq!(a0.get("sequence_number").and_then(|s| s.as_u64()), Some(0));
     assert_eq!(a1.get("sequence_number").and_then(|s| s.as_u64()), Some(1));
 
-    // Stream B begins with its own created → counter resets to 0.
-    let (_, b0) = writer.write_response_event(&start()).expect("emit");
-    let (_, b1) = writer.write_response_event(&delta()).expect("emit");
+    // Stream B is a new stream, so a new writer → its counter starts at 0.
+    let writer_b = ResponsesWriter;
+    let (_, b0) = writer_b.write_response_event(&start()).expect("emit");
+    let (_, b1) = writer_b.write_response_event(&delta()).expect("emit");
     assert_eq!(
         b0.get("sequence_number").and_then(|s| s.as_u64()),
         Some(0),

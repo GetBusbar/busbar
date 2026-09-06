@@ -673,9 +673,13 @@ impl ProtocolWriter for ResponsesWriter {
 
     fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
         // The stream's opening event resets the per-stream `sequence_number` counter so each stream's
-        // sequence starts at 0. The reader gates `MessageStart` on `state.started`, so exactly one
-        // reset happens per stream.
-        if matches!(ev, IrStreamEvent::MessageStart { .. }) {
+        // sequence starts at 0. Only the FIRST `MessageStart` is that opening event: the writer
+        // cannot rely on seeing exactly one, because the Anthropic reader emits `MessageStart` 1:1
+        // with the upstream frame rather than gating it. The latch makes the reset idempotent per
+        // stream, so a duplicate continues the stream instead of restarting it.
+        if matches!(ev, IrStreamEvent::MessageStart { .. })
+            && !self.started.swap(true, Ordering::Relaxed)
+        {
             self.reset_sequence_number();
         }
 

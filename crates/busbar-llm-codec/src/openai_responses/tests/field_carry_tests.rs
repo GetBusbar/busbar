@@ -1057,6 +1057,78 @@ fn responses_stream_events_emitted_by_writer() {
     }
 }
 
+/// A duplicate `MessageStart` must not restart the stream. Five of the six readers gate
+/// `MessageStart` on `state.started`, but the Anthropic reader emits it 1:1 with the upstream
+/// `message_start` frame, so a responses-egress stream fed from an Anthropic ingress can see two.
+/// The second one must not rewind `sequence_number`, must not change `response.id` between
+/// `response.created` and `response.completed`, and must not drop the open text item.
+#[test]
+fn responses_duplicate_message_start_does_not_restart_stream() {
+    let w = ResponsesWriter;
+    let start = || crate::ir::IrStreamEvent::MessageStart {
+        role: crate::ir::IrRole::Assistant,
+        usage: None,
+        id: Some("resp_dup".to_string()),
+        created: Some(1_700_000_000),
+        model: Some("gpt-dup".to_string()),
+    };
+
+    let mut frames: Vec<(String, serde_json::Value)> = Vec::new();
+    frames.extend(w.write_response_events(&start()));
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::ir::IrBlockMeta::Text,
+        }),
+    );
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
+        }),
+    );
+    // The duplicate. Everything after it must continue the SAME stream.
+    frames.extend(w.write_response_events(&start()));
+    frames.extend(w.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 }));
+    frames.extend(
+        w.write_response_events(&crate::ir::IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: usage(1, 1),
+        }),
+    );
+
+    let seqs: Vec<u64> = frames
+        .iter()
+        .filter_map(|(_, d)| d["sequence_number"].as_u64())
+        .collect();
+    assert!(
+        seqs.windows(2).all(|w| w[0] < w[1]),
+        "sequence_number must be strictly increasing across the whole stream: {seqs:?}"
+    );
+
+    let created_id = frames
+        .iter()
+        .find(|(n, _)| n == EVT_RESPONSE_CREATED)
+        .map(|(_, d)| d["response"]["id"].clone())
+        .expect("response.created must be emitted");
+    let completed_id = frames
+        .iter()
+        .find(|(n, _)| n == EVT_RESPONSE_COMPLETED)
+        .map(|(_, d)| d["response"]["id"].clone())
+        .expect("response.completed must be emitted");
+    assert_eq!(
+        created_id, completed_id,
+        "the terminal event must replay the id response.created carried"
+    );
+
+    assert!(
+        frames.iter().any(|(n, _)| n == EVT_OUTPUT_TEXT_DONE),
+        "the text item opened before the duplicate must still close: {:?}",
+        frames.iter().map(|(n, _)| n).collect::<Vec<_>>()
+    );
+}
+
 /// responses/response/stream:response.incomplete
 #[test]
 fn responses_stream_incomplete_event_emitted() {

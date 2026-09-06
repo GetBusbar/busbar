@@ -29,7 +29,7 @@ use super::proto_codec::*;
 // THIS crate's own `proto_codec` rather than the ambiguous `busbar_substrate_values::proto::*` re-export.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 pub mod handler;
 mod reader;
@@ -1122,6 +1122,15 @@ pub struct ResponsesWriter {
     /// `AtomicU64` (not `Cell`) so the writer stays `Sync` as the `ProtocolWriter` trait requires;
     /// the stream is single-threaded at any instant, so `Relaxed` ordering is sufficient.
     sequence: AtomicU64,
+    /// Whether this stream's opening `MessageStart` has already been written. The per-stream reset
+    /// belongs to the FIRST one only, but the writer cannot assume it sees exactly one: five of the
+    /// six readers gate `MessageStart` on `state.started`, while the Anthropic reader emits it 1:1
+    /// with the upstream `message_start` frame. So a responses-egress stream fed from an Anthropic
+    /// ingress can carry a duplicate, and an ungated reset rewinds `sequence_number` to 0, mints a
+    /// different `response.id` between `response.created` and `response.completed`, and clears the
+    /// open-text set out from under an item that is still open. Latching here makes the reset
+    /// idempotent per stream. `AtomicBool` (not `Cell`) for the same `Sync` reason as `sequence`.
+    started: AtomicBool,
     /// Per-stream `response.id`. Captured on the opening `MessageStart` (the synthesized-or-
     /// forwarded id written into `response.created`) and replayed verbatim onto EVERY subsequent
     /// lifecycle event (`response.completed`/`response.incomplete`/`response.failed`). A native
@@ -1295,6 +1304,7 @@ struct ToolCallAccum {
 #[allow(clippy::declare_interior_mutable_const)]
 pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     sequence: AtomicU64::new(0),
+    started: AtomicBool::new(false),
     response_id: std::sync::Mutex::new(None),
     created_at: std::sync::Mutex::new(None),
     stamped_created_at: UNSTAMPED_CREATED_AT,
@@ -1321,6 +1331,9 @@ impl Clone for ResponsesWriter {
         // panicking on the request path.
         ResponsesWriter {
             sequence: AtomicU64::new(self.sequence.load(Ordering::Relaxed)),
+            // Carry the started latch too: a mid-stream `Protocol::clone` is still the SAME stream,
+            // so a duplicate `MessageStart` arriving after the clone must not reset it either.
+            started: AtomicBool::new(self.started.load(Ordering::Relaxed)),
             stamped_created_at: self.stamped_created_at,
             response_id: std::sync::Mutex::new(
                 self.response_id.lock().map(|id| id.clone()).unwrap_or(None),
