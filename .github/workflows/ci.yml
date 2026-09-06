@@ -1495,7 +1495,12 @@ jobs:
         run: |
           set -euo pipefail
           bash testing/shadow-oracle/fetch-golden.sh
-          for pl in store-sqlite headroom-hook webrequest-hook auth-oidc auth-ldap auth-github hashicorp-vault store-postgres store-mysql store-valkey; do
+          # The plugin set is DERIVED from the same digest file the cells and fetch-plugin.sh read,
+          # not restated here: a hand-kept copy of it goes stale the day a plugin is added, and the
+          # symptom is a plugins-family cell recording against a plugin that was never fetched.
+          plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
+          [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
+          for pl in $plugins; do
             bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
           done
       - name: Build the candidate (release, with the release public key)
