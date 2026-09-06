@@ -164,6 +164,51 @@ async fn begin_sets_httponly_secure_cookie_and_redirects() {
     );
 }
 
+/// An authorize URL a `HeaderValue` cannot represent must FAIL CLOSED, not panic. `Location` is the
+/// one plugin-authored header on this path, and `/auth/token` is anonymously reachable with no
+/// catch-panic layer anywhere in the tree — so building the 302 with `expect` turned a login-plugin
+/// bug (a raw newline in an interpolated hint, say) into a dead request task and an aborted
+/// connection. Each byte class below is one `HeaderValue` refuses; note that obs-text (>= 0x80) is
+/// NOT among them, so a non-ASCII authorize URL is representable and still redirects.
+#[tokio::test]
+async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
+    for bad in [
+        "https://idp.example.com/authorize\r\nX-Evil: 1", // CRLF
+        "https://idp.example.com/authorize\nX-Evil: 1",   // bare LF
+        "https://idp.example.com/authorize?x=\u{0}",      // NUL
+        "https://idp.example.com/authorize?x=\u{7f}",     // DEL
+    ] {
+        let app = crate::test_support::TestApp::new()
+            .public_url("https://busbar.example.com")
+            .login_method(
+                "microsoft",
+                Box::new(TestLogin {
+                    authorize_url: bad.to_string(),
+                    token_url: String::new(),
+                }),
+                Some("REAL-CLIENT-SECRET".into()),
+                None,
+                true,
+            )
+            .build();
+        let resp = begin(&app, "microsoft", false).await;
+        assert_eq!(
+            resp.status().as_u16(),
+            502,
+            "an unrepresentable authorize URL must fail closed as a misbehaving module: {bad:?}"
+        );
+        // Fail-closed means no redirect and no login cookie handed out for a flow that never began.
+        assert!(
+            resp.headers().get("location").is_none(),
+            "no Location may be emitted for {bad:?}"
+        );
+        assert!(
+            resp.headers().get("set-cookie").is_none(),
+            "no login cookie may be handed out for {bad:?}"
+        );
+    }
+}
+
 // ── callback: state + nonce guards ───────────────────────────────────────────────────────────────
 
 #[tokio::test]
