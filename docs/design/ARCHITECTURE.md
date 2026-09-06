@@ -1481,6 +1481,10 @@ injection is unified onto the degraded/fallback path so a fallback stream to an 
 longer bills zero tokens — registered as `improvement` (owner sign-off; money-affecting) ·
 busbar is a byte-governance router.
 
+### Decisions 2026-09-06 (owner)
+
+- **A challenge round runs every step, as `Principal::Anonymous`.** The loop took a challenge at step 1 as an answer for steps 2–4 as well and went straight to the zero-hold admission, so the hook veto seat (step 3) and the frozen-group check (step 4) — the two gates that apply before anyone is known — were exactly the two an unauthenticated handshake went around. No step is skipped: a challenge carries no principal, so verify, approve and admit run for the arrival subject this section already names, and the admission stays `ZeroHold` because a handshake reaches no destination. `PrincipalId::anonymous()` is added to the contract for it. Not an exemption in this section; the section was right and the loop was not.
+
 ### Decisions 2026-09-05 (orchestrator, resolving the consolidated contract gaps in `docs/design/1.6.0-contract-gaps.md`)
 
 - **CG-20 `KernelSeal` means one thing.** The caps unit struct. The contract's trait of the same name
