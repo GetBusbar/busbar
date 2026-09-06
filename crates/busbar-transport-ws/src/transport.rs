@@ -468,7 +468,7 @@ impl Transport for WsTransport {
                             continue;
                         }
                         Some(Ok(Message::Pong(_))) | Some(Ok(Message::Frame(_))) => continue,
-                        Some(Err(_)) => break Some(Err(TransportError::Reset)),
+                        Some(Err(e)) => break Some(Err(read_error(&e))),
                     }
                 };
                 drop(held);
@@ -619,6 +619,27 @@ impl Transport for WsTransport {
             self.close(conn, CloseReason::Normal);
             outcome
         })
+    }
+}
+
+/// What a failed read of the WebSocket stream means to the layer above.
+///
+/// Reporting all of them as `Reset` told a network story about protocol events, and the two get
+/// different answers upstream: a reset is a connection that broke and may be worth redialling, a
+/// framing failure is a peer whose bytes were wrong and redialling changes nothing. A close the
+/// peer already completed is neither — it is the session ending, and the only error shape for that
+/// is `Closed`.
+fn read_error(e: &tokio_tungstenite::tungstenite::Error) -> TransportError {
+    use tokio_tungstenite::tungstenite::Error as WsError;
+    match e {
+        // The bytes were not WebSocket: a reserved opcode, a message past the cap, a text frame
+        // that was not UTF-8. Nothing happened to the connection.
+        WsError::Protocol(_) | WsError::Capacity(_) | WsError::Utf8(_) => TransportError::Framing,
+        // The closing handshake is finished, or something asked for a read after it was.
+        WsError::ConnectionClosed | WsError::AlreadyClosed => TransportError::Closed,
+        // Everything else — IO, TLS, a full write buffer — really is the connection going away
+        // underneath this layer.
+        _ => TransportError::Reset,
     }
 }
 

@@ -209,6 +209,42 @@ async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
     );
 }
 
+/// A peer that speaks something other than WebSocket on a WebSocket connection is not a connection
+/// that was reset: nothing happened to the transport, the bytes were wrong. Reporting every read
+/// failure as `Reset` tells the layer above a network story about a protocol event, and the two get
+/// different answers — a reset is worth redialling, malformed framing never is.
+#[tokio::test]
+async fn a_frame_with_a_reserved_opcode_is_a_framing_error_and_not_a_reset() {
+    let t = WsTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (accepted, dialled) = tokio::join!(
+        t.handshake_over(end_a, true, "peer-a"),
+        tokio_tungstenite::client_async("ws://localhost/", end_b)
+    );
+    let conn = accepted.unwrap();
+    let (mut client, _resp) = dialled.unwrap();
+
+    // Opcode 0x3 is reserved by RFC 6455 and no endpoint may send it. Written under the client's
+    // own socket so tungstenite cannot refuse to produce it: FIN + reserved opcode, masked, empty.
+    tokio::io::AsyncWriteExt::write_all(client.get_mut(), &[0x83, 0x80, 0, 0, 0, 0])
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::flush(client.get_mut())
+        .await
+        .unwrap();
+
+    let mut frames = t.frames(conn);
+    let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a protocol violation must be reported rather than waited on")
+        .expect("a violation is an error, not a clean end of session");
+    assert_eq!(
+        outcome.unwrap_err(),
+        TransportError::Framing,
+        "bytes that are not WebSocket are a framing error, not a reset connection"
+    );
+}
+
 /// A bind address, for the layer below.
 struct HttpCfg(String);
 impl busbar_contract::ConfigView for HttpCfg {
