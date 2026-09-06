@@ -14,7 +14,11 @@
 #     and assert busbar still served it (the hook ran in-band without breaking the path).
 #
 # Usage: BUSBAR_BIN=<busbar> PLUGIN_DIR=<dir> LEDGER=<tsv> \
-#          [HOOK_SIDECAR=1] [HOOK_KIND=tap|gate] probe-hook.sh <alias>
+#          [HOOK_SIDECAR=1] [HOOK_KIND=tap|gate] [HOOK_CONTENT_INTENT=0] probe-hook.sh <alias>
+#
+# HOOK_CONTENT_INTENT=0 (in-process hooks only) says this hook is not expected to declare content
+# intent at boot. Without it, a missing declaration is a FAIL: it is the only thing this branch can
+# observe about the hook at all.
 set -uo pipefail
 cd "$(dirname "$0")" || exit 1
 # shellcheck source=testing/fleet-fixtures/lib.sh
@@ -128,10 +132,19 @@ if [ "$HOOK_SIDECAR" = "1" ]; then
     "the request was served but the forwarding hook never relayed it to its sidecar. The hook is wired but inert."
   record "$ID" PASS "hook ${ALIAS}: forwarded a driven request to its sidecar (${RECV} received) and validated first-party" ""
 else
-  # Content-intent hooks declare intent at boot; assert that line as the observable effect.
+  # Content-intent hooks declare intent at boot; that line is this branch's ONLY observable effect —
+  # there is no sidecar here, and "busbar still served the request" is equally true of a hook that
+  # was never loaded. Both arms used to record PASS, so the second of the two boot-line assertions
+  # this probe's header promises could not fail: an inert in-process hook passed exactly like a
+  # working one. A hook that legitimately declares no content intent is a CALLER'S claim, made
+  # explicitly with HOOK_CONTENT_INTENT=0 — never inferred from the grep that was supposed to
+  # verify it.
   if grep -qE "hook plugin declared content intent" "${WORK}/busbar.log"; then
     record "$ID" PASS "hook ${ALIAS}: declared content intent, validated first-party, and a driven request still served" ""
+  elif [ "${HOOK_CONTENT_INTENT:-1}" = "0" ]; then
+    record "$ID" PASS "hook ${ALIAS}: validated first-party and a driven request through the tapped path served (caller set HOOK_CONTENT_INTENT=0: no content-intent declaration is expected)" ""
   else
-    record "$ID" PASS "hook ${ALIAS}: validated first-party and a driven request through the tapped path served (no content-intent declaration expected for this hook)" ""
+    fail_here "the in-process hook never declared content intent" \
+      "no 'hook plugin declared content intent' line in the boot log, so nothing observed this hook doing its job: serving the request proves only that busbar works. Boot log tail: $(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 300). If this hook genuinely declares no content intent, say so with HOOK_CONTENT_INTENT=0."
   fi
 fi
