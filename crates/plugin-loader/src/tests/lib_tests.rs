@@ -2108,6 +2108,8 @@ mod abi2_store_ops_tests;
 mod legacy_default_tests;
 #[path = "legacy_usage_tests.rs"]
 mod legacy_usage_tests;
+#[path = "plane_sidecar_tests.rs"]
+mod plane_sidecar_tests;
 #[path = "store_adapter_migration_tests.rs"]
 mod store_adapter_migration_tests;
 #[path = "store_adapter_tests.rs"]

@@ -914,3 +914,136 @@ fn verify_only_module_defaults_begin_login_reject() {
         AuthResponse::Reject
     ));
 }
+
+// ── THE PLANE-RECORD SIDECAR ON THE WIRE ────────────────────────────────────────────────────────
+//
+// `ts` and `disposition` are the two typed sidecar columns retention sweeps on, and they have to
+// SURVIVE the engine→plugin hop: a store behind the C ABI reconstitutes its `PlaneRecord` from the
+// request JSON alone, so anything the wire drops is gone by the time `purge_plane_records_before`
+// reads it — an age-based sweep then sees ts 0 on every row and deletes the whole log, and a
+// terminal-only sweep sees Active on every row and purges nothing, ever. These decode the on-wire
+// JSON (the exact bytes a plugin receives) and assert the reconstituted envelope carries the sidecar.
+
+/// A store that records the envelopes handed to the two write verbs, so a test can inspect what
+/// [`dispatch`] reconstituted from the wire. Every non-plane method is a stub: nothing here reads them.
+#[derive(Default)]
+struct RecordingStore {
+    written: std::sync::Mutex<Vec<busbar_api::PlaneRecord>>,
+}
+
+impl busbar_api::Store for RecordingStore {
+    fn put_key(&self, _key: &VirtualKey) -> Result<(), StoreError> {
+        Ok(())
+    }
+    fn get_key(&self, _id: &str) -> Result<Option<VirtualKey>, StoreError> {
+        Ok(None)
+    }
+    fn list_keys(&self) -> Result<Vec<VirtualKey>, StoreError> {
+        Ok(Vec::new())
+    }
+    fn delete_key(&self, _id: &str) -> Result<(), StoreError> {
+        Ok(())
+    }
+    fn get_usage(&self, _bucket: &str, _window: u64) -> Result<busbar_api::UsageLedger, StoreError> {
+        Ok(busbar_api::UsageLedger::default())
+    }
+    fn put_usage(
+        &self,
+        _bucket: &str,
+        _window: u64,
+        _ledger: &busbar_api::UsageLedger,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+    fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> Result<(), StoreError> {
+        Ok(())
+    }
+    fn list_metering(&self, _bucket: u64) -> Result<Vec<busbar_api::MeteringRow>, StoreError> {
+        Ok(Vec::new())
+    }
+    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> Result<(), StoreError> {
+        self.written
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record.clone());
+        Ok(())
+    }
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> Result<(), StoreError> {
+        self.written
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(record.clone());
+        Ok(())
+    }
+}
+
+/// Decode `json` as a request and dispatch it against a recording store, returning the ONE envelope
+/// the store was handed — i.e. exactly what a plugin behind the ABI would persist.
+fn envelope_from_wire(json: serde_json::Value) -> busbar_api::PlaneRecord {
+    let store = RecordingStore::default();
+    let req: StoreRequest =
+        serde_json::from_slice(&serde_json::to_vec(&json).unwrap()).expect("request decodes");
+    dispatch(&store, req).expect("dispatch");
+    let written = store.written.lock().unwrap_or_else(|p| p.into_inner());
+    assert_eq!(written.len(), 1, "exactly one envelope written");
+    written[0].clone()
+}
+
+/// An APPENDED record's `ts` (and child `id`) survive the hop.
+#[test]
+fn appended_plane_record_keeps_its_ts_across_the_wire() {
+    let rec = envelope_from_wire(serde_json::json!({
+        "AppendPlaneRecord": {
+            "kind": "call",
+            "id": "vk_owner",
+            "parent": "vk_owner",
+            "seq": 7,
+            "ts": 1_600u64,
+            "disposition": "Active",
+            "body": [9],
+        }
+    }));
+    assert_eq!(rec.ts, 1_600, "the append wire must carry `ts`");
+    assert_eq!(rec.id, "vk_owner", "the append wire must carry the child id");
+    assert_eq!(rec.parent.as_deref(), Some("vk_owner"));
+    assert_eq!(rec.seq, 7);
+}
+
+/// An UPSERTED record's `disposition` (and `ts`) survive the hop.
+#[test]
+fn upserted_plane_record_keeps_its_disposition_across_the_wire() {
+    let rec = envelope_from_wire(serde_json::json!({
+        "UpsertPlaneRecord": {
+            "kind": "task",
+            "id": "task-abc",
+            "ts": 2_000u64,
+            "disposition": "Terminal",
+            "body": [1, 2, 3],
+        }
+    }));
+    assert_eq!(rec.ts, 2_000, "the upsert wire must carry `ts`");
+    assert_eq!(
+        rec.disposition,
+        busbar_api::PlaneDisposition::Terminal,
+        "the upsert wire must carry `disposition`"
+    );
+}
+
+/// An OLDER engine's request — no sidecar keys at all — still decodes, at the neutral defaults. This
+/// is what makes the added fields ADDITIVE rather than a schema break, and it is why the payload
+/// schema version does not move.
+#[test]
+fn a_sidecar_less_request_still_decodes_at_the_neutral_defaults() {
+    let rec = envelope_from_wire(serde_json::json!({
+        "UpsertPlaneRecord": { "kind": "task", "id": "task-abc", "body": [1] }
+    }));
+    assert_eq!(rec.ts, 0);
+    assert_eq!(rec.disposition, busbar_api::PlaneDisposition::Active);
+
+    let rec = envelope_from_wire(serde_json::json!({
+        "AppendPlaneRecord": { "kind": "call", "parent": "p", "seq": 1, "body": [1] }
+    }));
+    assert_eq!(rec.ts, 0);
+    assert_eq!(rec.disposition, busbar_api::PlaneDisposition::Active);
+    assert_eq!(rec.id, "", "no id on the wire is an empty child id");
+}
