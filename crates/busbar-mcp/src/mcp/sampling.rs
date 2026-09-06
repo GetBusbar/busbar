@@ -181,6 +181,32 @@ pub(crate) async fn satisfy_upstream_ask(
     Ok(serde_json::Value::Object(continuation))
 }
 
+/// HOW MANY MESSAGES one sampling ask may carry.
+///
+/// The output side of this satisfier was bounded from the first line it had (`max_tokens` is
+/// clamped to the operator's ceiling) and the INPUT side was bounded by nothing at all: the
+/// `messages` array arrives on an UPSTREAM'S ask — the least trusted input this plane handles — and
+/// was copied into a chat body that is then charged to the INBOUND CALLER'S budget. So an upstream
+/// could make a caller pay for a prompt of any size it liked, which inverts the whole point of
+/// spending the caller's governance rather than a side channel: the caller's budget bounds what the
+/// caller asked for, and it cannot bound what somebody else appended to it.
+///
+/// The per-upstream `max_requests_per_minute` budget does not stand in for this. It bounds HOW MANY
+/// completions an upstream induces and says nothing about how large each one is, and prompt tokens
+/// are the larger half of a completion's cost.
+const MAX_SAMPLING_MESSAGES: usize = 64;
+
+/// TOTAL prompt bytes one sampling ask may carry — the system prompt plus every message's text.
+///
+/// A total rather than a per-message limit because the cost is the sum: a thousand messages of a
+/// kilobyte each and one message of a megabyte are the same bill.
+const MAX_SAMPLING_PROMPT_BYTES: usize = 64 * 1024;
+
+/// HOW MANY stop sequences, and how long each may be. Both forwarded verbatim to a provider before
+/// this, so both were an upstream's choice about a request the caller pays for.
+const MAX_STOP_SEQUENCES: usize = 8;
+const MAX_STOP_SEQUENCE_BYTES: usize = 64;
+
 /// Translate one `sampling/createMessage` params object into one non-streaming `openai`-dialect
 /// chat body, under the operator's ceilings.
 fn chat_body(
@@ -189,13 +215,33 @@ fn chat_body(
 ) -> Result<serde_json::Value, String> {
     let params = params.and_then(|p| p.as_object());
     let mut messages: Vec<serde_json::Value> = Vec::new();
+    // THE RUNNING PROMPT SIZE, counted as it is built rather than measured afterwards: a body
+    // measured after it exists has already been allocated at whatever size the upstream chose.
+    let mut prompt_bytes = 0usize;
     if let Some(system) = params
         .and_then(|p| p.get("systemPrompt"))
         .and_then(|s| s.as_str())
     {
         if !system.is_empty() {
+            prompt_bytes = prompt_bytes.saturating_add(system.len());
+            if prompt_bytes > MAX_SAMPLING_PROMPT_BYTES {
+                return Err(oversized_prompt());
+            }
             messages.push(serde_json::json!({ "role": "system", "content": system }));
         }
+    }
+    let asked = params
+        .and_then(|p| p.get("messages"))
+        .and_then(|m| m.as_array())
+        .map(Vec::len)
+        .unwrap_or(0);
+    if asked > MAX_SAMPLING_MESSAGES {
+        return Err(format!(
+            "the sampling ask carries {asked} messages; busbar completes at most \
+             {MAX_SAMPLING_MESSAGES} per ask. The prompt an upstream sends is spent against the \
+             CALLER'S budget, so its size is bounded here rather than by the caller who never wrote \
+             it. The ask terminates here."
+        ));
     }
     for (i, message) in params
         .and_then(|p| p.get("messages"))
@@ -231,6 +277,10 @@ fn chat_body(
                  ask terminates here"
             ));
         };
+        prompt_bytes = prompt_bytes.saturating_add(text.len());
+        if prompt_bytes > MAX_SAMPLING_PROMPT_BYTES {
+            return Err(oversized_prompt());
+        }
         messages.push(serde_json::json!({ "role": role, "content": text }));
     }
     if messages.is_empty() {
@@ -252,19 +302,69 @@ fn chat_body(
         "messages": messages,
         "max_tokens": max_tokens,
     });
-    if let Some(t) = params
-        .and_then(|p| p.get("temperature"))
-        .filter(|t| t.is_number())
-    {
-        body["temperature"] = t.clone();
+    // TEMPERATURE IS RANGE-CHECKED, not merely type-checked. `is_number()` admits `-1`, `1e308` and
+    // every other value the protocol's own `0.0..=2.0` does not, and the number went verbatim into a
+    // body a provider then answered with an error the caller paid the round trip for. A value
+    // outside the range is the upstream's mistake, so it is refused here rather than forwarded.
+    if let Some(t) = params.and_then(|p| p.get("temperature")) {
+        let Some(value) = t
+            .as_f64()
+            .filter(|v| v.is_finite() && (0.0..=2.0).contains(v))
+        else {
+            return Err(format!(
+                "the sampling ask names temperature {t}, which is not a number in `0.0..=2.0`; the \
+                 ask terminates here"
+            ));
+        };
+        body["temperature"] = serde_json::json!(value);
     }
-    if let Some(stop) = params
-        .and_then(|p| p.get("stopSequences"))
-        .filter(|s| s.is_array())
-    {
+    // STOP SEQUENCES ARE COUNTED AND MEASURED. They were copied through as whatever array arrived:
+    // any length, any element type, any element size — an upstream's free hand on a request the
+    // caller is charged for, and a non-string element is a body a provider refuses.
+    if let Some(stop) = params.and_then(|p| p.get("stopSequences")) {
+        let Some(list) = stop.as_array() else {
+            return Err(
+                "the sampling ask's `stopSequences` is not an array; the ask terminates here"
+                    .to_string(),
+            );
+        };
+        if list.len() > MAX_STOP_SEQUENCES {
+            return Err(format!(
+                "the sampling ask names {} stop sequences; busbar forwards at most \
+                 {MAX_STOP_SEQUENCES}. The ask terminates here.",
+                list.len()
+            ));
+        }
+        for (i, entry) in list.iter().enumerate() {
+            match entry.as_str() {
+                Some(s) if s.len() <= MAX_STOP_SEQUENCE_BYTES => {}
+                Some(_) => {
+                    return Err(format!(
+                        "the sampling ask's `stopSequences[{i}]` is longer than \
+                         {MAX_STOP_SEQUENCE_BYTES} bytes; the ask terminates here"
+                    ))
+                }
+                None => {
+                    return Err(format!(
+                        "the sampling ask's `stopSequences[{i}]` is not a string; the ask \
+                         terminates here"
+                    ))
+                }
+            }
+        }
         body["stop"] = stop.clone();
     }
     Ok(body)
+}
+
+/// The one refusal both prompt-size arms return, so the system prompt and a message body cannot
+/// come to say different things about the same bound.
+fn oversized_prompt() -> String {
+    format!(
+        "the sampling ask's prompt exceeds {MAX_SAMPLING_PROMPT_BYTES} bytes. The prompt an \
+         upstream sends is spent against the CALLER'S budget, so its size is bounded here rather \
+         than by the caller who never wrote it. The ask terminates here."
+    )
 }
 
 /// DRIVE one completion through the governed pipeline and shape the answer as the protocol's
@@ -291,14 +391,34 @@ async fn complete(
         format!("the sampling completion answered HTTP {status} and a body that is not JSON")
     })?;
     if !(200..300).contains(&status) {
-        // The pipeline's OWN refusal, relayed by its reason: this is busbar's admission, budget or
-        // pool answer, not upstream content, and an operator debugging a refused grant needs it.
+        // THE OPERATOR GETS THE REASON; THE CALLER GETS THE FACT.
+        //
+        // This relayed busbar's OWN pipeline error verbatim, unbounded, into a string that ends up
+        // on a `Refusal::Unsatisfiable` returned to the party that made the tool call. That message
+        // is busbar's internal admission/budget/pool answer, and it names internal things — the pool
+        // that was selected, the provider behind it, the budget bucket, the breaker cell. None of
+        // those are the caller's business: the caller asked a tool a question and an upstream's
+        // sampling ask is a fact about the OPERATOR'S deployment. Relaying it turned every refused
+        // completion into a probe an upstream could drive on demand (it chooses when to ask, and it
+        // reads the caller's answer) for the operator's pool topology, and it was unbounded, so a
+        // long provider error was also an amplifier.
+        //
+        // So the detail is LOGGED, where an operator debugging a refused grant reads it, and the
+        // caller is told only that the completion was refused and by whom.
         let reason = value
             .pointer("/error/message")
             .and_then(|m| m.as_str())
             .unwrap_or("no reason was given");
+        tracing::warn!(
+            status,
+            model = %cfg.model,
+            reason = %reason,
+            "an upstream's sampling ask was refused by busbar's own pipeline"
+        );
         return Err(format!(
-            "the sampling completion was refused by busbar's own pipeline (HTTP {status}): {reason}"
+            "the sampling completion was refused by busbar's own pipeline (HTTP {status}); the \
+             reason is recorded in busbar's log and is not relayed, because it describes this \
+             deployment rather than your call"
         ));
     }
     let text = value
