@@ -20,6 +20,12 @@ pub use busbar_contract::ClassDirection as Direction;
 /// A divisor of nothing yields nothing rather than dividing by zero — a class declared with no
 /// divisor cannot convert bytes, and refusing to guess is the safe reading. The frame factor
 /// saturates rather than wrapping.
+///
+/// Every source is named. No wildcard arm: under one, a source added to the set later would be
+/// metered as its own raw measurement without anybody deciding that it should be — the reading
+/// that costs money silently, and the failure mode this set already drifted into once. Naming the
+/// pass-through sources means adding one to `busbar-caps` stops this build until its conversion is
+/// written down.
 pub fn quantity_from_raw(source: &QuantitySource, raw: u64) -> u64 {
     match source {
         QuantitySource::KernelBytes { divisor } => {
@@ -30,6 +36,13 @@ pub fn quantity_from_raw(source: &QuantitySource, raw: u64) -> u64 {
             }
         }
         QuantitySource::KernelFrames { factor } => raw.saturating_mul(*factor),
-        _ => raw,
+        // The sources that already arrive in the class's own quantity: a locator reads the
+        // destination's own figure, a decoding transport reports units, monotonic elapsed time is
+        // measured in them, and both counts count the thing itself. Nothing to convert.
+        QuantitySource::Locator { .. }
+        | QuantitySource::TransportUnits
+        | QuantitySource::KernelElapsedMono
+        | QuantitySource::Count
+        | QuantitySource::PlaneCount { .. } => raw,
     }
 }
