@@ -438,3 +438,42 @@ async fn a_cancelled_dispatch_retires_the_child_rather_than_wedging_the_next_cal
          caller the abandoned exchange's answer — a permanent one-ahead wedge"
     );
 }
+
+/// A NOTIFICATION CANCELLED MID-WRITE RETIRES THE CHILD, so the next dispatch does not write its
+/// request onto the tail of a truncated line.
+///
+/// The request arm has carried this guard since the one-ahead wedge above; the notification arm is
+/// the same hazard on the half of the exchange a notification has. `write_line` awaits a body, a
+/// newline and a flush, and a future dropped at any of those awaits has already put SOME bytes into
+/// the child's stdin — the child is mid-frame, and an unguarded slot keeps it. The next dispatch
+/// then appends its own request to the truncated one and the child parses the concatenation as a
+/// single malformed message.
+///
+/// The fixture NEVER READS its stdin, so the pipe buffer fills and the write blocks with part of the
+/// body already delivered — the exact state a cancel has to be safe against.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_cancelled_notification_retires_the_child_rather_than_leaving_a_partial_line() {
+    let child = StdioChild::spawn(&sh("sleep 5")).await.expect("spawn");
+
+    let mut slot = crate::mcp::client::stdio::ChildSlot::new();
+    slot.supervisor.ready();
+    slot.child = Some(child);
+
+    // Comfortably past any pipe buffer, so the write is still in progress when the cancel lands.
+    let body = vec![b'x'; 4 * 1024 * 1024];
+    let cancelled = tokio::time::timeout(
+        Duration::from_millis(200),
+        slot.guarded_notify(&body, Duration::from_secs(30)),
+    )
+    .await;
+    assert!(
+        cancelled.is_err(),
+        "the write must still be in progress when it is cancelled, or this test proves nothing"
+    );
+    assert!(
+        slot.child.is_none(),
+        "a notification cancelled mid-write must retire the child; leaving it live makes the next \
+         dispatch write its request onto the tail of a truncated line"
+    );
+}
