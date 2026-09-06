@@ -1195,6 +1195,16 @@ impl<T> IntoStoreResult<T> for Result<T, getrandom::Error> {
 // crate::main's store selection + busbar-plugin-loader).
 pub use busbar_store_memory::MemoryStore;
 
+/// THE single-permit gate every budget/metering flush passes through, whichever flusher is running
+/// it: the periodic tick (which SKIPS while it is held), the flusher task's own final flush, and the
+/// run task's inline shutdown flush (both of which WAIT for it).
+///
+/// `flush_budgets` snapshots each dirty cell's DELTA against its acked baseline and advances that
+/// baseline only once the durable write succeeds. Two flushes in flight over the same cell therefore
+/// snapshot the SAME un-advanced baseline and both send the same delta — a durable double-count, in
+/// the ledger the money reads from. One permit is what makes that unrepresentable.
+pub type FlushGate = std::sync::Arc<tokio::sync::Mutex<()>>;
+
 /// The write-behind flusher: on a fixed cadence (and once more on graceful shutdown) pushes the
 /// dirty in-memory budget cells and the accumulated `pending_metering` rows to the durable store off
 /// the request hot path. The canonical spawned-flusher shape in the crate — a spawned loop
@@ -1205,10 +1215,17 @@ pub use busbar_store_memory::MemoryStore;
 /// transient write failure is retried on the next tick rather than lost. The admin audit log needs no
 /// flush here: its ONE durable path is the neutral journal seam, which persists each record inline as
 /// it is recorded.
+///
+/// Returns the task handle AND the flush GATE. The gate is published rather than private because the
+/// task is not the only flusher: the run task also flushes INLINE after the graceful drain (the
+/// task's own shutdown arm is fire-and-forget and can lose the race with process exit). That inline
+/// call has the identical overlap hazard — it snapshots deltas against baselines an in-flight flush
+/// has not advanced yet, so an overlap DOUBLE-COUNTS into the durable ledger — and a gate it cannot
+/// name is a gate it cannot take. Every flusher takes this one.
 pub fn spawn_budget_flusher(
     gov: std::sync::Arc<GovState>,
     mut shutdown: tokio::sync::broadcast::Receiver<()>,
-) -> tokio::task::JoinHandle<()> {
+) -> (tokio::task::JoinHandle<()>, FlushGate) {
     let interval = std::time::Duration::from_millis(crate::limits::usage_flush_interval_ms());
     // SERIALIZE flushes: `flush_budgets` snapshots each dirty cell's DELTA against its acked
     // baseline and `add_usage`-accumulates it, advancing the baseline only on success. If a slow
@@ -1218,8 +1235,9 @@ pub fn spawn_budget_flusher(
     // if a flush is still running (`try_lock`), and the shutdown arm WAITS for the in-flight flush to
     // drain (`lock().await`) before its final flush, so shutdown never overlaps and never loses the
     // last window's spend.
-    let flush_gate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-    tokio::spawn(async move {
+    let flush_gate: FlushGate = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+    let published = flush_gate.clone();
+    let task = tokio::spawn(async move {
         loop {
             tokio::select! {
                 _ = tokio::time::sleep(interval) => {
@@ -1266,7 +1284,8 @@ pub fn spawn_budget_flusher(
                 }
             }
         }
-    })
+    });
+    (task, published)
 }
 
 #[cfg(test)]
