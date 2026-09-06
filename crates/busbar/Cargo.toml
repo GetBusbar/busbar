@@ -131,9 +131,10 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 
 [features]
 # Pure forwards: every `#[cfg(feature = ...)]` site lives in busbar-core, so the binary's features
-# are one-line re-exports of the core feature with the same name. The binary keeps the SAME default
-# set the monolithic crate had, so `cargo build -p busbar` builds the same artifact as before.
-default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice"]
+# are one-line re-exports of the core feature with the same name. Every protocol entry below is the
+# SAME default set the monolithic crate had; `root-admin` is the one addition, and it is a path
+# rather than a surface — the operations, their bytes and their features are unchanged.
+default = ["auth-admin-tokens", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-voice", "root-admin"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -189,11 +190,13 @@ root-a2a = []
 # checked against the real unit traits while the serving path is untouched — so a build with it on
 # and a build with it off answer identically on the wire, and the rigs prove that both ways.
 root-mcp = []
-# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT OFF, and it
-# stays off until the oracle's admin family is green on it: the switch is what makes an admin request
-# travel through the kernel's loop instead of reaching its handler directly, and until that is
-# measured the shipped binary must keep the path it has. Off, the feature costs one unbuilt module
-# and nothing else — `main.rs` names the mount inside a `cfg` and the router it wraps is untouched.
+# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
+# off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
+# request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
+# `admin.ops` cells and the whole 890-cell owed golden read the same either way, which is the
+# measurement the default was waiting for. The leg stays switchable — turning it off drops one
+# unbuilt module and nothing else, because `main.rs` names the mount inside a `cfg` and the router it
+# wraps is untouched.
 #
 # `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
 # already is, which is the one thing that guarantees the inner surface answers exactly as it did.
