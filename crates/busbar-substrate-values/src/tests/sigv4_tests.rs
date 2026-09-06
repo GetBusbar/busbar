@@ -412,11 +412,13 @@ fn test_verify_inbound_sigv4_duplicate_signed_header_values_are_combined() {
     let now = parse_amz_date(amzdate).unwrap();
     let payload_hash = sha256_hex(b"{\"x\":1}");
 
-    // What the CLIENT signs: the duplicate name folded to one comma-joined value.
+    // What the CLIENT signs: the duplicate name folded to one comma-joined value. The signed
+    // service/host/path are arbitrary here — header folding is signing-scheme behaviour, not
+    // anything about the upstream this request happens to address.
     let signing_view = vec![
         (
             "host".to_string(),
-            "bedrock-runtime.amazonaws.com".to_string(),
+            "example-service.amazonaws.com".to_string(),
         ),
         ("x-amz-meta-tag".to_string(), "a,b".to_string()),
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
@@ -425,9 +427,9 @@ fn test_verify_inbound_sigv4_duplicate_signed_header_values_are_combined() {
     let (sig, signed_headers) = sign_v4(
         secret,
         "us-east-1",
-        "bedrock",
+        "example-service",
         "POST",
-        "/model/anthropic.claude/converse",
+        "/v1/example/invoke",
         "",
         &signing_view,
         &payload_hash,
@@ -438,7 +440,7 @@ fn test_verify_inbound_sigv4_duplicate_signed_header_values_are_combined() {
         access_key_id: "AKIAEXAMPLE1234567890".to_string(),
         datestamp: "20150830".to_string(),
         region: "us-east-1".to_string(),
-        service: "bedrock".to_string(),
+        service: "example-service".to_string(),
         signed_headers,
         signature: sig,
     };
@@ -447,14 +449,23 @@ fn test_verify_inbound_sigv4_duplicate_signed_header_values_are_combined() {
     let wire = vec![
         (
             "host".to_string(),
-            "bedrock-runtime.amazonaws.com".to_string(),
+            "example-service.amazonaws.com".to_string(),
         ),
         ("x-amz-meta-tag".to_string(), "a".to_string()),
         ("x-amz-meta-tag".to_string(), "b".to_string()),
         (X_AMZ_CONTENT_SHA256.to_string(), payload_hash.clone()),
         (X_AMZ_DATE.to_string(), amzdate.to_string()),
     ];
-    let req = inbound(&wire, &payload_hash, amzdate);
+    // Built inline rather than through `inbound`, which pins its own canonical URI: this request
+    // must arrive on exactly the neutral path that was signed above.
+    let req = InboundRequest {
+        method: "POST",
+        canonical_uri: "/v1/example/invoke",
+        canonical_querystring: "",
+        headers: &wire,
+        payload_hash: &payload_hash,
+        amzdate,
+    };
     assert_eq!(verify_inbound_sigv4(&parsed, &req, secret, now), Ok(()));
 }
 
