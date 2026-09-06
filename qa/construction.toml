@@ -184,7 +184,7 @@ be opened by Admit, a posting can only be minted after Audit. Every one of those
 a token, so a unit spelling Decision::proceed or Hold::open with its own token is the design working; \
 the forgery surface is MINTING a token. That holds exactly as long as nothing outside the kernel can \
 spell a token constructor. Every such spelling elsewhere is a forged token."""
-patterns = ["UnitToken::mint(", "AdmitToken::mint(", "LedgerToken::mint(", "UsageToken::mint(", "AuditToken::mint(", "ExitToken::mint("]
+patterns = ["UnitToken::mint(", "LedgerToken::mint(", "UsageToken::mint(", "AuditToken::mint(", "ExitToken::mint("]
 allowed_root = "crates/busbar-kernel/src"
 max_sites = 0
 # Two more of the same shape, scoped to busbar-kernel (not busbar-substrate/src/teller, which is
@@ -194,7 +194,9 @@ max_sites = 0
 # busbar-caps/src/tests.rs) -- allowed there because production_only test-classification already
 # excludes them, never allowed from a unit's production src. `AdmitToken::mint(` is the in-flight
 # table's arrival-hold constructor; `Kernel::admit_token()` (busbar-kernel/src/teller.rs) is its one
-# named seam, so the mint itself should never be spelled anywhere else.
+# named seam, so the mint itself should never be spelled anywhere else -- it is scanned only by the
+# admit-token-mint sub-rule below, not by the `patterns` list above, so each seal-site symbol has
+# exactly one scanner.
 kernel_seal_pattern = 'KernelSeal::acquire_for_kernel\('
 admit_token_mint_pattern = 'AdmitToken::mint\('
 kernel_root = "crates/busbar-kernel/src"
