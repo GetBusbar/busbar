@@ -226,6 +226,95 @@ fn submit_demo_bounded<A>(
         .expect("submit");
 }
 
+/// WHAT A SUBMIT COSTS ON A BIG WORKING SET — measured, not asserted. Ten thousand ACTIVE handles
+/// against a cap of ten thousand is the exact shape the design note calls the cliff: the cap rule may
+/// evict only TERMINAL handles, so it evicts nothing here and the set stays large, and every submit
+/// pays whatever the sweep's mechanism costs to rediscover that there is nothing to do. Two hundred
+/// submits are timed over twenty distinct `now` seconds (ten per second) so the AMORTISED trigger's
+/// effect is in the number too. NO WALL-CLOCK BUDGET IS ASSERTED — a timing assertion is a flake on
+/// somebody else's busy machine; the number is printed for the record (`--nocapture`) and only the
+/// working-set invariants are asserted.
+#[test]
+fn what_a_submit_costs_on_a_ten_thousand_handle_working_set() {
+    use std::time::Instant;
+
+    const RESIDENT: u64 = 10_000;
+    const SUBMITS: u64 = 200;
+    let wide = SweepBounds {
+        abandon_secs: 100,
+        terminal_ttl_secs: 50,
+        max_retained: RESIDENT as usize,
+    };
+
+    // Install the resident set through the boot rehydrate, which does NOT sweep — so the setup cost
+    // is not itself the quantity under measurement.
+    let rows: Vec<PlaneRecord> = (0..RESIDENT)
+        .map(|i| {
+            DemoRow {
+                id: format!("r{i:05}"),
+                owner: "o".into(),
+                updated_at: 1_000,
+                terminal: false,
+                cursor: 0,
+            }
+            .record()
+        })
+        .collect();
+    let store = MemStore {
+        rows: Mutex::new(rows),
+        events: Mutex::new(Vec::new()),
+    };
+    let engine = DurableHandleEngine::new();
+    let counts = engine
+        .rehydrate(&store, "demo", |_store, body| {
+            let row = DemoRow::from_body(body).expect("a seeded row decodes");
+            let meta = row.meta();
+            Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                pos: ChainPosition::genesis(),
+                row: row.arc(),
+                meta,
+                event_unreadable: 0,
+            })
+        })
+        .expect("rehydrate");
+    assert_eq!(counts.active, RESIDENT as usize);
+
+    let started = Instant::now();
+    for i in 0..SUBMITS {
+        // Fresh handles at a `now` that leaves the resident set inside `abandon_secs`, so no rule
+        // fires and what is measured is the sweep's cost to decide exactly that.
+        let now = 1_020 + i / 10;
+        submit_demo_bounded(
+            &engine,
+            DemoRow {
+                id: format!("n{i:05}"),
+                owner: "o".into(),
+                updated_at: now,
+                terminal: false,
+                cursor: 0,
+            },
+            now,
+            wide,
+            demo_abandon,
+        );
+    }
+    let elapsed = started.elapsed();
+    println!(
+        "submit cost over a {RESIDENT}-handle working set: {SUBMITS} submits in {elapsed:?} \
+         ({:?} per submit)",
+        elapsed / u32::try_from(SUBMITS).expect("submit count fits a u32")
+    );
+
+    // The only assertions are the invariants: nothing was abandoned (nothing was idle), nothing was
+    // evicted (nothing was terminal), and every submitted handle is resident.
+    assert_eq!(engine.len(), (RESIDENT + SUBMITS) as usize);
+    assert!(!engine.meta("r00000").expect("resident").terminal);
+    assert!(engine
+        .get_unscoped(&format!("n{:05}", SUBMITS - 1))
+        .is_some());
+}
+
 #[test]
 fn a_foreign_or_missing_id_is_one_indistinguishable_denial() {
     let engine = DurableHandleEngine::new();

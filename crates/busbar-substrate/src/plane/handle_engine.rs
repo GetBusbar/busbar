@@ -67,7 +67,7 @@
 #![cfg_attr(not(any(test, feature = "test-support")), allow(dead_code))]
 
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::plane::store::PlaneStore;
@@ -293,10 +293,65 @@ struct HandleSlot {
     pos: ChainPosition,
 }
 
+/// ONE KEY IN THE EXPIRY INDEX: a handle's age and its id, in the order the sweep evicts by — oldest
+/// `updated_at` first, ties broken by the id.
+type ExpiryKey = (u64, String);
+
+/// The shards rule (0) took from the index and will abandon with the outer lock released.
+type AbandonCandidates = Vec<(ExpiryKey, Arc<Mutex<HandleSlot>>)>;
+
+/// THE TIME-ORDERED EXPIRY INDEX — the sweep's ordering, kept instead of recomputed.
+///
+/// `by_age` is keyed `(updated_at, id)` and valued by the handle's `terminal` flag. That key is
+/// DELIBERATELY the total order the sweep's eviction used to produce by sorting a
+/// `Vec<(u64, String)>`: oldest `updated_at` first, ties broken by the id. Every rule then reads a
+/// PREFIX of it — rule (0) the entries below `now - abandon_secs`, rule (1) the terminal entries
+/// below `now - terminal_ttl_secs`, rule (2) the terminal entries from the front — instead of
+/// scanning the whole working set three times.
+///
+/// The index is a HINT, never the truth: the truth is the slot's own `meta`, and every rule
+/// re-reads it under that handle's inner lock before acting (which it must do anyway — the abandon
+/// writes run with the outer lock released). A key that disagrees with its slot is HEALED where it
+/// is found, and a key whose id has left the working set is dropped there. `terminal` is the count
+/// of terminal-valued keys, which is what lets rule (2) stop walking: a working set with no
+/// terminal handle has nothing the cap rule may evict, and that is the case the cliff was made of.
+#[derive(Default)]
+struct ExpiryIndex {
+    by_age: BTreeMap<ExpiryKey, bool>,
+    terminal: usize,
+}
+
+impl ExpiryIndex {
+    /// Record `id` at its current age/terminality, replacing any entry already under the same key.
+    fn insert(&mut self, id: &str, meta: &HandleMeta) {
+        if self
+            .by_age
+            .insert((meta.updated_at, id.to_string()), meta.terminal)
+            == Some(true)
+        {
+            self.terminal -= 1;
+        }
+        if meta.terminal {
+            self.terminal += 1;
+        }
+    }
+
+    /// Drop one key, keeping the terminal count honest.
+    fn remove(&mut self, key: &ExpiryKey) {
+        if self.by_age.remove(key) == Some(true) {
+            self.terminal -= 1;
+        }
+    }
+}
+
 /// THE DURABLE-HANDLE ENGINE. Non-generic; holds opaque rows behind `Arc<dyn Any>`. No `Debug`: it
 /// holds a `dyn PlaneStore`.
 pub struct DurableHandleEngine {
     handles: Mutex<HashMap<String, Arc<Mutex<HandleSlot>>>>,
+    /// The sweep's time-ordered view of `handles`, under its OWN lock and always taken LAST — a
+    /// `mutate` reaches it holding only that handle's inner lock, and the sweep reaches it holding
+    /// the outer lock, so it must never be held while any other lock is acquired.
+    expiry: Mutex<ExpiryIndex>,
     /// The durable sink for row upserts AND event appends. `None` is the RAM-cache posture (a plane's
     /// `store: memory`): the persistence methods no-op and nothing survives a restart.
     sink: Mutex<Option<Arc<dyn PlaneStore>>>,
@@ -306,6 +361,7 @@ impl Default for DurableHandleEngine {
     fn default() -> Self {
         Self {
             handles: Mutex::new(HashMap::new()),
+            expiry: Mutex::new(ExpiryIndex::default()),
             sink: Mutex::new(None),
         }
     }
@@ -330,6 +386,29 @@ impl DurableHandleEngine {
     /// panic leaves the slot fields consistent, and a poison must not wedge the handle forever.
     fn lock_slot(slot: &Arc<Mutex<HandleSlot>>) -> MutexGuard<'_, HandleSlot> {
         slot.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Poison-recovering LEAF lock over the expiry index. Nothing is ever acquired while it is held.
+    fn expiry(&self) -> MutexGuard<'_, ExpiryIndex> {
+        self.expiry.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Install one handle in the working set and in the expiry index together, retiring the index key
+    /// of whatever this id displaced. Returns the displaced shard, if any.
+    fn install(
+        handles: &mut HashMap<String, Arc<Mutex<HandleSlot>>>,
+        expiry: &Mutex<ExpiryIndex>,
+        id: String,
+        slot: HandleSlot,
+    ) {
+        let meta = slot.meta.clone();
+        let displaced = handles.insert(id.clone(), Arc::new(Mutex::new(slot)));
+        let displaced_at = displaced.map(|s| Self::lock_slot(&s).meta.updated_at);
+        let mut expiry = expiry.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(at) = displaced_at {
+            expiry.remove(&(at, id.clone()));
+        }
+        expiry.insert(&id, &meta);
     }
 
     /// The durable sink, cloned. `None` is the RAM-cache posture.
@@ -384,7 +463,17 @@ impl DurableHandleEngine {
     /// `?` BEFORE any in-memory field is touched, so the slot is left untouched (the caller retries).
     /// The slot is held under its per-handle inner lock across the whole call, serializing that one
     /// handle's chain against a concurrent same-handle mutation.
-    fn apply_mutation_to_slot(&self, slot: &mut HandleSlot, m: Mutation) -> StoreResult<()> {
+    ///
+    /// This is the ONE place a live handle's `updated_at` and `terminal` move, so it is where the
+    /// expiry index is re-keyed: a handle left under a stale key is a handle the sweep would judge at
+    /// the wrong age. The index lock is taken here holding only this handle's inner lock, and is
+    /// released before anything else is acquired.
+    fn apply_mutation_to_slot(
+        &self,
+        id: &str,
+        slot: &mut HandleSlot,
+        m: Mutation,
+    ) -> StoreResult<()> {
         if let Some(rec) = &m.row_record {
             self.upsert_record(rec)?;
         }
@@ -399,7 +488,11 @@ impl DurableHandleEngine {
             slot.row = row;
         }
         if let Some(meta) = m.meta {
+            let was_at = slot.meta.updated_at;
             slot.meta = meta;
+            let mut expiry = self.expiry();
+            expiry.remove(&(was_at, id.to_string()));
+            expiry.insert(id, &slot.meta);
         }
         Ok(())
     }
@@ -455,13 +548,15 @@ impl DurableHandleEngine {
         self.sweep(now, bounds, &abandon, &report_fail);
         let mut handles = self.lock();
         let row = sr.row.clone();
-        handles.insert(
+        Self::install(
+            &mut handles,
+            &self.expiry,
             sr.id,
-            Arc::new(Mutex::new(HandleSlot {
+            HandleSlot {
                 row: sr.row,
                 meta: sr.meta,
                 pos,
-            })),
+            },
         );
         Ok(row)
     }
@@ -504,7 +599,7 @@ impl DurableHandleEngine {
             // No-op: return the current row unchanged.
             return Ok(slot.row.clone());
         };
-        self.apply_mutation_to_slot(&mut slot, m)
+        self.apply_mutation_to_slot(id, &mut slot, m)
             .map_err(HandleEngineError::Store)?;
         Ok(slot.row.clone())
     }
@@ -555,7 +650,7 @@ impl DurableHandleEngine {
             // No-op: return the current row unchanged.
             return Ok(slot.row.clone());
         };
-        self.apply_mutation_to_slot(&mut slot, m)
+        self.apply_mutation_to_slot(id, &mut slot, m)
             .map_err(ScopedMutateError::Store)?;
         Ok(slot.row.clone())
     }
@@ -575,9 +670,10 @@ impl DurableHandleEngine {
     /// settled or touched the handle in the meantime, and that is exactly the case where the abandon
     /// must NOT fire. Rules (1) and (2) then re-take the outer lock.
     ///
-    /// EACH OF RULES (1) AND (2) STILL OPENS WITH A FULL SCAN — two O(n) passes per submit. The
-    /// mechanism is due the rest of its redesign (a time-ordered expiry index and an amortised
-    /// trigger); what the redesign may not change is pinned by
+    /// NO RULE SCANS THE WORKING SET. Each reads a PREFIX of the [`ExpiryIndex`] — whose key
+    /// `(updated_at, id)` is the same total order the eviction used to reconstruct by sorting — and
+    /// stops at the first entry that is not due, so a sweep costs O(handles it acts on) rather than
+    /// three O(n) passes. What a redesign may not change is pinned by
     /// `the_sweep_keeps_every_active_handle_and_evicts_terminal_ones_oldest_first`, and the shape is
     /// written down in `docs/design/handle-engine-retention-sweep.md`.
     fn sweep<A, R>(&self, now: u64, bounds: SweepBounds, abandon: &A, report_fail: &R)
@@ -585,26 +681,27 @@ impl DurableHandleEngine {
         A: Fn(&str, &(dyn Any + Send + Sync), &ChainPosition, u64) -> Option<Mutation>,
         R: Fn(&str, &StoreError),
     {
-        // Rule (0), phase one: choose the candidates under the outer lock, holding it for meta reads
-        // only, and clone out their shards.
-        let candidates: Vec<(String, Arc<Mutex<HandleSlot>>)> = {
+        // Rule (0), phase one: the ACTIVE entries aged past `abandon_secs` are a prefix of the index.
+        // The outer lock is held for the shard clones only — no slot is read here, because phase two
+        // has to re-read every one of them anyway.
+        let candidates: AbandonCandidates = {
             let handles = self.lock();
-            handles
-                .iter()
-                .filter(|(_, s)| {
-                    let s = Self::lock_slot(s);
-                    !s.meta.terminal && now.saturating_sub(s.meta.updated_at) > bounds.abandon_secs
-                })
-                .map(|(id, s)| (id.clone(), s.clone()))
+            let mut expiry = self.expiry();
+            Self::take_due(&handles, &mut expiry, now, bounds.abandon_secs, false)
+                .into_iter()
+                .filter_map(|key| handles.get(&key.1).map(|s| (key, s.clone())))
                 .collect()
         };
         // Rule (0), phase two: the durable writes, with the outer lock NOT held. The re-read is the
         // whole point of the gap — a handle another writer settled or touched while the lock was down
-        // is no longer idle and must not be abandoned.
-        for (id, slot_arc) in &candidates {
+        // is no longer idle and must not be abandoned, and neither may an index key be believed over
+        // the slot it points at.
+        for (key, slot_arc) in &candidates {
+            let id = key.1.as_str();
             let mut slot = Self::lock_slot(slot_arc);
             if slot.meta.terminal || now.saturating_sub(slot.meta.updated_at) <= bounds.abandon_secs
             {
+                self.heal(key, &slot.meta);
                 continue;
             }
             let Some(m) = abandon(id, slot.row.as_ref(), &slot.pos, now) else {
@@ -612,39 +709,115 @@ impl DurableHandleEngine {
             };
             // A failed compensating write leaves the handle ACTIVE (the mutation applies nothing on
             // a durable failure) and is reported, never swallowed.
-            if let Err(e) = self.apply_mutation_to_slot(&mut slot, m) {
+            if let Err(e) = self.apply_mutation_to_slot(id, &mut slot, m) {
                 report_fail(id, &e);
             }
         }
         let handles = &mut *self.lock();
-        let expired: Vec<String> = handles
-            .iter()
-            .filter(|(_, s)| {
-                let s = Self::lock_slot(s);
-                s.meta.terminal && now.saturating_sub(s.meta.updated_at) > bounds.terminal_ttl_secs
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
-        for id in &expired {
-            handles.remove(id);
+        // Rule (1): the TERMINAL entries aged past `terminal_ttl_secs`, likewise a prefix.
+        let expired = {
+            let mut expiry = self.expiry();
+            Self::take_due(handles, &mut expiry, now, bounds.terminal_ttl_secs, true)
+        };
+        for key in &expired {
+            self.evict_verified(handles, key, now, Some(bounds.terminal_ttl_secs));
         }
         if handles.len() < bounds.max_retained {
             return;
         }
-        let mut terminal: Vec<(u64, String)> = handles
-            .iter()
-            .filter_map(|(id, s)| {
-                let s = Self::lock_slot(s);
-                s.meta.terminal.then(|| (s.meta.updated_at, id.clone()))
-            })
-            .collect();
-        terminal.sort_unstable();
-        for (_, id) in terminal
-            .into_iter()
-            .take(handles.len().saturating_sub(bounds.max_retained) + 1)
-        {
-            handles.remove(&id);
+        // Rule (2): the oldest TERMINAL entries, taken from the FRONT of the index — which is what
+        // makes the eviction oldest-first on `updated_at` with the id as the tie-break, without ever
+        // sorting anything. The walk stops as soon as it has enough victims or has passed the whole
+        // terminal population, so a working set with nothing terminal costs nothing here.
+        let wanted = handles.len().saturating_sub(bounds.max_retained) + 1;
+        let victims: Vec<ExpiryKey> = {
+            let expiry = self.expiry();
+            let mut seen_terminal = 0usize;
+            let mut victims = Vec::with_capacity(wanted.min(expiry.terminal));
+            for (key, terminal) in &expiry.by_age {
+                if seen_terminal >= expiry.terminal || victims.len() >= wanted {
+                    break;
+                }
+                if !*terminal {
+                    continue;
+                }
+                seen_terminal += 1;
+                victims.push(key.clone());
+            }
+            victims
+        };
+        for key in &victims {
+            // No age bound: the cap rule evicts by POSITION in the order, not by age, so all it has
+            // to verify is that the handle is still terminal.
+            self.evict_verified(handles, key, now, None);
         }
+    }
+
+    /// The index keys aged past `secs` whose `terminal` flag matches `terminal`, oldest first,
+    /// dropping any key whose id has left the working set on the way past. `handles` and the index
+    /// are both already held by the caller.
+    fn take_due(
+        handles: &HashMap<String, Arc<Mutex<HandleSlot>>>,
+        expiry: &mut ExpiryIndex,
+        now: u64,
+        secs: u64,
+        terminal: bool,
+    ) -> Vec<ExpiryKey> {
+        // Due means `now - updated_at > secs`, i.e. `updated_at < now - secs`. With `now` inside the
+        // bound nothing is due at all, and the range is empty rather than saturated to zero.
+        let Some(cutoff) = now.checked_sub(secs) else {
+            return Vec::new();
+        };
+        let mut due = Vec::new();
+        let mut orphaned = Vec::new();
+        for (key, flag) in expiry.by_age.range(..(cutoff, String::new())) {
+            if !handles.contains_key(&key.1) {
+                orphaned.push(key.clone());
+            } else if *flag == terminal {
+                due.push(key.clone());
+            }
+        }
+        for key in &orphaned {
+            expiry.remove(key);
+        }
+        due
+    }
+
+    /// Drop the handle `key` names from the working set AND the index, but only if its own slot still
+    /// agrees it is terminal (and, where `secs` is given, aged past it) — the index is a hint, and a
+    /// handle a concurrent `mutate` refreshed in the meantime is not evictable. A disagreeing key is
+    /// healed instead, and the handle waits for the next sweep.
+    fn evict_verified(
+        &self,
+        handles: &mut HashMap<String, Arc<Mutex<HandleSlot>>>,
+        key: &ExpiryKey,
+        now: u64,
+        secs: Option<u64>,
+    ) {
+        let id = key.1.as_str();
+        let Some(slot_arc) = handles.get(id).cloned() else {
+            self.expiry().remove(key);
+            return;
+        };
+        let meta = Self::lock_slot(&slot_arc).meta.clone();
+        let aged = secs.is_none_or(|s| now.saturating_sub(meta.updated_at) > s);
+        if meta.terminal && aged {
+            handles.remove(id);
+            let mut expiry = self.expiry();
+            expiry.remove(key);
+            expiry.remove(&(meta.updated_at, id.to_string()));
+        } else {
+            self.heal(key, &meta);
+        }
+    }
+
+    /// Re-key one handle from its OWN meta, retiring the stale key the sweep just found it under.
+    /// A hint that has drifted is corrected where the drift is discovered, so it is not reconsidered
+    /// by every later sweep.
+    fn heal(&self, stale: &ExpiryKey, meta: &HandleMeta) {
+        let mut expiry = self.expiry();
+        expiry.remove(stale);
+        expiry.insert(&stale.1, meta);
     }
 
     /// BOOT REHYDRATE. Reads every persisted row of `kind` from `store`, asks `classify` what to do
@@ -678,7 +851,12 @@ impl DurableHandleEngine {
                     event_unreadable,
                 } => {
                     out.unreadable += event_unreadable;
-                    handles.insert(id, Arc::new(Mutex::new(HandleSlot { row, meta, pos })));
+                    Self::install(
+                        &mut handles,
+                        &self.expiry,
+                        id,
+                        HandleSlot { row, meta, pos },
+                    );
                     out.active += 1;
                 }
             }
@@ -751,12 +929,14 @@ impl DurableHandleEngine {
     /// Refuses to evict an ACTIVE handle.
     pub fn evict_if_terminal(&self, id: &str) -> bool {
         let mut handles = self.lock();
-        let terminal = handles.get(id).map(|s| Self::lock_slot(s).meta.terminal);
-        if terminal == Some(true) {
-            handles.remove(id);
-            true
-        } else {
-            false
+        let meta = handles.get(id).map(|s| Self::lock_slot(s).meta.clone());
+        match meta {
+            Some(meta) if meta.terminal => {
+                handles.remove(id);
+                self.expiry().remove(&(meta.updated_at, id.to_string()));
+                true
+            }
+            _ => false,
         }
     }
 
@@ -768,15 +948,17 @@ impl DurableHandleEngine {
             None => 0,
         };
         let mut handles = self.lock();
-        let dropped: Vec<String> = handles
+        let dropped: Vec<ExpiryKey> = handles
             .iter()
             .filter_map(|(id, s)| {
                 let s = Self::lock_slot(s);
-                (s.meta.terminal && s.meta.updated_at < before).then(|| id.clone())
+                (s.meta.terminal && s.meta.updated_at < before)
+                    .then(|| (s.meta.updated_at, id.clone()))
             })
             .collect();
-        for id in &dropped {
-            handles.remove(id);
+        for key in &dropped {
+            handles.remove(&key.1);
+            self.expiry().remove(key);
         }
         Ok(removed)
     }
