@@ -360,34 +360,36 @@ impl DuplexPlane for Session {
         match caller_id.as_ref().map(id_key) {
             Some(key) => {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-                // THE GATE IS CLAIMED, NEVER DISPLACED. Inserting over a key a request is still
-                // running under would DROP that request's sender, and a dropped sender resolves its
-                // receiver — firing the cancel arm of a request nobody cancelled, dropping its
-                // dispatch mid-flight and leaving its caller waiting on an answer that will never be
-                // written. A client that reuses an id while the first is still open is
-                // non-conformant, and what that costs is the SECOND frame its cancellability, not
-                // the first frame its answer.
-                //
-                // The sender is handed over ONLY on a claim; unclaimed it stays owned by this arm's
-                // own frame and drops when the arm ends — after the `select!`, never before it, or
-                // the duplicate would fire its own cancel arm the instant it was refused the gate.
-                let mut owns_gate = false;
-                {
-                    let mut gates = self.inflight.lock().unwrap();
-                    if !gates.contains_key(&key) {
-                        gates.insert(key.clone(), cancel_tx);
-                        owns_gate = true;
-                    }
+                // A COLLIDING ID IS REFUSED, NOT SILENTLY SWAPPED IN. A bare `insert` DISPLACED the
+                // live entry and dropped the previous frame's `cancel_tx` — which resolves its
+                // `cancel_rx` with an error, and the `select!` arm below matches an error as readily
+                // as a value. So a second frame reusing an id in flight ABORTED the first one and
+                // suppressed its answer: the client got no response and no error for a request it
+                // never cancelled, and the survivor was then un-cancellable because whichever
+                // finished first removed the shared key. JSON-RPC 2.0 §4 requires an id to be unique
+                // within a session while its request is outstanding, so the duplicate is the
+                // malformed frame and it is the one that is refused.
+                if !self.claim_inflight(&key, cancel_tx) {
+                    let err = serde_json::json!({
+                        "jsonrpc": "2.0",
+                        "id": caller_id.clone().unwrap_or(Value::Null),
+                        "error": {
+                            "code": -32600,
+                            "message": "a request with this id is already in flight on this \
+                                        session; a JSON-RPC id must be unique while its request \
+                                        is outstanding",
+                        },
+                    });
+                    self.emit(&err).await;
+                    return;
                 }
                 tokio::select! {
                     () = self.handle_frame(frame, caller_id) => {}
                     _ = cancel_rx => {} // cancelled: the dispatch future is dropped, its answer suppressed
                 }
-                // Only the frame that claimed the gate clears it: a duplicate that removed a key it
-                // never owned would strip the live request of the cancel it is entitled to.
-                if owns_gate {
-                    self.inflight.lock().unwrap().remove(&key);
-                }
+                // Only the frame that claimed the gate reaches here — a duplicate returned above —
+                // so clearing the key never strips a live request of the cancel it is entitled to.
+                self.inflight.lock().unwrap().remove(&key);
             }
             // A notification or an id-less frame cannot be cancelled — nothing names it.
             None => self.handle_frame(frame, caller_id).await,
@@ -434,9 +436,28 @@ fn envelope_id(line: &[u8]) -> Option<Value> {
 
 /// A stable map key for a JSON-RPC id: type-tagged so the string `"1"` and the number `1` — which
 /// never correlate on the wire — never collide in the in-flight table either.
-fn id_key(id: &Value) -> String {
+///
+/// ## The numeric arm is CANONICAL, not the serializer's spelling
+///
+/// JSON has ONE number type, so `1` and `1.0` are the same id on the wire and every client is free
+/// to render either. `format!("n:{other}")` renders serde_json's own text, which is `1` for an
+/// integer and `1.0` for a float — two keys for one id. A client that issued `tools/call` with `1`
+/// and then sent `notifications/cancelled` naming `1.0` (the shape any client that round-trips ids
+/// through a double produces) missed the table entirely and the cancel silently did nothing, which
+/// is the one outcome a cancel must never have. So a number that is integral is keyed by its integer
+/// value whatever its spelling, and only a genuinely fractional id keeps a distinct key.
+pub(crate) fn id_key(id: &Value) -> String {
     match id {
         Value::String(s) => format!("s:{s}"),
+        Value::Number(n) => match n.as_f64() {
+            // `as_i128`/`as_u64` would not see `1.0`; going through `f64` and back is what makes the
+            // two spellings ONE key. The `f64` round-trip is exact for every integer JSON-RPC ids
+            // are drawn from, and a value outside that range keeps its own literal spelling.
+            Some(f) if f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 => {
+                format!("n:{}", f as i64)
+            }
+            _ => format!("n:{n}"),
+        },
         other => format!("n:{other}"),
     }
 }
@@ -478,6 +499,27 @@ struct Session {
 }
 
 impl Session {
+    /// CLAIM one in-flight id, or report that it is already taken. `true` when this frame now owns
+    /// the key. Its own method so the collision rule can be driven by a test without arranging a
+    /// long-running dispatch to keep a frame in flight.
+    ///
+    /// The claim is CHECK-AND-INSERT UNDER ONE LOCK. A bare `insert` DISPLACED the live entry and
+    /// dropped the previous frame's `cancel_tx` — which resolves its `cancel_rx` with an error, and
+    /// the `select!` arm matches an error as readily as a value. So a second frame reusing an id in
+    /// flight ABORTED the first one and suppressed its answer: the client got no response and no
+    /// error for a request it never cancelled, and the survivor was then un-cancellable because
+    /// whichever finished first removed the shared key. JSON-RPC 2.0 §4 requires an id to be unique
+    /// within a session while its request is outstanding, so the DUPLICATE is the malformed frame
+    /// and it is the one that is refused.
+    fn claim_inflight(&self, key: &str, cancel_tx: tokio::sync::oneshot::Sender<()>) -> bool {
+        let mut inflight = self.inflight.lock().unwrap();
+        if inflight.contains_key(key) {
+            return false;
+        }
+        inflight.insert(key.to_string(), cancel_tx);
+        true
+    }
+
     /// The cached channel handle, once the pump has handed us one. Every emit path runs only after a
     /// frame (an answer to it, or a push that a prior subscribe/ask/task result set in motion), so in
     /// a live session it is always present; a push racing ahead of the first frame is simply dropped.
