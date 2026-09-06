@@ -27,7 +27,6 @@ import rules  # noqa: E402
 # that the pristine copy does not have (deleted upstream, or created by a plant) is REMOVED from
 # the scratch copy on restore, so a plant can create a file and the next plant starts clean.
 TOUCHED = [
-    "crates/busbar-llm/src/engine/walk.rs",
     "crates/busbar-llm/src/engine/select.rs",
     "crates/busbar-llm/src/arrival.rs",
     "crates/busbar-llm/src/native_ingress.rs",
@@ -49,6 +48,40 @@ TOUCHED = [
     "crates/busbar-unit-admission/src/cells.rs",
     "crates/busbar-unit-breaker/src/port.rs",
 ]
+
+
+# TOUCHED IS LOAD-BEARING AND SILENT WHEN WRONG: a file a plant edits but nobody restores stays
+# sabotaged for every plant after it, so the self-test's "exactly one FAIL row" can be produced by
+# leftovers from an earlier rule rather than by the rule under test. Nothing about a missing entry
+# is visible at the time it is written. So the list is checked against the plants THEMSELVES, by
+# reading this module's own source: every path literal a plant hands to `append` or joins onto the
+# scratch root must be restorable. This runs at import, before any rule is planted.
+def _assert_touched_covers_the_plants():
+    import ast
+
+    src = ast.parse(open(os.path.abspath(__file__), encoding="utf-8").read())
+    edited = set()
+    for node in ast.walk(src):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        # append(scratch, "<rel>", ...)
+        if isinstance(fn, ast.Name) and fn.id == "append" and len(node.args) >= 2:
+            if isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+                edited.add(node.args[1].value)
+        # os.path.join(scratch, "<rel>")
+        elif (isinstance(fn, ast.Attribute) and fn.attr == "join" and len(node.args) == 2
+              and isinstance(node.args[0], ast.Name) and node.args[0].id == "scratch"
+              and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
+            edited.add(node.args[1].value)
+    missing = sorted(edited - set(TOUCHED))
+    if missing:
+        raise AssertionError(
+            "plant.py: these paths are edited by a plant but are not in TOUCHED, so they would "
+            f"never be restored between plants: {missing}")
+
+
+_assert_touched_covers_the_plants()
 
 
 def restore(pristine, scratch):
