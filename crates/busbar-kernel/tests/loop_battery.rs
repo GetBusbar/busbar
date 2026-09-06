@@ -981,3 +981,48 @@ fn client(key: u64) -> Enter {
         now: 0,
     }
 }
+
+/// TWO CALLERS HOLD A KEY TO A HOLD CELL, AND THERE IS NO THIRD.
+///
+/// The whole of "a unit posts exactly once" rests on how many places in this crate can take a hold
+/// out of its cell. Two are designed for: the loop's exit path, and the node's sweep. The cell makes
+/// whichever arrives second lose, so two are safe — but the safety is a property of the CELL, and
+/// what it buys is bounded by how many callers there are to reason about. Every additional site is
+/// another settle to read, another lease release to get right beside it, and another place a future
+/// edit can forget that the leases go back in the same breath as the take.
+///
+/// So the count is asserted here rather than left to review, over the crate's own source: the take
+/// is token-sealed, the token is named at the call, and a third one is therefore visible. A site
+/// that legitimately needs to settle a hold reaches the exit path; it does not open the cell itself.
+#[test]
+fn exactly_two_callers_can_take_a_hold_out_of_its_cell() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut sites: Vec<String> = Vec::new();
+    let mut files: Vec<_> = std::fs::read_dir(&src)
+        .expect("the crate's own source is beside its tests")
+        .map(|entry| entry.expect("a readable directory entry").path())
+        .filter(|path| path.extension().is_some_and(|e| e == "rs"))
+        .collect();
+    files.sort();
+    for path in files {
+        let text = std::fs::read_to_string(&path).expect("a readable source file");
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .expect("a named file")
+            .to_owned();
+        for line in text.lines() {
+            // The seal is spelled at the call, so a take is exactly a line that opens a cell with
+            // an exit token in its hand.
+            if line.contains(".take(&exit)") || line.contains(".take(&ExitToken::mint(") {
+                sites.push(name.clone());
+            }
+        }
+    }
+    assert_eq!(
+        sites,
+        vec!["teller.rs".to_owned(), "tick.rs".to_owned()],
+        "a hold leaves its cell in the exit path and in the sweep, once each. Anything else \
+         settling a unit reaches the exit path rather than opening the cell itself"
+    );
+}
