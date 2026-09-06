@@ -1263,15 +1263,12 @@ pub fn meter(
 /// and a settlement is not rolled back because a write failed.
 pub fn settle(
     durability: &mut crate::root::durability::Durability,
-    server: &str,
-    scope: BucketScope,
+    principal: &PrincipalId,
     epoch: u64,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
-    // The key this plane already declares for its settlements — one per registration per dimension —
-    // rather than a second spelling of the same balance invented at the exit.
-    let key = totals_key(server, CapDimension::NanoUnits, scope);
+    let key = balance(principal);
     let at = crate::root::durability::Settling {
         key: &key,
         window: busbar_unit_admission::budget_window(
@@ -1359,14 +1356,26 @@ pub fn record_finish(
 // Exit — the totals the settlement posts against
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Where a settled unit of this plane posts.
+/// The balance one unit of this plane settles into: the caller's own attribution bucket, in
+/// nano-units, across every pool.
 ///
-/// One key per registration per dimension, so a deployment reading its books back can answer "what
-/// did this server cost" without joining anything. The scope is the caller's, because that is what a
-/// budget is drawn against.
+/// The bucket is the PRINCIPAL's, which is the same bucket the other planes settle into and the same
+/// one `/usage` reads back. A registration-shaped bucket would answer "what did this server cost"
+/// and nothing else: the caller's spend on this plane would be missing from every figure a principal
+/// is quoted, and the reconciliation identity — the ledger's postings against the rows the usage
+/// projection keeps — would carry a difference no operator could ever close, because the two sides
+/// would be counting different things rather than disagreeing about one.
+///
+/// Every pool, because an attribution bucket is not a budget: the caps a deployment configures are
+/// walked at the door, and what settles here is the money one caller spent, whatever it was spent
+/// through.
 #[must_use]
-pub fn totals_key(server: &str, dimension: CapDimension, scope: BucketScope) -> TotalsKey {
-    TotalsKey::new(BucketId::new(pool_key(server)), dimension, scope)
+pub fn balance(principal: &PrincipalId) -> TotalsKey {
+    TotalsKey::new(
+        BucketId::new(principal.as_str()),
+        CapDimension::NanoUnits,
+        BucketScope::All,
+    )
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2601,16 +2610,24 @@ mod tests {
         assert!(!ops.contains(&records::OP_SCAN));
     }
 
-    /// The totals key names the registration, under the same prefix the breaker cells use, so the
-    /// books and the breaker answer about the same thing.
+    /// The balance names the CALLER, which is the bucket every other plane settles into and the
+    /// bucket a principal's own usage is read out of. A registration-shaped one would put this
+    /// plane's spend somewhere no principal's figures ever look.
     #[test]
-    fn the_totals_key_names_the_registration() {
-        let key = totals_key(
-            "fs",
-            CapDimension::class(&CLASS_TOOL_CALLS),
-            BucketScope::Pool(pool_key("fs")),
+    fn the_balance_names_the_caller_and_not_the_registration() {
+        let key = balance(&PrincipalId::new("vk_mcp"));
+        assert_eq!(key.bucket.as_str(), "vk_mcp");
+        assert_ne!(
+            key.bucket.as_str(),
+            pool_key("fs"),
+            "the server's own key is the breaker's and the pool table's, never the books'"
         );
-        assert_eq!(key.bucket.as_str(), "tool:fs");
+        assert_eq!(key.dimension, CapDimension::NanoUnits, "money, not calls");
+        assert_eq!(
+            key.scope,
+            BucketScope::All,
+            "an attribution bucket is not a budget"
+        );
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2793,7 +2810,7 @@ mod tests {
         let mut durability = memory_durability();
         let who = PrincipalId::new("vk_mcp");
 
-        let mut hold = Hold::open(&AdmitToken::<AdmitStep>::mint(&seal), who, 1_000);
+        let mut hold = Hold::open(&AdmitToken::<AdmitStep>::mint(&seal), who.clone(), 1_000);
         // The slice had room, so the reservation grows rather than the unit carrying anything.
         assert_eq!(hold.spend(400, u64::MAX).overdraft, 0);
         let usage = Usage::report(
@@ -2812,8 +2829,7 @@ mod tests {
 
         let settled = settle(
             &mut durability,
-            "fs",
-            BucketScope::Pool(pool_key("fs")),
+            &who,
             1_700_000_000,
             &DurabilityToken::mint(&seal),
             posted,
@@ -2822,11 +2838,7 @@ mod tests {
         assert_eq!(settled.settlement.released, 600);
         assert!(settled.overdraft.is_none());
 
-        let key = totals_key(
-            "fs",
-            CapDimension::NanoUnits,
-            BucketScope::Pool(pool_key("fs")),
-        );
+        let key = balance(&who);
         let window = busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,
             1_700_000_000,
@@ -2835,6 +2847,16 @@ mod tests {
         assert_eq!(figures.settled, 400);
         assert_eq!(figures.open_slice_remainders, 600, "the residual goes back");
         assert_eq!(figures.overdraft_carried_out, 0);
+        // The identity, over this plane's own unit: what was reserved is what was spent plus what
+        // came back plus what nothing could back. It only closes because the three figures are all
+        // read out of ONE bucket — the caller's. Posted into a bucket keyed by the registration,
+        // every one of them would be missing from the principal the money was taken from, and the
+        // difference would sit on the reconciliation permanently.
+        assert_eq!(
+            figures.settled + figures.open_slice_remainders + figures.overdraft_carried_out,
+            1_000,
+            "the reservation is accounted for, in the caller's own bucket"
+        );
         let replayed = durability
             .journal
             .replay()
@@ -2878,8 +2900,7 @@ mod tests {
 
         let settled = settle(
             &mut durability,
-            "fs",
-            BucketScope::Pool(pool_key("fs")),
+            &PrincipalId::new("vk_mcp"),
             1_700_000_000,
             &DurabilityToken::mint(&seal),
             posted,
