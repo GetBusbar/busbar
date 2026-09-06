@@ -154,6 +154,34 @@ fn a_successful_answer_carries_the_discriminator() {
     );
 }
 
+/// A result that cannot CARRY the discriminator is refused, never written without one.
+///
+/// The discriminator is what this node says about its own answer, and the caller-facing decode
+/// step reads it back: a result with none reads as finished. A result that is not an object has
+/// nowhere to put the member, and the write used to notice that and go on regardless — so a
+/// composed answer that meant "this asks the caller for something" left here saying nothing,
+/// and a peer, and this plane's own reader, took it as complete. There is no spelling of the
+/// member for these shapes, so the honest answer is that the result cannot be written.
+#[test]
+fn a_result_that_cannot_carry_the_discriminator_is_refused() {
+    let id = id_value(b"1").expect("a number is a value");
+    for result in [
+        &b"[]"[..],
+        &b"[{\"a\":1}]"[..],
+        &b"\"done\""[..],
+        &b"7"[..],
+        &b"true"[..],
+        &b"null"[..],
+    ] {
+        assert_eq!(
+            success(Some(&id), result, RESULT_TYPE_COMPLETE),
+            Err(busbar_contract::wire::Encode::Unrepresentable),
+            "{} was written with no discriminator",
+            core::str::from_utf8(result).unwrap()
+        );
+    }
+}
+
 /// A discriminator a server put on its own result is REPLACED, never passed through.
 ///
 /// This is the laundering the three-constructor shape exists to prevent, asserted rather than

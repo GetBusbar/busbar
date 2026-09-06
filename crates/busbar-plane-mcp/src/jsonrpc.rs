@@ -340,8 +340,14 @@ pub fn id_value(raw: &[u8]) -> Result<serde_json::Value, Encode> {
 /// answered with a demand for the caller's authority would otherwise have that demand handed on
 /// under this node's name and this node's authentication.
 ///
+/// A result that has nowhere to PUT the member — anything that is not an object — is refused rather
+/// than written without one. The stamping is the safety property, and a result with no discriminator
+/// reads as finished to a peer and to this plane's own reader; writing one silently would turn "this
+/// asks the caller for something" into "this is the answer" for every shape but an object.
+///
 /// # Errors
-/// Returns an encode error when the result bytes are not a document.
+/// Returns an encode error when the result bytes are not a document, or are a document with no
+/// member the discriminator can be written to.
 pub fn success(
     id: Option<&serde_json::Value>,
     result_bytes: &[u8],
@@ -349,9 +355,8 @@ pub fn success(
 ) -> Result<Vec<u8>, Encode> {
     let mut result: serde_json::Value =
         serde_json::from_slice(result_bytes).map_err(|_| Encode::Unrepresentable)?;
-    if let Some(object) = result.as_object_mut() {
-        object.insert("resultType".into(), result_type.into());
-    }
+    let object = result.as_object_mut().ok_or(Encode::Unrepresentable)?;
+    object.insert("resultType".into(), result_type.into());
     let mut envelope = serde_json::Map::new();
     envelope.insert("jsonrpc".into(), VERSION.into());
     // OMITTED when there is none: on the success path the member is written only if there is one.
