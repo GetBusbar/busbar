@@ -51,6 +51,9 @@ pub struct TestUnits {
     pub challenge: bool,
     /// The lanes the verified set carried when it reached the approve step.
     pub approved_lanes: Mutex<Vec<busbar_caps::LaneId>>,
+    /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
+    /// them. Empty is the door that names none, which is every case that predates the slip.
+    pub groups: Vec<&'static str>,
 }
 
 impl Default for TestUnits {
@@ -65,6 +68,7 @@ impl Default for TestUnits {
             refused_door: AtomicBool::new(false),
             admitted_door: AtomicBool::new(false),
             approved_lanes: Mutex::new(Vec::new()),
+            groups: Vec::new(),
         }
     }
 }
@@ -73,6 +77,14 @@ impl TestUnits {
     /// Units that let every step through.
     pub fn passing() -> Self {
         TestUnits::default()
+    }
+
+    /// Units whose door counts every unit against these capped groups and says so.
+    pub fn in_groups(groups: &[&'static str]) -> Self {
+        TestUnits {
+            groups: groups.to_vec(),
+            ..TestUnits::default()
+        }
     }
 
     /// Units that refuse at `step` for `reason`.
@@ -334,11 +346,17 @@ impl Units for TestUnits {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
+        leases: &busbar_kernel::slice::GroupLeaseSlip,
     ) -> Decision<Admit> {
         self.note(StepName::Admit);
         match self.refusal(StepName::Admit) {
             Some(refusal) => Decision::refuse(token, refusal),
             None => {
+                // Named on the yes and only on the yes, exactly where the real door names them:
+                // after the decision, never as part of it.
+                for group in &self.groups {
+                    leases.counted(group);
+                }
                 let admission = match &self.door {
                     Door::Own(size) => Admission::Own(Hold::open(admit, principal.clone(), *size)),
                     Door::Zero => Admission::ZeroHold,

@@ -306,6 +306,79 @@ fn the_sweep_gives_back_the_lease_the_door_drew_on_a_lost_task() {
     assert!(!slot.leases().is_owned(), "and the slot is unowned now");
 }
 
+/// AND THE LOST UNIT'S GROUP LEASES WITH IT. A group whose count a dead task kept would be a group
+/// that admits less and less until it admits nothing, and no reading anywhere would say why.
+///
+/// The same lost task as above, this time through a door that names two capped groups. The sweep
+/// does not know the names and does not have to: the leases are the slot's, all three of them, and
+/// the one release gives back everything the slot holds.
+#[test]
+fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let canary = Canary::new();
+    let units = common::TestUnits::in_groups(&["tenant", "team"]);
+    let dropped = std::sync::atomic::AtomicBool::new(false);
+    let route = common::NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let gauge = ConcurrencyGauge::new();
+    let meter = busbar_kernel::teller::AccrualMeter::new();
+    let tenant = busbar_kernel::slice::group_lease("tenant");
+    let team = busbar_kernel::slice::group_lease("team");
+    let slot = table
+        .insert(Enter {
+            key: UnitKey::new(11),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+        })
+        .map_err(|_| ())
+        .expect("under the cap");
+
+    let unit = common::ctx(11);
+    let mut running = Box::pin(busbar_kernel::teller::run_unit_async(
+        &kernel,
+        &units,
+        &unit,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+        &route,
+    ));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(running.as_mut(), &mut cx).is_pending());
+    assert_eq!(gauge.count(&tenant), 1, "the door counted the outer group");
+    assert_eq!(gauge.count(&team), 1, "and the inner one");
+    // The task is gone, exactly as above: nothing it owns comes back on its own.
+    std::mem::forget(running);
+
+    slot.mark();
+    let verdict = sweep(&slot, StepName::Route, 0, 30_000, true);
+    sweep_settle(
+        &kernel,
+        &slot,
+        verdict,
+        &Evidence::default(),
+        &canary,
+        &gauge,
+    )
+    .expect("the sweep is the second key to the cell");
+
+    assert_eq!(gauge.count(&tenant), 0, "the group has its count back");
+    assert_eq!(gauge.count(&team), 0, "and so does the other one");
+    assert_eq!(gauge.count(&busbar_kernel::slice::IN_FLIGHT), 0);
+}
+
 /// A sweep that races a unit which is still running reclaims nothing of it.
 ///
 /// The unit's leases live on the slot now, where the sweep can reach them, so this is a rule and

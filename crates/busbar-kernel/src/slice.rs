@@ -355,6 +355,53 @@ pub struct ChainRefused {
 /// reading of the slot the door's yes occupied, and it is the reading the sweep gives back.
 pub const IN_FLIGHT: BucketId = bucket_all("kernel:in_flight");
 
+/// The bucket one capped-`concurrent` GROUP's leases are counted on.
+///
+/// Node-wide, like [`IN_FLIGHT`] and for the same reason: a group's concurrency limit counts the
+/// units of that group this node is running, and there is nothing else it could count. The id is
+/// the group's own name as the composition root interned it, so the two never collide unless an
+/// operator names a group `kernel:in_flight` — at which point the two readings are of the same set
+/// anyway.
+pub const fn group_lease(group: &'static str) -> BucketId {
+    bucket_all(group)
+}
+
+/// Where the door names the capped groups its yes counted, for the slot to record.
+///
+/// The door decides and the kernel counts, and this is the whole of the seam between the two. It is
+/// created on the loop's own frame, lent to the door's step for the length of that one call, and
+/// read once immediately after — so a name written here belongs to this unit and to no other, with
+/// no allocation and nothing to clean up.
+///
+/// Interior mutability because the step is lent everything by shared reference; a slip is not a
+/// capability and carries no token. Writing to it cannot admit, refuse, charge or release anything:
+/// the worst a wrong name can do is make the node's own reading of what it is running wrong, which
+/// is why it is a reading and not a gate.
+#[derive(Debug, Default)]
+pub struct GroupLeaseSlip {
+    named: std::sync::Mutex<Vec<BucketId>>,
+}
+
+impl GroupLeaseSlip {
+    /// An empty slip.
+    pub fn new() -> Self {
+        GroupLeaseSlip::default()
+    }
+
+    /// Name a group the door counted this unit against.
+    pub fn counted(&self, group: &'static str) {
+        self.named
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(group_lease(group));
+    }
+
+    /// Take what the door named, emptying the slip. Called once, by the draw.
+    pub fn taken(&self) -> Vec<BucketId> {
+        std::mem::take(&mut *self.named.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
 /// Does a unit of this origin take a concurrency lease?
 ///
 /// Handshake units and tick units move no money and take none, so a node at a saturated

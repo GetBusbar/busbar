@@ -66,7 +66,7 @@ use busbar_caps::{
 };
 
 use crate::registry::Generation;
-use crate::slice::{takes_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
+use crate::slice::{takes_lease, ConcurrencyGauge, GroupLeaseSlip, LeaseCell, IN_FLIGHT};
 
 /// The kernel's own authority: the one place the tokens the units are lent are minted.
 ///
@@ -459,6 +459,14 @@ pub trait Units {
     ) -> Decision<Approve>;
 
     /// The door.
+    ///
+    /// Lent a `leases` slip as well as its two tokens. The design gives a unit one concurrency lease
+    /// per capped-`concurrent` group it charges through, and only the door knows which groups those
+    /// are: the names are config-derived and the decision is the door's alone. So the door names
+    /// them here and the loop records them on the unit's slot, where both of the unit's ends can
+    /// give them back. A door that names nothing is a unit counted only on the node-wide gauge,
+    /// which is what every unit was counted on before, and the slip is written AFTER the decision —
+    /// nothing in it can turn a yes into a no.
     fn admit(
         &self,
         token: &UnitToken<Admit>,
@@ -466,6 +474,7 @@ pub trait Units {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
     ) -> Decision<Admit>;
 
     /// Dial, send, relay — all under the hold, with the meter running.
@@ -687,6 +696,11 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 )
                 .and_then(
                     |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
+                        // The slip the door names its capped groups on, for the length of the one
+                        // call. It lives here rather than on the unit's context because it is not
+                        // something the unit IS: it is what the door said, read once, on the next
+                        // line, by the draw.
+                        let groups = GroupLeaseSlip::new();
                         let admitted = units
                             .admit(
                                 &UnitToken::<Admit>::mint(seal),
@@ -694,6 +708,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                                 ctx,
                                 &principal,
                                 &destinations,
+                                &groups,
                             )
                             .into_result(seal);
                         // THE LEASE, drawn on the one answer that entitles a unit to it. The door
@@ -702,7 +717,7 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                         // count — and a unit that never reached this step, a challenge round, is
                         // never here to draw one.
                         if admitted.is_ok() {
-                            draw_lease(ctx, &run);
+                            draw_lease(ctx, &run, &groups);
                         }
                         admitted
                     },
@@ -800,11 +815,21 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
 /// A cell that refuses a lease is a unit whose other end has already run, and the count it would
 /// otherwise be left holding is one no exit and no sweep would ever release — a cap that only goes
 /// up, invisible until the node stops admitting anything.
-fn draw_lease(ctx: &UnitCtx, run: &Run<'_>) {
-    if takes_lease(ctx.origin, ctx.kernel_verb_only) {
-        run.gauge.record(&IN_FLIGHT);
-        if !run.leases.take(IN_FLIGHT) {
-            run.gauge.release(&IN_FLIGHT);
+///
+/// ONE LEASE PER CAPPED GROUP, and the node-wide one beside them. The design's `concurrent` lease is
+/// per capped group, and the groups are the door's to name — so the slip carries what the door
+/// counted and every name in it becomes a lease of its own on the same slot, released by the same
+/// two ends in the same breath. The count here is a READING and never a gate: `record` is the entry
+/// point that cannot refuse, so a unit the door admitted is never turned away by the counting of it.
+/// A door that named nothing leaves the node-wide lease exactly as it was.
+fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
+    if !takes_lease(ctx.origin, ctx.kernel_verb_only) {
+        return;
+    }
+    for bucket in std::iter::once(IN_FLIGHT).chain(groups.taken()) {
+        run.gauge.record(&bucket);
+        if !run.leases.take(bucket) {
+            run.gauge.release(&bucket);
         }
     }
 }

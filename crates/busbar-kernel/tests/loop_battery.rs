@@ -15,7 +15,7 @@ use busbar_caps::{
     Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, ReasonCode, StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
-use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell, IN_FLIGHT};
+use busbar_kernel::slice::{group_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
 use busbar_kernel::teller::{
     exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run,
 };
@@ -687,6 +687,72 @@ fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
         0,
         "the unit ended, so the slot it occupied is back"
     );
+    assert_eq!(slot.leases().held(), 0);
+}
+
+/// ONE LEASE PER CAPPED GROUP. Two capped groups are two counts while the unit is in flight, and
+/// nothing at all once it has ended.
+///
+/// The design gives a unit a `concurrent` lease per capped-`concurrent` group in its chain, and the
+/// node-wide one it has always drawn beside them. Only the door knows which groups those are, so
+/// this is the reading of what the door SAID: two named groups, counted separately, on the same
+/// slot, given back together by the one end the unit reaches. A single node-wide count cannot tell
+/// an operator which group filled up, and a per-group count that the end does not release is a
+/// group that stops admitting for good.
+#[test]
+fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
+    let kernel = Kernel::new();
+    let units = TestUnits::in_groups(&["tenant", "team"]);
+    let dropped = AtomicBool::new(false);
+    let route = NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let table = InFlight::new(4, 0);
+    let slot = table
+        .insert(client(31))
+        .map_err(|_| ())
+        .expect("under the cap");
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let unit = ctx(31);
+    let tenant = group_lease("tenant");
+    let team = group_lease("team");
+
+    {
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &unit,
+            Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: slot.leases(),
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(gauge.count(&tenant), 1, "the outer group is running one");
+        assert_eq!(gauge.count(&team), 1, "and so is the inner one");
+        assert_eq!(
+            gauge.count(&IN_FLIGHT),
+            1,
+            "the node-wide reading is unchanged: one unit is one unit"
+        );
+        assert_eq!(
+            slot.leases().held(),
+            3,
+            "all three are the slot's, so both of the unit's ends can give them back"
+        );
+    }
+    assert_eq!(gauge.count(&tenant), 0);
+    assert_eq!(gauge.count(&team), 0);
+    assert_eq!(gauge.count(&IN_FLIGHT), 0);
     assert_eq!(slot.leases().held(), 0);
 }
 
