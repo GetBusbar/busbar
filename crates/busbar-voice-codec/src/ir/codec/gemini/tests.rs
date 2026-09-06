@@ -1042,6 +1042,44 @@ fn audio_format_from_mime_probe() {
     }
 }
 
+#[test]
+fn the_media_type_is_matched_whole_not_as_a_prefix() {
+    // `audio/PCMU` is G.711 µ-law's OWN registered media type, and it begins with `audio/pcm`. Admitted
+    // as the shared `Pcm16` token, its bytes are measured at 48 bytes per millisecond instead of 8 —
+    // six times short — so the next barge-in truncates a turn the caller is still six-sevenths of the
+    // way through. `audio/pcma` (A-law) is the same trap.
+    for dir in [UpDown::Up, UpDown::Down] {
+        assert_eq!(
+            audio_format_from_mime("audio/PCMU", dir),
+            None,
+            "µ-law is not the 24 kHz PCM the truncate math measures in"
+        );
+        assert_eq!(audio_format_from_mime("audio/pcma", dir), None);
+        assert_eq!(audio_format_from_mime("audio/pcm-whatever", dir), None);
+    }
+}
+
+#[test]
+fn the_rate_is_read_as_a_parameter_not_looked_for_as_a_substring() {
+    // `rate=240000` CONTAINS `rate=24000` and is a different rate — ten times the samples per
+    // millisecond, so a downlink blob admitted on that spelling meters ten times long and the truncate
+    // point runs past the end of what was heard.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=240000", UpDown::Down),
+        None
+    );
+    assert_eq!(
+        audio_format_from_mime("audio/pcm;rate=160000", UpDown::Up),
+        None
+    );
+    // A parameter list with the rate somewhere other than first still resolves, and whitespace after
+    // the separator is a parameter list, not a different type.
+    assert_eq!(
+        audio_format_from_mime("audio/pcm; codecs=x; rate=24000", UpDown::Down),
+        Some(AudioFormat::Pcm16)
+    );
+}
+
 // ── degrade, don't error (drop+warn asymmetries) ─────────────────────────────────────────────────
 
 #[test]
