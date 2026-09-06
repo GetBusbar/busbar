@@ -21,8 +21,11 @@
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
 #   no-deferral      scripts/no-deferral-gate.sh --strict-done (nothing deferred; voice markers CLEARED).
-#   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0): core names no
-#                    section noun as a parse target (0 — Stage A landed).
+#   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0). Its residual is
+#                    a LOCKED-legitimate floor, not zero and not a done condition, so what is asserted
+#                    is the floor itself: the run must PRODUCE a count (a gate that errored, or whose
+#                    verdict line moved, is RED) and that count must not RISE above CONFIG_NOUN_FLOOR.
+#                    A fall is green and says so — lower the floor when it lands.
 #   equality         scripts/capability-equality-summary.py reports 0 missing cells (LLM==MCP==A2A true),
 #                    AND the ledger's root column holds with all five root-* legs on and every cell it
 #                    calls `proven` over the loop actually runs and passes.
@@ -210,15 +213,55 @@ step "no-deferral-gate --strict-done" bash scripts/no-deferral-gate.sh --strict-
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "CONFIG-NOUN — four-noun parse residual (REPORT-ONLY; locked-legitimate floor)"
+begin_group "CONFIG-NOUN — four-noun parse residual holds at its locked-legitimate floor"
 step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh --selftest
-# REPORT-ONLY, deliberately NOT a done-blocker — same treatment as the plane-noun/plane-grep
+# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun/plane-grep
 # billing-vocab meters the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
 # core-owned (CORE_OWNED_CONCRETE_SECTIONS, never evicted), and the `tools`/`agents`/`streams`
 # DeployCfg fields are Option A's `deny_unknown_fields` floor (Option B is serde-blocked). So the
-# residual (pools 8 · tools 3 · agents 2 · streams 5 = 18) is a LEGITIMATE floor, not debt; the DoD is
-# "core's generic named-map MACHINERY names no plane noun" (Stage A, done), not "zero noun field refs".
-# Printed for visibility; a RISE above the floor is the real signal.
+# residual is a LEGITIMATE floor, not debt; the DoD is "core's generic named-map MACHINERY names no
+# plane noun" (Stage A, done), not "zero noun field refs".
+#
+# What IS asserted, therefore, is the floor: the armed gate must produce a residual (a run that could
+# not print one is an error, not a pass), and that residual must not RISE above the number declared
+# here. The gate's own exit status is 1 while the residual is above zero — by design — so it can never
+# be the verdict on its own; it is captured and reported so a crash is distinguishable from the
+# expected refusal, and a run that printed no countable verdict line is RED whatever it exited.
+#
+# THE FLOOR, as measured on this tree: pools 8 · tools 5 · streams 6 = 19 distinct core parse-target
+# lines. Lower this number the moment a section is evicted; a fall is reported as a fall and tells you
+# what to lower it to.
+CONFIG_NOUN_FLOOR=19
+config_noun_residual() {
+  local out rc line count
+  out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?
+  line="$(printf '%s\n' "$out" | grep -E "distinct core parse-target lines" | tail -1)"
+  count="$(printf '%s\n' "$line" | sed -e 's/.*distinct core parse-target lines): *//' -e 's/[^0-9].*$//')"
+  if [ -z "$count" ]; then
+    printf '%s\n' "$out"
+    printf 'the armed gate printed NO residual line (exit %s): it errored, or its verdict wording moved.\n' "$rc"
+    printf 'Nothing was compared to the floor, so this is RED rather than an unavailable count.\n'
+    return 1
+  fi
+  if [ "$rc" -gt 1 ]; then
+    printf '%s\n' "$out"
+    printf 'the armed gate exited %s (usage/error, not its residual verdict) — residual %s not trusted.\n' "$rc" "$count"
+    return 1
+  fi
+  if [ "$count" -gt "$CONFIG_NOUN_FLOOR" ]; then
+    printf '%s\n' "$out"
+    printf 'residual ROSE: %s core parse-target line(s), above the declared floor of %s (gate exit %s).\n' \
+      "$count" "$CONFIG_NOUN_FLOOR" "$rc"
+    return 1
+  fi
+  if [ "$count" -lt "$CONFIG_NOUN_FLOOR" ]; then
+    printf 'residual FELL to %s (declared floor %s, gate exit %s) — lower CONFIG_NOUN_FLOOR to %s.\n' \
+      "$count" "$CONFIG_NOUN_FLOOR" "$rc" "$count"
+    return 0
+  fi
+  printf 'residual %s, exactly the declared floor (gate exit %s).\n' "$count" "$rc"
+}
+step "four-noun residual is at or below its declared floor ($CONFIG_NOUN_FLOOR)" config_noun_residual
 printf '  \033[36m[info]\033[0m '
 GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1 | grep -E "distinct core parse-target lines" | tail -1 || echo "config-noun count unavailable"
 end_group
