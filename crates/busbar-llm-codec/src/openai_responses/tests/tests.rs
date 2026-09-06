@@ -6253,6 +6253,43 @@ fn test_cache_write_tokens_mapping() {
     assert_eq!(usage.input_tokens, 500);
 }
 
+/// The Responses stream declares a top-level `error` event (`ResponseErrorEvent`: "Emitted when an
+/// error occurs", with required `code`/`message`/`param`) that is NOT `response.failed` — it is the
+/// generic mid-stream failure. The reader had no arm for it, so the whole event fell through the
+/// `_ => {}` default and produced ZERO IR events: the client got no error frame, the stream was
+/// never terminated, and the breaker recorded no fault for a failure the upstream announced.
+#[test]
+fn a_stream_error_event_terminates_the_stream_and_faults_the_breaker() {
+    let reader = ResponsesReader;
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = reader.read_response_events(
+        "error",
+        &serde_json::json!({
+            "type": "error",
+            "code": "server_error",
+            "message": "Something went wrong",
+            "param": serde_json::Value::Null,
+            "sequence_number": 1
+        }),
+        &mut state,
+    );
+    let err = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::Error(e) => Some(e),
+            _ => None,
+        })
+        .expect("an `error` event must produce an IrStreamEvent::Error, not zero events");
+    assert_eq!(err.provider_signal.as_deref(), Some("server_error"));
+    assert_eq!(err.detail.message.as_deref(), Some("Something went wrong"));
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, crate::ir::IrStreamEvent::MessageStop)),
+        "the stream must be terminated, not left hanging: {events:?}"
+    );
+}
+
 // usage.input_tokens_details.cached_tokens must surface it on the IR MessageDelta usage, and the
 // writer's MessageDelta must re-emit it on the terminal event.
 #[test]

@@ -264,6 +264,9 @@ const EVT_REASONING_TEXT_DONE: &str = "response.reasoning_text.done";
 const EVT_RESPONSE_COMPLETED: &str = "response.completed";
 const EVT_RESPONSE_FAILED: &str = "response.failed";
 const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";
+/// The spec's `ResponseErrorEvent` type — the generic mid-stream failure, distinct from
+/// `response.failed` (which carries a nested `response` object).
+const EVT_ERROR: &str = "error";
 
 /// Internal `provider_signal` sentinel emitted when a `response.failed` event carries no recognizable
 /// `error.code`/`error.type`. Distinct from the `EVT_RESPONSE_FAILED` wire event type ("response.failed"):
