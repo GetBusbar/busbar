@@ -272,6 +272,17 @@ impl Breaker for TestBreaker {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .push((pool.to_string(), destination));
+        // Winning the single-flight probe marks it in flight on the cell, exactly as the real one
+        // does — which is what makes a probe that is never given back exclude the member from
+        // every later pick.
+        if health.offers_probe.is_some() {
+            self.health
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .entry(destination)
+                .or_default()
+                .probe_in_flight = true;
+        }
         Ok(Admit {
             probe_epoch: health.offers_probe,
         })
@@ -352,6 +363,14 @@ impl Breaker for TestBreaker {
             destination,
             epoch,
         ));
+        // Owner-checked, as the real cell is: a release naming an epoch the cell no longer offers
+        // is a late guard and must not clear a peer's live probe.
+        let mut health = self.health.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(h) = health.get_mut(&destination) {
+            if h.offers_probe == Some(epoch) {
+                h.probe_in_flight = false;
+            }
+        }
     }
 
     fn spend_budget(&self, destination: DestinationId) -> bool {

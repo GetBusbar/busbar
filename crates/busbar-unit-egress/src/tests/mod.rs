@@ -145,12 +145,12 @@ impl Node {
 
 impl Node {
     /// One pick against these members, without a walk around it.
-    pub fn pick(
-        &self,
-        pool: &str,
-        members: &[Member],
+    pub fn pick<'a>(
+        &'a self,
+        pool: &'a str,
+        members: &'a [Member],
         ctx: &mut RequestCtx,
-    ) -> Option<crate::select::Picked> {
+    ) -> Option<crate::select::Picked<'a>> {
         // Test-only: mints the capability token through the kernel seal exactly as CG-29 says a
         // real deployment would (`KernelSeal::acquire_for_kernel` is `// contract:` kernel-only
         // outside test modules), matching `route_with`'s own minting above.

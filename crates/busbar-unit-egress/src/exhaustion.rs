@@ -18,7 +18,7 @@ use crate::attempt::{attempt, AttemptInput, AttemptOutcome, Hop};
 use crate::pool::{Member, OnExhausted, Pool};
 use crate::ports::{Breaker, DestinationId, Permit, Unavailable};
 use crate::race;
-use crate::select::{pick_among, PickInput, RequestCtx};
+use crate::select::{pick_among, PickInput, ProbeGuard, RequestCtx};
 use crate::walk::RouteRequest;
 use crate::wire::{RouteOutcome, Shed};
 
@@ -109,6 +109,9 @@ pub async fn handle_exhaustion_for_pool<'a>(
 /// `Ok` is an answer for the client — a delivered body, a relayed upstream refusal, or a bail
 /// before anything was sent. `Err` means the upstream produced no answer at all, which is the only
 /// case in which a degraded caller may try another member.
+///
+/// The probe arrives as its guard, not as a bare epoch, so the resolution shed below — a member the
+/// verified set does not carry — gives it back on the way out instead of wedging the cell.
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_degraded<'a>(
     request: &RouteRequest<'a>,
@@ -116,11 +119,12 @@ async fn dispatch_degraded<'a>(
     pool: &Pool,
     member: &Member,
     permit: Permit,
-    probe_epoch: Option<u64>,
+    mut probe: Option<ProbeGuard<'_>>,
 ) -> Result<RouteOutcome, ()> {
     let Some(dest) = request.destination(member.destination) else {
         return Ok(RouteOutcome::Refused(Shed::internal()));
     };
+    let probe_epoch = probe.as_mut().map(ProbeGuard::take_epoch);
     let now = request.clock.now_secs();
     let metric_pool = if pool.name.is_empty() {
         member.name.as_str()
@@ -257,7 +261,7 @@ async fn handle_fallback_pool<'a>(
         };
         ctx.exclude(pick.destination);
 
-        match dispatch_degraded(request, ctx, pool, member, pick.permit, pick.probe_epoch).await {
+        match dispatch_degraded(request, ctx, pool, member, pick.permit, pick.probe).await {
             Ok(outcome) => return outcome,
             // No answer at all: try the next member of this pool.
             Err(()) => continue,
@@ -429,20 +433,16 @@ async fn queue_wait<'a>(
         let now = request.clock.now_secs();
         match request.breaker.try_admit(&pool.name, destination, now) {
             Ok(admit) => {
+                // Guarded from the win, so the resolution shed below returns it rather than
+                // leaving the cell half-open with nothing to record an outcome against.
+                let probe = admit.probe_epoch.map(|epoch| {
+                    ProbeGuard::new(request.breaker, &pool.name, destination, epoch, now)
+                });
                 let Some(member) = members.iter().find(|m| m.destination == destination) else {
                     drop(permit);
                     return RouteOutcome::Refused(Shed::internal());
                 };
-                return match dispatch_degraded(
-                    request,
-                    ctx,
-                    pool,
-                    member,
-                    permit,
-                    admit.probe_epoch,
-                )
-                .await
-                {
+                return match dispatch_degraded(request, ctx, pool, member, permit, probe).await {
                     Ok(outcome) => outcome,
                     Err(()) => handle_status_503(
                         request.breaker,
