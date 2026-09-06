@@ -10,10 +10,15 @@
 //! bounded by the client-level ceiling instead of the walk budget once it is under way — but it is
 //! not exempt from the check that there was any budget left to start it with.
 
-use super::harness::Script;
+use super::harness::{frame, Script};
 use super::{member, Node};
-use crate::ports::disposition;
+use crate::ports::{disposition, Clock};
 use busbar_contract::DestinationId;
+use busbar_contract_transport::wire::StatusClass;
+
+/// The client-level ceiling every walk in this module runs under, in milliseconds. The harness
+/// hands the unit `stream_ceiling_secs: 300`.
+const CEILING_MS: u64 = 300 * 1000;
 
 fn one_lane_pool(stream: bool) -> Node {
     let mut node = Node::with_lanes(&["a"]);
@@ -150,5 +155,74 @@ fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
             .iter()
             .any(|(_, _, label)| *label == disposition::TRANSIENT),
         "with no per-attempt cap the outer deadline is what ends it"
+    );
+}
+
+/// A drip-fed stream: `count` frames, one every `step_ms`, the last one terminal when asked.
+fn drip(node: &Node, count: usize, step_ms: u64, terminal: bool) -> Script {
+    let mut frames: Vec<_> = (0..count)
+        .map(|_| frame(Some(StatusClass::Success), "head"))
+        .collect();
+    if terminal {
+        frames.pop();
+        frames.push(frame(Some(StatusClass::Success), "end"));
+    }
+    Script::Drip {
+        frames,
+        step_ms,
+        clock: node.clock.clone(),
+    }
+}
+
+#[test]
+fn the_stream_ceiling_bounds_the_whole_answer_not_each_frame() {
+    let mut node = Node::with_lanes(&["a"]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.wants_stream = true;
+    // An upstream that never finishes and never quite goes quiet: a frame every quarter of the
+    // ceiling, twenty of them. Bounded by the whole answer, four arrive and the answer is cut at
+    // the ceiling; bounded per frame, all twenty arrive and the send runs five times as long.
+    node.transport.script("a", drip(&node, 20, CEILING_MS / 4, false));
+
+    let started = node.clock.now_millis();
+    let outcome = node.route("primary");
+    let elapsed = node.clock.now_millis() - started;
+
+    let crate::wire::RouteOutcome::Delivered(delivered) = &outcome else {
+        panic!("the frames that did arrive are relayed, not shed: {outcome:?}");
+    };
+    assert_eq!(
+        u64::try_from(elapsed).unwrap(),
+        CEILING_MS,
+        "the send is cut at the ceiling, measured from the send start"
+    );
+    assert_eq!(
+        delivered.frames, 4,
+        "only the frames that fit inside the ceiling are relayed"
+    );
+    assert_eq!(
+        delivered.finish,
+        Some(busbar_contract::FinishClass::Partial),
+        "a cut answer is a partial one"
+    );
+}
+
+#[test]
+fn a_streamed_answer_that_finishes_inside_the_ceiling_is_untouched() {
+    let mut node = Node::with_lanes(&["a"]);
+    node.pool("primary", vec![member(DestinationId::new(0), "a")]);
+    node.wants_stream = true;
+    // Three frames at a quarter of the ceiling each: the terminal one lands with budget to spare.
+    node.transport.script("a", drip(&node, 3, CEILING_MS / 4, true));
+
+    let outcome = node.route("primary");
+    let crate::wire::RouteOutcome::Delivered(delivered) = &outcome else {
+        panic!("a whole answer is delivered: {outcome:?}");
+    };
+    assert_eq!(delivered.frames, 3);
+    assert_eq!(
+        delivered.finish,
+        Some(busbar_contract::FinishClass::Complete),
+        "the answer ended on its own terminal frame"
     );
 }
