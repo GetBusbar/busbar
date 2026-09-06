@@ -134,9 +134,14 @@ pub fn decorate(
         } => {
             let (amzdate, datestamp) = sigv4::format_amz_time(body.timestamp_epoch);
             let payload_hash = sigv4::sha256_hex(body.body);
+            // SET, never append. Signing is re-run per attempt over whatever envelope encoding
+            // handed this call, and that envelope may already carry the two fields a previous
+            // decoration wrote — a retried leg, a plane that timestamps its own request. Appending
+            // signs the field twice while `substitute` writes it once, so the bytes that went out
+            // are not the bytes that were signed and the upstream refuses every one of them.
             let mut headers: Vec<(String, String)> = body.envelope.to_vec();
-            headers.push(("x-amz-date".to_string(), amzdate.clone()));
-            headers.push(("x-amz-content-sha256".to_string(), payload_hash.clone()));
+            set_header(&mut headers, "x-amz-date", amzdate.clone());
+            set_header(&mut headers, "x-amz-content-sha256", payload_hash.clone());
             let (signature, signed_headers) = sigv4::sign_v4(
                 secret,
                 region,
