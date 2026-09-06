@@ -453,10 +453,27 @@ impl<'r> Catalogue<'r> {
         Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN, net)
     }
 
-    /// Where one lane sits in the registered-server table, which is the position the breaker keys
-    /// its cells by.
-    fn lane_index(&self, lane: &LaneId) -> Option<usize> {
-        self.plane.servers().iter().position(|s| s.lane == *lane)
+    /// Where one lane sits AMONG THE MEMBERS OF ONE POOL, which is the second half of the key the
+    /// breaker holds its cells under.
+    ///
+    /// The cell is `(pool, lane-within-pool)` and the member table under each pool key is a fixed,
+    /// small one — a lane past its end is a refusal the host seam makes without consulting the
+    /// cell's health at all. So the position that may be handed over is the position within the pool
+    /// the query names, never the position in the whole registered-server table: those two numbers
+    /// agree only for the first pool, and for the ninth registration the second one is past the end
+    /// of every member table there is. Reading it that way would refuse a healthy server for no
+    /// reason but how many OTHER servers the deployment registered.
+    ///
+    /// This plane declares one registration per pool, so a member of the named pool is that pool's
+    /// lane zero. A destination that is not a member of the named pool has no position in it, and
+    /// `None` is that answer rather than a borrowed index from somewhere else.
+    fn lane_in_pool(&self, pool: &str, lane: &LaneId) -> Option<usize> {
+        let name = pool.strip_prefix(POOL_PREFIX_TOOL).unwrap_or(pool);
+        self.plane
+            .servers()
+            .iter()
+            .filter(|s| s.id == name)
+            .position(|s| s.lane == *lane)
     }
 
     /// The registered server one destination names, where it names one.
@@ -574,13 +591,17 @@ impl KindFacts for Catalogue<'_> {
     }
 
     fn breaker_admits(&self, dest: &DestinationFacts, at: &BreakerQuery<'_>) -> bool {
-        // The mapping is this root's — a lane name is a position in the registered-server table and
-        // nothing outside here knows the order. The QUESTION is the query's, so the answer here is
-        // the same answer the pre-walk's filter gives about the same lane at the same moment.
-        match dest.lane().and_then(|lane| self.lane_index(&lane)) {
+        // The mapping is this root's — a lane name is a position among one pool's members and
+        // nothing outside here knows the membership. The QUESTION is the query's, so the answer here
+        // is the same answer the pre-walk's filter gives about the same lane at the same moment, and
+        // the pool it is asked about is the pool the query names rather than a second one.
+        match dest
+            .lane()
+            .and_then(|lane| self.lane_in_pool(at.pool, &lane))
+        {
             Some(index) => at.admits_lane(index),
-            // A destination priced on no registered lane has no position for the breaker to hold an
-            // opinion about; the allow-list conjunct beside this one has already refused it.
+            // A destination that is no member of the named pool has no position for the breaker to
+            // hold an opinion about; the allow-list conjunct beside this one has already refused it.
             None => true,
         }
     }
@@ -2380,9 +2401,15 @@ mod tests {
         assert!(Catalogue::upstream_only(plane, seam()).net_guard_passes(&hop));
     }
 
-    /// The breaker's answer at the seal is the breaker's answer about that lane's position.
+    /// The breaker's answer at the seal is its answer about that lane's position IN THE POOL THE
+    /// QUERY NAMES — because that is the only position the cell has.
+    ///
+    /// The cell is `(pool, lane-within-pool)`. This plane declares one registration per pool, so the
+    /// member a pool key names is that pool's lane zero and the answer is read there. The position
+    /// in the whole registered-server table is a different number about a different pool's cell, and
+    /// reading it here asks the breaker about somebody else's member.
     #[test]
-    fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
+    fn the_catalogue_asks_the_breaker_about_the_lanes_position_in_the_named_pool() {
         struct Open(usize);
         impl BreakerView for Open {
             fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
@@ -2418,24 +2445,105 @@ mod tests {
             lane: LaneId::new("second-lane"),
         };
 
-        let open = Open(1);
+        // Its own pool's zeroth member is what the second registration is, and a breaker holding
+        // that cell open refuses it.
+        let open = Open(0);
         let at = BreakerQuery {
             breaker: &open,
-            pool: "second",
+            pool: &pool_key("second"),
             now: 7,
         };
         assert!(
             !facts.breaker_admits(&second, &at),
-            "the second registration is at position one, and that is the open cell"
+            "the second registration is its own pool's lane zero, and that is the open cell"
         );
 
-        let elsewhere = Open(0);
+        // A breaker holding some OTHER member of that pool open says nothing about this one.
+        let elsewhere = Open(1);
         let at = BreakerQuery {
             breaker: &elsewhere,
-            pool: "second",
+            pool: &pool_key("second"),
             now: 7,
         };
         assert!(facts.breaker_admits(&second, &at));
+
+        // And a query naming a pool this destination is not a member of has no position to read.
+        // The allow-list conjunct beside this one is what refuses that, not a borrowed index.
+        let open = Open(0);
+        let at = BreakerQuery {
+            breaker: &open,
+            pool: &pool_key("first"),
+            now: 7,
+        };
+        assert!(facts.breaker_admits(&second, &at));
+    }
+
+    /// The ninth registration is not past the end of the breaker's member table.
+    ///
+    /// The host seam holds a fixed lane table per cell and FAILS CLOSED on a lane past it. A mapping
+    /// that handed it the position in the whole registered-server table would hand it eight for the
+    /// ninth registration, and the seam would refuse a healthy server at the seal — a refusal caused
+    /// by how many OTHER servers the deployment happens to have registered.
+    #[test]
+    fn the_ninth_registration_is_not_past_the_end_of_the_breakers_member_table() {
+        struct HostShaped;
+        impl BreakerView for HostShaped {
+            fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
+                // Exactly the host seam's own rule: a lane past the fixed table is a refusal.
+                lane < busbar_core::store::MAX_POOL_MEMBERS
+            }
+            fn try_admit(
+                &self,
+                _pool: &str,
+                lane: usize,
+                _now: u64,
+            ) -> Result<(), busbar_unit_trust::Unavailable> {
+                if lane < busbar_core::store::MAX_POOL_MEMBERS {
+                    Ok(())
+                } else {
+                    Err(busbar_unit_trust::Unavailable::BreakerOpen)
+                }
+            }
+        }
+        macro_rules! server {
+            ($id:literal, $lane:literal, $host:literal) => {
+                Server {
+                    id: $id,
+                    lane: LaneId::new($lane),
+                    host: $host,
+                    transport: claims::TRANSPORT_HTTP,
+                }
+            };
+        }
+        static SERVERS: &[Server] = &[
+            server!("s1", "l1", "127.0.0.1:1"),
+            server!("s2", "l2", "127.0.0.1:2"),
+            server!("s3", "l3", "127.0.0.1:3"),
+            server!("s4", "l4", "127.0.0.1:4"),
+            server!("s5", "l5", "127.0.0.1:5"),
+            server!("s6", "l6", "127.0.0.1:6"),
+            server!("s7", "l7", "127.0.0.1:7"),
+            server!("s8", "l8", "127.0.0.1:8"),
+            server!("s9", "l9", "127.0.0.1:9"),
+        ];
+        assert!(SERVERS.len() > busbar_core::store::MAX_POOL_MEMBERS);
+
+        let facts = Catalogue::upstream_only(McpPlane::new(SERVERS), seam());
+        let ninth = DestinationFacts::Upstream {
+            transport: claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket("127.0.0.1:9"),
+            lane: LaneId::new("l9"),
+        };
+        let breaker = HostShaped;
+        let at = BreakerQuery {
+            breaker: &breaker,
+            pool: &pool_key("s9"),
+            now: 7,
+        };
+        assert!(
+            facts.breaker_admits(&ninth, &at),
+            "a healthy ninth registration is its own pool's lane zero, not the table's lane eight"
+        );
     }
 
     /// An explicitly empty scope list denies every registration; an absent one denies none.
