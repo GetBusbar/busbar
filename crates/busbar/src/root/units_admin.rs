@@ -3207,6 +3207,90 @@ mod tests {
         );
     }
 
+    /// One admin unit seals exactly one entry on the chain, and a read seals none.
+    ///
+    /// THE audit STEP, over the loop. The rig column reads the fresh four-op chain from the outside;
+    /// this reads the same chain from the step that writes it, which is where "exactly one" is
+    /// actually decided. Three answers, and each is a different way the step could be wrong:
+    ///
+    /// - a mutating verb appends exactly ONE entry, under the operation's own name and the applied
+    ///   outcome — not zero, and not one per step that ran;
+    /// - a READ appends none, because the chain is a record of what changed and a listing changed
+    ///   nothing. A chain that grew on every GET would bury the mutations an operator came to find;
+    /// - a unit refused before Admit still appends one, under the rejected outcome, because the
+    ///   attempt happened and a chain that recorded only successes is the one an attacker wants.
+    ///
+    /// The chain is verified after each, so the entries are linked rather than merely counted.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none() {
+        let legacy = busbar_unit_audit::AuditLog::new();
+
+        // A mutation: an operator-key write, on the mutating side of the closed split.
+        let mut mutating = a_request();
+        mutating.method = "POST".to_string();
+        mutating.path = "/api/v1/admin/operator-key".to_string();
+        let (binding, ctx, seal) = a_bound_unit(mutating);
+        let resolved = binding
+            .units
+            .verb(ctx.key)
+            .expect("the operator-key write is a row the table names");
+        assert!(!resolved.read_only, "the fixture must be a mutation");
+
+        let before = legacy.len();
+        let _ = audit(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Outcome::Completed,
+        );
+        assert_eq!(legacy.len(), before + 1, "one unit, one entry");
+        let entry = legacy.list(1).pop().expect("the entry just sealed");
+        assert_eq!(entry.action, resolved.verb);
+        assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_APPLIED);
+        assert_eq!(entry.principal, "admin-token");
+        assert!(legacy.verify(), "the chain is linked");
+
+        // A read changes nothing and records nothing.
+        let (binding, ctx, seal) = a_bound_unit(a_request());
+        assert!(
+            binding
+                .units
+                .verb(ctx.key)
+                .expect("the audit listing is a row the table names")
+                .read_only,
+            "the fixture must be a read"
+        );
+        let before = legacy.len();
+        let _ = audit(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Outcome::Completed,
+        );
+        assert_eq!(legacy.len(), before, "a read is not a mutation");
+
+        // A refused mutation is recorded as an attempt, not dropped.
+        let mut mutating = a_request();
+        mutating.method = "POST".to_string();
+        mutating.path = "/api/v1/admin/operator-key".to_string();
+        let (binding, ctx, seal) = a_bound_unit(mutating);
+        let before = legacy.len();
+        let _ = audit_refused(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::OverBudget),
+        );
+        assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
+        let entry = legacy.list(1).pop().expect("the entry just sealed");
+        assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_REJECTED);
+        assert!(legacy.verify(), "the chain is still linked");
+    }
+
     // ── the five ledger views ───────────────────────────────────────────────────────────────────
 
     /// The day the fixture's postings fall in.
