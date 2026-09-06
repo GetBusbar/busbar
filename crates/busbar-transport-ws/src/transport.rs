@@ -212,10 +212,16 @@ impl WsTransport {
     ///
     /// This is the whole of what this transport does with a socket: it never opens one. An embedder
     /// that already owns a duplex pair drives the identical path a composed accept or dial does.
+    ///
+    /// `url` is the target the client role names in its upgrade request; the server role ignores
+    /// it. It is the caller's, not a `ws://localhost/` this seam invents — an embedder driving a
+    /// real upstream would otherwise have had its request line rewritten to name a host it was
+    /// never talking to.
     pub async fn handshake_over<S>(
         &self,
         stream: S,
         is_server: bool,
+        url: &str,
         peer: &str,
     ) -> Result<Conn, TransportError>
     where
@@ -224,7 +230,7 @@ impl WsTransport {
         self.handshake(
             Box::new(stream),
             is_server,
-            "ws://localhost/",
+            url,
             peer,
             vec!["ws"],
             LowerFacts::default(),
@@ -492,7 +498,9 @@ impl Transport for WsTransport {
                     match reader.next().await {
                         None => break None, // the peer closed the socket
                         Some(Ok(Message::Binary(b))) => {
-                            let bytes = SlabBytes::new(Arc::<[u8]>::from(b.to_vec()));
+                            // One copy, straight into the slab: `to_vec` then `Arc::from` copied the payload
+                            // twice, on the hot path, for every inbound message.
+                            let bytes = SlabBytes::new(Arc::<[u8]>::from(&b[..]));
                             let meta = FrameMeta {
                                 bytes: bytes.len() as u64,
                                 transport_units: None,
@@ -509,8 +517,7 @@ impl Transport for WsTransport {
                             )));
                         }
                         Some(Ok(Message::Text(t))) => {
-                            let raw = t.as_bytes().to_vec();
-                            let bytes = SlabBytes::new(Arc::<[u8]>::from(raw));
+                            let bytes = SlabBytes::new(Arc::<[u8]>::from(t.as_bytes()));
                             let meta = FrameMeta {
                                 bytes: bytes.len() as u64,
                                 transport_units: None,

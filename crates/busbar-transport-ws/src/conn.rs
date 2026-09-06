@@ -32,7 +32,7 @@ impl ConnHandle for WsConnHandle {
 
 /// The framed WebSocket socket, over whatever duplex the layer below handed up. The stream is
 /// boxed rather than concrete because which carrier is under it — a plain socket, a TLS one, an
-/// in-memory pair — is the lower layer'''s business and never this one'''s.
+/// in-memory pair — is the lower layer's business and never this one's.
 pub(crate) trait LowerIo:
     tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin
 {

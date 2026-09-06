@@ -16,6 +16,11 @@ use busbar_contract_transport::wire::TransportError;
 
 use crate::WsTransport;
 
+/// The target the client role names in its upgrade request. The battery drives both roles over an
+/// in-memory duplex, so it is the battery that says what the request line reads — the transport
+/// does not invent one.
+const WS_TARGET: &str = "ws://localhost/";
+
 /// Build a connected pair of live WS connections over an in-memory duplex — one performs the
 /// server handshake role, the other the client role, exactly as `accept`/`dial` would over a real
 /// socket. This is the exact seam a real `tcp`/`tls`/`http` transport would hand this crate a
@@ -28,8 +33,8 @@ async fn pair(
     busbar_contract_transport::wire::Conn,
 ) {
     let (end_a, end_b) = tokio::io::duplex(cap);
-    let server = t.handshake_over(end_a, true, "peer-a");
-    let client = t.handshake_over(end_b, false, "peer-b");
+    let server = t.handshake_over(end_a, true, WS_TARGET, "peer-a");
+    let client = t.handshake_over(end_b, false, WS_TARGET, "peer-b");
     let (server, client) = tokio::join!(server, client);
     (server.unwrap(), client.unwrap())
 }
@@ -218,7 +223,7 @@ async fn a_frame_with_a_reserved_opcode_is_a_framing_error_and_not_a_reset() {
     let t = WsTransport::new();
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
     let (accepted, dialled) = tokio::join!(
-        t.handshake_over(end_a, true, "peer-a"),
+        t.handshake_over(end_a, true, WS_TARGET, "peer-a"),
         tokio_tungstenite::client_async("ws://localhost/", end_b)
     );
     let conn = accepted.unwrap();
@@ -270,8 +275,8 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     let peer = WsTransport::new();
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
     let (accepted, dialled) = tokio::join!(
-        t.handshake_over(end_a, true, "capped-peer"),
-        peer.handshake_over(end_b, false, "uncapped-peer")
+        t.handshake_over(end_a, true, WS_TARGET, "capped-peer"),
+        peer.handshake_over(end_b, false, WS_TARGET, "uncapped-peer")
     );
     let (a, b) = (dialled.unwrap(), accepted.unwrap());
 
@@ -515,7 +520,7 @@ async fn an_upgrade_the_peer_never_answers_expires_on_the_handshake_budget() {
     let (end_a, _end_b) = tokio::io::duplex(64 * 1024);
     let started = tokio::time::Instant::now();
     let err = t
-        .handshake_over(end_a, true, "silent-peer")
+        .handshake_over(end_a, true, WS_TARGET, "silent-peer")
         .await
         .expect_err("an unanswered upgrade must not wait forever");
     assert_eq!(err, TransportError::Timeout);
