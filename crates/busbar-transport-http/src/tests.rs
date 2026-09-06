@@ -2021,3 +2021,56 @@ async fn an_arrival_names_the_port_it_arrived_on() {
         "an arrival on a listener bound to {bound_port} must say so"
     );
 }
+
+/// An upstream's response TRAILERS reach the caller as one final frame, in the same wire form the
+/// ingress reader hands a request's trailers up in — one `name: value` line each.
+///
+/// A trailer is a header that arrived late. Dropping it loses whatever the upstream chose to say
+/// only after it knew the body — a checksum, a token count, a `grpc-status` — which is exactly the
+/// class of fact a byte-blind transport has no business deciding is uninteresting.
+#[tokio::test]
+async fn upstream_response_trailers_reach_the_caller_as_a_final_frame() {
+    let uri = fixed_response_server(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-Checksum\r\n\r\n\
+          5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n",
+    )
+    .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert!(
+        head.meta.status.is_some(),
+        "the head carries the status leg"
+    );
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    assert_eq!(body.bytes.as_slice(), b"hello");
+
+    let (_s, trailer) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the trailer frame must arrive rather than be dropped")
+        .expect("the stream must still be live")
+        .unwrap();
+    assert_eq!(
+        trailer.bytes.as_slice(),
+        b"x-checksum: abc123\r\n",
+        "the trailer goes up in wire form, as the ingress reader renders one"
+    );
+    assert_eq!(
+        trailer.meta.status, None,
+        "only the HEAD frame carries the status leg, which is how a composed layer tells the two apart"
+    );
+    assert_eq!(trailer.meta.bytes, trailer.bytes.len() as u64);
+}
