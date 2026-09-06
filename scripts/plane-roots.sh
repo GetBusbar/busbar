@@ -69,7 +69,14 @@ plane_roots_resolve() {   # $1.. = plane keys. Sets PLANE_ROOT_<key> per plane; 
     owned=""
     while IFS= read -r d; do
       [ -z "$d" ] && continue
-      if find "$d" -maxdepth 1 -name '*.rs' -exec grep -l -- "$grammar" {} + >/dev/null 2>&1; then
+      # THE ANSWER IS THE MATCHED FILE, NOT find's EXIT STATUS. `-exec … +` runs the command once
+      # per batch of matched files, and a directory holding NO `.rs` file produces no batch at all:
+      # `grep` never runs, find has nothing to complain about, and find exits 0. Read as a status,
+      # that 0 says "this directory declares the plane's grammar" about a directory with no Rust in
+      # it — a plane root resolved to somewhere that cannot possibly own the plane, which then
+      # becomes the scan root every rule that names the plane uses. So the ownership claim is the
+      # grep's OUTPUT (the file that carries the declaration), and an empty output owns nothing.
+      if [ -n "$(find "$d" -maxdepth 1 -name '*.rs' -exec grep -l -- "$grammar" {} + 2>/dev/null)" ]; then
         owned="${owned}${d}
 "
       fi
@@ -146,6 +153,23 @@ plane_roots_selftest() {
   PLANE_ROOTS_SEARCH_ROOT="$tmp/none" plane_roots_resolve z >/dev/null 2>&1 && rc=1
   if [ "$rc" -ne 0 ]; then
     note "SELFTEST FAIL [plane-roots: no-declaring-home-is-an-error] no declaration resolved instead of being refused"
+    fails=$((fails + 1))
+  fi
+
+  # Case 3b: a same-named directory holding NO `.rs` FILE AT ALL. `find … -exec grep {} +` runs its
+  # command once per batch of matched files, so with nothing to match it never runs grep and find
+  # exits 0 — and the old ownership test read that 0 as "this directory declares the plane". The
+  # plane then resolved to a directory with no Rust in it, which became the scan root for every rule
+  # that names the plane: zero files scanned, and zero is the passing answer to a ban. Distinct from
+  # case 3 (a directory that HAS Rust but declares nothing), which took the other branch and was
+  # already refused.
+  mkdir -p "$tmp/norust/plane-w/src/w/docs"
+  printf 'not rust\n' >"$tmp/norust/plane-w/src/w/docs/NOTES.md"
+  cases=$((cases + 1))
+  rc=0
+  PLANE_ROOTS_SEARCH_ROOT="$tmp/norust" plane_roots_resolve w >/dev/null 2>&1 && rc=1
+  if [ "$rc" -ne 0 ]; then
+    note "SELFTEST FAIL [plane-roots: a-directory-with-no-rust-owns-nothing] a directory holding no .rs file resolved as the plane's declaring home"
     fails=$((fails + 1))
   fi
 
