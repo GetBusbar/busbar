@@ -5,6 +5,12 @@
 
 use super::multipart_model;
 
+/// The `Content-Type` each body below arrives under. The boundary is not decoration: it is the only
+/// thing that says where a part begins, so every case names the one its bytes were written with.
+const CT_BOUNDARY: &str = "multipart/form-data; boundary=BOUNDARY";
+const CT_B: &str = "multipart/form-data; boundary=B";
+const CT_ZZ: &str = "multipart/form-data; boundary=zz";
+
 #[test]
 fn extracts_model_from_head_ignoring_large_binary_tail() {
     // A well-formed transcription: the `model` text part precedes a large binary audio part.
@@ -18,13 +24,16 @@ fn extracts_model_from_head_ignoring_large_binary_tail() {
     );
     body.extend(std::iter::repeat_n(0u8, 1 << 20)); // 1 MiB of binary, not valid UTF-8
     body.extend_from_slice(b"\r\n--BOUNDARY--\r\n");
-    assert_eq!(multipart_model(&body).as_deref(), Some("whisper-1"));
+    assert_eq!(
+        multipart_model(CT_BOUNDARY, &body).as_deref(),
+        Some("whisper-1")
+    );
 }
 
 #[test]
 fn absent_model_is_none() {
     let body = b"--B\r\nContent-Disposition: form-data; name=\"file\"\r\n\r\nx\r\n--B--\r\n";
-    assert_eq!(multipart_model(body), None);
+    assert_eq!(multipart_model(CT_B, body), None);
 }
 
 /// A `name="model"` SPELLED INSIDE ANOTHER PART'S VALUE IS NOT A PART HEADER.
@@ -60,7 +69,7 @@ fn a_decoy_model_inside_another_parts_value_does_not_win() {
     body.extend_from_slice(b"\r\n--zz--\r\n");
 
     assert_eq!(
-        multipart_model(&body).as_deref(),
+        multipart_model(CT_ZZ, &body).as_deref(),
         Some("expensive-model"),
         "busbar must verify, admit and bill the model the provider will actually serve"
     );
@@ -81,5 +90,5 @@ fn two_model_parts_resolve_to_no_model() {
         "--zz\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nsecond\r\n",
         "--zz--\r\n"
     );
-    assert_eq!(multipart_model(body.as_bytes()), None);
+    assert_eq!(multipart_model(CT_ZZ, body.as_bytes()), None);
 }
