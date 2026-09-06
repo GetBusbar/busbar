@@ -277,11 +277,21 @@ pub trait Audit: sealed::Sealed {
 /// different rates, and pouring one into the other would make a busy hour of request-rate records
 /// evict the operator-rate ones — silently, because a pruned ring looks exactly like one that was
 /// never written to.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AuditChain {
     tail_hash: String,
     next_seq: u64,
     sealed: u64,
+}
+
+/// HAND-WRITTEN for the reason the previous release's chain writes its own: a DERIVED default gives
+/// a next position of zero, which is not a position a chain has, and the position is now DIGESTED
+/// into every record — so a silently zero-based chain would seal records that a verifier walking
+/// from the genesis rejects. It delegates to the one real constructor so the two cannot drift.
+impl Default for AuditChain {
+    fn default() -> Self {
+        AuditChain::new()
+    }
 }
 
 impl AuditChain {

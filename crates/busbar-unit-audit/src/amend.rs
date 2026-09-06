@@ -165,10 +165,21 @@ impl Amendment {
 /// One chain for both classes, because an access and a correction are both "something happened after
 /// the fact" and interleaving them preserves the order in which they did. Splitting them would make
 /// the question "what happened to this posting, in order" need two reads and a merge.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AmendChain {
     tail_hash: String,
     next_seq: u64,
+}
+
+/// HAND-WRITTEN, and it must stay that way — the same reason the previous release's chain writes its
+/// own: a DERIVED default gives a next position of zero, which is not a position a chain has, and
+/// the position is DIGESTED here, so a silently zero-based chain would seal amendments that a
+/// verifier walking from one rejects. It delegates to the one real constructor so the two cannot
+/// drift apart.
+impl Default for AmendChain {
+    fn default() -> Self {
+        AmendChain::new()
+    }
 }
 
 impl AmendChain {

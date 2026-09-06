@@ -12,6 +12,29 @@ fn token() -> UnitToken<AuditStep> {
     UnitToken::mint(&KernelSeal::acquire_for_kernel())
 }
 
+/// The two constructors are pinned against each other, as the previous release's chain already pins
+/// its own: a DERIVED default gives a next position of zero, which is not a position a chain has —
+/// the first entry is one — and the position is DIGESTED, so a chain that quietly started at zero
+/// would seal entries a verifier walking from one rejects.
+#[test]
+fn the_default_amend_chain_is_the_new_one_because_a_derived_default_starts_at_zero() {
+    let made = AmendChain::new();
+    let defaulted = AmendChain::default();
+    assert_eq!(made.next_seq(), 1);
+    assert_eq!(defaulted.next_seq(), made.next_seq());
+    assert_eq!(defaulted.head(), made.head());
+}
+
+/// The same pinning for the fixed record's chain, which digests its position too.
+#[test]
+fn the_default_audit_chain_is_the_new_one() {
+    let made = crate::record::AuditChain::new();
+    let defaulted = crate::record::AuditChain::default();
+    assert_eq!(made.next_seq(), 1);
+    assert_eq!(defaulted.next_seq(), made.next_seq());
+    assert_eq!(defaulted.head(), made.head());
+}
+
 fn an_access() -> AmendBody {
     content_access(
         Reader::Hook,
