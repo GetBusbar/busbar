@@ -86,6 +86,10 @@ fn inputs(unit: u64) -> AuditInputs {
 /// hex below was produced by an earlier build; it is a value to preserve, never one to re-capture
 /// from a failing run. The inputs deliberately use the enum arms that carry payloads, because those
 /// are the ones whose encoding is easiest to move by accident.
+///
+/// Moved exactly once, before any release wrote a chain: the record's position entered the digest,
+/// so a chain cut at its tail reports the cut instead of linking perfectly. That is the only
+/// change this value has ever absorbed, and the next one needs a migration, not a re-capture.
 #[test]
 fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     let mut chain = AuditChain::new();
@@ -95,7 +99,7 @@ fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
     with_payloads.outcome.finish = FinishClass::Error;
     let record = chain.seal(with_payloads, &token());
     assert_eq!(
-        record.hash, "1218355de479c5340448935264ad0c96d78511a22f2ade945fd4aff35b3c7525",
+        record.hash, "0161f86736b3ed067dcdbaa80259c52ceb25946076879a8968e3f84570626358",
         "the sealed digest moved: every persisted chain would now report itself tampered"
     );
 }
