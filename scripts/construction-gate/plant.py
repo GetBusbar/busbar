@@ -338,11 +338,12 @@ def plant(rule, pristine, scratch, cfg, baseline):
     elif rule == "one-pricing-site:fee-fields":
         append(scratch, "crates/busbar-substrate/src/lib.rs",
                "pub fn planted_fee(card: &Card) -> i64 { card.per_request_fee_cents() }")
-    elif rule.startswith("legacy-reach:"):
-        # One MORE distinct symbol of the retiring crate, named from the composition root. The
-        # ratchet is calibrated to today's exact count, so a single new name breaches it -- and the
-        # file chosen carries no other rule's ceiling.
-        prefix = cfg["rules"]["legacy-reach"]["prefixes"][rule.split(":", 1)[1]]["prefix"]
+    elif rule == "legacy-reach":
+        # One MORE distinct symbol of a retiring crate, named from the composition root. The ratchet
+        # is over the TOTAL and is calibrated to today's exact count, so a single new name breaches
+        # it wherever it is spelled -- and the file chosen carries no other rule's ceiling. The
+        # per-crate sub-row rises with it and stays a WARN, which is the shape under test.
+        prefix = cfg["rules"]["legacy-reach"]["prefixes"]["busbar_core"]["prefix"]
         append(scratch, "crates/busbar/src/root/vocabulary.rs",
                f"pub(crate) fn planted_reach() {{ let _ = {prefix}planted_module::PlantedThing; }}")
     elif rule == "duplicate-dispatch":

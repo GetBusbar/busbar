@@ -1924,25 +1924,48 @@ def _named_symbols(tree, files, prefix, exclude):
 def rule_legacy_reach(tree, cfg):
     """How many distinct symbols of the retiring crates the composition root still names.
 
-    A ratchet, one row per crate prefix: the number may only go DOWN. Every red row lists the
-    symbols, so the deletion work has a worklist rather than a number."""
+    ONE RATCHET OVER THE TOTAL, and per-crate figures that inform rather than gate. The work this
+    measures moves a symbol off one retiring crate and, for a while, onto another: a core seam the
+    kernel takes over is spelled through the substrate on the way, which is one fewer `busbar_core::`
+    name and one more `busbar_substrate::` one. Per-crate ceilings call that step backwards and turn
+    a cut into a red row, so the direction that mattered — how much of the retiring surface the root
+    still names AT ALL — went unmeasured while the gate argued about which crate it was named
+    through. The total cannot be gamed by moving a name sideways, which is the only thing the
+    per-crate figures were ever asked to prove.
+
+    The per-crate rows stay, as WARN sub-rows: they carry the worklist, and a crate whose figure
+    climbs while the total falls is exactly the intermediate step above, visible and not fatal."""
     c = cfg["rules"]["legacy-reach"]
     files = _scoped_files(tree, c["scope_globs"])
-    rows = []
+    rows, total_offenders, total = [], [], 0
     for key, spec in c["prefixes"].items():
         seen = _named_symbols(tree, files, spec["prefix"], spec.get("exclude", []))
         current = len(seen)
+        total += current
         offenders = [f"{s} ({len(seen[s])} site(s), first {seen[s][0]})" for s in sorted(seen)]
+        total_offenders += offenders
         if not files:
             detail = VACUOUS + "no composition-root source is present in this tree"
         else:
-            detail = (f"the root names {current} distinct `{spec['prefix']}` symbol(s) "
-                      f"(ratchet {spec['ceiling']}, may only go down): "
+            detail = (f"informational: the root names {current} distinct `{spec['prefix']}` "
+                      f"symbol(s) (last calibrated at {spec['figure']}; this row does not gate — "
+                      f"the total does): "
                       + (", ".join(sorted(seen)[:6]) + (" …" if current > 6 else "")
                          if seen else "none"))
-        rows.append(row(f"legacy-reach:{key}", current <= spec["ceiling"],
-                        f"the root's reach into `{spec['prefix']}` only shrinks",
-                        detail, current, spec["ceiling"], c["why"], offenders))
+        rows.append(row(f"legacy-reach:{key}", current <= spec["figure"],
+                        f"the root's reach into `{spec['prefix']}`",
+                        detail, current, spec["figure"], c["why"], offenders,
+                        informational=True))
+    prefixes = ", ".join(f"`{s['prefix']}`" for s in c["prefixes"].values())
+    if not files:
+        detail = VACUOUS + "no composition-root source is present in this tree"
+    else:
+        detail = (f"the root names {total} distinct symbol(s) across the retiring crates "
+                  f"({prefixes}) (ratchet {c['ceiling']}, may only go down); per-crate figures are "
+                  "in the WARN sub-rows above")
+    rows.append(row("legacy-reach", total <= c["ceiling"],
+                    "the root's total reach into the retiring crates only shrinks",
+                    detail, total, c["ceiling"], c["why"], total_offenders))
     return rows
 
 
@@ -2092,8 +2115,9 @@ def calibrate(rows, cfg, path):
     rules["plane-no-money"]["max_hits"] = by_id["plane-no-money"]["current"]
     rules["one-pricing-site"]["max_extra_sites"] = by_id["one-pricing-site"]["current"]
     rules["one-pricing-site"]["max_fee_readers"] = by_id["one-pricing-site:fee-fields"]["current"]
+    rules["legacy-reach"]["ceiling"] = by_id["legacy-reach"]["current"]
     for key in rules["legacy-reach"]["prefixes"]:
-        rules["legacy-reach"]["prefixes"][key]["ceiling"] = by_id[f"legacy-reach:{key}"]["current"]
+        rules["legacy-reach"]["prefixes"][key]["figure"] = by_id[f"legacy-reach:{key}"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(
