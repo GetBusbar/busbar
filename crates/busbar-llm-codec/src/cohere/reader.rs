@@ -7,6 +7,15 @@ impl ProtocolReader for CohereReader {
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         let tokens = v.get("tokens");
+        // The BILLED bucket, read exactly as `read_response` reads it. Cohere reports usage twice —
+        // a raw `tokens` bucket and the separately-metered `billed_units` bucket the operator is
+        // invoiced on — and `to_token_usage` lets the billed counts WIN for the reserved
+        // input/output tiers. Carrying only `tokens` here meant a head-truncated body billed the RAW
+        // counts while the identical untruncated body billed the BILLED ones: one completion,
+        // two invoices, decided by whether it fit the reassembly cap. `search_units` (a separately
+        // billed unit that is not a token count at all) was lost outright on this path.
+        let billed = v.get("billed_units");
+        let billed_u64 = |k: &str| billed.and_then(|b| b.get(k)).and_then(|x| x.as_u64());
         Some(
             crate::ir::IrUsage {
                 input_tokens: tokens
@@ -19,7 +28,13 @@ impl ProtocolReader for CohereReader {
                     .unwrap_or(0),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: None,
-                detail: crate::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail {
+                    search_units: billed_u64("search_units"),
+                    billed_input_tokens: billed_u64("input_tokens"),
+                    billed_output_tokens: billed_u64("output_tokens"),
+                    billed_classifications: billed_u64("classifications"),
+                    ..Default::default()
+                },
             }
             .to_token_usage(),
         )
