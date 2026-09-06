@@ -183,6 +183,9 @@ pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
         upstream_http1_only: limits.upstream_http1_only,
         upstream_h2_prior_knowledge: limits.upstream_h2_prior_knowledge,
         request_body_max_bytes: limits.request_body_max_bytes,
+        // The deployment resolves one body limit; the transport holds it against both directions,
+        // which is the same posture its own default takes.
+        response_body_max_bytes: limits.request_body_max_bytes,
     }
 }
 
