@@ -390,6 +390,19 @@ const fn sampling_destination() -> DestinationFacts {
     }
 }
 
+/// The transport fact key a request target is published under.
+///
+/// The kernel's own reserved key, named rather than guessed at.
+const FACT_PATH: &str = busbar_contract::transport::facts::PATH;
+
+/// Whether a request target names this plane's one surface that carries no request envelope.
+///
+/// A query string names no surface, so it is cut before the comparison: it is an argument to the
+/// fetch, never part of which surface is being fetched.
+fn is_discovery_target(target: &str) -> bool {
+    target.split(['?', '#']).next().unwrap_or(target) == crate::claims::DEFAULT_METADATA
+}
+
 /// The finish class one unit ending is.
 fn finish_of(end: &UnitEnd, streaming: bool) -> FinishClass {
     // One mapping, written once in the contract and read by every plane. All this plane decides is
@@ -412,6 +425,29 @@ impl Plane for McpPlane {
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
+        // Which surface a request arrived on is a question about the target, and the target is a
+        // transport fact. It is asked FIRST because one surface this plane claims carries no request
+        // envelope: the discovery document is fetched with no body at all. Asking the body first
+        // meant an empty fetch read as "nothing has arrived yet" on a surface where nothing more
+        // ever arrives, so the plane claimed a route the codec serves and then held every request to
+        // it open until the caller gave up.
+        if ctx
+            .transport()
+            .fact(FACT_PATH)
+            .is_some_and(is_discovery_target)
+        {
+            let mut facts = Facts::new();
+            let _ = facts.set(f::FACT_METHOD, FactValue::Str(ops::METHOD_METADATA));
+            return Ok(Ingress::OneShot(Box::new(UnitDraft {
+                op: ops::OP_METADATA,
+                body_ir: view(&[], &[], ctx)?,
+                // A static document answers no request of anyone's and is answered by no later
+                // frame: it is complete the moment it is recognised.
+                correlates: None,
+                correlation_out: None,
+                facts,
+            })));
+        }
         let Some(frame) = frames.next_frame() else {
             return Ok(Ingress::NeedMore);
         };
@@ -725,8 +761,21 @@ impl Plane for McpPlane {
         // and that claim declares a scheme; the surface that genuinely carries no credential is the
         // discovery document, and it says so on its own claim. So a notice narrows like everything
         // else on the mount, and what its credential resolves to is the auth unit's answer.
+        //
+        // The discovery document is the exception, and it is asked about by TARGET, the same way the
+        // decode step asks. A plane may narrow only within the alternatives its claim declares, and
+        // that claim declares none — so naming one here is not a harmless extra word, it is a
+        // refusal at this step on the one document a caller reads BECAUSE it has no credential yet.
+        let on_open_target = ctx
+            .transport()
+            .fact(FACT_PATH)
+            .is_some_and(is_discovery_target);
         CredentialLocator {
-            narrowing: Some(SchemeAlt::new(alt)),
+            narrowing: if on_open_target {
+                None
+            } else {
+                Some(SchemeAlt::new(alt))
+            },
             from_session: ctx
                 .session()
                 .is_some_and(busbar_contract::unit::SessionView::is_bound),
@@ -776,6 +825,13 @@ impl Plane for McpPlane {
             // is the one nested destination this plane names, and it is written once so that what
             // this step seals and what `route` dials are the same expression, not two agreeing ones.
             ops::OP_SAMPLING => sampling_destination(),
+            // The discovery document is what this node publishes about its own mount, which it
+            // reads out of its own settings. It reaches no server: a caller that has not
+            // authenticated yet must not be able to make this node dial one.
+            ops::OP_METADATA => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_SETTINGS,
+                op: rec::OP_GET,
+            },
             // A server asking which roots it may work under is answered from configuration, which
             // this plane reads through its own settings records.
             ops::OP_ROOTS_LIST => DestinationFacts::PlaneRecord {
@@ -885,7 +941,9 @@ impl Plane for McpPlane {
                     destination: sampling_destination(),
                 });
             }
-            ops::OP_ROOTS_LIST => leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET)),
+            ops::OP_ROOTS_LIST | ops::OP_METADATA => {
+                leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET));
+            }
             ops::OP_ELICITATION => leg(Leg {
                 destination: DestinationFacts::Client {
                     selector: "opener",
