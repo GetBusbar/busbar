@@ -690,6 +690,18 @@ def rule_duplicate_dispatch(tree, cfg):
 
 VACUOUS = "vacuous: "
 
+# ZERO SUBJECTS IS NOT ZERO HITS. A rule scoped by a path glob or a symbol name measures its subject
+# and reports the count; when the subject matches nothing, the count is zero for the one reason that
+# proves nothing at all, and the row reads exactly like a rule that was met. Renaming the subject out
+# from under four rules took `one-pick-site` from 4 to 0 and `plane-no-money` from 3 to 0 and walked
+# the legacy-reach ratchets backwards, all in green. A rule whose subject is absent says UNPROVEN and
+# is RED; the fix is one path or one name in qa/construction.toml.
+UNPROVEN = "UNPROVEN: "
+
+
+def _unproven(rid, title, what, why):
+    return row(rid, False, title, UNPROVEN + what, 1, 0, why, [UNPROVEN + what])
+
 
 def _word(rx_literal):
     """A regex for `rx_literal` as a whole token (no identifier char immediately before it)."""
@@ -971,6 +983,17 @@ def _read_cargo_deps(cargo_toml_path):
 
 def rule_one_pick_site(tree, cfg):
     c = cfg["rules"]["one-pick-site"]
+    # THE SUBJECT FIRST. This rule counts call sites of one verb, so a verb that no longer exists
+    # measures zero and reads as the cleanest possible pass: renaming `pick_among` took a live
+    # 4-site FAIL to PASS/0 without a word about the rename. A symbol the scanner cannot find a
+    # definition for is a scanner pointed at nothing, which is UNPROVEN, not met.
+    if not tree.grep(r"fn\s+" + re.escape(c["verb"]) + r"(?![A-Za-z0-9_])", production_only=False):
+        return [_unproven("one-pick-site",
+                          "the lane pick is called from at most the loop and the fallback re-entry",
+                          f"no `fn {c['verb']}` is defined anywhere in the scanned tree, so this "
+                          f"rule counted call sites of a verb that does not exist; point "
+                          f"qa/construction.toml's [rules.one-pick-site] verb at the lane pick's "
+                          f"new name", c["why"])]
     sites = [f"{rel}:{l.no}" for rel, l in _call_sites(tree, c["verb"])]
     current = len(sites)
     detail = (f"{current} production call site(s) of `{c['verb']}(` (ceiling {c['max_sites']}): "
@@ -1036,13 +1059,22 @@ def rule_loc_ceilings(tree, cfg):
 
     for key, spec in c["kernel_files"].items():
         matched = [rel for rel in kernel_files_all if os.path.basename(rel) in spec["patterns"]]
+        # A named split of the kernel's budget whose files are not there measured 0 and passed, so
+        # renaming teller.rs abolished its own ceiling in green. Zero subject files is UNPROVEN.
+        if not matched:
+            rows.append(_unproven(
+                f"loc-ceilings:kernel:{key}",
+                f"busbar-kernel's {spec['label']} stays within its LOC ceiling",
+                f"no file named {', '.join(spec['patterns'])} exists under "
+                f"crates/{c['kernel_crate']}/src, so this ceiling measured nothing; point "
+                f"qa/construction.toml's [rules.loc-ceilings.kernel_files.{key}] patterns at the "
+                f"file's new name (or delete the sub-ceiling)", c["why"]))
+            continue
         cur = sum(loc(rel) for rel in matched)
-        note = "" if matched else " -- no matching file under busbar-kernel/src yet (vacuous 0)"
         rows.append(row(
             f"loc-ceilings:kernel:{key}", cur <= spec["ceiling"],
             f"busbar-kernel's {spec['label']} stays within its LOC ceiling",
-            f"{spec['label']} ({', '.join(spec['patterns'])}): {cur} line(s) (ceiling {spec['ceiling']})"
-            + note,
+            f"{spec['label']} ({', '.join(spec['patterns'])}): {cur} line(s) (ceiling {spec['ceiling']})",
             cur, spec["ceiling"], c["why"], matched))
 
     caps_contract = crate_total(c["caps_crate"]) + crate_total(c["contract_crate"])
@@ -1783,6 +1815,17 @@ def rule_plane_no_money(tree, cfg):
     crate in a manifest is the same reach spelled where no source scan would see it."""
     c = cfg["rules"]["plane-no-money"]
     files = _scoped_files(tree, c["scope_globs"])
+    # Zero scoped files is zero findings for the one reason that proves nothing: renaming the plane
+    # crates out from under scope_globs took a live 3-hit FAIL to PASS/0. (Individual globs that
+    # match nothing YET are still a note, not a finding — the row says which ones — but a scope that
+    # matches nothing at all is a scanner pointed at nothing.)
+    if not files:
+        return [_unproven("plane-no-money",
+                          "a plane names usage classes and quantities, never a price",
+                          "none of the scope glob(s) " + ", ".join(c["scope_globs"])
+                          + " matches a scanned file, so no plane source was read at all; point "
+                            "qa/construction.toml's [rules.plane-no-money] scope_globs at the "
+                            "planes' current homes", c["why"])]
     allowed = set(c["allowed_vocabulary"])
     per_file = {k.replace("/", os.sep): set(v) for k, v in c.get("allowlist", {}).items()}
     sym_rx = re.compile("|".join(
@@ -1810,14 +1853,11 @@ def rule_plane_no_money(tree, cfg):
                 offenders.append(f"{crate}/Cargo.toml depends on `{dep}`")
     current = len(offenders)
     empty = [g for g in c["scope_globs"] if not _scoped_files(tree, [g])]
-    if not files:
-        detail = VACUOUS + "no plane crate, plane codec or plane unit module is present in this tree"
-    else:
-        detail = (f"{current} money symbol(s) in the plane crates, plane codecs and plane unit "
-                  f"modules (ceiling {c['max_hits']}): "
-                  + ("; ".join(offenders[:8]) if offenders else "none")
-                  + (f"; scope glob(s) matching no file yet (not a finding): {', '.join(empty)}"
-                     if empty else ""))
+    detail = (f"{current} money symbol(s) in the plane crates, plane codecs and plane unit "
+              f"modules (ceiling {c['max_hits']}): "
+              + ("; ".join(offenders[:8]) if offenders else "none")
+              + (f"; scope glob(s) matching no file yet (not a finding): {', '.join(empty)}"
+                 if empty else ""))
     return [row("plane-no-money", current <= c["max_hits"],
                 "a plane names usage classes and quantities, never a price",
                 detail, current, c["max_hits"], c["why"], offenders)]
@@ -1971,6 +2011,17 @@ def rule_legacy_reach(tree, cfg):
     files = _scoped_files(tree, c["scope_globs"])
     rows, total_offenders, total = [], [], 0
     for key, spec in c["prefixes"].items():
+        # A ratchet whose scope matches nothing counts 0 and walks BACKWARDS: the next --calibrate
+        # writes 0 as the new ceiling and the reach the root still has can never be seen again.
+        # Zero scoped files is UNPROVEN, not a ratchet met.
+        if not files:
+            rows.append(_unproven(
+                f"legacy-reach:{key}", f"the root's reach into `{spec['prefix']}` only shrinks",
+                "none of the scope glob(s) " + ", ".join(c["scope_globs"])
+                + " matches a scanned file, so no composition-root source was read; point "
+                  "qa/construction.toml's [rules.legacy-reach] scope_globs at the root's new home",
+                c["why"]))
+            continue
         seen = _named_symbols(tree, files, spec["prefix"], spec.get("exclude", []))
         current = len(seen)
         total += current
