@@ -497,6 +497,21 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pool: &'r str,
     /// The arrival epoch, pinned. Never a fresh clock read on the request path.
     pub now: u64,
+    /// THE SECOND CLOCK the audit record carries, pinned at the same arrival — a MONOTONIC reading,
+    /// which is a different measurement from `now` above and not a second spelling of it.
+    ///
+    /// The record has two clocks because one of them can lie: a wall clock that is stepped by an
+    /// operator, by NTP or by a leap second can hand two events of one unit timestamps that run
+    /// backwards, and a reader cannot tell that from a unit whose steps genuinely ran out of order.
+    /// The monotonic reading cannot go backwards, so it is what ORDERS the record and the wall
+    /// reading is what DATES it. Fill this from the wall clock and the record has one clock written
+    /// in two fields: it still dates correctly and it orders nothing at all, which is exactly the
+    /// property the second field exists to provide.
+    ///
+    /// Supplied by the composition root from the node's own monotonic source and pinned once at
+    /// arrival, the same shape the voice plane's node gives its units — a unit does not read clocks,
+    /// and one that read this one here would be reading it per step rather than per unit.
+    pub mono: u64,
     /// The sealed origin the audit record is written under.
     ///
     /// Sealed by the kernel and carried here for the same reason the trust token is: `Origin::seal`
@@ -621,10 +636,13 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             // The loop has no exit step of its own; the figure this posting is OF is the metering
             // step's, and that is the step a durability loss here is attributed to.
             step: busbar_caps::StepName::Meter,
+            // The posting's own two clocks, the same pair the audit record carries and read the same
+            // way: the wall epoch dates it, the monotonic reading orders it. A posting stamped twice
+            // off the wall clock is a posting a stepped clock can reorder against its own record.
             stamp: crate::root::durability::PostingStamp {
                 rate_card_version: 0,
                 wall: self.bindings.now,
-                mono: self.bindings.now,
+                mono: self.bindings.mono,
             },
         };
         let mut durability = read_through_poison(self.bindings.durability);
@@ -797,8 +815,12 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 pre_hook_head: None,
                 post_hook_head: None,
             },
+            // The two clocks, and they are two READINGS: the wall epoch dates the record and the
+            // monotonic reading orders it. Both pinned at arrival, so a unit is stamped once.
+            // The two clocks, and they are two READINGS: the wall epoch dates the record and the
+            // monotonic reading orders it. Both pinned at arrival, so a unit is stamped once.
             wall: self.bindings.now,
-            mono: self.bindings.now,
+            mono: self.bindings.mono,
             origin: self.bindings.origin,
             outcome: busbar_unit_audit::OutcomeFacts {
                 unit_end: outcome,
@@ -1388,6 +1410,60 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// **The record's two clocks are two readings, and the monotonic one cannot be walked back.**
+    ///
+    /// A wall clock is steppable — an operator sets it, NTP corrects it, a leap second repeats it —
+    /// and the audit record carries a second clock for exactly that reason: the wall reading DATES
+    /// the record and the monotonic reading ORDERS it. Filled from the wall clock, the second field
+    /// is a copy rather than a reading and the record orders nothing.
+    ///
+    /// So: two units, and between them the wall clock goes BACKWARDS. Each record dates itself at
+    /// the epoch its own unit arrived at, which is the wall clock telling the truth about a
+    /// deployment whose clock moved. And the monotonic readings still run forwards, which is the
+    /// property that makes the pair of records readable in the order they happened.
+    #[test]
+    fn a_wall_clock_that_steps_backwards_does_not_reorder_the_audit_records() {
+        const EARLIER: u64 = 1_700_000_040;
+        // The correction: the operator's clock was forty seconds fast, so the SECOND unit to arrive
+        // dates itself before the first.
+        const LATER: u64 = 1_700_000_000;
+
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some("a2a-team"));
+        let record = |now| {
+            deployment.calling_at(chain.as_ref(), now).audit_inputs(
+                &a2a_ctx(),
+                Outcome::Completed,
+                Some(&who),
+            )
+        };
+
+        let first = record(EARLIER);
+        let second = record(LATER);
+
+        assert_eq!(
+            first.wall, EARLIER,
+            "the record dates itself at its arrival"
+        );
+        assert_eq!(second.wall, LATER, "and so does the one that followed it");
+        assert!(
+            first.wall > second.wall,
+            "the wall clock went backwards between the two, which is the whole point"
+        );
+        assert!(
+            second.mono > first.mono,
+            "and the reading that ORDERS them did not: {} then {}",
+            first.mono,
+            second.mono
+        );
+        assert_ne!(
+            first.mono, first.wall,
+            "the two clocks are two readings, not one written twice"
+        );
+    }
 
     /// A panic somewhere else does not stop this plane from sealing and settling.
     ///
@@ -2570,6 +2646,9 @@ mod tests {
         scope: crate::root::policy::ScopePolicy,
         durability: Mutex<crate::root::durability::Durability>,
         origin: busbar_caps::Origin,
+        /// The node's monotonic source, as the composition root holds it: a counter that only ever
+        /// goes up, whatever the wall clock does.
+        mono: AtomicU64,
     }
 
     fn deployment(groups: busbar_unit_admission::GroupTable) -> Deployment {
@@ -2601,6 +2680,7 @@ mod tests {
             scope: scope_policy(crate::root::policy::ScopePolicy::new()),
             durability: Mutex::new(durability),
             origin: busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
+            mono: AtomicU64::new(0),
         }
     }
 
@@ -2619,6 +2699,16 @@ mod tests {
         fn calling<'r>(
             &'r self,
             chain: Option<&'r busbar_unit_admission::BucketChain>,
+        ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+            self.calling_at(chain, 1_700_000_000)
+        }
+
+        /// The same unit, arriving at a named wall epoch — so a test can step the wall clock the
+        /// way an operator or an NTP correction steps it and watch what the record does.
+        fn calling_at<'r>(
+            &'r self,
+            chain: Option<&'r busbar_unit_admission::BucketChain>,
+            now: u64,
         ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
             A2aUnits::new(
                 A2aBindings {
@@ -2641,7 +2731,10 @@ mod tests {
                     scope_policy: &self.scope,
                     durability: &self.durability,
                     pool: "agents",
-                    now: 1_700_000_000,
+                    now,
+                    // One reading per unit, off the node's own counter, exactly as the root would
+                    // take it at arrival.
+                    mono: self.mono.fetch_add(1, Ordering::AcqRel),
                     origin: self.origin,
                 },
                 draft(ops::OP_MESSAGE_SEND),
