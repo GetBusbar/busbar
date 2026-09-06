@@ -1675,9 +1675,53 @@ async fn tools_call(
             busbar_substrate::plane_host::TransformVerdict::Proceed { applied, args_json } => {
                 // A committed rewrite REPLACES the arguments the rest of this path uses (ask-merge is
                 // already done above; the egress gate, task row and dispatch all read `arguments`).
+                //
+                // AN OUTPUT THAT WILL NOT PARSE REFUSES THE CALL. This was `if let Ok(v) = … { … }`,
+                // so a hook that COMMITTED a rewrite and then produced bytes that are not JSON left
+                // `arguments` holding the ORIGINAL, un-rewritten values and the call went on to
+                // dispatch them. For the hook class this seam exists for that is fail-OPEN in the
+                // precise sense: a redaction hook says "I have removed the secret from these
+                // arguments", its output is unreadable, and busbar sends the arguments WITH the
+                // secret still in them to the upstream. The operator wrote a hook that ran, said it
+                // applied, and was silently undone.
+                //
+                // There is no safe fallback available here. Proceeding with the original is the
+                // defect; proceeding with the unreadable bytes is impossible. So the call is refused
+                // — the same answer the hook's own `Reject` gets, because a rewrite that cannot be
+                // read is a rewrite that did not happen, and this seam's whole contract is that a
+                // committed rewrite is the arguments that go out.
                 if applied {
-                    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&args_json) {
-                        arguments = v;
+                    match committed_arguments(&args_json) {
+                        Ok(v) => arguments = v,
+                        Err(e) => {
+                            ctx.host.audit_emit(
+                                "mcp_tool.call",
+                                &format!("mcp_tool:{}", selected.namespaced),
+                                busbar_substrate::audit::vocab::OUTCOME_REJECTED,
+                                ctx.actor,
+                            );
+                            tracing::error!(
+                                tool = %selected.namespaced,
+                                error = %e,
+                                "a rewrite (prompt: rw) hook committed a rewrite whose output is \
+                                 not JSON; the call is refused rather than dispatched with the \
+                                 arguments the hook said it had replaced"
+                            );
+                            return log.refused(
+                                busbar_substrate::audit::vocab::REASON_HOOK_REJECTED,
+                                error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    id,
+                                    CODE_REFUSED,
+                                    "a rewrite hook attached to this tool committed a rewrite that \
+                                     busbar could not read back. The call is refused rather than \
+                                     dispatched with the arguments the hook said it had replaced.",
+                                    Some(serde_json::json!({
+                                        "reason": busbar_substrate::audit::vocab::REASON_HOOK_REJECTED,
+                                    })),
+                                ),
+                            );
+                        }
                     }
                 }
             }
@@ -2326,6 +2370,32 @@ fn upstream_ask_field(value: &serde_json::Value) -> Option<&'static str> {
 /// key-level and group-level caps still apply, which is what "the same budget plane" means. Naming
 /// the tool rather than a constant is what makes a future per-tool bucket expressible without
 /// re-plumbing anything.
+/// THE ARGUMENTS A COMMITTED REWRITE PRODUCED, or the reason they cannot be used.
+///
+/// Its own function so the fail-open it replaces can be driven by a test without arranging a hook
+/// chain that emits unreadable bytes — the plane cannot make the seam misbehave, and the rule the
+/// plane owns is what happens when it does.
+///
+/// A rewrite verdict that reports `applied` is a hook saying "these bytes are the arguments now".
+/// The plane read them with `if let Ok(v) = …`, so bytes it could not read left `arguments` holding
+/// the ORIGINAL values and the call dispatched them. For the hook class this seam exists for that is
+/// fail-OPEN in the precise sense: a redaction hook says it removed the secret, its output is
+/// unreadable, and the arguments WITH the secret go upstream. There is no safe fallback — proceeding
+/// with the original is the defect and the unreadable bytes are not arguments — so the answer is
+/// `Err`, and the call is refused.
+///
+/// An `arguments` member is an OBJECT by the protocol's own shape, so a well-formed JSON scalar is
+/// refused here too: a rewrite that turned the arguments into `7` is as unusable as one that turned
+/// them into nothing, and admitting it would only move the failure to the upstream.
+pub(super) fn committed_arguments(args_json: &[u8]) -> Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_slice(args_json).map_err(|e| format!("the output is not JSON: {e}"))?;
+    if !value.is_object() {
+        return Err("the output is JSON but not an arguments object".to_string());
+    }
+    Ok(value)
+}
+
 pub(super) fn charge_round(
     ctx: &Ctx<'_>,
     namespaced: &str,
