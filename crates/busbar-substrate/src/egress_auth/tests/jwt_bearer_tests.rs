@@ -265,3 +265,41 @@ async fn mint_rejects_a_response_body_over_the_cap() {
         "expected an error naming the size cap / truncation, got: {err}"
     );
 }
+
+/// A credential that is not inline JSON is treated as a FILE PATH, and when that read fails the
+/// error must never carry the credential itself.
+///
+/// The credential and the path are the same string, and nothing here can tell them apart: an
+/// operator who pasted the PEM body, or a `{ file: ... }` ref that resolved to key material rather
+/// than to a path, arrives at this branch with the SECRET in hand. That error is not swallowed —
+/// it is printed by `--validate` and panicked by the boot path, so rendering the argument publishes
+/// the signing key to a terminal, a CI log, and a crash report. The caller already names the lane
+/// and the secret's source, so this layer owes only the io failure.
+#[test]
+fn a_failed_credential_read_never_renders_the_credential() {
+    // Stand-in for real key material: no `{` (so it takes the file branch) and a body distinctive
+    // enough that any substring of it appearing in the error is unambiguous.
+    let secret =
+        "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADAKPRIVATEKEYBODY9z8\n-----END PRIVATE KEY-----\n";
+    let err = read_credential(secret).expect_err("this is not a readable path, so it must fail");
+
+    // Not one byte of the secret, at any window a reader could recognize.
+    for window in 8..=secret.len().min(48) {
+        for start in 0..=secret.len().saturating_sub(window) {
+            let frag = &secret[start..start + window];
+            if !frag.is_ascii() {
+                continue;
+            }
+            assert!(
+                !err.contains(frag),
+                "the error leaked {window} bytes of the credential ({frag:?}): {err}"
+            );
+        }
+    }
+
+    // It still says what failed, so an operator can act on it.
+    assert!(
+        err.contains("service-account key"),
+        "the error must still name the source it could not read: {err}"
+    );
+}
