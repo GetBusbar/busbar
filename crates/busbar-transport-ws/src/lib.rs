@@ -32,7 +32,7 @@ mod conn;
 mod transport;
 
 pub use conn::StaticConfig;
-pub use transport::WsTransport;
+pub use transport::{WsTransport, MESSAGE_MAX_BYTES_KEY};
 
 #[cfg(test)]
 #[path = "tests/battery.rs"]

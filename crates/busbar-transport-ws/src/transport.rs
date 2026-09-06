@@ -53,7 +53,10 @@ pub(crate) const HANDSHAKE_BUDGET: std::time::Duration = std::time::Duration::fr
 /// it by: a WebSocket message and an HTTP body are the same thing to an operator sizing a limit,
 /// and a `ws` listener that buffered more than the `http` one beside it would be a hole nobody
 /// declared. Absent, the library's own default stands.
-pub(crate) const MESSAGE_MAX_BYTES_KEY: &str = "limits.request_body_max_bytes";
+///
+/// Public because two sides read it and a literal spelled twice is a seam that drifts: this crate
+/// asks for it at `listen`, and the composition root answers it from the listener view it builds.
+pub const MESSAGE_MAX_BYTES_KEY: &str = "limits.request_body_max_bytes";
 
 /// The `'static` view of a dial address, allocated at most once per distinct string.
 ///
@@ -128,8 +131,15 @@ pub(crate) fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), Tra
 pub struct WsTransport {
     next_id: AtomicU64,
     conns: SyncMutex<HashMap<u64, Arc<ConnState>>>,
-    /// The largest message this transport will read, as the operator declared it at `listen`. Zero
-    /// means nothing was declared and the library's default stands.
+    /// The largest message this transport will read. Zero means nothing was declared and the
+    /// library's default stands.
+    ///
+    /// One field, two routes in, because there are two lifecycles and each reaches only one of
+    /// them. A served instance learns the number at `listen`, from the configuration view it is
+    /// handed there — the seam a deployment's limits actually arrive through. A dial-only instance
+    /// is never bound and so never sees that view, and its composition root names the number at
+    /// construction instead. A `listen` on an instance that was constructed with one overrides it,
+    /// which is the right precedence: the view is the deployment speaking later and more locally.
     max_message_bytes: std::sync::atomic::AtomicUsize,
     /// The layer this one composes over. `None` for an instance used only through
     /// [`WsTransport::adopt`] or the in-memory handshake seam, which are handed a stream directly.
@@ -181,7 +191,9 @@ impl WsTransport {
     /// field: this constructor seeds it, and a later `listen` on the same instance overrides it.
     #[must_use]
     pub fn over_with_max_message_bytes(lower: Arc<dyn Transport>, max: usize) -> Self {
-        Self::over(lower)
+        let t = Self::over(lower);
+        t.max_message_bytes.store(max, Ordering::Relaxed);
+        t
     }
 
     fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
