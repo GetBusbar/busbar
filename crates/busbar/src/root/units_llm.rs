@@ -137,6 +137,57 @@ struct LaneNames {
     consulted: u64,
 }
 
+/// WHEN ONE UNIT ARRIVED — one reading of the wall clock, spelled in both the units this loop asks
+/// for.
+///
+/// The loop needs the arrival instant twice and in two shapes: SECONDS, which is the window every
+/// charge and every refund this unit makes lands in, and MILLISECONDS, which is the stamp the
+/// in-flight table enters it under. Read the clock twice and those are two arrivals, not one in two
+/// shapes — a request that arrives at the very end of a window can have its seconds fall in that
+/// window and its milliseconds in the next, and the books then bill it in a window the table says it
+/// did not arrive in. Nothing downstream can tell which of the two readings was the truth, because
+/// both of them were.
+///
+/// So the clock is read ONCE, here, and every figure is spelled out of that one reading. Being a
+/// value rather than a call is also what lets a test name the instant a unit arrived at, which is
+/// the only way to drive the case that matters — the last millisecond of a window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Arrived {
+    /// Milliseconds since the epoch: the reading, at the finest resolution either caller needs.
+    ms: u64,
+}
+
+impl Arrived {
+    /// Read the node's clock, once. The ONE call on the request path.
+    #[must_use]
+    pub fn now() -> Self {
+        Self {
+            ms: busbar_substrate::store::now_ms(),
+        }
+    }
+
+    /// A named instant, for a caller that already has one.
+    #[must_use]
+    pub fn at_ms(ms: u64) -> Self {
+        Self { ms }
+    }
+
+    /// The window every charge and every refund this unit makes lands in.
+    ///
+    /// The same truncation of the same clock `store::now` performs, so the epoch is the one the
+    /// legacy entry point pinned — spelled out of the reading above rather than taken again.
+    #[must_use]
+    pub fn secs(self) -> u64 {
+        self.ms / 1_000
+    }
+
+    /// The stamp the in-flight table takes.
+    #[must_use]
+    pub fn ms(self) -> u64 {
+        self.ms
+    }
+}
+
 impl LaneNames {
     /// The id for one lane name, reaching the interner only for a name this node has not resolved.
     ///
@@ -369,6 +420,26 @@ impl LlmNode {
         model_hint: Option<String>,
         seats: &[&(dyn approve::VetoSeat + Sync)],
     ) -> Response {
+        self.answer_arriving_at(arrival, model_hint, seats, Arrived::now())
+            .await
+    }
+
+    /// The same drive, with the arrival reading HANDED IN rather than taken.
+    ///
+    /// [`answer_with`](Self::answer_with) is this with the node's own clock read once, at the top,
+    /// which is the only place on this path a clock is read. It is split out for the same reason
+    /// the seats are: "what this loop does with the instant it arrived at" is a property of the
+    /// loop, and a drive that reads the clock itself cannot be asked about an instant a test picks —
+    /// least of all the one instant that matters, a unit arriving at the last millisecond of a
+    /// window.
+    #[must_use]
+    pub async fn answer_arriving_at(
+        &self,
+        arrival: WalkArrival,
+        model_hint: Option<String>,
+        seats: &[&(dyn approve::VetoSeat + Sync)],
+        arrived: Arrived,
+    ) -> Response {
         let proto = arrival.proto;
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
@@ -386,8 +457,10 @@ impl LlmNode {
             // The header-arrival epoch, pinned once and reused for every charge and every refund
             // this unit makes, exactly as the legacy entry point pins it: a request whose response
             // completes in a later window than its headers arrived must not split its charges
-            // across two windows.
-            charged_at: busbar_substrate::store::now(),
+            // across two windows. Spelled out of the ONE arrival reading below rather than read
+            // here, so the epoch this unit is billed in and the stamp the table enters it under
+            // cannot be two different instants.
+            charged_at: arrived.secs(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
             walk: Walk::open(arrival),
@@ -403,7 +476,11 @@ impl LlmNode {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
-            now: busbar_substrate::store::now_ms(),
+            // THE SAME READING the charge above is pinned from, in the units this table keeps. A
+            // second read here is a second arrival: the table would stamp the unit in one window
+            // and the books would bill it in another, and nothing downstream could say which of the
+            // two the request actually arrived in.
+            now: arrived.ms(),
         });
 
         match entered {
@@ -2136,6 +2213,105 @@ mod tests {
             path: None,
         };
         node.answer(arrival, None).await
+    }
+
+    /// **One arrival is one reading, and both figures come out of it.**
+    ///
+    /// The pure half of the straddle. A unit arriving at the last millisecond of a window has its
+    /// seconds in that window and its milliseconds one tick short of the next: read the clock twice
+    /// there and the second read is already over the line, so the table stamps the unit in one
+    /// window and the books bill it in another. Read once and the two figures are two spellings of
+    /// one instant, which is the property asserted here.
+    #[test]
+    fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
+        const LAST_MILLISECOND: u64 = 1_700_000_000_999;
+        let arrived = Arrived::at_ms(LAST_MILLISECOND);
+        assert_eq!(arrived.ms(), LAST_MILLISECOND, "the reading, unmodified");
+        assert_eq!(
+            arrived.secs(),
+            1_700_000_000,
+            "and the window it lands in, which is the second that has not ended yet"
+        );
+        assert_eq!(
+            arrived.ms() / 1_000,
+            arrived.secs(),
+            "the two figures are one instant: neither can be on the far side of a boundary the \
+             other is on the near side of"
+        );
+    }
+
+    /// **A unit that arrives in the last millisecond of a window bills in THAT window.**
+    ///
+    /// The driven half. The arrival is placed one millisecond short of a metering-bucket boundary —
+    /// the one instant where two clock reads disagree — and the whole unit is run from it: the
+    /// entry the in-flight table takes, the epoch the charges land in, and the row the flush
+    /// writes. Every figure is then looked for in the bucket the unit arrived in, and the next
+    /// bucket is checked to be empty, because a charge that leaked forward would have to land
+    /// somewhere and that is where it would land.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in() {
+        use busbar_substrate::governance::metering_bucket;
+
+        let rig = rig(Fixture::BufferedOk).await;
+        // The last SECOND of the bucket BEFORE the one the node's own clock is in, and the last
+        // MILLISECOND of that second. Before, so that a figure derived from a fresh clock read
+        // instead of from this arrival lands somewhere visibly different — in the live bucket,
+        // which is the one asserted empty below.
+        let arrival_secs = metering_bucket(rig.charged_at) - 1;
+        let arrived = Arrived::at_ms(arrival_secs * 1_000 + 999);
+        assert_eq!(
+            arrived.secs(),
+            arrival_secs,
+            "the fixture really is on the last second of a bucket"
+        );
+        assert_ne!(
+            metering_bucket(arrived.secs()),
+            metering_bucket(arrived.secs() + 1),
+            "and one second later is a different bucket, which is what makes this a straddle"
+        );
+
+        let node = LlmNode::new();
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: PROTO,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: Fixture::BufferedOk.body(),
+            path: None,
+        };
+        let resp = node
+            .answer_arriving_at(arrival, None, NATIVE_SEATS, arrived)
+            .await;
+        // Drain the body: this plane's money lands when the tap fills, which is on the drain.
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+        tokio::task::yield_now().await;
+        rig.server.shutdown().await;
+
+        let gov = rig
+            .app
+            .governance
+            .clone()
+            .expect("governance is configured");
+        gov.flush_metering();
+        let rows_in = |bucket| {
+            gov.metering_for(bucket)
+                .expect("metering read")
+                .into_iter()
+                .filter(|r| r.key_id == rig.key.id)
+                .count()
+        };
+        assert_eq!(
+            rows_in(metering_bucket(arrived.secs())),
+            1,
+            "the unit's figures land in the bucket it arrived in"
+        );
+        assert_eq!(
+            rows_in(metering_bucket(arrived.secs() + 1)),
+            0,
+            "and nothing leaked into the bucket the clock was about to roll into"
+        );
     }
 
     const CASES: [Fixture; 6] = [
