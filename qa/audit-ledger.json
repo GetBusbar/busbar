@@ -2227,13 +2227,17 @@
    "paths": [
     ".github/workflows"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "1e1819448046ce94337fa723954f6063b84e123050d9f56cf3f4795f655da973",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 9,
+    "LOW": 8
+   },
+   "report": "pass 1 (all 30 files read): deletion-test matrix outside the umbrella (fixed 8bda6d3d), branch-name spliced into run (fixed e1399597), promote re-check masked by unique_by (fixed cfb71b7e), missing permissions blocks (fixed 9dffc06b), voice verdict not required (fixed a7d43b11); release-fleet gates N on N-1, cargo-deny required but path-filtered, headroom-hook built from a moving branch, no action pinned by sha reported",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
