@@ -857,6 +857,7 @@ mod rehearsal {
             &AdmitToken::mint(seal),
             &admit::AdmitCtx {
                 host,
+                cells: &**rt,
                 gov,
                 proto: PROTO,
                 destination: &model,
