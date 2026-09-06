@@ -72,7 +72,30 @@ on:
   # Manual re-run of the same commit after fixing whatever went red. Safe because `plan` refuses a
   # version that is already released, resolve-staged is a pure read, and every promote step below
   # is idempotent against a re-run.
+  #
+  # IT IS ALSO HOW THE SECOND PROMOTION OF ONE STAGED SHA HAPPENS. `v1.6.0-rc.1` and `v1.6.0` are
+  # two names over one record; the push to main mints the first, and this dispatch -- typed by a
+  # human once the soak has said what it has to say -- mints the second. See `release_tag`.
   workflow_dispatch:
+    inputs:
+      # WHICH OF THE RECORD'S TWO NAMES THIS PROMOTION MINTS.
+      #
+      #   ""                 take the record's own answer: the rc name if it offers one and that rc
+      #                      has not been minted yet, otherwise the final name. This is what a push
+      #                      to main does, and for a record with no rc it is exactly the behaviour
+      #                      this workflow has always had.
+      #   "v1.6.0"           mint the FINAL name from the record for main's HEAD. This is the
+      #                      after-the-soak promotion: no rebuild, the same digest, the same draft.
+      #   "v1.6.0-rc.2"      mint a further candidate -- only if the staged record names it.
+      #
+      # ANYTHING ELSE IS REFUSED. resolve-staged accepts this input only when it equals the
+      # record's `tag` or its `rc_tag`, so this is a CHOICE BETWEEN RECORDED NAMES, never a way to
+      # type a name into a release.
+      release_tag:
+        description: "Which recorded name to mint: empty (the record decides), vX.Y.Z, or vX.Y.Z-rc.N."
+        required: false
+        type: string
+        default: ""
 
 # Serialize. A burst of pushes to main must not put two runs into the promote phase for the same
 # version.
@@ -475,12 +498,20 @@ jobs:
     outputs:
       staging_tag: ${{ steps.r.outputs.staging_tag }}
       digest: ${{ steps.r.outputs.digest }}
+      # THE NAME THIS RUN MINTS, decided here because this is the only job that has read the
+      # record. `promote_tag` is the git/GitHub name (`v1.6.0-rc.1`), `promote_version` the
+      # registry name (`1.6.0-rc.1`), and `is_rc` is what every downstream job branches on.
+      promote_tag: ${{ steps.r.outputs.promote_tag }}
+      promote_version: ${{ steps.r.outputs.promote_version }}
+      is_rc: ${{ steps.r.outputs.is_rc }}
     steps:
       - id: r
         name: Find, fetch and re-verify the staged manifest for this exact sha
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Empty on a push to main. Inert data via env, never `${{ }}` inside the script.
+          RELEASE_TAG: ${{ inputs.release_tag }}
           SHA: ${{ needs.plan.outputs.sha }}
           VERSION: ${{ needs.plan.outputs.version }}
           TAG: ${{ needs.plan.outputs.tag }}
@@ -651,11 +682,52 @@ jobs:
           print("All %d draft assets match the staged record byte for byte." % len(pinned))
           PY
 
+          # 8. WHICH OF THE RECORD'S TWO NAMES THIS RUN MINTS.
+          #
+          #    The record is by SHA and may name two: `tag` (the final v<version>) and `rc_tag`
+          #    (v<version>-rc.<N>, or empty). Both describe the SAME digest, the SAME draft assets
+          #    and the SAME attestation -- everything above has already been re-proved once, and it
+          #    is proved once for both names because there is only one set of bytes to prove.
+          #
+          #    THE CHOICE IS A CHOICE BETWEEN RECORDED NAMES. An empty `release_tag` takes the
+          #    record's own answer, which is what a push to main does; a non-empty one must EQUAL
+          #    `tag` or `rc_tag` or this refuses. There is no path by which a name that was not
+          #    written on qa reaches a registry or a git tag.
+          #
+          #    THE DEFAULT IS RC-FIRST WHEN AN RC IS ON OFFER, and that is the whole point of the
+          #    soak: fast-forwarding qa->main must not, by itself, mint the irreversible `1.6.0`
+          #    Docker Hub pin when the plan was to soak `1.6.0-rc.1` first. So a record carrying an
+          #    unminted rc makes the PUSH promote the rc, and the final name then requires a human
+          #    to dispatch this workflow with release_tag=v<version> -- an explicit second act,
+          #    after the soak, on the same bytes.
+          r_rc_tag="$(jq -r '.rc_tag // ""' staged/staged.json)"
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            if [ "$RELEASE_TAG" = "$TAG" ]; then
+              promote_tag="$TAG"
+            elif [ -n "$r_rc_tag" ] && [ "$RELEASE_TAG" = "$r_rc_tag" ]; then
+              promote_tag="$r_rc_tag"
+            else
+              echo "::error::release_tag '${RELEASE_TAG}' is not a name this staged record carries. The record for ${SHA:0:7} names '${TAG}' (final) and '${r_rc_tag:-<no rc>}' (candidate), and a promote may mint only those. A name that was never staged has no verified bytes behind it. Fix: dispatch with one of those two values, or re-stage on qa with the rc name you want."
+              exit 1
+            fi
+          # `gh api`, not `git ls-remote`: this job deliberately has no checkout (it is a pure read
+          # of the Actions API, the registries and the release), so there is no work tree to ask.
+          elif [ -n "$r_rc_tag" ] && ! gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${r_rc_tag}" >/dev/null 2>&1; then
+            promote_tag="$r_rc_tag"
+            echo "::notice::This staged record offers the candidate ${r_rc_tag} and it has not been minted yet, so THIS run mints the candidate, not ${TAG}. Soak it, then dispatch 'Release' with release_tag=${TAG} to mint the release from these same bytes."
+          else
+            promote_tag="$TAG"
+          fi
+          if [ "$promote_tag" = "$TAG" ]; then is_rc=0; else is_rc=1; fi
+
           {
             echo "staging_tag=${r_staging}"
             echo "digest=${r_digest}"
+            echo "promote_tag=${promote_tag}"
+            echo "promote_version=${promote_tag#v}"
+            echo "is_rc=${is_rc}"
           } >> "$GITHUB_OUTPUT"
-          echo "::notice::Resolved staged record: ${r_staging} @ ${r_digest} (stage run ${run_id}). Promoting exactly these bytes."
+          echo "::notice::Resolved staged record: ${r_staging} @ ${r_digest} (stage run ${run_id}). Promoting exactly these bytes as ${promote_tag}."
 
   # -- PROMOTE, PART 1: THE IRREVERSIBLE HALF, FIRST -----------------------------------------------
   #
@@ -678,7 +750,13 @@ jobs:
     needs: [plan, resolve-staged]
     uses: ./.github/workflows/docker.yml
     with:
-      promote_to: ${{ needs.plan.outputs.version }}
+      # FROM THE RECORD'S CHOSEN NAME, not from plan's version read. For a release the two are the
+      # same string; for a candidate this is `1.6.0-rc.1`, and plan's version is what that rc is a
+      # candidate OF, which is not the name being minted.
+      promote_to: ${{ needs['resolve-staged'].outputs.promote_version }}
+      # A CANDIDATE MOVES NO FLOATING POINTER. `docker pull getbusbar/busbar` must keep serving the
+      # current release for the whole soak; the rc is pullable only by its own immutable name.
+      promote_latest: ${{ needs['resolve-staged'].outputs.is_rc != '1' }}
       # FROM THE RECORD, NOT FROM PLAN'S DERIVATION. resolve-staged proved this tag currently
       # resolves, on both registries, to the exact digest the qa stage recorded and verified;
       # plan's staging_tag is the same string by construction, but the record is the one that was
@@ -712,11 +790,25 @@ jobs:
   # and the release DEPENDED on the tag triggering release.yml and docker.yml. Nothing is triggered
   # by a tag any more, so that requirement is gone with it.
   promote-release:
-    name: promote the release (tag + publish + prove it landed)
-    needs: [plan, promote-image]
+    name: promote ${{ needs['resolve-staged'].outputs.promote_tag }} (tag + publish + prove it landed)
+    needs: [plan, resolve-staged, promote-image]
     runs-on: ubuntu-latest
     outputs:
       version: ${{ needs.plan.outputs.version }}
+      # Re-exported so the three public-facing jobs below can branch on it WITHOUT taking a
+      # `needs: resolve-staged` they do not otherwise want: their one true dependency is "a promote
+      # succeeded", and R6 exists to keep it that way.
+      is_rc: ${{ needs['resolve-staged'].outputs.is_rc }}
+    env:
+      # THE NAME BEING MINTED, and the one flag every step below branches on. A CANDIDATE gets the
+      # git tag and the immutable image pin and NOTHING ELSE: the draft stays a draft (it is the
+      # release's draft, and it must still be a draft when the release is promoted from these same
+      # bytes), `latest` does not move, nothing is fanned out and nothing is announced. A soak
+      # tester pulls `getbusbar/busbar:1.6.0-rc.1` and, for the binaries, `gh release download
+      # v1.6.0` -- a draft's assets are downloadable by tag through the API, which is the property
+      # release-stage.yml's `draft` job header established and verified end to end.
+      TAG: ${{ needs['resolve-staged'].outputs.promote_tag }}
+      IS_RC: ${{ needs['resolve-staged'].outputs.is_rc }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -757,7 +849,6 @@ jobs:
           echo "PASS: ${SHA:0:7} is still green at promote time."
       - name: Push the version tag
         env:
-          TAG: ${{ needs.plan.outputs.tag }}
           SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
@@ -777,10 +868,14 @@ jobs:
             git push origin "$TAG"
             echo "::notice::Pushed ${TAG} at ${SHA:0:7}."
           fi
+      # A CANDIDATE PUBLISHES NOTHING. Skipped, not neutered: the draft this would flip is the
+      # RELEASE's draft, and resolve-staged asserts on the later, final promote that it is still a
+      # draft anchored to this sha. Publishing it for an rc would consume the very object the
+      # release needs and leave `v1.6.0` with nothing to promote.
       - name: Publish the draft
+        if: ${{ needs['resolve-staged'].outputs.is_rc != '1' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.plan.outputs.tag }}
         run: |
           set -euo pipefail
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
@@ -793,7 +888,6 @@ jobs:
       - name: Assert the promote actually landed
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ needs.plan.outputs.tag }}
           SHA: ${{ needs.plan.outputs.sha }}
         run: |
           set -euo pipefail
@@ -803,6 +897,24 @@ jobs:
           else
             echo "::error::PARTIAL PROMOTE: the container tags for ${TAG#v} were published but the git tag ${TAG} does not exist on origin. Fix: re-run this workflow; the promote is idempotent and will complete the missing half."
             fail=1
+          fi
+          # A CANDIDATE'S ASSERTIONS ARE THE INVERSE OF A RELEASE'S, AND THEY ARE ASSERTIONS, NOT A
+          # SKIP. What must be true after an rc promote is that the rc git tag exists (above), the
+          # immutable image pin exists (docker.yml's own landing assertion, already run) and that
+          # NOTHING PUBLIC MOVED: the draft is still a draft, so `/releases/latest` still points at
+          # the previous release. Checking that is what makes "the soak did not ship anything" a
+          # verified fact rather than a consequence of some `if:` having been false.
+          if [ "$IS_RC" = "1" ]; then
+            draft="$(gh release view "${{ needs.plan.outputs.tag }}" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null || echo missing)"
+            if [ "$draft" = "true" ]; then
+              echo "PASS: ${{ needs.plan.outputs.tag }} is still an unpublished draft -- the candidate shipped no release."
+            else
+              echo "::error::${{ needs.plan.outputs.tag }} reports isDraft=${draft} after a CANDIDATE promote. An rc must leave the release's draft untouched; something published it. Investigate before promoting ${{ needs.plan.outputs.tag }}."
+              fail=1
+            fi
+            [ "$fail" = 0 ] || exit 1
+            echo "::notice::${TAG} is minted as a release CANDIDATE: git tag + immutable image pin only. Nothing is listed, \`latest\` did not move, no downstream repo was told and nothing was announced. Soak it, then dispatch 'Release' with release_tag=${{ needs.plan.outputs.tag }}."
+            exit 0
           fi
           state="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,isLatest 2>/dev/null || echo '{}')"
           draft="$(echo "$state" | jq -r '.isDraft // "unknown"')"
@@ -866,6 +978,10 @@ jobs:
   #    will catch it eventually" the way a bare `if:` skip would.
   notify-downstream:
     needs: [plan, promote-release]
+    # A CANDIDATE IS NOT A RELEASE, so nothing downstream is told about it. Every repo on that list
+    # re-pins itself to the upstream release and publishes; telling them about `1.6.0-rc.1` would
+    # fan a soak out to nineteen repos as though it had shipped.
+    if: ${{ needs['promote-release'].outputs.is_rc != '1' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -931,7 +1047,9 @@ jobs:
   discord-notify:
     name: announce the release in Discord
     needs: [plan, promote-release]
-    if: ${{ needs['promote-release'].result == 'success' && needs.plan.outputs.release == '1' }}
+    # ...and not for a release CANDIDATE: an @everyone announcing a soak build is exactly the kind
+    # of noise that teaches a community to mute the channel.
+    if: ${{ needs['promote-release'].result == 'success' && needs.plan.outputs.release == '1' && needs['promote-release'].outputs.is_rc != '1' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -996,7 +1114,12 @@ jobs:
     # expression, and a hyphenated job id reached by dot access is at best relying on the lexer to
     # guess. The index form is unambiguous. The clause itself is what stops the public sweep running
     # against a release that was never promoted, which would fail on every channel and say nothing.
-    if: ${{ !cancelled() && needs['promote-release'].result == 'success' }}
+    # ...and never after a CANDIDATE. This job asks whether the PUBLIC channels moved -- `latest`,
+    # /releases/latest, the tap, the chart, the download page. After an rc promote none of them
+    # moved, deliberately and correctly, so running it would produce a red run reporting that a
+    # release which was never published is not published. That is a fabrication, and a check that
+    # fabricates is how a red stops meaning anything.
+    if: ${{ !cancelled() && needs['promote-release'].result == 'success' && needs['promote-release'].outputs.is_rc != '1' }}
     uses: ./.github/workflows/verify-deploy.yml
     with:
       version: ${{ needs.plan.outputs.version }}

@@ -74,6 +74,30 @@ on:
   # hiccup). Safe because every job below is idempotent against a re-run of the same sha: the
   # draft is reused, assets are --clobber'd, and the staging tag is overwritten in place.
   workflow_dispatch:
+    inputs:
+      # -- THE RC RULE, AND WHY THE NAME IS AN INPUT RATHER THAN A COUNTER IN A FILE ---------------
+      #
+      # The owner's first 1.6.0 release is `v1.6.0-rc.1`, soaked, then `v1.6.0` -- from the SAME
+      # bytes. This input is how a qa staging says so.
+      #
+      # THE VERSION IS STILL CARGO.TOML'S, ALWAYS. This input does NOT set the version; it names an
+      # rc SUFFIX on the version this commit already carries, and `plan` refuses any value that is
+      # not exactly `v<Cargo.toml version>-rc.<N>`. There is no second place a version can come
+      # from, which is the property release-stage has always had and the reason a `RELEASE_TAG`
+      # free-text input was rejected: it would let a dispatch stage bytes under a name whose
+      # Cargo.toml, OCI version label, CHANGELOG section and OpenAPI document all say something
+      # else, and every downstream check reads those, not the input.
+      #
+      # AN INPUT, NOT A DERIVED COUNTER, because "how many rc tags exist" is a fact about the tag
+      # namespace at the instant the workflow happens to run, and the record it lands in is read up
+      # to 90 days later by a different workflow. prepare-release.yml already models the version as
+      # an explicit dispatch input for the same reason: naming a release is a decision, and a
+      # decision is typed by a human once and then recorded, not recomputed.
+      release_tag:
+        description: "Optional rc name for this staging, e.g. v1.6.0-rc.1. Empty = stage under the final vX.Y.Z name."
+        required: false
+        type: string
+        default: ""
 
 # Serialize per-branch. A burst of qa pushes must not interleave two stagings of the same draft.
 # cancel-in-progress stays FALSE: a superseded staging run finishes and leaves a coherent record
@@ -116,6 +140,11 @@ jobs:
     outputs:
       version: ${{ steps.p.outputs.version }}
       tag: ${{ steps.p.outputs.tag }}
+      # The rc name this staging carries, or "" for an ordinary staging. It is an OFFER recorded
+      # alongside the final tag, never a replacement for it: the draft, the assets, the OCI label
+      # and the image digest are all the same objects either way, and `record-staged` writes BOTH
+      # names into one record so release.yml can mint them one at a time.
+      rc_tag: ${{ steps.p.outputs.rc_tag }}
       staging_tag: ${{ steps.p.outputs.staging_tag }}
       sha: ${{ steps.p.outputs.sha }}
       release: ${{ steps.p.outputs.release }}
@@ -131,9 +160,39 @@ jobs:
           echo "$V" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
             || { echo "::error::crates/busbar/Cargo.toml version '$V' is not X.Y.Z"; exit 1; }
           SHA="${GITHUB_SHA}"
+
+          # -- THE RC NAME, VALIDATED AGAINST THE VERSION THIS COMMIT ACTUALLY IS ------------------
+          #
+          # `release_tag` reaches the shell only through `env:` (inert data), never through GitHub
+          # expression interpolation inside this script -- interpolation happens before the shell
+          # sees the text, so a crafted value would splice shell in. Same rule prepare-release.yml
+          # states for its own version input.
+          #
+          # THE PATTERN IS ANCHORED TO $V, so an rc can only ever be an rc OF THIS COMMIT'S VERSION.
+          # `v1.7.0-rc.1` staged off a 1.6.0 Cargo.toml is refused here rather than discovered at
+          # promote time by a version-mismatch check in resolve-staged. `-rc.` with a decimal
+          # counter (not `-rc1`) because that is what Cargo/semver order as a pre-release of X.Y.Z.
+          RC_TAG=""
+          if [ -n "${RELEASE_TAG:-}" ]; then
+            echo "$RELEASE_TAG" | grep -qE "^v${V//./\\.}-rc\.[1-9][0-9]*$" || {
+              echo "::error::release_tag '${RELEASE_TAG}' is not an rc of the version this commit carries. It must be exactly 'v${V}-rc.<N>' (N >= 1), because the version is crates/busbar/Cargo.toml's and nothing else -- the OCI version label, the CHANGELOG section and the OpenAPI document on this sha all say ${V}. Fix: bump Cargo.toml on dev if you meant a different version, or pass v${V}-rc.1."
+              exit 1
+            }
+            # AN RC NAME IS AS IMMUTABLE AS A RELEASE NAME. Docker Hub will not let
+            # `getbusbar/busbar:1.6.0-rc.1` be overwritten, and a git tag must not be moved, so a
+            # re-soak is rc.2 -- never rc.1 again. Refused here, before ~40 minutes are spent.
+            if git rev-parse "$RELEASE_TAG" >/dev/null 2>&1; then
+              echo "::error::${RELEASE_TAG} already exists as a git tag. An rc name is minted once and never moved; a second soak of the same version is the NEXT counter. Fix: dispatch again with v${V}-rc.$(( $(git tag -l "v${V}-rc.*" | wc -l | tr -d ' ') + 1 ))."
+              exit 1
+            fi
+            RC_TAG="$RELEASE_TAG"
+            echo "::notice::This staging carries the rc name ${RC_TAG} alongside the final name v${V}. Both are recorded; release.yml mints them one at a time."
+          fi
+
           {
             echo "version=$V"
             echo "tag=v$V"
+            echo "rc_tag=$RC_TAG"
             echo "sha=$SHA"
             # The throwaway name. Derived from the commit, so a re-run of the SAME commit reuses the
             # SAME staging tag and overwrites it rather than littering the registry, while two
@@ -168,6 +227,21 @@ jobs:
               exit 1
             fi
             echo "Docker Hub tag ${V} is free (HTTP ${code} on HEAD manifest)."
+            # Same pre-flight for the rc pin this staging offers. `1.6.0-rc.1` is as immutable as
+            # `1.6.0`, so a taken rc name is a release candidate that could never be promoted, and
+            # finding that out here costs one HEAD request instead of a full staging run.
+            if [ -n "$RC_TAG" ]; then
+              rcv="${RC_TAG#v}"
+              rccode="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' -I \
+                -H "Authorization: Bearer $tok" \
+                -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json,application/vnd.oci.image.index.v1+json' \
+                "https://registry-1.docker.io/v2/getbusbar/busbar/manifests/${rcv}" || echo 000)"
+              if [ "$rccode" = "200" ]; then
+                echo "::error::getbusbar/busbar:${rcv} ALREADY EXISTS on Docker Hub and cannot be overwritten. Refusing to stage a release candidate whose image name could never be published. Fix: dispatch with the next rc counter."
+                exit 1
+              fi
+              echo "Docker Hub tag ${rcv} is free (HTTP ${rccode} on HEAD manifest)."
+            fi
           else
             echo "::warning::could not obtain an anonymous Docker Hub pull token; skipping the tag-immutability pre-flight. The promote step will still refuse to overwrite an existing tag, just later."
           fi
@@ -176,6 +250,9 @@ jobs:
 
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Empty on a push to qa (inputs do not exist for a push event), so the ordinary staging
+          # path is bit-for-bit the behaviour it has always had.
+          RELEASE_TAG: ${{ inputs.release_tag }}
 
       # -- A VERSION WITHOUT RELEASE NOTES DOES NOT STAGE ------------------------------------
       #
@@ -1273,6 +1350,7 @@ jobs:
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           TAG: ${{ needs.plan.outputs.tag }}
+          RC_TAG: ${{ needs.plan.outputs.rc_tag }}
           STAGING_TAG: ${{ needs.plan.outputs.staging_tag }}
           SHA: ${{ needs.plan.outputs.sha }}
           DIGEST: ${{ needs.stage-image.outputs.digest }}
@@ -1315,7 +1393,23 @@ jobs:
             echo "::error::no draft assets were pinned, so the record could not name the binaries the promote would publish. Refusing." >&2
             exit 1
           fi
-          jq -n             --arg version "$VERSION"             --arg tag "$TAG"             --arg qa_sha "$SHA"             --arg staging_tag "$STAGING_TAG"             --arg digest "$DIGEST"             --arg compat_digest "$COMPAT_DIGEST"             --arg run_id "$GITHUB_RUN_ID"             --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             --slurpfile assets assets.json             '{version: $version, tag: $tag, qa_sha: $qa_sha, staging_tag: $staging_tag,
+          # -- ONE RECORD, KEYED BY SHA, NAMING EVERY TAG THOSE BYTES MAY EVER WEAR ----------------
+          #
+          # The record is BY SHA, and a sha can carry more than one user-facing name over its life:
+          # `v1.6.0-rc.1` during the soak and `v1.6.0` when the soak passes -- the same digest, the
+          # same draft assets, the same attestation, promoted twice.
+          #
+          # SO THE RECORD NAMES BOTH, EXPLICITLY, AND SAYS WHICH IS WHICH:
+          #   `tag`     the FINAL name (always v<version>, always present). The one that moves
+          #             `latest`, publishes the draft and fans out. Minted at most once.
+          #   `rc_tag`  the CANDIDATE name (v<version>-rc.<N>, or "" when this staging offers none).
+          #             Minted as an immutable image pin plus a git tag; it publishes nothing,
+          #             moves no floating pointer, and leaves the draft a draft.
+          #
+          # A promote may mint EITHER of these two names and no other string; release.yml's
+          # resolve-staged refuses anything that is not one of them, so "two tags, one record" can
+          # never widen into "any tag, one record".
+          jq -n             --arg version "$VERSION"             --arg tag "$TAG"             --arg rc_tag "$RC_TAG"             --arg qa_sha "$SHA"             --arg staging_tag "$STAGING_TAG"             --arg digest "$DIGEST"             --arg compat_digest "$COMPAT_DIGEST"             --arg run_id "$GITHUB_RUN_ID"             --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             --slurpfile assets assets.json             '{version: $version, tag: $tag, rc_tag: $rc_tag, qa_sha: $qa_sha, staging_tag: $staging_tag,
               digest: $digest, compat_digest: $compat_digest, assets: $assets[0],
               run_id: $run_id, recorded_at: $recorded_at}'             | tee staged.json
           {
