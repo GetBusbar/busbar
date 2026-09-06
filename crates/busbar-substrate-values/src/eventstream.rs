@@ -402,7 +402,7 @@ pub fn encode_exception_frame(exception_type: &str, message: &str) -> Vec<u8> {
     // vocabulary like "upstream" — a native Bedrock exception frame would never carry that word, so
     // leaking it here would be a protocol-indistinguishability tell (mirrors the scrub already done
     // for the Gemini truncation path in proto::gemini::GeminiJsonArrayFramer::finish_with_error).
-    let payload = serde_json::to_vec(&serde_json::json!({ "message": message }))
+    let payload = crate::json::to_vec(&serde_json::json!({ "message": message }))
         .unwrap_or_else(|_| b"{\"message\":\"An internal server error occurred.\"}".to_vec());
     // Build headers straight into the single frame buffer (see `encode_frame`) — one allocation.
     let mut frame = frame_open();

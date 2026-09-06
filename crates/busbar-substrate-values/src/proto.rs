@@ -150,7 +150,7 @@ pub fn openai_classify(status: http::StatusCode, body: &[u8]) -> crate::breaker:
     use http::StatusCode;
     // context-length-exceeded — the lane is healthy; this must fail over (to a larger-context
     // model), not penalize the breaker. Detect by OpenAI code/message first.
-    let code_is_context = serde_json::from_slice::<serde_json::Value>(body)
+    let code_is_context = crate::json::parse::<serde_json::Value>(body)
         .ok()
         .and_then(|j| {
             j.get("error")
