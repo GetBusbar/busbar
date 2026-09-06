@@ -78,6 +78,25 @@ fn base64_decode_fails_loud_on_malformed() {
     assert_eq!(base64_decode("Zm9v\nYmFy").as_deref(), Some(&b"foobar"[..]));
 }
 
+/// Padding is TERMINAL: `=` ends the encoded data. Skipping `=` wherever it appeared meant two
+/// concatenated padded blobs decoded as one longer payload instead of failing loud.
+#[test]
+fn base64_decode_treats_padding_as_terminal() {
+    assert_eq!(base64_decode("QQ==").as_deref(), Some(&b"A"[..]));
+    assert_eq!(
+        base64_decode("QQ==QQ=="),
+        None,
+        "encoded data must not resume after the padding"
+    );
+    assert_eq!(
+        base64_decode("QQ=Q"),
+        None,
+        "a single interior pad byte too"
+    );
+    // Whitespace after the padding is still fine (providers wrap and newline-terminate).
+    assert_eq!(base64_decode("QQ==\n").as_deref(), Some(&b"A"[..]));
+}
+
 #[test]
 fn image_output_is_additive_b64_and_url_coexist() {
     let img = ImageOutput {
