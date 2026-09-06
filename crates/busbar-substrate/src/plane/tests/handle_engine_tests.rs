@@ -226,6 +226,92 @@ fn submit_demo_bounded<A>(
         .expect("submit");
 }
 
+/// THE SWEEP IS AMORTISED OVER SUBMITS, AND SKIPPING ONE CHANGES NOTHING BUT WHEN.
+///
+/// The sweep runs from a submit whose `now` has advanced past the last swept second — every bound the
+/// sweep enforces is in whole seconds, so a second sweep inside one second cannot reach a different
+/// verdict, and paying for it is paying to be told the same thing twice. Two facts:
+///
+/// - A submit that does NOT trigger the sweep leaves everything except its own insertion alone. The
+///   durable store is byte-identical apart from the new handle's own row and event — in particular no
+///   abandon write happened — and no resident handle's meta moved.
+/// - The NEXT triggering submit reaches exactly the state a per-submit sweep would have been at by
+///   then. Here that is `{a2, x, y, z}`: the deferred sweep evicts a0 and a1 together at `z` (the set
+///   is two over the cap by then), where a per-submit sweep would have evicted a0 at `y` and a1 at
+///   `z`. Same survivors, same order, one sweep instead of two.
+#[test]
+fn a_submit_that_skips_the_sweep_defers_it_without_changing_where_it_lands() {
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(Arc::clone(&store) as Arc<dyn PlaneStore>);
+    let live = |id: &str, at: u64| DemoRow {
+        id: id.to_string(),
+        owner: "o".into(),
+        updated_at: at,
+        terminal: false,
+        cursor: 0,
+    };
+    let resident = |engine: &DurableHandleEngine| {
+        let mut ids: Vec<String> = ["a0", "a1", "a2", "x", "y", "z"]
+            .iter()
+            .filter(|id| engine.get_unscoped(id).is_some())
+            .map(|id| (*id).to_string())
+            .collect();
+        ids.sort();
+        ids
+    };
+
+    // Three active handles at now=5, then a submit at now=200 whose sweep abandons all three. The
+    // set is at the cap (4) and nothing is evicted yet.
+    for i in 0..3u64 {
+        submit_demo(&engine, live(&format!("a{i}"), 5), 5);
+    }
+    submit_demo(&engine, live("x", 200), 200);
+    assert_eq!(resident(&engine), ["a0", "a1", "a2", "x"]);
+    for i in 0..3u64 {
+        let meta = engine.meta(&format!("a{i}")).expect("resident");
+        assert!(meta.terminal && meta.updated_at == 200, "abandoned at now");
+    }
+
+    // A second submit in the SAME second. Its sweep is skipped, so the working set is allowed over
+    // the cap and the durable store gains nothing but the new handle's own row and event.
+    let rows_before = store.rows.lock().unwrap().clone();
+    let events_before = store.events.lock().unwrap().clone();
+    let metas_before: Vec<HandleMeta> = (0..3u64)
+        .map(|i| engine.meta(&format!("a{i}")).expect("resident"))
+        .collect();
+    submit_demo(&engine, live("y", 200), 200);
+    let rows_after = store.rows.lock().unwrap().clone();
+    let events_after = store.events.lock().unwrap().clone();
+    let y = live("y", 200).record();
+    assert_eq!(
+        rows_after,
+        [rows_before, vec![y.clone()]].concat(),
+        "a skipped sweep wrote nothing durable but the new handle's own row"
+    );
+    assert_eq!(
+        events_after,
+        [events_before, vec![y]].concat(),
+        "a skipped sweep appended nothing but the new handle's own genesis event"
+    );
+    let metas_now: Vec<HandleMeta> = (0..3u64)
+        .map(|i| engine.meta(&format!("a{i}")).expect("resident"))
+        .collect();
+    assert_eq!(metas_now, metas_before, "a skipped sweep moved no handle");
+    assert_eq!(resident(&engine), ["a0", "a1", "a2", "x", "y"]);
+    assert_eq!(engine.len(), 5, "the deferred cap is over its ceiling");
+
+    // The next second's submit triggers the deferred sweep, and it lands where a per-submit sweep
+    // would have been by now: the two oldest terminal handles go, oldest first by (updated_at, id).
+    submit_demo(&engine, live("z", 201), 201);
+    assert_eq!(
+        resident(&engine),
+        ["a2", "x", "y", "z"],
+        "the deferred sweep evicted a0 and a1 — the same survivors a per-submit sweep leaves"
+    );
+    assert_eq!(engine.len(), 4, "the sweep brought the set back to the cap");
+}
+
 /// WHAT A SUBMIT COSTS ON A BIG WORKING SET — measured, not asserted. Ten thousand ACTIVE handles
 /// against a cap of ten thousand is the exact shape the design note calls the cliff: the cap rule may
 /// evict only TERMINAL handles, so it evicts nothing here and the set stays large, and every submit

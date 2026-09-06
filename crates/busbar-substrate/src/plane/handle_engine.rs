@@ -51,7 +51,9 @@
 //! - [`submit`](DurableHandleEngine::submit) still does its durable writes (`upsert_record` +
 //!   `append_record`) BEFORE it takes the outer lock — a submit is a FRESH id at the genesis chain
 //!   position, with no existing per-handle chain another writer could fork, so its durable write needs
-//!   no cross-writer serialization. It takes the outer lock only to run the retention sweep and insert.
+//!   no cross-writer serialization. It takes the outer lock only to insert, and to run the retention
+//!   sweep on the submits that CLAIM it (see [`claim_sweep`](DurableHandleEngine::claim_sweep) — the
+//!   sweep is amortised over the submits inside one second, and it is still a submit that triggers it).
 //! - The sweep in [`sweep`](DurableHandleEngine::sweep) does its abandon writes with the outer lock
 //!   RELEASED: it collects the candidate shards under the lock, drops it, applies each abandon mutation
 //!   under that handle's own inner lock (re-reading `meta` first, because a concurrent `mutate` may have
@@ -68,6 +70,7 @@
 
 use std::any::Any;
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::plane::store::PlaneStore;
@@ -352,6 +355,9 @@ pub struct DurableHandleEngine {
     /// `mutate` reaches it holding only that handle's inner lock, and the sweep reaches it holding
     /// the outer lock, so it must never be held while any other lock is acquired.
     expiry: Mutex<ExpiryIndex>,
+    /// The last second a sweep was CLAIMED for. See [`claim_sweep`](Self::claim_sweep): the sweep is
+    /// amortised over the submits inside one second rather than run by every one of them.
+    last_swept: AtomicU64,
     /// The durable sink for row upserts AND event appends. `None` is the RAM-cache posture (a plane's
     /// `store: memory`): the persistence methods no-op and nothing survives a restart.
     sink: Mutex<Option<Arc<dyn PlaneStore>>>,
@@ -362,6 +368,7 @@ impl Default for DurableHandleEngine {
         Self {
             handles: Mutex::new(HashMap::new()),
             expiry: Mutex::new(ExpiryIndex::default()),
+            last_swept: AtomicU64::new(0),
             sink: Mutex::new(None),
         }
     }
@@ -497,6 +504,32 @@ impl DurableHandleEngine {
         Ok(())
     }
 
+    /// CLAIM THE SWEEP FOR `now`, or decline it. Every bound the sweep enforces is in WHOLE SECONDS,
+    /// so a second sweep inside one second cannot reach a verdict the first did not: running one per
+    /// submit is paying, per submit, to be told the same thing again. This hands the sweep to the
+    /// FIRST submit of each second — the exchange is what makes the claim exclusive, so two submits
+    /// racing in the same second produce one sweep, not two — and every other submit that second
+    /// still INSERTS, so the working set is never stale in the direction that matters.
+    ///
+    /// Nothing here sweeps on a TIMER. The trigger is still a submit; it is just not every submit.
+    fn claim_sweep(&self, now: u64) -> bool {
+        let mut last = self.last_swept.load(Ordering::Relaxed);
+        loop {
+            if now <= last {
+                return false;
+            }
+            match self.last_swept.compare_exchange_weak(
+                last,
+                now,
+                Ordering::AcqRel,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(seen) => last = seen,
+            }
+        }
+    }
+
     /// SUBMIT a new handle: `plan` builds its row + records + genesis event from the genesis position
     /// (the plane computes the digest); the engine persists row-then-event, runs the retention sweep,
     /// and inserts. The durable writes happen BEFORE the working-set lock is taken, exactly as the
@@ -545,7 +578,9 @@ impl DurableHandleEngine {
             }
             None => genesis,
         };
-        self.sweep(now, bounds, &abandon, &report_fail);
+        if self.claim_sweep(now) {
+            self.sweep(now, bounds, &abandon, &report_fail);
+        }
         let mut handles = self.lock();
         let row = sr.row.clone();
         Self::install(
@@ -669,6 +704,10 @@ impl DurableHandleEngine {
     /// lock rather than trusting the values read before the gap: a concurrent `mutate` may have
     /// settled or touched the handle in the meantime, and that is exactly the case where the abandon
     /// must NOT fire. Rules (1) and (2) then re-take the outer lock.
+    ///
+    /// NOT EVERY SUBMIT RUNS IT — [`claim_sweep`](Self::claim_sweep) hands it to the first submit of
+    /// each second, because every bound here is in whole seconds and a second sweep inside one second
+    /// cannot reach a different verdict.
     ///
     /// NO RULE SCANS THE WORKING SET. Each reads a PREFIX of the [`ExpiryIndex`] — whose key
     /// `(updated_at, id)` is the same total order the eviction used to reconstruct by sorting — and
