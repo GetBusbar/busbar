@@ -1021,6 +1021,38 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
 
+            // The spec's `ResponseErrorEvent` — "Emitted when an error occurs" — is a TOP-LEVEL
+            // stream event (`type: "error"`, with required `code`, `message` and `param`), NOT a
+            // `response.failed` carrying a nested response object. It had no arm here, so the whole
+            // event fell through the `_ => {}` default and produced ZERO IR events: the client
+            // received no error frame, the stream was never terminated (`MessageStop` never
+            // emitted, so a downstream consumer waits for an end that never comes), and the breaker
+            // recorded no fault for a failure the upstream explicitly announced. Mirror the bodyless
+            // `response.failed` arm: an explicit Error, the open blocks closed, then MessageStop.
+            EVT_ERROR => {
+                let code = data.get("code").and_then(|c| c.as_str());
+                let message = data.get("message").and_then(|m| m.as_str());
+                // Prefer the enumerated `code` as the breaker signal (it is what
+                // `class_for_response_failed` maps), falling back to the generic sentinel when the
+                // upstream sent `code: null` — which the spec allows.
+                let provider_signal = code
+                    .filter(|c| !c.is_empty())
+                    .unwrap_or(SIGNAL_RESPONSE_FAILED);
+                out.push(IrStreamEvent::Error(IrError {
+                    class: class_for_response_failed(provider_signal),
+                    provider_signal: Some(provider_signal.to_string()),
+                    retry_after: None,
+                    detail: busbar_substrate_values::breaker::ProviderErrorDetail {
+                        // An `error` event rides inside a 200 stream; it carries no HTTP status.
+                        http_status: None,
+                        status_name: code.map(String::from),
+                        message: message.map(String::from),
+                    },
+                }));
+                close_open_blocks(&mut out, state);
+                out.push(IrStreamEvent::MessageStop);
+            }
+
             EVT_RESPONSE_COMPLETED | EVT_RESPONSE_FAILED | EVT_RESPONSE_INCOMPLETE => {
                 // A terminal event ends the message. Any content block still open at this point
                 // (a tool index tracked as a raw `idx`, or a text index tracked under
@@ -1033,37 +1065,6 @@ impl ProtocolReader for ResponsesReader {
                 // MessageStop, converting text keys (>= TEXT_INDEX_KEY_OFFSET) back to their IR
                 // index. This closure is invoked in EVERY terminal sub-path (incl. the failed
                 // early-return) right before the MessageStop is pushed.
-                let close_open_blocks =
-                    |out: &mut Vec<IrStreamEvent>, state: &mut crate::ir::StreamDecodeState| {
-                        // Drain into a sorted Vec first: closing in ascending IR-index order keeps
-                        // the emitted BlockStop sequence deterministic regardless of insertion order
-                        // (text and tool keys interleave under the offset scheme).
-                        let mut indices: Vec<usize> = state
-                            .open_tools
-                            .iter()
-                            .map(|&key| {
-                                if key >= TEXT_INDEX_KEY_OFFSET {
-                                    key - TEXT_INDEX_KEY_OFFSET
-                                } else {
-                                    key
-                                }
-                            })
-                            .collect();
-                        state.open_tools.clear();
-                        // Dedup AFTER sorting: a tool key (`N`) and a text key (`N +
-                        // TEXT_INDEX_KEY_OFFSET`) both map back to the SAME IR index `N`, so without
-                        // dedup a single output_index that was (erroneously, pre-fix) opened as both
-                        // kinds would emit TWO BlockStop{N} — a duplicate `content_block_stop` the
-                        // downstream Anthropic writer relays for an already-closed index. One
-                        // BlockStop per distinct IR index, regardless of how many keys collapsed onto
-                        // it. (The output_item.added / output_text.delta guards below also prevent the
-                        // double-open in the first place; this dedup is the second, defensive layer.)
-                        indices.sort_unstable();
-                        indices.dedup();
-                        for index in indices {
-                            out.push(IrStreamEvent::BlockStop { index });
-                        }
-                    };
 
                 if let Some(response_obj) = data.get("response") {
                     let status = response_obj
@@ -1719,5 +1720,45 @@ fn tool_input_from_arguments(v: Option<&serde_json::Value>) -> serde_json::Value
             .unwrap_or_else(|_| serde_json::Value::String(s.clone())),
         Some(other) => other.clone(),
         None => serde_json::json!({}),
+    }
+}
+
+/// Close every content block still open on the stream state, in ascending IR-index order.
+///
+/// Invoked from EVERY terminal sub-path right before the `MessageStop` is pushed — a block opened
+/// with a `BlockStart` that never received its matching `output_item.done`/`content_part.done`
+/// (the upstream cut the stream mid-block, or a `failed`/`incomplete`/`error` arrived while content
+/// was still streaming) would otherwise leave the downstream writer relaying an unbalanced stream.
+///
+/// A FREE function rather than a closure scoped inside one match arm: the `error` arm needs the same
+/// balancing, and a second copy of it is how the two paths drift apart.
+fn close_open_blocks(out: &mut Vec<IrStreamEvent>, state: &mut crate::ir::StreamDecodeState) {
+    // Drain into a sorted Vec first: closing in ascending IR-index order keeps
+    // the emitted BlockStop sequence deterministic regardless of insertion order
+    // (text and tool keys interleave under the offset scheme).
+    let mut indices: Vec<usize> = state
+        .open_tools
+        .iter()
+        .map(|&key| {
+            if key >= TEXT_INDEX_KEY_OFFSET {
+                key - TEXT_INDEX_KEY_OFFSET
+            } else {
+                key
+            }
+        })
+        .collect();
+    state.open_tools.clear();
+    // Dedup AFTER sorting: a tool key (`N`) and a text key (`N +
+    // TEXT_INDEX_KEY_OFFSET`) both map back to the SAME IR index `N`, so without
+    // dedup a single output_index that was (erroneously, pre-fix) opened as both
+    // kinds would emit TWO BlockStop{N} — a duplicate `content_block_stop` the
+    // downstream Anthropic writer relays for an already-closed index. One
+    // BlockStop per distinct IR index, regardless of how many keys collapsed onto
+    // it. (The output_item.added / output_text.delta guards below also prevent the
+    // double-open in the first place; this dedup is the second, defensive layer.)
+    indices.sort_unstable();
+    indices.dedup();
+    for index in indices {
+        out.push(IrStreamEvent::BlockStop { index });
     }
 }
