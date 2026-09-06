@@ -183,26 +183,39 @@ pub(crate) async fn forward_inbound(
         }
     };
     if is_response {
-        let status = final_status.as_ref().map_or(
-            busbar_contract_transport::wire::StatusClass::Success,
-            map_status,
-        );
-        let meta = FrameMeta {
-            bytes: 0,
-            transport_units: None,
-            status: Some(status),
-            status_code: None,
-            retry_after_secs: None,
-        };
-        let frame = Frame {
-            direction: Direction::Inbound,
-            stream: stream_id,
-            bytes: SlabBytes::new(Arc::from([])),
-            meta,
-        };
+        let frame = terminal_frame(stream_id, final_status.as_ref());
         let _ = state.send_inbound(Ok((stream_id, frame))).await;
     } else if final_status.is_some() {
         let _ = state.send_inbound(Err(TransportError::Reset)).await;
+    }
+}
+
+/// The zero-length, status-bearing frame that ends one call — the transport's honest reading of
+/// the `grpc-status` the upstream put on its answer, whether that answer ended a body with a
+/// trailer or was the whole answer (a trailers-only refusal, which never opens a body at all).
+///
+/// `None` means the stream ended with no failure, which on the gRPC wire is `grpc-status: 0`, so
+/// the number goes on the frame too: gRPC always puts a number on an answer, and a reader that has
+/// to tell a withdrawn credential from a bad argument cannot do it from the class alone.
+pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Frame {
+    let code = status.map_or(tonic::Code::Ok, Status::code);
+    let meta = FrameMeta {
+        bytes: 0,
+        transport_units: None,
+        status: Some(status.map_or(
+            busbar_contract_transport::wire::StatusClass::Success,
+            map_status,
+        )),
+        // `as i32` is `grpc-status`'s own wire spelling, and every code it names is small and
+        // non-negative, so the narrowing below loses nothing.
+        status_code: u16::try_from(code as i32).ok(),
+        retry_after_secs: None,
+    };
+    Frame {
+        direction: Direction::Inbound,
+        stream: stream_id,
+        bytes: SlabBytes::new(Arc::from([])),
+        meta,
     }
 }
 

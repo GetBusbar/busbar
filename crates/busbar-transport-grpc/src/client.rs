@@ -99,10 +99,24 @@ pub(crate) async fn open_stream(
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
     let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
-    let response = grpc
+    let response = match grpc
         .streaming(tonic::Request::new(InStream(out_rx)), path, RawCodec)
         .await
-        .map_err(|_| TransportError::Refused)?;
+    {
+        Ok(response) => response,
+        Err(status) => {
+            // A TRAILERS-ONLY answer — one HEADERS frame with END_STREAM carrying a non-zero
+            // `grpc-status`, the standard shape for `UNIMPLEMENTED` or `UNAUTHENTICATED` — arrives
+            // here, before any response stream exists. It is still an ANSWER: the upstream read the
+            // call and said no. This transport declares its status class at the terminal frame, so
+            // that class has to reach the reader as a frame; reporting only the opening failure
+            // left a call the upstream had judged posting no status evidence at all, which is the
+            // difference between "refused" and "nothing answered" on the leg that decides a fee.
+            let frame = crate::server::terminal_frame(stream_id, Some(&status));
+            let _ = state.send_inbound(Ok((stream_id, frame))).await;
+            return Err(TransportError::Refused);
+        }
+    };
     let stream = response.into_inner();
     tokio::spawn(async move {
         crate::server::forward_inbound(state.clone(), stream_id, stream, true).await;
