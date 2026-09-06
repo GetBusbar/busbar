@@ -70,6 +70,47 @@ pub enum Framing {
     Datagram,
 }
 
+/// The exact status an upstream put on an answer, in the numbering that spelled it.
+///
+/// Two transports both report "a number", and the numbers mean unrelated things: HTTP's `503` and
+/// gRPC's `14` both say the upstream is unavailable, while gRPC's `5` (`NOT_FOUND`) and HTTP's `5`
+/// (nothing) share a spelling and no meaning at all. Carrying the number without its namespace
+/// pushes the disambiguation onto every reader, and a reader that guesses wrong on the money path
+/// silently stops recording breaker failures for a whole protocol.
+///
+/// So the namespace travels WITH the number, in one field rather than two: an answer has exactly
+/// one status, and a second field would let a caller construct a frame claiming two.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum WireStatus {
+    /// An HTTP status code, as the HTTP (and SSE-over-HTTP) transports read it off the response.
+    Http(u16),
+    /// A `grpc-status` code, as the gRPC transport reads it off the answer's trailer — the leg the
+    /// upstream actually said what happened on. `u8` because every code gRPC defines is small and
+    /// non-negative.
+    Grpc(u8),
+}
+
+impl WireStatus {
+    /// The HTTP status, when this IS one. `None` for any other numbering — never a coerced number,
+    /// because there is no HTTP status a gRPC code "is".
+    #[must_use]
+    pub fn http(self) -> Option<u16> {
+        match self {
+            WireStatus::Http(code) => Some(code),
+            WireStatus::Grpc(_) => None,
+        }
+    }
+
+    /// The `grpc-status` code, when this IS one.
+    #[must_use]
+    pub fn grpc(self) -> Option<u8> {
+        match self {
+            WireStatus::Grpc(code) => Some(code),
+            WireStatus::Http(_) => None,
+        }
+    }
+}
+
 /// A frame's transport-level meta.
 ///
 /// Byte counts are always present. The transport-unit count is present only where the transport
@@ -91,12 +132,18 @@ pub struct FrameMeta {
     pub transport_units: Option<u64>,
     /// The transport's status reading, where it carries one.
     pub status: Option<StatusClass>,
-    /// The exact numeric status the upstream reported, where the transport's wire has one.
+    /// The exact numeric status the upstream reported, WITH THE NAMESPACE THAT SPELLED IT, where
+    /// the transport's wire has one.
     ///
     /// Present only on the frame that carries [`FrameMeta::status`], and only for a transport
     /// whose protocol puts a number on an answer. `None` is honest: it says this transport read
     /// no number here, never that the upstream returned zero.
-    pub status_code: Option<u16>,
+    ///
+    /// The namespace is not decoration. A bare number is unreadable without knowing which
+    /// vocabulary wrote it: `14` is `UNAVAILABLE` in gRPC's numbering and is not a status at all in
+    /// HTTP's, so a reader handed the number alone matches it against HTTP's bands, finds no band,
+    /// and calls a dead upstream the caller's fault. [`WireStatus`] makes that mistake unspellable.
+    pub status_code: Option<WireStatus>,
     /// The wait the upstream asked for on this answer, in WHOLE SECONDS.
     ///
     /// Already parsed: both RFC 9110 forms (`delay-seconds` and an HTTP-date) resolve to a count

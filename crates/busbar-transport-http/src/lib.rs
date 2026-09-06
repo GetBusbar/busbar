@@ -84,6 +84,7 @@ use busbar_contract_transport::wire::Listener;
 use busbar_contract_transport::wire::ListenerHandle;
 use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::WireStatus;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
@@ -818,7 +819,10 @@ impl Transport for HttpTransport {
                             // with it) from a malformed request (any other 4xx, which is the
                             // caller's own fault), and the wait is the upstream's own floor on
                             // when it is worth asking again.
-                            status_code: Some(status),
+                            // Named as HTTP's number, because that is the numbering this transport
+                            // reads: a reader downstream matches it against HTTP's bands only
+                            // because the frame says so, never because it assumed.
+                            status_code: Some(WireStatus::Http(status)),
                             retry_after_secs: retry_after,
                         },
                     };

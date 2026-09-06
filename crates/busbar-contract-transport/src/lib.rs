@@ -41,5 +41,5 @@ pub use registry::{check_composition, facts, CompositionError, Registered, TRANS
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
-    RawStream, StatusAt, StatusClass, TransportError, Unit0Trigger,
+    RawStream, StatusAt, StatusClass, TransportError, Unit0Trigger, WireStatus,
 };

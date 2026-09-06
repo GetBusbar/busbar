@@ -72,5 +72,5 @@ pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
     Listener, ListenerHandle, RawIo, RawStream, StatusAt, StatusClass, TransportEnvelope,
-    TransportError, Unit0Trigger,
+    TransportError, Unit0Trigger, WireStatus,
 };

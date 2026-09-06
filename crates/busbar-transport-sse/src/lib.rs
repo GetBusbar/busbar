@@ -170,7 +170,7 @@ impl Transport for SseTransport {
         #[derive(Clone, Copy, Default)]
         struct StatusLeg {
             class: Option<busbar_contract_transport::wire::StatusClass>,
-            code: Option<u16>,
+            code: Option<busbar_contract_transport::wire::WireStatus>,
             retry_after_secs: Option<u64>,
         }
         struct State {
