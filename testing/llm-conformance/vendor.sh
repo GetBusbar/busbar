@@ -54,6 +54,17 @@ ext_for() { case "$1" in *.json|*'$discovery'*|*'?version='*) echo json ;; *) ec
 
 rows() { awk -F'\t' '!/^#/ && NF>=4 {print}' "$DIGESTS"; }
 [ -s "$DIGESTS" ] || { echo "vendor: no digest file at $DIGESTS" >&2; exit 2; }
+# FLOOR: `-s` above only proves the file has BYTES, and this file is mostly comment lines -- a
+# digest file reduced to its header, or one whose columns were edited to spaces instead of tabs,
+# satisfies `-s` and yields ZERO data rows. The loop below then iterates nothing, `fails` stays 0,
+# and every mode exits 0 reporting success over nothing pinned at all. Nothing is pinned unless at
+# least one row survives the parse.
+n_rows="$(rows | grep -c . || true)"
+[ "$n_rows" -gt 0 ] || {
+  echo "vendor: $DIGESTS parsed to ZERO pinned spec(s) -- nothing would be verified, so nothing is" >&2
+  echo "        pinned. Rows are TAB-separated with at least 4 columns: <spec> <format> <digest> <url>." >&2
+  exit 2
+}
 
 if [ "$MODE" = repin ]; then
   row="$(rows | awk -F'\t' -v s="$REPIN" '$1==s{print; exit}')"
@@ -73,8 +84,28 @@ while IFS=$'\t' read -r spec fmt want url; do
   file="${dir}/spec.${ext}"
   if [ "$MODE" = paths ]; then printf '%s\t%s\n' "$spec" "$file"; continue; fi
 
-  if [ -s "$file" ] && [ "$(cat "${dir}/.digest" 2>/dev/null || true)" = "$want" ]; then
-    echo "cached     ${spec}  ${want:0:12}  ${file}"
+  # A CACHED SPEC IS RE-HASHED, NEVER TAKEN ON THE WORD OF A SIDECAR. This used to accept the cache
+  # whenever `${dir}/.digest` happened to contain $want -- but that sidecar is an ordinary file this
+  # script wrote once, and its required content is the expected digest itself, so any process that
+  # can write the cache can mint a matching pair. The bytes the gate actually validates against were
+  # never hashed after install. The header's promise ("refuses on any digest mismatch") only held on
+  # the download path; on every subsequent offline run -- which is every CI run, since the cache is
+  # restored from an artifact -- the pin was not enforced at all. Now the pinned digest is compared
+  # to the digest OF THE FILE, every time, in every mode.
+  if [ -s "$file" ]; then
+    have="$(digest_of "$fmt" "$file")"
+    if [ "$have" = "$want" ]; then
+      echo "cached     ${spec}  ${want:0:12}  ${file}"
+      continue
+    fi
+    echo "vendor: CACHED SPEC DOES NOT MATCH ITS PIN for ${spec} (${fmt})" >&2
+    echo "  file     ${file}" >&2
+    echo "  expected ${want}" >&2
+    echo "  actual   ${have}" >&2
+    echo "  The cached bytes are not the pinned document. Delete the cache entry and re-vendor; if" >&2
+    echo "  upstream genuinely changed, review it and: vendor.sh --repin ${spec}" >&2
+    rm -f "${dir}/.digest"
+    fails=$((fails+1))
     continue
   fi
   if [ "$MODE" = check ]; then

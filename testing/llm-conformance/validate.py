@@ -137,25 +137,12 @@ def sha256_file(p):
     return h.hexdigest()
 
 
-def load_spec_doc(spec, pin, cache_root):
-    """Locate the pinned document in the cache, re-verify its digest, parse it (cached as JSON)."""
-    d = os.path.join(cache_root, spec, pin["digest"])
-    cands = [os.path.join(d, "spec.json"), os.path.join(d, "spec.yaml")]
-    path = next((c for c in cands if os.path.isfile(c)), None)
-    if not path:
-        raise SystemExit(f"spec '{spec}' is not in the cache ({d}); run testing/llm-conformance/vendor.sh")
-    parsed = os.path.join(d, "spec.parsed.json")
-    if os.path.isfile(parsed):
-        with open(parsed) as f:
-            return json.load(f)
-    if pin["fmt"] == "raw":
-        got = sha256_file(path)
-        if got != pin["digest"]:
-            raise SystemExit(f"spec '{spec}' digest mismatch in cache: {got} != pinned {pin['digest']}")
+def parse_spec_bytes(spec, path):
+    """Parse the on-disk spec document (JSON, else YAML)."""
     with open(path, "rb") as f:
         raw = f.read()
     try:
-        doc = json.loads(raw)
+        return json.loads(raw)
     except ValueError:
         try:
             import yaml  # PyYAML >= 6.0; only needed the first time a YAML spec is parsed
@@ -163,11 +150,50 @@ def load_spec_doc(spec, pin, cache_root):
             raise SystemExit(f"spec '{spec}' is YAML and PyYAML is not installed (pip install 'pyyaml>=6.0'); "
                              "a parsed JSON cache would let later runs skip this")
         loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
-        doc = yaml.load(raw, Loader=loader)
-    if pin["fmt"] == "json-canonical":
+        return yaml.load(raw, Loader=loader)
+
+
+def load_spec_doc(spec, pin, cache_root):
+    """Locate the pinned document in the cache, re-verify its digest, parse it (cached as JSON)."""
+    d = os.path.join(cache_root, spec, pin["digest"])
+    cands = [os.path.join(d, "spec.json"), os.path.join(d, "spec.yaml")]
+    path = next((c for c in cands if os.path.isfile(c)), None)
+    if not path:
+        raise SystemExit(f"spec '{spec}' is not in the cache ({d}); run testing/llm-conformance/vendor.sh")
+
+    # THE PIN IS VERIFIED BEFORE THE PARSED CACHE IS TRUSTED, NOT AFTER IT.
+    #
+    # `spec.parsed.json` used to short-circuit here, ABOVE both digest checks -- so whenever that
+    # sidecar existed the pinned bytes were never read at all. CI restores the whole spec cache
+    # directory, sidecar included, from a build artifact, which means that on every run after the
+    # first, no digest in spec-digests.tsv was compared to anything. Overwriting spec.yaml with
+    # arbitrary content while leaving the sidecar alone left this gate GREEN while judging busbar
+    # against a document nobody pinned -- the exact substitution the pin exists to prevent.
+    #
+    # The sidecar is still worth having: for a `raw`-format YAML spec it saves the YAML parse, which
+    # is the expensive part. It is now allowed to save the PARSE only, never the VERIFICATION.
+    doc = None
+    if pin["fmt"] == "raw":
+        got = sha256_file(path)
+    elif pin["fmt"] == "json-canonical":
+        doc = parse_spec_bytes(spec, path)
         got = hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
-        if got != pin["digest"]:
-            raise SystemExit(f"spec '{spec}' canonical digest mismatch: {got} != pinned {pin['digest']}")
+    else:
+        # An unrecognised format used to mean NO check ran at all: neither branch matched and the
+        # document was accepted unverified. A pin nobody knows how to check is not a pin.
+        raise SystemExit(f"spec '{spec}': unknown digest format {pin['fmt']!r} in spec-digests.tsv "
+                         "(expected 'raw' or 'json-canonical') -- refusing to use an unverifiable spec")
+    if got != pin["digest"]:
+        raise SystemExit(f"spec '{spec}' digest mismatch in cache ({pin['fmt']}): {got} != pinned {pin['digest']} "
+                         f"-- the cached document at {path} is not the pinned one; "
+                         "re-run testing/llm-conformance/vendor.sh")
+
+    parsed = os.path.join(d, "spec.parsed.json")
+    if os.path.isfile(parsed):
+        with open(parsed) as f:
+            return json.load(f)
+    if doc is None:
+        doc = parse_spec_bytes(spec, path)
     # YAML can carry dates/timestamps inside `example:` blocks; they are documentation, not schema,
     # so stringifying them loses nothing the checker reads.
     text = json.dumps(doc, separators=(",", ":"), default=str)
