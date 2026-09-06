@@ -842,7 +842,9 @@ impl<U: Units> Drop for Abandoned<'_, '_, U> {
                 self.units,
                 self.ctx,
                 run,
-                Outcome::Aborted(Abort::Client),
+                Outcome::Aborted(Abort::Kernel {
+                    reason: ReasonCode::ClientGone,
+                }),
                 settling,
             );
         }

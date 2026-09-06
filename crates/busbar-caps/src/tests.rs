@@ -504,8 +504,12 @@ fn every_way_a_unit_can_end_names_a_step_or_deliberately_does_not() {
     ];
     let names_none = [
         Outcome::Completed,
-        Outcome::Aborted(Abort::Client),
-        Outcome::Aborted(Abort::Drain),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        }),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::Drain,
+        }),
         Outcome::Aborted(Abort::Kernel {
             reason: ReasonCode::Revoked,
         }),
@@ -516,6 +520,49 @@ fn every_way_a_unit_can_end_names_a_step_or_deliberately_does_not() {
     assert!(names_a_step.iter().all(|o| o.step().is_some()));
     assert!(names_none.iter().all(|o| o.step().is_none()));
     assert_eq!(names_a_step[0].step(), Some(StepName::Admit));
+}
+
+/// An abort names one reason, and the reason is where it is named.
+///
+/// `Client`, `Drain` and `Superseded` were spelled twice: once as an `Abort` variant and once as a
+/// `ReasonCode`, so the same event could be recorded two ways and a reader could not tell whether
+/// the two spellings meant the same thing. The variants that carried nothing the reason does not
+/// already carry are gone; the one that carries more than a reason — which unit took over — stays,
+/// and answers with its own reason like the rest.
+#[test]
+fn every_abort_names_a_reason_of_its_own() {
+    let aborts = [
+        Abort::Kernel {
+            reason: ReasonCode::ClientGone,
+        },
+        Abort::Kernel {
+            reason: ReasonCode::Drain,
+        },
+        Abort::Superseded {
+            by: UnitKey::new(7),
+        },
+    ];
+    let reasons: Vec<ReasonCode> = aborts.iter().map(|a| a.reason()).collect();
+    assert_eq!(
+        reasons,
+        vec![
+            ReasonCode::ClientGone,
+            ReasonCode::Drain,
+            ReasonCode::Superseded
+        ]
+    );
+
+    // Two aborts that answer with one reason would make two endings one row in the record.
+    let mut distinct = reasons.clone();
+    distinct.sort_unstable_by_key(|r| r.as_str());
+    distinct.dedup();
+    assert_eq!(distinct.len(), reasons.len(), "two aborts share one reason");
+
+    // The kernel arm passes its reason straight through, so an abort for any reason in the closed
+    // vocabulary is recorded as that reason and not as something near it.
+    for &code in ReasonCode::ALL {
+        assert_eq!(Abort::Kernel { reason: code }.reason(), code);
+    }
 }
 
 #[test]

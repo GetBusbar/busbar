@@ -185,7 +185,9 @@ pub fn drain_verdict(has_idle_bound: bool, max_unit_duration: Millis) -> DrainVe
 
 /// The end a drained unit gets.
 pub fn drain_outcome() -> Outcome {
-    Outcome::Aborted(Abort::Drain)
+    Outcome::Aborted(Abort::Kernel {
+        reason: ReasonCode::Drain,
+    })
 }
 
 /// How this node is behaving, as its peers see it.

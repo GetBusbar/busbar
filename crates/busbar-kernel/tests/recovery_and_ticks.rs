@@ -313,7 +313,9 @@ fn drain_never_cuts_a_protocol_that_was_never_cut_before() {
     );
     assert_eq!(
         drain_outcome(),
-        busbar_caps::Outcome::Aborted(busbar_caps::Abort::Drain)
+        busbar_caps::Outcome::Aborted(busbar_caps::Abort::Kernel {
+            reason: busbar_caps::ReasonCode::Drain,
+        })
     );
 }
 

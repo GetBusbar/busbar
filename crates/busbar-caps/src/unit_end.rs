@@ -142,22 +142,37 @@ impl IdempotencyKey {
 }
 
 /// Why a unit was cut short rather than refused or failed.
+///
+/// One encoding, not two. `Client`, `Drain` and `Superseded` were once variants here as well as
+/// reasons in the closed vocabulary, so the same ending could be written down two ways and nothing
+/// reading the record could tell whether the two spellings were the same event. What is left is
+/// the reason itself, plus the one shape that carries something a reason cannot: which unit took
+/// this one's place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Abort {
-    /// The client went away.
-    Client,
-    /// The node cut it, for a named reason.
+    /// The node cut it, for a named reason — a client that went away and a node that is draining
+    /// both arrive here, as `ClientGone` and `Drain`.
     Kernel {
         /// The reason.
         reason: ReasonCode,
     },
-    /// The node is draining.
-    Drain,
-    /// A later unit took its place.
+    /// A later unit took its place. Its own variant because it names that unit, which no reason
+    /// code carries.
     Superseded {
         /// The unit that took over.
         by: UnitKey,
     },
+}
+
+impl Abort {
+    /// The reason this abort is recorded under. Every abort has one, and no two shapes share one,
+    /// so the journal row and the reason vocabulary say the same thing.
+    pub fn reason(self) -> ReasonCode {
+        match self {
+            Abort::Kernel { reason } => reason,
+            Abort::Superseded { .. } => ReasonCode::Superseded,
+        }
+    }
 }
 
 /// How a unit ended, before the posting is attached.
