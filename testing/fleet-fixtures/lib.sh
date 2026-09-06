@@ -38,6 +38,9 @@ export LEDGER
 mkdir -p "$(dirname "$LEDGER")"
 [ -f "$LEDGER" ] || : > "$LEDGER"
 
+# GATE_NAME, not a hardcoded "plugin-functional": these annotations are what a reader sees in the
+# Actions summary, and verdict.sh already names the gate from this variable. The shadow oracle sources
+# this same file, so every one of its FAIL rows was annotating itself as a plugin gate it is not.
 record() {  # record <id> <PASS|FAIL|SKIP> <title> <detail>
   local id="$1" status="$2" title="$3" detail="${4:-}"
   title="$(printf '%s' "$title" | tr '\t\n' '  ')"
@@ -48,12 +51,12 @@ record() {  # record <id> <PASS|FAIL|SKIP> <title> <detail>
     FAIL)
       printf 'FAIL  %-40s %s\n' "$id" "$title"
       printf '      %s\n' "$detail"
-      echo "::error title=plugin-functional ${id}::${title} — ${detail}"
+      echo "::error title=${GATE_NAME:-plugin-functional} ${id}::${title} — ${detail}"
       ;;
     SKIP)
       printf 'SKIP  %-40s %s\n' "$id" "$title"
       printf '      %s\n' "$detail"
-      echo "::warning title=plugin-functional ${id} DID NOT VERIFY::${title} — ${detail}"
+      echo "::warning title=${GATE_NAME:-plugin-functional} ${id} DID NOT VERIFY::${title} — ${detail}"
       ;;
   esac
 }
