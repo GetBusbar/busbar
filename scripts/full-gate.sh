@@ -53,6 +53,12 @@ set -uo pipefail
 
 CI_YML=".github/workflows/ci.yml"
 
+# `--dump-cargo [FILE]` prints, one per line, the cargo invocations discovery finds in FILE (default:
+# CI's own workflow) and exits before any classification. It exists so the selftest can point discovery
+# at a fixture and assert on what it found. It runs NO gate and relaxes NO floor: the floors below still
+# apply, which is why the fixture carries eight script invocations of its own.
+[ "${1:-}" = "--dump-cargo" ] && [ -n "${2:-}" ] && CI_YML="$2"
+
 # Gates that genuinely cannot run locally. Each entry carries WHY, because a skip without a reason
 # becomes permanent.
 declare -a SKIP_REASON=(
@@ -94,7 +100,7 @@ declare -a CARGO_LOCAL=(
   "cargo test -p busbar -p busbar-core --features openapi-schema --locked openapi -- --nocapture"
   "cargo build --locked --bin busbar"
   "cargo test -p busbar --test migration_corpus --locked -- --nocapture"
-  "cargo test -p busbar-voice --features runtime,test-support --locked"
+  "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked"
 )
 
 declare -a CARGO_CI_ONLY=(
@@ -103,16 +109,24 @@ declare -a CARGO_CI_ONLY=(
   "cargo clippy --workspace --all-targets -- -D warnings|the WINDOWS job's clippy. It exists to catch the platform-gated code no local run compiles at all -- a #[cfg(unix)] item whose #[cfg(windows)] twin was never written is a warning THERE and nowhere here. A macOS/Linux clippy cannot substitute: it takes the other arm of every cfg. Approximated locally with 'cargo xwin clippy --target x86_64-pc-windows-msvc', which type-checks the Windows arms without a Windows host but still executes nothing."
   "cargo test --release --locked timing_gate -- --ignored|a RELEASE-profile wall-clock gate on a dedicated runner. A debug tree with a compiler and a browser competing for the CPU measures the laptop, not the engine; run it directly when touching the timing path."
   "cargo build -p busbar --release --locked|the RELEASE-profile build that feeds build-provenance-gate.sh (it asserts the shipped binary's optimized posture). The local build mirror is the debug 'cargo build --locked --bin busbar' above; a release build here would re-measure the laptop, not prove anything the debug build does not."
-  "cargo build -p busbar-core -p busbar-substrate -p busbar-api|the plane-DELETION matrix build, whose '\${{ matrix.features }}' expands per kept-plane combination -- a CI matrix construct with no single local form. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."
+  "cargo build -p busbar-core -p busbar-substrate -p busbar-api --no-default-features --features \"\$FEATS\" --locked|the plane-DELETION matrix build. \$FEATS is '\${{ matrix.features }}', which expands per kept-plane combination -- a CI matrix construct with no single local form, and the literal string is not a runnable command. It is mirrored locally by the delete-test gate (PLANE-DELETE group), which compiles the neutral crates with a plane removed."
+  "cargo build -p busbar-core -p busbar-substrate -p busbar-api --no-default-features --locked|the same plane-DELETION matrix build's EMPTY-features arm (every plane removed). Same matrix job, same local mirror in the delete-test gate; listed separately because the step branches on \$FEATS and both arms are real invocations."
   "cargo test -p busbar-core --lib alloc_gate -- --nocapture|the deterministic alloc-count perf gate, invoked BY NAME so a regression reds this one line rather than a 400-test workspace run. The same test is also executed by 'cargo test --workspace --locked' above, which DOES run locally."
 )
 
 # Normalise a cargo invocation for comparison: drop the shell plumbing CI wraps it in (`2>&1`, a
-# trailing `\` line-continuation, and a trailing `>` stdout redirect whose target file was already cut
-# off at the opening `"`), drop `--verbose` (it changes output, not what is proven), collapse
-# whitespace. So the COMMAND, not the log file it writes, is what gets classified.
+# trailing `\` line-continuation, a stdout redirect WITH its target file, and a trailing `&` that
+# backgrounds it), drop `--verbose` (it changes output, not what is proven), collapse whitespace. So
+# the COMMAND, not the log file it writes or the job control around it, is what gets classified.
+#
+# The redirect used to fall off for the wrong reason — capture stopped at the `"` that opened the log
+# file's name. Capture now keeps quoted arguments (the plane-deletion build passes `--features
+# "$FEATS"`, and cutting there left a dangling `--features`), so the redirect is stripped HERE, by
+# name, instead of by accident.
 cargo_norm() {
-  printf '%s\n' "$1" | sed -e 's/2>&1//g' -e 's/--verbose//g' -e 's/[[:space:]]*\\$//' -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//' -e 's/[[:space:]]*>$//'
+  printf '%s\n' "$1" | sed -e 's/2>&1//g' -e 's/--verbose//g' -e 's/[[:space:]]*\\$//' \
+    -e 's/[0-9]*>>\{0,1\}.*$//' -e 's/[[:space:]]*&[[:space:]]*$//' \
+    -e 's/[[:space:]]\{1,\}/ /g' -e 's/^ //' -e 's/ $//'
 }
 
 cargo_ci_only_reason() {
@@ -127,12 +141,81 @@ die() { printf 'full-gate: %s\n' "$*" >&2; exit 2; }
 
 [ -f "$CI_YML" ] || die "no $CI_YML -- run this from the repository root. A gate runner that cannot find CI is not a gate runner."
 
+# ── ci.yml AS LOGICAL LINES ───────────────────────────────────────────────────────────────────────
+# A COMMAND CI WRAPS OVER SEVERAL LINES IS ONE COMMAND, and discovery used to read `ci.yml` a physical
+# line at a time. The voice-runtime step wraps its `cargo test` over three backslash-continued lines,
+# so the runner saw the first fragment — `cargo test -p busbar-voice --features runtime,test-support`,
+# a TRUNCATION that names neither the second crate nor `--locked`. It matched no list, the fails-closed
+# rule fired, and `--list` and `--selftest` both aborted: the gate runner was unusable, on a defect in
+# its own reader rather than anything in the tree. Pasting the truncation into a list would have been
+# worse than the abort — it records a command CI does not run.
+#
+# So the file is folded into LOGICAL lines here, once, before anything matches against it:
+#
+#   * inside a `run:` block scalar only, a line ending in `\` is joined to the next one. Outside a
+#     `run:` step nothing is joined; `run: cargo fmt --all -- --check` on one line stays one line.
+#   * `>` folded scalars are folded the way YAML folds them (every line of the block is one command),
+#     `|` literal scalars keep their line structure except for the `\` joins.
+#   * a joined statement that begins `echo ` is DROPPED. This is the half a first attempt got wrong:
+#     joining without it welds a step's surrounding `echo` lines onto its command and invents
+#     fragments CI never runs. An `echo` that quotes a cargo command is a step printing a message, the
+#     same category as a `#` comment or a step `name:`, and none of the three is a gate.
+#
+# Shell comment lines inside a step are dropped here; the `#`/`name:` stripping downstream handles the
+# YAML level. `scripts/fixtures/full-gate/continuation-ci.yml` holds all four shapes and the selftest
+# asserts on what discovery makes of them.
+ci_logical_lines() {
+  awk '
+    function emit(s) {
+      sub(/^[ \t]+/, "", s)
+      if (s ~ /^echo[ \t]/) return
+      if (s ~ /^#/) return
+      print s
+    }
+    function flush(  s) { if (pending != "") { s = pending; pending = ""; emit(s) } }
+    {
+      line = $0
+      if (in_run) {
+        if (line ~ /^[ \t]*$/) { flush(); next }
+        indent = match(line, /[^ \t]/) - 1
+        if (indent <= run_indent) { flush(); in_run = 0 }
+      }
+      if (!in_run) {
+        if (line ~ /^[ \t]*-?[ \t]*run:[ \t]*[|>]/) {
+          run_indent = match(line, /[^ \t]/) - 1
+          fold = (line ~ /run:[ \t]*>/)
+          in_run = 1; pending = ""
+          next
+        }
+        print line
+        next
+      }
+      body = line
+      sub(/^[ \t]+/, "", body)
+      if (body ~ /^#/) next
+      if (fold || body ~ /\\[ \t]*$/) {
+        sub(/\\[ \t]*$/, "", body)
+        pending = pending body " "
+        next
+      }
+      pending = pending body
+      flush()
+    }
+    END { flush() }
+  ' "$CI_YML"
+}
+
 # ── DISCOVERY ─────────────────────────────────────────────────────────────────────────────────────
 # Every `scripts/...` invocation CI makes, with its arguments, deduplicated and in a stable order.
 # COMMENT LINES AND STEP `name:` LABELS ARE STRIPPED FIRST, exactly as the cargo discovery below does:
 # a `#` comment that MENTIONS a script by name (e.g. "scripts/plane-delete-test.sh PHYSICALLY REMOVES
 # ...") is documentation, not an invocation, and running that bare mention as if it were a gate prints
 # a usage line and a false red. Only real `run:` lines survive.
+#
+# This half reads PHYSICAL lines deliberately, where the cargo half below reads logical ones. A gate
+# script's continuation lines are ARGUMENTS, and the head line already names the gate; splicing the
+# rest in would hand a gate a half-captured argument list (the capture stops at the first quote), which
+# is the false red this file exists to prevent.
 #
 # THE EXTENSION SET IS NOT `sh|py`, and it was, which is how a gate went unrun AND unlisted. `ci.yml`
 # runs `node scripts/check-proof-manifest-public.mjs` — the fail-closed public-safety guard on the
@@ -159,12 +242,18 @@ mapfile -t DISCOVERED < <(
 # a documented or quoted command is not a gate. A `>` redirect is likewise excluded at capture, so the
 # COMMAND, not the log file it writes, is what gets classified.
 mapfile -t CARGO_DISCOVERED < <(
-  sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' "$CI_YML" \
+  ci_logical_lines \
+    | sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' \
     | grep -v "^[[:space:]]*echo " \
-    | grep -oE 'cargo (fmt|clippy|build|test|run)[^"|)]*' \
+    | grep -oE 'cargo (fmt|clippy|build|test|run)[^|)]*' \
     | while IFS= read -r c; do cargo_norm "$c"; done \
     | grep -v '^$' | sort -u
 )
+
+if [ "${1:-}" = "--dump-cargo" ]; then
+  printf '%s\n' "${CARGO_DISCOVERED[@]}"
+  exit 0
+fi
 
 # FAILS CLOSED, exactly as the script's rule does: a cargo invocation in `ci.yml` that is in NEITHER
 # list breaks this script until somebody decides which it is. Silence here is how the openapi and
@@ -273,6 +362,39 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     printf '  [FAILED] unclassified cargo invocation(s) -- the script must refuse to run:\n'
     printf '           %s\n' "${CARGO_UNCLASSIFIED[@]}"; bad=1
+  fi
+
+  # A COMMAND CI WRAPS OVER SEVERAL LINES IS ONE COMMAND. Discovery used to read `ci.yml` line-wise,
+  # so a `cargo test` continued over three lines was discovered as its own first fragment — a
+  # TRUNCATION of the real invocation, matching neither list, which (correctly, and uselessly) refused
+  # to run the whole gate. The fixture holds that exact shape, together with the `echo` lines, the `#`
+  # comment and the step `name:` that each quote a DIFFERENT cargo command: joining that welds an echo
+  # onto a command is the other way to get this wrong, and it invents fragments CI never runs.
+  CONT_FIXTURE="scripts/fixtures/full-gate/continuation-ci.yml"
+  if [ ! -f "$CONT_FIXTURE" ]; then
+    printf '  [FAILED] the continuation fixture %s is missing -- the multi-line shape is unproven\n' "$CONT_FIXTURE"; bad=1
+  else
+    cont_found="$(bash "$0" --dump-cargo "$CONT_FIXTURE" 2>/dev/null)"
+    cont_want="cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked"
+    if printf '%s\n' "$cont_found" | grep -qxF "$cont_want"; then
+      printf '  [ok]     a cargo invocation continued over three lines is discovered WHOLE\n'
+    else
+      printf '  [FAILED] a three-line continued cargo invocation was not joined; discovery saw:\n'
+      printf '           %s\n' "$cont_found"; bad=1
+    fi
+    if printf '%s\n' "$cont_found" | grep -q -- '--workspace'; then
+      printf '  [FAILED] discovery invented an invocation from an echo/comment/name: line:\n'
+      printf '           %s\n' "$(printf '%s\n' "$cont_found" | grep -- '--workspace')"; bad=1
+    else
+      printf '  [ok]     the echo, comment and name: lines quoting cargo commands are NOT discovered\n'
+    fi
+    cont_n="$(printf '%s\n' "$cont_found" | grep -c .)"
+    if [ "$cont_n" = 2 ]; then
+      printf '  [ok]     the fixture yields exactly its 2 real invocations, no fragments\n'
+    else
+      printf '  [FAILED] the fixture yields %s invocations, expected 2 -- joining produced fragments:\n' "$cont_n"
+      printf '           %s\n' "$cont_found"; bad=1
+    fi
   fi
 
   for must in "--no-default-features" "--features openapi-schema"; do

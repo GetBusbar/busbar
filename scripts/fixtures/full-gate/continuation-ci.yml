@@ -1,0 +1,43 @@
+# FIXTURE for `scripts/full-gate.sh --selftest`. This is NOT a workflow: nothing schedules it and
+# nothing runs the commands in it. It exists because the runner's discovery reads `.github/workflows/ci.yml`
+# LINE BY LINE, and a real CI step is free to spread one command over several lines.
+#
+# The shape that broke it is below: a `cargo test` wrapped over three backslash-continued lines. Read
+# line-wise it yields a first fragment that is a TRUNCATION of the real command — it matches neither the
+# runner's LOCAL list nor its CI-only list, so the fails-closed rule (correctly) refused to run at all,
+# and the whole gate runner was unusable until somebody pasted the truncation into a list, which would
+# have recorded a command CI does not run.
+#
+# The traps around it are the other half. Joining continuations naively also welds together the `echo`
+# lines a step prints around its command, and an `echo` that MENTIONS a cargo command is documentation,
+# not a gate — as is a `#` comment and a step's human-readable `name:`. Each appears here quoting a
+# DIFFERENT `--workspace` invocation, so the selftest can assert that none of them was discovered.
+name: continuation fixture (not a workflow)
+on: [workflow_dispatch]
+
+jobs:
+  fixture:
+    runs-on: ubuntu-latest
+    steps:
+      # A comment naming `cargo clippy --workspace --all-targets -- -D warnings` is documentation.
+      - name: a step label that quotes `cargo build --workspace` in prose
+        run: |
+          echo "next up: cargo test --workspace --locked"
+          cargo test -p busbar-voice --features runtime,test-support \
+                     -p busbar-voice-codec --features runtime \
+                     --locked --verbose | tee "$RUNNER_TEMP/voice-test.log"
+          echo "the voice runtime suite ran"
+
+      - name: a single-line run, which must keep working
+        run: cargo fmt --all -- --check
+
+      # Eight script invocations, because the runner's discovery floor is eight and a fixture that
+      # tripped the floor would prove nothing about the joining.
+      - run: bash scripts/structure-lint.sh
+      - run: python3 scripts/public-hygiene-lint.py
+      - run: python3 scripts/workspace-deps-lint.py
+      - run: bash scripts/no-deferral-gate.sh
+      - run: bash scripts/no-plugins-gate.sh
+      - run: python3 scripts/inventory-ref-lint.py
+      - run: python3 scripts/changelog-lint.py
+      - run: bash scripts/config-stability-gate.sh
