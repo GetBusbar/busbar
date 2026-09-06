@@ -83,12 +83,17 @@ impl AudioFormat {
     }
 }
 
-/// THE PURE BARGE-IN TRUNCATE HELPER (`plane4-duplex-session.md`). Given the total bytes of downlink audio the plane has
-/// actually PLAYED OUT to the client for one item, compute the `audio_played_ms` truncate point — the
-/// audio the user genuinely heard. On WebSocket the upstream emits audio faster than realtime, so this
-/// count is the plane's own playback-position bookkeeping ([`crate::ir::codec::DecodeState`]), never a
-/// field copied off the wire. The runtime that ACTS on this (cancel + truncate) is the next layer;
-/// this function is the arithmetic only.
+/// THE PURE BARGE-IN TRUNCATE HELPER (`plane4-duplex-session.md`). Given the bytes of downlink audio the plane has
+/// RELAYED to the client for one item, compute the `audio_played_ms` truncate point.
+///
+/// SAY WHAT THIS IS. It is the audio HANDED OVER, not the audio heard: on WebSocket the upstream emits
+/// a turn far faster than it plays, so straight after a burst this is the whole turn while the user is
+/// still on its first syllable. That makes it an UPPER BOUND on what was heard — the safe direction for
+/// a truncate (never cut before the user got there) and the wrong number to call a measurement. The
+/// count is the plane's own bookkeeping ([`crate::ir::codec::DecodeState`]), never a field copied off
+/// the wire, and it narrows toward the truth as the runtime feeds a clock through
+/// [`crate::ir::codec::DecodeState::record_played_at`]. The runtime that ACTS on this (cancel +
+/// truncate) is the next layer; this function is the arithmetic only.
 #[must_use]
 pub fn truncate_point_ms(bytes_played: u64, fmt: AudioFormat) -> u64 {
     fmt.bytes_to_ms(bytes_played)

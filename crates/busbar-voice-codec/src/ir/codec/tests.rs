@@ -394,6 +394,37 @@ fn downlink_audio_delta_legacy_alias_decodes() {
     assert!(matches!(&ir[0], IrServerEvent::AudioFrame(f) if f.dir == UpDown::Down));
 }
 
+#[test]
+fn a_faster_than_realtime_burst_reports_the_audio_relayed_not_the_audio_heard() {
+    // WHAT THE COUNTER MEANS. The upstream emits a whole turn's audio in one burst, far faster than
+    // it plays. The position is derived from BYTES RELAYED, so after the burst it reads the whole
+    // turn — an UPPER BOUND on what the user heard, not a measurement of it.
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16); // 48 B/ms
+    st.record_played(48 * 10_000); // ten seconds of audio, handed over at once
+    assert_eq!(
+        st.played_ms(),
+        10_000,
+        "the bytes relayed for this item, in ms"
+    );
+
+    // THE SEAM A CLOCK GOES THROUGH. Fed how long the item has actually been playing, the position
+    // is bounded by it: no more audio can have been heard than there has been time to hear it in.
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16);
+    st.record_played_at(48 * 10_000, Some(1_200));
+    assert_eq!(
+        st.played_ms(),
+        1_200,
+        "1.2 s of wall clock cannot have played 10 s of audio"
+    );
+    // And a clock that has run longer than the audio relayed does not invent audio.
+    let mut st = DecodeState::default();
+    st.set_output_format(AudioFormat::Pcm16);
+    st.record_played_at(48 * 100, Some(9_000));
+    assert_eq!(st.played_ms(), 100, "only the audio actually handed over");
+}
+
 // ── barge-in truncate math ───────────────────────────────────────────────────────────────────────
 
 #[test]
