@@ -12,9 +12,11 @@
 #   plane-purity     scripts/plane-purity-lint.sh --check  (neutral crates 0 side channels / 0 backwards).
 #   plane-delete     scripts/plane-delete-test.sh --all     (llm/mcp/a2a/voice each deletable).
 #   byte-identity    the MONEY PATH is byte-stable: openapi_json_matches_committed_file,
-#                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-llm same-proto
-#                    byte-exact oracles. Bless/regen env vars MUST be empty first (else the check is a
-#                    no-op that regenerates the goldens instead of comparing to them).
+#                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-llm-codec
+#                    same-proto byte-exact oracles. Bless/regen env vars MUST be empty first (else the
+#                    check is a no-op that regenerates the goldens instead of comparing to them), and
+#                    every filtered step declares its test count so a filter that selects nothing is
+#                    RED rather than vacuously green (see filtered_cargo_test).
 #   config-stability scripts/config-stability-gate.sh --check (config-schema.snapshot.json byte-stable).
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
@@ -90,6 +92,29 @@ step() {   # $1 = label ; rest = command
 # A step that is RED simply because an artifact does not exist yet (a not-yet-built sub-gate).
 absent_step() { printf '  \033[31m[RED]\033[0m  %s — NOT PRESENT YET (%s)\n' "$1" "$2"; CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="$1 (absent)"; }
 
+# NON-VACUITY FOR A FILTERED `cargo test`. A name filter selects by substring across every target
+# cargo builds, and a filter that matches NOTHING still exits 0 — "running 0 tests ... 0 passed; N
+# filtered out" — so a step whose filter has drifted (wrong -p, a renamed test, a moved module) goes
+# green while proving nothing at all. Every filtered step below therefore DECLARES how many tests it
+# expects, and this wrapper refuses the run unless exactly that many actually passed. The declared
+# number is part of the assertion: a test deleted out of the set is as red as a test that failed.
+filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
+  local want="$1"; shift
+  local out rc got
+  out="$("$@" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then printf '%s\n' "$out"; return "$rc"; fi
+  got="$(printf '%s\n' "$out" \
+    | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' \
+    | awk '{ n += $1 } END { print n+0 }')"
+  if [ "$got" != "$want" ]; then
+    printf '%s\n' "$out"
+    printf 'VACUITY: this filter was expected to run %s test(s); the run reported %s passed.\n' "$want" "$got"
+    printf 'Either the filter no longer selects the intended tests, or the expected count is stale.\n'
+    return 1
+  fi
+  printf '%s test(s) passed, exactly the expected set.\n' "$got"
+}
+
 # Assert the money-path bless/regen env vars are EMPTY — otherwise a byte-identity "check" silently
 # REGENERATES the golden instead of comparing against it (a green that proves nothing).
 assert_bless_env_empty() {
@@ -135,9 +160,11 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
   # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
   # error-enum-matches), so the oracle's byte-identity check is real, matching full-gate.sh.
-  step "openapi.json goldens match committed file"  cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
-  step "resolved billing+limits config byte-stable" cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
-  step "6 busbar-llm same-proto byte-exact oracles" cargo test -p busbar-llm --quiet round_trip_byte_exact
+  step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
+  step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
+  # The six `*_round_trip_byte_exact` oracles live in busbar-llm-codec
+  # (crates/busbar-llm-codec/src/tests/proto/same_proto_fidelity_tests.rs), not in busbar-llm.
+  step "6 same-proto byte-exact oracles"            filtered_cargo_test 6  cargo test -p busbar-llm-codec --quiet round_trip_byte_exact
 else
   printf '  \033[31m[RED]\033[0m  bless/regen env is NOT empty — refusing byte-identity (would regenerate goldens)\n'
   sed 's/^/          /' /tmp/done-oracle-step.$$; rm -f /tmp/done-oracle-step.$$
@@ -304,7 +331,7 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
   step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
-  step "attempt identity (busbar-llm)"   cargo test -p busbar-llm --quiet attempt_identity
+  step "attempt identity (busbar-llm)"   filtered_cargo_test 1 cargo test -p busbar-llm --quiet attempt_identity
 else
   absent_step "kernel battery" "crates/busbar-kernel"
 fi
