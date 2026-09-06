@@ -232,12 +232,37 @@ pub struct AuditInputs {
     pub correlation_label: Option<String>,
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// The audit unit: it seals records, and it is the only thing that can.
 ///
 /// The token is the point. A plane can say what it saw and a hook can say what it did, but turning
 /// either into a record that goes on the chain takes the audit step's own token, which the loop
 /// hands out for the length of one call. So a record on the chain is a record the audit unit made.
-pub trait Audit {
+///
+/// SEALED on a private supertrait, the same shape the breaker unit's kernel-facing trait has. The
+/// token proves the loop is at the audit step; the seal is what says the thing answering that step
+/// is the audit unit. Without it a plugin crate could implement this trait, be handed the token the
+/// loop lends, and put a record on the chain that the audit unit never made — and a record nobody
+/// can attribute to the audit unit is not evidence. [`AuditChain`] is the only implementor there
+/// can be. Nothing outside this crate can name the supertrait, so nothing outside it can implement
+/// this one:
+///
+/// ```compile_fail
+/// struct Impostor;
+/// impl busbar_unit_audit::Audit for Impostor {
+///     fn seal(
+///         &mut self,
+///         _inputs: busbar_unit_audit::AuditInputs,
+///         _token: &busbar_caps::UnitToken<busbar_caps::Audit>,
+///     ) -> busbar_unit_audit::AuditRecord {
+///         unimplemented!()
+///     }
+/// }
+/// ```
+pub trait Audit: sealed::Sealed {
     /// Seal one record onto the chain.
     fn seal(
         &mut self,
@@ -445,6 +470,8 @@ enum Anchor {
     /// only its own digest is checked.
     Window,
 }
+
+impl sealed::Sealed for AuditChain {}
 
 impl Audit for AuditChain {
     fn seal(

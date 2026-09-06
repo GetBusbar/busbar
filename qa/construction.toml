@@ -450,6 +450,11 @@ crate = "busbar-unit-breaker"
 file = "crates/busbar-unit-breaker/src/lib.rs"
 trait = "Breaker"
 
+[rules.sealed-unit-traits.traits.audit]
+crate = "busbar-unit-audit"
+file = "crates/busbar-unit-audit/src/record.rs"
+trait = "Audit"
+
 # ── 20. hold-discipline (ARCHITECTURE.md section 3.7 / section 8.3) ────────────────────────────────────────────────
 [rules.hold-discipline]
 why = """Every path takes its Hold exactly once and every path that takes one actually settles it. \
