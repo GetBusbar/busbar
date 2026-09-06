@@ -38,8 +38,10 @@
 //! reconciles, and a node whose postings never reach a book looks exactly like a node with no
 //! traffic. So the served side asserts the row count FIRST and every figure after it. The two sides
 //! are read at different widths and the section says which: the node's books retain no lane and no
-//! provider, and the plane's own pricing seam returns token classes only, so the flat per-request
-//! fee is named there as its own term rather than folded into an expected figure.
+//! provider. The MONEY is the same on both — the plane reports what a unit consumed and the
+//! composition root prices that report against the deployment's card, which puts the flat
+//! per-request fee on the posting as a line of its own, so the served figures and the legacy rows
+//! are one sum and the identity is an equality rather than a difference.
 #![cfg(unix)]
 // Needs a bootable server with an LLM route: the money path is what is being reconciled.
 #![cfg(feature = "proto-llm")]
@@ -418,16 +420,17 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         rig.log()
     );
 
-    // THE FLAT FEE IS NOT ON THIS SIDE, and the term is written rather than folded into an expected
-    // figure. The legacy projection reprices a row's token counts AND adds the flat per-request fee
-    // at read time, because it holds the deployment's card. What the node's books carry is what the
-    // plane's own pricing seam returns for the usage the tap reported — token classes only; there is
-    // no seam on the plane host that exposes the fee, so a fee component in these rows would be a
-    // number invented on this side of the comparison. Naming it as its own term is what keeps the
-    // check exact: `Σ priced == spend − fee`, with both halves pinned as absolutes below, fails on a
-    // change to either side rather than absorbing it.
-    let fee_micros = FEE_CENTS * MICROS_PER_CENT * i64::try_from(delivered).expect("small");
-    let tokens_micros = expected_micros - fee_micros;
+    // THE WHOLE OF THE MONEY IS ON THIS SIDE. The node's books carry what the composition root priced
+    // the plane's report at — the token lines the tap reported AND the flat per-request fee, which
+    // the cost unit's pricing puts on the posting as a line of its own from the billable count the
+    // plane reported. The legacy projection derives the same two components from the same configured
+    // card at read time. So the identity is an equality and not a difference:
+    //
+    //     Σ /ledger/totals priced_micros  ==  /usage total spend_micros
+    //
+    // Both halves are pinned as absolutes below as well, so a change that moved the two sides
+    // identically still fails here rather than being absorbed by the comparison.
+    //
     // `priced_micros` is served as a STRING, which is the view's own decision about a money figure
     // wider than a JSON number holds. Parsed rather than read as one, so a change to that decision
     // fails here rather than being absorbed.
@@ -441,17 +444,19 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
                 .expect("priced_micros is a number")
         })
         .sum();
+    let fee_micros = FEE_CENTS * MICROS_PER_CENT * i64::try_from(delivered).expect("small");
     assert_eq!(
-        served_micros, tokens_micros,
+        served_micros, expected_micros,
         "the node's own books carry {served_micros} micro-units for {delivered} delivered \
-         responses; the legacy rows carry {expected_micros}, of which {fee_micros} is the flat \
-         per-request fee the plane cannot price\n{totals}"
+         responses and the legacy rows carry {expected_micros}; the {fee_micros} micro-units of \
+         flat per-request fee in that figure are posted by the root's own pricing, so the two are \
+         the same money and not two views of it\n{totals}"
     );
     assert_eq!(
-        tokens_micros,
-        2_500_000 * i64::try_from(delivered).expect("small"),
-        "one delivered response's TOKEN spend is a pinned figure, stated as an absolute so a change \
-         that moved both sides of the comparison identically still fails here"
+        served_micros,
+        MICROS_PER_RESPONSE * i64::try_from(delivered).expect("small"),
+        "one delivered response's spend — tokens AND the flat fee — is a pinned figure, stated as \
+         an absolute so a change that moved both sides of the comparison identically still fails here"
     );
 
     // The fee count, at the width the node keeps. Zero on BOTH sides and never on one: neither the

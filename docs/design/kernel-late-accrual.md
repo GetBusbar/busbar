@@ -126,23 +126,43 @@ sides of the served reconciliation are read with those two names empty (see
 fact about the width rather than a figure that lost its row on the way, and it is where a
 wider key attaches the day the books grow one.
 
-## What the ledger's own books do not carry
+## Who prices it
 
-The flat per-request fee. The legacy `/usage` projection reprices a row's token counts *and*
-adds the fee at read time, because it holds the deployment's card; the plane's own pricing
-seam (`EngineHost::cost_price_usage`) returns token classes only, and there is no seam on the
-plane host that exposes the fee. So the node's books carry the token spend, and the identity
-against `/usage` is stated with the fee as its own named term rather than folded into an
-expected figure:
+Not this plane. The plane says what the unit **did**; the root says what it **cost**.
+
+`Walk::reported_after_terminal` hands back a report and no money: the tier split the tap read,
+by neutral unit class; the billable count the Meter step decided; and the serving lane and its
+provider. There is no rate behind it, because a plane that could read a rate could price a
+request, and a second place a rate lives is a second answer to what one request cost.
+
+The composition root prices that report through `busbar_unit_cost::price`, against a `RateCard`
+built at boot from the deployment's own `rate_card:` and `per_request_fee:` — the same two
+configured figures the legacy `/usage` projection derives a row's spend from. The card is bound
+onto the node beside the book (`bind_card`, beside `bind_book`), for the same reason: a node
+that built its own would price traffic on rates nobody configured, and those figures would look
+exactly like figures somebody did.
+
+**The fee arrives by construction.** The cost unit's pricing is one line per reported quantity
+*plus the flat fee as its own line*, at the card's configured fee times the count the report
+carried, summed in before the single tier divide. So one call produces the token lines and the
+fee line together, and there is no arm anywhere that could post the tokens and forget the fee.
+
+The billable count is the plane's, unchanged: `delivered && upstream_leg` at the Meter step,
+which is the same base the previous release charges the fee on — a refusal at the door, an
+out-of-scope key and a failed transfer all report zero and are charged nothing. A stream whose
+end carried a terminal error prices its TOKENS at zero and still carries its fee, because that
+is exactly what the previous release bills for the same event: the fee was decided at the frame
+that carried the status, and `finish_admitted` refunds only a non-2xx.
+
+The identity is therefore an equality and not a difference:
 
 ```
-Σ /ledger/totals priced_micros  ==  /usage total spend_micros  −  fee_cents × 10^4 × billable
+Σ /ledger/totals priced_micros  ==  /usage total spend_micros
 ```
 
-On the identity rig's four delivered completions that reads `10,000,000 == 10,120,000 −
-120,000`, with both halves pinned as absolutes so a change to either side fails rather than
-being absorbed. Closing the fee term needs a host seam that does not exist yet; it is named
-here so that it is a known gap rather than a silent one.
+On the identity rig's four delivered completions that reads `10,120,000 == 10,120,000`, with
+both halves pinned as absolutes so a change that moved the two sides identically still fails
+rather than being absorbed.
 
 ---
 
