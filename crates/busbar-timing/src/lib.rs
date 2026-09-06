@@ -156,14 +156,24 @@ mod imp {
     }
 
     /// One method's accumulated stats. `count`/`total_ns`/`min_ns`/`max_ns` are exact; the histogram
-    /// gives coarse p50/p99. No heap per sample — a fixed `[u32; 65]` of bucket hit counts.
+    /// gives coarse p50/p99. No heap per sample — a fixed `[u64; 65]` of bucket hit counts.
+    ///
+    /// The buckets are `u64`, the same width as `count`, and that is not spare capacity. They were
+    /// `u32` while `count` was already `u64`, so a hot method whose samples cluster in one bucket
+    /// overflows a bucket long before it overflows the count — at roughly a million samples a second
+    /// on one thread, in about seventy minutes. This crate is debug-only by design, and in a debug
+    /// build that overflow is an arithmetic PANIC inside `record`, i.e. the measurement kills the
+    /// request it was measuring. In release it silently wraps, and `percentile` then walks the whole
+    /// histogram without its cumulative sum ever reaching a `target` derived from the exact `u64`
+    /// count, so p50 and p99 both collapse to `max_ns` with nothing saying they are wrong. `merge`
+    /// folds the per-thread histograms with the same `+=` and had the same exposure.
     #[derive(Clone)]
     struct MethodStat {
         count: u64,
         total_ns: u64,
         min_ns: u64,
         max_ns: u64,
-        buckets: [u32; N_BUCKETS],
+        buckets: [u64; N_BUCKETS],
     }
 
     impl Default for MethodStat {
@@ -213,7 +223,7 @@ mod imp {
             let target = ((self.count as f64) * p).ceil().max(1.0) as u64;
             let mut cum = 0u64;
             for (idx, &c) in self.buckets.iter().enumerate() {
-                cum += c as u64;
+                cum += c;
                 if cum >= target {
                     return bucket_floor(idx);
                 }
