@@ -520,3 +520,13 @@ repository cannot read. The carriers below are the named ones; adding a type tha
 secret, a client credential or key material means adding it here and writing the impl."""
 carriers = ["Credential", "SecretValue", "CredentialSecret", "KeyMaterial"]
 max_derived = 0
+
+# ── 23. no-escaped-newline-doc-comment ──────────────────────────────────────────────────────────────
+[rules.no-escaped-newline-doc-comment]
+why = """A relocation script that moves a test module into its own file can turn the doc comment's
+intended line breaks into the literal two characters backslash-n, which then sits on one physical
+line right before the next `//!`/`///` prefix instead of starting a new one. rustdoc renders it as
+inert text mid-sentence and no compiler warning catches it, so it survives until someone reads the
+generated docs. The ceiling is zero and is never calibrated upward: this is a class of typo, not a
+figure the tree is allowed to carry any of."""
+max_hits = 0

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the arrival helpers: the gemini `alt=sse` selector recognizer and the gemini API\n//! version parse. Relocated out of `arrival.rs` per the tests-in-their-own-file convention.
+//! Tests for the arrival helpers: the gemini `alt=sse` selector recognizer and the gemini API
+//! version parse. Relocated out of `arrival.rs` per the tests-in-their-own-file convention.
 
 use std::sync::Arc;
 use std::time::Instant;

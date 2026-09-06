@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Round-trip tests for the MCP plane rows through their actual persisted shapes — the neutral\n//! call-log journal body read back via `from_journal_body`, and the demotion row. Relocated out of\n//! `record.rs` per the tests-in-their-own-file convention.
+//! Round-trip tests for the MCP plane rows through their actual persisted shapes — the neutral
+//! call-log journal body read back via `from_journal_body`, and the demotion row. Relocated out of
+//! `record.rs` per the tests-in-their-own-file convention.
 
 use super::*;
 

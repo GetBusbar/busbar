@@ -1470,6 +1470,38 @@ def rule_secret_carrier_debug(tree, cfg):
                 detail, current, c["max_derived"], c["why"], offenders)]
 
 
+_ESCAPED_NEWLINE_DOC_RX = re.compile(r"\\n//[!/]")
+
+
+def rule_no_escaped_newline_doc_comment(tree, cfg):
+    """A relocation script's escape bug leaves a literal two-character `\\n` sitting where a real
+    line break belongs, immediately before a `//!` or `///` doc-comment prefix on the SAME raw
+    line — the tell that distinguishes it from the many legitimate mentions of `\\n` in backtick'd
+    prose (SSE terminator docs) elsewhere in the tree, which are never followed by that prefix.
+    Scanned on the RAW file text (not the comment-stripped view every other rule reads) because the
+    escape sequence lives inside the doc comment itself."""
+    c = cfg["rules"]["no-escaped-newline-doc-comment"]
+    root = "crates" + os.sep
+    offenders = []
+    for rel in sorted(tree.files):
+        if not rel.startswith(root):
+            continue
+        try:
+            with open(os.path.join(tree.root, rel), encoding="utf-8", errors="replace") as fh:
+                for lineno, raw in enumerate(fh, start=1):
+                    if _ESCAPED_NEWLINE_DOC_RX.search(raw):
+                        offenders.append(f"{rel}:{lineno}")
+        except OSError:
+            continue
+    current = len(offenders)
+    detail = (f"{current} line(s) under crates/ carrying a literal backslash-n immediately before "
+              f"`//!`/`///` (ceiling {c['max_hits']}): "
+              + ("; ".join(offenders) if offenders else "none"))
+    return [row("no-escaped-newline-doc-comment", current <= c["max_hits"],
+                "no doc comment carries a literal backslash-n instead of a real line break",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -1495,6 +1527,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_kernel_seal_impls(tree, cfg)
     rows += rule_forbid_unsafe(tree, cfg)
     rows += rule_secret_carrier_debug(tree, cfg)
+    rows += rule_no_escaped_newline_doc_comment(tree, cfg)
     return rows
 
 

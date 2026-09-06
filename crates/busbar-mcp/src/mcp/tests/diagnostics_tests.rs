@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Per-plane diagnostics-catalog invariants for the MCP plane: code/slug uniqueness, the\n//! class↔code thousands-digit contract, and equality of the committed markdown/JSON snapshots with a\n//! fresh render. Relocated out of `diagnostics.rs` per the tests-in-their-own-file convention.
+//! Per-plane diagnostics-catalog invariants for the MCP plane: code/slug uniqueness, the
+//! class↔code thousands-digit contract, and equality of the committed markdown/JSON snapshots with a
+//! fresh render. Relocated out of `diagnostics.rs` per the tests-in-their-own-file convention.
 
 use super::*;
 use busbar_substrate::diagnostics::{render_json_for, render_markdown_for};

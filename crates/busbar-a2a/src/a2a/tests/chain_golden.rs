@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The frozen byte-layout golden for the A2A per-task provenance chain — see the doc comment on\n//! the `chain_golden` declaration in `taskstore.rs`. Relocated out of `taskstore.rs` per the\n//! tests-in-their-own-file convention.
+//! The frozen byte-layout golden for the A2A per-task provenance chain — see the doc comment on
+//! the `chain_golden` declaration in `taskstore.rs`. Relocated out of `taskstore.rs` per the
+//! tests-in-their-own-file convention.
 
 use super::*;
 use busbar_api::{PlaneRecord, PlaneSelector, StoreResult};
