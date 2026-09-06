@@ -414,6 +414,16 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
              `ProviderCfg`, which IS walked.",
         ),
     ),
+    (
+        "ConfiguredSecrets",
+        SecretBearing::NotInResolvedConfig(
+            "the composition root's BOOT-TIME adapter between the deployment's typed references \
+             and the transport-key unit's opaque-location seam. It holds no reference of its own: \
+             every entry in its map is a clone of a `TlsCfg` field, and `TlsCfg` IS walked, so a \
+             reference that reaches it has already been validated by the pass this inventory \
+             guards. It is built after `--validate` has run and dropped before any listener binds.",
+        ),
+    ),
 ];
 
 /// How [`secret_refs`] accounts for one secret-bearing type. See [`SECRET_BEARING_TYPES`].
