@@ -321,9 +321,10 @@
         "status": "mapped",
         "note": "shared kernel gate; plane-agnostic",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-a2a",
-          "note": "arrival is the shared kernel gate ahead of any plane's units; the root-a2a cells begin at a decoded draft and none of them drives it"
+          "test": "crates/busbar/src/root/units_a2a.rs::the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival",
+          "note": "both halves of what Arrival decides for a data-listener leg: the gate refuses an a2a unit at the in-flight cap with the arrival hold handed back, and the step carries the transport's own composed chain forward rather than re-deriving one"
         }
       },
       "decode": {
