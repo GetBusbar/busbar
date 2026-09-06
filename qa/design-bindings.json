@@ -70,7 +70,7 @@
      "ref": "scripts/construction-gate.sh",
      "status": "mapped",
      "source": "hand",
-     "proves": "construction-gate `legacy-reach`: the composition root's count of distinct symbols named through the retiring engine crates is a ratchet that may only go down, and every red row lists them -- so the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
+     "proves": "construction-gate `legacy-reach`: ONE ratchet over the composition root's TOTAL count of distinct symbols named through the retiring engine crates, which may only go down, with the per-crate figures kept as informational sub-rows -- so a cut that retargets a core symbol onto the substrate on its way to the kernel counts as the progress it is, and the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
     }
    ]
   },
