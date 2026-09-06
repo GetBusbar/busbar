@@ -21,6 +21,7 @@ use crate::{BucketChain, InMemoryCells};
 
 mod cells;
 mod hold;
+mod leases;
 mod ported;
 mod price;
 
@@ -161,6 +162,10 @@ pub(crate) fn table(groups: &[(&str, GroupCfg)]) -> GroupTable {
             }
             GroupRuntime {
                 name: (*name).to_string(),
+                // The interned name is the composition root's to hand over, and this harness is
+                // not the root: a table built here names no lease, which is the shape every
+                // decision test below is written against.
+                lease_id: None,
                 enabled: cfg.enabled,
                 concurrent_cap,
                 tier_bp: cfg.tier_bp,
