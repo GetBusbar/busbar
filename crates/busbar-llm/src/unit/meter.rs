@@ -85,12 +85,17 @@
 //! this step takes the hold, accrues against it, and hands it straight back for the exit to close;
 //! it never builds a `Posted`. What it does own is the report the posting is made against.
 //!
-//! **What it accrues is MONEY.** A reservation is in nano-units, so the spend has to be too. The
-//! report's lines are quantities in four different meter classes and their sum is a figure in no
-//! unit at all; the money is what the rate CARD makes of those quantities. The card is the one the
-//! unit's sink pinned at the door, so a request that opened before a config reload is priced on the
-//! rates it was admitted under rather than on today's — and the plane still reads no rate of its
-//! own, it hands over the counts it metered and is told a total.
+//! **What it accrues is MONEY, and this step is not what turns the counts into it.** A reservation
+//! is in nano-units, so the spend has to be too. The report's lines are quantities in four different
+//! meter classes and their sum is a figure in no unit at all. What those quantities are WORTH is a
+//! question about the deployment's rates, and the rates belong to whoever keeps the books — so this
+//! step assembles the report and asks, through [`Worth`], and takes the answer back. That is the
+//! same seam the late accrual goes through and the same report shape it hands back
+//! ([`crate::unit::walk::LateReport`]): one statement of what a unit consumed, whether it is read at
+//! the step or after the body drained, and one place that prices it.
+//!
+//! So there is no rate, no fee, no card and no price anywhere in this file. A plane says what it
+//! did; the composition root says what it cost.
 
 use std::sync::Arc;
 
@@ -282,6 +287,17 @@ pub struct Metered {
     /// response consumed and it is reported on both sides of the branch, because sealing is not a
     /// reason to report nothing.
     pub posted: bool,
+    /// WHAT THE UNIT CONSUMED, for whoever keeps the books.
+    ///
+    /// The classes and quantities the tap read, the count of billable requests this unit is, and the
+    /// two names the row it belongs to is keyed by. No amount, no rate and no card — the holder
+    /// prices it and the step is told a total.
+    ///
+    /// It is the SAME type the late reading hands back, deliberately: a unit that reports one shape
+    /// at the step and a different shape after its body drained is a unit whose two readings can
+    /// disagree about what it consumed. `None` where there was no lane, no meter half, or nothing
+    /// billable to report — which is the honest statement that there is nothing to price.
+    pub report: Option<crate::unit::walk::LateReport>,
 }
 
 impl Metered {
@@ -291,13 +307,28 @@ impl Metered {
     }
 }
 
+/// WHAT A REPORT IS WORTH, as this plane is handed it.
+///
+/// A report goes in and an amount in nano-units comes back. That is the whole of the seam, and it is
+/// the reason no rate, no fee and no card appears on this side of it: the plane holds none of them,
+/// so it asks whoever does and takes the answer. The composition root supplies this against the card
+/// the admission pinned — the same card the late reading is priced against — and a build with no
+/// card bound answers zero, which is the honest figure for a node that can price nothing.
+pub type Worth<'a> = &'a dyn Fn(&crate::unit::walk::LateReport) -> u64;
+
 /// The shape of this step, as a value — the `Units::meter` row with the plane's own context.
 ///
 /// The kernel's row also takes the hold implicitly, through the cell; here it is passed and
 /// returned explicitly, because a plane holds no cell and the point is that the hold leaves this
 /// step exactly as it arrived plus its accrual.
-pub type MeterStep =
-    for<'a> fn(&UnitToken<Meter>, &UsageToken, &MeterCtx<'a>, Option<Hold>, &Outcome) -> Metered;
+pub type MeterStep = for<'a> fn(
+    &UnitToken<Meter>,
+    &UsageToken,
+    &MeterCtx<'a>,
+    Option<Hold>,
+    &Outcome,
+    Worth<'a>,
+) -> Metered;
 
 /// The four reserved meter classes, in the canonical order the pricer prices them.
 ///
@@ -320,8 +351,14 @@ pub fn meter(
     ctx: &MeterCtx<'_>,
     hold: Option<Hold>,
     _provisional: &Outcome,
+    worth: Worth<'_>,
 ) -> Metered {
     let delivered = ctx.delivered();
+    // The fee is the KIND of leg and the client-facing status, and nothing else: one per delivered
+    // client request that routed to an upstream. Decided once, here, and carried on both the step's
+    // own answer and the report handed over to be priced, so the two cannot come to different
+    // answers about the same unit.
+    let fee_count = u32::from(delivered && ctx.upstream_leg);
     // A stream whose end carried a terminal error, or whose translation aborted, bills ZERO: the
     // accrual is skipped, not floored. The figures seen before the error are evidence only.
     let bills = !ctx.billing_failed;
@@ -340,9 +377,10 @@ pub fn meter(
     // Whether the accrual arm below was the one that ran. Reported rather than derived: `row` is
     // filled on both sides of the branch and cannot stand in for this.
     let mut posted = false;
-    // What the response is WORTH, in the nano-units a reservation is in. Zero until a card prices
-    // it, which is the honest figure for a unit that reached no lane and for one that billed none.
-    let mut priced_nanos: u128 = 0;
+    // WHAT THE UNIT CONSUMED, assembled for whoever keeps the books. `None` until there is a lane
+    // and a meter half to attribute it to, which is the honest statement that there is nothing to
+    // price — and it is the same `None` a unit that billed nothing reports.
+    let mut report = None;
     if bills {
         if let (Some(sink), Some(lane)) = (ctx.sink, ctx.lane) {
             // The tier split, projected once and read twice: the ledger accrues against it, and the
@@ -356,19 +394,21 @@ pub fn meter(
                 posted = true;
             }
             row = Some(metering_row(sink, lane, reported));
-            // THE MONEY. Priced against the card the SINK carries — the one resolved when this
-            // unit's hold opened at the door — and keyed by the serving lane's config name, which
-            // is the key space a rate card is written in and the same key the metering row above
-            // attributes to. Pricing against the deployment's card as it is now would reprice a
-            // request that opened before a reload on rates it never agreed to.
+            // THE REPORT, and it is where the money used to be. The step used to reach the legacy
+            // host seam here and come back with an amount; what it hands over now is the tier split
+            // it already projected, the billable count it already decided, and the two names the row
+            // it belongs to is keyed by — and it is told a total by the one side that holds a card.
             //
-            // `None` is a present card that does not know this model, and the Verify step's pricing
-            // guard has already turned that unit away before it could reach here; there is no
-            // figure to invent at this point, so nothing is spent.
-            priced_nanos = ctx
-                .host
-                .cost_price_usage(&sink.cost, &lane.model, &tier)
-                .unwrap_or(0);
+            // The lane is the SERVING lane's config name, after any failover. That is the key space
+            // rates are written in and the same key the metering row above attributes to, so the
+            // line this reports and the entry that prices it are keyed by the same name with no
+            // translation between them.
+            report = Some(crate::unit::walk::LateReport {
+                usage: tier,
+                fee_count,
+                lane: lane.model.clone(),
+                provider: lane.provider.clone(),
+            });
         }
     }
 
@@ -412,7 +452,11 @@ pub fn meter(
         // plane does not hold; claiming headroom here would mean growing a reservation against
         // budget nobody checked. So the whole shortfall is carried, which is the conservative half
         // of the same accounting.
-        h.spend(u64::try_from(priced_nanos).unwrap_or(u64::MAX), 0);
+        //
+        // WHAT IS SPENT IS WHAT THE HOLDER OF THE CARD SAID, and nothing this file worked out. A
+        // unit with nothing to report spends zero, which is the honest figure for one that reached
+        // no lane and for one that billed none.
+        h.spend(report.as_ref().map(worth).unwrap_or(0), 0);
         h
     });
 
@@ -420,13 +464,12 @@ pub fn meter(
         decision: Decision::proceed(unit_token, usage),
         hold,
         row,
-        // The fee is the KIND of leg and the client-facing status, and nothing else: one per
-        // delivered client request that routed to an upstream.
-        fee_count: u32::from(delivered && ctx.upstream_leg),
+        fee_count,
         // The refund is owed only where a charge landed and the client did not see a 2xx — and it
         // is owed against the fee base alone.
         refund: ctx.charged && !delivered,
         posted,
+        report,
     }
 }
 
@@ -688,7 +731,14 @@ mod tests {
             false,
         );
         let (seal, unit_token, usage_token) = tokens();
-        let metered = meter(&unit_token, &usage_token, &ctx, None, &Outcome::Completed);
+        let metered = meter(
+            &unit_token,
+            &usage_token,
+            &ctx,
+            None,
+            &Outcome::Completed,
+            &worth_of,
+        );
 
         assert_eq!(
             metered.row.as_ref().expect("a served response is metered"),
@@ -810,7 +860,14 @@ mod tests {
                 upstream_leg,
                 false,
             );
-            let metered = meter(&unit_token, &usage_token, &ctx, None, &Outcome::Completed);
+            let metered = meter(
+                &unit_token,
+                &usage_token,
+                &ctx,
+                None,
+                &Outcome::Completed,
+                &worth_of,
+            );
             assert_eq!(metered.fee_count, fee, "{why}: fee_count");
             assert_eq!(metered.refund, refund, "{why}: refund");
             assert!(
@@ -846,6 +903,7 @@ mod tests {
                 StepName::Route,
                 busbar_caps::ReasonCode::DestinationUnreachable,
             ),
+            &worth_of,
         );
         assert_eq!(
             metered.fee_count, 1,
@@ -899,6 +957,31 @@ mod tests {
     /// What that card prices this usage at: 100 × 2_000 + 50 × 6_000 nano-units.
     const PRICED_NANOS: u64 = 500_000;
 
+    /// THE HOLDER OF THE CARD, as these tests stand in for it.
+    ///
+    /// The step names no rate, so what a report is worth arrives from outside — this is the
+    /// composition root's half of that seam, spelled with the same two literals `priced_card` is
+    /// built from and reading the REPORT the step assembled rather than the response it came from.
+    ///
+    /// That is deliberate: a step that handed over an empty report, or one keyed by names a card
+    /// cannot look up, would be answered zero here, and the spend assertions below would fail. So
+    /// they are assertions about the report as much as about the accrual.
+    fn worth_of(report: &crate::unit::walk::LateReport) -> u64 {
+        report
+            .usage
+            .usage_units
+            .iter()
+            .map(|(class, quantity)| {
+                let per_unit = match class.as_str() {
+                    busbar_api::UNIT_INPUT => 2_000,
+                    busbar_api::UNIT_OUTPUT => 6_000,
+                    _ => 0,
+                };
+                quantity * per_unit
+            })
+            .sum()
+    }
+
     /// A rig whose deployment carries [`priced_card`], one lane named for it, and governance — so
     /// the sink the door pins carries a card that actually prices something. No upstream is dialled
     /// here: this test drives the step directly over a usage report the reader already produced.
@@ -935,9 +1018,15 @@ mod tests {
         (builder.build(), std::sync::Arc::new(key))
     }
 
-    /// THE ACCRUAL IS MONEY. What the step spends against the unit's reservation is the PRICED
-    /// total of the usage, in the nano-units the reservation is in — never the sum of the token
-    /// counts, which is a figure in no unit at all.
+    /// THE ACCRUAL IS MONEY, AND THE STEP IS TOLD WHAT IT IS. What the step spends against the
+    /// unit's reservation is what the holder of the card answered over the report the step
+    /// assembled, in the nano-units the reservation is in — never the sum of the token counts,
+    /// which is a figure in no unit at all.
+    ///
+    /// Two things at once, and that is deliberate. The spend is the answer, so the arithmetic in
+    /// this file is a pass-through. And the answer is derived from the REPORT — a step that handed
+    /// over an empty one, or one keyed by names a card cannot look up, would be answered zero and
+    /// this assertion would fail. So it pins the report as much as the accrual.
     ///
     /// A reservation is nano-units. A usage report carries one quantity per meter class, each in
     /// that class's own unit, and adding them across classes gives a number that is not comparable
@@ -989,13 +1078,14 @@ mod tests {
             &ctx,
             Some(hold),
             &Outcome::Completed,
+            &worth_of,
         );
 
         let hold = metered.hold.expect("the hold rides back out to the exit");
         assert_eq!(
             hold.accrued(),
             PRICED_NANOS,
-            "the step spends the card's price for the usage, not the sum of the token counts"
+            "the step spends what it was told the report was worth, not the sum of the token counts"
         );
         assert_eq!(
             hold.remaining(),
@@ -1070,6 +1160,7 @@ mod tests {
             &ctx,
             Some(hold),
             &Outcome::Completed,
+            &worth_of,
         );
 
         let hold = metered.hold.expect("the hold rides back out to the exit");
@@ -1139,6 +1230,7 @@ mod tests {
             ),
             None,
             &Outcome::Completed,
+            &worth_of,
         );
         assert_eq!(
             accrued(&app1, &key1.id, charged_at).ledger_tokens,
@@ -1171,6 +1263,7 @@ mod tests {
             ),
             None,
             &Outcome::Completed,
+            &worth_of,
         );
         let gov2 = app2.governance.clone().expect("governance is configured");
         gov2.flush_metering();

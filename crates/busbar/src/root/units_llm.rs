@@ -88,7 +88,7 @@ use busbar_caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
-use busbar_llm::unit::walk::{Tap, Walk, WalkArrival};
+use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate::proxy::POOL_LABEL_UNRESOLVED;
@@ -664,6 +664,42 @@ fn usage_record(
         .unwrap_or_else(|_| busbar_caps::Usage::report(token, Vec::new()).expect("no lines fit"))
 }
 
+/// **WHAT ONE REPORT IS WORTH**, against one card — the node's single pricing expression.
+///
+/// Both readings of a unit's consumption come through here: the live metering step's, handed over as
+/// the step runs, and the late reading's, taken off the tap once the body has drained. One
+/// expression rather than two, because a second spelling of this arithmetic is how one unit ends up
+/// settling two different amounts on two books.
+///
+/// The plane supplied the report — classes, quantities, the billable count and the two names the row
+/// is keyed by — and nothing in it is money. The card supplies the rest.
+///
+/// **The fee arrives by construction.** The cost unit's pricing puts the flat per-request charge on
+/// the posting as a line of its own, at the card's configured fee times the count the plane reported,
+/// and sums it in with the token lines before the single tier divide. So one call produces the token
+/// lines AND the fee line, and there is no arm anywhere that could post the tokens and forget the
+/// fee. That is what makes the identity exact rather than approximate: the previous release's
+/// projection reprices a row's token counts and adds the same configured fee at read time, so a node
+/// that posted only the tokens was out by the fee on every billable request.
+///
+/// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
+/// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
+/// unit the node has ever run.
+fn priced_amount(
+    card: &busbar_unit_cost::RateCard,
+    token: &busbar_caps::UsageToken,
+    report: &LateReport,
+) -> u64 {
+    let posting = busbar_unit_cost::price(
+        &card.pin(),
+        &report.lane,
+        &usage_record(token, &report.usage),
+        u64::from(report.fee_count),
+        busbar_unit_cost::STANDARD_TIER_BP,
+    );
+    u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX)
+}
+
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
 /// drained.
 ///
@@ -714,25 +750,10 @@ impl LateAccrual {
         };
         // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
         // consumed — quantities, by class — and how many billable requests it is. What that is worth
-        // is the card's answer, and this is the only side that holds a card.
+        // is the card's answer, and this is the only side that holds a card. It is the same
+        // expression the live metering step is answered through, because one report priced two ways
+        // is two answers to what one request cost.
         //
-        // The FEE comes with it, and it comes for free. The cost unit's pricing puts the flat
-        // per-request charge on the posting as a line of its own, at the card's configured fee times
-        // the count the plane reported, and sums it in with the token lines before the single tier
-        // divide. So one call produces token lines AND a fee line, and there is no arm anywhere that
-        // could post the tokens and forget the fee.
-        //
-        // That is what makes the identity exact rather than approximate. The previous release's
-        // projection reprices a row's token counts and adds the same configured fee at read time; a
-        // node that posted only the tokens was out by the fee on every billable request, and the
-        // identity had to name the difference as its own term instead of checking it.
-        let posting = busbar_unit_cost::price(
-            &card.pin(),
-            &report.lane,
-            &usage_record(&usage_token, &report.usage),
-            u64::from(report.fee_count),
-            busbar_unit_cost::STANDARD_TIER_BP,
-        );
         // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
         // legacy row is keyed by — and the balance below is keyed by principal and window. Those are
         // the same row: the node's books retain no lane and no provider, so both the ledger's side and
@@ -748,7 +769,7 @@ impl LateAccrual {
         // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
         // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
         // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX);
+        let amount = priced_amount(&card, &usage_token, &report);
         if amount == 0 {
             return;
         }
@@ -1263,7 +1284,20 @@ impl Units for LlmUnit<'_> {
         // handed the client its bytes. At this step the cell is on the response and empty, so a
         // figure read here would be zero on every delivered unit and a meter accruing it would be
         // accruing a zero it could not tell from a free request.
-        self.walk.meter(token, usage)
+        //
+        // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the card is here. The step
+        // assembles what the unit consumed and asks; this closure answers, against the card the node
+        // was bound at boot — the same card the late reading is priced against, through the same one
+        // expression — and the step spends the answer against the hold it was handed. A build with
+        // no card bound answers nothing, which is the honest figure for a node that can price
+        // nothing rather than a rate it invented for itself.
+        self.walk.meter(token, usage, &|report| {
+            self.node
+                .card
+                .get()
+                .map(|card| priced_amount(card, usage, report))
+                .unwrap_or(0)
+        })
     }
 
     fn audit(
