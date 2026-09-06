@@ -301,23 +301,58 @@ impl Observed {
     }
 }
 
-/// Replace the decimal number that follows every occurrence of `key` with `0`, leaving every other
-/// byte alone. For a value embedded in a body that is not parseable as one JSON document, where the
-/// structural blanker in [`normalize`] cannot reach it.
-fn blank_number_after(s: &str, key: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(at) = rest.find(key) {
-        out.push_str(&rest[..at + key.len()]);
-        out.push('0');
-        let tail = &rest[at + key.len()..];
-        let end = tail
-            .find(|c: char| !c.is_ascii_digit())
-            .unwrap_or(tail.len());
-        rest = &tail[end..];
+/// Normalize a response body from its RAW bytes, before any lossy UTF-8 conversion.
+///
+/// A Bedrock-ingress stream is an `application/vnd.amazon.eventstream` body: BINARY frames, each a
+/// 12-byte prelude (total/headers lengths plus a prelude CRC32), a length-prefixed header block, the
+/// JSON payload, and a trailing message CRC32 over everything before it. It must be DECODED to be
+/// normalized, which is only possible while the bytes are still bytes — hence this entry point
+/// rather than [`normalize`] on an already-`from_utf8_lossy`'d string.
+///
+/// Decoding, rather than filtering the lossy text down to its printable characters, is what makes
+/// the comparison sound. The two CRCs and the two lengths are FUNCTIONS of the payload, so they
+/// carry every byte of `metrics.latencyMs` — busbar's own measured wall-clock reading, which the two
+/// racing legs are expected to disagree about. Blanking the reading in the payload TEXT leaves those
+/// derived bytes carrying the original measurement, and whichever of them happen to be printable
+/// survive a printable-character filter and land in the comparison. That is not a hypothetical: a
+/// `latencyMs` of 0 yields a message CRC whose printable bytes are exactly `Bu`, while a reading of
+/// 2ms yields one with none, so the faster leg's body compared as the slower leg's body plus a
+/// two-byte tail — an arch- and load-dependent red with no behavioral difference behind it.
+///
+/// Decoding drops the framing outright: what is compared is each frame's event type and its payload,
+/// the latter normalized structurally by [`normalize`] like any other JSON document. A body that is
+/// not a complete, well-formed frame sequence falls through to the text normalizer unchanged.
+fn normalize_body(bytes: &[u8]) -> String {
+    match eventstream_text(bytes) {
+        Some(text) => text,
+        None => normalize(&String::from_utf8_lossy(bytes)),
     }
-    out.push_str(rest);
-    out
+}
+
+/// `Some` when `bytes` decode as a complete AWS event-stream frame sequence with nothing left over:
+/// each frame rendered as its event type plus its structurally normalized JSON payload, and the
+/// binary framing (lengths, CRCs) dropped. `None` for any other body — a JSON document, an SSE
+/// stream, an error page — which the caller then normalizes as text. A non-event-stream body cannot
+/// be mistaken for one: its first four bytes read as a `total_len` that the decoder rejects.
+fn eventstream_text(bytes: &[u8]) -> Option<String> {
+    use busbar_substrate::eventstream::{drain_frames_checked, DrainStatus};
+    let mut buf = bytes.to_vec();
+    let (frames, status, consumed) = drain_frames_checked(&mut buf, None);
+    if status != DrainStatus::Ok || frames.is_empty() || consumed != bytes.len() {
+        return None;
+    }
+    Some(
+        frames
+            .iter()
+            .map(|(event_type, payload)| {
+                format!(
+                    "event-type: {event_type}\n{}",
+                    normalize(&String::from_utf8_lossy(payload))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
 }
 
 /// Blank the values that are synthesized per response (ids, clocks, measured latency) so byte
@@ -359,28 +394,10 @@ fn normalize(s: &str) -> String {
         blank(&mut v);
         return v.to_string();
     }
-    // AWS EVENT-STREAM BODY (Bedrock's stream). Neither branch around this one reaches it: it is not
-    // one JSON document, and its frames are binary — a length prelude, length-prefixed headers, the
-    // JSON payload, and two CRCs — rather than `data:`-prefixed SSE lines. So the `latencyMs` the
-    // doc above blanks everywhere else survived here, and the metadata frame of every Bedrock stream
-    // case carried a live wall-clock reading into a byte comparison. Two legs racing the same mock
-    // under `tokio::join!` measure 0ms and 1ms often enough that this was an intermittent red with
-    // no behavioral difference behind it.
-    //
-    // Normalize by keeping the frames' TEXT — the `:event-type`/`:content-type`/`:message-type`
-    // header names and values, and the JSON payloads — and blanking the reading. What is dropped is
-    // the binary framing: the total/headers lengths and the prelude/message CRCs. Those are pure
-    // FUNCTIONS of the header bytes and payload that remain in the comparison, so a divergence in
-    // them that is not also a divergence in what is compared is not representable — and the body
-    // reaches here already `from_utf8_lossy`'d, so those bytes were never compared faithfully in the
-    // first place.
-    if s.contains(":event-type") {
-        let text: String = s
-            .chars()
-            .filter(|c| c.is_ascii_graphic() || *c == ' ')
-            .collect();
-        return blank_number_after(&text, "\"latencyMs\":");
-    }
+    // An AWS event-stream body (Bedrock's stream) never reaches here: it is binary, so it is decoded
+    // frame by frame in `normalize_body` while it is still bytes, and each frame's JSON payload comes
+    // back through this function. See `normalize_body` for why decoding, not filtering the lossy text,
+    // is what keeps the measured `latencyMs` out of the comparison.
     s.lines()
         .map(|line| match line.strip_prefix("data: ") {
             Some(payload) => match serde_json::from_str::<serde_json::Value>(payload) {
@@ -427,7 +444,7 @@ async fn observe(
             let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
                 .await
                 .unwrap_or_default();
-            fields.push(("body", normalize(&String::from_utf8_lossy(&body))));
+            fields.push(("body", normalize_body(&body)));
         }
     }
     // The body wrapper records mid-stream outcomes on drop; give it a tick before reading the store.
@@ -639,32 +656,67 @@ const ALLOWED: &[Divergence] = &[
     },
 ];
 
-/// The event-stream branch of [`normalize`] does the job the doc claims: two Bedrock metadata frames
-/// that differ ONLY in the measured `latencyMs` compare equal, and two that differ in anything the
-/// frame actually says still do not. Without the second half the normalizer could pass by erasing
-/// the body, which would make the identity rig above green over nothing.
+/// [`normalize_body`] does the job the doc claims on REAL frames from the production encoder — the
+/// same bytes a Bedrock-ingress client is served — not on a hand-written approximation whose CRCs
+/// are stand-in characters that happen to be equal on both sides.
+///
+/// The distinction is the whole bug. Two metadata frames differing ONLY in the measured `latencyMs`
+/// must compare equal, and the frames' derived bytes are where that used to fail: a reading of 0ms
+/// produces a message CRC whose printable bytes are `Bu` and a reading of 2ms one with none, so a
+/// normalizer that filtered the lossy text to its printable characters reported the faster leg's
+/// body as the slower leg's plus a two-byte `Bu` tail. The first assertion below pins exactly that
+/// pair. The rest keep the normalizer from passing by erasing the body, which would make the
+/// identity rig above green over nothing.
 #[test]
 fn eventstream_normalization_blanks_the_reading_and_nothing_else() {
     let frame = |latency: u32, tokens: u32| {
-        format!(
-            "\u{0}\u{0}\u{0}\u{8c}\u{0}\u{0}\u{0}N*:event-type metadata:content-type \
-             application/json:message-type event{{\"metrics\":{{\"latencyMs\":{latency}}},\
-             \"usage\":{{\"inputTokens\":{tokens},\"outputTokens\":2,\"totalTokens\":5}}}}\u{fffd}"
+        busbar_substrate::eventstream::encode_frame(
+            "metadata",
+            format!(
+                "{{\"metrics\":{{\"latencyMs\":{latency}}},\"usage\":{{\"inputTokens\":{tokens},\
+                 \"outputTokens\":2,\"totalTokens\":5}}}}"
+            )
+            .as_bytes(),
         )
     };
     assert_eq!(
-        normalize(&frame(0, 3)),
-        normalize(&frame(17, 3)),
-        "the measured latency is not identity-bearing and must normalize away"
+        normalize_body(&frame(0, 3)),
+        normalize_body(&frame(2, 3)),
+        "the measured latency is not identity-bearing and must normalize away — including out of \
+         the lengths and CRCs derived from it"
+    );
+    assert_eq!(
+        normalize_body(&frame(0, 3)),
+        normalize_body(&frame(17_000, 3)),
+        "a reading wide enough to change the frame's own declared length must normalize away too"
     );
     assert_ne!(
-        normalize(&frame(0, 3)),
-        normalize(&frame(0, 4)),
+        normalize_body(&frame(0, 3)),
+        normalize_body(&frame(0, 4)),
         "a real difference in what the frame reports must survive normalization"
     );
     assert!(
-        normalize(&frame(0, 3)).contains(":event-type metadata"),
-        "the frame's own headers stay in the comparison"
+        normalize_body(&frame(0, 3)).contains("event-type: metadata"),
+        "the frame's event type stays in the comparison"
+    );
+    assert!(
+        normalize_body(&frame(0, 3)).contains("\"inputTokens\":3"),
+        "the frame's payload stays in the comparison"
+    );
+    // A multi-frame body is every frame, in order — not just the one the decoder stopped on.
+    let mut stream =
+        busbar_substrate::eventstream::encode_frame("messageStart", br#"{"role":"assistant"}"#);
+    stream.extend_from_slice(&frame(0, 3));
+    let text = normalize_body(&stream);
+    assert!(
+        text.contains("event-type: messageStart") && text.contains("event-type: metadata"),
+        "every frame of the stream is compared, in order: {text}"
+    );
+    // A body that is not a frame sequence is still normalized as text.
+    assert_eq!(
+        normalize_body(br#"{"latencyMs":9}"#),
+        normalize(r#"{"latencyMs":9}"#),
+        "a non-event-stream body falls through to the text normalizer"
     );
 }
 
