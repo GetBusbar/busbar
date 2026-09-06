@@ -1094,6 +1094,14 @@ pub struct VoiceUnit<'n> {
     /// verdict rather than a second guess at it: a record that says the turn errored and a posting
     /// that charged for it would be two answers to one question.
     sealed_finish: Mutex<Option<busbar_contract::FinishClass>>,
+    /// WHO THIS UNIT IS FOR, as the auth chain resolved it.
+    ///
+    /// The chain's answer is the chain's: a decision has no reader on it by design, and the only
+    /// thing that opens one is the loop. So the principal is recorded at the first step the loop
+    /// hands it to — verify — and the record reads it back from here. The audit record names a
+    /// subject, and a paid unit whose subject is "an arrival" names nobody at all: a bill nobody
+    /// can be shown, and a revocation nobody can be traced through.
+    principal: Mutex<Option<PrincipalId>>,
 }
 
 impl std::fmt::Debug for VoiceUnit<'_> {
@@ -1141,6 +1149,7 @@ impl<'n> VoiceUnit<'n> {
             accrued: AtomicU64::new(0),
             dialed: Mutex::new(None),
             sealed_finish: Mutex::new(None),
+            principal: Mutex::new(None),
         }
     }
 
@@ -1393,8 +1402,13 @@ impl Units for VoiceUnit<'_> {
         token: &UnitToken<Verify>,
         trust: &TrustToken,
         ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        principal: &PrincipalId,
     ) -> Decision<Verify> {
+        // THE FIRST STEP THAT IS HANDED THE PRINCIPAL IS THE FIRST THAT CAN RECORD IT, and the
+        // record is the only reader that needs one. The authenticate step's answer belongs to the
+        // chain and nothing may open it there; here the loop has already opened it and hands over
+        // who it named. Recorded once, on the unit, for the same reason the grants are.
+        *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal.clone());
         // **The one frame a wait can be entered in.** A tool call's leg is a client await-reply, and
         // the value it waits on is the identifier this unit's own draft minted, which lives no
         // longer than the frame that decoded it. So the wait is entered HERE, where the leg is
@@ -1829,7 +1843,22 @@ impl VoiceUnit<'_> {
             Some(finish),
         ));
         busbar_unit_audit::record::AuditInputs {
-            subject: busbar_unit_audit::record::Subject::Arrival,
+            // WHO THE RECORD IS ABOUT. The principal the auth chain named, where the unit got as far
+            // as being handed one. `Arrival` is the honest answer for a unit that was refused before
+            // any principal existed — a connection that never got past decode is nobody's — and it
+            // was the answer for every unit on this plane, including the paid ones: a settled turn
+            // whose row named no principal cannot be shown to the account it charged.
+            subject: match self
+                .principal
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                Some(principal) => {
+                    busbar_unit_audit::record::Subject::PrincipalId(principal.as_str().to_string())
+                }
+                None => busbar_unit_audit::record::Subject::Arrival,
+            },
             what: busbar_unit_audit::record::What {
                 unit_key: ctx.key,
                 op_class: busbar_unit_audit::record::OpClassId::new(self.shape.op_class().as_str()),
@@ -3295,6 +3324,47 @@ mod tests {
             usage.total(),
             "a completed turn posts what it metered, not what it drew the lease at"
         );
+    }
+
+    /// A PAID TURN'S RECORD NAMES THE PRINCIPAL IT CHARGED, and a refusal before anyone was named
+    /// still names an arrival.
+    ///
+    /// The subject is what makes a row belong to an account. Written as `Arrival` on every unit, the
+    /// chain carried a full set of settled turns that no account could be shown, no revocation could
+    /// be traced through and no dispute could be answered from. The principal is the auth chain's,
+    /// recorded at the first step the loop hands it over on, and read back here.
+    #[test]
+    fn a_paid_turns_record_names_its_principal() {
+        use busbar_unit_audit::record::Subject;
+
+        let node = priced_node(serviceable());
+        let kernel = Kernel::new();
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 12,
+                ..TurnUsage::default()
+            });
+        let _ = run(&kernel, &unit);
+        let inputs = unit.audit_inputs(
+            &ctx(1),
+            Outcome::Completed,
+            busbar_contract::FinishClass::TurnComplete,
+        );
+        assert!(
+            matches!(inputs.subject, Subject::PrincipalId(ref who) if !who.is_empty()),
+            "a turn that was authenticated names who it was for"
+        );
+
+        // And the unit that never reached verify — a refusal before any principal existed — is an
+        // arrival, which is the one thing `Arrival` is the honest answer to.
+        let unseen = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let refused = unseen.audit_inputs(
+            &ctx(1),
+            Outcome::Refused(busbar_caps::StepName::Decode, ReasonCode::DecodeFailed),
+            busbar_contract::FinishClass::Error,
+        );
+        assert!(matches!(refused.subject, Subject::Arrival));
     }
 
     /// THE KERNEL'S OWN FLOOR IS THE AUDIO THAT CAME IN, IN THE UNIT ITS CLASS IS DENOMINATED IN.
