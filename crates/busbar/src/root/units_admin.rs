@@ -2661,6 +2661,23 @@ fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
+/// The epoch one arriving administrative request is stamped with, off THE NODE'S ONE CLOCK.
+///
+/// A function rather than an inline read, and the seam rather than `SystemTime`, because this node
+/// already has a clock: the in-flight table's arrival is stamped from `busbar_substrate::store`, and
+/// so is every epoch the LLM leg pins. A second reading of the operating system beside it is a
+/// second clock — it cannot be moved, wrapped or instrumented with the first, and the two answers
+/// for one request would drift apart the day anything at all is done to either. One name, one
+/// reading, and this is where a test can ask what the wrap read.
+///
+/// Seconds, because that is the width [`AdminRequest::at`] carries; the table's own stamp is the
+/// same clock in milliseconds.
+#[cfg(feature = "root-admin")]
+#[must_use]
+fn request_epoch() -> u64 {
+    busbar_substrate::store::now()
+}
+
 /// One answer as the response this listener writes.
 ///
 /// Written once because two paths reach it: the request that ran and the one this wrap refused
@@ -2776,9 +2793,7 @@ pub fn mount(
                     credential: presented_credential(&parts.headers),
                     headers: header_pairs(&parts.headers),
                     body: bytes.to_vec(),
-                    at: std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |d| d.as_secs()),
+                    at: request_epoch(),
                     unit,
                 };
                 // AND THE EXIT PATH RUNS EVEN WHERE THERE IS NO EXIT. A client that hangs up while
@@ -2895,6 +2910,25 @@ mod tests {
         assert_eq!(
             String::from_utf8(answer.body).expect("the envelope is text"),
             r#"{"error":{"code":"forbidden","message":"insufficient scope: this endpoint requires `read-only`"}}"#
+        );
+    }
+
+    /// The wrap's arrival epoch is READ FROM THE NODE'S CLOCK, which is the same seam the in-flight
+    /// table's stamp is read from — not a second `SystemTime` call beside it.
+    ///
+    /// Bracketed by the table's own reading rather than compared to one taken separately: what is
+    /// being asserted is that the two are ONE clock, so the check is that the wrap's answer falls
+    /// inside a window the other seam defines. A reading from anywhere else would only be inside it
+    /// by luck.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_wrap_stamps_an_arrival_off_the_same_clock_the_table_does() {
+        let before = busbar_substrate::store::now_ms() / 1_000;
+        let at = request_epoch();
+        let after = busbar_substrate::store::now_ms() / 1_000;
+        assert!(
+            (before..=after).contains(&at),
+            "the wrap stamped {at}, outside the [{before}, {after}] the node's own clock read"
         );
     }
 
