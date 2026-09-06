@@ -92,11 +92,24 @@ fn the_verify_step_seals_the_destinations_the_later_steps_read() {
     );
 }
 
-/// A challenge round is a handshake unit: the authenticate step answers "one more round" rather
-/// than an identity, so verify, approve and admit are never asked and no reservation is opened.
-/// The design says the step's decision may yield a challenge; this is what the loop does with one.
+/// A CHALLENGE ROUND SKIPS NO STEP.
+///
+/// The authenticate step answers "one more round" rather than an identity, and the loop used to
+/// take that as an answer for the three steps AFTER it as well: verify, approve and admit were
+/// jumped over and the round went straight to the zero-hold admission. No step is skipped — a
+/// challenge carries no principal, and having no principal is a reason to run the steps for the
+/// ARRIVAL SUBJECT, not a reason not to run them. The design names that subject: an anonymous
+/// principal with no bucket, which is what the pre-authentication surface has always been scoped
+/// and admitted as.
+///
+/// What it costs to have skipped them: the hook veto seat at approve and the frozen-group check at
+/// admit are the two gates that apply BEFORE anyone is known, and they are exactly the two a
+/// challenge round went around. The two cells below are those gates.
+///
+/// The round is still a handshake: it reaches no destination and opens no reservation, so the
+/// admission is the zero hold whatever the door would have sized for an established caller.
 #[test]
-fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
+fn a_challenge_round_runs_every_step_as_the_arrival_subject() {
     let kernel = Kernel::new();
     let units = TestUnits {
         challenge: true,
@@ -108,21 +121,99 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
 
     assert_eq!(
         units.called(),
-        vec![
-            StepName::Arrival,
-            StepName::Decode,
-            StepName::Authenticate,
-            StepName::Route,
-            StepName::Meter,
-            StepName::Audit,
-            StepName::Encode,
-        ],
-        "a challenge settles nothing about where the unit may go or whether it may be admitted"
+        ORDER.to_vec(),
+        "a challenge round is a unit like any other; no step is skipped for want of a name"
     );
+    let subjects = units.subjects.lock().unwrap().clone();
+    assert_eq!(subjects.len(), 3, "verify, approve and admit each ran once");
     assert!(
-        matches!(ended, Ended::Settled { .. }),
-        "the round still ends once, through the one exit"
+        subjects.iter().all(busbar_caps::PrincipalId::is_anonymous),
+        "a challenge has no established identity, so the three steps run for the arrival subject"
     );
+    match ended {
+        Ended::Settled { end, .. } => assert_eq!(
+            end.posted().expect("the round posts once").reserved(),
+            0,
+            "a challenge round opens no reservation, whatever the door would have sized for it"
+        ),
+        other => panic!("the round still ends once, through the one exit: {other:?}"),
+    }
+}
+
+/// THE HOOK VETO SEAT REACHES A CHALLENGE ROUND.
+///
+/// The veto is a closed code and the first veto at any seat wins. A challenge round that never
+/// reached approve was a round no seat could veto — an unauthenticated handshake the node had
+/// decided to run before any policy was consulted about it.
+#[test]
+fn a_hook_veto_at_approve_refuses_a_challenge_round() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        challenge: true,
+        refuse_at: Some((StepName::Approve, ReasonCode::HookVeto)),
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    match run(&units, &kernel, &cell, &canary) {
+        Ended::Settled { end, .. } => assert_eq!(
+            end.outcome(),
+            Outcome::Refused(StepName::Approve, ReasonCode::HookVeto)
+        ),
+        other => panic!("expected a vetoed challenge round, got {other:?}"),
+    }
+}
+
+/// A FROZEN GROUP REACHES A CHALLENGE ROUND.
+///
+/// Freezing a group is how an operator stops a tenant. A challenge round that skipped the door kept
+/// a frozen tenant's handshakes running: the node went on spending rounds on a principal it had
+/// already been told to stop serving, and the freeze only took hold once the caller had finished
+/// proving who they were.
+#[test]
+fn a_frozen_group_refuses_a_challenge_round() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        challenge: true,
+        refuse_at: Some((StepName::Admit, ReasonCode::GroupFrozen)),
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    match run(&units, &kernel, &cell, &canary) {
+        Ended::Settled { end, .. } => assert_eq!(
+            end.outcome(),
+            Outcome::Refused(StepName::Admit, ReasonCode::GroupFrozen)
+        ),
+        other => panic!("expected a frozen challenge round, got {other:?}"),
+    }
+}
+
+/// AND A CHALLENGE NOBODY REFUSES STILL COMPLETES.
+///
+/// The rounds a handshake is allowed are the design's `challenge_max_rounds`; the fixture's
+/// challenge carries its own remaining count. Running three more steps must not consume one of
+/// them, and must not turn a round the node would have completed into a refusal.
+#[test]
+fn a_challenge_nobody_refuses_completes_within_its_rounds() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        challenge: true,
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    match run(&units, &kernel, &cell, &canary) {
+        Ended::Settled { end, .. } => {
+            assert_eq!(end.outcome(), Outcome::Completed);
+            assert_eq!(
+                units.called().len(),
+                ORDER.len(),
+                "running the three steps neither refuses the round nor spends one of its rounds"
+            );
+        }
+        other => panic!("expected a completed challenge round, got {other:?}"),
+    }
 }
 
 #[test]

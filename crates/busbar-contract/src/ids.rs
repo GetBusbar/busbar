@@ -143,12 +143,35 @@ impl PrincipalId {
         Self(id.into())
     }
 
+    /// The arrival subject: nobody has been established yet, and the steps run anyway.
+    ///
+    /// The design names this principal directly — it is the subject a unit carries before the
+    /// authenticate step has settled on an identity, it has NO bucket, and it renders as the literal
+    /// `anonymous` on every surface that prints an actor. It exists because the steps a unit passes
+    /// through are not skipped for want of a name: a challenge round has no principal and still has
+    /// to be scoped, still has to pass the hook veto seat, and still has to be admitted against a
+    /// frozen group. Without a subject to run them for, those steps had nothing to be handed and
+    /// were jumped over.
+    #[must_use]
+    pub fn anonymous() -> Self {
+        Self(ANONYMOUS.to_string())
+    }
+
+    /// Whether this is the arrival subject rather than an established identity.
+    #[must_use]
+    pub fn is_anonymous(&self) -> bool {
+        self.0 == ANONYMOUS
+    }
+
     /// The identity as the audit row prints it.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
 }
+
+/// How the arrival subject renders wherever an actor is printed.
+const ANONYMOUS: &str = "anonymous";
 
 impl fmt::Display for PrincipalId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
