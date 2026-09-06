@@ -188,6 +188,37 @@ tier   = "fast"
 run    = "cargo build -p busbar-hook-test-plugin && cargo test -p busbar-llm --features teller-waist --lib"
 
 [[segment]]
+id     = "plane-plugin-suites"
+status = "active"
+tier   = "fast"
+# THE TWO PLANE PLUGIN CRATES' OWN `test-support` SUITES — busbar-mcp's and busbar-a2a's full
+# in-crate batteries, plus the clippy invocation that sees them. NOTHING RAN THEM. Every other cargo
+# line in this manifest and in ci.yml is either a filtered `-p busbar -p busbar-core` run or a
+# `cargo test --workspace` / `cargo clippy --workspace --all-targets`, and NONE of those turns
+# `test-support` on for these two crates — which is exactly the feature that compiles the batteries
+# in (`#[cfg(all(test, feature = "test-support"))]` on every `#[path = "tests/…"]` include). Without
+# it a bare `cargo test -p busbar-mcp` runs 8 tests and a bare `-p busbar-a2a` runs 11; with it they
+# run 479 and 572. That is ~1000 tests the gate could not see, and the shape of the miss is the one
+# the honesty rule at the top of this file exists to prevent: a green that ran almost nothing.
+#
+# WHY THE `cargo build` COMES FIRST, AND WHY IT IS NOT OPTIONAL. Several of the mcp batteries
+# (`calllog_dispatch_tests`, `quarantine_boot_tests`, `hook_gate_tests`, `hook_tap_tests`) dlopen a
+# REAL cdylib across the REAL plugin C ABI, because the defects they exist to catch — an ABI that
+# carried four store methods and discarded every write through it; a hook that never fired on a
+# non-LLM protocol — are invisible to any in-process double. Neither fixture crate is a Cargo
+# dependency of anything the test build pulls (they are only ever reached by dlopen at run time), so
+# no scoped `-p busbar-mcp` invocation builds them as a side effect. The tests REFUSE rather than
+# skip when the artifact is absent — they panic naming this exact build command — so the artifacts
+# are built here, in the same profile the tests then run in (both resolvers derive the path from the
+# test binary's own location, so `--release` is coherent end to end).
+#
+# Clippy runs WITHOUT `--release`: it shares the debug fingerprint cache with ci.yml's
+# `cargo clippy --workspace --all-targets`, and the only thing it adds over that line is the
+# `test-support` feature — the configuration in which the batteries and their support code are
+# actually compiled, and therefore the only one in which their warnings exist at all.
+run    = "cargo build --release -p busbar-store-example-plugin -p busbar-hook-test-plugin && cargo test --release -p busbar-mcp --features test-support && cargo test --release -p busbar-a2a --features test-support && cargo clippy -p busbar-mcp --all-targets --features test-support -- -D warnings && cargo clippy -p busbar-a2a --all-targets --features test-support -- -D warnings"
+
+[[segment]]
 id     = "core-data-plane"
 status = "active"
 tier   = "live-mock"
