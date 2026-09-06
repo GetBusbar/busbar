@@ -68,9 +68,33 @@ pub fn assert_empty_config_rejected<T>(open: impl Fn(&str) -> Result<T, String>)
 /// "no fields set."
 pub fn assert_whitespace_only_config_rejected<T>(open: impl Fn(&str) -> Result<T, String>) {
     let err = expect_err(open("   \n\t  "));
+    assert_descriptive(&err, "whitespace-only config");
+}
+
+/// The bar an error message has to clear for this testkit to call it DESCRIPTIVE, applied wherever
+/// one of these helpers promises that word.
+///
+/// It used to promise it and then assert only `!err.is_empty()`, which every one of these helpers
+/// passes with the message `"e"`. That is the gap that matters: what the plugin author is being
+/// checked on is whether an operator reading the boot log learns what is wrong, and a single
+/// character does not, while a bare `"invalid"` barely does. So the bar is a written one — several
+/// characters, more than one word, and some actual letters — low enough that no honest message
+/// fails it and high enough that a placeholder does.
+fn assert_descriptive(err: &str, what: &str) {
+    let trimmed = err.trim();
     assert!(
-        !err.is_empty(),
-        "whitespace-only config must be rejected with a NON-empty, descriptive error"
+        trimmed.len() >= 12,
+        "{what} must be rejected with a DESCRIPTIVE error, not a token an operator cannot act on; \
+         got {err:?}"
+    );
+    assert!(
+        trimmed.split_whitespace().count() >= 2,
+        "{what} must be rejected with a DESCRIPTIVE error — one word is a code, not an \
+         explanation; got {err:?}"
+    );
+    assert!(
+        trimmed.chars().filter(|c| c.is_alphabetic()).count() >= 8,
+        "{what} must be rejected with a DESCRIPTIVE error in words; got {err:?}"
     );
 }
 
@@ -78,10 +102,7 @@ pub fn assert_whitespace_only_config_rejected<T>(open: impl Fn(&str) -> Result<T
 /// silently fall back to defaults.
 pub fn assert_malformed_json_rejected<T>(open: impl Fn(&str) -> Result<T, String>) {
     let err = expect_err(open("{ this is not json"));
-    assert!(
-        !err.is_empty(),
-        "malformed JSON config must be rejected with a NON-empty, descriptive error"
-    );
+    assert_descriptive(&err, "malformed JSON config");
 }
 
 /// UNIVERSAL: a config missing a specific required field must be rejected. `field_name` is asserted
