@@ -1591,18 +1591,26 @@ fn mints_its_own_identity(verb: KernelVerb) -> bool {
 /// secret — and it also attributes two callers sharing one token to two different actors while
 /// attributing one caller rotating a token to one actor per rotation.
 ///
-/// The fallback is a literal rather than the credential for the same reason: a unit refused before
-/// the identity was resolved has no actor to name, and saying so is the honest record.
-fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
-    binding
-        .units
-        .principal(key)
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| UNRESOLVED_ACTOR.to_string())
+/// `None` where no identity was resolved, which is the answer the audit doors act on: a unit refused
+/// at or before Authenticate has no actor, so the previous release's chain takes no row for it. The
+/// literal that used to stand in was the CONFIGURED administrator's name, which made every refused
+/// unauthenticated mutation a row in that operator's own history.
+fn resolved_actor(binding: &AdminBinding, key: UnitKey) -> Option<String> {
+    binding.units.principal(key).map(|p| p.as_str().to_string())
 }
 
-/// What an administrative record names when no identity was resolved for the unit.
+/// What a step that must name somebody uses when the identity did not resolve.
+///
+/// Reached only by Route, and Route is downstream of Authenticate — a unit that reaches it has a
+/// principal, so this is the shape of an impossibility rather than a fallback anything exercises.
+/// It is NOT what the audit doors use: those decline to write at all, because a record naming a
+/// non-participant is a worse answer than no record.
 const UNRESOLVED_ACTOR: &str = "admin";
+
+/// The identity a step that cannot decline is handed. See [`UNRESOLVED_ACTOR`].
+fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
+    resolved_actor(binding, key).unwrap_or_else(|| UNRESOLVED_ACTOR.to_string())
+}
 
 /// The verbs unit's refusal vocabulary, said in the kernel's.
 ///
@@ -1660,15 +1668,22 @@ pub(crate) fn audit(
     let (Some(request), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
-        return Decision::proceed(token, unresolved_facts(outcome));
+        return Decision::proceed(
+            token,
+            unresolved_facts(
+                binding
+                    .units
+                    .request(ctx.key)
+                    .map(|request| request.method)
+                    .as_deref(),
+                outcome,
+            ),
+        );
     };
     if !resolved.read_only {
-        legacy.record_by(
-            resolved.verb,
-            &request.path,
-            outcome_word(outcome),
-            &actor_of(binding, ctx.key),
-        );
+        if let Some(actor) = resolved_actor(binding, ctx.key) {
+            legacy.record_by(resolved.verb, &request.path, outcome_word(outcome), &actor);
+        }
     }
     Decision::proceed(
         token,
@@ -1686,26 +1701,49 @@ pub(crate) fn audit_refused(
     legacy: &busbar_unit_audit::AuditLog,
     token: &UnitToken<Audit>,
     ctx: &UnitCtx,
-    _refusal: &Refusal,
+    refusal: &Refusal,
 ) -> Decision<Audit> {
     let (Some(request), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
+        // THE REFUSAL THAT HAPPENED, not one composed here. This arm used to seal every unresolved
+        // unit as a decode failure raised at Decode, whatever it had actually been refused for: a
+        // revoked credential, a denied scope and a saturated store all left one record, saying the
+        // bytes did not parse. That is the single thing an audit record exists to state, and it was
+        // the field this door overwrote. The step is the decision's own stamp where it carries one,
+        // and the door itself is the latest step it could have been raised at where it does not.
         return Decision::proceed(
             token,
-            unresolved_facts(&Outcome::Refused(
-                busbar_caps::StepName::Decode,
-                ReasonCode::DecodeFailed,
-            )),
+            unresolved_facts(
+                binding
+                    .units
+                    .request(ctx.key)
+                    .map(|request| request.method)
+                    .as_deref(),
+                &Outcome::Refused(
+                    refusal.step().unwrap_or(busbar_caps::StepName::Audit),
+                    refusal.reason(),
+                ),
+            ),
         );
     };
+    // A REFUSAL BEFORE THE IDENTITY RESOLVED APPENDS NOTHING. The previous release's chain is what
+    // an operator's history page reads, and for an unauthenticated administrative request it holds
+    // no row at all — the credential was never accepted, so no principal ever acted. Writing one
+    // anyway put a mutation in the history under the configured administrator's name for a request
+    // that administrator never made, which is worse than a gap: an anonymous caller could grow that
+    // operator's history one refused `DELETE` at a time. The attempt is still reported — it is the
+    // refusal the caller receives and the sealed facts below — it is simply not attributed to
+    // somebody who was not there.
     if !resolved.read_only {
-        legacy.record_by(
-            resolved.verb,
-            &request.path,
-            busbar_unit_audit::OUTCOME_REJECTED,
-            &actor_of(binding, ctx.key),
-        );
+        if let Some(actor) = resolved_actor(binding, ctx.key) {
+            legacy.record_by(
+                resolved.verb,
+                &request.path,
+                busbar_unit_audit::OUTCOME_REJECTED,
+                &actor,
+            );
+        }
     }
     Decision::proceed(
         token,
@@ -1719,13 +1757,42 @@ pub(crate) fn audit_refused(
 /// What the record says about a unit whose verb never resolved.
 ///
 /// It still ended, and it still has an operation class, because "the table declares no such
-/// operation" IS an admin-read answer: the surface was asked a question and said no. Naming a class
-/// here rather than leaving one unset is what keeps every sealed end comparable.
-pub(crate) fn unresolved_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
+/// operation" IS an answer: the surface was asked a question and said no. Naming a class here
+/// rather than leaving one unset is what keeps every sealed end comparable.
+///
+/// WHICH class is read off the method, not fixed. Every unresolved unit used to seal as
+/// `admin_read`, so an unrouted `DELETE` and an unrouted `GET` came out of the record as the same
+/// event — an operator reading a page. That answer is right for one of them and wrong for the other
+/// in the direction that matters: the record under-reports the attempted blast radius, which is
+/// exactly the column somebody reviewing an administrative history is reading for. A method the
+/// request never carried (there is no request at all, so nothing was asked of any resource) stays
+/// a read, because a unit that never presented a method attempted no mutation.
+pub(crate) fn unresolved_facts(
+    method: Option<&str>,
+    outcome: &Outcome,
+) -> busbar_contract::AuditFacts {
     busbar_contract::AuditFacts {
-        op_class: busbar_contract::OpClassId::new("admin_read"),
+        op_class: busbar_contract::OpClassId::new(match method {
+            Some(method) if !is_read_method(method) => OP_UNRESOLVED_WRITE,
+            _ => OP_UNRESOLVED_READ,
+        }),
         finish: finish_of(outcome),
     }
+}
+
+/// The two operation classes the admin plane seals a resolved unit under, spelt here for the
+/// unresolved ones so that both halves of the record use one vocabulary. Taken from the plane's own
+/// table rather than invented, because a class this file coined would be a third word for a split
+/// the surface already has two.
+const OP_UNRESOLVED_READ: &str = "admin_read";
+/// See [`OP_UNRESOLVED_READ`].
+const OP_UNRESOLVED_WRITE: &str = "admin_write";
+
+/// Whether this method reads. The two the HTTP specification defines as safe, and nothing else —
+/// an unknown method is not one of them, so it seals as a write, which is the conservative
+/// direction for a column an audit review is read for.
+fn is_read_method(method: &str) -> bool {
+    method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
 }
 
 fn outcome_word(outcome: &Outcome) -> &'static str {
@@ -3329,7 +3396,10 @@ mod tests {
     /// - a READ appends none, because the chain is a record of what changed and a listing changed
     ///   nothing. A chain that grew on every GET would bury the mutations an operator came to find;
     /// - a unit refused before Admit still appends one, under the rejected outcome, because the
-    ///   attempt happened and a chain that recorded only successes is the one an attacker wants.
+    ///   attempt happened and a chain that recorded only successes is the one an attacker wants —
+    ///   PROVIDED an identity was resolved for it. A unit refused before that has nobody to
+    ///   attribute to, and the fourth answer below is that it appends nothing rather than
+    ///   attributing an anonymous caller's refused mutation to the configured administrator.
     ///
     /// The chain is verified after each, so the entries are linked rather than merely counted.
     #[cfg(feature = "root-admin")]
@@ -3350,6 +3420,12 @@ mod tests {
             .verb(ctx.key)
             .expect("the operator-key write is a row the table names");
         assert!(!resolved.read_only, "the fixture must be a mutation");
+        // Verify is what keeps the resolved identity, and the fixture stands in for it: a unit that
+        // reaches the audit door having been authenticated has one, and that is what the record is
+        // attributed to.
+        binding
+            .units
+            .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
 
         let before = legacy.len();
         let _ = audit(
@@ -3363,9 +3439,9 @@ mod tests {
         let entry = legacy.list(1).pop().expect("the entry just sealed");
         assert_eq!(entry.action, resolved.verb);
         assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_APPLIED);
-        // The fixture never ran Verify, so the record names the unresolved actor -- never the
-        // credential the request presented, which is a secret and stays out of the chain.
-        assert_eq!(entry.principal, UNRESOLVED_ACTOR);
+        // The record names the identity Verify resolved -- never the credential the request
+        // presented, which is a secret and stays out of the chain.
+        assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
         assert!(!entry.principal.contains("admin-token"));
         assert!(legacy.verify(), "the chain is linked");
 
@@ -3389,11 +3465,14 @@ mod tests {
         );
         assert_eq!(legacy.len(), before, "a read is not a mutation");
 
-        // A refused mutation is recorded as an attempt, not dropped.
+        // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
         let mut mutating = a_request();
         mutating.method = "POST".to_string();
         mutating.path = "/api/v1/admin/operator-key".to_string();
         let (binding, ctx, seal) = a_bound_unit(mutating);
+        binding
+            .units
+            .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
         let before = legacy.len();
         let _ = audit_refused(
             &binding,
@@ -3405,7 +3484,120 @@ mod tests {
         assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
         let entry = legacy.list(1).pop().expect("the entry just sealed");
         assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_REJECTED);
+        assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
         assert!(legacy.verify(), "the chain is still linked");
+
+        // AND THE SAME MUTATION BY NOBODY IS NOT. No principal was ever set on this unit, which is
+        // the state of every request refused at or before Authenticate. The previous release's
+        // chain holds no row for one, and neither does this: a record naming the configured
+        // administrator for a request that administrator never made would let an anonymous caller
+        // grow that operator's history one refused write at a time.
+        let mut mutating = a_request();
+        mutating.method = "POST".to_string();
+        mutating.path = "/api/v1/admin/operator-key".to_string();
+        let (binding, ctx, seal) = a_bound_unit(mutating);
+        assert!(
+            binding.units.principal(ctx.key).is_none(),
+            "the fixture must be a unit no identity was resolved for"
+        );
+        let before = legacy.len();
+        let _ = audit_refused(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::Unauthenticated),
+        );
+        assert_eq!(
+            legacy.len(),
+            before,
+            "an unattributable refusal appends nothing"
+        );
+        assert!(legacy.verify(), "the chain is still linked");
+    }
+
+    /// The identity a fixture stands Verify's answer in for. Deliberately NOT the word the
+    /// unresolved fallback uses, so a test that passed by accident because the two agreed would
+    /// stop passing.
+    const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
+
+    /// A unit whose verb never resolved is sealed by its METHOD, not as a read whatever it asked.
+    ///
+    /// Written as an inequality against the read class as well as an equality on the write one,
+    /// because what matters is not the spelling that replaced it but that an attempted mutation
+    /// stops leaving the record as somebody browsing a page. The safe methods stay reads, and an
+    /// absent request — a unit that presented no method at all — stays one too, because it
+    /// attempted nothing.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
+        let refused = &Outcome::Refused(busbar_caps::StepName::Decode, ReasonCode::DecodeFailed);
+        let read = busbar_contract::OpClassId::new(OP_UNRESOLVED_READ);
+        let write = busbar_contract::OpClassId::new(OP_UNRESOLVED_WRITE);
+
+        for method in ["GET", "HEAD", "head"] {
+            assert_eq!(
+                unresolved_facts(Some(method), refused).op_class,
+                read,
+                "{method} reads"
+            );
+        }
+        for method in ["POST", "PUT", "PATCH", "DELETE", "delete", "WHAT"] {
+            let facts = unresolved_facts(Some(method), refused);
+            assert_ne!(facts.op_class, read, "{method} is not a read");
+            assert_eq!(facts.op_class, write, "{method} seals as a write");
+        }
+        assert_eq!(
+            unresolved_facts(None, refused).op_class,
+            read,
+            "a unit that presented no method attempted no mutation"
+        );
+        assert_eq!(
+            unresolved_facts(None, refused).finish,
+            busbar_contract::FinishClass::Error
+        );
+    }
+
+    /// The refused-audit door seals the refusal that HAPPENED, not one it composed.
+    ///
+    /// The door used to answer with a decode failure raised at Decode for every unresolved unit,
+    /// whatever it had actually been refused for — which overwrote the single field an audit record
+    /// exists to state. Two different refusals are asked for here, because one would pass against a
+    /// fixed sentinel that happened to match it.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_refused_door_seals_the_refusal_that_happened() {
+        let legacy = busbar_unit_audit::AuditLog::with(
+            Box::new(PinnedClock),
+            Box::new(busbar_unit_audit::NoSeam),
+        );
+        // A path the plane's table does not declare, so the verb never resolves and the door takes
+        // its unresolved arm — the one that used to fabricate.
+        let mut unrouted = a_request();
+        unrouted.method = "DELETE".to_string();
+        unrouted.path = "/api/v1/admin/nothing-declares-this".to_string();
+        let (binding, ctx, seal) = a_bound_unit(unrouted);
+        assert!(
+            binding.units.verb(ctx.key).is_none(),
+            "the fixture must be a unit whose verb never resolved"
+        );
+
+        let facts = audit_refused(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::Unauthenticated),
+        )
+        .into_result(&seal)
+        .expect("the door seals a record for an unresolved unit");
+        assert_eq!(
+            facts.op_class,
+            busbar_contract::OpClassId::new(OP_UNRESOLVED_WRITE),
+            "the DELETE it asked with, not the read it used to be sealed as"
+        );
+        assert_eq!(facts.finish, busbar_contract::FinishClass::Error);
+        assert_eq!(legacy.len(), 0, "and nobody was attributed for it");
     }
 
     // ── the five ledger views ───────────────────────────────────────────────────────────────────
