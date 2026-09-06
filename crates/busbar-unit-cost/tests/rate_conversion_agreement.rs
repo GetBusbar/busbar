@@ -3,23 +3,24 @@
 
 //! The two decimal-to-money conversions, held to the same answer.
 //!
-//! There are two of them in the tree, not one. This crate's [`nano_rate`] is the pricing law's
-//! conversion; the admission unit carries its own copy inside its rate projection, because that
-//! crate depends on nothing here and cannot call across. Both take micro-units per unit of quantity
-//! off config, multiply by a thousand, round to nearest half away from zero, and clamp anything not
-//! finite or not positive to zero.
+//! There is ONE of them in the tree now, and this file is what says so.
 //!
-//! They have to give the same integer for the same configured rate. If they ever drift, a request
-//! is JUDGED at one rate by the door and BILLED at another by the ledger, and the gap between the
-//! two is silent — no error, no refusal, just a bill that does not match the decision that produced
-//! it. This file is the only place that can notice, so it does: ten thousand generated rates, and
-//! the specific values where a rounding rule or a clamp would be the thing that differs.
+//! There used to be two. This crate's [`nano_rate`] is the pricing law's conversion; the admission
+//! unit carried its own copy inside its rate projection, because that crate named nothing here and
+//! could not call across. They had to give the same integer for the same configured rate — if they
+//! drifted, a request would be JUDGED at one rate by the door and BILLED at another by the ledger,
+//! silently, with no error and no refusal, just a bill that did not match the decision that produced
+//! it. This file was the only place that could notice.
 //!
-//! The dependency that makes the comparison possible is a DEV dependency. Neither library gains a
-//! dependency on the other; nothing in either crate's compiled arithmetic changes. What the two
-//! Cargo files say about having no workspace dependencies beyond the capability types remains true
-//! of both libraries, and the copies are now checked against each other instead of merely asserted
-//! to match.
+//! It noticed. A clamp for a finite-but-overflowing rate landed on one copy and not the other, and
+//! the two answered a config typo with too many zeros as "prices at nothing" and "prices at the
+//! largest rate there is". A test that catches a drift is not as good as an arithmetic that cannot
+//! drift, so the admission unit's projection now CALLS this crate's conversion.
+//!
+//! What is left is a guard against the second copy coming back. Both sides of every assertion below
+//! are the same function today, so every case passes by construction — and the moment somebody
+//! re-forks those three lines to "avoid a dependency", these are the assertions that stop being
+//! trivially true.
 
 use busbar_unit_admission::RateNanos;
 use busbar_unit_cost::nano_rate;
@@ -73,10 +74,21 @@ fn the_two_conversions_agree_on_ten_thousand_generated_rates() {
 }
 
 /// The values where a difference would actually live: the rounding boundary in both directions,
-/// zero, the smallest configured rate that is not zero, and the three clamped inputs. A generator
-/// reaches these only by luck, so they are named.
+/// zero, the smallest configured rate that is not zero, the clamped inputs, and the whole
+/// neighbourhood of the `u64` ceiling — which is where the drift that prompted the unification
+/// actually was. A generator reaches these only by luck, so they are named.
+///
+/// The `u64::MAX`-adjacent block is the sharp one. A float outside the target integer's range
+/// SATURATES when cast rather than wrapping, so a config typo with too many zeros converts to the
+/// largest rate there is — an astronomical overcharge — unless something clamps it. Whichever way
+/// the law resolves that (clamp to zero, or take the saturated value), the door and the ledger have
+/// to resolve it the SAME way, and these rows are what says they do.
 #[test]
 fn the_two_conversions_agree_at_every_boundary_value() {
+    // The largest configured micro-rate whose ×1000 still fits a `u64`, and its neighbours either
+    // side of the ceiling. Written as arithmetic on `u64::MAX` rather than as a literal, so the
+    // cases follow the type rather than a number somebody typed once.
+    const CEILING_MICRO: f64 = (u64::MAX as f64) / 1000.0;
     let boundaries = [
         0.0,
         0.0004, // below the half-nano-unit boundary: floors to nothing
@@ -92,7 +104,14 @@ fn the_two_conversions_agree_at_every_boundary_value() {
         f64::NAN, // cannot be ordered, so cannot be priced
         f64::INFINITY,
         f64::NEG_INFINITY,
-        f64::MAX, // finite, but times a thousand it is not
+        f64::MAX,            // finite, but times a thousand it is not
+        CEILING_MICRO,       // right at the `u64` ceiling
+        CEILING_MICRO * 2.0, // finite, and just past it
+        1e15,                // ×1000 is 1e18: comfortably inside, must convert normally
+        1e16,                // ×1000 is 1e19: still inside, and close
+        1e17,                // ×1000 is 1e20: finite and past the ceiling
+        1e18,                // the config-typo case the clamp was written for
+        -1e18,               // and its negative twin, which is not a discount either
     ];
     for micro in boundaries {
         assert_eq!(
