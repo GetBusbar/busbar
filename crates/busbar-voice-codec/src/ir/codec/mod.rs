@@ -141,6 +141,17 @@ pub struct DecodeState {
     /// them, so the writer accumulates here and frames the call ONCE at its close. `None` for the
     /// entry means the accumulation was abandoned (over the ceiling) — the call frames nothing.
     call_args: HashMap<CallRef, Option<String>>,
+    /// The order [`DecodeState::call_args`] took its entries in, oldest first, so that table is
+    /// bounded by the same ceiling its sibling `call_ids` is.
+    ///
+    /// It needs its own order rather than borrowing `call_id_order`, because the two tables are
+    /// keyed differently and are emptied at different moments: an id leaves `call_ids` when it is
+    /// evicted, an accumulation leaves `call_args` when the call closes, and a call whose close
+    /// never arrives leaves it never. Without this, an upstream that opens calls and never closes
+    /// them grows one held accumulation per call for the life of the session, and an id evicted
+    /// from `call_ids` and then sighted again mints a fresh handle — orphaning the entry the old
+    /// handle keyed, which nothing can ever reach to remove.
+    call_args_order: VecDeque<CallRef>,
     /// Downlink audio bytes RELAYED for the CURRENT item — reset when the item ends (its audio is
     /// done, a new audio-bearing item begins) and on a barge-in flush.
     played_bytes: u64,
@@ -162,6 +173,7 @@ impl Default for DecodeState {
             call_names: HashMap::new(),
             dropped_fields: VecDeque::new(),
             call_args: HashMap::new(),
+            call_args_order: VecDeque::new(),
             played_bytes: 0,
             played_clock_ms: None,
             output_fmt: AudioFormat::Pcm16,
@@ -228,6 +240,11 @@ impl DecodeState {
     /// ATOMICALLY has nothing to frame from a fragment, so the pieces are held here until the call
     /// closes. Past [`MAX_TOOL_ARG_BYTES`] the accumulation is abandoned and stays abandoned.
     ///
+    /// The NUMBER of accumulations is bounded by [`MAX_TRACKED_CALL_IDS`] too, because the size of
+    /// each one alone is no bound on the table: only a call that CLOSES gives its entry back, and
+    /// an upstream is under no obligation to close one. Past the ceiling the oldest accumulation is
+    /// given up, exactly as the oldest call id is.
+    ///
     /// A fragment that is ITSELF a whole JSON OBJECT is not a fragment of anything: it is the dialect
     /// handing the arguments over complete (an atomic call's `args`, or the complete `arguments` a
     /// streamed call states when it closes), so it REPLACES what was held rather than being appended
@@ -237,6 +254,14 @@ impl DecodeState {
         let whole = serde_json::from_slice::<Value>(fragment)
             .ok()
             .filter(Value::is_object);
+        if !self.call_args.contains_key(&call) {
+            self.call_args_order.push_back(call);
+            while self.call_args_order.len() > MAX_TRACKED_CALL_IDS {
+                if let Some(oldest) = self.call_args_order.pop_front() {
+                    self.call_args.remove(&oldest);
+                }
+            }
+        }
         let held = self
             .call_args
             .entry(call)
@@ -263,6 +288,10 @@ impl DecodeState {
     /// for this answer; a call dispatched without the arguments the model asked for is a different
     /// call.
     pub fn take_call_args(&mut self, call: CallRef) -> Option<Value> {
+        // Out of the order too, not only out of the table: a closed call that stayed in the order
+        // would spend one of the ceiling's places and evict a LIVE accumulation in its stead, which
+        // is the one loss this ceiling must not cause.
+        self.call_args_order.retain(|held| *held != call);
         let buf = self.call_args.remove(&call)??;
         if buf.is_empty() {
             return None;
