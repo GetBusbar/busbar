@@ -107,6 +107,14 @@ fn correlation_value<'u>(raw_id: &[u8], arena: &'u dyn Arena) -> Option<Correlat
         }
         return Some(CorrelationValue::Num(n));
     }
+    // The EMPTY value is not an identifier. This protocol writes it on an answer whose request
+    // could not be read at all, so it names no request; carrying it as the four letters it is spelled
+    // with makes it a text identifier that a caller could send — and then two unrelated answers, one
+    // to that caller and one to a request nobody could read, correlate onto one hold. A quoted
+    // "null" is a caller's own identifier and is unaffected: these are the bare bytes.
+    if raw_id == b"null" {
+        return None;
+    }
     // A quoted identifier is the text between the quotes; anything else is the bytes as they are.
     let inner = match (raw_id.first(), raw_id.last(), raw_id.len()) {
         (Some(b'"'), Some(b'"'), n) if n >= 2 => &raw_id[1..n - 1],
@@ -259,6 +267,24 @@ mod tests {
         assert_eq!(
             correlation_value(b"0", &arena),
             Some(CorrelationValue::Num(0))
+        );
+    }
+
+    /// The EMPTY identifier correlates with nothing.
+    ///
+    /// This protocol spells "the request could not be read" as the empty value, so an answer
+    /// carrying it answers no request of anyone's. It used to be carried as the four letters it is
+    /// written with, which is a text identifier a caller can send for itself — and then that
+    /// caller's own answer and an answer to a request nobody could read land on one hold. A QUOTED
+    /// one is a caller's identifier and is carried as itself.
+    #[test]
+    fn the_empty_identifier_correlates_with_nothing() {
+        let arena = TestArena;
+        assert_eq!(correlation_value(b"null", &arena), None);
+        assert!(correlation_for(b"null", &arena).is_none());
+        assert_eq!(
+            correlation_value(br#""null""#, &arena),
+            Some(CorrelationValue::Str("null"))
         );
     }
 
