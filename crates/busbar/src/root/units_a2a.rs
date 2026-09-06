@@ -753,13 +753,38 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 max_unit_price_nanos: self.bindings.bytes_nanos,
             }],
             fee_nanos: if self.draft.has_upstream() {
-                u64::try_from(self.bindings.pricer.price_per_request_cents().max(0))
-                    .unwrap_or(0)
-                    .saturating_mul(NANOS_PER_CENT)
+                self.fee_nanos()
             } else {
                 0
             },
         }
+    }
+
+    /// What a run of this plane's priced document is worth, in nano-units.
+    ///
+    /// THE ROOT PRICES AND THE PLANE REPORTS. The plane counted bytes, which is a quantity in its
+    /// own meter class; the exit path settles MONEY — `Posted::settle` takes a priced total in the
+    /// nano-units the hold was reserved in — so somewhere between the two the figure has to be
+    /// multiplied by the card's rate, and the root is the only half of the pair allowed to know the
+    /// rate at all. Here is that multiplication, written once, so the reservation the door opened
+    /// and the amount the exit settles are two readings of one rate rather than two numbers in two
+    /// units.
+    ///
+    /// A card that prices this class at nothing answers zero, which is a unit that costs its caller
+    /// nothing but the flat fee — never a unit that is not metered.
+    fn priced(&self, bytes: u64) -> u64 {
+        bytes.saturating_mul(self.bindings.bytes_nanos)
+    }
+
+    /// The flat per-request fee, in nano-units.
+    ///
+    /// One decision, read by the door that reserves it and by the settlement that posts it. WHETHER
+    /// it applies is [`fee_evidence`]'s answer and not this function's: this is only what one fee is
+    /// worth, and a fee nobody drew is multiplied by a count of zero.
+    fn fee_nanos(&self) -> u64 {
+        let cents =
+            u128::try_from(self.bindings.pricer.price_per_request_cents().max(0)).unwrap_or(0);
+        u64::try_from(cents.saturating_mul(u128::from(NANOS_PER_CENT))).unwrap_or(u64::MAX)
     }
 
     /// The audit record one ending seals.
@@ -1085,8 +1110,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
         // The bytes the request carried accrue as the unit runs; the answer's bytes settle at the
         // metering step. The meter is the kernel's running total and the hold is applied to it at
-        // the exit, which is why this is an accrual and not a posting.
-        meter.accrue(self.draft.request_bytes);
+        // the exit, which is why this is an accrual and not a posting — and the meter counts in the
+        // nano-units the hold was reserved in, so what accrues is the priced document and never the
+        // count of its bytes.
+        meter.accrue(self.priced(self.draft.request_bytes));
         // How far this unit's reservation may still grow, read off the same chain the door was
         // judged against. Offered here rather than at the door because it is a reading of the window
         // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
@@ -1179,7 +1206,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(_) => Decision::refuse(token, Refusal::new(ReasonCode::MeterDisputed)),
             Ok(metered) => {
                 let mut progress = read_through_poison(&self.progress);
-                progress.metered = Some(self.draft.response_bytes);
+                // PRICED HERE, before the figure becomes evidence. What the plane read is a
+                // quantity; what the exit path settles is money, and the multiplication between
+                // them belongs on the side of the seam that holds the rate.
+                progress.metered = Some(self.priced(self.draft.response_bytes));
                 progress.disputed = metered.disputed();
                 Decision::proceed(token, metered.usage)
             }
@@ -1261,9 +1291,19 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         let progress = read_through_poison(&self.progress);
+        let fee = fee_evidence(&self.draft, ctx.origin, progress.metered.is_some());
+        // The fee is DECIDED once, by the same function the audit record reads, and PRICED once,
+        // by the same function the door's estimate read. What is added here is the money for the
+        // fees this unit actually drew — a count of one or zero times what one is worth — because
+        // a fee the door reserved and the exit never posted is a fee handed back to the caller's
+        // slice at the moment the unit ends.
+        let (fees, _) = busbar_kernel::teller::fee_count(&fee);
+        let fee_nanos = u64::from(fees).saturating_mul(self.fee_nanos());
         Evidence {
-            located: progress.metered,
-            accrued_floor: self.draft.request_bytes,
+            located: progress
+                .metered
+                .map(|priced| priced.saturating_add(fee_nanos)),
+            accrued_floor: self.priced(self.draft.request_bytes),
             // Nothing is required of a card that does not price this class. With a card that does,
             // the located figure is what settles and the floor is the tripwire beside it.
             locator_required: false,
@@ -1278,7 +1318,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // The fee's origin rule and the request slot's are the same rule: a client unit whose
             // verified set contains an agent draws one, and a push the agent sent draws none.
             upstream_candidate: self.draft.has_upstream(),
-            fee: fee_evidence(&self.draft, ctx.origin, progress.metered.is_some()),
+            fee,
         }
     }
 }
@@ -1925,6 +1965,63 @@ mod tests {
         );
     }
 
+    /// **What settles is money.** The exit path prices the hold against the figure this leg hands
+    /// it — `Posted::settle` takes nano-units — so a leg that reported a byte COUNT would reserve
+    /// at the card's rate per byte and settle at the number of bytes: a hundred-kilobyte request at
+    /// five thousand nano-units a byte holds back half a unit of currency and posts two thousand
+    /// nano-units, which is not a discount, it is a different unit.
+    ///
+    /// And the flat fee is part of what the unit is worth. The door reserved it; a settlement that
+    /// left it behind returns it to the caller's slice at the exit, so the request the deployment
+    /// charges a fee for is served for nothing.
+    #[test]
+    fn what_settles_is_the_priced_document_and_the_fee_the_door_reserved() {
+        const BYTES_NANOS: u64 = 5_000;
+        const FEE_CENTS: i64 = 3;
+        let mut deployment = deployment(one_call_at_a_time("a2a-team"));
+        deployment.pricer = Pricer::flat(FEE_CENTS);
+        deployment.bytes_nanos = BYTES_NANOS;
+        let unit = deployment.calling(None);
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        Units::meter(
+            &unit,
+            &UnitToken::mint(&seal),
+            &UsageToken::mint(&seal),
+            &a2a_ctx(),
+            &Outcome::Completed,
+        )
+        .into_result(&seal)
+        .expect("the metering step folds the one class this plane declares");
+
+        let fee_nanos = u64::try_from(FEE_CENTS).expect("a positive fee") * 10_000_000;
+        let evidence = unit.evidence(&a2a_ctx());
+        assert_eq!(
+            evidence.located,
+            Some(256 * BYTES_NANOS + fee_nanos),
+            "the answer's bytes at the card's rate, plus the one fee the unit drew"
+        );
+        assert_ne!(
+            evidence.located,
+            Some(256),
+            "a count of bytes is not a sum of money"
+        );
+        assert_eq!(
+            evidence.accrued_floor,
+            128 * BYTES_NANOS,
+            "and the floor beside it is the request document at the same rate"
+        );
+
+        // The reservation is in the same unit as the settlement, which is the whole claim: the
+        // door sized this hold off the same rate and the same fee.
+        let estimate = unit.estimate();
+        assert_eq!(estimate.fee_nanos, fee_nanos);
+        assert_eq!(
+            estimate.pre_tier_nanos(),
+            u128::from(128 * BYTES_NANOS + fee_nanos)
+        );
+    }
+
     /// The four endings map one for one onto the audit unit's own four.
     #[test]
     fn every_ending_has_an_audited_spelling() {
@@ -2546,6 +2643,9 @@ mod tests {
         door: Door<busbar_unit_admission::InMemoryCells>,
         groups: busbar_unit_admission::GroupTable,
         pricer: Pricer,
+        /// What the deployment's card charges for one byte of the priced document. Zero is the
+        /// unpriced deployment every cell that is not about money runs under.
+        bytes_nanos: u64,
         records: RecordLegs,
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope: crate::root::policy::ScopePolicy,
@@ -2571,6 +2671,7 @@ mod tests {
             door: Door::new(busbar_unit_admission::InMemoryCells::new()),
             groups,
             pricer: Pricer::flat(0),
+            bytes_nanos: 0,
             records: RecordLegs::new(Arc::new(RecordingStore::default())),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
@@ -2612,7 +2713,7 @@ mod tests {
                     door: &self.door,
                     chain,
                     pricer: &self.pricer,
-                    bytes_nanos: 0,
+                    bytes_nanos: self.bytes_nanos,
                     records: &self.records,
                     meter_policy: &self.meter_policy,
                     scope_policy: &self.scope,
