@@ -23,11 +23,12 @@ const BYTE_FAMILY: &str = "byte";
 /// class and calls it bytes, and that is what is declared: a unit of this plane is one exchange with
 /// an agent, and what an exchange costs is what it moved.
 ///
-/// The direction says where the ESTIMATE comes from — the ingress-derived figure, which the
-/// admission step reads off the span the admit facts point at. The SETTLEMENT comes from what the
-/// metering step read off the answer. Estimate from one side, settle from the other, is the same
-/// shape every class in every plane has; it is only unusual here because the class's name mentions
-/// a direction and the class itself does not.
+/// The direction says which side of the exchange the class is sized from, and it says the ANSWER,
+/// because the answer is what the metering step measures: the one quantity this plane reports under
+/// this class is the length of the document it just read back. It used to say the request, described
+/// as an estimate from one side settled from the other — which is not the shape the other planes
+/// have (their input class settles input and their response class settles response) and which left a
+/// rate card reading the declaration pricing a caller's request at the size of an agent's answer.
 ///
 /// One observation worth recording rather than smoothing over: a single byte class cannot separate
 /// what a caller sent from what an agent returned, so a deployment that wanted to price those
@@ -36,7 +37,7 @@ const BYTE_FAMILY: &str = "byte";
 const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
     key: MeterClassId::new("bytes"),
     family: BYTE_FAMILY,
-    direction: ClassDirection::Input,
+    direction: ClassDirection::Response,
     // A byte is a byte: the class's own quantity is the quantity, so nothing is divided.
     default_divisor: 1,
 }];
