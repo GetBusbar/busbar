@@ -378,6 +378,38 @@ run_selftest() {
   fi
   rm -rf "$ctree"
 
+  # 7. THE SUBJECT. Four rules are scoped by a path glob or a symbol name, and each of them used to
+  # answer "zero" when its subject was renamed out from under it — a live FAIL turning into the
+  # cleanest possible PASS. Rename the subject; the row must be RED (UNPROVEN), not 0/PASS. Each
+  # case is a fresh copy of the pristine tree so no sabotage leaks into the next.
+  #   spec: <row id>|<shell that sabotages $ctree>
+  local sub_spec sub_id sub_do sub_status
+  for sub_spec in \
+    "one-pick-site|grep -rl pick_among \"\$ctree/crates\" --include=*.rs | xargs -r sed -i.bak 's/pick_among/pick_elsewhere/g'" \
+    "loc-ceilings:kernel:teller|mv \"\$ctree/crates/busbar-kernel/src/teller.rs\" \"\$ctree/crates/busbar-kernel/src/teller_renamed.rs\"" \
+    "plane-no-money|rm -rf \"\$ctree\"/crates/busbar-plane-* \"\$ctree\"/crates/busbar-*-codec \"\$ctree\"/crates/busbar-llm/src/unit" \
+    "legacy-reach:busbar_substrate|rm -rf \"\$ctree/crates/busbar/src/root\" \"\$ctree/crates/busbar/src/main.rs\""
+  do
+    sub_id="${sub_spec%%|*}"; sub_do="${sub_spec#*|}"
+    rm -rf "$ctree"; mkdir -p "$ctree"
+    (cd "$pristine" && tar -cf - .) | tar -C "$ctree" -xf -
+    if ! eval "$sub_do" >/dev/null 2>&1; then
+      fail=1; note "SUBJECT $sub_id FAILED: could not rename the subject away ($sub_do)"; continue
+    fi
+    find "$ctree" -name '*.rs.bak' -delete 2>/dev/null || true
+    CONSTRUCTION_TOML="$scratch/calibrated.toml" CONSTRUCTION_OUT="$cout" bash "$cgate" --check >/dev/null 2>&1
+    sub_status="$(awk -F'\t' -v id="$sub_id" '$1==id{print $2}' "$cout/ledger.tsv")"
+    if [ "$sub_status" = "FAIL" ] \
+       && awk -F'\t' -v id="$sub_id" '$1==id{print $4}' "$cout/ledger.tsv" | grep -q UNPROVEN; then
+      note "SUBJECT $sub_id: a renamed subject is RED (UNPROVEN), not a clean 0"
+    else
+      fail=1
+      note "SUBJECT $sub_id FAILED: a renamed subject read as [${sub_status:-no row at all}], not UNPROVEN"
+      awk -F'\t' -v id="$sub_id" '$1==id{print "    " $2 ": " $4}' "$cout/ledger.tsv"
+    fi
+  done
+  rm -rf "$ctree"
+
   if [ "$fail" -ne 0 ]; then
     red "construction-gate SELF-TEST FAILED — a rule would let its violation through"
     return 1
