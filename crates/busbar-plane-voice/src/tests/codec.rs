@@ -306,6 +306,10 @@ fn a_tool_call_open_surfaces_as_progress_one_shot() {
 /// used to name the constant zero for every one of them, so the two were indistinguishable: the
 /// first reply satisfied whichever leg was found first, and the second call waited out its whole
 /// deadline against an answer that had already been delivered elsewhere.
+///
+/// What the leg names is the declared KEY; what tells the two calls apart is the identifier the
+/// draft mints under it, in the unit's own arena, as itself. This plane states neither twice — it
+/// no longer folds the identifier into a number to get a copy of it onto the sealed leg.
 #[test]
 fn two_open_tool_calls_wait_on_two_different_correlations() {
     let plane = openai_plane();
@@ -335,18 +339,28 @@ fn two_open_tool_calls_wait_on_two_different_correlations() {
         else {
             panic!("a tool-call open is its own unit");
         };
-        // The draft's own correlation carries the identifier itself; the leg is what the kernel
-        // matches a reply against, and the two must not disagree about which call is which.
+        let out = draft
+            .correlation_out
+            .expect("a tool call mints a correlation");
+        // The draft's own correlation carries the identifier itself, not a fold of it.
         assert_eq!(
-            draft.correlation_out.map(|c| c.value),
-            Some(busbar_contract::ids::CorrelationValue::Str(call_id))
+            out.value,
+            busbar_contract::ids::CorrelationValue::Str(call_id)
         );
         let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
         match plane.verify(&unit, &c) {
             busbar_contract::dest::DestinationFacts::Client {
-                mode: busbar_contract::dest::ClientMode::AwaitReply { correlation, .. },
+                mode:
+                    busbar_contract::dest::ClientMode::AwaitReply {
+                        correlation_key, ..
+                    },
                 ..
-            } => correlation.value,
+            } => {
+                // The leg names the key the draft minted under. If those two ever disagreed the
+                // kernel would have a wait it could never satisfy.
+                assert_eq!(correlation_key, out.fact_key);
+                format!("{:?}", out.value)
+            }
             other => panic!("a tool call is delivered to the client, got {other:?}"),
         }
     };
