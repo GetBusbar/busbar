@@ -233,10 +233,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly five entries of kind `breaking`:
+The accepted-differences register for this release has exactly six entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
-from the hook view, and one refusal that now comes out of the resolver rather than the validator.
+from the hook view, one refusal that now comes out of the resolver rather than the validator,
+and one refusal status on `POST /keys/{id}/rotate` — an improvement in substance, registered
+here because the register lets only a `breaking` entry accept a status change.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -258,6 +260,17 @@ identically, and every 1.5.5 key and minted secret carries over.
   opt in now gets its usage chunk on the fallback hop too. **Migration:** if you priced or
   capacity-planned on 1.5.5's numbers for traffic that routinely fails over, expect those keys'
   recorded spend to rise to what they actually used; no config change is needed.
+- 1.6.0 Improvements: rotate refuses an overlong key id like its siblings.
+  `POST /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` endpoint that never bounded its
+  path id: read, patch, delete, usage and revoke all answer `400 invalid_request` / "id must be
+  <= 64 characters", while rotate carried an arbitrarily long caller-supplied id through to the
+  store lookup and — uniquely to this handler — into a process-global idempotency cache key, then
+  answered `404 not_found` / "key not found". 1.6.0 applies the same bound, ahead of the
+  idempotency block, and declares the `Validation / Overlong` error the endpoint's contract had
+  omitted (an additive `openapi.json` change; no existing response moved). **Migration:** a caller
+  that sent an over-length id to rotate was refused before and is refused now; it receives the
+  siblings' `400` and message instead of a misleading `404`. Ids of 64 characters or fewer — every
+  id Busbar has ever minted — are unaffected; no config change is needed.
 - 1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both
   the buffered and the streamed path. Cohere reports usage twice — a raw `usage.tokens` bucket and
   a separately-metered `usage.billed_units` bucket, and `billed_units` is what the operator is
