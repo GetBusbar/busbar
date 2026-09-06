@@ -630,43 +630,19 @@ impl ProtocolWriter for OpenAiWriter {
                     None
                 }
                 crate::ir::IrDelta::CitationsDelta(cits) => {
-                    // A `chat.completion.chunk` DOES carry `choices[].delta.annotations` — it is the
-                    // same `url_citation` shape the NON-stream writer builds at `message.annotations`
+                    // A `chat.completion.chunk` DOES carry `choices[].delta.annotations` — the same
+                    // `url_citation` shape the NON-stream writer builds at `message.annotations`
                     // (see `write_response`), which is the proof the shape exists: this arm used to
                     // decline it, so the SAME request against the SAME backend returned sources at
                     // `stream:false` and no sources at `stream:true`. Nothing about the request
                     // explains that difference to the caller, which is what made it the worst shape
                     // of this loss rather than merely the largest.
                     //
-                    // Offsets: the streamed text is not yet assembled here, so a citation whose
-                    // span cannot be resolved is emitted WITHOUT one rather than with a fabricated
-                    // one — `url_annotations`' span requirement is a non-stream, whole-text rule.
-                    let annotations: Vec<serde_json::Value> = cits
-                        .iter()
-                        .filter_map(|c| {
-                            let url = c.url.as_deref().filter(|u| !u.is_empty())?;
-                            let mut uc = serde_json::Map::new();
-                            uc.insert("url".to_string(), serde_json::json!(url));
-                            uc.insert(
-                                "title".to_string(),
-                                serde_json::json!(c
-                                    .title
-                                    .as_deref()
-                                    .filter(|t| !t.is_empty())
-                                    .unwrap_or(url)),
-                            );
-                            if let (Some(s), Some(e)) = (c.start_index, c.end_index) {
-                                if s >= 0 && e >= s {
-                                    uc.insert("start_index".to_string(), serde_json::json!(s));
-                                    uc.insert("end_index".to_string(), serde_json::json!(e));
-                                }
-                            }
-                            Some(serde_json::json!({
-                                "type": "url_citation",
-                                "url_citation": serde_json::Value::Object(uc)
-                            }))
-                        })
-                        .collect();
+                    // Offsets: the streamed text is not yet assembled here, so pass an empty text
+                    // and a zero base — a citation whose span cannot be resolved is then emitted
+                    // WITHOUT one rather than with a fabricated one.
+                    let annotations =
+                        super::super::openai_annotations::chat_url_annotations("", 0, cits);
                     if annotations.is_empty() {
                         return None;
                     }
@@ -1032,7 +1008,7 @@ impl ProtocolWriter for OpenAiWriter {
                 text, citations, ..
             } = block
             {
-                annotations.extend(super::super::openai_annotations::url_annotations(
+                annotations.extend(super::super::openai_annotations::chat_url_annotations(
                     text, base, citations,
                 ));
                 // CHARACTERS, not bytes: the IR citation contract (`IrCitation::start_index`/

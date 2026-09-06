@@ -1088,14 +1088,23 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
     // citation. Neither receives a bare unattributed paragraph.
     let openai = crate::proto_codec::protocol_for("openai").expect("openai");
     let out = openai.writer.write_response(&ir);
-    // NOTE the shape: the BUFFERED writer emits the flat `url_annotations` entry
-    // (`{type,url,title,start_index,end_index}`) while the STREAMING arm emits the nested
-    // `{type, url_citation:{…}}`. That divergence predates this change and is asserted as-is here
-    // rather than quietly "corrected", which would move a wire byte no row of this work covers.
+    // The Chat wire shape is the NESTED one: `ChatCompletionResponseMessage.annotations` items are
+    // `{type, url_citation:{url,title,start_index,end_index}}`.
     assert_eq!(
-        out["choices"][0]["message"]["annotations"][0]["url"], "https://atlas",
+        out["choices"][0]["message"]["annotations"][0]["url_citation"]["url"], "https://atlas",
         "the grounding source must reach an OpenAI client: {out}"
     );
+    // And it must be READABLE back: what the Chat writer emits is what the Chat reader parses, so
+    // the source survives a further hop instead of being dropped on the way back in.
+    let recovered = crate::openai_annotations::read_url_annotations(
+        &out["choices"][0]["message"]["annotations"],
+    );
+    assert_eq!(
+        recovered.len(),
+        1,
+        "the emitted annotation must round-trip back into an IR citation: {out}"
+    );
+    assert_eq!(recovered[0].url.as_deref(), Some("https://atlas"));
     let anthropic = crate::proto_codec::protocol_for("anthropic").expect("anthropic");
     let out = anthropic.writer.write_response(&ir);
     assert!(

@@ -4847,13 +4847,15 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         .as_array()
         .expect("annotations must be emitted when sources exist");
     assert_eq!(anns.len(), 2, "{anns:?}");
-    assert_eq!(anns[0]["url"], "https://a.test");
-    assert_eq!(anns[0]["start_index"], 0);
+    // Chat nests the citation under `url_citation`; the flat form is the Responses shape.
+    assert_eq!(anns[0]["type"], "url_citation");
+    assert_eq!(anns[0]["url_citation"]["url"], "https://a.test");
+    assert_eq!(anns[0]["url_citation"]["start_index"], 0);
     assert_eq!(
-        anns[1]["start_index"], 13,
+        anns[1]["url_citation"]["start_index"], 13,
         "the second block's citation is offset by the first block's length in the joined content"
     );
-    assert_eq!(anns[1]["end_index"], 26);
+    assert_eq!(anns[1]["url_citation"]["end_index"], 26);
 }
 
 /// `start_index: i64::MAX` (upstream-controlled, only sign-checked) must not panic on
@@ -4939,7 +4941,7 @@ fn url_annotation_base_accumulates_in_characters() {
         .expect("annotations must be emitted");
     assert_eq!(anns.len(), 1, "{anns:?}");
     assert_eq!(
-        anns[0]["start_index"], 12,
+        anns[0]["url_citation"]["start_index"], 12,
         "the second block's citation must be offset by the CHARACTER length (12) of the first \
          block, not its byte length (14): {anns:?}"
     );
