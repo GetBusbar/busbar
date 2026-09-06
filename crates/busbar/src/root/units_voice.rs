@@ -100,18 +100,22 @@
 //! as often as it appears in the kernel: never. What arrives is a shape and a set of facts, and the
 //! plane is what turned bytes into either.
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
     Decision, Decode, Encode, Meter, MeterClassId, OpClassId, Outcome, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitToken, Usage, UsageLine,
-    UsageToken, VerifiedDestination, Verify,
+    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitKey, UnitToken, Usage,
+    UsageLine, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_contract::ids::LaneId;
+use busbar_contract::dest::ClientMode;
+use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
 use busbar_contract::ClaimKey;
+use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
+use busbar_kernel::Millis;
 use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
@@ -385,6 +389,192 @@ impl std::fmt::Debug for VoiceIo {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The tool calls a session has open
+// ---------------------------------------------------------------------------------------------
+
+/// The leg a provider-pushed tool call plans: deliver it to the client, and wait for the answer.
+///
+/// The key and the deadline are the plane's own declarations, read from it rather than restated. A
+/// second spelling of either here would be a wait entered under one key and answered under another,
+/// with both files looking correct on their own.
+const TOOL_REPLY_LEG: ClientMode = ClientMode::AwaitReply {
+    correlation_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+    deadline_secs: busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS,
+};
+
+/// Why a client's tool reply woke nothing.
+///
+/// Refused rather than dropped, and that is the whole of this type. A reply nobody is waiting for is
+/// either a client answering a call it was never asked to make or a call this node has already
+/// ended, and both are worth being able to say — a dropped frame is indistinguishable from a frame
+/// that was never sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyRefused {
+    /// This node holds no tool calls on that session.
+    NoSuchSession,
+    /// The session is here, but nothing open on it is waiting on the identifier the reply carried.
+    UnknownCall,
+}
+
+/// What became of one tool call, once it stopped waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallEnd {
+    /// The client answered it, carrying the identifier the call was entered under.
+    Answered,
+    /// Nobody answered before the deadline the leg declared.
+    Unanswered,
+}
+
+/// One call the sweep found unanswered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnansweredCall {
+    /// Which session it was open on.
+    pub session: u64,
+    /// Which unit was waiting.
+    pub unit: UnitKey,
+}
+
+/// One session's open calls, and the endings its units have not read yet.
+#[derive(Debug, Default)]
+struct SessionCalls {
+    /// The kernel's own table: which reply wakes which unit.
+    awaiting: AwaitingReplies,
+    /// How a call ended, held until the unit's exit path reads it.
+    ended: HashMap<UnitKey, CallEnd>,
+}
+
+/// Every tool call this node has open, session by session.
+///
+/// The kernel's [`AwaitingReplies`] answers "which unit does this reply wake" and is deliberately
+/// keyed by unit alone; it is one session's table, and this is what holds one per session. The
+/// division matters: two sessions may legitimately have calls open under identical identifiers —
+/// providers mint them per conversation — and a single node-wide table would have to decide which
+/// of them a reply belonged to before it had the session to decide it with.
+///
+/// The endings sit beside the waits rather than inside them because they outlive the wait by exactly
+/// one frame: the pump wakes or sweeps, and the unit's own exit path is what reads what happened to
+/// it. A call's ending is final — re-planning a leg for a unit that already ended does not reopen
+/// it, which is what keeps a resumed unit from waiting a second time on an answer that is not coming.
+#[derive(Debug, Default)]
+pub struct OpenToolCalls {
+    sessions: Mutex<BTreeMap<u64, SessionCalls>>,
+}
+
+impl OpenToolCalls {
+    /// A node holding no calls.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Enter a tool call's reply leg as waiting, in the frame that planned it.
+    ///
+    /// `correlation_out` is the unit's own draft field, borrowed for the length of this call: the
+    /// kernel's table copies the identifier into its own memory here, which is the one moment it is
+    /// guaranteed readable.
+    ///
+    /// # Errors
+    /// Returns why the leg is not a wait: it delivers, the unit minted no identifier for an answer
+    /// to carry, or the draft's key is not the one the leg named.
+    pub fn planned(
+        &self,
+        session: u64,
+        unit: UnitKey,
+        mode: ClientMode,
+        correlation_out: Option<CorrelationRef<'_>>,
+        now: Millis,
+    ) -> Result<(), NotWaiting> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let calls = sessions.entry(session).or_default();
+        if calls.ended.contains_key(&unit) {
+            // The call is over and its unit has not read the ending yet. Entering it again would be
+            // a second wait on an answer that has already come or already timed out.
+            return Ok(());
+        }
+        calls.awaiting.enter(unit, mode, correlation_out, now)
+    }
+
+    /// The unit a client's reply answers, taken out of the table.
+    ///
+    /// # Errors
+    /// The session holds no calls, or nothing open on it carries that identifier under that key.
+    pub fn replied(
+        &self,
+        session: u64,
+        correlates: CorrelationRef<'_>,
+    ) -> Result<UnitKey, ReplyRefused> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let calls = sessions
+            .get_mut(&session)
+            .ok_or(ReplyRefused::NoSuchSession)?;
+        let unit = calls.awaiting.wake(correlates).ok_or(
+            // Not "the only call open", and not silence either. A reply that matches nothing is
+            // refused as what it is, because paying it out against whichever call happens to be
+            // standing is the exact failure the whole correlation exists to prevent.
+            ReplyRefused::UnknownCall,
+        )?;
+        calls.ended.insert(unit, CallEnd::Answered);
+        Ok(unit)
+    }
+
+    /// **The sweep.** Every call whose declared deadline has passed, named so its unit can be ended.
+    ///
+    /// A wait that is never woken is a hold that is never settled, so this runs on the node's tick
+    /// rather than being something a caller is trusted to remember. What it leaves behind is the
+    /// ending the unit's exit path reads.
+    pub fn expired(&self, now: Millis) -> Vec<UnansweredCall> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut swept = Vec::new();
+        for (session, calls) in sessions.iter_mut() {
+            for unit in calls.awaiting.expired(now) {
+                calls.ended.insert(unit, CallEnd::Unanswered);
+                swept.push(UnansweredCall {
+                    session: *session,
+                    unit,
+                });
+            }
+        }
+        swept
+    }
+
+    /// How one call ended, taken out of the table.
+    ///
+    /// Read once, by the unit's own exit path. Taking it rather than copying it is what keeps the
+    /// table the size of the calls that are actually open: an ending nobody is going to read is a
+    /// row that never comes back out.
+    pub fn ending(&self, session: u64, unit: UnitKey) -> Option<CallEnd> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let calls = sessions.get_mut(&session)?;
+        calls.ended.remove(&unit)
+    }
+
+    /// Whether one unit is still waiting on its answer.
+    #[must_use]
+    pub fn waiting(&self, session: u64, unit: UnitKey) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions
+            .get(&session)
+            .is_some_and(|calls| calls.awaiting.waiting(unit).is_some())
+    }
+
+    /// How many calls are open across every session.
+    #[must_use]
+    pub fn open(&self) -> usize {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.values().map(|calls| calls.awaiting.len()).sum()
+    }
+
+    /// Forget a session's calls, when the session itself ends.
+    ///
+    /// A conversation that is over cannot answer anything, so its waits end with it rather than
+    /// waiting out deadlines nobody is left to satisfy.
+    pub fn closed(&self, session: u64) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.remove(&session);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The node's long-lived half
 // ---------------------------------------------------------------------------------------------
 
@@ -415,6 +605,11 @@ pub struct VoiceNode {
     pub durability: Mutex<crate::root::durability::Durability>,
     /// The I/O half, behind its four seams.
     pub io: VoiceIo,
+    /// The tool calls this node's sessions have open, waiting on a client's reply.
+    ///
+    /// Node-held rather than passed in, because nothing configuration decides is in it: it is empty
+    /// at boot and its whole contents are what the sessions running on this node have opened since.
+    pub tool_calls: OpenToolCalls,
     /// The origin every unit of this plane carries into its audit record, minted once at boot.
     ///
     /// A sealed origin cannot be constructed outside the kernel, and the audit step is lent its own
@@ -484,6 +679,7 @@ impl VoiceNode {
             meter_policy: parts.meter_policy,
             durability: Mutex::new(parts.durability),
             io: parts.io,
+            tool_calls: OpenToolCalls::new(),
             origin: parts.origin,
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
@@ -693,6 +889,20 @@ pub struct VoiceUnit<'n> {
     pub dialect: Dialect,
     /// What the turn reported, once the upstream reported it.
     pub usage: TurnUsage,
+    /// The identifier a tool call's answer must carry, as the plane's draft minted it.
+    ///
+    /// The unit's own copy, and it is here rather than reached for because the frame that plans the
+    /// leg is the frame that has to enter the wait: by the time anything else could ask, the arena
+    /// the plane decoded the identifier into is gone.
+    pub call_id: Option<String>,
+    /// The node's monotonic reading when this unit's frame arrived, in milliseconds.
+    ///
+    /// A deadline is a difference between two of these, never a wall-clock reading: [`epoch`] is
+    /// pinned at arrival so the unit is judged and charged in one window, which is a different
+    /// question from how long a client has to answer a tool call.
+    ///
+    /// [`epoch`]: VoiceUnit::epoch
+    pub now_ms: Millis,
     /// The wall clock this unit is judged against, pinned at arrival. Never a fresh read: a
     /// straddling unit judged against one clock and charged against another is a unit whose charge
     /// landed in a window it was not checked in.
@@ -748,6 +958,8 @@ impl<'n> VoiceUnit<'n> {
             from_session: shape != UnitShape::SessionOpen,
             dialect: Dialect::OpenaiRealtime,
             usage: TurnUsage::default(),
+            call_id: None,
+            now_ms: 0,
             epoch,
             accrued: AtomicU64::new(0),
             dialed: Mutex::new(None),
@@ -792,6 +1004,32 @@ impl<'n> VoiceUnit<'n> {
     #[must_use]
     fn answered(&self) -> bool {
         self.usage.audio_tokens_out > 0 || self.usage.text_tokens_out > 0
+    }
+
+    /// The call this tool-call unit is, named by the identifier its answer must carry.
+    #[must_use]
+    pub fn calling(mut self, call_id: impl Into<String>) -> Self {
+        self.call_id = Some(call_id.into());
+        self
+    }
+
+    /// The node's monotonic reading this unit's frame arrived at.
+    #[must_use]
+    pub fn at_ms(mut self, now_ms: Millis) -> Self {
+        self.now_ms = now_ms;
+        self
+    }
+
+    /// The correlation an answer to this unit must carry, borrowed from the unit's own copy.
+    ///
+    /// Borrowed rather than owned, and borrowed for no longer than the call that enters it: the
+    /// waiting table copies the identifier into the kernel's own memory and keeps no borrow, which
+    /// is what lets a wait outlive the frame that planned it.
+    fn correlation_out(&self) -> Option<CorrelationRef<'_>> {
+        self.call_id.as_deref().map(|id| CorrelationRef {
+            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(id),
+        })
     }
 
     /// Whether the dial was attempted and what it answered.
@@ -958,9 +1196,32 @@ impl Units for VoiceUnit<'_> {
         &self,
         token: &UnitToken<Verify>,
         trust: &TrustToken,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
+        // **The one frame a wait can be entered in.** A tool call's leg is a client await-reply, and
+        // the value it waits on is the identifier this unit's own draft minted, which lives no
+        // longer than the frame that decoded it. So the wait is entered HERE, where the leg is
+        // planned and the identifier is still readable, and not on some later step that would have
+        // to have kept a borrow it cannot keep.
+        if matches!(self.shape, UnitShape::ToolCall)
+            && self
+                .node
+                .tool_calls
+                .planned(
+                    self.session,
+                    ctx.key,
+                    TOOL_REPLY_LEG,
+                    self.correlation_out(),
+                    self.now_ms,
+                )
+                .is_err()
+        {
+            // A call nothing can answer. The leg names a key and the draft minted nothing under it,
+            // or minted under another — either way there is no client this reply could come back
+            // from, which is the no-destination answer and not a wait with a wildcard in it.
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
         // The trust unit's answer is a set of SEALED destinations, and sealing takes the trust token
         // the loop lends this step beside its own — the same shape admit and meter are lent. So the
         // destination this session's dialect resolves to is sealed HERE, once, and the route step
@@ -1073,9 +1334,20 @@ impl Units for VoiceUnit<'_> {
     fn route(
         &self,
         token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
+        // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
+        // the ending behind; this is where the unit reads it. A call that ran out its declared
+        // deadline ends under that deadline rather than settling as though the answer arrived, which
+        // is the difference between a hold that closes and a hold that is held open by a client that
+        // simply never replied.
+        if matches!(self.shape, UnitShape::ToolCall)
+            && self.node.tool_calls.ending(self.session, ctx.key) == Some(CallEnd::Unanswered)
+        {
+            return Decision::refuse(token, Refusal::new(ReasonCode::DeadlineExceeded));
+        }
+
         // A turn does not dial: it relays onto the upstream the session already opened. Only unit
         // zero opens the leg, which is why the dial is here and under this shape's arm alone — a
         // second dial per turn would be a second socket per sentence.
@@ -2029,6 +2301,200 @@ mod tests {
     #[test]
     fn the_handshake_scope_is_the_kernel_granted_one() {
         assert_eq!(handshake_scope(), "transport:handshake");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The tool calls a session waits on
+    // -----------------------------------------------------------------------------------------
+
+    /// The correlation a client's reply carries, as the plane reads it off the bytes.
+    fn reply(call_id: &str) -> CorrelationRef<'_> {
+        CorrelationRef {
+            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(call_id),
+        }
+    }
+
+    /// Run one tool-call unit far enough to plan its leg, which is where the wait is entered.
+    fn plan(kernel: &Kernel, node: &VoiceNode, key: u64, call_id: &str, now_ms: Millis) -> Ended {
+        let unit = VoiceUnit::new(node, UnitShape::ToolCall, 7, 1_700_000_000)
+            .calling(call_id)
+            .at_ms(now_ms);
+        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+            &kernel.admit_token(),
+            PrincipalId::new("acct:voice"),
+            0,
+        ));
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let mut leases = LeaseSet::new();
+        let meter = AccrualMeter::new();
+        run_unit(
+            kernel,
+            &unit,
+            &ctx(key),
+            Run {
+                cell: &cell,
+                parent: None,
+                leases: &mut leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+        )
+    }
+
+    /// **Two calls open at once, and each reply wakes only its own.**
+    ///
+    /// A turn that asks for two tools opens two units. They are identical apart from the identifier
+    /// each minted — same key, same selector, same deadline — which is exactly the pair that a wait
+    /// on a constant, or on a fold of an identifier, is free to confuse. The replies come back in
+    /// the opposite order to the calls, so "whichever is waiting" cannot pass either.
+    #[test]
+    fn two_tool_calls_on_one_session_each_wake_only_the_call_they_answer() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let (weather, tide) = (11, 22);
+        let _ = plan(&kernel, &node, weather, "call_aaa", 0);
+        let _ = plan(&kernel, &node, tide, "call_bbb", 0);
+        assert_eq!(node.tool_calls.open(), 2, "two calls are open, not one");
+
+        // The SECOND call answers first.
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_bbb")),
+            Ok(UnitKey::new(tide)),
+            "the reply wakes the call whose identifier it carries"
+        );
+        assert!(
+            node.tool_calls.waiting(7, UnitKey::new(weather)),
+            "and leaves the other call waiting on its own identifier, untouched"
+        );
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_aaa")),
+            Ok(UnitKey::new(weather)),
+            "which is still there for its own answer"
+        );
+        assert_eq!(node.tool_calls.open(), 0, "and both calls are settled");
+        assert_eq!(
+            node.tool_calls.ending(7, UnitKey::new(weather)),
+            Some(CallEnd::Answered),
+            "each unit reads its own ending, once"
+        );
+    }
+
+    /// A reply nobody is waiting for is refused, not dropped.
+    ///
+    /// The temptation the refusal exists to remove is "there is one call open, so this must be for
+    /// it". Paying a hold out against an answer that named something else is the failure a
+    /// correlation exists to prevent, and it costs a real principal real money.
+    #[test]
+    fn a_reply_for_a_call_nobody_opened_is_refused_rather_than_dropped() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_zzz")),
+            Err(ReplyRefused::UnknownCall),
+            "an unmatched reply is not paid out against the only call standing"
+        );
+        assert_eq!(
+            node.tool_calls.replied(9, reply("call_aaa")),
+            Err(ReplyRefused::NoSuchSession),
+            "and the same identifier on another session is another conversation's business"
+        );
+        assert!(
+            node.tool_calls.waiting(7, UnitKey::new(11)),
+            "the open call is untouched by either"
+        );
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_aaa")),
+            Ok(UnitKey::new(11)),
+            "and still answers to its own identifier"
+        );
+    }
+
+    /// **An unanswered call ends at the deadline it declared.**
+    ///
+    /// The wait is entered with the plane's own thirty seconds; the sweep at thirty-one names it,
+    /// and the unit's exit path ends it under the deadline rather than settling as though the answer
+    /// had arrived. Before this was wired the wait was entered nowhere at all, so an unanswered call
+    /// was a hold nothing ever closed.
+    #[test]
+    fn an_unanswered_tool_call_ends_at_the_deadline_its_leg_declared() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+        let _ = plan(&kernel, &node, 22, "call_bbb", 20_000);
+
+        let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+        assert!(
+            node.tool_calls.expired(deadline - 1).is_empty(),
+            "a call is not swept one millisecond before its own deadline"
+        );
+        assert_eq!(
+            node.tool_calls.expired(deadline + 1),
+            vec![UnansweredCall {
+                session: 7,
+                unit: UnitKey::new(11)
+            }],
+            "the first call's deadline is up; the one opened twenty seconds later is not"
+        );
+        assert_eq!(
+            node.tool_calls.open(),
+            1,
+            "the second call is still waiting"
+        );
+
+        // The exit: the unit is resumed and reads what became of its wait.
+        let Ended::Settled { end, .. } = plan(&kernel, &node, 11, "call_aaa", deadline + 1) else {
+            panic!("the exit path settles an unanswered call like anything else");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
+    }
+
+    /// A call that minted no identifier is not entered as a wildcard.
+    ///
+    /// A wait with no identity matches the first reply that arrives, whoever it was for. Refusing
+    /// the unit says so where it happens rather than at the first reply that goes to the wrong call.
+    #[test]
+    fn a_tool_call_that_minted_no_identifier_is_refused_rather_than_entered() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000);
+        let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+            panic!("the exit settles it");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Refused(_, ReasonCode::NoDestination)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
+        assert_eq!(node.tool_calls.open(), 0, "and nothing is waiting");
+    }
+
+    /// A conversation that is over cannot answer anything.
+    #[test]
+    fn a_closed_session_stops_waiting_on_the_calls_it_had_open() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+        node.tool_calls.closed(7);
+        assert_eq!(node.tool_calls.open(), 0);
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_aaa")),
+            Err(ReplyRefused::NoSuchSession)
+        );
     }
 
     // -----------------------------------------------------------------------------------------

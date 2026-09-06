@@ -788,7 +788,10 @@ fn ingress_from_client_event<'u>(
     // so the one unit actually waiting for it could not be told it had been answered, and the reply
     // and the wait passed each other on the same session.
     if let IrClientEvent::Tool(IrDuplexTool::CallResult { call_id, .. }) = &event {
-        let id = ctx.arena().alloc_str(call_id).map_err(|_| Decode::Oversize)?;
+        let id = ctx
+            .arena()
+            .alloc_str(call_id)
+            .map_err(|_| Decode::Oversize)?;
         let mut facts = Facts::new();
         facts
             .set(meta::FACT_CALL_ID, FactValue::Str(id))
@@ -801,7 +804,7 @@ fn ingress_from_client_event<'u>(
                 value: CorrelationValue::Str(id),
             }),
             relay: ArenaBytes::new(&[]),
-            facts,
+            facts: Box::new(facts),
         });
     }
     let (relay, interrupt_ms) = match &event {
