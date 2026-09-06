@@ -49,22 +49,42 @@ fi
 
 fail_ids="" skip_ids="" missing_ids="" pass_n=0
 report="$(mktemp)"
+resolved="$(mktemp)"
+trap 'rm -f "$report" "$resolved"' EXIT
 
-for id in $EXPECTED_IDS; do
-  row="$(awk -F'\t' -v i="$id" '$1==i{print; exit}' "$LEDGER")"
-  if [ -z "$row" ]; then
-    missing_ids="${missing_ids}${id} "
-    printf '%-12s %-40s\n' "DID NOT RUN" "$id" >> "$report"
-    continue
-  fi
-  status="$(printf '%s' "$row" | cut -f2)"
-  detail="$(printf '%s' "$row" | cut -f4)"
+# THE LAST ROW WINS. record() APPENDS, so an id can legitimately appear more than once — a probe
+# that retried, or a later step that revised its own verdict. Taking the FIRST row froze the earliest
+# (often optimistic) result and threw the correction away; a probe that recorded PASS and then FAIL
+# read as PASS. `resolve` keeps the last row per id.
+#
+# One awk pass, not one per id: the previous loop re-read the whole ledger for every expected id,
+# which is O(ids × rows) file reads on a ledger the oracle replay can fill with thousands of cells.
+awk -F'\t' -v ids="$EXPECTED_IDS" '
+  BEGIN {
+    n = split(ids, want, /[ \t\n]+/)
+    for (i = 1; i <= n; i++) if (want[i] != "") seen[want[i]] = 1
+  }
+  NF && ($1 in seen) { status[$1] = $2; detail[$1] = $4; got[$1] = 1 }
+  END {
+    # emitted in EXPECTED_IDS order, one line per owed id, so the shell loop below needs no lookup
+    for (i = 1; i <= n; i++) {
+      id = want[i]
+      if (id == "") continue
+      if (id in got) printf "%s\t%s\t%s\n", id, status[id], detail[id]
+      else           printf "%s\t%s\t%s\n", id, "__NOROW__", ""
+    }
+  }
+' "$LEDGER" > "$resolved"
+
+while IFS=$'\t' read -r id status detail; do
+  [ -n "$id" ] || continue
   case "$status" in
+    __NOROW__) missing_ids="${missing_ids}${id} "; printf '%-12s %-40s\n' "DID NOT RUN" "$id" >> "$report" ;;
     PASS) pass_n=$((pass_n + 1)); printf '%-12s %-40s\n' "PASS" "$id" >> "$report" ;;
     SKIP) skip_ids="${skip_ids}${id} "; printf '%-12s %-40s %s\n' "SKIP" "$id" "$detail" >> "$report" ;;
     *)    fail_ids="${fail_ids}${id} "; printf '%-12s %-40s %s\n' "FAIL" "$id" "$detail" >> "$report" ;;
   esac
-done
+done < "$resolved"
 
 cat "$report"
 echo
