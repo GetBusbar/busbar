@@ -1026,8 +1026,7 @@ fn terminal<U: Units>(
             // Emptying the cell HERE is what makes the child's end final: leaving it full would
             // leave the sweep free to settle a unit that already finished, and the parent's hold
             // already carries this spend.
-            let taken = run.cell.take(&ExitToken::mint(seal));
-            run.leases.release_all(run.gauge);
+            let taken = take_and_release(seal, &run);
             match taken {
                 None => Ended::AlreadySettled,
                 Some(arrival) => {
@@ -1099,6 +1098,24 @@ async fn under_hold<U: Units, R: RouteAwait>(
 /// about ownership rather than a comment.
 fn drop_arrival(_hold: Hold) {}
 
+/// THE LOOP'S SIDE OF THE HOLD CELL: the take, and the leases going back in the same breath.
+///
+/// A unit has two ends and there are two callers with a key to its cell — this, and the node's
+/// sweep. Two, and not three: the cell makes whichever arrives second lose, so a second caller is
+/// safe, but every ADDITIONAL one is another settle to read and another place a later edit can
+/// forget that the leases go back with the take. So the loop opens the cell here and nowhere else,
+/// and both of the shapes that settle a unit — the reservation the exit path takes, and the arrival
+/// hold a child spending against its parent leaves behind — come through this one line.
+///
+/// The leases go back whether or not the take won. A take that lost is a unit the sweep already
+/// ended, and the sweep gave its leases back too; `release_all` is the cell's own take, so the
+/// second caller finds an unowned slot and gives back nothing.
+fn take_and_release(seal: &KernelSeal, run: &Run<'_>) -> Option<Hold> {
+    let taken = run.cell.take(&ExitToken::mint(seal));
+    run.leases.release_all(run.gauge);
+    taken
+}
+
 /// The one exit path.
 ///
 /// Takes the hold out of the cell by compare-and-set, releases the unit's concurrency leases in the
@@ -1114,8 +1131,7 @@ pub fn exit<U: Units>(
     reached_admitted: bool,
 ) -> Ended {
     let seal = &kernel.seal;
-    let taken = run.cell.take(&ExitToken::mint(seal));
-    run.leases.release_all(run.gauge);
+    let taken = take_and_release(seal, &run);
     match taken {
         None => Ended::AlreadySettled,
         Some(mut hold) => {
