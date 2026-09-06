@@ -224,14 +224,19 @@ mod tests {
         assert_eq!(parsed["required"], serde_json::json!(["canonical_uri"]));
     }
 
-    /// Every declared operation class is named by at least one method of the vocabulary.
+    /// Every declared operation class is produced by something the decode step can reach.
+    ///
+    /// Most classes come from a method of the vocabulary. Two do not, and each is named here rather
+    /// than allowed through a bound that cannot fail: a notice is a message with no identifier, and
+    /// the discovery fetch is named by its TARGET because it carries no document to name it in.
     #[test]
     fn every_class_is_reachable_from_the_vocabulary() {
         for op in McpPlane::OP_CLASSES {
             let from_a_method = crate::ops::METHODS.iter().any(|m| m.op == *op);
             let from_a_notice = *op == crate::ops::OP_NOTIFICATION;
+            let from_the_target = *op == crate::ops::OP_METADATA;
             assert!(
-                from_a_method || from_a_notice,
+                from_a_method || from_a_notice || from_the_target,
                 "{op} is declared but nothing produces it"
             );
         }
