@@ -532,3 +532,81 @@ async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
          frame's terminator would meter {on_the_wire} bytes of body as {metered}"
     );
 }
+
+/// A terminal framing error is the last thing the stream says. Frames carved out of the same buffer
+/// that then overran the cursor budget were queued before the budget was checked, so a consumer
+/// that kept polling was handed an event AFTER the error that ended the stream — payload out of a
+/// body this transport had already refused to finish reading.
+#[tokio::test]
+async fn no_frame_is_emitted_after_the_terminal_framing_error() {
+    /// The bind the served side is given; `sse` delegates `listen` and `accept` straight to `http`.
+    struct BindCfg(String);
+    impl busbar_contract::unit::ConfigView for BindCfg {
+        fn get_str(&self, _k: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _k: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _k: &str) -> Option<bool> {
+            None
+        }
+    }
+    impl TransportConfigView for BindCfg {
+        fn bind(&self) -> Option<&str> {
+            Some(&self.0)
+        }
+    }
+
+    // The served side, where one declared-length body arrives as ONE frame: a complete event
+    // followed by a tail that never ends a frame and runs past the cursor budget, so the carve and
+    // the budget check meet inside a single re-segmentation step.
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = std::sync::Arc::new(SseTransport::new(http));
+    let listener = sse
+        .listen(&BindCfg("127.0.0.1:0".to_string()), &fixture_key())
+        .await
+        .unwrap();
+    let addr = listener.local_addr();
+    let accept = tokio::spawn({
+        let sse = sse.clone();
+        async move { sse.accept(&listener).await.unwrap() }
+    });
+
+    let mut body = b"data: {\"a\":1}\n\ndata: ".to_vec();
+    body.extend_from_slice(&vec![b'x'; busbar_contract::MAX_CURSOR_BYTES * 2]);
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let head = format!(
+        "POST / HTTP/1.1\r\nHost: x\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    tokio::io::AsyncWriteExt::write_all(&mut client, head.as_bytes())
+        .await
+        .unwrap();
+    tokio::io::AsyncWriteExt::write_all(&mut client, &body)
+        .await
+        .unwrap();
+
+    let conn = accept.await.unwrap();
+    let mut frames = sse.frames(conn);
+    let mut saw_error = false;
+    while let Some(item) = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the stream answers rather than accumulating")
+    {
+        if item.is_err() {
+            saw_error = true;
+            // What the stream says AFTER its terminal error is the whole of this cell, so the poll
+            // goes on past the error rather than stopping at it.
+            let after = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+                .await
+                .expect("the ended stream answers");
+            assert!(
+                after.is_none(),
+                "the framing error ends the stream: nothing follows it"
+            );
+            break;
+        }
+    }
+    assert!(saw_error, "the unterminated tail is answered with an error");
+}

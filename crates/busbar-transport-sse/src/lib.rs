@@ -240,7 +240,13 @@ impl Transport for SseTransport {
                             // exactly what the served door's body limit does not reach — so an
                             // upstream that never ends a frame would grow it for the life of the
                             // connection. Ended here instead.
+                            //
+                            // Frames carved off the front of this same buffer are dropped with it.
+                            // The error is the stream's last word, and a consumer that kept polling
+                            // would otherwise be handed an event AFTER it — payload out of a body
+                            // this transport has just refused to go on reading.
                             st.done = true;
+                            st.pending.clear();
                             return Some((Err(TransportError::Framing), st));
                         }
                         if !st.pending.is_empty() {
@@ -248,7 +254,10 @@ impl Transport for SseTransport {
                         }
                     }
                     Some(Err(e)) => {
+                        // The same rule the cursor budget's own error follows: an error is
+                        // terminal, so nothing queued behind it goes out after it.
                         st.done = true;
+                        st.pending.clear();
                         return Some((Err(e), st));
                     }
                     None => {
