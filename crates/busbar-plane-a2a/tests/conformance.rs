@@ -830,6 +830,116 @@ fn the_callback_surface_decodes_a_bare_task_document() {
     );
 }
 
+/// A surface whose claim declares NO scheme is one this plane names no credential for.
+///
+/// The narrowing check runs against the claim the request arrived on: a plane may narrow only
+/// within the alternatives that claim declares, and a claim declaring none has nothing to narrow
+/// to. So naming an alternative on an open surface is not a harmless extra word — it is a refusal
+/// at the authenticate step on the two documents a caller reads precisely BECAUSE it has no
+/// credential yet, which closes the loop the discovery documents exist to open.
+#[test]
+fn an_open_surface_names_no_credential() {
+    let plane = A2aPlane::EMPTY;
+    let seal = common::TestSeal;
+    for (target, op) in [
+        ("/.well-known/agent-card.json", ops::OP_AGENT_CARD),
+        (
+            "/.well-known/oauth-protected-resource/a2a",
+            ops::OP_AGENT_CARD,
+        ),
+        ("/a2a/push", ops::OP_PUSH_EVENT),
+    ] {
+        let scaffold = Scaffold::new("http").on_path(target);
+        let ctx = scaffold.ctx();
+        let unit = unit_of(&seal, op);
+        assert!(
+            plane.authenticate(&unit, &ctx).narrowing.is_none(),
+            "{target} carries no credential and this plane named one for it"
+        );
+    }
+}
+
+/// The authenticated card is still an authenticated surface.
+///
+/// It decodes to the same class the open card does, so a reading that keyed on the class alone
+/// would have opened this one too — and this is the one route of the three that a caller must
+/// present a credential on.
+#[test]
+fn the_extended_card_still_names_a_credential() {
+    let plane = A2aPlane::EMPTY;
+    let seal = common::TestSeal;
+    let scaffold = Scaffold::new("http").on_path("/a2a/extendedAgentCard");
+    let ctx = scaffold.ctx();
+    let unit = unit_of(&seal, ops::OP_AGENT_CARD);
+    assert_eq!(
+        plane
+            .authenticate(&unit, &ctx)
+            .narrowing
+            .expect("the authenticated card narrows")
+            .as_str(),
+        "bearer"
+    );
+}
+
+/// Every alternative the plane narrows to is one the claim it arrived on declares.
+///
+/// The mirror of the check the sibling plane already carries, in the form this plane's surfaces
+/// need: a claim with no scheme must draw NO narrowing, and every other claim must draw one from
+/// its own declared set. Reading the claim list rather than a hand-written path list is what keeps
+/// a claim added later from escaping the check.
+#[test]
+fn every_narrowing_is_declared_by_the_claim_it_arrives_on() {
+    use busbar_contract::grammar::Selector;
+    let plane = A2aPlane::EMPTY;
+    let seal = common::TestSeal;
+    for claim in A2aPlane::CLAIMS {
+        let Selector::ExactPath(path) = claim.selector else {
+            continue;
+        };
+        for op in A2aPlane::OP_CLASSES {
+            // The pushed class never arrives on a claimed target: it is what a frame on a
+            // connection this node DIALLED means, and the kernel paired that connection. Pairing
+            // it with a client mount would be asserting over a request that cannot happen.
+            if *op == ops::OP_PUSH_EVENT && path != "/a2a/push" {
+                continue;
+            }
+            let scaffold = Scaffold::new(claim.transport).on_path(path);
+            let ctx = scaffold.ctx();
+            let unit = unit_of(&seal, *op);
+            match plane.authenticate(&unit, &ctx).narrowing {
+                None => assert!(
+                    claim.scheme.is_none(),
+                    "{path} declares a scheme and {op} narrowed to nothing"
+                ),
+                Some(alt) => assert!(
+                    claim.scheme_alternatives.contains(&alt.as_str()),
+                    "{path} does not declare {alt}, which {op} narrows to"
+                ),
+            }
+        }
+    }
+}
+
+/// One kernel-built unit of a given class, for the steps that take one.
+fn unit_of<'u>(
+    seal: &'u common::TestSeal,
+    op: busbar_contract::ids::OpClassId,
+) -> busbar_contract::unit::Unit<'u> {
+    busbar_contract::unit::Unit::new(
+        seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        op,
+        busbar_contract::bounded::Ir::new(b"{}", &[]),
+        busbar_contract::bounded::Facts::new(),
+        None,
+    )
+}
+
 /// The document mount still reads an envelope, and a target that names no open surface reaches it.
 #[test]
 fn the_document_mount_is_unchanged_by_the_open_surfaces() {
