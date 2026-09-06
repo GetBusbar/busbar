@@ -413,6 +413,58 @@ async fn an_unpinned_registration_issues_nothing() {
     assert_eq!(peer.mcp_hits(), 0);
 }
 
+/// AN AUTHORIZATION SERVER IS NOT FULLY TRUSTED EITHER, AND ITS BODY IS CAPPED.
+///
+/// The exchange reaches a token endpoint over the network on busbar's OWN subject token, and the
+/// only bound the read had was a DEADLINE — which says how long a body may take to arrive and
+/// nothing whatever about how much of it is held while it does. A compromised or merely broken AS
+/// streaming a multi-gigabyte body was read whole into memory, once per round, on every concurrent
+/// granted dispatch. The cap is the same `busbar_substrate::proxy` primitive that already bounds the
+/// MCP response body and a stdio child's line.
+///
+/// Driven by making the endpoint's OWN issued token larger than the cap, so the oversized body is
+/// the real thing the real fixture serves rather than a hand-built frame.
+#[tokio::test]
+async fn an_oversized_token_endpoint_body_is_refused_rather_than_buffered_whole() {
+    metrics_init();
+    let cap = busbar_substrate::proxy::max_upstream_buffered_bytes();
+    // Comfortably past the cap, and made of one byte so the assertion is about SIZE and not shape.
+    let oversized = "t".repeat(cap + 4096);
+    let peer = Peer::start(Behaviour::Result, &oversized).await;
+    let app = test_app()
+        .mcp(&mcp_cfg(CANONICAL))
+        .mcp_server(SERVER, exchanging_server(&peer, SUBJECT))
+        .build();
+    engine().ensure_call_stream_registered();
+    let caller = key_with_scopes("k-http-oversized-token", &[("mcp_server", SERVER)]);
+    let auth = authorise(&app, Some(&caller)).expect("the gate admits a granted caller");
+
+    let err = issue(
+        &crate::mcp::runtime(&app).pool,
+        &auth,
+        &UpstreamVerb::PromptsList,
+        21,
+        &engine_host(&app),
+    )
+    .await
+    .expect_err("a token response past the cap is refused, not parsed");
+
+    assert!(
+        err.contains("cap"),
+        "the refusal must name the bound it hit rather than a nearby parse failure: {err}"
+    );
+    assert_eq!(
+        peer.token_hits(),
+        1,
+        "the exchange really was attempted — the refusal is about the answer, not the ask"
+    );
+    assert_eq!(
+        peer.mcp_hits(),
+        0,
+        "and no call goes out on a credential busbar refused to read whole"
+    );
+}
+
 /// THE ARGUMENT GUARD RUNS ON A VERB'S OWN PARAMS, and it runs before the exchange.
 ///
 /// A `resources/read` carries a URI the CALLER chose. The routing rule makes the DESTINATION immune
