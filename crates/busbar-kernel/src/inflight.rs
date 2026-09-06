@@ -803,11 +803,19 @@ pub enum HardClose {
 /// the session closes; a datagram that could not be decoded is one datagram, and the next is
 /// unaffected — it is discarded and the session stands. Without the framing this function read a
 /// forged packet as a reason to drop a session, which is a denial of service anyone can post.
+///
+/// The binding is load-bearing for exactly one other arm, and for the same kind of reason. A
+/// credential refused at the re-check means different things on the two kinds of session: on a
+/// BOUND one the cached principal is what every later unit runs as, and a session running as
+/// somebody it can no longer prove it is has nothing left to be, so it closes; on an unbound one
+/// every unit authenticates for itself and a bad credential is one bad unit. Without the binding
+/// there was no arm that could tell the two apart, and one of the two answers was never given.
 pub fn hard_closes(
     origin: OriginKind,
     step: StepName,
     reason: ReasonCode,
     framing: Framing,
+    binding: Binding,
 ) -> Option<HardClose> {
     let money_reason = matches!(
         reason,
@@ -833,6 +841,10 @@ pub fn hard_closes(
         (_, _, ReasonCode::HandoffMismatch) => Some(HardClose::HandoffMismatch),
         (_, StepName::Decode, ReasonCode::DecodeFailed) if framing == Framing::Stream => {
             Some(HardClose::DecodeFailedOnStream)
+        }
+        // The re-check arm, on a bound session only.
+        (_, StepName::Authenticate, ReasonCode::Unauthenticated) if binding == Binding::Bound => {
+            Some(HardClose::BoundPrincipalFailed)
         }
         _ => None,
     }

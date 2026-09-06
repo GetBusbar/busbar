@@ -735,7 +735,8 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
             OriginKind::Client,
             StepName::Decode,
             ReasonCode::DecodeFailed,
-            Framing::Stream
+            Framing::Stream,
+            Binding::Unbound,
         ),
         Some(HardClose::DecodeFailedOnStream),
         "a stream that has lost sync cannot be trusted to resynchronise"
@@ -745,7 +746,8 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
             OriginKind::Client,
             StepName::Decode,
             ReasonCode::DecodeFailed,
-            Framing::Datagram
+            Framing::Datagram,
+            Binding::Unbound,
         ),
         None,
         "one unreadable datagram says nothing about the next one"
@@ -773,6 +775,57 @@ fn a_forged_datagram_is_discarded_and_the_session_stands() {
     assert_eq!(table.len(), 0, "and nothing entered the table to be posted");
 }
 
+/// A bound session whose cached principal stops authenticating is closed, and an unbound one is not.
+///
+/// This is what BINDING is for. On a bound session the cached principal is the thing every later
+/// unit runs as; when the re-check refuses it, there is nothing left on that connection to be — the
+/// session is standing on a fact that is no longer true, so it closes. On an unbound session every
+/// unit authenticates for itself, and "wrong credential, try again" is an ordinary thing for a
+/// client to do on a connection that stays up. The decision could not see the binding at all, so
+/// one of the two answers was unreachable and the other was given to both.
+#[test]
+fn a_bound_session_closes_when_its_cached_principal_stops_authenticating() {
+    use busbar_contract::Framing;
+    use busbar_kernel::inflight::{hard_closes, HardClose};
+
+    for framing in [Framing::Stream, Framing::Datagram] {
+        assert_eq!(
+            hard_closes(
+                OriginKind::Client,
+                StepName::Authenticate,
+                ReasonCode::Unauthenticated,
+                framing,
+                Binding::Bound,
+            ),
+            Some(HardClose::BoundPrincipalFailed),
+            "the session is running as somebody it can no longer prove it is"
+        );
+        assert_eq!(
+            hard_closes(
+                OriginKind::Client,
+                StepName::Authenticate,
+                ReasonCode::Unauthenticated,
+                framing,
+                Binding::Unbound,
+            ),
+            None,
+            "an unbound session authenticates per unit and survives a bad one"
+        );
+    }
+
+    // A refusal somewhere other than the re-check is not the cached principal failing.
+    assert_eq!(
+        hard_closes(
+            OriginKind::Client,
+            StepName::Admit,
+            ReasonCode::Unauthenticated,
+            Framing::Stream,
+            Binding::Bound,
+        ),
+        None
+    );
+}
+
 /// A handoff neither leg declared closes the session it happened on, on either framing.
 ///
 /// The variant was declared and nothing produced it, which made it a comment. An upgrade the
@@ -789,7 +842,8 @@ fn a_handoff_mismatch_closes_the_session_on_either_framing() {
                 OriginKind::Client,
                 StepName::Verify,
                 ReasonCode::HandoffMismatch,
-                framing
+                framing,
+                Binding::Bound,
             ),
             Some(HardClose::HandoffMismatch),
             "the stack the session stands on is not a per-frame question"
