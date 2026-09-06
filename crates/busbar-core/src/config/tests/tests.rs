@@ -3804,6 +3804,87 @@ fn a_failover_pool_needs_two_members() {
     );
 }
 
+/// A KNOB THE INFERRED PLANE CANNOT READ IS REFUSED, NOT DISCARDED. An inferred MCP/A2A pool is
+/// PROJECTED to a `CandidatePoolCfg` — members and `repeatable:` — and then REMOVED from `pools:`
+/// before `config_validate` ever sees it. Everything else the operator wrote on that pool
+/// therefore went nowhere and was checked by nothing: a per-pool `hooks:` never attached, a
+/// `breaker: { base_cooldown_secs: 0 }` was never rejected, an `on_exhausted: { fallback_pool: … }`
+/// naming no pool at all was never caught.
+///
+/// This is the rule the `tools:` attach path already states in this same file — a dropped
+/// attachment leaves an operator believing a control is attached that is not, which is worse than
+/// the typo it came from. The pool plane is held to it too.
+#[test]
+fn an_inferred_tool_pool_refuses_the_knobs_its_plane_cannot_read() {
+    let mut deploy = base_deploy();
+    let mut tools = busbar_mcp::mcp::config::ToolsCfg::default();
+    for name in ["search-eu", "search-us"] {
+        tools.servers.insert(
+            name.to_string(),
+            serde_yaml::from_str("{url: 'https://eu.example/mcp', pin: {mechanism: unpinned}}")
+                .expect("a minimal server"),
+        );
+    }
+    deploy.tools = crate::plane::config::ToolsSection(Box::new(tools));
+    deploy.pools.pools.insert(
+        "search".to_string(),
+        serde_yaml::from_str::<crate::config::PoolCfg>(
+            "{members: [search-eu, search-us], hooks: [audit-everything], \
+             breaker: {base_cooldown_secs: 0}, on_exhausted: {fallback_pool: nowhere}}",
+        )
+        .expect("a bare-name pool carrying LLM-plane knobs"),
+    );
+    let errs = resolve(&deploy, &HashMap::new())
+        .expect_err("knobs the inferred plane cannot read must refuse boot");
+    let joined = errs.join("\n");
+    assert!(
+        joined.contains("pools.search"),
+        "the message names the pool: {errs:?}"
+    );
+    for knob in ["hooks", "breaker", "on_exhausted"] {
+        assert!(
+            joined.contains(knob),
+            "the message names the knob `{knob}` that went nowhere: {errs:?}"
+        );
+    }
+    assert!(
+        joined.contains("tools"),
+        "and the plane its kind inferred to, so the operator knows WHY it cannot be read: {errs:?}"
+    );
+}
+
+/// The mirror on the A2A plane, and the proof that the two knobs the projection DOES carry —
+/// `members:` and `repeatable:` — are still accepted. A refusal that swallowed the pool's whole
+/// vocabulary would be a worse bug than the silent discard it replaces.
+#[test]
+fn an_inferred_agent_pool_still_accepts_what_its_plane_does_read() {
+    let mut deploy = base_deploy();
+    let mut agents = busbar_a2a::a2a::config::AgentsCfg::default();
+    for name in ["planner-eu", "planner-us"] {
+        agents.agents.insert(
+            name.to_string(),
+            serde_yaml::from_str("{url: 'https://a.example/card', pin: {mechanism: unpinned}}")
+                .expect("a minimal agent"),
+        );
+    }
+    deploy.agents = crate::plane::config::AgentsSection(Box::new(agents));
+    deploy.pools.pools.insert(
+        "planner".to_string(),
+        serde_yaml::from_str::<crate::config::PoolCfg>(
+            "{members: [planner-eu, planner-us], repeatable: [plan]}",
+        )
+        .expect("a bare-name pool"),
+    );
+    let cfg = resolve(&deploy, &HashMap::new()).expect("members + repeatable are the pool's own");
+    assert_eq!(
+        cfg.agent_pools
+            .get("planner")
+            .expect("the pool projected onto the A2A plane")
+            .repeatable,
+        vec!["plan".to_string()],
+    );
+}
+
 /// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted
 /// here rather than only in the seam's own tests because this is where an operator's document is
 /// turned into the answer, and a default that drifted here would be invisible there.

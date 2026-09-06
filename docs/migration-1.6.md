@@ -109,6 +109,16 @@ written in the top-level `pools:` map with `tools:` / `agents:` entries as bare-
 the same breaker and failover you already run for models applies to them; see
 [Circuit breaker](circuit-breaker.md).
 
+A pool whose kind infers to `tools:` or `agents:` reads `members:` and `repeatable:` and nothing
+else, so writing `hooks:`, `breaker:`, `failover:`, `on_exhausted:`, `affinity:` or
+`upstream_credentials:` on one is refused with a message naming the pool, the knob and the plane it
+inferred to — rather than accepted and dropped, which is what leaves an operator believing a
+control is attached that is not. This cannot affect a config written for 1.5.5: without a `tools:`
+or `agents:` section a pool's members can only resolve against `models:` and the pool stays on the
+LLM plane, where all six knobs are read exactly as before. If you wrote one of them on a tool or
+agent pool it was doing nothing: delete it, or move those members to an LLM pool. The neutral
+routing knobs `weights:`, `tier:` and `attempt_timeout_ms:` are unaffected.
+
 Validation messages know the new keys: an `expected one of` list now includes `mcp`, `oauth_as`,
 `tools`, `agents` and `streams`, and the group-limit `metric` list includes the four token
 sub-metrics `tokens_input`, `tokens_output`, `tokens_cache_read` and `tokens_cache_write` (see

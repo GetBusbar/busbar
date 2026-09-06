@@ -438,6 +438,18 @@
         "headers"
       ],
       "rationale": "Spec fidelity: published include_usage says the token counts ride an ADDITIONAL final chunk whose choices array is always EMPTY. The Chat writer cannot emit two frames for one IR MessageDelta, so it folds the counts onto the chunk it does write and a downstream seam un-folds them into that trailing chunk. The writer folds whenever the terminal counts are nonzero -- NOT only when the delta carries a stop reason -- but both un-fold seams additionally required a non-null finish_reason beside the folded object. A backend that ends a stream with no stop reason (an incomplete Responses stream whose incomplete_details.reason the published spec does not name) produces exactly the chunk neither seam looked at: a client that asked for usage never received it, and a client that opted OUT was sent usage it had not asked for. Both seams now key on the folded object itself, which is only ever present because the writer put it there. Cross-dialect stream bodies only; the same-dialect byte-exact passthrough never reaches these seams, and no usage or billing class is waived -- busbar's own metering reads the IR-side tap upstream of this seam and never moved. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "P-1 an inferred MCP/A2A pool refuses the knobs its plane cannot read",
+      "kind": "breaking",
+      "by": "owner (Matthew Jackson), 2026-09-06 busbar-core remainder audit",
+      "cells": "^config\\.migrate\\|[^|]+\\|validate-migrated$|^cli\\|validate\\|",
+      "classes": [
+        "status",
+        "effects.stderr"
+      ],
+      "rationale": "A 1.6.0 `pools:` entry whose members resolve to `tools:`/`agents:` is PROJECTED to a CandidatePoolCfg (members + repeatable) and then REMOVED from `cfg.pools` before config_validate walks it, so every other knob written on that pool reached no engine and was checked by no validator: a per-pool `hooks:` never attached, `breaker: { base_cooldown_secs: 0 }` was never rejected, `on_exhausted: { fallback_pool: <typo> }` was never resolved. 1.6.0 REFUSES `hooks`/`breaker`/`failover`/`on_exhausted`/`affinity`/`upstream_credentials` on such a pool, naming the pool, the knobs and the plane its kind inferred to, rather than discarding them. Registered as breaking because it turns an accepted document into a refused one. NO RECORDED CELL MOVES TODAY, and the reason is checkable rather than asserted: the shape is unreachable from 1.5.5, which has no `tools:`/`agents:` sections, so a 1.5.5 pool's members can only resolve against `models:` and stay on the LLM plane where every one of these knobs is read exactly as before. `cargo test -p busbar --test migration_corpus` confirms no corpus config changes verdict. The entry is registered ahead of any fixture that writes such a pool, which is what the register is for. The three NEUTRAL 1.6.0 knobs (`weights:`/`tier:`/`attempt_timeout_ms:`) are deliberately not refused: the projection is documented in config/mod.rs as behaviour-neutral for them by design.",
+      "changelog": "1.6.0 Changed: a pool whose kind infers to `tools:`/`agents:` refuses the knobs that plane cannot read, instead of discarding them"
     }
   ]
 }
