@@ -560,8 +560,8 @@ MUTATIONS = [
     (
         "R6 the fan-out is re-hung off the record resolution instead of the promote",
         "release.yml",
-        lambda t: t.replace("needs: [plan, promote-release]\n    runs-on: ubuntu-latest",
-                            "needs: [plan, resolve-staged]\n    runs-on: ubuntu-latest"),
+        lambda t: t.replace("  notify-downstream:\n    needs: [plan, promote-release]",
+                            "  notify-downstream:\n    needs: [plan, resolve-staged]"),
         "R6",
     ),
     (
@@ -605,15 +605,18 @@ MUTATIONS = [
     (
         "R9 an override input is added to bypass a red branch",
         "release.yml",
-        lambda t: t.replace("  workflow_dispatch:\n",
-                            "  workflow_dispatch:\n    inputs:\n      override_red_ci:\n        description: reason\n"),
+        # Inserted INTO the existing `inputs:` block (release.yml declares `release_tag` there for
+        # the rc promote), not as a second `inputs:` key -- a mutation that produces invalid YAML
+        # would go red for the wrong reason and prove nothing about R9.
+        lambda t: t.replace("      release_tag:\n",
+                            "      override_red_ci:\n        description: reason\n      release_tag:\n"),
         "R9",
     ),
     (
         "R10 a fresh image build sneaks back into the main promote",
         "release.yml",
-        lambda t: t.replace("      promote_to: ${{ needs.plan.outputs.version }}",
-                            "      staging_tag: staging-oops\n      promote_to: ${{ needs.plan.outputs.version }}"),
+        lambda t: t.replace("      promote_to: ${{ needs['resolve-staged'].outputs.promote_version }}",
+                            "      staging_tag: staging-oops\n      promote_to: ${{ needs['resolve-staged'].outputs.promote_version }}"),
         "R10",
     ),
     (
