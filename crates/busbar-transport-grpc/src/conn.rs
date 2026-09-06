@@ -241,6 +241,8 @@ pub(crate) struct ConnState {
     /// completion — and `close`.
     inbound_tx: SyncMutex<Option<mpsc::Sender<InboundItem>>>,
     pub(crate) inbound_rx: AsyncMutex<Option<mpsc::Receiver<InboundItem>>>,
+    /// Fired when the inbound side ends, for the senders already parked on a full buffer.
+    inbound_ended: tokio::sync::Notify,
     /// One outbound channel per open stream (gRPC call). `write()` looks a stream up here; the
     /// task driving that RPC (accepted inbound, or opened by a dial-side `write` to a fresh
     /// `StreamId`) owns the receiving half and forwards each message onto the wire.
@@ -282,6 +284,7 @@ impl ConnState {
         Arc::new(Self {
             inbound_tx: SyncMutex::new(Some(inbound_tx)),
             inbound_rx: AsyncMutex::new(Some(inbound_rx)),
+            inbound_ended: tokio::sync::Notify::new(),
             outbound: SyncMutex::new(HashMap::new()),
             next_call_serial: std::sync::atomic::AtomicU64::new(1),
             dialer,
@@ -302,11 +305,26 @@ impl ConnState {
     /// battery names as a cell: a peer writing faster than `frames()` is polled must stall against
     /// the HTTP/2 flow-control window, not queue on this process's heap. Peer bytes are untrusted,
     /// and this connection carries every multiplexed call's inbound messages on this one channel.
+    /// The wait has a way out. Dropping the state's own sender does NOT end this one: the task
+    /// waiting here holds its own clone of the connection state, which is what keeps the receiving
+    /// half — and so the send — alive. Without a leg for the end of the connection, a forwarder
+    /// parked on a buffer nothing is draining waits for the life of the process, holding a task and
+    /// a buffer's worth of frames for a call whose reader has gone.
     pub(crate) async fn send_inbound(&self, item: InboundItem) -> Result<(), ()> {
         // Cloned out from under the lock and awaited outside it: the wait is on the reader, which
         // may be a long one, and it must not hold every other call's sender hostage.
         let tx = self.inbound_tx.lock().unwrap().clone().ok_or(())?;
-        tx.send(item).await.map_err(|_| ())
+        let ended = self.inbound_ended.notified();
+        tokio::pin!(ended);
+        // Armed BEFORE the second look at the sender, so an end landing between the two is seen
+        // here rather than waited out.
+        if self.inbound_tx.lock().unwrap().is_none() {
+            return Err(());
+        }
+        tokio::select! {
+            sent = tx.send(item) => sent.map_err(|_| ()),
+            () = ended => Err(()),
+        }
     }
 
     /// End the inbound side: no frame will ever arrive on this connection again, so `frames()`
@@ -314,6 +332,9 @@ impl ConnState {
     /// by `close`.
     pub(crate) fn end_inbound(&self) {
         self.inbound_tx.lock().unwrap().take();
+        // And wake whatever is parked on a full buffer: dropping the state's sender says nothing to
+        // a forwarder holding a clone of its own.
+        self.inbound_ended.notify_waiters();
     }
 
     /// The serial the next call registered on this connection will carry.

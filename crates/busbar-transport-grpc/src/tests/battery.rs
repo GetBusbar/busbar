@@ -851,6 +851,74 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
     );
 }
 
+/// A forwarder parked on a full inbound buffer ends when the connection does.
+///
+/// Backpressure is a wait, and a wait needs a way out. The wait was on a send with no cancellation
+/// leg, and the task doing it holds its own clone of the connection state — which is what keeps the
+/// receiving half alive — so nothing could ever end it: not the connection's own completion, not
+/// `close`, not a reader that gave up and walked away. One task and one buffer's worth of frames
+/// per abandoned call, held for the life of the process.
+#[tokio::test]
+async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_does() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let one = || {
+        Ok((
+            StreamId(1),
+            busbar_contract::wire::Frame {
+                direction: busbar_contract_transport::wire::Direction::Inbound,
+                stream: StreamId(1),
+                bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b"x"[..])),
+                meta: busbar_contract_transport::wire::FrameMeta {
+                    bytes: 1,
+                    transport_units: None,
+                    status: None,
+                },
+            },
+        ))
+    };
+
+    // A forwarder with nothing draining it: it fills the per-unit buffer and parks on the send.
+    let forwarder = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            for _ in 0..crate::conn::INBOUND_FRAME_BUFFER * 4 {
+                if state.send_inbound(one()).await.is_err() {
+                    return;
+                }
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        !forwarder.is_finished(),
+        "the buffer must be full and the forwarder parked on it, or this test proves nothing"
+    );
+
+    // The connection ends. Nothing will ever read what is queued, so the forwarder has nothing left
+    // to wait for.
+    state.end_inbound();
+    let ended = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
+    assert!(
+        ended.is_ok(),
+        "a forwarder parked on the inbound buffer outlived the connection it was forwarding for"
+    );
+
+    // And with it gone, the last inbound sender is gone: a reader draining what is queued reaches
+    // end-of-stream rather than waiting on a connection that has ended.
+    let drained = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut guard = state.inbound_rx.lock().await;
+        let rx = guard
+            .as_mut()
+            .expect("the receiving half is this connection's");
+        while rx.recv().await.is_some() {}
+    })
+    .await;
+    assert!(
+        drained.is_ok(),
+        "the queued frames of an ended connection never reached end-of-stream"
+    );
+}
+
 /// A destination is sealed by whatever named the method; nothing validates that string is a legal
 /// HTTP/2 `:path` before it gets here. A malformed method must refuse the dial's first write, not
 /// panic the process building the request.
