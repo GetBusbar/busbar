@@ -48,6 +48,29 @@
 //! then finding at Route that nothing knows what it is — would charge a request slot for a unit that
 //! could never have been answered. A refusal at the first step costs nothing and says exactly what
 //! happened, which is what makes the coexistence window safe to be in.
+//!
+//! ## WHO ADMITS AN ADMINISTRATIVE CALLER TODAY: the mounted router, not these steps
+//!
+//! Stated here, at the top, because the twelve steps below read as load-bearing and one of them is
+//! not. The shipping administrative composition ([`ProductionUnits::admin_only_sharing`]) binds an
+//! EMPTY authentication chain and the UNBOUND authenticate seams — no configured modules, no
+//! signed-key verifier, no revocation view. So the authenticate step resolves a principal and denies
+//! nobody, and every administrative request that reaches Route is handed to the mounted surface,
+//! which runs the credential check it has always run and answers the 401 or the 403 the previous
+//! release pinned. The inner router is the authority.
+//!
+//! That is a STAGE of the switch-over rather than a hole in it. The chain and the revocation set are
+//! live handles on governance state — the directory of virtual keys, the operator's configured
+//! modules — and neither exists at the point this composition is built; the constructor that DOES
+//! take them ([`ProductionUnits::new_sharing`], plus
+//! [`ProductionUnits::with_auth_bindings`]) is the one a boot with governance state uses, and the
+//! day the administrative listener resolves them the same way the data listener does, the binding
+//! moves there and these steps become the authority they already look like.
+//!
+//! What must not happen in the meantime is for the steps to read as decorative and undocumented, so
+//! the claim above is a TEST as well as a paragraph — see
+//! `the_inner_router_is_the_admin_authority_until_the_chain_is_bound`. If somebody binds a real chain
+//! here, that test fails and this section is what it points at.
 
 // The authenticate step's three seams live beside the other root modules; reached here by the
 // name every call site uses.
@@ -401,6 +424,12 @@ impl ProductionUnits {
             // the cache is real, and the two authorities are absent rather than permissive. A
             // deployment whose keys are busbar's own binds them through
             // `ProductionUnits::with_auth_bindings` at boot, where the governance state exists.
+            //
+            // ABSENT MEANS NO REVOCATION IS CONSULTED HERE, and on the administrative composition
+            // nothing binds one afterwards — so the authenticate step's revocation half is inert
+            // there for the same reason its chain half is. Which is safe only because the surface
+            // below is what admits an operator today; see this module's preamble and the test named
+            // for it, not this comment alone.
             auth_bindings: auth_bindings::AuthBindings::without_directory(),
             trust: Trust,
             arrival_door: AdmissionDoor,
@@ -484,6 +513,13 @@ impl ProductionUnits {
         let kernel = new_kernel();
         let mut units = ProductionUnits::new_sharing(
             &kernel,
+            // AN EMPTY CHAIN, AND THE MOUNTED ROUTER IS THE AUTHORITY. Not an oversight and not a
+            // permissive default dressed as one: a configured chain is resolved from governance
+            // state that does not exist at the point an administrative listener is composed, and the
+            // constructor that takes one is what a boot holding that state calls. Until then the
+            // authenticate step denies nobody, every unit reaches Route, and the surface below runs
+            // the credential check it has always run. See this module's own preamble and the test
+            // named for it.
             AuthChain::new(Vec::new(), false),
             Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
@@ -1117,6 +1153,42 @@ mod tests {
             classified.disposition,
             busbar_unit_egress::ports::Disposition::TransientUpstream,
             "and the mapping stayed ignored: the 503 classified from its HTTP status"
+        );
+    }
+
+    /// THE INNER ROUTER IS THE ADMIN AUTHORITY, and this is the test the module preamble names.
+    ///
+    /// An administrative request carrying NO credential at all walks the whole loop and is handed to
+    /// the mounted surface, which answers it — so nothing in these twelve steps refused it, and what
+    /// admits or denies an operator today is the router's own check. That is the honest description
+    /// of a composition built with an empty chain and no revocation view, and writing it down as an
+    /// assertion is what keeps the steps from reading as a gate they are not yet.
+    ///
+    /// It fails the day somebody binds a real chain here — which is exactly when the preamble it
+    /// points at needs rewriting, and when the surface's own check stops being the only one.
+    #[cfg(feature = "root-admin")]
+    #[tokio::test]
+    async fn the_inner_router_is_the_admin_authority_until_the_chain_is_bound() {
+        use tower::ServiceExt;
+
+        let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
+        let wrapped =
+            crate::root::units_admin::mount(inner, new_kernel(), 1024, ProductionUnits::admin_only);
+        let response = wrapped
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("GET")
+                    .uri("/api/v1/admin/audit")
+                    .body(axum::body::Body::empty())
+                    .expect("the request builds"),
+            )
+            .await
+            .expect("the router answers");
+        assert_eq!(
+            response.status(),
+            200,
+            "a credential-less administrative read was refused by the loop; the authenticate step \
+             has become an authority and the module preamble that says it is not needs rewriting"
         );
     }
 
