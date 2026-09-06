@@ -197,7 +197,7 @@ run_selftest() {
               no-uninstalled-seam neutral-no-dialect single-terminal \
               token-sealed teller-step-order one-teller-loop one-teller-loop:run_gauntlet \
               no-response-escapes-audit terminal-doors-in-audit-step one-pick-site \
-              loc-ceilings:kernel:arena manifest-allowlist:hook-test-plugin \
+              loc-ceilings:kernel:arena loc-ceilings:kernel:ticks manifest-allowlist:hook-test-plugin \
               source-denylist:busbar-plane-llm lean-core no-default-bodies sealed-unit-traits \
               hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
               token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls; do

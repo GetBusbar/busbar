@@ -39,6 +39,7 @@ TOUCHED = [
     "crates/busbar-substrate/src/teller/run.rs",
     "crates/busbar-core/src/router.rs",
     "crates/busbar-kernel/src/arena.rs",
+    "crates/busbar-kernel/src/tick.rs",
     "crates/busbar-kernel/src/teller.rs",
     "crates/busbar-kernel/src/lib.rs",
     "crates/hook-test-plugin/Cargo.toml",
@@ -163,6 +164,17 @@ def plant(rule, pristine, scratch, cfg, baseline):
         n = 40
         body = "\n".join(f"    let _planted_{i} = 1;" for i in range(n))
         append(scratch, "crates/busbar-kernel/src/arena.rs", f"fn planted_bloat() {{\n{body}\n}}")
+    elif rule == "loc-ceilings:kernel:ticks":
+        # The same shape as arena above, against the clock file. This row spent its life matching no
+        # file at all and reporting a vacuous 0; a row that cannot be made red is not a ceiling.
+        spec = cfg["rules"]["loc-ceilings"]["kernel_files"]["ticks"]
+        target = next((p for p in spec["patterns"]
+                       if os.path.exists(os.path.join(scratch, "crates/busbar-kernel/src", p))), None)
+        if target is None:
+            nothing_to_plant(f"no kernel file matches {spec['patterns']}")
+        n = 40
+        body = "\n".join(f"    let _planted_{i} = 1;" for i in range(n))
+        append(scratch, f"crates/busbar-kernel/src/{target}", f"fn planted_bloat() {{\n{body}\n}}")
     elif rule == "manifest-allowlist:hook-test-plugin":
         path = os.path.join(scratch, "crates/hook-test-plugin/Cargo.toml")
         with open(path, encoding="utf-8") as fh:

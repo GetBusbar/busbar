@@ -315,9 +315,16 @@ patterns = ["grammar.rs"]
 ceiling = 800
 
 [rules.loc-ceilings.kernel_files.ticks]
-label = "Ticks/drain/fleet"
-patterns = ["ticks.rs", "drain.rs", "fleet.rs"]
-ceiling = 500
+# The file is `tick.rs`, singular, and always was. `ticks.rs`, `drain.rs` and `fleet.rs` matched no
+# file in the tree, so this row measured the empty set and reported 0/500 -- a ceiling nothing
+# spends is a ceiling that has been abolished rather than met. The drain and the fleet sweep are
+# not separate files: they are two of the three jobs inside tick.rs, and the label says so.
+#
+# The ceiling is today's measurement, not the abolished 500: a ratchet, so the first line that
+# grows this file is the line that has to justify itself.
+label = "tick: session tick, node tick and the drain sweep"
+patterns = ["tick.rs"]
+ceiling = 200
 
 [rules.loc-ceilings.kernel_files.arena]
 label = "arena/masking"
