@@ -540,24 +540,13 @@ fn inventory_reports_every_row_class_without_loading() {
 /// rationale). Used here purely to prove the tarball PIPELINE's mechanics (sign, package, scan,
 /// resolve-by-alias, open), never sqlite-specific behavior (which is that repo's own job).
 fn store_fixture_cdylib() -> Option<PathBuf> {
-    let candidate = {
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbarAI/crates/plugin-loader
-        let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of busbarAI
-        let name = crate::plugin_library_filename("busbar_store_sqlite_plugin");
-        let candidate = sibling_root.join("target/release").join(&name);
-        candidate.exists().then_some(candidate)
-    };
-    if candidate.is_none()
-        && std::env::var_os("CI").is_some()
-        && std::env::var_os("DEV_GATE").is_some()
-    {
-        panic!(
-            "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
-                 checkout under dev-gate.yml: refusing to silently skip the end-to-end tarball \
-                 pipeline coverage"
-        );
-    }
-    candidate
+    crate::fixture_guard::locate(
+        "busbar_store_sqlite_plugin",
+        crate::fixture_guard::FixtureClass::Sibling {
+            repo: "store-sqlite",
+        },
+        "the end-to-end tarball pipeline coverage",
+    )
 }
 
 /// END-TO-END, REAL CODE: package the real store-sqlite-plugin cdylib into a SIGNED tarball, run
@@ -568,10 +557,7 @@ fn store_fixture_cdylib() -> Option<PathBuf> {
 #[test]
 fn end_to_end_open_store_from_signed_tarball() {
     let Some(path) = store_fixture_cdylib() else {
-        eprintln!(
-            "skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p \
-                 busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)"
-        );
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let lib = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");

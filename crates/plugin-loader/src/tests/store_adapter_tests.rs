@@ -88,7 +88,7 @@ fn no_payload_schema_this_binary_can_load_speaks_the_added_operations() {
 #[test]
 fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let grant = adapter
@@ -119,7 +119,7 @@ fn the_slice_seam_reserves_in_full_at_the_shim_epoch() {
 #[test]
 fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let grant = adapter
@@ -134,7 +134,7 @@ fn the_slice_seam_stamps_a_foreign_epoch_rather_than_refusing_it() {
 #[test]
 fn the_slice_seam_releases_and_forgives_an_unknown_id() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let grant = adapter.reserve(&slice_request(100, 0)).expect("reserve");
@@ -156,7 +156,7 @@ fn the_slice_seam_releases_and_forgives_an_unknown_id() {
 #[test]
 fn the_slice_seam_epoch_is_constant() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     assert_eq!(adapter.epoch(), Epoch(0));
@@ -176,7 +176,7 @@ fn the_slice_seam_epoch_is_constant() {
 #[test]
 fn the_verb_seam_records_a_chain_break() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     assert_eq!(adapter.shim_state().chain_breaks, 0);
@@ -190,7 +190,7 @@ fn the_verb_seam_records_a_chain_break() {
 #[test]
 fn the_verb_seam_records_a_restore_and_keeps_the_sealed_replay_slots() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let key = ("export_keyset".to_string(), "idem-1".to_string());
@@ -232,7 +232,7 @@ fn the_verb_seam_records_a_restore_and_keeps_the_sealed_replay_slots() {
 #[test]
 fn a_restore_reseals_both_slice_figures_together() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     adapter.reserve(&slice_request(100, 0)).expect("reserve");
@@ -266,7 +266,7 @@ fn a_restore_reseals_both_slice_figures_together() {
 #[test]
 fn concurrent_shippers_never_split_the_count_from_the_head() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     const PER_SHIPPER: u64 = 20_000;
@@ -328,7 +328,7 @@ fn concurrent_shippers_never_split_the_count_from_the_head() {
 #[test]
 fn the_verb_seam_reseals_the_epoch_floor() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     adapter
@@ -342,7 +342,7 @@ fn the_verb_seam_reseals_the_epoch_floor() {
 #[test]
 fn the_verb_seam_replay_cache_reserves_then_replays_the_committed_bytes() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let key = ("set_operator_key".to_string(), "idem-7".to_string());
@@ -420,7 +420,7 @@ fn replay_key(name: &str) -> (String, String) {
 fn a_replay_inside_the_window_returns_the_committed_bytes() {
     let clock = TestClock::default();
     let Some(adapter) = adapter_at(&clock) else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let key = replay_key("idem-a");
@@ -443,7 +443,7 @@ fn a_replay_inside_the_window_returns_the_committed_bytes() {
 fn a_slot_past_the_window_is_neither_answered_nor_held() {
     let clock = TestClock::default();
     let Some(adapter) = adapter_at(&clock) else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let committed = replay_key("idem-a");
@@ -489,7 +489,7 @@ fn a_slot_past_the_window_is_neither_answered_nor_held() {
 fn a_slot_that_survives_a_restore_still_expires() {
     let clock = TestClock::default();
     let Some(adapter) = adapter_at(&clock) else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let key = replay_key("idem-a");
@@ -518,7 +518,7 @@ fn a_slot_that_survives_a_restore_still_expires() {
 #[test]
 fn the_shipper_seam_acknowledges_a_batch_and_keeps_the_head() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let mut shipper = adapter.shipper();
@@ -586,7 +586,7 @@ fn sweep_every_seam_method(adapter: &StoreAdapter, failures: &mut Vec<String>) {
 #[test]
 fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     assert!(
@@ -619,7 +619,7 @@ fn every_added_operation_on_a_published_schema_store_is_silent_and_never_errors(
 #[test]
 fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     assert_eq!(
@@ -654,7 +654,7 @@ fn the_published_operations_pass_through_the_adapter_to_the_plugin() {
 #[test]
 fn the_three_seams_share_one_shim() {
     let Some(adapter) = adapter_over_published_schema() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let slices: Arc<dyn SliceStore> = adapter.slice_store();

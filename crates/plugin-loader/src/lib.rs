@@ -1613,5 +1613,9 @@ pub fn inventory(dir: &Path) -> Vec<PluginInfo> {
 }
 
 #[cfg(test)]
+#[path = "tests/fixture_guard.rs"]
+pub(crate) mod fixture_guard;
+
+#[cfg(test)]
 #[path = "tests/lib_tests.rs"]
 mod tests;

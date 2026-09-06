@@ -104,7 +104,7 @@ fn one_key() -> VirtualKey {
 #[test]
 fn every_1_6_0_only_store_op_on_an_abi_2_store_defaults_with_no_error_and_no_log_line() {
     let Some(store) = dyn_example_store_with_fake_call() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let log = EventLog::default();
@@ -218,7 +218,7 @@ fn every_1_6_0_only_store_op_on_an_abi_2_store_defaults_with_no_error_and_no_log
 #[test]
 fn repeated_1_6_0_only_ops_on_an_abi_2_store_stay_silent() {
     let Some(store) = dyn_example_store_with_fake_call() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let log = EventLog::default();

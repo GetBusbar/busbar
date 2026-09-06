@@ -98,7 +98,7 @@ fn request_json_for(abi: u32, op: impl FnOnce(&DynStore)) -> serde_json::Value {
 #[test]
 fn add_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
     if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     }
     let delta = one_delta();
@@ -126,7 +126,7 @@ fn add_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
 #[test]
 fn add_usage_to_a_current_store_still_sends_the_unit_map() {
     if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     }
     let delta = one_delta();
@@ -146,7 +146,7 @@ fn add_usage_to_a_current_store_still_sends_the_unit_map() {
 #[test]
 fn put_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
     if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     }
     let ledger = UsageLedger {
@@ -173,7 +173,7 @@ fn put_usage_to_an_abi_2_store_sends_the_1_5_5_tier_row() {
 #[test]
 fn get_usage_from_an_abi_2_store_reads_the_1_5_5_tier_row() {
     if store_example_plugin_path().is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     }
     let store = store_at_abi(2).expect("checked above");

@@ -40,7 +40,7 @@ fn durable_cfg(tag: &str) -> String {
 #[test]
 fn appended_call_rows_newer_than_the_cutoff_survive_a_purge_over_the_abi() {
     let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let cfg = durable_cfg("call-purge");
@@ -90,7 +90,7 @@ fn appended_call_rows_newer_than_the_cutoff_survive_a_purge_over_the_abi() {
 #[test]
 fn a_terminal_task_is_purged_over_the_abi() {
     let Some(lib) = store_example_plugin_path() else {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let cfg = durable_cfg("task-purge");
