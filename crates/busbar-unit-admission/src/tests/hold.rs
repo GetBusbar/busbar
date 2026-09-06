@@ -270,6 +270,7 @@ struct ParentCase {
 fn settle(hold: Hold, seal: &KernelSeal) {
     let _ = busbar_caps::Posted::settle(
         hold,
+        0,
         &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(seal), Vec::new())
             .expect("an empty report is within the bound"),
         &busbar_caps::LedgerToken::mint(seal),

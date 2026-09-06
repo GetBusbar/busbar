@@ -313,7 +313,8 @@ fn an_attempt_whose_caller_goes_away_mid_send_abandons_its_record() {
     // the caller drops it.
     node.transport.script("a", Script::Hang);
 
-    node.route_cancelled("primary", 1);
+    let mut ctx = node.request_ctx();
+    node.route_poll_once_then_drop("primary", &mut ctx);
 
     assert_eq!(
         node.journal.dispatched.lock().unwrap().len(),
