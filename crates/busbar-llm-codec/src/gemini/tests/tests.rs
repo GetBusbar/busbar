@@ -5563,6 +5563,121 @@ fn test_gemini_usage_counts_thinking_tokens_as_output() {
     assert_eq!(u.output_tokens, 523);
 }
 
+/// Gemini's TOOL-USE prompt tokens are billed input tokens and must be ledgered.
+/// The discovery document types `promptTokenCount` as "Number of tokens in the prompt. When
+/// `cached_content` is set, this is still the total effective prompt size meaning this includes the
+/// number of tokens in the cached content" — cached content is the ONLY thing it folds in — while
+/// `toolUsePromptTokenCount` is its own top-level `UsageMetadata` member ("Number of tokens present
+/// in tool-use prompt(s)"). So on a tool turn the tool-use prompt is an ADDITIVE bucket, not a slice
+/// of `promptTokenCount`, and the wire's own `totalTokenCount` is the cross-check that says so.
+/// Treating it as a sub-bucket ledgered every tool-use prompt token as zero and made the
+/// `totalTokenCount` this dialect synthesizes on egress short by the same amount.
+#[test]
+fn test_gemini_usage_counts_tool_use_prompt_tokens_as_input() {
+    // The shape a tool turn returns: the wire total (100 + 11 + 40) proves the tool-use bucket is
+    // ADDITIVE to promptTokenCount rather than carved out of it.
+    let tool_turn = serde_json::json!({
+        "usageMetadata": {
+            "promptTokenCount": 100,
+            "candidatesTokenCount": 11,
+            "toolUsePromptTokenCount": 40,
+            "totalTokenCount": 151
+        }
+    });
+    let u = gemini_usage(&tool_turn);
+    assert_eq!(
+        u.input_tokens, 140,
+        "tool-use prompt tokens are billed input tokens: they belong in input_tokens"
+    );
+    assert_eq!(u.detail.tool_use_prompt_tokens, Some(40));
+    assert_eq!(
+        u.billable_tokens(),
+        tool_turn["usageMetadata"]["totalTokenCount"]
+            .as_u64()
+            .unwrap(),
+        "IR billable total must equal Gemini's own totalTokenCount"
+    );
+
+    // CROSS-CHECK the wire total: an upstream whose `totalTokenCount` leaves no room for an
+    // additive tool-use bucket has already folded it into `promptTokenCount`, and adding it again
+    // would double-bill. The wire's own total is the authority.
+    let folded = serde_json::json!({
+        "usageMetadata": {
+            "promptTokenCount": 100,
+            "candidatesTokenCount": 11,
+            "toolUsePromptTokenCount": 40,
+            "totalTokenCount": 111
+        }
+    });
+    let u = gemini_usage(&folded);
+    assert_eq!(
+        u.input_tokens, 100,
+        "no double-billing when the wire total says the bucket is already inside promptTokenCount"
+    );
+    assert_eq!(u.detail.tool_use_prompt_tokens, Some(40));
+
+    // The egress writer reconstructs the native split: `promptTokenCount` back without the
+    // tool-use bucket, and a `totalTokenCount` that counts it.
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        content: Vec::new(),
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        usage: u_of(140, 11, Some(40)),
+        model: Some("gemini-2.5-pro".to_string()),
+        id: None,
+        created: None,
+        system_fingerprint: None,
+        stop_sequence: None,
+        request_echo: None,
+    };
+    let out = GeminiWriter.write_response(&resp);
+    assert_eq!(
+        out.pointer("/usageMetadata/promptTokenCount"),
+        Some(&serde_json::json!(100))
+    );
+    assert_eq!(
+        out.pointer("/usageMetadata/toolUsePromptTokenCount"),
+        Some(&serde_json::json!(40))
+    );
+    assert_eq!(
+        out.pointer("/usageMetadata/totalTokenCount"),
+        Some(&serde_json::json!(151)),
+        "the synthesized total must count the tool-use prompt bucket"
+    );
+
+    // Same on the streamed terminal chunk.
+    let ev = GeminiWriter
+        .write_response_event(&IrStreamEvent::MessageDelta {
+            stop_reason: None,
+            usage: u_of(140, 11, Some(40)),
+            stop_sequence: None,
+        })
+        .expect("MessageDelta must emit a usage chunk");
+    assert_eq!(
+        ev.1.pointer("/usageMetadata/promptTokenCount"),
+        Some(&serde_json::json!(100))
+    );
+    assert_eq!(
+        ev.1.pointer("/usageMetadata/totalTokenCount"),
+        Some(&serde_json::json!(151))
+    );
+}
+
+/// Helper: an `IrUsage` with the tool-use prompt sub-bucket set.
+fn u_of(input: u64, output: u64, tool_use: Option<u64>) -> crate::ir::IrUsage {
+    crate::ir::IrUsage {
+        input_tokens: input,
+        output_tokens: output,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: None,
+        detail: crate::ir::IrUsageDetail {
+            tool_use_prompt_tokens: tool_use,
+            ..Default::default()
+        },
+    }
+}
+
 /// The Gemini stream WRITE path must emit a streamed reasoning part for a `ThinkingDelta`
 /// (`{text, thought:true}`) and carry the signature for a `SignatureDelta`
 /// (`{thought:true, thoughtSignature}`), mirroring the non-stream `write_response` thinking shape.
