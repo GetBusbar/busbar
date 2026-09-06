@@ -1422,6 +1422,52 @@ impl<'n> VoiceUnit<'n> {
         .headroom_nanos(chain)
     }
 
+    /// **WHAT THIS UNIT DELIVERED IS WORTH, IN NANO-UNITS** — the money figure, priced against the
+    /// node's own card, before it is ever offered as evidence.
+    ///
+    /// This is the step the settlement was missing. The exit path hands the located figure to
+    /// `Posted::settle(hold, priced_nanos, ..)`, whose second argument is nano-units — the same
+    /// unit the door's reservation is in — and what it was being handed was a raw TOKEN COUNT. A
+    /// card pricing output at five micro-units a token therefore settled a hundred-and-twenty-token
+    /// answer at 120 against a reservation of twenty million, released the difference, and billed a
+    /// five-thousandth of what the operator's rate card says the turn cost. The reservation and the
+    /// settlement were being compared in two different units, so no cap and no overdraft flag could
+    /// have caught it: 120 is inside every reservation there is.
+    ///
+    /// Priced HERE, once, and read by both the located figure and the kernel's accrual floor, so the
+    /// floor and the settlement are the same kind of number. The reserved four are what a rate card
+    /// is written in, so this plane's classes fold onto them: what the model emitted prices at the
+    /// output rate, what the turn consumed at the input rate, and what the upstream served from its
+    /// cache at the cache-read rate. `audio_ms_in` is deliberately absent — it is a duration the
+    /// plane derived from frame byte counts, not a class any card prices.
+    fn priced_nanos(&self) -> u64 {
+        let rate = self
+            .node
+            .pricer
+            .rate_for(self.dialect.name())
+            .unwrap_or_default();
+        let mut units = std::collections::BTreeMap::new();
+        units.insert(
+            busbar_api::UNIT_INPUT.to_string(),
+            self.usage
+                .audio_tokens_in
+                .saturating_add(self.usage.text_tokens_in),
+        );
+        units.insert(
+            busbar_api::UNIT_OUTPUT.to_string(),
+            self.usage
+                .audio_tokens_out
+                .saturating_add(self.usage.text_tokens_out),
+        );
+        units.insert(
+            busbar_api::UNIT_CACHE_READ.to_string(),
+            self.usage.cached_tokens,
+        );
+        // The fold saturates in u128 and pins here: an astronomically over-cap figure blocks, and a
+        // wrapped one would land near zero and read as free.
+        u64::try_from(rate.reserved_nanos(&units)).unwrap_or(u64::MAX)
+    }
+
     /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
     /// and every later frame is allowed against.
     ///
@@ -1756,7 +1802,11 @@ impl Units for VoiceUnit<'_> {
         // zero opens the leg, which is why the dial is here and under this shape's arm alone — a
         // second dial per turn would be a second socket per sentence.
         if !self.shape.is_handshake() {
-            let spent = self.usage.audio_ms_in;
+            // THE ACCRUAL IS MONEY, so it is the priced figure and not the millisecond count it
+            // used to be. What the kernel counts here becomes `accrued_floor`, which the exit path
+            // reads as a settlement in nano-units when nothing was located — so a raw duration here
+            // was a duration being posted as a currency amount.
+            let spent = self.priced_nanos();
             self.accrued.fetch_add(spent, Ordering::AcqRel);
             meter.accrue(spent);
             // How far this turn's reservation may still grow, read off the same chain the door was
@@ -1879,18 +1929,12 @@ impl Units for VoiceUnit<'_> {
             located: if self.awaiting.load(Ordering::Acquire) {
                 None
             } else {
-                Some(self.usage.total()).filter(|total| *total > 0)
+                Some(self.priced_nanos()).filter(|n| *n > 0)
             },
-            // What the kernel counted while the unit ran, IN THE UNIT OF THE CLASS IT IS COUNTED
-            // UNDER. The counter is milliseconds of uplink audio; the class the plane declares for
-            // the audio a turn takes in is denominated in seconds, and the label is what says which
-            // rate a figure is read at. Reported verbatim, the one row of the settlement table that
-            // reads the floor settled a turn of audio at a thousand times its duration — the same
-            // mismatch the metered lines already meet at the plane's own boundary, met here too so
-            // the two readings of one quantity are in one unit.
-            //
-            // The floor is evidence, never a charge.
-            accrued_floor: meta::audio_seconds_in(self.accrued.load(Ordering::Acquire)),
+            // What the kernel counted while the unit ran, in the same nano-units the figure above
+            // is in. The floor is evidence, never a charge — but a floor in one unit under a
+            // settlement in another is not evidence of anything.
+            accrued_floor: self.accrued.load(Ordering::Acquire),
             locator_required: false,
             // DERIVED FROM THE ENDING THE PLANE SEALED, as it is on every other plane, rather than
             // written here as a constant no. This is the row that decides whether a stream that
