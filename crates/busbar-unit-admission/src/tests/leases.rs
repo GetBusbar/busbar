@@ -59,6 +59,62 @@ fn a_yes_names_every_capped_group_it_counted() {
     assert_eq!(grant.group_leases(), ["team", "tenant"]);
 }
 
+/// WHAT THE GRANT IS FOR: a group capped at one runs one unit at a time, and only for as long as
+/// something holds the yes.
+///
+/// The `concurrent` cap is enforced by the gauge this grant holds up, and the grant releases it on
+/// drop. So the cap is worth exactly the lifetime the CALLER gives the grant: held for the life of
+/// the unit it admitted, the second arrival is refused while the first is in the air and admitted
+/// once it has ended; dropped where the decision was taken, this cell's middle admission succeeds
+/// and the cap has never refused anything.
+///
+/// The refusal names the group, the `concurrent` metric and no window — a gauge is instantaneous,
+/// so there is nothing to roll and nothing to retry after — which is what the renderers read to
+/// render it as the rate-limited answer rather than an over-quota one.
+#[test]
+fn a_group_capped_at_one_refuses_while_the_yes_it_gave_is_still_held() {
+    let d = door();
+    let p = card(0, &[]);
+    let t = GroupTable::new(vec![capped("team", Some("team"), 1, None)]);
+    let chain = super::chain(&t, "vk_4", Some("team"));
+
+    let first = d
+        .try_admit(&p, &chain, "", 0)
+        .expect("the first is admitted");
+    assert_eq!(first.held(), 1);
+    assert_eq!(d.gauges().in_flight("team"), 1, "the group is running one");
+
+    match d.try_admit(&p, &chain, "", 0) {
+        Err(Blocked::Limit {
+            group,
+            metric,
+            window,
+            retry_after,
+            ..
+        }) => {
+            assert_eq!(group, "team");
+            assert_eq!(metric, Metric::Concurrent);
+            assert_eq!(window, None, "a gauge has no window to roll");
+            assert_eq!(retry_after, None, "and so nothing to wait for");
+        }
+        other => panic!("expected the group's concurrency block, got {other:?}"),
+    }
+    assert_eq!(
+        d.gauges().in_flight("team"),
+        1,
+        "and the refusal counted nothing: the reading is still the one unit"
+    );
+
+    // The first unit ends.
+    drop(first);
+    assert_eq!(d.gauges().in_flight("team"), 0);
+
+    let third = d
+        .try_admit(&p, &chain, "", 0)
+        .expect("the room the first unit gave back admits the next");
+    assert_eq!(third.group_leases(), ["team"]);
+}
+
 /// A group the root never interned is counted exactly as before and simply is not named. The count
 /// is the decision; the name is the record, and a missing record can never be a missing count.
 #[test]

@@ -411,6 +411,7 @@ fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
             admin_listener: false,
             provider_of_open_session: false,
             zero_hold_tick: false,
+            now: 0,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
         })
         .map_err(|_| ())
