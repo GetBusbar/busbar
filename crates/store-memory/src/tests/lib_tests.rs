@@ -730,3 +730,26 @@ fn put_key_with_credential_leaves_no_key_behind_when_the_credential_is_refused()
     assert!(s.get_key("fresh").unwrap().is_some());
     assert_eq!(s.list_credentials("fresh").unwrap().len(), 1);
 }
+
+/// The spent-token ledger is bounded by the tokens' own expiry: a row past its `expires_at` can
+/// never be presented again, so redeeming anything sweeps the lapsed rows out in the same call.
+/// The ledger is keyed by `(kind, token)`, so the same nonce under a different kind is its own
+/// single-use grant rather than a collision.
+#[test]
+fn redeem_plane_token_sweeps_lapsed_rows_and_separates_kinds() {
+    let s = MemoryStore::new();
+    assert!(s.redeem_plane_token("ask", "n1", 100, 50).unwrap());
+    assert!(!s.redeem_plane_token("ask", "n1", 100, 50).unwrap());
+
+    // Same nonce, different kind: a separate grant, not the same spent row.
+    assert!(s.redeem_plane_token("other", "n1", 100, 50).unwrap());
+
+    // Past its own expiry the row is dropped — nothing upstream can present it again anyway, and
+    // keeping it only grows the map.
+    assert!(s.redeem_plane_token("ask", "n2", 300, 200).unwrap());
+    assert_eq!(
+        s.plane_tokens.read().unwrap().len(),
+        1,
+        "the two lapsed rows must be swept by the redemption that came after them"
+    );
+}

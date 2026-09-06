@@ -7,8 +7,9 @@
 //! for persistence. Poison-recovering locks (the governance surface must never panic on a request).
 
 use busbar_api::{
-    CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, Store, StoreError, StoreResult,
-    UsageDelta, UsageLedger, VirtualKey,
+    AuditRecord, CredentialMeta, CredentialSecret, MeteringDelta, MeteringRow, PlaneDisposition,
+    PlaneRecord, PlaneSelector, Store, StoreError, StoreResult, UsageDelta, UsageLedger,
+    VirtualKey,
 };
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -47,6 +48,19 @@ pub struct MemoryStore {
     /// The revocation DENYLIST: denied subject ids (1.5.0 signed-token keys). A set (the reason is
     /// audit-only and not needed for the enforcement read).
     denylist: RwLock<std::collections::HashSet<String>>,
+    /// The SPENT-TOKEN ledger behind `redeem_plane_token`: `(kind, token) -> expires_at`. Presence
+    /// means "already redeemed", so the test-and-set is an occupied-entry check under one guard.
+    /// Bounded by dropping lapsed rows on every redemption (a token past its own `expires_at` can
+    /// never be presented again, so keeping it proves nothing).
+    plane_tokens: RwLock<HashMap<(String, String), u64>>,
+    /// Plane records keyed by `(kind, identity, seq)`. The identity is the record's `parent` for the
+    /// APPENDED child kinds (a chain is `(parent, seq)`) and its `id` for the upserted ones, which
+    /// take `seq` 0 — one map serves both because the child kinds never point-read by id.
+    plane_records: RwLock<HashMap<(String, String, u64), PlaneRecord>>,
+    /// The durable admin AUDIT log, by `seq`. EPHEMERAL like every other map here — this backend is
+    /// RAM — but append-only and fork-detecting within the process's life, which is what the
+    /// engine's write-through actually asks of a store. Ordered reads come from the `BTreeMap`.
+    audit: RwLock<std::collections::BTreeMap<u64, AuditRecord>>,
     /// Amortized-sweep write counters for `usage`/`metering`/tombstoned `keys`/revoked `creds` (see
     /// `MAX_RETENTION_SECS`). Separate per map since the maps see independent write rates.
     usage_sweep_ticker: AtomicU64,
@@ -113,6 +127,24 @@ impl MemoryStore {
             0 => now(),
             pinned => pinned,
         }
+    }
+    fn plane_records(
+        &self,
+    ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
+        self.plane_records
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    fn plane_records_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, String, u64), PlaneRecord>> {
+        self.plane_records.read().unwrap_or_else(|e| e.into_inner())
+    }
+    /// A plane record's identity in the one map: its `parent` when it is an APPENDED child (a chain
+    /// position is `(parent, seq)`), else its own `id` at `seq` 0.
+    fn plane_key(record: &PlaneRecord) -> (String, String, u64) {
+        let identity = record.parent.clone().unwrap_or_else(|| record.id.clone());
+        (record.kind.clone(), identity, record.seq)
     }
     /// The two credential-table preconditions, factored out of `put_credential` so the ATOMIC
     /// `put_key_with_credential` can run the identical rules under its own single critical section
@@ -532,6 +564,133 @@ impl Store for MemoryStore {
             .iter()
             .cloned()
             .collect())
+    }
+
+    fn append_audit(&self, entry: &AuditRecord) -> StoreResult<()> {
+        // Append-only, never rewriting: a second record on an occupied `seq` is EITHER the
+        // write-through retrying (byte-identical → Ok, the common case) or a forked/tampered chain
+        // (different → error). Collapsing those two is the one thing an audit store must not do.
+        let mut audit = self.audit.write().unwrap_or_else(|e| e.into_inner());
+        match audit.get(&entry.seq) {
+            Some(stored) if stored == entry => Ok(()),
+            Some(_) => Err(StoreError(format!(
+                "append_audit: seq {} already holds a DIFFERENT record — the audit chain has forked",
+                entry.seq
+            ))),
+            None => {
+                audit.insert(entry.seq, entry.clone());
+                Ok(())
+            }
+        }
+    }
+
+    fn list_audit(&self) -> StoreResult<Vec<AuditRecord>> {
+        Ok(self
+            .audit
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .cloned()
+            .collect())
+    }
+
+    fn upsert_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        self.plane_records()
+            .insert(Self::plane_key(record), record.clone());
+        Ok(())
+    }
+
+    fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
+        Ok(self
+            .plane_records_read()
+            .get(&(kind.to_string(), id.to_string(), 0))
+            .map(|r| r.body.clone()))
+    }
+
+    fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        // Keyed by `(parent, seq)`, so a replay of the same position replaces rather than duplicates
+        // it and the chain stays one record per seq — the ordering `list_plane_records` promises.
+        self.plane_records()
+            .insert(Self::plane_key(record), record.clone());
+        Ok(())
+    }
+
+    fn list_plane_records(
+        &self,
+        kind: &str,
+        selector: &PlaneSelector,
+    ) -> StoreResult<Vec<Vec<u8>>> {
+        let records = self.plane_records_read();
+        let mut rows: Vec<(u64, Vec<u8>)> = records
+            .iter()
+            .filter(|((k, _, _), r)| {
+                k == kind
+                    && match selector {
+                        PlaneSelector::All => true,
+                        PlaneSelector::Parent(p) => r.parent.as_deref() == Some(p.as_str()),
+                    }
+            })
+            .map(|(_, r)| (r.seq, r.body.clone()))
+            .collect();
+        // Oldest-first by `seq` — the order the engine's chain verifier reads a parent's events in.
+        rows.sort_by_key(|(seq, _)| *seq);
+        Ok(rows.into_iter().map(|(_, body)| body).collect())
+    }
+
+    fn list_plane_record_parents(&self, kind: &str) -> StoreResult<Vec<String>> {
+        let records = self.plane_records_read();
+        let mut parents: Vec<String> = records
+            .iter()
+            .filter(|((k, _, _), _)| k == kind)
+            .filter_map(|(_, r)| r.parent.clone())
+            .collect();
+        parents.sort();
+        parents.dedup();
+        Ok(parents)
+    }
+
+    fn purge_plane_records_before(&self, kind: &str, before: u64) -> StoreResult<u64> {
+        // WHICH rows go is the kind's contract: `task` drops only TERMINAL rows (an interrupted task
+        // waiting on a human is exactly the row that sits still longest, and dropping it loses the
+        // work), every other kind drops any row older than `before`.
+        let mut records = self.plane_records();
+        let before_len = records.len();
+        records.retain(|(k, _, _), r| {
+            if k != kind || r.ts >= before {
+                return true;
+            }
+            k == "task" && r.disposition != PlaneDisposition::Terminal
+        });
+        Ok((before_len - records.len()) as u64)
+    }
+
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        // Absent is a no-op, per the trait. Every `seq` under the identity goes, so deleting a
+        // parent's record cannot leave part of a chain behind.
+        self.plane_records()
+            .retain(|(k, i, _), _| !(k == kind && i == id));
+        Ok(())
+    }
+
+    fn redeem_plane_token(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        // TEST-AND-SET under ONE guard. The trait's default is `Ok(true)` — "this store keeps no
+        // ledger" — which on the DEFAULT backend makes every single-use approval token replayable:
+        // a confirm-once tool re-executes for anyone who replays the nonce, and the store reports
+        // each replay as the first redemption. Governance's out-of-the-box posture cannot be that.
+        let mut spent = self.plane_tokens.write().unwrap_or_else(|e| e.into_inner());
+        // Lapsed rows go in the same call: a token past its own expiry can never be presented
+        // again, so retaining it only grows the map.
+        spent.retain(|_, exp| *exp > now);
+        let first = spent
+            .insert((kind.to_string(), token.to_string()), expires_at)
+            .is_none();
+        Ok(first)
     }
 }
 

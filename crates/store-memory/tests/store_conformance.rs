@@ -7,8 +7,12 @@
 //! exist because the fleet had silently disagreed with itself about all four behaviours, and a suite
 //! the reference implementation is exempt from is a suite nobody has to agree with.
 //!
-//! `append_audit` is not covered here — `MemoryStore` deliberately takes the trait's defaulted no-op
-//! (memory = ephemeral audit, see the trait doc), so there is no durable behaviour to conform to.
+//! Every ruling the suite offers is wired here, including the audit-fork and plane-record ones the
+//! reference backend used to sit out by taking the trait's keep-nothing defaults. Ephemeral is not
+//! the same as absent: this store loses its rows on restart, but WITHIN a process it is the backend
+//! an out-of-the-box deployment actually runs on, so it answers the same questions every plugin
+//! backend does — a suite the default implementation is exempt from is a suite nobody has to agree
+//! with.
 //!
 //! Its own file rather than a second inline `mod` in `src/lib.rs`, per the repo's test-locality rule
 //! (at most one inline test body per file; see `docs/code-layout.md`).
@@ -41,4 +45,34 @@ fn put_credential_requires_a_live_key() {
 #[test]
 fn put_key_with_credential_is_atomic() {
     conf::assert_put_key_with_credential_is_atomic(&MemoryStore::new(), "conf");
+}
+
+#[test]
+fn append_audit_settles_a_duplicate_seq() {
+    conf::assert_append_audit_duplicate_seq(&MemoryStore::new(), 1);
+}
+
+#[test]
+fn plane_task_upsert_get_list() {
+    conf::assert_plane_task_upsert_get_list(&MemoryStore::new(), "conf");
+}
+
+#[test]
+fn plane_event_chain_is_ordered_by_seq() {
+    conf::assert_plane_event_chain_is_ordered_by_seq(&MemoryStore::new(), "conf");
+}
+
+#[test]
+fn plane_call_parents_enumerated() {
+    conf::assert_plane_call_parents_enumerated(&MemoryStore::new(), "conf");
+}
+
+#[test]
+fn plane_demotion_upsert_list_delete() {
+    conf::assert_plane_demotion_upsert_list_delete(&MemoryStore::new(), "conf");
+}
+
+#[test]
+fn plane_token_is_single_use() {
+    conf::assert_plane_token_is_single_use(&MemoryStore::new(), "conf");
 }
