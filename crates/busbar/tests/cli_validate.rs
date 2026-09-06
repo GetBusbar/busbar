@@ -148,26 +148,41 @@ fn validate_ok_on_valid_config_without_plugins() {
 #[cfg(feature = "proto-llm")]
 #[test]
 fn validate_notes_unset_interpolated_env_vars_by_name() {
+    const UNSET_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
     let dir = fixture_dir("unsetenv");
-    // Defensive: ensure the var is genuinely unset regardless of the ambient environment (this test
-    // never sets it, only relies on its absence).
-    std::env::remove_var("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR");
     // `${VAR}` interpolation runs on the RAW config text before YAML parsing (see
     // config::interpolate_env_with), so a reference inside a COMMENT is still recorded as
     // referenced/unset while being guaranteed structurally harmless -- no risk of the substituted
     // (empty) value landing in a real field and failing config validation for an unrelated reason.
     write_configs(
         &dir,
-        "# smoke-tests unset-env-var interpolation: ${BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR}\n",
+        &format!("# smoke-tests unset-env-var interpolation: ${{{UNSET_VAR}}}\n"),
     );
-    let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
+    // Scrub the var on the CHILD process only (`.env_remove`, mirroring
+    // `validate_fails_on_unresolvable_browser_login_client_secret` below), not process-wide: a
+    // `std::env::remove_var` here would race every other test in this threaded binary that reads
+    // or sets the ambient environment concurrently.
+    let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
+        .arg("--validate")
+        .env_remove(UNSET_VAR)
+        .env("MOCK_KEY", "test-key-value")
+        .env(
+            "BUSBAR_SIGNING_KEY",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+        )
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .output()
+        .expect("run busbar");
+    let code = out.status.code().unwrap_or(-1);
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
     assert_eq!(
         code, 0,
         "an unset interpolation var is a note, not a failure: {stderr}"
     );
     assert!(
-        stdout.contains("1 env var(s) referenced but unset here")
-            && stdout.contains("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR"),
+        stdout.contains("1 env var(s) referenced but unset here") && stdout.contains(UNSET_VAR),
         "expected the unset-var note naming the variable, got: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
