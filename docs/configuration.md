@@ -111,6 +111,23 @@ Most secrets never need `${VAR}` interpolation at all: credential fields are sec
 (`{ env: VAR }` / `{ file: /path }` / `{ module: <secret-plugin> }`) resolved by the secret
 subsystem at boot. Interpolation remains for non-secret values (hosts, paths, names).
 
+### Interpolation is a property of the two FILES, not of config generally
+
+`${VAR}` is expanded in `config.yaml` and `providers.yaml` because those are text read off disk:
+the substitution happens on the raw bytes before the parser sees them, which is also why it is
+guarded by the control-character rejection and the shape check described below.
+
+The **persisted overlay** (`busbar-overlay.json`, the durable record of API-applied config) has no
+such text stage — it is a JSON document busbar itself serializes — so it does **not** interpolate,
+and writing a `${VAR}` into an overlay value is **refused** at the API call that would persist it,
+with a message naming the exact value's path. Those characters would otherwise have been stored,
+merged and used literally, which for a credential means presenting `${MY_TOKEN}` to an upstream as
+the token.
+
+This costs nothing, because the overlay resolves the idiom that matters: a credential in an overlay
+value is a **secret reference** — `{ env: VAR }`, `{ file: /path }`, `{ module: <secret-plugin> }` —
+resolved at boot through the same subsystem `config.yaml`'s references go through.
+
 ### Error cases
 
 | Situation | Behavior |
