@@ -591,6 +591,18 @@
       ],
       "rationale": "A 1.6.0 `pools:` entry whose members resolve to `tools:`/`agents:` is PROJECTED to a CandidatePoolCfg (members + repeatable) and then REMOVED from `cfg.pools` before config_validate walks it, so every other knob written on that pool reached no engine and was checked by no validator: a per-pool `hooks:` never attached, `breaker: { base_cooldown_secs: 0 }` was never rejected, `on_exhausted: { fallback_pool: <typo> }` was never resolved. 1.6.0 REFUSES `hooks`/`breaker`/`failover`/`on_exhausted`/`affinity`/`upstream_credentials` on such a pool, naming the pool, the knobs and the plane its kind inferred to, rather than discarding them. Registered as breaking because it turns an accepted document into a refused one. NO RECORDED CELL MOVES TODAY, and the reason is checkable rather than asserted: the shape is unreachable from 1.5.5, which has no `tools:`/`agents:` sections, so a 1.5.5 pool's members can only resolve against `models:` and stay on the LLM plane where every one of these knobs is read exactly as before. `cargo test -p busbar --test migration_corpus` confirms no corpus config changes verdict. The entry is registered ahead of any fixture that writes such a pool, which is what the register is for. The three NEUTRAL 1.6.0 knobs (`weights:`/`tier:`/`attempt_timeout_ms:`) are deliberately not refused: the projection is documented in config/mod.rs as behaviour-neutral for them by design.",
       "changelog": "1.6.0 Changed: a pool whose kind infers to `tools:`/`agents:` refuses the knobs that plane cannot read, instead of discarding them"
+    },
+    {
+      "id": "P-2 an unknown key in the reasoning-budget table or the overlay fails the load",
+      "kind": "breaking",
+      "by": "owner (Matthew Jackson), 2026-09-06 busbar-core remainder audit",
+      "cells": "^config\\.migrate\\|[^|]+\\|validate-migrated$|^cli\\|validate\\||^boot\\.refusal\\|",
+      "classes": [
+        "status",
+        "effects.stderr"
+      ],
+      "rationale": "`ReasoningEffortBudgets` and `OverlayDoc` were the two config shapes left without `deny_unknown_fields`, so a typo in either parsed cleanly and was DISCARDED. Every field of the reasoning table has a serde default, so `meduim: 2048` left that rung at its shipped value and the operator's explicit cost decision was silently dropped; every section of the overlay defaults, so a mis-spelled section (`gruops:`) loaded a document with that section simply absent -- the exact silent drop the overlay `version` field exists to prevent, reached without ever moving the version. Both now refuse, serde naming the offending key and listing the accepted ones, and the overlay refusal is additionally logged at BUSBAR-3023 with the key AND the file (the read classifies the document `Unreadable`, which is a verdict and not a diagnosis; the parser's message existed nowhere else). Registered as breaking because it turns an accepted document into a refused one. No recorded cell moves: `cargo test -p busbar --test migration_corpus` and the busbar-core config corpus confirm no shipped or corpus config carries an unknown key in either shape. NOT applied to `ProviderDef` in this change: providers.yaml's documented `api_key_env:` is not a `ProviderDef` field, so denying unknown keys there refuses documents the shipped docs tell operators to write -- that one needs an owner decision on whether the key is added to the struct or retired, and is reported rather than shipped.",
+      "changelog": "1.6.0 Changed: an unknown key in the reasoning-effort budget table or in the persisted overlay fails the load instead of being discarded"
     }
   ]
 }

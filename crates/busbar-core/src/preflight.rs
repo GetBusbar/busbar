@@ -756,7 +756,7 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
     }
     if auth
         .and_then(|a| a.signing_key.as_ref())
-        .is_some_and(|r| is_builtin(r))
+        .is_some_and(is_builtin)
     {
         resolve_signing_key(auth, &builtins)?;
     }
