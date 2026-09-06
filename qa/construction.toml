@@ -716,14 +716,20 @@ known_sites = [
 [rules.seal-sites.symbols.kernel-seal]
 symbol = "KernelSeal::acquire_for_kernel"
 confined_to = "kernel/src"
+# The scope resolved against this tree, matched as path prefixes.
+confined_to_paths = ["crates/busbar-kernel/src/"]
 because = "the seal is what mints every token; only the kernel may obtain one"
 
 [rules.seal-sites.symbols.recovery-token]
 symbol = "RecoveryToken"
 confined_to = "recovery"
+# The scope resolved against this tree, matched as path prefixes.
+confined_to_paths = ["crates/busbar-kernel/src/recovery.rs"]
 because = "it materialises a hold from a journal record with no admission behind it"
 
 [rules.seal-sites.symbols.hold-cell-take]
 symbol = "take(&ExitToken::mint("
 confined_to = "kernel/src"
+# The scope resolved against this tree, matched as path prefixes.
+confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
 because = "there are three take sites -- the exit path, the sweep and the tick -- and no fourth"

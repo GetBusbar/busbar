@@ -1900,7 +1900,7 @@ def main():
         write_rows(rows, a.rows)
     if a.expected:
         with open(a.expected, "w", encoding="utf-8") as fh:
-            fh.write(" ".join(r["id"] for r in rows) + "\n")
+            fh.write("\n".join(r["id"] for r in rows) + "\n")
     if a.report:
         write_report(rows, cfg, a.report, a.root)
     if a.summary:
