@@ -314,6 +314,24 @@ pub fn admit_check(
             ),
         };
         let mut resp = ingress_error(proto, status, kind, &message);
+        // WHICH BUCKET BLOCKED, for a caller whose terminal is a step of its own and whose record
+        // has a reason code to fill. It rides on the response's extensions, which are dropped when
+        // the response is written: the client's bytes are these bytes either way, and the only
+        // difference this makes is that a plane no longer has to file a frozen group and a spent
+        // rate under the one reason a rendered response can be narrowed to.
+        //
+        // Derived from the SAME match that chose the status, so the two cannot drift: a fourth arm
+        // added above without a reading here would not compile.
+        resp.extensions_mut().insert(match &blocked {
+            LimitBlocked::Disabled(_) => busbar_substrate::plane_host::AdmissionBlock::GroupFrozen,
+            LimitBlocked::MissingGroup(_) => {
+                busbar_substrate::plane_host::AdmissionBlock::OverBudget
+            }
+            LimitBlocked::Limit { metric, .. } => match *metric {
+                "budget" => busbar_substrate::plane_host::AdmissionBlock::OverBudget,
+                _ => busbar_substrate::plane_host::AdmissionBlock::RateLimited,
+            },
+        });
         // Standard `Retry-After` for a rolling window so a well-behaved SDK backs off the
         // right amount ('total' never rolls: no header).
         if let Some(retry) = retry_after {
