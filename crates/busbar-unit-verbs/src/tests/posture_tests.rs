@@ -115,6 +115,34 @@ fn approve_itself_is_never_subject_to_the_dual_control_gate() {
     .is_ok());
 }
 
+/// A read is not a mutation, so the maker-checker gate has nothing of its to hold.
+///
+/// The document scopes maker-checker to "every mutating verb except `approve` itself", and
+/// `verify`/`plane_facts` are the two of the seventeen bound as GETs. Holding them behind an
+/// approval does not delay them — it refuses them forever, because there is no pending mutation for
+/// anyone to approve, and `verify` is precisely the check an operator runs to find out what state a
+/// fleet under `required` is in.
+#[test]
+fn a_read_only_new_verb_is_not_held_by_the_maker_checker_gate() {
+    for verb in [KernelVerb::Verify, KernelVerb::PlaneFacts] {
+        assert!(
+            check_dual_control(verb, DualControl::Required, ApprovalState::NotYetApproved).is_ok(),
+            "{verb:?} is a read and has no mutation for a checker to approve"
+        );
+    }
+    // The control: a mutating verb on the same gate still waits.
+    assert_eq!(
+        check_dual_control(
+            KernelVerb::SetEscrow,
+            DualControl::Required,
+            ApprovalState::NotYetApproved
+        )
+        .unwrap_err()
+        .reason,
+        ReasonCode::ApprovalPending
+    );
+}
+
 #[test]
 fn check_approve_refuses_self_approval() {
     let err = check_approve("alice", "alice", true).unwrap_err();
