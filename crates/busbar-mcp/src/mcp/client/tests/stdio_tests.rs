@@ -477,3 +477,83 @@ async fn a_cancelled_notification_retires_the_child_rather_than_leaving_a_partia
          dispatch write its request onto the tail of a truncated line"
     );
 }
+
+/// AN OPERATOR WHO FIXES A `command:` THAT NEVER STARTED REOPENS THE QUARANTINE — the remedy the
+/// refusal advertises is a remedy that works.
+///
+/// The breaker's re-approval act is an edit to `command:`, and the dispatch path recognises that
+/// edit by comparing the operator's recipe against the one this slot last used. The comparison read
+/// the recipe a child was SUCCESSFULLY SPAWNED WITH, which is only ever written on a spawn that
+/// worked — so the one failure mode that is guaranteed to quarantine a slot without ever spawning
+/// anything (a typo'd program, a missing interpreter, a permission error) left that field unset, the
+/// comparison could not fire, and the fixed command was refused by a breaker with no way left to
+/// reopen it. The refusal text names re-approval as the way out, so a quarantine that could not be
+/// reopened was busbar advertising a remedy it did not implement.
+///
+/// Both fixtures name programs that do not exist, so nothing is spawned in either half: the first
+/// drives the breaker to its threshold on spawn failures alone, and the second asserts the refusal
+/// that follows the edit is the SPAWN'S OWN error rather than the supervisor's quarantine.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_fixed_command_reopens_a_quarantine_that_no_child_ever_survived() {
+    use crate::mcp::client::stdio::StdioWire;
+    use crate::mcp::client::wire::TransportError;
+
+    let pool = crate::mcp::client::pool::McpConnectionPool::default();
+    let missing = |name: &str| StdioCommand {
+        program: format!("/nonexistent/busbar-fixture-{name}"),
+        args: Vec::new(),
+        env: Default::default(),
+        cwd: None,
+    };
+    let broken = missing("broken");
+    let fixed = missing("fixed");
+    fn leg_for<'a>(
+        pool: &'a crate::mcp::client::pool::McpConnectionPool,
+        cmd: &'a StdioCommand,
+    ) -> crate::mcp::client::wire::WireLeg<'a> {
+        crate::mcp::client::wire::WireLeg {
+            pool,
+            policy: crate::mcp::client::ssrf::SsrfPolicy {
+                allow_private: false,
+            },
+            timeout: Duration::from_secs(5),
+            server: "fixture",
+            command: Some(cmd),
+            grants: Default::default(),
+        }
+    }
+
+    // Drive the breaker to its threshold on spawn failures alone. A refused restart is either the
+    // backoff (wait it out) or the quarantine (the state under test); the loop counts neither
+    // sleeps nor attempts, it reads the refusal.
+    let mut quarantined = false;
+    for _ in 0..40 {
+        match StdioWire.ready_child(&leg_for(&pool, &broken)).await {
+            Err(TransportError::Supervision(why)) if why.contains("restarts stopped") => {
+                quarantined = true;
+                break;
+            }
+            Err(TransportError::Supervision(_)) => {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+            }
+            Err(TransportError::Io(_)) => {}
+            other => panic!("a program that does not exist cannot be reached: {other:?}"),
+        }
+    }
+    assert!(
+        quarantined,
+        "repeated spawn failures must trip the breaker, or the second half proves nothing"
+    );
+
+    // THE EDIT. A different `command:` is the operator naming this child and saying they have fixed
+    // it, and it must be tried — the refusal that comes back is the new program's own.
+    match StdioWire.ready_child(&leg_for(&pool, &fixed)).await {
+        Err(TransportError::Io(_)) => {}
+        Err(TransportError::Supervision(why)) => panic!(
+            "a changed command must reopen the quarantine and be TRIED; the breaker refused it \
+             instead, so the remedy the refusal advertises does not exist: {why}"
+        ),
+        other => panic!("a program that does not exist cannot be reached: {other:?}"),
+    }
+}
