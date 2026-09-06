@@ -743,7 +743,27 @@ impl DurableHandleEngine {
                 self.heal(key, &slot.meta);
                 continue;
             }
-            let Some(m) = abandon(id, slot.row.as_ref(), &slot.pos, now) else {
+            // THE PLANE'S CALLBACK RUNS INSIDE AN UNWIND BOUNDARY. It is plane code, reached from a
+            // sweep that some OTHER caller's `submit` happened to claim, and that submit is in the
+            // middle of its own lifecycle: its row and its genesis event are already durable and its
+            // handle is not yet installed. A panic escaping here would unwind straight out through
+            // that submit, leaving a row on disk that no live handle answers for — and the next boot
+            // rehydrates it ACTIVE, installing a handle nobody ever accepted. The panicking candidate
+            // is skipped and reported; every other candidate, and the caller whose submit is midway
+            // through, carry on. `AssertUnwindSafe` because nothing the closure can see survives the
+            // boundary: the slot guard is held here rather than inside it, and a `None` verdict and a
+            // panicking one both mean the same thing — this handle was not abandoned.
+            let verdict = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                abandon(id, slot.row.as_ref(), &slot.pos, now)
+            }));
+            let Ok(verdict) = verdict else {
+                tracing::error!(
+                    handle = %id,
+                    "the plane's abandon callback panicked during the retention sweep; the handle is left active and the sweep continues"
+                );
+                continue;
+            };
+            let Some(m) = verdict else {
                 continue;
             };
             // A failed compensating write leaves the handle ACTIVE (the mutation applies nothing on

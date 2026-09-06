@@ -599,11 +599,22 @@ max_sites = 0
 #   either side of those calls. busbar-core is the crate being emptied; its sites move or go with it.
 #
 #   The two remaining leaks are boot-time interners of the same shape as ids.rs.
+#
+#   handle_engine.rs `sweep` is the plane-callback boundary of the same family as the plane-host
+#   ones above, named by function so the rest of the engine is still held to the rule. The retention
+#   sweep is AMORTISED over submits, so the plane's `abandon` callback runs inside some OTHER
+#   caller's `submit` — one whose row and genesis event are already durable and whose handle is not
+#   yet installed. A panic escaping that callback would unwind through that submit and leave a
+#   durable row no live handle answers for, which the next boot rehydrates as a handle nobody
+#   accepted. No hold is in scope on either side of the call: the boundary wraps exactly the
+#   callback invocation, the slot guard is held outside it, and both a `None` verdict and a
+#   panicking one mean the same thing — this handle was not abandoned.
 known_sites = [
   "crates/busbar-contract/src/ids.rs::key",
   "crates/busbar-core/src/plane_host/",
   "crates/busbar-core/src/plane/registry.rs",
   "crates/busbar-core/src/router.rs",
+  "crates/busbar-substrate/src/plane/handle_engine.rs::sweep",
   "crates/busbar-substrate/src/plane_host/mod.rs",
   "crates/busbar-substrate-values/src/proto.rs",
   "crates/busbar-transport-ws/src/transport.rs",
