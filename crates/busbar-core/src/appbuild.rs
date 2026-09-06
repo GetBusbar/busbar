@@ -448,6 +448,32 @@ pub fn load_config_from_disk(
 /// `spawn_blocking` boundary the admin transaction (`txn.rs`) applies it on.
 pub type GovCredentialRotation = Box<dyn FnOnce() + Send>;
 
+/// The process-wide operational limits a build installed, still PROVISIONAL.
+///
+/// `build_app_from_config` has to install the candidate limits before it starts (the build reads
+/// them through the deep-call-stack accessors), and every step of the build itself is fallible — the
+/// `InstallGuard` inside covers that, rolling them back on any `return Err`/`?`. What it did NOT
+/// cover is everything the CALLER still has to do: an admin apply persists the desired state to the
+/// overlay AFTER the build returns, and a persist failure aborts the transaction with "nothing was
+/// changed (the running engine is unaffected)". Committing the guard at the end of the build made
+/// that message false for exactly the values a rejected config should never get to set — the old
+/// `App` keeps serving, but under the rejected config's body caps.
+///
+/// So the commit is now the CALLER's, and it is the same shape as the governance-credential
+/// rotation beside it: the build hands back an uncommitted handle, and the one place that knows the
+/// transaction actually landed (persist AND swap both `Ok`) calls [`InstalledLimits::keep`]. Dropped
+/// unkept — a persist failure, an early return, a caller that simply lets it fall out of scope — the
+/// previous limits are restored.
+#[must_use = "an unkept InstalledLimits rolls the process-wide limits back when dropped"]
+pub struct InstalledLimits(limits::InstallGuard);
+
+impl InstalledLimits {
+    /// The new generation is live (and durable, where the caller persists): KEEP these limits.
+    pub fn keep(self) {
+        self.0.commit();
+    }
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -458,7 +484,7 @@ pub fn build_app_from_config(
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
-) -> Result<(state::App, Option<GovCredentialRotation>), String> {
+) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
     // running here (not in main) so a config APPLY/RELOAD refreshes them too. The values threaded
     // explicitly (client/store/router/TLS) read `cfg.limits` directly; the deep call-stack sites
@@ -1862,8 +1888,9 @@ pub fn build_app_from_config(
             retain(&app);
         }
     }
-    // The build reached its end without a single fallible step refusing: KEEP the limits installed
-    // at the top. Every earlier `return Err` / `?` drops the guard instead and rolls them back.
-    limits_guard.commit();
-    Ok((app, rotate_gov_credentials))
+    // The build reached its end without a single fallible step refusing — but the build is not the
+    // whole apply. The guard travels OUT, uncommitted, so the limits survive only if the caller's
+    // own persist-and-swap lands (see `InstalledLimits`). Every earlier `return Err` / `?` drops it
+    // here instead and rolls them back, exactly as before.
+    Ok((app, rotate_gov_credentials, InstalledLimits(limits_guard)))
 }
