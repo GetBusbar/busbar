@@ -69,7 +69,15 @@ cd "$repo" || { echo "record.sh: cannot cd to the repo root $repo" >&2; exit 2; 
 
 mkdir -p "$OUT/cells" "$OUT/raw"
 LEDGER="$OUT/ledger.tsv"; : >"$LEDGER"; export LEDGER
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/shadow-oracle-record.XXXXXX")"; export WORK
+# AN UNCHECKED `mktemp -d` POINTS THE WHOLE RUN AT `/`. Every path below is built as "$WORK/…", so a
+# mktemp that failed (a full or read-only temp filesystem, a TMPDIR that does not exist) left WORK
+# empty and the run went on writing "/config.yaml", "/egress", "/mock.control" — and `rm -rf "$WORK"`
+# in the cleanup trap became `rm -rf /`. Checked, and checked to be a directory we can write.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/shadow-oracle-record.XXXXXX")" \
+  || { echo "record.sh: could not create a work directory under ${TMPDIR:-/tmp}" >&2; exit 2; }
+[ -n "$WORK" ] && [ -d "$WORK" ] && [ -w "$WORK" ] \
+  || { echo "record.sh: mktemp -d gave no usable work directory (got '${WORK}')" >&2; exit 2; }
+export WORK
 # WORK holds a config, a signing key, the egress captures and every cell's scratch — tens of MB per
 # run, and a full recording is ~900 cells. Nothing removed it, so every run (and every run that died
 # in its preamble) left one behind until the machine was rebooted. lib.sh has already installed
