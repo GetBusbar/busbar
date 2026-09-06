@@ -119,14 +119,15 @@ if ! busbar_env "$BUSBAR_BIN" --validate >"${WORK}/validate.log" 2>&1; then
     "$(tr '\n' '|' <"${WORK}/validate.log" | tail -c 500). The ${ALIAS} plugin does not load into this busbar at all."
 fi
 
-boot() {
-  busbar_env "$BUSBAR_BIN" >"${WORK}/busbar.log" 2>&1 &
-  local pid=$!
-  track_pid "$pid"
-  echo "$pid"
-}
-
-PID="$(boot)"
+# THE SPAWN IS INLINE, and it has to be. `PID="$(boot)"` runs boot() in a COMMAND SUBSTITUTION, so
+# `track_pid` appends to a copy of FIXTURE_PIDS that dies with the subshell — the reaper's trap runs
+# in the parent and never learns busbar's pid. Its captured stdout is the right number, so the probe
+# could kill the process it named and still leave every OTHER fixture pid unreaped; and the
+# post-restart boot below, whose pid is captured nowhere at all, was left running on the listen port
+# after the probe exited, where the next probe's port guard finds it. Spawn in this shell, take $!
+# here, and track it here — the shape probe-auth.sh already uses.
+busbar_env "$BUSBAR_BIN" >"${WORK}/busbar.log" 2>&1 &
+PID=$!; track_pid "$PID"
 if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
   fail_here "busbar did not come up with the ${ALIAS} store plugin" \
     "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"
@@ -175,7 +176,8 @@ echo "  usage before restart: requests=${REQ_BEFORE} tokens=${TOK_BEFORE}"
 # THE DURABILITY PROOF: kill, restart against the SAME store, assert the key + usage survived.
 kill "$PID" 2>/dev/null || true
 wait "$PID" 2>/dev/null || true
-boot >/dev/null   # its pid is tracked inside boot() for the reaper; we only need it up again
+busbar_env "$BUSBAR_BIN" >>"${WORK}/busbar.log" 2>&1 &
+PID=$!; track_pid "$PID"
 if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
   fail_here "busbar did not restart against the ${ALIAS} store" \
     "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"
