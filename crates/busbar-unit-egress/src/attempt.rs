@@ -248,7 +248,11 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     hop.telemetry
         .upstream_attempt(hop.metric_pool, hop.destination);
 
-    // 6. The send, under the outer deadline with the per-attempt cap raced inside it.
+    // 6. The send, under the outer deadline with the per-attempt cap raced inside it. The anchor
+    //    is read here, once, because the deadline is a bound on the WHOLE send — headers and the
+    //    answer's frames together — and every later reading of what is left of it measures from
+    //    this instant.
+    let anchor_ms = hop.clock.now_millis();
     let deadline_ms = send_deadline_ms(&hop);
     let cap_ms = hop
         .attempt_timeout_ms
@@ -292,7 +296,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         return classify_failure(&hop, status, permit, now);
     }
 
-    deliver(&hop, first, permit, &mut probe_guard, ctx, now).await
+    deliver(&hop, first, permit, &mut probe_guard, ctx, now, anchor_ms).await
 }
 
 // ── assemble ────────────────────────────────────────────────────────────────────────────────────
@@ -563,8 +567,23 @@ fn classify_failure(
 
 // ── deliver ─────────────────────────────────────────────────────────────────────────────────────
 
+/// What is left of the send's deadline, measured from the anchor the send started at. `None` once
+/// the whole budget is spent.
+///
+/// The relay loop asks this before every wait rather than arming a fresh full-length deadline: a
+/// deadline re-armed per frame bounds the gap BETWEEN frames and nothing else, so an upstream that
+/// emits one frame just inside it holds the permit, the connection and the answer open for as long
+/// as it cares to keep dripping.
+fn remaining_ms(clock: &dyn Clock, anchor_ms: u128, budget_ms: u64) -> Option<u64> {
+    let elapsed = clock.now_millis().saturating_sub(anchor_ms);
+    let left = u128::from(budget_ms).checked_sub(elapsed)?;
+    (left > 0).then(|| u64::try_from(left).unwrap_or(budget_ms))
+}
+
 /// The delivered answer: record the success, hand the probe over, spend one unit of the
 /// destination's lifetime budget under a refund guard, and relay the frames.
+///
+/// `anchor_ms` is the instant the send started, which is what the deadline is measured from.
 async fn deliver(
     hop: &Hop<'_>,
     first: FirstFrame,
@@ -572,6 +591,7 @@ async fn deliver(
     probe_guard: &mut Option<ProbeGuard<'_>>,
     ctx: &Ctx<'_>,
     now: u64,
+    anchor_ms: u128,
 ) -> AttemptOutcome {
     hop.breaker
         .observe(hop.pool, hop.destination, Outcome::Success, now, hop.token);
@@ -606,15 +626,21 @@ async fn deliver(
     // moment the first frame is relayed there is no failing over: the client already has part of
     // the answer, so a later failure ends the answer rather than starting another attempt.
     let mut pending = Some(frame);
-    let deadline_ms = send_deadline_ms(hop);
+    let budget_ms = send_deadline_ms(hop);
     loop {
         let next = match pending.take() {
             Some(frame) => Some(Ok((hop.stream, frame))),
             // A deadline that expires while waiting for the next frame ends the answer here; the
-            // client already has what arrived, so there is nothing to fail over to.
-            None => race::with_deadline(frames.next(), hop.clock.sleep(deadline_ms))
-                .await
-                .unwrap_or_default(),
+            // client already has what arrived, so there is nothing to fail over to. The wait is
+            // bounded by what is LEFT of the send's deadline, and a spent one ends the answer
+            // without waiting at all — both by the same path, so a cut stream is the same
+            // partial answer it has always been.
+            None => match remaining_ms(hop.clock, anchor_ms, budget_ms) {
+                Some(ms) => race::with_deadline(frames.next(), hop.clock.sleep(ms))
+                    .await
+                    .unwrap_or_default(),
+                None => None,
+            },
         };
         let Some(Ok((_, frame))) = next else {
             break;
