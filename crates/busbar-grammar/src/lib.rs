@@ -63,9 +63,16 @@ impl Span {
     }
 
     /// The bytes themselves, from the buffer the span was found in.
+    ///
+    /// Total, for every span and every buffer. `Span::new` is public, so a span the scanner never
+    /// produced — one read back out of a journal, one a caller did its own arithmetic on — can still
+    /// arrive here, and both ends are clamped so that reading one is an empty answer rather than a
+    /// panic in the middle of a request. A span whose start is past its end covers no bytes, which
+    /// is already what [`Span::len`] says about it.
     #[must_use]
     pub fn of(self, buf: &[u8]) -> &[u8] {
-        &buf[self.start.min(buf.len())..self.end.min(buf.len())]
+        let end = self.end.min(buf.len());
+        &buf[self.start.min(end)..end]
     }
 }
 
