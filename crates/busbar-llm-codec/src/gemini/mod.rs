@@ -862,6 +862,35 @@ fn gemini_char_offset_to_byte(text: &str, char_idx: i64) -> i64 {
 /// accumulated full-response text to convert against (`GeminiStreamState` carries only an index, not
 /// text) — adding one for an offset correction would put a full-text accumulator on a hot streaming
 /// path, so the streaming arm is left with byte offsets and a comment stating why.
+/// Hard cap on the number of DISTINCT citations one stream may carry, bounding the identity set the
+/// streaming citation dedup keeps. A pathological upstream restating an ever-growing citation list
+/// cannot grow per-stream memory without limit; a real grounded answer cites a handful of sources.
+const MAX_GEMINI_STREAM_CITATIONS: usize = 256;
+
+/// The IDENTITY of a streamed citation, for the dedup that replaces the positional watermark: the
+/// source it names plus the span it backs. Two entries with the same key are the same citation
+/// restated (Gemini repeats its whole list on every chunk); a span-less entry and the span-bearing
+/// entry for the same source are DIFFERENT citations, which is precisely what a positional
+/// watermark could not express.
+fn gemini_citation_identity(c: &crate::ir::IrCitation) -> String {
+    fn s(v: &Option<String>) -> &str {
+        v.as_deref().unwrap_or("")
+    }
+    fn n(v: Option<i64>) -> String {
+        v.map_or_else(|| "-".to_string(), |x| x.to_string())
+    }
+    // `\u{1}` is not legal in a URL, a title or cited text, so it cannot be forged into a
+    // collision between two genuinely different citations.
+    format!(
+        "{}\u{1}{}\u{1}{}\u{1}{}\u{1}{}",
+        s(&c.url),
+        s(&c.title),
+        n(c.start_index),
+        n(c.end_index),
+        s(&c.cited_text)
+    )
+}
+
 fn read_gemini_citations(
     candidate: &serde_json::Value,
     anchor_text: Option<&str>,
