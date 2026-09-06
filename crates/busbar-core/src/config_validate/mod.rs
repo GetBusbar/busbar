@@ -37,6 +37,31 @@ const MAX_SEMAPHORE_PERMITS: usize = tokio::sync::Semaphore::MAX_PERMITS;
 /// have an opinion about credential size.
 const VALIDATE_SECRET_MAX_BYTES: u64 = 1024 * 1024;
 
+/// THE 1.x-DOCUMENT REFUSAL, as one function both validating callers reach.
+///
+/// A busbar 1.x config is not a config with a typo in it; it is a config written against a grammar
+/// that was redesigned, and the useful answer names the markers and says `--migrate-config`. Boot and
+/// `--validate` have always given that answer, from `load_config_from_disk`, which runs this check on
+/// the raw document BEFORE the typed parse — because after the typed parse there is nothing left to
+/// recognize: `deny_unknown_fields` has already collapsed every 1.x section into an anonymous
+/// `unknown field` error.
+///
+/// `POST /api/v1/admin/config/validate` had no equivalent, and could not have one by accident: its
+/// body is deserialized straight into `DeployCfg`, so an operator dry-running their 1.x file through
+/// the endpoint got a `400 malformed config body: unknown field 'governance'` and no mention that a
+/// migrator exists. Same document, same product, two different answers. This is that answer, factored
+/// out of the pair `load_config_from_disk` already calls so the wording cannot drift between them.
+///
+/// `Ok(())` when the document carries no 1.x marker (including a document that is not a mapping at
+/// all — that is a parse question, not a migration one).
+pub fn refuse_legacy_document(doc: &serde_yaml::Value) -> Result<(), String> {
+    let markers = crate::config::migrate::detect_legacy_markers(doc);
+    if markers.is_empty() {
+        return Ok(());
+    }
+    Err(crate::config::migrate::legacy_config_error(&markers))
+}
+
 /// Resolve a provider credential FOR VALIDATION ONLY, with the `file:` read BOUNDED.
 ///
 /// Validation dry-runs the credential FORMAT checks that otherwise only run at boot, which means it
