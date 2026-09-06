@@ -76,6 +76,36 @@ What is normalized (each rule is a named entry in `applied`):
                       a client header that leaked upstream when it should not have)
   text.port           127.0.0.1:<port> in any text body or stderr line: listen, admin and mock ports are the harness's
   egress.host         effects.egress[].headers.host: the mock's port becomes <PORT> (chosen per recording)
+  eventstream.frames  a body whose Content-Type is `application/vnd.amazon.eventstream` (Bedrock's
+                      binary framing for a streamed Converse) is DECODED rather than read as text.
+                      Before this rule the bytes were run through `.decode("utf-8", "replace")`,
+                      which is lossy in both directions: every non-UTF-8 framing byte — the two
+                      big-endian lengths, the prelude CRC, the message CRC, the header block's
+                      type/length bytes — collapsed to U+FFFD, so two DIFFERENT frame streams could
+                      normalize to the same golden text, and the JSON payload inside each frame was
+                      never seen by the JSON path at all (its `metrics.latencyMs`, a per-run
+                      measurement, sat in the golden as a literal). The oracle was blind inside the
+                      frames on exactly the five `llm|bedrock|*|ok_stream` cells.
+                      The rule decodes the whole message stream: for each frame the 12-byte prelude
+                      (total_length, headers_length, prelude CRC32), the header block (all nine AWS
+                      header value types), the payload, and the trailing message CRC32 — and it
+                      VERIFIES both CRCs, so a corrupted stream cannot decode into a clean-looking
+                      list. Each payload is then normalized through the ordinary JSON path, so every
+                      existing rule applies inside a frame exactly as it does to an unframed body
+                      (`metrics.timing` on `latencyMs`, `ts.unix`, `id.wire`, ...).
+                      The body is represented as the ordered list of `[event-type, payload]` pairs
+                      with the framing DROPPED: lengths and CRCs are a re-encoding of the payload
+                      and its headers, not a busbar contract, and keeping them would re-introduce
+                      the per-run noise the payload rules just removed. Frame ORDER is kept, because
+                      the order of a stream's events is a contract. The event-type is the frame's
+                      `:event-type` header; a frame that carries none (an exception frame) is keyed
+                      by its `:exception-type`/`:error-code`, else its `:message-type`, so an error
+                      frame can never be mistaken for a nameless event.
+                      A body that claims the content-type but does NOT decode (bad CRC, truncated
+                      frame, unknown header type) does not silently fall back and disappear: the
+                      rule records `eventstream.undecodable` instead and the old text path runs, and
+                      because the applied-rule SET is itself a diff class (`norm.rules`), one side
+                      decoding where the other does not is red on its own.
   egress.body         effects.egress[].body is parsed as JSON and re-serialized canonically (same
                       technique as a response body) so key order/whitespace cannot masquerade as a
                       diff; a non-JSON body is left untouched. No id/timestamp scrubbing rule from
@@ -100,6 +130,8 @@ import base64
 import json
 import re
 import sys
+import uuid as _uuid
+import zlib
 
 HDR_STRIP = {"date", "server", "x-request-id", "traceparent", "tracestate", "x-trace-id"}
 HDR_TIMING = {"server-timing"}  # busbar;dur=... carries a per-request latency; keep the KEY, blank the value
@@ -363,10 +395,115 @@ def norm_text(text: str, applied: set, keep_regex=None) -> str:
     return "\n".join(sort_pool_lines(lines, applied))
 
 
-def norm_body(body: str, applied: set, key_id: str | None, keep_json_keys: set | None = None, keep_regex=None):
-    raw = body
-    if body.startswith("base64:"):
-        raw = base64.b64decode(body[7:]).decode("utf-8", "replace")
+EVENTSTREAM_CT = "application/vnd.amazon.eventstream"
+
+
+def es_headers(buf: bytes) -> dict:
+    """Decode one frame's header block. Raises ValueError on anything it does not fully understand —
+    a header type this does not know is a header whose LENGTH this cannot compute, so every byte
+    after it would be misread; refusing is the only honest answer."""
+    out, i, n = {}, 0, len(buf)
+    while i < n:
+        nlen = buf[i]; i += 1
+        if i + nlen > n:
+            raise ValueError("header name runs past the block")
+        name = buf[i:i + nlen].decode("utf-8"); i += nlen
+        if i >= n:
+            raise ValueError("header value type missing")
+        htype = buf[i]; i += 1
+        if htype == 0:
+            val = True
+        elif htype == 1:
+            val = False
+        elif htype in (2, 3, 4, 5, 8):
+            width = {2: 1, 3: 2, 4: 4, 5: 8, 8: 8}[htype]
+            if i + width > n:
+                raise ValueError("header integer runs past the block")
+            val = int.from_bytes(buf[i:i + width], "big", signed=True); i += width
+        elif htype in (6, 7):
+            if i + 2 > n:
+                raise ValueError("header value length runs past the block")
+            vlen = int.from_bytes(buf[i:i + 2], "big"); i += 2
+            if i + vlen > n:
+                raise ValueError("header value runs past the block")
+            blob = buf[i:i + vlen]; i += vlen
+            # 7 = STRING (every `:`-prefixed frame header Bedrock sends), 6 = BYTE_ARRAY (opaque:
+            # rendered base64 so a non-UTF-8 value can never be lossily flattened here either)
+            val = blob.decode("utf-8") if htype == 7 else "base64:" + base64.b64encode(blob).decode()
+        elif htype == 9:
+            if i + 16 > n:
+                raise ValueError("header uuid runs past the block")
+            val = str(_uuid.UUID(bytes=bytes(buf[i:i + 16]))); i += 16
+        else:
+            raise ValueError(f"unknown header value type {htype}")
+        out[name] = val
+    return out
+
+
+def decode_eventstream(data: bytes) -> list:
+    """Split an `application/vnd.amazon.eventstream` body into [(headers, payload_bytes), ...],
+    VERIFYING the prelude CRC32 and the message CRC32 of every frame. Raises ValueError if the
+    stream is not a well-formed, intact sequence of frames covering exactly the whole body."""
+    frames, i, n = [], 0, len(data)
+    while i < n:
+        if n - i < 16:
+            raise ValueError("truncated frame prelude")
+        total = int.from_bytes(data[i:i + 4], "big")
+        hlen = int.from_bytes(data[i + 4:i + 8], "big")
+        pre_crc = int.from_bytes(data[i + 8:i + 12], "big")
+        if zlib.crc32(data[i:i + 8]) & 0xFFFFFFFF != pre_crc:
+            raise ValueError("prelude CRC32 mismatch")
+        if total < 16 + hlen or i + total > n:
+            raise ValueError("frame length runs past the body")
+        msg_crc = int.from_bytes(data[i + total - 4:i + total], "big")
+        if zlib.crc32(data[i:i + total - 4]) & 0xFFFFFFFF != msg_crc:
+            raise ValueError("message CRC32 mismatch")
+        frames.append((es_headers(data[i + 12:i + 12 + hlen]), data[i + 12 + hlen:i + total - 4]))
+        i += total
+    if not frames:
+        raise ValueError("no frames")
+    return frames
+
+
+def es_event_type(hdrs: dict) -> str:
+    """The name this frame is keyed by. `:event-type` for an ordinary event; for an exception frame
+    (which carries no `:event-type`) the `:exception-type`/`:error-code`, else the `:message-type` —
+    so an error frame is never recorded as a nameless event."""
+    for k in (":event-type", ":exception-type", ":error-code", ":message-type"):
+        v = hdrs.get(k)
+        if isinstance(v, str) and v:
+            return v
+    return "<no-event-type>"
+
+
+def norm_frame_payload(payload: bytes, applied: set, key_id: str | None, keep_json_keys: set | None):
+    """One frame's payload through the ORDINARY body rules: JSON is parsed and run through norm_json
+    (so metrics.timing fires on `latencyMs`, ts.unix on `created`, id.wire on a synthesized id — the
+    same rules an unframed body gets), anything else through the scalar id rules."""
+    text = payload.decode("utf-8", "replace")
+    stripped = text.strip()
+    if stripped.startswith("{") or stripped.startswith("["):
+        try:
+            return norm_json(json.loads(stripped), applied, key_id, keep_json_keys=keep_json_keys)
+        except Exception:
+            pass
+    return norm_scalar_str(text if key_id is None else text.replace(key_id, "<KEY>"), applied)
+
+
+def norm_body(body: str, applied: set, key_id: str | None, keep_json_keys: set | None = None, keep_regex=None, content_type: str | None = None):
+    raw_bytes = base64.b64decode(body[7:]) if body.startswith("base64:") else body.encode("utf-8", "replace")
+    raw = raw_bytes.decode("utf-8", "replace")
+    if content_type and EVENTSTREAM_CT in content_type.lower():
+        # Bedrock's binary framing. Decode it rather than read it as text: see `eventstream.frames`.
+        try:
+            frames = decode_eventstream(raw_bytes)
+        except ValueError:
+            # NOT a silent fallback: the rule name below is part of the `applied` set, which is
+            # itself a diff class (norm.rules), so a body that stopped decoding is red on its own.
+            applied.add("eventstream.undecodable")
+        else:
+            applied.add("eventstream.frames")
+            return {"eventstream": [[es_event_type(h), norm_frame_payload(p, applied, key_id, keep_json_keys)] for h, p in frames]}
     stripped = raw.strip()
     if stripped.startswith("{") or stripped.startswith("["):
         try:
@@ -394,12 +531,15 @@ def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep
     keep_regex = re.compile(keep["text_regex"]) if keep.get("text_regex") else None
     applied: set = set()
     body_rules: set = set()
-    body = norm_body(cap.get("body", ""), body_rules, key_id, keep_json_keys, keep_regex)
+    # The Content-Type decides whether the body is TEXT at all: an eventstream body is binary framing
+    # and must be decoded, not read through `.decode(..., "replace")` (see `eventstream.frames`).
+    content_type = next((v for k, v in cap.get("headers", {}).items() if k.lower() == "content-type"), None)
+    body = norm_body(cap.get("body", ""), body_rules, key_id, keep_json_keys, keep_regex, content_type)
     if keep_lines is not None:
         # The cell's contract is what is NOT there: keep only the matching lines (a JSON body is
         # rendered canonically first so the filter sees one line per top-level entry).
         rx = re.compile(keep_lines)
-        text = body["text"] if "text" in body else json.dumps(body["json"], separators=(",", ":"), sort_keys=True, indent=0)
+        text = body["text"] if "text" in body else json.dumps(body.get("json", body.get("eventstream")), separators=(",", ":"), sort_keys=True, indent=0)
         body = {"text": "\n".join(ln for ln in text.split("\n") if rx.search(ln))}
         body_rules.add("body.keep-lines")
     applied |= body_rules
