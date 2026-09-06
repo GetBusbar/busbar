@@ -493,14 +493,19 @@ impl Transport for TcpTransport {
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
-            {
+            let delivered = {
                 let mut guard = inner.write.lock().await;
-                deliver_refusal(&mut *guard, bytes.as_slice()).await?;
-            }
+                deliver_refusal(&mut *guard, bytes.as_slice()).await
+            };
             // A refusal finalises the connection, so it ends it the way `close` does: dropping the
             // registry's clone is not enough, because a frame stream that started before the
             // refusal holds its own clone and would stay parked on the socket forever. The flag is
             // what ends that stream, after which the last clone goes and the socket really closes.
+            //
+            // This runs on every path out, delivered or not. A refusal whose bytes never reached
+            // the peer is still a finalised connection — returning the write's error first would
+            // leave the entry registered and that pump parked, which is the leak this ends, on the
+            // one path where the peer is already gone.
             let removed = self
                 .conns
                 .lock()
@@ -509,7 +514,7 @@ impl Transport for TcpTransport {
             if let Some(removed) = removed {
                 removed.finalise();
             }
-            Ok(())
+            delivered
         })
     }
 }

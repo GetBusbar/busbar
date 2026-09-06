@@ -495,6 +495,82 @@ async fn an_undelivered_unit0_refusal_is_an_error() {
     assert_eq!(w.written.as_slice(), b"refused");
 }
 
+/// A refusal that never reached the wire still finalises the connection.
+///
+/// The error is the caller's to see, but it is not a reason to leave the connection registered: the
+/// bytes are gone either way, and a refusal that returned early would leave the entry behind with a
+/// pump parked on the socket — the leak the delivered-refusal cell above rules out, reappearing on
+/// exactly the path where the peer is already gone. Closing runs on every path out, and the delivery
+/// result is reported after it.
+#[tokio::test]
+async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let id = server_conn.id();
+
+    // A pump that is live before the refusal, holding its own clone of the state.
+    let mut frames = server.frames(server_conn.clone());
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"first");
+
+    // Make the write leg fail for certain: with this side's write half already shut down, the
+    // kernel refuses the refusal's bytes locally rather than putting them on the wire. This is the
+    // "the peer never sees it" case without a timing race.
+    let captured = server.inner(id).expect("the connection is registered");
+    {
+        let mut guard = captured.write.lock().await;
+        tokio::io::AsyncWriteExt::shutdown(&mut *guard).await.ok();
+    }
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let err = server
+        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal that never left this host is not a delivered refusal");
+    assert!(
+        matches!(err, TransportError::Closed | TransportError::Reset),
+        "the write failure is reported through the same table every other I/O path uses: {err:?}"
+    );
+
+    assert!(
+        server.inner(id).is_none(),
+        "an undelivered refusal still ends the connection: the registry entry must be gone"
+    );
+    assert!(
+        captured.closed.load(Ordering::Acquire),
+        "an undelivered refusal still sets the flag a live pump reads, or the pump keeps the socket"
+    );
+
+    // The pump ends, which is what the flag exists for.
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .await
+        .unwrap();
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("a refused connection's frame stream must end rather than park on the socket");
+    assert!(next.is_none(), "the pump ends on a failed refusal too");
+}
+
 /// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new
 /// way to fail: a short frame following a long one must not carry the tail of its predecessor, and
 /// the buffer a connection reads through must be the same allocation each time rather than a fresh
