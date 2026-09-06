@@ -105,7 +105,13 @@ def metrics_delta(before_dir: str, after_dir: str):
     # The recorder scrapes with `oracle_scrape_metrics ... || true`, so a scrape that failed after
     # creating (or part-writing) the file leaves a metrics.txt with no parseable samples. Subtracting
     # that from a healthy "after" reports every counter's RUNNING TOTAL as this request's delta.
-    if not b and a:
+    # EITHER SIDE, not just the before one: this guard used to read `not b and a`, so the mirror
+    # failure — a healthy before against an empty AFTER — reported every counter's NEGATED lifetime
+    # total instead, which is the same absolute-in-a-golden the docstring above refuses for usage and
+    # audit ("Both sides must be present, or the effect is unavailable"). Two binaries whose scrape
+    # fails the same way then produce the same fabricated numbers and compare equal, so the metrics
+    # half of the closed loop proves nothing while looking measured.
+    if bool(b) != bool(a):
         return {"unavailable": True}
     out = {}
     for k in sorted(set(a) | set(b)):
@@ -288,6 +294,15 @@ def selftest() -> int:
         say(metrics_delta(b, a) == {"unavailable": True}, "metrics: unparseable before scrape -> unavailable, not the absolute")
         open(os.path.join(b, "metrics.txt"), "w").write("busbar_requests_total{pool=\"p\"} 40\n")
         say(metrics_delta(b, a) == {'busbar_requests_total{pool="p"}': 1}, "metrics: both scrapes present -> the real delta")
+        # THE SAME FAILURE ON THE OTHER SIDE. The guard above was written for an empty BEFORE scrape
+        # only, and the recorder's `oracle_scrape_metrics ... || true` can leave either file with no
+        # parseable samples. An empty AFTER against a healthy before subtracted the running total the
+        # wrong way round and reported every counter's NEGATED lifetime figure as this cell's delta —
+        # an absolute in a golden, which is the one thing effects.* exists to keep out, and a value
+        # both binaries reproduce identically when they fail the same way, so the differ sees a match.
+        open(os.path.join(a, "metrics.txt"), "w").write("")
+        say(metrics_delta(b, a) == {"unavailable": True}, "metrics: unparseable after scrape -> unavailable, not the negated absolute")
+        open(os.path.join(a, "metrics.txt"), "w").write("busbar_requests_total{pool=\"p\"} 41\n")
         os.remove(os.path.join(b, "metrics.txt"))
         say(metrics_delta(b, a) == {"unavailable": True}, "metrics: before scrape absent -> unavailable")
     finally:
