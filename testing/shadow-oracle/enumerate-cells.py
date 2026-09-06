@@ -25,6 +25,14 @@ Cell drivers (record.sh dispatches on `driver`; absent = the LLM wire builder):
 Cells may carry `compare: [classes]` when part of their output is inherently random (a generated
 signing key) — the differ then judges only those classes; `fresh: true` boots a new busbar first.
 
+A cell may also carry `bindings: [PB-N, ...]`: the Appendix B parity rows it proves. That list is
+READ BY A PROGRAM — scripts/design-bindings.py scans each cell for its `PB-N` tokens and derives
+the binding's oracle checks from what it finds — so it is a field, not an aside in the cell's
+`why`. The distinction is not cosmetic: as a parenthetical in prose (`(PB-43/70)`) it was
+unqueryable, it constrained how the sentence could be written, and the `/`-joined spelling meant
+the derivation silently saw only the first row of the pair. As data it is exact, and `why` goes
+back to being one plain-English line about what the cell pins.
+
 Each protocol cell is crossed with the OUTCOME CLASSES the governed path must reproduce
 byte-for-byte: the happy path plus every refusal the core pipeline can emit before/around it.
 
@@ -208,11 +216,11 @@ def cli_cells() -> list[dict]:
               compare=["status"], why="random key: only the exit code is a contract"),
         exec_("cli|--print-metadata-blocklist", F, args=["--print-metadata-blocklist"], mode="cli", why="built-in denylist ∪ security.blocked_metadata_hosts"),
         exec_("cli|unknown-flag", F, args=["--definitely-not-a-flag"], mode="cli", why="unrecognized argument; exit 2"),
-        exec_("cli|--safe-mode|first-arg", F, args=["--safe-mode"], mode="cli", why="1.5.5: unrecognized as a FIRST argument; exit 2 (PB-23)"),
+        exec_("cli|--safe-mode|first-arg", F, args=["--safe-mode"], mode="cli", why="1.5.5: unrecognized as a FIRST argument; exit 2", bindings=["PB-23"]),
         exec_("cli|env|BUSBAR_CONFIG-missing", F, args=["--validate"], mode="validate", config="missing",
               why="config path does not exist; [error] …; exit 1"),
         exec_("cli|env|RUST_LOG-crate-filter", F, args=["--validate"], mode="validate", env={"RUST_LOG": "busbar=debug"},
-              why="bare tracing::Level only — a crate filter silently falls back (PB-51)"),
+              why="bare tracing::Level only — a crate filter silently falls back", bindings=["PB-51"]),
     ]
 
 
@@ -224,7 +232,7 @@ def migrate_cells() -> list[dict]:
         rel = str(f.relative_to(ROOT))
         cells.append(exec_(f"config.migrate|{tag}|migrate", "config.migrate",
                            args=["--migrate-config", rel], mode="cli", config="none",
-                           why="YAML to stdout, banner to stderr, exit 0/1/2 (PB-50)"))
+                           why="YAML to stdout, banner to stderr, exit 0/1/2", bindings=["PB-50"]))
         cells.append(exec_(f"config.migrate|{tag}|validate-migrated", "config.migrate",
                            args=["--validate"], mode="validate", config=f"migrated:{rel}",
                            why="the migrated document under --validate"))
@@ -234,20 +242,20 @@ def migrate_cells() -> list[dict]:
 def scrape_cells() -> list[dict]:
     F = "ops.scrape"
     return [
-        http("ops.scrape|/metrics|key", F, "GET", "/metrics", why="RouteAuth::Key; text/plain; version=0.0.4 (PB-43/70)"),
+        http("ops.scrape|/metrics|key", F, "GET", "/metrics", why="RouteAuth::Key; text/plain; version=0.0.4", bindings=["PB-43", "PB-70"]),
         http("ops.scrape|/metrics|none", F, "GET", "/metrics", auth="none", why="data-plane key auth refused"),
         # The contract is an ABSENCE: the body is filtered to the ledger/journal/hold/WAL series lines
         # only, so the 1.5.5 golden is an empty body and any such series on a later binary is a diff.
         http("ops.scrape|/metrics|no-ledger-series", F, "GET", "/metrics",
              body_lines=r"^busbar_(ledger|journal|hold|wal)_",
-             why="no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)"),
-        http("ops.scrape|/metrics|admin-listener", F, "GET", "/metrics", auth="admin", listener="admin", why="admin router has no /metrics (PB-76)"),
-        http("ops.scrape|/metrics/hooks|key", F, "GET", "/metrics/hooks", why="core axum route; charset=utf-8 (PB-43)"),
-        http("ops.scrape|/stats|key", F, "GET", "/stats", why="20 per-lane fields, 'unbounded', variant names (PB-43)"),
+             why="no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty", bindings=["PB-13", "PB-15", "PB-17", "PB-41"]),
+        http("ops.scrape|/metrics|admin-listener", F, "GET", "/metrics", auth="admin", listener="admin", why="admin router has no /metrics", bindings=["PB-76"]),
+        http("ops.scrape|/metrics/hooks|key", F, "GET", "/metrics/hooks", why="core axum route; charset=utf-8", bindings=["PB-43"]),
+        http("ops.scrape|/stats|key", F, "GET", "/stats", why="20 per-lane fields, 'unbounded', variant names", bindings=["PB-43"]),
         http("ops.scrape|/stats|none", F, "GET", "/stats", auth="none", why="auth chain applies"),
         http("ops.scrape|/healthz|data", F, "GET", "/healthz", auth="none", why="unconditional bypass; 200 ok"),
         http("ops.scrape|/healthz|admin", F, "GET", "/healthz", auth="none", listener="admin", why="same on the admin listener (the admin-listener parity rule)"),
-        http("ops.scrape|/v1/models|openai-fp", F, "GET", "/v1/models", why="openai envelope by fingerprint (no x-api-key rung, PB-100)"),
+        http("ops.scrape|/v1/models|openai-fp", F, "GET", "/v1/models", why="openai envelope by fingerprint (no x-api-key rung)", bindings=["PB-100"]),
         http("ops.scrape|/v1/models|anthropic-fp", F, "GET", "/v1/models", headers={"anthropic-version": "2023-06-01"}, why="anthropic envelope"),
         http("ops.scrape|/v1/models|x-api-key", F, "GET", "/v1/models", headers={"x-api-key": "irrelevant"}, why="x-api-key is NOT a rung for /v1/models"),
         http("ops.scrape|/v1beta/models", F, "GET", "/v1beta/models", why="gemini listing"),
@@ -263,22 +271,22 @@ BIG_BODY = "@oversize:33MiB"
 def crosscut_cells() -> list[dict]:
     F = "http.crosscut"
     return [
-        http("http.crosscut|unknown-path|bare", F, "POST", "/definitely/unknown", body="{}", why="catch-all: path-inferred 404 (PB-30)"),
+        http("http.crosscut|unknown-path|bare", F, "POST", "/definitely/unknown", body="{}", why="catch-all: path-inferred 404", bindings=["PB-30"]),
         http("http.crosscut|unknown-path|openai-suffix", F, "POST", "/x/v1/chat/completions", body='{"model":"nope","messages":[]}', why="detects openai; unknown model"),
         http("http.crosscut|unknown-path|anthropic-header", F, "POST", "/whatever", headers={"anthropic-version": "2023-06-01"}, body="{}", why="detects anthropic by header presence"),
-        http("http.crosscut|unknown-path|anthropic-beta", F, "POST", "/whatever", headers={"anthropic-beta": "x"}, body="{}", why="anthropic-beta is rung 2 too (PB-30)"),
-        http("http.crosscut|/api-prefix|data", F, "GET", "/api/v1/admin/nope", why="frozen admin envelope on the data listener (PB-30)"),
+        http("http.crosscut|unknown-path|anthropic-beta", F, "POST", "/whatever", headers={"anthropic-beta": "x"}, body="{}", why="anthropic-beta is rung 2 too", bindings=["PB-30"]),
+        http("http.crosscut|/api-prefix|data", F, "GET", "/api/v1/admin/nope", why="frozen admin envelope on the data listener", bindings=["PB-30"]),
         http("http.crosscut|/api|data", F, "GET", "/api", why="exact /api also forced"),
-        http("http.crosscut|admin-unknown|admin", F, "GET", "/api/v1/admin/nope", auth="admin", listener="admin", why="nested not_found envelope (PB-76)"),
-        http("http.crosscut|admin-outside-prefix|admin", F, "GET", "/nope", auth="admin", listener="admin", why="outer admin router: empty-bodied 404 (PB-76)"),
+        http("http.crosscut|admin-unknown|admin", F, "GET", "/api/v1/admin/nope", auth="admin", listener="admin", why="nested not_found envelope", bindings=["PB-76"]),
+        http("http.crosscut|admin-outside-prefix|admin", F, "GET", "/nope", auth="admin", listener="admin", why="outer admin router: empty-bodied 404", bindings=["PB-76"]),
         http("http.crosscut|admin-wrong-method|admin", F, "DELETE", "/api/v1/admin/info", auth="admin", listener="admin", why="method_not_allowed envelope"),
         http("http.crosscut|wrong-method|GET-messages", F, "GET", "/v1/messages", why="405 protocol-native (the protocol-native-status-code rule)"),
-        http("http.crosscut|OPTIONS|chat", F, "OPTIONS", "/v1/chat/completions", auth="none", why="no CORS layer ever; OPTIONS => None (PB-100)"),
+        http("http.crosscut|OPTIONS|chat", F, "OPTIONS", "/v1/chat/completions", auth="none", why="no CORS layer ever; OPTIONS => None", bindings=["PB-100"]),
         http("http.crosscut|HEAD|healthz", F, "HEAD", "/healthz", auth="none", why="HEAD on a GET route"),
-        http("http.crosscut|413|openai", F, "POST", "/v1/chat/completions", body=BIG_BODY, why="oversize after auth, dialect-shaped (PB-60)"),
-        http("http.crosscut|413|openai-unauth", F, "POST", "/v1/chat/completions", auth="none", body=BIG_BODY, why="unauthenticated oversize: 401 first (PB-60)"),
+        http("http.crosscut|413|openai", F, "POST", "/v1/chat/completions", body=BIG_BODY, why="oversize after auth, dialect-shaped", bindings=["PB-60"]),
+        http("http.crosscut|413|openai-unauth", F, "POST", "/v1/chat/completions", auth="none", body=BIG_BODY, why="unauthenticated oversize: 401 first", bindings=["PB-60"]),
         http("http.crosscut|413|anthropic", F, "POST", "/v1/messages", headers={"anthropic-version": "2023-06-01"}, body=BIG_BODY, why="anthropic envelope"),
-        http("http.crosscut|413|api-prefix", F, "POST", "/api/v1/admin/keys", auth="admin", listener="admin", body=BIG_BODY, why="admin envelope discards status/kind (PB-60)"),
+        http("http.crosscut|413|api-prefix", F, "POST", "/api/v1/admin/keys", auth="admin", listener="admin", body=BIG_BODY, why="admin envelope discards status/kind", bindings=["PB-60"]),
         # The oversize refusal is produced BEFORE any plane sees the body, so its envelope is decided
         # by the door's own dialect detection. Three doors had no 413 cell at all, which is exactly
         # where a 1.6.0 plane that mounts its own body-limit layer would change the answer unseen.
@@ -303,9 +311,9 @@ def crosscut_cells() -> list[dict]:
              why="oversize on the gemini path: the gemini door detects by PATH, not by header or "
                  "body, so it is the one dialect whose 413 envelope the openai/anthropic cells above "
                  "cannot stand in for"),
-        http("http.crosscut|auth-token|GET-none", F, "GET", "/auth/token", auth="none", why="browser exchange bypass (PB-33)"),
-        http("http.crosscut|auth-token|POST-empty", F, "POST", "/auth/token", auth="none", body="{}", why="flat {\"error\":…} envelope (PB-100)"),
-        http("http.crosscut|bearer-and-x-api-key", F, "GET", "/stats", headers={"x-api-key": "not-a-key"}, why="carrier precedence: Bearer wins (PB-35)"),
+        http("http.crosscut|auth-token|GET-none", F, "GET", "/auth/token", auth="none", why="browser exchange bypass", bindings=["PB-33"]),
+        http("http.crosscut|auth-token|POST-empty", F, "POST", "/auth/token", auth="none", body="{}", why="flat {\"error\":…} envelope", bindings=["PB-100"]),
+        http("http.crosscut|bearer-and-x-api-key", F, "GET", "/stats", headers={"x-api-key": "not-a-key"}, why="carrier precedence: Bearer wins", bindings=["PB-35"]),
         http("http.crosscut|x-api-key-only|bad", F, "GET", "/stats", auth="none", headers={"x-api-key": "not-a-key"}, why="second carrier, invalid"),
     ]
 
@@ -425,7 +433,8 @@ def admin_cells() -> list[dict]:
             if op.get("idempotent"):
                 # the SAME read-back: a replayed write must show the same state as the first write did.
                 c2 = json.loads(json.dumps(c)); c2["id"] = f"admin.ops|{opid}|idempotent-replay"
-                c2["request"]["repeat"] = 2; c2["why"] = "same Idempotency-Key twice: the replay returns the first response (PB-21)"
+                c2["request"]["repeat"] = 2; c2["bindings"] = ["PB-21"]
+                c2["why"] = "same Idempotency-Key twice: the replay returns the first response"
                 cells.append(c2)
             if op.get("if_match") and stale:
                 for kind in ("stale", "malformed"):
@@ -433,7 +442,8 @@ def admin_cells() -> list[dict]:
                     c3 = json.loads(json.dumps(c)); c3["id"] = f"admin.ops|{opid}|if-match-{kind}"
                     c3["request"].pop("post", None)
                     c3["request"]["headers"] = {**c3["request"]["headers"], stale.get("header", "If-Match"): stale[kind]}
-                    c3["why"] = f"If-Match {kind}: {stale.get(kind + '_expect')} (PB-100)"
+                    c3["why"] = f"If-Match {kind}: {stale.get(kind + '_expect')}"
+                    c3["bindings"] = ["PB-100"]
                     cells.append(c3)
         else:
             cells.append(http(f"admin.ops|{opid}|ok", F, op["method"], base_path, auth="admin", listener="admin",
@@ -554,20 +564,20 @@ def failover_cells() -> list[dict]:
         c["mock_control"] = ctl
         return c
     cells += [
-        fo("fo|all-up", "oracle-fo", {}, "SWRR over two members, 3:1 (PB-5/57)"),
-        fo("fo|primary-down", "oracle-fo", {"m-openai-chat": "down"}, "first attempt 503 -> breaker trips (consecutive 1) -> failover to anthropic; 200 (PB-8/10)"),
+        fo("fo|all-up", "oracle-fo", {}, "SWRR over two members, 3:1", bindings=["PB-5", "PB-57"]),
+        fo("fo|primary-down", "oracle-fo", {"m-openai-chat": "down"}, "first attempt 503 -> breaker trips (consecutive 1) -> failover to anthropic; 200", bindings=["PB-8", "PB-10"]),
         fo("fo|primary-5xx", "oracle-fo", {"m-openai-chat": "5xx"}, "500 disposition -> failover"),
-        fo("fo|primary-429", "oracle-fo", {"m-openai-chat": "429"}, "upstream 429 with Retry-After 7: disposition + honor_retry_after floor (PB-80)"),
-        fo("fo|all-down", "oracle-fo", {"m-openai-chat": "down", "m-anthropic": "down"}, "every member fails -> on_exhausted default 503 + Retry-After (PB-4)"),
+        fo("fo|primary-429", "oracle-fo", {"m-openai-chat": "429"}, "upstream 429 with Retry-After 7: disposition + honor_retry_after floor", bindings=["PB-80"]),
+        fo("fo|all-down", "oracle-fo", {"m-openai-chat": "down", "m-anthropic": "down"}, "every member fails -> on_exhausted default 503 + Retry-After", bindings=["PB-4"]),
         fo("fo|all-down-stream", "oracle-fo", {"m-openai-chat": "down", "m-anthropic": "down"}, "same, streamed request", stream=True),
         fo("fo|primary-slow", "oracle-fo", {"m-openai-chat": "slow"}, "attempt exceeds upstream_request_timeout? (default 300 s: NOT cut; the mock sleeps 8 s then answers) — records the real 1.5.5 wait", ),
-        fo("fo|primary-cut-stream", "oracle-fo", {"m-openai-chat": "cut"}, "transport cut after the first SSE frame: stream_failed, tokens 0, lane unit not refunded (PB-27)", stream=True),
-        fo("fo|primary-cut-body", "oracle-fo", {"m-openai-chat": "cut"}, "transport cut mid-body on a buffered response: 502, fee refunded (PB-91)"),
-        fo("fb|member-down", "oracle-fb", {"m-cohere": "down"}, "cohere down -> on_exhausted fallback_pool oracle-fo -> served by the hop; scoped draws on the ATTEMPTED pool (PB-47)"),
+        fo("fo|primary-cut-stream", "oracle-fo", {"m-openai-chat": "cut"}, "transport cut after the first SSE frame: stream_failed, tokens 0, lane unit not refunded", stream=True, bindings=["PB-27"]),
+        fo("fo|primary-cut-body", "oracle-fo", {"m-openai-chat": "cut"}, "transport cut mid-body on a buffered response: 502, fee refunded", bindings=["PB-91"]),
+        fo("fb|member-down", "oracle-fb", {"m-cohere": "down"}, "cohere down -> on_exhausted fallback_pool oracle-fo -> served by the hop; scoped draws on the ATTEMPTED pool", bindings=["PB-47"]),
         fo("fb|all-down", "oracle-fb", {"m-cohere": "down", "m-openai-chat": "down", "m-anthropic": "down"}, "hop exhausted too -> 503"),
-        fo("fb|member-401", "oracle-fb", {"m-cohere": "401"}, "cohere answers 401: an auth hard-down on the member; what the caller sees and what the breaker records (PB-83)"),
+        fo("fb|member-401", "oracle-fb", {"m-cohere": "401"}, "cohere answers 401: an auth hard-down on the member; what the caller sees and what the breaker records", bindings=["PB-83"]),
         fo("fb|member-down-stream-openai", "oracle-fb", {"m-cohere": "down"}, "a STREAM served by the fallback lane (oracle-fo's openai-chat member): the usage delta is the contract — a fallback stream must bill exactly as the hot path does", stream=True, weight=10),
-        fo("lb|member-down", "oracle-lb", {"m-gemini": "down"}, "least_bad: one breaker-bypassing attempt against the tripped member (PB-4)"),
+        fo("lb|member-down", "oracle-lb", {"m-gemini": "down"}, "least_bad: one breaker-bypassing attempt against the tripped member", bindings=["PB-4"]),
         fo("lb|up", "oracle-lb", {}, "least_bad pool healthy"),
         fo("fo|second-request-after-trip", "oracle-fo", {"m-openai-chat": "down"}, "two requests in one boot: the second never tries the tripped member", pre_same=True),
     ]
@@ -594,12 +604,14 @@ def plugin_cells() -> list[dict]:
     for n in names:
         cells.append({"id": f"plugins.load|{n}", "plane": "core", "family": "plugins", "driver": "script",
                       "script": {"name": "plugin-list.sh", "args": [n]}, "outcome": "ok",
-                      "why": "--list-plugins with the published tarball: kind/alias/signature/STATUS line (PB-11)"})
+                      "why": "--list-plugins with the published tarball: kind/alias/signature/STATUS line",
+                      "bindings": ["PB-11"]})
         if n.startswith("store-"):
             needs = n in ("store-postgres", "store-mysql", "store-valkey")  # need a live backend service
             cells.append({"id": f"plugins.store-persist|{n}", "plane": "core", "family": "plugins", "driver": "script",
                           "script": {"name": "store-persist.sh", "args": [n]}, "outcome": "ok",
-                          "why": "validate, boot, mint, spend, restart, read back (PB-11/37/93; persistence is the job)",
+                          "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+                          "bindings": ["PB-11", "PB-37", "PB-93"],
                           **({"needs_fixture": True} if needs else {})})
     return cells
 
@@ -613,8 +625,8 @@ def billing_cells() -> list[dict]:
                                                      "headers": {"Content-Type": "application/json"},
                                                      "body": json.dumps({"model": model, "messages": [{"role": "user", "content": "ping"}]}, separators=(",", ":"))}
     cells = []
-    def usage(id_, pre, why, path="/api/v1/admin/keys/{KEY_OK}/usage", auth="admin"):
-        c = http(f"billing|{id_}", F, "GET", path, auth=auth, listener="admin", why=why)
+    def usage(id_, pre, why, path="/api/v1/admin/keys/{KEY_OK}/usage", auth="admin", **extra):
+        c = http(f"billing|{id_}", F, "GET", path, auth=auth, listener="admin", why=why, **extra)
         c["request"]["pre"] = pre
         return c
     cells += [
@@ -622,7 +634,7 @@ def billing_cells() -> list[dict]:
         usage("key-usage|after-1", [chat()], "1 request: requests 1, tokens 18, spend_cents 250 (2.5 units)"),
         usage("key-usage|after-3", [chat(), chat(), chat()], "3 requests: 3 / 54 / 750 — no truncation drift across rows"),
         usage("key-usage|after-cross-protocol", [chat(model="m-anthropic"), chat(model="m-gemini")], "two lanes: per-lane rows folded into one view"),
-        usage("key-usage|after-upstream-down", [{**chat(), "mock_control": {"m-openai-chat": "down"}}], "a 503: requests +1, billable refunded, spend 0 (PB-16/26/27)"),
+        usage("key-usage|after-upstream-down", [{**chat(), "mock_control": {"m-openai-chat": "down"}}], "a 503: requests +1, billable refunded, spend 0", bindings=["PB-16", "PB-26", "PB-27"]),
         usage("group-usage|after-2", [chat(), chat()], "the group view", path="/api/v1/admin/groups/oracle/usage"),
         usage("group-usage|broke-after-prime", [], "the primed broke group: 1 request already spent", path="/api/v1/admin/groups/broke/usage"),
         usage("admin-usage|after-2", [chat(), chat()], "GET /admin/usage (all keys, today)", path="/api/v1/admin/usage"),
@@ -658,7 +670,7 @@ def hooks_cells() -> list[dict]:
         http("hooks|hooked-pool|ok", F, "POST", "/v1/chat/completions", body=body(), why="gate + rewrite in 1.5.5 order; served 200", config_variant=V),
         http("hooks|hooked-pool|ok_stream", F, "POST", "/v1/chat/completions", body=body(True), why="streamed through the gate", config_variant=V),
         http("hooks|hooked-pool|unauth", F, "POST", "/v1/chat/completions", auth="none", body=body(), why="refused before any hook", config_variant=V),
-        http("hooks|metrics-hooks", F, "GET", "/metrics/hooks", why="the hook's own scrape exposition (PB-43)", config_variant=V),
+        http("hooks|metrics-hooks", F, "GET", "/metrics/hooks", why="the hook's own scrape exposition", config_variant=V, bindings=["PB-43"]),
         http("hooks|admin-list", F, "GET", "/api/v1/admin/hooks", auth="admin", listener="admin", why="registry with the loaded hook, incl. the 1.5.5 legacy `at` field alongside `phase`/`fires_at` (the legacy-hook-spelling rule)", config_variant=V),
         http("hooks|unhooked-pool|ok", F, "POST", "/v1/chat/completions", body=json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]}), why="a pool without the hook is untouched", config_variant=V),
         # A15 — 1.5.5 spellings HEAD 1.6.0 dropped and the owner rule restored: a hook def's
@@ -810,7 +822,8 @@ def crosscut_traps_cells() -> list[dict]:
                      "route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of "
                      "blanked to <RETRY>, so the report can show its actual value and a regression that "
                      "floors it below 2 seconds (the breaker's own base_cooldown_secs is 15s, jittered) is "
-                     "a visible diff, not hidden inside the usual retry-after normalization (PB-4)")
+                     "a visible diff, not hidden inside the usual retry-after normalization",
+                 bindings=["PB-4"])
     trap["mock_control"] = {"m-openai-chat": "down", "m-anthropic": "down"}
     cells.append(trap)
     cells.append(http(
