@@ -2092,15 +2092,25 @@ fn refused_answer(ended: &busbar_kernel::teller::Ended) -> AdminAnswer {
 ///
 /// The vocabulary is the previous release's admin envelope and nothing here invents a status: each
 /// arm is a reason the loop can end on paired with the status that release already gave the same
-/// condition. `forbidden` stays the answer for the two authorization endings AND for an ending this
+/// condition. `forbidden` stays the answer for the authorization endings AND for an ending this
 /// table does not name, so an ending nobody has mapped cannot quietly become a new status on a
-/// surface a caller has pinned.
+/// surface a caller has pinned — but an AUTHENTICATION ending is not an authorization one, and the
+/// pinned document answers it `401`/`unauthorized` on every operation it declares.
 #[cfg(feature = "root-admin")]
 fn answer_for(outcome: Outcome) -> AdminAnswer {
     let (status, code) = match outcome {
         Outcome::Refused(_, reason) | Outcome::Failed(_, reason) => match reason {
             // A body or a verb the plane could not read is a bad request, not a denied one.
             ReasonCode::DecodeFailed => (400, "invalid_request"),
+            // Nobody was authenticated, so nothing about scope has been decided yet. The pinned
+            // document answers every one of its operations with `401`/`unauthorized` for a missing
+            // or invalid admin credential, and the plane's own ratified table renders these same
+            // four endings under `unauthorized`; rendering them as `forbidden` told a client
+            // holding an expired token that its SCOPE was the problem.
+            ReasonCode::Unauthenticated
+            | ReasonCode::SchemeNotDeclared
+            | ReasonCode::SessionUnbound
+            | ReasonCode::ChallengeExhausted => (401, "unauthorized"),
             // Nothing on this surface answers that method and path.
             ReasonCode::NoDestination => (404, "not_found"),
             // The caller is inside its rights and the node is over a limit.
@@ -2504,7 +2514,6 @@ mod tests {
         assert_eq!(status(ReasonCode::OverBudget).status, 429);
         assert_eq!(status(ReasonCode::DurabilityUnavailable).status, 503);
         assert_eq!(status(ReasonCode::ScopeDenied).status, 403);
-        assert_eq!(status(ReasonCode::Unauthenticated).status, 403);
         assert_eq!(
             status(ReasonCode::PlanePanic).status,
             403,
@@ -2529,6 +2538,42 @@ mod tests {
         assert_eq!(
             status(ReasonCode::NoDestination).headers,
             vec![("content-type".to_string(), "application/json".to_string())]
+        );
+    }
+
+    /// A caller who never authenticated is told so, not told they are under-scoped.
+    ///
+    /// The pinned document answers a missing or invalid admin credential with `401`/`unauthorized`
+    /// on every one of its 66 operations, and the plane's own ratified table renders the same four
+    /// authentication endings under `unauthorized`. Rendering them as `403`/`forbidden` told a
+    /// client holding an expired token that its scope was wrong — so the one branch every admin
+    /// client has (re-authenticate on 401, give up on 403) took the wrong arm.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn an_unauthenticated_caller_is_told_unauthorized_not_forbidden() {
+        let status = |reason| {
+            answer_for(Outcome::Refused(
+                busbar_caps::StepName::Authenticate,
+                reason,
+            ))
+        };
+        for reason in [
+            ReasonCode::Unauthenticated,
+            ReasonCode::SchemeNotDeclared,
+            ReasonCode::SessionUnbound,
+            ReasonCode::ChallengeExhausted,
+        ] {
+            assert_eq!(
+                status(reason),
+                error_answer(401, "unauthorized"),
+                "{reason:?} is an authentication ending, not an authorization one"
+            );
+        }
+        // and an ending that IS about authority keeps the answer the surface pinned for it
+        assert_eq!(status(ReasonCode::Revoked), error_answer(403, "forbidden"));
+        assert_eq!(
+            status(ReasonCode::ScopeDenied),
+            error_answer(403, "forbidden")
         );
     }
 
