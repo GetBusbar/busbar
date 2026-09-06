@@ -21,6 +21,29 @@ use crate::WsTransport;
 /// does not invent one.
 const WS_TARGET: &str = "ws://localhost/";
 
+/// Every await in this file that could park forever runs under this.
+///
+/// A test that hangs reports NOTHING. The job is killed by the CI runner's own wall clock, the
+/// failure names no cell, and the regression that caused it — a pump that never wakes, an upgrade
+/// nobody answers, a writer lock that is never given back — reads as infrastructure flakiness
+/// rather than as the red test it is. Wrapping the await turns "the suite hung" into "this cell
+/// parked", which is a bug report.
+///
+/// Ten seconds is deliberately generous: this is a HANG DETECTOR, not a timing assertion. No
+/// healthy cell here comes within two orders of magnitude of it, so the bound can never be what
+/// decides whether a passing test passes — only whether a parked one is reported.
+///
+/// Cells under `#[tokio::test(start_paused = true)]` are deliberately NOT wrapped: the paused
+/// clock auto-advances to the nearest deadline, so this bound would fire the instant it was armed.
+async fn bounded<T>(what: &str, f: impl std::future::Future<Output = T>) -> T {
+    match tokio::time::timeout(std::time::Duration::from_secs(10), f).await {
+        Ok(value) => value,
+        Err(_) => {
+            panic!("{what} parked; a park-forever regression must be a red test, not a hung job")
+        }
+    }
+}
+
 /// Build a connected pair of live WS connections over an in-memory duplex — one performs the
 /// server handshake role, the other the client role, exactly as `accept`/`dial` would over a real
 /// socket. This is the exact seam a real `tcp`/`tls`/`http` transport would hand this crate a
@@ -35,7 +58,10 @@ async fn pair(
     let (end_a, end_b) = tokio::io::duplex(cap);
     let server = t.handshake_over(end_a, true, WS_TARGET, "peer-a");
     let client = t.handshake_over(end_b, false, WS_TARGET, "peer-b");
-    let (server, client) = tokio::join!(server, client);
+    let (server, client) = bounded("the ws handshake pair", async {
+        tokio::join!(server, client)
+    })
+    .await;
     (server.unwrap(), client.unwrap())
 }
 
@@ -44,17 +70,22 @@ async fn upgrade_then_round_trip_byte_exact() {
     let t = WsTransport::new();
     // The handshake succeeding at all IS the upgrade path (`Unit0Trigger::Upgrade`): a peer that
     // is not speaking the WS opening handshake never produces a connection.
-    let (a, b) = pair(&t, 64 * 1024).await;
+    let (a, b) = bounded("pair(&t, 64 * 1024)", pair(&t, 64 * 1024)).await;
 
     let payload = b"the quick brown fox \xE2\x9C\x93".to_vec();
-    let n = t
-        .write(&a, StreamId(0), ArenaBytes::new(&payload))
-        .await
-        .unwrap();
+    let n = bounded(
+        "t.write(&a, StreamId(0), ArenaBytes::new(&payload))",
+        t.write(&a, StreamId(0), ArenaBytes::new(&payload)),
+    )
+    .await
+    .unwrap();
     assert_eq!(n, payload.len());
 
     let mut frames = t.frames(b);
-    let (stream, frame) = frames.next().await.unwrap().unwrap();
+    let (stream, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(stream, StreamId(0));
     assert_eq!(frame.direction, Direction::Inbound);
     assert_eq!(frame.bytes.as_slice(), payload.as_slice(), "byte-exact");
@@ -74,26 +105,40 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
     ));
     let ws = Arc::new(WsTransport::new());
     let keys = test_key_handle();
-    let listener = http
-        .listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
-        .await
-        .unwrap();
+    let listener = bounded(
+        "http .listen(&HttpCfg(\"127.0.0.1:0\".to_string(), None), &...",
+        http.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys),
+    )
+    .await
+    .unwrap();
     let addr = listener.local_addr();
 
     let upgrade_task = {
         let (http, ws, keys) = (http.clone(), ws.clone(), test_key_handle());
         tokio::spawn(async move {
-            let http_conn = http.accept(&listener).await.unwrap();
+            let http_conn = bounded("http.accept(&listener)", http.accept(&listener))
+                .await
+                .unwrap();
             let before = http.arrival(&http_conn).transport_chain;
-            let upgraded = ws.adopt(&*http, http_conn.clone(), &keys).await.unwrap();
+            let upgraded = bounded(
+                "ws.adopt(&*http, http_conn.clone(), &keys)",
+                ws.adopt(&*http, http_conn.clone(), &keys),
+            )
+            .await
+            .unwrap();
             (before, http.arrival(&http_conn), upgraded)
         })
     };
 
     let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
     let url: &'static str = Box::leak(format!("ws://{addr}/duplex").into_boxed_str());
-    let client_conn = client_t.dial(&verified_upstream(url), &keys).await.unwrap();
-    let (before, after_source, upgraded) = upgrade_task.await.unwrap();
+    let client_conn = bounded(
+        "client_t.dial(&verified_upstream(url), &keys)",
+        client_t.dial(&verified_upstream(url), &keys),
+    )
+    .await
+    .unwrap();
+    let (before, after_source, upgraded) = bounded("upgrade_task", upgrade_task).await.unwrap();
 
     assert_eq!(before, vec!["tcp", "http"], "the layer below named itself");
     assert_eq!(
@@ -108,15 +153,21 @@ async fn an_in_band_upgrade_over_http_with_cleared_facts() {
 
     // And the adopted connection carries frames, which is what makes the upgrade real rather than
     // a shape that only type-checks.
-    ws.write(
-        &upgraded,
-        StreamId(0),
-        ArenaBytes::new(b"after the upgrade"),
+    bounded(
+        "ws.write( &upgraded, StreamId(0), ArenaBytes::new(b\"after...",
+        ws.write(
+            &upgraded,
+            StreamId(0),
+            ArenaBytes::new(b"after the upgrade"),
+        ),
     )
     .await
     .unwrap();
     let mut frames = client_t.frames(client_conn);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"after the upgrade");
 }
 
@@ -131,21 +182,27 @@ async fn a_composed_round_trip_over_the_layers_below() {
     let server_t = Arc::new(WsTransport::over(http));
     let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
     let keys = test_key_handle();
-    let listener = server_t
-        .listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
-        .await
-        .unwrap();
+    let listener = bounded(
+        "server_t .listen(&HttpCfg(\"127.0.0.1:0\".to_string(), None...",
+        server_t.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys),
+    )
+    .await
+    .unwrap();
     let addr = listener.local_addr();
 
     let accept_task = {
         let server_t = server_t.clone();
-        tokio::spawn(async move { server_t.accept(&listener).await })
+        tokio::spawn(async move {
+            bounded("server_t.accept(&listener)", server_t.accept(&listener)).await
+        })
     };
 
     let host: &'static str = Box::leak(format!("ws://{addr}/").into_boxed_str());
     let dest = verified_upstream(host);
-    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
-    let server_conn = accept_task.await.unwrap().unwrap();
+    let client_conn = bounded("client_t.dial(&dest, &keys)", client_t.dial(&dest, &keys))
+        .await
+        .unwrap();
+    let server_conn = bounded("accept_task", accept_task).await.unwrap().unwrap();
 
     // Both ends report the stack they actually stand on, not a name for themselves.
     assert_eq!(
@@ -157,16 +214,21 @@ async fn a_composed_round_trip_over_the_layers_below() {
         vec!["tcp", "ws"]
     );
 
-    client_t
-        .write(
+    bounded(
+        "client_t.write( &client_conn, StreamId(0), ArenaBytes::n...",
+        client_t.write(
             &client_conn,
             StreamId(0),
             ArenaBytes::new(b"hello over the layers below"),
-        )
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     let mut frames = server_t.frames(server_conn);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"hello over the layers below");
 }
 
@@ -201,15 +263,21 @@ async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
     let t = WsTransport::new();
     let keys = test_key_handle();
     assert_eq!(
-        t.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
-            .await
-            .unwrap_err(),
+        bounded(
+            "t.listen(&HttpCfg(\"127.0.0.1:0\".to_string(), None), &keys)",
+            t.listen(&HttpCfg("127.0.0.1:0".to_string(), None), &keys)
+        )
+        .await
+        .unwrap_err(),
         TransportError::HandoffMismatch
     );
     assert_eq!(
-        t.dial(&verified_upstream("ws://127.0.0.1:1/"), &keys)
-            .await
-            .unwrap_err(),
+        bounded(
+            "t.dial(&verified_upstream(\"ws://127.0.0.1:1/\"), &keys)",
+            t.dial(&verified_upstream("ws://127.0.0.1:1/"), &keys)
+        )
+        .await
+        .unwrap_err(),
         TransportError::HandoffMismatch
     );
 }
@@ -222,21 +290,33 @@ async fn a_transport_with_no_lower_layer_cannot_listen_or_dial() {
 async fn a_frame_with_a_reserved_opcode_is_a_framing_error_and_not_a_reset() {
     let t = WsTransport::new();
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
-    let (accepted, dialled) = tokio::join!(
-        t.handshake_over(end_a, true, WS_TARGET, "peer-a"),
-        tokio_tungstenite::client_async("ws://localhost/", end_b)
-    );
+    let (accepted, dialled) = bounded(
+        "tokio::join!( t.handshake_over(end_a, true, WS_TARGET, \"p...",
+        async {
+            tokio::join!(
+                t.handshake_over(end_a, true, WS_TARGET, "peer-a"),
+                tokio_tungstenite::client_async("ws://localhost/", end_b)
+            )
+        },
+    )
+    .await;
     let conn = accepted.unwrap();
     let (mut client, _resp) = dialled.unwrap();
 
     // Opcode 0x3 is reserved by RFC 6455 and no endpoint may send it. Written under the client's
     // own socket so tungstenite cannot refuse to produce it: FIN + reserved opcode, masked, empty.
-    tokio::io::AsyncWriteExt::write_all(client.get_mut(), &[0x83, 0x80, 0, 0, 0, 0])
-        .await
-        .unwrap();
-    tokio::io::AsyncWriteExt::flush(client.get_mut())
-        .await
-        .unwrap();
+    bounded(
+        "tokio::io::AsyncWriteExt::write_all(client.get_mut(), &[0...",
+        tokio::io::AsyncWriteExt::write_all(client.get_mut(), &[0x83, 0x80, 0, 0, 0, 0]),
+    )
+    .await
+    .unwrap();
+    bounded(
+        "tokio::io::AsyncWriteExt::flush(client.get_mut())",
+        tokio::io::AsyncWriteExt::flush(client.get_mut()),
+    )
+    .await
+    .unwrap();
 
     let mut frames = t.frames(conn);
     let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
@@ -261,29 +341,40 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
         busbar_transport_tcp::TcpTransport::new(),
     )));
     // The listener is where the operator's configuration reaches this transport at all.
-    let listener = t
-        .listen(
+    let listener = bounded(
+        "t .listen( &HttpCfg(\"127.0.0.1:0\".to_string(), Some(CAP a...",
+        t.listen(
             &HttpCfg("127.0.0.1:0".to_string(), Some(CAP as i64)),
             &test_key_handle(),
-        )
-        .await
-        .unwrap();
+        ),
+    )
+    .await
+    .unwrap();
     drop(listener);
 
     // The peer is an uncapped transport, because the cap this test is about is the RECEIVER's: a
     // limit that only holds when the far side agrees to it is not a limit.
     let peer = WsTransport::new();
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
-    let (accepted, dialled) = tokio::join!(
-        t.handshake_over(end_a, true, WS_TARGET, "capped-peer"),
-        peer.handshake_over(end_b, false, WS_TARGET, "uncapped-peer")
-    );
+    let (accepted, dialled) = bounded(
+        "tokio::join!( t.handshake_over(end_a, true, WS_TARGET, \"c...",
+        async {
+            tokio::join!(
+                t.handshake_over(end_a, true, WS_TARGET, "capped-peer"),
+                peer.handshake_over(end_b, false, WS_TARGET, "uncapped-peer")
+            )
+        },
+    )
+    .await;
     let (a, b) = (dialled.unwrap(), accepted.unwrap());
 
     let oversized = vec![b'w'; 2 * CAP];
-    peer.write(&a, StreamId(0), ArenaBytes::new(&oversized))
-        .await
-        .expect("the uncapped peer puts the oversized message on the wire");
+    bounded(
+        "peer.write(&a, StreamId(0), ArenaBytes::new(&oversized))",
+        peer.write(&a, StreamId(0), ArenaBytes::new(&oversized)),
+    )
+    .await
+    .expect("the uncapped peer puts the oversized message on the wire");
 
     let mut frames = t.frames(b);
     let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
@@ -315,25 +406,40 @@ async fn a_dial_only_instance_holds_the_ceiling_its_root_named() {
 
     let peer = WsTransport::new();
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
-    let (dialled, accepted) = tokio::join!(
-        t.handshake_over(end_a, false, WS_TARGET, "capped-dialer"),
-        peer.handshake_over(end_b, true, WS_TARGET, "uncapped-upstream")
-    );
+    let (dialled, accepted) = bounded(
+        "tokio::join!( t.handshake_over(end_a, false, WS_TARGET, \"...",
+        async {
+            tokio::join!(
+                t.handshake_over(end_a, false, WS_TARGET, "capped-dialer"),
+                peer.handshake_over(end_b, true, WS_TARGET, "uncapped-upstream")
+            )
+        },
+    )
+    .await;
     let (mine, theirs) = (dialled.unwrap(), accepted.unwrap());
 
     // At the ceiling the message is a message, so this is a ceiling and not a smaller default.
     let at_cap = vec![b'k'; CAP];
-    peer.write(&theirs, StreamId(0), ArenaBytes::new(&at_cap))
-        .await
-        .unwrap();
+    bounded(
+        "peer.write(&theirs, StreamId(0), ArenaBytes::new(&at_cap))",
+        peer.write(&theirs, StreamId(0), ArenaBytes::new(&at_cap)),
+    )
+    .await
+    .unwrap();
     let mut frames = t.frames(mine);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.len(), CAP);
 
     let oversized = vec![b'w'; 2 * CAP];
-    peer.write(&theirs, StreamId(0), ArenaBytes::new(&oversized))
-        .await
-        .expect("the uncapped upstream puts the oversized message on the wire");
+    bounded(
+        "peer.write(&theirs, StreamId(0), ArenaBytes::new(&oversiz...",
+        peer.write(&theirs, StreamId(0), ArenaBytes::new(&oversized)),
+    )
+    .await
+    .expect("the uncapped upstream puts the oversized message on the wire");
     let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
         .await
         .expect("the cap must be enforced rather than waited on")
@@ -358,10 +464,16 @@ async fn the_facts_the_layer_below_established_survive_the_upgrade() {
     let ws = WsTransport::new();
     let keys = test_key_handle();
 
-    let (adopted, dialled) = tokio::join!(
-        ws.adopt(&below, below.conn(), &keys),
-        tokio_tungstenite::client_async("ws://localhost/", end_b)
-    );
+    let (adopted, dialled) = bounded(
+        "tokio::join!( ws.adopt(&below, below.conn(), &keys), toki...",
+        async {
+            tokio::join!(
+                ws.adopt(&below, below.conn(), &keys),
+                tokio_tungstenite::client_async("ws://localhost/", end_b)
+            )
+        },
+    )
+    .await;
     let adopted = adopted.unwrap();
     dialled.unwrap();
 
@@ -563,6 +675,9 @@ impl busbar_contract::TransportConfigView for HttpCfg {
 /// permanent lease.
 #[tokio::test(start_paused = true)]
 async fn an_upgrade_the_peer_never_answers_expires_on_the_handshake_budget() {
+    // No `bounded` in this cell, deliberately: the clock is paused, so it auto-advances to the
+    // nearest armed deadline and a hang-detector bound would fire the instant it was armed — it
+    // would report every run as parked. The budget under test is what ends this one.
     let t = WsTransport::new();
     // The far half is held open and never written to: the accept side can only wait.
     let (end_a, _end_b) = tokio::io::duplex(64 * 1024);
@@ -581,33 +696,41 @@ async fn an_upgrade_the_peer_never_answers_expires_on_the_handshake_budget() {
 #[tokio::test]
 async fn half_close_is_the_ws_closing_handshake() {
     let t = WsTransport::new();
-    let (a, b) = pair(&t, 64 * 1024).await;
-    t.write(&a, StreamId(0), ArenaBytes::new(b"last words"))
-        .await
-        .unwrap();
+    let (a, b) = bounded("pair(&t, 64 * 1024)", pair(&t, 64 * 1024)).await;
+    bounded(
+        "t.write(&a, StreamId(0), ArenaBytes::new(b\"last words\"))",
+        t.write(&a, StreamId(0), ArenaBytes::new(b"last words")),
+    )
+    .await
+    .unwrap();
     // `close` sends the WS Close control frame — the initiator's half of the closing handshake.
     t.close(a, CloseReason::Normal);
 
     let mut frames = t.frames(b);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"last words");
     // The Close frame ends the stream cleanly (`None`), never as a `Reset` error.
-    assert!(frames.next().await.is_none());
+    assert!(bounded("frames.next()", frames.next()).await.is_none());
 }
 
 #[tokio::test]
 async fn cancel_mid_frame_fences_the_connection() {
     let t = WsTransport::new();
-    let (a, _b) = pair(&t, 8).await;
+    let (a, _b) = bounded("pair(&t, 8)", pair(&t, 8)).await;
     let big = vec![b'x'; 1_000_000];
     let write_fut = t.write(&a, StreamId(0), ArenaBytes::new(&big));
     let raced = tokio::time::timeout(Duration::from_millis(1), write_fut).await;
     assert!(raced.is_err(), "the write did not have time to complete");
 
-    let err = t
-        .write(&a, StreamId(0), ArenaBytes::new(b"x"))
-        .await
-        .unwrap_err();
+    let err = bounded(
+        "t .write(&a, StreamId(0), ArenaBytes::new(b\"x\"))",
+        t.write(&a, StreamId(0), ArenaBytes::new(b"x")),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(err, TransportError::Framing);
 
     // The read arm of the same cell. A `frames()` future dropped while suspended in the socket
@@ -615,7 +738,7 @@ async fn cancel_mid_frame_fences_the_connection() {
     // future that was polling it, so the next pump sees the frame that arrived rather than a
     // silent end-of-stream indistinguishable from the peer closing.
     let t = Arc::new(WsTransport::new());
-    let (a, b) = pair(&t, 64 * 1024).await;
+    let (a, b) = bounded("pair(&t, 64 * 1024)", pair(&t, 64 * 1024)).await;
     {
         let mut frames = t.frames(b.clone());
         let first = frames.next();
@@ -626,9 +749,12 @@ async fn cancel_mid_frame_fences_the_connection() {
             "the read must still be suspended when dropped"
         );
     }
-    t.write(&a, StreamId(0), ArenaBytes::new(b"after the cancel"))
-        .await
-        .unwrap();
+    bounded(
+        "t.write(&a, StreamId(0), ArenaBytes::new(b\"after the canc...",
+        t.write(&a, StreamId(0), ArenaBytes::new(b"after the cancel")),
+    )
+    .await
+    .unwrap();
     let mut frames = t.frames(b);
     let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
         .await
@@ -645,11 +771,11 @@ async fn cancel_mid_frame_fences_the_connection() {
 #[tokio::test]
 async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connection() {
     let t = Arc::new(WsTransport::new());
-    let (a, b) = pair(&t, 64 * 1024).await;
+    let (a, b) = bounded("pair(&t, 64 * 1024)", pair(&t, 64 * 1024)).await;
 
     // One holder of the writer, so the next write can only queue on the lock and never send.
     let state = t.state_of(a.id()).expect("the connection is live");
-    let held = state.writer.lock().await;
+    let held = bounded("state.writer.lock()", state.writer.lock()).await;
     {
         let queued = t.write(&a, StreamId(0), ArenaBytes::new(b"never sent"));
         tokio::pin!(queued);
@@ -659,9 +785,12 @@ async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connectio
     drop(held);
 
     // Nothing was written, so nothing was torn: the connection carries the next frame.
-    t.write(&a, StreamId(0), ArenaBytes::new(b"after the queue"))
-        .await
-        .expect("a write that never reached the socket must not fence the connection");
+    bounded(
+        "t.write(&a, StreamId(0), ArenaBytes::new(b\"after the queu...",
+        t.write(&a, StreamId(0), ArenaBytes::new(b"after the queue")),
+    )
+    .await
+    .expect("a write that never reached the socket must not fence the connection");
     let mut frames = t.frames(b);
     let (_s, frame) = tokio::time::timeout(Duration::from_secs(5), frames.next())
         .await
@@ -678,13 +807,13 @@ async fn a_write_dropped_while_queued_on_the_writer_does_not_fence_the_connectio
 #[tokio::test]
 async fn a_frame_arriving_after_the_close_ends_the_pump_rather_than_being_delivered() {
     let t = Arc::new(WsTransport::new());
-    let (a, b) = pair(&t, 64 * 1024).await;
+    let (a, b) = bounded("pair(&t, 64 * 1024)", pair(&t, 64 * 1024)).await;
 
     let pump = {
         let (t, b) = (t.clone(), b.clone());
         tokio::spawn(async move {
             let mut frames = t.frames(b);
-            frames.next().await
+            bounded("frames.next()", frames.next()).await
         })
     };
     // The pump is suspended in the read before the close, which is the case a fence set only at
@@ -693,9 +822,12 @@ async fn a_frame_arriving_after_the_close_ends_the_pump_rather_than_being_delive
     t.close(b, CloseReason::Normal);
 
     // The peer writes anyway — a message already in flight when the close was decided.
-    t.write(&a, StreamId(0), ArenaBytes::new(b"after the close"))
-        .await
-        .unwrap();
+    bounded(
+        "t.write(&a, StreamId(0), ArenaBytes::new(b\"after the clos...",
+        t.write(&a, StreamId(0), ArenaBytes::new(b"after the close")),
+    )
+    .await
+    .unwrap();
 
     let ended = tokio::time::timeout(Duration::from_secs(5), pump)
         .await
@@ -710,27 +842,35 @@ async fn a_frame_arriving_after_the_close_ends_the_pump_rather_than_being_delive
 #[tokio::test]
 async fn backpressure_is_bidirectional() {
     let t = Arc::new(WsTransport::new());
-    let (a, b) = pair(&t, 8).await;
+    let (a, b) = bounded("pair(&t, 8)", pair(&t, 8)).await;
     let payload = vec![b'y'; 65536];
     let t2 = t.clone();
     let payload2 = payload.clone();
-    let writer =
-        tokio::spawn(async move { t2.write(&a, StreamId(0), ArenaBytes::new(&payload2)).await });
+    let writer = tokio::spawn(async move {
+        bounded(
+            "t2.write(&a, StreamId(0), ArenaBytes::new(&payload2))",
+            t2.write(&a, StreamId(0), ArenaBytes::new(&payload2)),
+        )
+        .await
+    });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(
         !writer.is_finished(),
         "an oversized write must block on a full duplex"
     );
     let mut frames = t.frames(b);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.len(), payload.len());
-    writer.await.unwrap().unwrap();
+    bounded("writer", writer).await.unwrap().unwrap();
 }
 
 #[tokio::test]
 async fn k_writers_serialise_without_interleaving() {
     let t = Arc::new(WsTransport::new());
-    let (a, b) = pair(&t, 64 * 1024).await;
+    let (a, b) = bounded("pair(&t, 64 * 1024)", pair(&t, 64 * 1024)).await;
     const K: usize = 32;
     let mut handles = Vec::new();
     for i in 0..K {
@@ -738,18 +878,24 @@ async fn k_writers_serialise_without_interleaving() {
         let a = a.clone();
         handles.push(tokio::spawn(async move {
             let line = format!("writer-{i:02}");
-            t.write(&a, StreamId(0), ArenaBytes::new(line.as_bytes()))
-                .await
-                .unwrap();
+            bounded(
+                "t.write(&a, StreamId(0), ArenaBytes::new(line.as_bytes()))",
+                t.write(&a, StreamId(0), ArenaBytes::new(line.as_bytes())),
+            )
+            .await
+            .unwrap();
         }));
     }
     for h in handles {
-        h.await.unwrap();
+        bounded("h", h).await.unwrap();
     }
     let mut frames = t.frames(b);
     let mut seen = std::collections::BTreeSet::new();
     for _ in 0..K {
-        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        let (_s, frame) = bounded("frames.next()", frames.next())
+            .await
+            .unwrap()
+            .unwrap();
         let line = String::from_utf8(frame.bytes.as_slice().to_vec()).unwrap();
         assert!(line.starts_with("writer-"));
         seen.insert(line);
@@ -762,10 +908,12 @@ async fn k_writers_serialise_without_interleaving() {
 #[tokio::test]
 async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     let t = WsTransport::new();
-    let (a, _b) = pair(&t, 4096).await;
+    let (a, _b) = bounded("pair(&t, 4096)", pair(&t, 4096)).await;
     let keys = test_key_handle();
     // `ws` does not compose over `ws`; offering it its own connection names no declared handoff.
-    let err = t.adopt(&t, a, &keys).await.unwrap_err();
+    let err = bounded("t.adopt(&t, a, &keys)", t.adopt(&t, a, &keys))
+        .await
+        .unwrap_err();
     assert_eq!(err, TransportError::HandoffMismatch);
 }
 
@@ -786,24 +934,32 @@ fn test_refusal() -> busbar_contract::unit::Refusal<'static> {
 #[tokio::test]
 async fn unit0_refusal_writes_then_closes() {
     let t = WsTransport::new();
-    let (a, b) = pair(&t, 4096).await;
+    let (a, b) = bounded("pair(&t, 4096)", pair(&t, 4096)).await;
     let id = a.id();
     // A pump already live on the refused end, holding its own clone of the connection state.
     let mut refused_side = t.frames(a.clone());
     let refusal = test_refusal();
 
-    t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
-        .await
-        .unwrap();
+    bounded(
+        "t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b\"refu...",
+        t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused")),
+    )
+    .await
+    .unwrap();
 
     // The peer is told, byte-exact.
     let mut frames = t.frames(b);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");
 
     // And the connection is over: the pump ends and the registry no longer knows it.
     assert!(
-        refused_side.next().await.is_none(),
+        bounded("refused_side.next()", refused_side.next())
+            .await
+            .is_none(),
         "a refused connection's frame stream must end"
     );
     assert!(
@@ -819,7 +975,7 @@ async fn unit0_refusal_writes_then_closes() {
 #[tokio::test]
 async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
     let t = Arc::new(WsTransport::new());
-    let (a, b) = pair(&t, 4096).await;
+    let (a, b) = bounded("pair(&t, 4096)", pair(&t, 4096)).await;
 
     // Take the far end away: its socket half is dropped, so a send on this end cannot land.
     let peer = t.state_of(b.id()).expect("the peer connection is live");
@@ -840,19 +996,23 @@ async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
         stream: None,
         correlates: None,
     };
-    let err = t
-        .unit0_refusal(a.clone(), None, &refusal, ArenaBytes::new(b"refused"))
-        .await
-        .expect_err("a refusal that could not be written must not report success");
+    let err = bounded(
+        "t.unit0_refusal(a.clone(), None, &refusal, ArenaBytes::n...",
+        t.unit0_refusal(a.clone(), None, &refusal, ArenaBytes::new(b"refused")),
+    )
+    .await
+    .expect_err("a refusal that could not be written must not report success");
     assert_eq!(err, TransportError::Reset);
     // And the connection is finalised either way: a refusal ends it.
     assert!(t.state_of(a.id()).is_none(), "the refusal closed it");
 
     // A connection this transport no longer holds cannot carry a refusal at all, and says so.
-    let err = t
-        .unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused"))
-        .await
-        .expect_err("a refusal over a connection that is gone must not report success");
+    let err = bounded(
+        "t .unit0_refusal(a, None, &refusal, ArenaBytes::new(b\"ref...",
+        t.unit0_refusal(a, None, &refusal, ArenaBytes::new(b"refused")),
+    )
+    .await
+    .expect_err("a refusal over a connection that is gone must not report success");
     assert_eq!(err, TransportError::Closed);
 }
 
@@ -939,12 +1099,17 @@ fn a_bracketed_ipv6_authority_parses_with_and_without_a_port() {
 async fn close_gives_up_on_a_peer_that_never_reads() {
     let t = Arc::new(WsTransport::new());
     // A duplex with no room left: the peer end is never read, so a Close frame cannot be sent.
-    let (a, _b) = pair(&t, 8).await;
+    let (a, _b) = bounded("pair(&t, 8)", pair(&t, 8)).await;
     let stuffing = vec![b'z'; 1_000_000];
     let t2 = t.clone();
     let a2 = a.clone();
-    let stuffer =
-        tokio::spawn(async move { t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing)).await });
+    let stuffer = tokio::spawn(async move {
+        bounded(
+            "t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing))",
+            t2.write(&a2, StreamId(0), ArenaBytes::new(&stuffing)),
+        )
+        .await
+    });
     tokio::time::sleep(Duration::from_millis(20)).await;
     assert!(!stuffer.is_finished(), "the duplex must be full");
     stuffer.abort();
@@ -973,6 +1138,9 @@ async fn close_gives_up_on_a_peer_that_never_reads() {
 /// the session. The budget must end the wait, and the end must be reported rather than swallowed.
 #[tokio::test(start_paused = true)]
 async fn a_peer_that_pings_and_then_stops_reading_does_not_park_the_pump_forever() {
+    // No `bounded` in this cell, deliberately: the clock is paused, so it auto-advances to the
+    // nearest armed deadline and a hang-detector bound would fire the instant it was armed — it
+    // would report every run as parked. The budget under test is what ends this one.
     let t = Arc::new(WsTransport::new());
     // A duplex with no room left in the a → b direction: nothing drains b's end, so the Pong `a`
     // owes cannot leave.
@@ -1040,7 +1208,12 @@ fn a_redial_reuses_the_interned_address_rather_than_leaking_a_new_one() {
 /// nothing reaches the wire.
 #[tokio::test]
 async fn a_secure_target_over_a_cleartext_lower_layer_is_refused_before_any_byte_is_written() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let listener = bounded(
+        "tokio::net::TcpListener::bind(\"127.0.0.1:0\")",
+        tokio::net::TcpListener::bind("127.0.0.1:0"),
+    )
+    .await
+    .unwrap();
     let addr = listener.local_addr().unwrap();
     let seen = tokio::spawn(async move {
         // A refused dial connects to nothing, so the accept is bounded: no connection at all is
@@ -1064,13 +1237,15 @@ async fn a_secure_target_over_a_cleartext_lower_layer_is_refused_before_any_byte
 
     let client_t = WsTransport::over(Arc::new(busbar_transport_tcp::TcpTransport::new()));
     let url: &'static str = Box::leak(format!("wss://{addr}/duplex").into_boxed_str());
-    let err = client_t
-        .dial(&verified_upstream(url), &test_key_handle())
-        .await
-        .expect_err("a wss target dialled over a cleartext lower layer must be refused");
+    let err = bounded(
+        "client_t.dial(&verified_upstream(url), &test_key_handle())",
+        client_t.dial(&verified_upstream(url), &test_key_handle()),
+    )
+    .await
+    .expect_err("a wss target dialled over a cleartext lower layer must be refused");
     assert_eq!(err, TransportError::AddressRefused);
 
-    let first_bytes = seen.await.unwrap();
+    let first_bytes = bounded("seen", seen).await.unwrap();
     assert!(
         !first_bytes.starts_with(b"GET "),
         "a wss dial must never put a cleartext HTTP upgrade on the wire: {:?}",
