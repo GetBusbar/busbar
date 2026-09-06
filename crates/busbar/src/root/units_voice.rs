@@ -151,6 +151,11 @@ const _: () = assert!(
         <= busbar_caps::MAX_USAGE_LINES
 );
 
+/// Nano-units in a cent, for the one place this file turns the rate card's flat fee into the unit a
+/// reservation is taken in. Spelled here rather than reached for so the root's arithmetic is the
+/// root's; the plane never sees a fee at all.
+const NANOS_PER_CENT: u64 = 10_000_000;
+
 /// The operation class a turn is audited and priced under.
 const OP_DUPLEX_TURN: &str = "duplex_turn";
 /// The operation class a provider-pushed tool call is audited and priced under.
@@ -1262,8 +1267,13 @@ impl<'n> VoiceUnit<'n> {
 
     /// What the door is asked to reserve.
     ///
-    /// A handshake unit reserves nothing at all — its whole admission is the zero-priced one — and a
-    /// turn reserves the coarse opening magnitude the session's own budget names, over-estimated on
+    /// A handshake unit reserves nothing at all AT THE DOOR — its whole admission is the zero-priced
+    /// one, drawing no request slot and taking no concurrency lease, which is what lets a node hand
+    /// shake before it has authenticated anybody. The session's opening figure, and the one flat fee
+    /// with it, are taken on the SESSION's lease instead (`session_opening_nanos`); the two are
+    /// different reservations for different things and the distinction is the design.
+    ///
+    /// A turn reserves the coarse opening magnitude the session's own budget names, over-estimated on
     /// purpose. An under-sized hold tops up; an over-sized one costs nothing but headroom the unit
     /// gives straight back at settlement, and the asymmetry is why the estimate is deliberately
     /// generous rather than tight.
@@ -1292,9 +1302,27 @@ impl<'n> VoiceUnit<'n> {
                 max_unit_price_nanos: dearest,
             }],
             // A turn is a frame of a conversation the session already paid to open, not a request of
-            // its own, so it carries no flat fee. Unit zero drew the slot.
+            // its own, so it carries no flat fee. Unit zero drew the slot — and now the settlement
+            // agrees: the fee this line declines to reserve is the fee `fee_evidence` declines to
+            // post, one decision read in two places instead of two decisions disagreeing.
             fee_nanos: 0,
         }
+    }
+
+    /// The flat fee ONE VOICE SESSION pays, in nano-units.
+    ///
+    /// **Once per session, at the open.** A voice session is one billable arrival that then runs for
+    /// minutes: the caller connects once, the node dials one upstream leg once, and everything after
+    /// that is frames of the conversation that leg carries. That is the rule the previous release
+    /// shipped and metered — its lease reserved `estimate + fee` at the open and its settle path was
+    /// explicit that the fee is not re-debited per turn — and it is the rule the rate card's own
+    /// per-request fee means, because a session is the request.
+    ///
+    /// The root reads the figure; the plane never sees it. What the plane says is what it consumed.
+    fn session_fee_nanos(&self) -> u64 {
+        u64::try_from(self.node.pricer.price_per_request_cents().max(0))
+            .unwrap_or(0)
+            .saturating_mul(NANOS_PER_CENT)
     }
 
     /// How far this unit's reservation may still be grown, in nano-units.
@@ -1323,6 +1351,13 @@ impl<'n> VoiceUnit<'n> {
 
     /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
     /// and every later frame is allowed against.
+    ///
+    /// **The coarse estimate PLUS the session's one flat fee**, which is where the fee is reserved
+    /// and the only place it is. Unit zero's own admission is still the zero-priced one — it draws
+    /// no request slot and takes no concurrency lease, which is what lets a node hand shake before it
+    /// has authenticated anybody — so the fee cannot ride the door's hold; it rides the session's,
+    /// taken here, once, exactly as the previous release's lease took it. A fee that settled and was
+    /// never reserved is a session billed past a budget that was never asked about it.
     fn session_opening_nanos(&self) -> u64 {
         let rate = self
             .node
@@ -1337,6 +1372,30 @@ impl<'n> VoiceUnit<'n> {
         TURN_OPENING_TOKENS
             .saturating_mul(SESSION_OPENING_TURNS)
             .saturating_mul(dearest)
+            .saturating_add(self.session_fee_nanos())
+    }
+
+    /// The two facts about this unit's upstream leg the flat fee is decided from.
+    ///
+    /// Whether a leg was SELECTED, and whether it ANSWERED. On this plane both are unit zero's: the
+    /// session's one dial is what selects the leg and what opens it, and every later frame relays
+    /// onto a leg that already exists. So a turn's answer to the second question is what the turn
+    /// itself emitted, and its answer to the first is that the session's leg is there.
+    fn upstream_leg(&self) -> (bool, bool) {
+        if self.shape.is_handshake() {
+            (
+                self.target().is_some(),
+                matches!(self.dial_outcome(), Some(Ok(()))),
+            )
+        } else {
+            (true, self.answered())
+        }
+    }
+
+    /// Everything the flat fee is decided from, for this unit.
+    fn fee(&self, ctx: &UnitCtx, finish: Option<busbar_contract::FinishClass>) -> FeeEvidence {
+        let (selected_upstream, relayed) = self.upstream_leg();
+        fee_evidence(self.shape, ctx.origin, selected_upstream, relayed, finish)
     }
 }
 
@@ -1727,7 +1786,7 @@ impl Units for VoiceUnit<'_> {
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
-            fee: fee_evidence(self.shape, ctx.origin, self.answered(), finish),
+            fee: self.fee(ctx, finish),
         }
     }
 }
@@ -1836,12 +1895,7 @@ impl VoiceUnit<'_> {
     ) -> busbar_unit_audit::record::AuditInputs {
         // The record does not decide the fee a second time: it reads the same evidence the exit
         // path settles from, through the same function.
-        let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
-            self.shape,
-            ctx.origin,
-            self.answered(),
-            Some(finish),
-        ));
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee(ctx, Some(finish)));
         busbar_unit_audit::record::AuditInputs {
             // WHO THE RECORD IS ABOUT. The principal the auth chain named, where the unit got as far
             // as being handed one. `Arrival` is the honest answer for a unit that was refused before
@@ -1905,22 +1959,32 @@ impl VoiceUnit<'_> {
 /// decision — a row that says a fee was charged over a posting that charged none is a discrepancy
 /// nothing downstream can settle.
 ///
-/// A turn is the caller's own transaction and the only shape that pays: the handshake opens the
-/// session and moves no money, and a tool call is the provider pushing through the session's own
-/// upstream, which is not a caller's request. The leg is the session's upstream, which every shape
-/// but the handshake relays onto. This dialect writes no status frame of its own — the answer's
-/// first token is the first thing the caller sees — so the plane's sealed ending is the single
-/// source, and an ending it called an error posts nothing.
+/// **ONE FLAT FEE PER SESSION, AND THE SESSION'S OPENING UNIT IS WHAT PAYS IT.** A voice session is
+/// one billable arrival that then runs for minutes: the caller connects once, the node dials one
+/// upstream leg once, and every frame after that is the conversation that leg carries. Charging the
+/// fee per turn billed a ten-minute call ten, twenty, a hundred times over for one connection — and
+/// it disagreed with the hold, which reserved no fee on a turn at all on the stated grounds that
+/// unit zero had drawn the slot. Both halves now say the same thing, and the previous release's own
+/// metering is what they say: its lease reserved `estimate + fee` at the open and never re-debited
+/// the fee on a settle.
+///
+/// A tool call is the provider pushing through the session's own upstream, which is not a caller's
+/// request and pays nothing; a turn is a frame of a conversation already paid for.
+///
+/// The leg is the session's upstream: unit zero's dial is what SELECTS it and what OPENS it, so for
+/// the unit that pays, those two questions are that dial's two answers. This dialect writes no
+/// status frame of its own — the answer's first token is the first thing the caller sees — so the
+/// plane's sealed ending is the single source, and an ending it called an error posts nothing.
 fn fee_evidence(
     shape: UnitShape,
     origin: busbar_caps::OriginKind,
+    selected_upstream: bool,
     relayed_first_response_frame: bool,
     finish: Option<busbar_contract::FinishClass>,
 ) -> FeeEvidence {
     FeeEvidence {
-        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client
-            && matches!(shape, UnitShape::Turn),
-        selected_upstream: !shape.is_handshake(),
+        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client && shape.is_handshake(),
+        selected_upstream,
         relayed_first_response_frame,
         status_at: None,
         status: None,
@@ -2397,9 +2461,13 @@ mod tests {
         );
     }
 
-    /// No money moves in a handshake. It is admitted, it is audited, and it draws no request slot —
-    /// which is what lets a node hand shake before it has authenticated anybody without the shaking
-    /// being a billable event.
+    /// A handshake POSTS nothing and draws no request slot — which is what lets a node hand shake
+    /// before it has authenticated anybody without the shaking taking a caller's concurrency. No
+    /// class of usage passes through unit zero, so the amount it settles is zero.
+    ///
+    /// What it DOES draw is the session's one flat fee, which is a count and not a posting: opening
+    /// the session is the billable arrival, and every frame after it is the conversation that
+    /// arrival paid for.
     #[test]
     fn the_handshake_draws_no_request_slot_and_posts_nothing() {
         let kernel = Kernel::new();
@@ -2409,8 +2477,13 @@ mod tests {
             panic!("the exit path settles a handshake like anything else");
         };
         assert_eq!(requests, 0, "a handshake reaches no upstream candidate");
-        assert_eq!(fee, 0, "no flat fee on a unit that moved no money");
+        assert_eq!(fee, 1, "the session's one flat fee is drawn where it opens");
         assert!(matches!(end.outcome(), Outcome::Completed));
+        assert_eq!(
+            end.into_posted().expect("the report fits").settled(),
+            0,
+            "and it meters nothing: no class of usage passes through unit zero"
+        );
     }
 
     /// A node with no I/O half cannot open a session, and says so at the door rather than opening one
@@ -3248,33 +3321,35 @@ mod tests {
         );
     }
 
-    /// The flat fee is a turn's, and only a turn that answered.
+    /// The flat fee is the SESSION's, drawn on the unit that opens it, and it is drawn once.
     ///
-    /// The handshake moves no money, the provider's tool call is not a caller's request, a turn
-    /// nobody was answered on relayed nothing, and an ending the plane called an error pays nothing.
+    /// A turn is a frame of a conversation already paid for, the provider's tool call is not a
+    /// caller's request, a session whose leg never opened relayed nothing, and an ending the plane
+    /// called an error pays nothing.
     #[test]
-    fn the_flat_fee_is_a_turn_that_answered_and_nothing_else() {
+    fn the_flat_fee_is_the_session_open_and_nothing_else() {
         use busbar_caps::OriginKind;
         use busbar_contract::FinishClass;
         use busbar_kernel::teller::fee_count;
 
-        let turn = |finish| fee_evidence(UnitShape::Turn, OriginKind::Client, true, Some(finish));
-        assert_eq!(fee_count(&turn(FinishClass::TurnComplete)).0, 1);
-        assert_eq!(fee_count(&turn(FinishClass::Error)).0, 0);
-        assert_eq!(
-            fee_count(&fee_evidence(
-                UnitShape::Turn,
+        let open = |finish| {
+            fee_evidence(
+                UnitShape::SessionOpen,
                 OriginKind::Client,
-                false,
-                Some(FinishClass::TurnComplete),
-            ))
-            .0,
-            0
-        );
+                true,
+                true,
+                Some(finish),
+            )
+        };
+        assert_eq!(fee_count(&open(FinishClass::Complete)).0, 1);
+        assert_eq!(fee_count(&open(FinishClass::Error)).0, 0);
+        // A session that named no upstream, and one whose dial never opened: neither reached a leg,
+        // and a fee is for a connection that was actually made.
         assert_eq!(
             fee_count(&fee_evidence(
                 UnitShape::SessionOpen,
-                OriginKind::Handshake,
+                OriginKind::Client,
+                false,
                 true,
                 Some(FinishClass::Complete),
             ))
@@ -3283,13 +3358,104 @@ mod tests {
         );
         assert_eq!(
             fee_count(&fee_evidence(
+                UnitShape::SessionOpen,
+                OriginKind::Client,
+                true,
+                false,
+                Some(FinishClass::Complete),
+            ))
+            .0,
+            0
+        );
+        // A turn of a conversation the session already paid to open pays nothing, however it ended.
+        for finish in [FinishClass::TurnComplete, FinishClass::Error] {
+            assert_eq!(
+                fee_count(&fee_evidence(
+                    UnitShape::Turn,
+                    OriginKind::Client,
+                    true,
+                    true,
+                    Some(finish),
+                ))
+                .0,
+                0
+            );
+        }
+        // The provider's own push through the session's leg is not a caller's request.
+        assert_eq!(
+            fee_count(&fee_evidence(
                 UnitShape::ToolCall,
                 OriginKind::Provider,
+                true,
                 true,
                 Some(FinishClass::TurnComplete),
             ))
             .0,
             0
+        );
+    }
+
+    /// **THREE TURNS ON ONE SESSION PAY ONE FLAT FEE.**
+    ///
+    /// The rule the whole finding turns on, measured over the loop rather than over the evidence
+    /// function: a conversation is billed one flat fee for the connection that carried it, no matter
+    /// how many times the caller speaks. Charged per turn, this session paid three — and a real call
+    /// is not three turns, it is hundreds. The hold agrees: the fee is reserved once, on the
+    /// session's opening reservation, and no turn's estimate reserves one.
+    #[test]
+    fn a_three_turn_session_pays_one_flat_fee() {
+        let kernel = Kernel::new();
+        let node = priced_node(VoiceIo {
+            dial: Box::new(OpenDial),
+            lease: Box::new(OpenLease),
+            ..VoiceIo::default()
+        });
+
+        let opening = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        let Ended::Settled {
+            fee: opening_fee, ..
+        } = run(&kernel, &opening)
+        else {
+            panic!("the exit path settles the open");
+        };
+        assert_eq!(opening_fee, 1, "the session's one flat fee, at the open");
+
+        let mut turn_fees = 0;
+        for _ in 0..3 {
+            let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+                .charging_through(ungoverned())
+                .reporting(TurnUsage {
+                    audio_tokens_out: 30,
+                    audio_ms_in: 400,
+                    ..TurnUsage::default()
+                });
+            let Ended::Settled { fee, end, .. } = run(&kernel, &turn) else {
+                panic!("the exit path settles a turn");
+            };
+            assert_eq!(end.outcome(), Outcome::Completed, "the turn was served");
+            turn_fees += fee;
+        }
+        assert_eq!(
+            opening_fee + turn_fees,
+            1,
+            "one session, one flat fee, however many turns rode it"
+        );
+
+        // And the reservation side says the same. The turn's estimate reserves no fee; the session's
+        // opening figure carries the one there is.
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        assert_eq!(turn.estimate().fee_nanos, 0, "no turn reserves a fee");
+        let mut fee_bearing = priced_node(serviceable());
+        fee_bearing.pricer = Pricer::flat(25);
+        let open = VoiceUnit::new(&fee_bearing, UnitShape::SessionOpen, 7, 1_700_000_000);
+        assert_eq!(
+            open.session_fee_nanos(),
+            25 * NANOS_PER_CENT,
+            "the card's per-request fee, in nano-units"
+        );
+        assert!(
+            open.session_opening_nanos() >= open.session_fee_nanos(),
+            "and the session's opening reservation is what carries it"
         );
     }
 
