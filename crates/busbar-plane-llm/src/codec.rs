@@ -359,15 +359,25 @@ pub struct LlmSessionState {
     pub decode: StreamDecodeState,
 }
 
-/// The reader's stream state, or a fresh one when the kernel is holding none.
+/// Read one frame against the connection half's own stream state, IN PLACE.
 ///
-/// A transport with no session hands no state, and a dialect whose events are independent of one
-/// another reads correctly from a fresh state. A dialect whose events are not independent needs the
-/// session transport, and the registry is what requires it.
-fn decode_state(st: Option<&mut PlaneSessionState>) -> StreamDecodeState {
-    st.and_then(|s| s.get::<LlmSessionState>())
-        .map(|s| s.decode.clone())
-        .unwrap_or_default()
+/// The kernel owns the state and hands the half in; the reader ADVANCES it, and what it advanced is
+/// what the next frame of the same answer has to be read against. This used to hand the reader a
+/// COPY and drop it when the call returned, so every frame of a stream was read as if it were the
+/// first: the readers that gate the stream's opening event on "have I started" started again on
+/// every chunk, and a client of a dialect whose events must balance received one opening event per
+/// chunk and block indices that no later chunk ever closed.
+///
+/// A transport with no session hands no state, and a fresh one is then the honest starting point
+/// for the single frame this call sees — there is nowhere to carry anything to.
+fn with_decode_state<R>(
+    st: Option<&mut PlaneSessionState>,
+    f: impl FnOnce(&mut StreamDecodeState) -> R,
+) -> R {
+    match st.and_then(PlaneSessionState::get_mut::<LlmSessionState>) {
+        Some(held) => f(&mut held.decode),
+        None => f(&mut StreamDecodeState::default()),
+    }
 }
 
 /// The span view of a REQUEST body, built from the pointers this dialect declares.
@@ -632,10 +642,9 @@ impl Plane for LlmPlane {
                 });
             }
             let value = parse(data)?;
-            let mut state = decode_state(st);
-            let events = protocol
-                .reader()
-                .read_response_events(name, &value, &mut state);
+            let events = with_decode_state(st, |state| {
+                protocol.reader().read_response_events(name, &value, state)
+            });
             let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("event"));
             let terminal = events
                 .iter()
@@ -713,12 +722,13 @@ impl Plane for LlmPlane {
             }
             let value: serde_json::Value =
                 sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
-            let mut state = decode_state(st);
+            let events = with_decode_state(st, |state| {
+                source_protocol
+                    .reader()
+                    .read_response_events(name, &value, state)
+            });
             let mut out = Vec::new();
-            for event in source_protocol
-                .reader()
-                .read_response_events(name, &value, &mut state)
-            {
+            for event in events {
                 for (kind, payload) in ingress_protocol.writer().write_response_events(&event) {
                     out.extend_from_slice(b"event: ");
                     out.extend_from_slice(kind.as_bytes());
