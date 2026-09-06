@@ -599,6 +599,58 @@ jobs:
           [ "$d_assets" -gt 0 ]    || { echo "::error::draft ${TAG} carries no assets"; fail=1; }
           [ "$fail" = 0 ] || { echo "::error::DRAFT DOES NOT MATCH THE STAGED RECORD. Re-run 'Release stage' on ${SHA:0:7} (it reuses and re-anchors the draft), then re-run this workflow."; exit 1; }
 
+          # 7. THE DRAFT'S BYTES, RE-HASHED. `assets > 0` says nothing about WHICH assets or what is
+          #    in them, and the gap between the stage and this promote can be 90 days: an asset can
+          #    be deleted, replaced or added on the draft in that time and, until now, the promote
+          #    would have published it. The image half of the record has always been re-derived from
+          #    outside before anything irreversible; this is the same treatment for the binary half.
+          #    Set equality by NAME (nothing missing, nothing extra) and then sha256 over the bytes
+          #    downloaded back from the draft, compared against the record written on qa.
+          #
+          #    A record with no `assets` list is a REFUSAL, not a skip: it predates this check, so
+          #    its draft cannot be re-proved. The remedy is the same idempotent one as everywhere
+          #    else here - re-run 'Release stage' on this sha.
+          if [ "$(jq '(.assets // []) | length' staged/staged.json)" -lt 1 ]; then
+            echo "::error::STAGED RECORD PINS NO ASSETS. This record predates per-asset digests, so the draft's binaries cannot be re-proved and the promote would publish whatever is currently attached. Fix: re-run 'Release stage' on ${SHA:0:7} (idempotent), then re-run this workflow."
+            exit 1
+          fi
+          rm -rf "$RUNNER_TEMP/draft-assets"; mkdir -p "$RUNNER_TEMP/draft-assets"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$RUNNER_TEMP/draft-assets" --clobber \
+            || { echo "::error::could not download the ${TAG} draft's assets to re-verify them against the staged record."; exit 1; }
+          python3 - "$RUNNER_TEMP/draft-assets" staged/staged.json <<'PY' || exit 1
+          import hashlib, json, os, sys
+          d, record = sys.argv[1], sys.argv[2]
+          pinned = {a["name"]: a for a in json.load(open(record))["assets"]}
+          got = sorted(n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)))
+          bad = []
+          for name in sorted(set(pinned) - set(got)):
+              bad.append("MISSING from the draft: %s" % name)
+          for name in sorted(set(got) - set(pinned)):
+              bad.append("NOT IN THE STAGED RECORD (added after staging): %s" % name)
+          for name in sorted(set(pinned) & set(got)):
+              p = os.path.join(d, name)
+              h = hashlib.sha256()
+              with open(p, "rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      h.update(chunk)
+              if h.hexdigest() != pinned[name]["sha256"]:
+                  bad.append("REPLACED since staging: %s (draft %s, record %s)"
+                             % (name, h.hexdigest(), pinned[name]["sha256"]))
+              elif os.path.getsize(p) != pinned[name]["size"]:
+                  bad.append("SIZE CHANGED since staging: %s" % name)
+              else:
+                  print("  ok  %s  %s" % (name, h.hexdigest()))
+          if bad:
+              for b in bad:
+                  print("  " + b, file=sys.stderr)
+              print("::error::THE DRAFT IS NOT THE ONE QA STAGED. %d asset difference(s) between the "
+                    "draft and the staged record - these are the bytes users would download, so the "
+                    "promote refuses. Nothing was published, no tag exists. Fix: re-run 'Release "
+                    "stage' on this sha to rebuild and re-record the draft." % len(bad), file=sys.stderr)
+              sys.exit(1)
+          print("All %d draft assets match the staged record byte for byte." % len(pinned))
+          PY
+
           {
             echo "staging_tag=${r_staging}"
             echo "digest=${r_digest}"

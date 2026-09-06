@@ -1171,6 +1171,70 @@ jobs:
     needs: [plan, stage-image, verify-staged]
     runs-on: ubuntu-latest
     steps:
+      # -- PIN THE DRAFT'S BYTES, NOT JUST THE IMAGE'S ------------------------------------------
+      #
+      # The record used to carry image digests only. release.yml then checked the draft was a
+      # draft, was anchored to this sha, and had `assets > 0` - not WHICH assets, and not their
+      # bytes. Between this run and the promote (up to 90 days, see the retention note below) an
+      # asset can be deleted, replaced or added, and the promote would publish whatever was there.
+      # The image half of the record is re-derived from the registry before anything is named; this
+      # is the same treatment for the binary half.
+      #
+      # DOWNLOADED AND HASHED, NOT COPIED FROM THE BUILD. The digest that matters is the one of the
+      # bytes ON THE DRAFT - the bytes a user will download - so they are pulled back and hashed
+      # here. The build's own artifact.sha256 is already bound to those bytes by the contract rows
+      # (verify-artifact, upstream of this job through verify-staged), so this adds the missing
+      # link: the record now names them.
+      #
+      # This job is downstream of verify-assets and verify-set-equality (through verify-staged), so
+      # the set being pinned here has already been proven equal to the one .github/release-targets.json
+      # declares. What is added is the promise that it does not change afterwards.
+      - name: Pin every draft asset by name, size and sha256
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          dir="$RUNNER_TEMP/draft-assets"
+          rm -rf "$dir"; mkdir -p "$dir"
+          # The listing and the download are separate reads of the same draft; comparing them is
+          # what turns a silently partial download into a refusal rather than a shorter record.
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[] | "\(.name)\t\(.size)"' > "$RUNNER_TEMP/listed.tsv"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir "$dir" --clobber
+          python3 - "$dir" "$RUNNER_TEMP/listed.tsv" > assets.json <<'PY'
+          import hashlib, json, os, sys
+          d, listing = sys.argv[1], sys.argv[2]
+          listed = {}
+          for line in open(listing):
+              line = line.rstrip("\n")
+              if not line:
+                  continue
+              name, _, size = line.partition("\t")
+              listed[name] = int(size or 0)
+          got = sorted(n for n in os.listdir(d) if os.path.isfile(os.path.join(d, n)))
+          if not got:
+              sys.exit("::error::the draft downloaded 0 assets; refusing to record a release whose "
+                       "binaries cannot be pinned.")
+          if sorted(listed) != got:
+              sys.exit("::error::the draft LISTS %s but DOWNLOADED %s. Refusing to record a partial "
+                       "asset set." % (sorted(listed), got))
+          out = []
+          for name in got:
+              p = os.path.join(d, name)
+              h = hashlib.sha256()
+              with open(p, "rb") as f:
+                  for chunk in iter(lambda: f.read(1 << 20), b""):
+                      h.update(chunk)
+              size = os.path.getsize(p)
+              if size != listed[name]:
+                  sys.exit("::error::%s is %d bytes on disk but the API lists %d. Refusing to record "
+                           "a digest over bytes that do not match the draft." % (name, size, listed[name]))
+              out.append({"name": name, "size": size, "sha256": h.hexdigest()})
+          json.dump(out, sys.stdout, indent=2)
+          PY
+          jq -r '.[] | "  \(.name)  \(.size)  \(.sha256)"' assets.json
+
       - name: Write the staged manifest, from re-derived facts only
         env:
           VERSION: ${{ needs.plan.outputs.version }}
@@ -1210,8 +1274,15 @@ jobs:
             echo "::error::docker.io getbusbar/busbar:${STAGING_TAG}-armv8.0 resolves to"                  "'${hub_compat:-<none>}' but this run's build reported '${COMPAT_DIGEST}'."                  "Refusing to write a record naming compat bytes the registry does not serve." >&2
             exit 1
           fi
-          jq -n             --arg version "$VERSION"             --arg tag "$TAG"             --arg qa_sha "$SHA"             --arg staging_tag "$STAGING_TAG"             --arg digest "$DIGEST"             --arg compat_digest "$COMPAT_DIGEST"             --arg run_id "$GITHUB_RUN_ID"             --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             '{version: $version, tag: $tag, qa_sha: $qa_sha, staging_tag: $staging_tag,
-              digest: $digest, compat_digest: $compat_digest,
+          # The asset list is a REFUSAL if it is missing or empty: a record whose `assets` is absent
+          # would be indistinguishable, at the promote, from a release that legitimately has none -
+          # and release.yml treats an absent list as a refusal for exactly that reason.
+          if [ "$(jq 'length' assets.json)" -lt 1 ]; then
+            echo "::error::no draft assets were pinned, so the record could not name the binaries the promote would publish. Refusing." >&2
+            exit 1
+          fi
+          jq -n             --arg version "$VERSION"             --arg tag "$TAG"             --arg qa_sha "$SHA"             --arg staging_tag "$STAGING_TAG"             --arg digest "$DIGEST"             --arg compat_digest "$COMPAT_DIGEST"             --arg run_id "$GITHUB_RUN_ID"             --arg recorded_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)"             --slurpfile assets assets.json             '{version: $version, tag: $tag, qa_sha: $qa_sha, staging_tag: $staging_tag,
+              digest: $digest, compat_digest: $compat_digest, assets: $assets[0],
               run_id: $run_id, recorded_at: $recorded_at}'             | tee staged.json
           {
             echo "### Staged and recorded"
