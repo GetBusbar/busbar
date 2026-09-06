@@ -104,7 +104,25 @@ pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String
 /// again — and doing it on a caller thread would hand that thread plugin TLS at the exact moment the
 /// image is going away, which is the crash in its purest form.
 pub(crate) fn dlclose_on_worker(lib: Library) {
+    #[cfg(test)]
+    UNLOADS_ON_WORKER.with(|n| n.set(n.get() + 1));
     let _ = ffi_thread::on_plugin_thread(move || drop(lib));
+}
+
+#[cfg(test)]
+thread_local! {
+    /// TEST-ONLY: how many library unloads THIS THREAD has routed through [`dlclose_on_worker`]. An
+    /// unload that happens by an implicit field/local drop instead runs the image's `.fini_array` on
+    /// whatever thread dropped it, and a caller thread that later retires is the crash `ffi_thread`
+    /// documents — a property no assertion on a returned value can see. Counting the routed unloads
+    /// is what makes it observable.
+    ///
+    /// THREAD-LOCAL, not a global atomic: libtest runs siblings in parallel, and a sibling that
+    /// loaded and unloaded a plugin between a global counter's two samples would satisfy a "went up"
+    /// assertion while the path under test unloaded on the caller's thread — a test that passes in
+    /// the red state. `dlclose_on_worker` is called on the routing thread (only the drop moves to
+    /// the worker), so a per-thread count sees exactly this caller's unloads and nobody else's.
+    pub(crate) static UNLOADS_ON_WORKER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a plugin panic
@@ -1439,6 +1457,22 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
     // itself the trust of compiling it in. The path is operator/admin-supplied, never request data.
     let lib = dlopen_on_worker(lib_path.as_os_str())
         .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
+    // UNLOAD ON A WORKER, on EVERY exit path. The handshake below has five of them, and letting
+    // `lib` drop out of scope would `dlclose` — running the image's `.fini_array`, which is plugin
+    // code — on the CALLER's thread. A `.fini_array` that touches a plugin-side `thread_local!` with
+    // a destructor arms the plugin's `pthread_key` on that thread, and a caller that later retires
+    // (a libtest harness thread, a Tokio blocking thread) then calls that destructor inside the
+    // image it just unmapped. Every other unload in this crate (`RawPlugin::drop`, `LoadGuard::drop`)
+    // is already routed; the admin inventory/upload-vet path is the one that was not.
+    let verdict = validate_mapped(&lib, &display);
+    dlclose_on_worker(lib);
+    verdict
+}
+
+/// The handshake half of [`validate_plugin`], over an ALREADY-MAPPED library. Split out so its five
+/// exit paths cannot each be responsible for routing the unload — the caller unloads once.
+fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
+    let display = display.to_string();
     let transport = {
         let f = unsafe { lib.get::<busbar_plugin::cold::AbiFn>(symbol::ABI) }
             .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))?;
@@ -1450,7 +1484,7 @@ pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
         ));
     }
     // The exported kind must be one the engine supports (a range exists for it).
-    let plugin_kind = read_plugin_kind(&lib, &display)?;
+    let plugin_kind = read_plugin_kind(lib, &display)?;
     if supported_abi(&plugin_kind).is_empty() {
         return Err(format!(
             "plugin '{display}' declares unsupported kind '{plugin_kind}'"
