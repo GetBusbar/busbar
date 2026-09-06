@@ -57,6 +57,39 @@ fn one_key_at_the_maximum_is_exact_and_does_not_saturate() {
     assert!(expected < u128::MAX);
 }
 
+/// A NEGATIVE CONFIGURED FEE IS NOT A DISCOUNT, and it is clamped where the rate table is
+/// resolved rather than left to the comparison to survive.
+///
+/// The derivation adds the fee times the billable count to the token spend and then floors the
+/// whole thing at zero. An unclamped negative fee therefore does not merely contribute nothing: it
+/// SUBTRACTS from the token spend, so a bucket whose tokens have already carried it over its cap
+/// derives back under the cap and the door admits. The tag's own cost model clamps at resolve, in
+/// both its constructors, and the pricing card in the ledger's crate clamps too; the door has to
+/// agree with both or a request is judged at one fee and billed at another.
+#[test]
+fn a_negative_configured_fee_is_clamped_at_resolve_and_can_never_credit_a_bucket() {
+    use crate::price::Pricer;
+
+    assert_eq!(Pricer::flat(-5).price_per_request_cents(), 0);
+
+    // One micro-unit per input token: a million input tokens is a hundred cents of spend. A
+    // hundred billable requests at minus five cents would be five hundred cents of credit.
+    let rates = BTreeMap::from([(
+        "m".to_string(),
+        RateNanos::from_micros_per_token(1.0, 0.0, 0.0, 0.0),
+    )]);
+    let pricer = Pricer::with_card(-5, rates);
+    assert_eq!(pricer.price_per_request_cents(), 0);
+
+    let mut units = BTreeMap::new();
+    units.insert(UNIT_INPUT.to_string(), 1_000_000u64);
+    assert_eq!(
+        pricer.derive_spend_cents([("m", &units)].into_iter(), 100, true),
+        100,
+        "the tokens are the spend; the clamped fee adds nothing and takes nothing away"
+    );
+}
+
 /// Ordinary figures are untouched by the change: the fold is still an exact sum of four
 /// multiply-adds everywhere below the top of the range.
 #[test]

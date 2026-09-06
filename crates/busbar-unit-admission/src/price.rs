@@ -132,7 +132,7 @@ impl Pricer {
     pub fn flat(price_per_request_cents: i64) -> Self {
         Self {
             rates: None,
-            price_per_request_cents,
+            price_per_request_cents: price_per_request_cents.max(0),
         }
     }
 
@@ -140,7 +140,13 @@ impl Pricer {
     pub fn with_card(price_per_request_cents: i64, rates: BTreeMap<String, RateNanos>) -> Self {
         Self {
             rates: Some(rates),
-            price_per_request_cents,
+            // Clamped here, once, in both constructors — exactly where the tag's cost model clamps
+            // it. A negative fee is not a discount: the derivation ADDS the fee times the billable
+            // count to the token spend, so an unclamped one subtracts, and a bucket already over
+            // its cap on tokens alone derives back under it and is admitted. The ledger's own
+            // pricing card clamps at resolve too, so leaving it unclamped here would also mean a
+            // request judged at one fee and billed at another.
+            price_per_request_cents: price_per_request_cents.max(0),
         }
     }
 
