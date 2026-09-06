@@ -296,7 +296,10 @@ fn a_run_missing_its_oldest_records_does_not_verify_against_the_genesis() {
 
     let brk = AuditChain::verify_chain(&records[1..]).unwrap_err();
     assert_eq!(brk.kind, AuditBreakKind::LinkMismatch);
-    assert_eq!(brk.at_index, 1, "the break is at the record that should be the genesis");
+    assert_eq!(
+        brk.at_index, 1,
+        "the break is at the record that should be the genesis"
+    );
 
     // The same run read as a WINDOW of a longer chain is fine: a bounded store's oldest retained
     // record has legitimately lost its predecessor.

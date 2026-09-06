@@ -1663,7 +1663,8 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
 
     // Egress: a HEAD frame rebuilt past a stripped `Content-Length`, and the body frame after it.
     let uri =
-        fixed_response_server(b"HTTP/1.1 200 OK\r\nX-Tag: t\r\nContent-Length: 5\r\n\r\nhello").await;
+        fixed_response_server(b"HTTP/1.1 200 OK\r\nX-Tag: t\r\nContent-Length: 5\r\n\r\nhello")
+            .await;
     let transport = HttpTransport::new(ClientSettings::default());
     let conn = transport
         .dial(&upstream_dest(&uri), &fixture_key())
