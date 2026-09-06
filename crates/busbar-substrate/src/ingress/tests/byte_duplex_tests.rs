@@ -123,6 +123,37 @@ async fn mint_is_monotonic_and_never_none() {
     assert!(CallRef::NONE.is_none());
 }
 
+/// A PEER THAT NEVER TERMINATES A FRAME must not be able to spend this node's memory. One frame is
+/// one line, so a stream with no `0x0A` in it is a single frame that grows for as long as the peer
+/// keeps writing — the read has to stop somewhere, and the session ends where it stops. Every other
+/// read on the inbound path is capped; this one is the byte pipe's own.
+#[tokio::test]
+async fn an_unterminated_frame_past_the_cap_ends_the_session() {
+    let (near, far) = tokio::io::duplex(64 * 1024);
+    let (near_r, near_w) = tokio::io::split(near);
+    let pump = tokio::spawn(serve(near_r, near_w, Arc::new(EchoPlane)));
+
+    // Well past the cap, with no terminator anywhere and NO close — the peer is simply still typing.
+    let (_far_r, mut far_w) = tokio::io::split(far);
+    let flood = tokio::spawn(async move {
+        let chunk = vec![b'x'; 64 * 1024];
+        let mut written = 0usize;
+        while written <= MAX_FRAME_BYTES + chunk.len() {
+            if far_w.write_all(&chunk).await.is_err() {
+                break;
+            }
+            written += chunk.len();
+        }
+        std::future::pending::<()>().await;
+    });
+
+    tokio::time::timeout(std::time::Duration::from_secs(20), pump)
+        .await
+        .expect("the session ends on an unterminated frame instead of buffering it forever")
+        .unwrap();
+    flood.abort();
+}
+
 /// A plane whose handlers all PARK: each one records its arrival and then never finishes, so the
 /// number that got in is exactly the number of handler tasks the transport allowed to exist at once.
 struct ParkingPlane {

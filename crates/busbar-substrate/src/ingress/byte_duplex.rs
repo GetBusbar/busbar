@@ -42,7 +42,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures::{Sink, SinkExt, Stream, StreamExt};
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::oneshot;
 
 /// A neutral correlation key: the identity of ONE call awaiting its answer on this channel, as a
@@ -83,6 +83,14 @@ const EOF_DRAIN: std::time::Duration = std::time::Duration::from_secs(3);
 /// this gate, so a handler parked in [`DuplexHandle::issue`] is always reachable by the answer it is
 /// waiting for, however many siblings hold permits.
 const MAX_INFLIGHT_HANDLERS: usize = 256;
+
+/// The largest ONE inbound frame may be on the byte path. A frame is a line, so a peer that never
+/// writes the terminator is writing a single frame that grows for as long as it keeps typing — with
+/// no cap, until the allocation fails. The bar is the same one an inbound request body is held to
+/// ([`crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES`]): a payload this transport carries may
+/// not be larger than one the gateway would accept through its front door. Reaching it is a framing
+/// fault, not a big frame, and the session ends there.
+const MAX_FRAME_BYTES: usize = crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES;
 
 /// The two callbacks a plane supplies to bind this transport. The transport is generic over the
 /// concrete implementor, so there is no boxing on the hot per-frame path; the implementor is shared
@@ -342,15 +350,26 @@ where
     let mut buf: Vec<u8> = Vec::new();
     loop {
         buf.clear();
-        // One frame per line, split on 0x0A. EOF — zero bytes read — ends the session; a final
-        // unterminated line is still one frame.
-        match lines.read_until(b'\n', &mut buf).await {
+        // One frame per line, split on 0x0A, and never more than one frame's worth of bytes: the read
+        // is limited to the cap plus the terminator, so a peer that never writes one cannot make this
+        // buffer grow past it. EOF — zero bytes read — ends the session; a final unterminated line is
+        // still one frame.
+        let read = (&mut lines)
+            .take((MAX_FRAME_BYTES + 1) as u64)
+            .read_until(b'\n', &mut buf)
+            .await;
+        match read {
             Ok(0) => break,
             Ok(_) => {}
             Err(_) => break,
         }
         if buf.last() == Some(&b'\n') {
             buf.pop();
+        } else if buf.len() > MAX_FRAME_BYTES {
+            // The cap was reached with no terminator in sight: these bytes are not a frame and no
+            // later byte can make them one. A framing fault ends the session — there is no plane-side
+            // meaning to refuse it with, and reading on would only buffer more of the same.
+            break;
         }
         if buf.iter().all(u8::is_ascii_whitespace) {
             continue; // a blank line is not a frame
