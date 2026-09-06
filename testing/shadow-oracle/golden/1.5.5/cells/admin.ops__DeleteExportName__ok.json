@@ -24,6 +24,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/export/oracle-log",
+        "status": 404,
         "body": {
           "json": {
             "error": {
@@ -31,9 +33,7 @@
               "message": "exporter `oracle-log` not found"
             }
           }
-        },
-        "path": "/api/v1/admin/export/oracle-log",
-        "status": 404
+        }
       }
     ]
   },

@@ -30,6 +30,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/identity-providers/oracle-idp2",
+        "status": 200,
         "body": {
           "json": {
             "browser_login_configured": false,
@@ -38,9 +40,7 @@
             "settings_keys": [],
             "token_configured": true
           }
-        },
-        "path": "/api/v1/admin/identity-providers/oracle-idp2",
-        "status": 200
+        }
       }
     ]
   },

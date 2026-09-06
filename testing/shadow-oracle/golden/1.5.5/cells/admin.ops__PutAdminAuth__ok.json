@@ -32,6 +32,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/admin-auth",
+        "status": 200,
         "body": {
           "json": {
             "configured": true,
@@ -39,9 +41,7 @@
               "admin-tokens"
             ]
           }
-        },
-        "path": "/api/v1/admin/admin-auth",
-        "status": 200
+        }
       }
     ]
   },

@@ -714,6 +714,7 @@ billing|key-usage|after-upstream-down	PASS	HTTP 200; usage Δ {}
 billing|key-usage|broke-after-429	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|fresh	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|noscope-after-403	PASS	HTTP 200; usage Δ {}	
+billing|key-usage|refund-across-window	SKIP	UNSUPPORTED: a request that straddles the window roll: its flat per-request fee must be refunded from the SAME cell the charge landed on, so the view rea	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-001|validate	PASS	exit 1; 	
 boot.refusal|BOOT-002|validate	PASS	exit 1; 	
 boot.refusal|BOOT-003|validate	PASS	exit 1; 	
@@ -843,38 +844,38 @@ boot.refusal|BOOT-122|validate	PASS	exit 1;
 boot.refusal|BOOT-123|validate	PASS	exit 1; 	
 boot.refusal|BOOT-124|validate	PASS	exit 1; 	
 boot.refusal|BOOT-125|validate	PASS	exit 1; 	
-boot.refusal|BOOT-130|boot	PASS	exit 1; [2m2026-09-05T03:12:48.981976Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-131|boot	PASS	exit 1; [2m2026-09-05T03:12:49.240957Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-132|boot	PASS	exit 1; [2m2026-09-05T03:12:49.495372Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-133|boot	PASS	exit 1; [2m2026-09-05T03:12:49.753197Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-134|boot	PASS	exit 1; [2m2026-09-05T03:12:50.012958Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-135|boot	PASS	exit 1; [2m2026-09-05T03:12:50.298543Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-136|boot	PASS	exit 1; [2m2026-09-05T03:12:50.580922Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-137a|boot	PASS	exit 1; [2m2026-09-05T03:12:50.859919Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-137b|boot	PASS	exit 1; [2m2026-09-05T20:00:48.791024Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-137c|boot	PASS	exit 1; [2m2026-09-05T03:12:51.134801Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-138a|boot	PASS	exit 1; [2m2026-09-05T03:12:51.422408Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-138b|boot	PASS	exit 1; [2m2026-09-05T20:00:49.335164Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-138c|boot	PASS	exit 1; [2m2026-09-05T03:12:51.699668Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-139a|boot	PASS	exit 1; [2m2026-09-05T03:12:51.983787Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-139b|boot	PASS	exit 1; [2m2026-09-05T20:00:49.891644Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-140|boot	PASS	exit 1; [2m2026-09-05T03:12:52.265465Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-141|boot	PASS	exit 1; [2m2026-09-05T03:12:52.519343Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-130|boot	PASS	exit 1; [2m2026-09-06T17:26:31.390082Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-131|boot	PASS	exit 1; [2m2026-09-06T17:26:31.766236Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-132|boot	PASS	exit 1; [2m2026-09-06T17:26:32.122014Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-133|boot	PASS	exit 1; [2m2026-09-06T17:26:32.481970Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-134|boot	PASS	exit 1; [2m2026-09-06T17:26:32.814250Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-135|boot	PASS	exit 1; [2m2026-09-06T17:26:33.192096Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-136|boot	PASS	exit 1; [2m2026-09-06T17:26:33.583090Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-137a|boot	PASS	exit 1; [2m2026-09-06T17:26:33.977899Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-137b|boot	PASS	exit 1; [2m2026-09-06T17:26:34.697227Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-137c|boot	PASS	exit 1; [2m2026-09-06T17:26:35.049741Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-138a|boot	PASS	exit 1; [2m2026-09-06T17:26:35.401122Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-138b|boot	PASS	exit 1; [2m2026-09-06T17:26:36.016925Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-138c|boot	PASS	exit 1; [2m2026-09-06T17:26:36.342578Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-139a|boot	PASS	exit 1; [2m2026-09-06T17:26:36.691157Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-139b|boot	PASS	exit 1; [2m2026-09-06T17:26:37.445069Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-140|boot	PASS	exit 1; [2m2026-09-06T17:26:37.768236Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-141|boot	PASS	exit 1; [2m2026-09-06T17:26:38.083898Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-150|validate	PASS	exit 1; 	
 boot.refusal|BOOT-151|validate	PASS	exit 1; 	
 boot.refusal|BOOT-152|validate	PASS	exit 1; 	
-boot.refusal|BOOT-153|boot	PASS	exit 1; [2m2026-09-05T03:12:53.193132Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-153|boot	PASS	exit 1; [2m2026-09-06T17:26:38.876268Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-160|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ references unknown provider	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-161|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ references unknown model	named gap: the fixture this cell needs is not in the tree yet
-boot.refusal|BOOT-162|boot	PASS	exit 1; [2m2026-09-05T20:47:25.016510Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-170|boot	PASS	exit 1; [2m2026-09-05T20:47:26.446381Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-171|boot	PASS	exit 1; [2m2026-09-05T03:12:53.583052Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-162|boot	PASS	exit 1; [2m2026-09-06T17:26:39.243400Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-170|boot	PASS	exit 1; [2m2026-09-06T17:26:41.310726Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-171|boot	PASS	exit 1; [2m2026-09-06T17:26:41.662783Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-172|boot	PASS	script durable-governance-precondition.sh: status 1	
 boot.refusal|BOOT-173|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ governance boot: could not read stored keys to validate budget_group references 	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-174|boot	PASS	script durable-governance-precondition.sh: status 1	
 boot.refusal|BOOT-175|boot	PASS	script durable-governance-precondition.sh: status 1	
-boot.refusal|BOOT-180|boot	PASS	exit 0; [2m2026-09-05T03:12:54.066837Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-181|boot	PASS	exit 1; [2m2026-09-05T03:12:54.333783Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-180|boot	PASS	exit 0; [2m2026-09-06T17:26:49.648503Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-181|boot	PASS	exit 1; [2m2026-09-06T17:26:49.898113Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-182|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ server error on '	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-183|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ failed to build the tokio runtime	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-184|boot	PASS	exit 2; 	
@@ -923,34 +924,34 @@ boot.warning|BOOT-W01|validate	PASS	exit 0; ok: config valid — 6 provider(s), 
 boot.warning|BOOT-W02|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
 boot.warning|BOOT-W03|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
 boot.warning|BOOT-W04|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
-boot.warning|BOOT-W10|boot	PASS	exit 0; [2m2026-09-05T03:13:00.947492Z[0m [33m WARN[0m metadata 	
-boot.warning|BOOT-W11|boot	PASS	exit 0; [2m2026-09-05T03:13:01.218390Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W12|boot	PASS	exit 0; [2m2026-09-05T03:13:01.486251Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W10|boot	PASS	exit 0; [2m2026-09-06T17:26:58.846009Z[0m [33m WARN[0m metadata 	
+boot.warning|BOOT-W11|boot	PASS	exit 0; [2m2026-09-06T17:26:59.275302Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W12|boot	PASS	exit 0; [2m2026-09-06T17:26:59.551654Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W13|boot	PASS	script durable-governance-precondition.sh: status 0	
-boot.warning|BOOT-W14|boot	PASS	exit 0; [2m2026-09-05T03:13:01.793669Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W15|boot	PASS	exit 0; [2m2026-09-05T03:13:02.075764Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W16|boot	PASS	exit 0; [2m2026-09-05T03:13:02.366952Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W17|boot	PASS	exit 0; [2m2026-09-05T03:13:02.655763Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W18|boot	PASS	exit 0; [2m2026-09-05T03:13:02.945061Z[0m [33m WARN[0m config is	
-boot.warning|BOOT-W19|boot	PASS	exit 0; [2m2026-09-05T03:13:03.253170Z[0m [33m WARN[0m config is	
+boot.warning|BOOT-W14|boot	PASS	exit 0; [2m2026-09-06T17:27:06.229993Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W15|boot	PASS	exit 0; [2m2026-09-06T17:27:06.500837Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W16|boot	PASS	exit 0; [2m2026-09-06T17:27:06.770144Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W17|boot	PASS	exit 0; [2m2026-09-06T17:27:06.997973Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W18|boot	PASS	exit 0; [2m2026-09-06T17:27:07.217856Z[0m [33m WARN[0m config is	
+boot.warning|BOOT-W19|boot	PASS	exit 0; [2m2026-09-06T17:27:07.434738Z[0m [33m WARN[0m config is	
 boot.warning|BOOT-W20|boot	PASS	exit 2; 	
-boot.warning|BOOT-W21|boot	PASS	exit 0; [2m2026-09-05T20:00:50.379295Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W22|boot	PASS	exit 0; [2m2026-09-05T20:00:50.906398Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W23|boot	PASS	exit 0; [2m2026-09-05T20:00:51.441586Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W21|boot	PASS	exit 0; [2m2026-09-06T17:27:07.923481Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W22|boot	PASS	exit 0; [2m2026-09-06T17:27:08.420278Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W23|boot	PASS	exit 0; [2m2026-09-06T17:27:09.020195Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W24|boot	PASS	script plugins-fetch-reload-miss.sh: status 200	
-boot.warning|BOOT-W25|boot	PASS	exit 0; [2m2026-09-05T03:13:04.040367Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W26|boot	PASS	exit 0; [2m2026-09-05T20:47:36.559054Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W25|boot	PASS	exit 0; [2m2026-09-06T17:27:11.910042Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W26|boot	PASS	exit 0; [2m2026-09-06T17:27:12.138651Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W30|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
-boot.warning|BOOT-W31|boot	PASS	exit 0; [2m2026-09-05T03:13:04.613459Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W32|boot	PASS	exit 0; [2m2026-09-05T03:13:04.948116Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W33|boot	PASS	exit 0; [2m2026-09-05T03:13:05.277962Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W34|boot	PASS	exit 0; [2m2026-09-05T03:13:05.577783Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W35|boot	PASS	exit 0; [2m2026-09-05T03:13:05.859450Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W36|boot	PASS	exit 0; [2m2026-09-05T03:13:06.154301Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W31|boot	PASS	exit 0; [2m2026-09-06T17:27:12.496785Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W32|boot	PASS	exit 0; [2m2026-09-06T17:27:12.716168Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W33|boot	PASS	exit 0; [2m2026-09-06T17:27:12.939647Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W34|boot	PASS	exit 0; [2m2026-09-06T17:27:13.161847Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W35|boot	PASS	exit 0; [2m2026-09-06T17:27:13.377682Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W36|boot	PASS	exit 0; [2m2026-09-06T17:27:13.590943Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W40|boot	PASS	exit 0; 169.254.0.0/16 100.100.100.200 168.63.129.16 192.0.0.192 fd0	
 boot.warning|BOOT-W41|boot	PASS	exit 0; 169.254.0.0/16 100.100.100.200 168.63.129.16 192.0.0.192 fd0	
 boot.warning|BOOT-W42|boot	PASS	exit 0; plugins dir: plugins (plugins.enabled: false) no plugin tarb	
-cli|--generate-signing-key	PASS	exit 0; 13b9b2f1316aa9136dad68df54394061d38cb3065c01b96f80bff3ab36ac	
+cli|--generate-signing-key	PASS	exit 0; 5fc627cb40f4392c9d6e8adbe97e0ee0d21afcd9b673874071f3d580886c	
 cli|--help	PASS	exit 0; busbar 1.5.5 — native-protocol LLM gateway  USAGE:     bus	
 cli|--list-plugins	PASS	exit 0; plugins dir: plugins (plugins.enabled: false) no plugin tarb	
 cli|--migrate-config|missing-path	PASS	exit 2; 	
@@ -1117,7 +1118,7 @@ documented|changelog|docker-boots-and-mutation-refused	PASS	script documented-ov
 documented|changelog|headers-off-default	PASS	HTTP 200; usage Δ {}	
 documented|changelog|lane-available-metric	PASS	HTTP 200; usage Δ {}	
 documented|changelog|legacy-config-refused	PASS	exit 1; 	
-documented|changelog|no-keygen-at-boot	PASS	exit 1; [2m2026-09-05T15:54:08.470610Z[0m [33m WARN[0m heterogen	
+documented|changelog|no-keygen-at-boot	PASS	exit 1; [2m2026-09-06T17:28:41.198008Z[0m [33m WARN[0m heterogen	
 documented|changelog|no-per-key-gauge	PASS	HTTP 200; usage Δ {}	
 documented|changelog|retry-after-floor	PASS	HTTP 503; usage Δ {"requests":1}	
 documented|changelog|spend-metrics-labelled	PASS	HTTP 200; usage Δ {}	
@@ -1151,8 +1152,11 @@ hooks|hooked-pool|unauth	PASS	HTTP 401; usage Δ {}
 hooks|metrics-hooks	PASS	HTTP 200; usage Δ {}	
 hooks|register|plugin-alias	PASS	HTTP 201; usage Δ {}	
 hooks|unhooked-pool|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+http.crosscut|413|a2a-jsonrpc	SKIP	UNSUPPORTED: oversize on the A2A JSON-RPC mount (busbar-a2a-codec MOUNT_PATH) — needs a recorder config that mounts the agents: block	named gap: the fixture this cell needs is not in the tree yet
 http.crosscut|413|anthropic	PASS	HTTP 413; usage Δ {}	
 http.crosscut|413|api-prefix	PASS	HTTP 404; usage Δ {}	
+http.crosscut|413|gemini-path	PASS	HTTP 413; usage Δ {}	
+http.crosscut|413|mcp-streamable-http	SKIP	UNSUPPORTED: oversize on the MCP streamable-http mount: which envelope answers before the plane is reached (JSON-RPC error vs the path-inferred dialect e	named gap: the fixture this cell needs is not in the tree yet
 http.crosscut|413|openai	PASS	HTTP 413; usage Δ {}	
 http.crosscut|413|openai-unauth	PASS	HTTP 401; usage Δ {}	
 http.crosscut|HEAD|healthz	PASS	HTTP 200; usage Δ {}	
@@ -1177,6 +1181,7 @@ llm|anthropic|anthropic|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,
 llm|anthropic|anthropic|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|anthropic|anthropic|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|anthropic|anthropic|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
+llm|anthropic|anthropic|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
 llm|anthropic|anthropic|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|anthropic|anthropic|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|anthropic|bedrock|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1202,6 +1207,7 @@ llm|bedrock|bedrock|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spe
 llm|bedrock|bedrock|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|bedrock|bedrock|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|bedrock|bedrock|request|over_budget_total	PASS	HTTP 400; usage Δ {}	
+llm|bedrock|bedrock|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
 llm|bedrock|bedrock|request|unauthenticated	PASS	HTTP 403; usage Δ {}	
 llm|bedrock|bedrock|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|bedrock|cohere|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1227,6 +1233,7 @@ llm|cohere|cohere|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend
 llm|cohere|cohere|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|cohere|cohere|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|cohere|cohere|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
+llm|cohere|cohere|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
 llm|cohere|cohere|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|cohere|cohere|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|cohere|gemini|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1252,6 +1259,7 @@ llm|gemini|gemini|request|ok_stream_array	PASS	HTTP 200; usage Δ {"requests":1,
 llm|gemini|gemini|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|gemini|gemini|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|gemini|gemini|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
+llm|gemini|gemini|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
 llm|gemini|gemini|request|unauthenticated	PASS	HTTP 400; usage Δ {}	
 llm|gemini|gemini|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|gemini|openai|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1277,6 +1285,7 @@ llm|openai|openai|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend
 llm|openai|openai|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|openai|openai|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|openai|openai|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
+llm|openai|openai|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
 llm|openai|openai|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|openai|openai|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|openai|responses|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1302,6 +1311,7 @@ llm|responses|responses|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,
 llm|responses|responses|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|responses|responses|request|over_budget	PASS	HTTP 429; usage Δ {}	
 llm|responses|responses|request|over_budget_total	PASS	HTTP 429; usage Δ {}	
+llm|responses|responses|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
 llm|responses|responses|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|responses|responses|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 mcp|stdio|client|client|DELETE /mcp (terminate session)|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -2223,7 +2233,7 @@ neutrality|NEUT-U-identity-providers|validate	PASS	exit 1;
 neutrality|NEUT-U-models|validate	PASS	exit 1; 	
 neutrality|NEUT-U-providers|validate	PASS	exit 1; 	
 neutrality|NEUT-U-top|validate	PASS	exit 1; 	
-neutrality|boot-lines	PASS	exit 0; [2m2026-09-05T03:43:15.943779Z[0m [32m INFO[0m busbar st	
+neutrality|boot-lines	PASS	exit 0; [2m2026-09-06T17:36:08.240587Z[0m [32m INFO[0m busbar st	
 neutrality|metrics-no-plane-series	PASS	HTTP 200; usage Δ {}	
 neutrality|metrics-series	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|a2a-shaped-404	PASS	HTTP 404; usage Δ {}	
@@ -2258,10 +2268,10 @@ plugins.load|store-postgres	PASS	script plugin-list.sh: status 0
 plugins.load|store-sqlite	PASS	script plugin-list.sh: status 0	
 plugins.load|store-valkey	PASS	script plugin-list.sh: status 0	
 plugins.load|webrequest-hook	PASS	script plugin-list.sh: status 0	
-plugins.store-persist|store-mysql	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (PB-11/37/93; persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
-plugins.store-persist|store-postgres	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (PB-11/37/93; persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
+plugins.store-persist|store-mysql	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
+plugins.store-persist|store-postgres	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
 plugins.store-persist|store-sqlite	PASS	script store-persist.sh: status 0	
-plugins.store-persist|store-valkey	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (PB-11/37/93; persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
+plugins.store-persist|store-valkey	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
 queue|serve|n3	PASS	N=3; statuses [200,200,200]	
 queue|timeout|n2	PASS	N=2; statuses [200,503]	
 route.failover|fb|all-down	PASS	HTTP 503; usage Δ {"requests":1}	

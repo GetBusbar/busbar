@@ -24,6 +24,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/identity-providers/oracle-idp2",
+        "status": 404,
         "body": {
           "json": {
             "error": {
@@ -31,9 +33,7 @@
               "message": "identity-provider `oracle-idp2` not found"
             }
           }
-        },
-        "path": "/api/v1/admin/identity-providers/oracle-idp2",
-        "status": 404
+        }
       }
     ]
   },

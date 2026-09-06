@@ -27,6 +27,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/config",
+        "status": 200,
         "body": {
           "json": {
             "auth": {
@@ -171,9 +173,7 @@
             ],
             "version": 1
           }
-        },
-        "path": "/api/v1/admin/config",
-        "status": 200
+        }
       }
     ]
   },

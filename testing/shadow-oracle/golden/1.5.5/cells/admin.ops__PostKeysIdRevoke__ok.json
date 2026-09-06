@@ -27,6 +27,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/keys/vk_<KEY>",
+        "status": 200,
         "body": {
           "json": {
             "allowed_pools": null,
@@ -38,9 +40,7 @@
             "name": "oracle-broke",
             "state": "revoked"
           }
-        },
-        "path": "/api/v1/admin/keys/vk_<KEY>",
-        "status": 200
+        }
       }
     ]
   },

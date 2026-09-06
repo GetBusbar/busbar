@@ -34,6 +34,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/groups/oracle-added",
+        "status": 200,
         "body": {
           "json": {
             "enabled": true,
@@ -46,9 +48,7 @@
             ],
             "name": "oracle-added"
           }
-        },
-        "path": "/api/v1/admin/groups/oracle-added",
-        "status": 200
+        }
       }
     ]
   },

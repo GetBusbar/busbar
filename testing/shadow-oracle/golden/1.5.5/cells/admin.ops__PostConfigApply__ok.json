@@ -33,15 +33,15 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/config/settings",
+        "status": 200,
         "body": {
           "json": {
             "applied": false,
             "config_version": 1,
             "settings": {}
           }
-        },
-        "path": "/api/v1/admin/config/settings",
-        "status": 200
+        }
       }
     ]
   },
