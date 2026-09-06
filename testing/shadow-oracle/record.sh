@@ -89,6 +89,25 @@ assert_ports_free_or_fail() {  # <port>... — a busy port is a setup failure, n
 }
 assert_ports_free_or_fail "$LISTEN_PORT" "$ADMIN_PORT" "$MOCK_PORT"
 
+# Spare listeners for exec `boot` cells: those start a SECOND busbar, which must not collide with the
+# recording's own. Derived from the same ORACLE_* knobs rather than hardcoded, or two recordings on
+# deliberately different ports still fight over one fixed pair (48821/48822) and each adopts the
+# other's process. The defaults are unchanged (48811+10 / 48812+10), so the golden does not move.
+BOOT_LISTEN_PORT="${ORACLE_BOOT_LISTEN_PORT:-$((LISTEN_PORT + 10))}"
+BOOT_ADMIN_PORT="${ORACLE_BOOT_ADMIN_PORT:-$((ADMIN_PORT + 10))}"
+# A caller is free to choose ORACLE_* values that land the derived pair on a port this run already
+# owns (script cells take ADMIN_PORT+1 for their mock); step the pair by two until it does not.
+_boot_port_reserved() {  # <port>
+  case " ${LISTEN_PORT} ${ADMIN_PORT} ${MOCK_PORT} $((ADMIN_PORT + 1)) " in *" $1 "*) return 0 ;; esac
+  return 1
+}
+_bp=0
+while [ "$_bp" -lt 200 ] && { _boot_port_reserved "$BOOT_LISTEN_PORT" || _boot_port_reserved "$BOOT_ADMIN_PORT" \
+        || [ "$BOOT_LISTEN_PORT" = "$BOOT_ADMIN_PORT" ]; }; do
+  BOOT_LISTEN_PORT=$((BOOT_LISTEN_PORT + 2)); BOOT_ADMIN_PORT=$((BOOT_ADMIN_PORT + 2)); _bp=$((_bp + 1))
+done
+unset _bp
+
 # ── mock upstream (all six dialects, byte-deterministic) ────────────────────────────────────────
 mkdir -p "$WORK/egress"
 # the mock records every request it receives (path, method, headers, body) so the EGRESS side of a
@@ -252,22 +271,39 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
     cli|validate)
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null; rc=$? ;;
     boot)
-      # a boot cell must not collide with the recording busbar: rewrite the listen ports
-      python3 - "$cfgfile" "$xwork/boot.yaml" <<'PY'
+      # a boot cell must not collide with the recording busbar: rewrite the listen ports onto THIS
+      # run's derived spare pair (see BOOT_LISTEN_PORT/BOOT_ADMIN_PORT above), never a fixed one
+      python3 - "$cfgfile" "$xwork/boot.yaml" "$BOOT_LISTEN_PORT" "$BOOT_ADMIN_PORT" <<'PY'
 import sys,re
 s=open(sys.argv[1]).read()
-s=re.sub(r'^listen: .*$', 'listen: "127.0.0.1:48821"', s, flags=re.M)
-s=re.sub(r'^admin_listen: .*$', 'admin_listen: "127.0.0.1:48822"', s, flags=re.M)
+s=re.sub(r'^listen: .*$', 'listen: "127.0.0.1:%s"' % sys.argv[3], s, flags=re.M)
+s=re.sub(r'^admin_listen: .*$', 'admin_listen: "127.0.0.1:%s"' % sys.argv[4], s, flags=re.M)
 open(sys.argv[2],'w').write(s)
 PY
+      # The spare port must be PROVEN FREE before the spawn: otherwise the /healthz poll below reads
+      # somebody else's answer as "this cell's busbar came up degraded-but-serving" and records a pass
+      # for a process that never started.
+      assert_port_free "$BOOT_LISTEN_PORT" \
+        || { record "$id" FAIL "boot-cell port ${BOOT_LISTEN_PORT} is already in use" \
+               "owner pid '$(port_owner_pid "$BOOT_LISTEN_PORT")'; set ORACLE_BOOT_LISTEN_PORT/ORACLE_BOOT_ADMIN_PORT"; return; }
       envcmd+=(BUSBAR_CONFIG="$xwork/boot.yaml")
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null &
       local bpid=$! i=0 healthy=0
       while [ $i -lt 100 ]; do
         if ! kill -0 "$bpid" 2>/dev/null; then break; fi
-        if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:48821/healthz" 2>/dev/null; then healthy=1; break; fi
+        if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:${BOOT_LISTEN_PORT}/healthz" 2>/dev/null; then
+          # answered — but only OUR pid holding the listener makes that this cell's evidence
+          if assert_port_is_ours "$BOOT_LISTEN_PORT" "$bpid"; then healthy=1; else healthy=2; fi
+          break
+        fi
         sleep 0.1; i=$((i+1))
       done
+      if [ "$healthy" -eq 2 ]; then
+        kill -9 "$bpid" 2>/dev/null; wait "$bpid" 2>/dev/null
+        record "$id" FAIL "the listener on ${BOOT_LISTEN_PORT} is not this cell's busbar" \
+          "expected pid ${bpid}, port owned by '$(port_owner_pid "$BOOT_LISTEN_PORT")'"
+        return
+      fi
       if [ "$healthy" -eq 1 ]; then
         # a real warning-boot: /healthz answered on the data listener, so busbar came up degraded-but-
         # serving. That IS the "alive" contract for this cell family — stop it and record a pass.
