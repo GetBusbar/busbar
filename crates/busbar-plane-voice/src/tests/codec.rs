@@ -1264,6 +1264,93 @@ fn a_downlink_frame_answers_the_turn_the_client_half_opened() {
     );
 }
 
+/// A downlink telephony frame carries the identifier the carrier bound on the call.
+///
+/// The carrier binds a `streamSid` on its `start` event and REQUIRES it on every frame sent back;
+/// a media frame naming another one, or none, is dropped by the carrier. The binding is made
+/// against the client's half of the session (`start` arrives from the caller), and the downlink is
+/// rendered against an upstream's half, which never saw it — so every outbound frame of every call
+/// was rendered with an empty identifier and the caller heard silence for the whole conversation.
+#[test]
+fn a_downlink_telephony_frame_carries_the_identifier_the_carrier_bound() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/twilio/call-123");
+    let labels = Labels::new();
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+
+    // The carrier opens the stream and then speaks, which is what opens the turn.
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut client = PlaneSessionState::new(crate::session::VoiceSessionState::for_dialect(
+        Dialect::TwilioMediaStreams,
+    ));
+    let start = serde_json::to_vec(&json!({
+        "event": "start",
+        "start": {
+            "streamSid": "MZ123",
+            "callSid": "CA123",
+            "mediaFormat": { "encoding": "audio/x-mulaw", "sampleRate": 8000, "channels": 1 },
+        },
+    }))
+    .expect("start fixture serializes");
+    let frames = [frame(&start)];
+    let mut cursor = FrameCursor::new(&frames);
+    let _ = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("start decodes");
+
+    let media = serde_json::to_vec(&json!({
+        "event": "media",
+        "streamSid": "MZ123",
+        "media": { "payload": base64_of(&[0xFFu8; 160]) },
+    }))
+    .expect("media fixture serializes");
+    let frames = [frame(&media)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(turn) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the caller's first audio opens the turn")
+    else {
+        panic!("the first media frame opens a turn");
+    };
+
+    // Whatever the open published is what the kernel seals onto the session and what the upstream's
+    // half is therefore able to read.
+    let mut session = crate::tests::harness::SealedSession::default()
+        .with_fact(crate::meta::FACT_DIALECT, "twilio-media-streams")
+        .with_upstreams(1);
+    for key in <VoicePlane as busbar_contract::plane::PlaneMeta>::SESSION_FACTS {
+        if let Some(FactValue::Str(v)) = turn.facts.get(key) {
+            session = session.with_fact(key, v);
+        }
+    }
+    let c = crate::tests::harness::ctx_in_session(&arena, &config, &transport, &labels, &session);
+
+    // The upstream answers with audio, which this plane renders in the carrier's own shape.
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+    let delta = serde_json::to_vec(&json!({
+        "type": "response.output_audio.delta",
+        "delta": base64_of(&[0u8; 48]),
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&delta)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Frame { r, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+        .expect("a downlink audio frame decodes")
+    else {
+        panic!("a downlink audio frame is one frame of the turn");
+    };
+    let rendered: serde_json::Value =
+        serde_json::from_slice(r.ir.body()).expect("the carrier's envelope is JSON");
+    assert_eq!(rendered["event"], "media", "the carrier's media envelope");
+    assert_eq!(
+        rendered["streamSid"], "MZ123",
+        "a frame the carrier cannot place on a stream is a frame the caller never hears"
+    );
+}
+
 #[test]
 fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
     let plane = openai_plane();
