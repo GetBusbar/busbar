@@ -28,6 +28,12 @@
 #       This is the guard that stops a class being quietly dropped from MONEY_CLASSES: removing
 #       effects.usage (or effects.egress / effects.readback / effects.files / ...) from that set
 #       makes the matching case here go green-when-it-should-be-red, i.e. RED in this selftest.
+#   (w) EVERY script driver's give-up path carries effects.harness_error when it fails with a
+#       non-negative status -> record.sh cannot write a PASS row over a harness failure
+#   (x) no script driver steps a wall clock into effects (effects.script rates every such key
+#       MONEY, so an epoch second there is a permanent divergence about nothing)
+#   (y) every golden PASS id is named in owed-baseline.txt -- replay.sh only WARNS about an owed id
+#       missing from the baseline, so such a cell can stop being owed later with no red row
 #   (r) diff-cells.py --strict --id-filter used directly as a subset gate (land.sh's shape):
 #       a filter that selects a diverging cell exits 1, and a filter that selects NOTHING also
 #       exits 1 — a subset gate that compared zero cells has proven nothing
@@ -338,5 +344,54 @@ grep -q "no owed cells matched" "$W/out-v.log" && msg_ok=1 || msg_ok=0
 [ "$rc" = 1 ] && [ "$msg_ok" = 1 ] && say PASS "--strict with a filter matching nothing -> exit 1 (nothing was compared)" || say FAIL "strict empty filter rc=$rc msg_ok=$msg_ok (see $W/out-v.log)"
 
 
+# (w) EVERY script driver's give-up path must be distinguishable from a recorded outcome. record.sh
+# reads a script cell's `status` alone: -1 is a named gap (SKIP), and EVERY other status is recorded
+# PASS unless the capture carries `effects.harness_error` (record.sh:835). So a driver whose fail()
+# writes a NON-NEGATIVE status without that marker freezes its own infrastructure failure into the
+# golden — "this cell is exit 1" with a PASS row behind it — and the candidate, failing the same way
+# for the same reason, matches it exactly. hazard-no-data-dir.sh was the one driver in scripts/ that
+# did this (`fail 1 "busbar did not come up"`, `fail 2 "could not mint a key"`). This is a STATIC
+# guard, not a mutation case, because it has to hold for the next driver somebody writes too.
+sd="${here}/scripts"
+missing_he=""
+for f in "$sd"/*.sh; do
+  # does this driver ever call fail with a status other than -1? (`fail -1 …` is the named-gap shape)
+  grep -Eq '(^|[^-[:alnum:]_])fail[[:space:]]+[0-9]' "$f" || continue
+  grep -q 'harness_error' "$f" || missing_he="${missing_he} $(basename "$f")"
+done
+[ -z "$missing_he" ] \
+  && say PASS "every script driver that fails with a non-negative status marks it harness_error" \
+  || say FAIL "script driver(s) fail with a non-negative status and NO harness_error, so record.sh writes a PASS row over a harness failure:${missing_he}"
+
+# (x) A DRIVER MUST NOT PUT A WALL CLOCK IN `effects`. Since diff-cells.py grew `effects.script`,
+# EVERY effects key a driver writes is compared, and rated MONEY. A raw `date +%s` (or a store column
+# holding one) stepped into effects therefore differs on every single replay by construction — the
+# golden was recorded at one instant and the candidate runs at another — and normalize.py cannot save
+# it: its TS_KEYS rewrite is an EXACT key-name match on an int/float, and `step` writes strings under
+# names of the driver's own choosing (`now_at_edit`, `expires_at_after_edit`). The result is a
+# permanent, unforgivable-except-as-`breaking` divergence on a cell about nothing.
+clock_in_eff=""
+for f in "$sd"/*.sh; do
+  grep -Eq '^[[:space:]]*step[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]+"\$\((date|python3 -c .import time)' "$f" \
+    && clock_in_eff="${clock_in_eff} $(basename "$f")"
+done
+[ -z "$clock_in_eff" ] \
+  && say PASS "no script driver steps a wall clock straight into effects (money-rated by effects.script)" \
+  || say FAIL "script driver(s) step a raw wall clock into effects, which effects.script now compares as MONEY on every replay:${clock_in_eff}"
+
+# (y) THE OWED RATCHET MUST COVER EVERY GOLDEN PASS. replay.sh only prints "new coverage" to stderr
+# for an owed id missing from owed-baseline.txt — it is not a red row. So a golden PASS absent from
+# the baseline is a cell that can silently stop being owed later with nothing to catch it: exactly
+# the regression owed-baseline.txt exists to make impossible. (`http.crosscut|413|gemini-path` was
+# such a cell.) Only checked when the real golden is present in the tree.
+GOLD="${here}/golden/1.5.5"
+if [ -s "${GOLD}/ledger.tsv" ] && [ -s "${here}/owed-baseline.txt" ]; then
+  awk -F'\t' '$2=="PASS"{print $1}' "${GOLD}/ledger.tsv" | LC_ALL=C sort -u >"$W/gold-pass.txt"
+  grep -v '^[[:space:]]*$' "${here}/owed-baseline.txt" | LC_ALL=C sort -u >"$W/base.txt"
+  unowed="$(comm -23 "$W/gold-pass.txt" "$W/base.txt" | tr '\n' ' ')"
+  [ -z "$(printf '%s' "$unowed" | tr -d ' ')" ] \
+    && say PASS "every golden PASS id is named in owed-baseline.txt (the ratchet covers all of them)" \
+    || say FAIL "golden PASS id(s) missing from owed-baseline.txt, so they can stop being owed with no red row: ${unowed}"
+fi
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
