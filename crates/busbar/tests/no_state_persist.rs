@@ -8,9 +8,14 @@
 //! (or `$BUSBAR_STATE_FILE`), which the next boot restored — that is exactly what carried learned
 //! reliability state (breakers, cooldowns, latency EWMAs, hard-down latches) across a restart. This
 //! test boots the REAL binary through to "listening", sends `SIGTERM`, waits for a clean drain, and
-//! asserts NO state file exists at either the env-override path or the default-next-to-config path.
+//! asserts the fixture directory tree is byte-for-byte the same SET OF FILES it was before boot.
 //! A green run proves the snapshotter and the shutdown write are gone, so reliability state is
 //! RAM-only (re-learned on the next boot) and the old file-restore path cannot exist.
+//!
+//! The proof is an ENUMERATION, not a pair of filenames. "No file called `busbar-state.json`" and
+//! "no file" are different claims, and only the second is the invariant: a reintroduced snapshotter
+//! under any other name is the same regression, and a check that names the two paths the old code
+//! used would report green while it happened.
 //!
 //! Unix-only: it drives the process lifecycle with `SIGTERM`, the signal busbar's graceful shutdown
 //! listens for.
@@ -21,6 +26,7 @@
 // of it requires a bootable server, so it is gated on the LLM plane. Full-feature builds still run it.
 #![cfg(feature = "proto-llm")]
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -66,9 +72,9 @@ models:
     .unwrap();
 }
 
-/// A real busbar process, booted through to "listening", then stopped with SIGTERM, writes no state
-/// file at either the `$BUSBAR_STATE_FILE` override path or the default `busbar-state.json` beside
-/// the config. (Both paths are checked so a future default-path regression is caught too.)
+/// A real busbar process, booted through to "listening", then stopped with SIGTERM, adds NOTHING to
+/// the directory it was pointed at — compared as a whole tree, so a state file under any name is
+/// caught, with the two paths the removed mechanism used named afterwards for a legible message.
 #[test]
 fn a_running_busbar_writes_no_state_file() {
     let dir = fixture_dir();
@@ -80,6 +86,10 @@ fn a_running_busbar_writes_no_state_file() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
+
+    // The fixture tree as the process will find it. Everything here is ours: the two configs and
+    // the log we just opened. Anything the run adds to this set is state the process persisted.
+    let before = tree(&dir);
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
@@ -135,6 +145,21 @@ fn a_running_busbar_writes_no_state_file() {
         );
     }
 
+    // THE GATE: the tree is exactly as the process found it. A new file under any name — the two
+    // paths the removed mechanism used, or a third nobody has thought of yet — is persisted state.
+    let after = tree(&dir);
+    let added: Vec<_> = after.difference(&before).collect();
+    assert!(
+        added.is_empty(),
+        "the run left {} new file(s) in the fixture tree; reliability state must be RAM-only, so a \
+         busbar process must add nothing to the directory it was pointed at: {added:?}\nlog:\n{}",
+        added.len(),
+        read_to_string(&log_path)
+    );
+
+    // The two paths the removed mechanism used, named so a regression at either reads as itself
+    // rather than as an anonymous entry in the set above. The enumeration is what makes the gate
+    // total; these two make its most likely failure legible.
     assert!(
         !state_file.exists(),
         "$BUSBAR_STATE_FILE was written at {} — the state-file mechanism must be gone",
@@ -147,6 +172,32 @@ fn a_running_busbar_writes_no_state_file() {
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Every file path under `dir`, recursively, relative to `dir`.
+///
+/// The gate asks "did the process leave anything behind", and only an enumeration can answer that.
+/// Naming the paths the old code happened to use answers a narrower question — the next state file
+/// under a different name walks straight past a two-filename check — so the proof is the set of
+/// files that exist after the run, compared against the set that existed before it.
+fn tree(dir: &Path) -> BTreeSet<PathBuf> {
+    let mut out = BTreeSet::new();
+    collect(dir, dir, &mut out);
+    out
+}
+
+fn collect(root: &Path, dir: &Path, out: &mut BTreeSet<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect(root, &path, out);
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.insert(rel.to_path_buf());
+        }
+    }
 }
 
 /// Poll `cond` until it returns true or `budget` elapses; returns whether it became true.
