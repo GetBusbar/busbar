@@ -150,8 +150,23 @@ pub trait ChainedRecord: Sized {
 
     /// The operator-facing words for this stream, used when a break is reported.
     const LABELS: &'static ChainLabels;
-    /// See [`Framing`] — a wire fact of the records already on disk, not a preference.
+    /// See [`Framing`] — a wire fact of the records already on disk, not a preference. This is the
+    /// framing of a record that does not say which framing it was sealed under, which for a stream
+    /// that predates versioned framing means the framing it has always had.
     const FRAMING: Framing;
+
+    /// THE FRAMING **THIS RECORD** WAS SEALED UNDER, which is not always the stream's original one.
+    ///
+    /// A stream whose framing was ambiguous has to be able to hold both: the records already on disk
+    /// were sealed under the framing they were sealed under and cannot be re-sealed, while every new
+    /// record must be sealed under one that a caller-supplied field cannot forge. Verifying each
+    /// record under ITS OWN framing is what lets one chain be mixed across the upgrade boundary
+    /// instead of a deployment having to choose between verifying its history and being safe.
+    ///
+    /// A stream with only one framing never overrides this.
+    fn framing(&self) -> Framing {
+        Self::FRAMING
+    }
 
     /// The chain this record belongs to. A chain holds exactly one scope; the verifier refuses any
     /// record whose scope is not the chain's.
@@ -187,7 +202,9 @@ pub trait ChainedRecord: Sized {
 /// Recompute a record's digest from its own fields — the verification primitive, and the only place
 /// a digest is ever computed.
 pub fn digest<R: ChainedRecord>(record: &R) -> String {
-    let mut d = Digest::new(R::FRAMING);
+    // The record's OWN framing, not the stream's: on a stream that has crossed a framing change the
+    // two differ, and reading it off the record is what lets both halves of one chain verify.
+    let mut d = Digest::new(record.framing());
     record.digest_fields(&mut d);
     d.finish()
 }
