@@ -791,24 +791,20 @@ impl ProtocolWriter for GeminiWriter {
             // `modelVersion`. `created` has no Gemini stream analogue and is never emitted.
             IrStreamEvent::MessageStart { id, model, .. } => {
                 let mut frame = serde_json::Map::new();
-                match (id, model) {
-                    (Some(id), _) => {
-                        frame.insert(FIELD_RESPONSE_ID.to_string(), serde_json::json!(id));
-                    }
-                    // Cross-protocol stream: `StreamTranslate` strips the foreign `id` to `None`
-                    // before this writer runs (it does NOT strip `model` — that is the lane's model
-                    // name, emitted as `modelVersion` below). A native google-genai SDK reads
-                    // `chunk.response_id` off the FIRST chunk (for observability/tracing), so emitting
-                    // no identity frame at all is a detectable fidelity gap from a native Gemini stream
-                    // (which always carries `responseId` in the first chunk). Synthesize one —
-                    // matching the non-stream `write_response` behavior — rather than dropping it.
-                    (None, _) => {
-                        frame.insert(
-                            FIELD_RESPONSE_ID.to_string(),
-                            serde_json::json!(synth_response_id()),
-                        );
-                    }
-                }
+                // The FIRST identity frame decides this stream's `responseId`; a duplicate
+                // `MessageStart` replays it rather than announcing the same response under a second
+                // id. When the egress captured an `id` we pass it through; when it is `None` (the
+                // post-strip state on a cross-protocol stream — `StreamTranslate` zeroes the foreign
+                // id, though it does NOT strip `model`, which is the lane's own name and is emitted
+                // as `modelVersion` below) we SYNTHESIZE a native-shaped one rather than omitting
+                // it, because a native google-genai SDK reads `chunk.response_id` off the first
+                // chunk and an identity-less frame is a detectable fidelity gap.
+                let response_id =
+                    self.carried_response_id(|| id.clone().unwrap_or_else(synth_response_id));
+                frame.insert(
+                    FIELD_RESPONSE_ID.to_string(),
+                    serde_json::json!(response_id),
+                );
                 // A native Gemini SSE stream ALWAYS carries `modelVersion` in the first chunk (the
                 // official google-genai SDK reads `chunk.model_version`). `StreamTranslate` now
                 // preserves the lane's `model` across the cross-protocol boundary, so this is

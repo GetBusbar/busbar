@@ -30,7 +30,7 @@ fn foreign_vendor_image_ref_never_corrupts_any_writer() {
     let cohere = CohereWriter;
     let gemini = GeminiWriter;
     let bedrock = BedrockWriter;
-    let o = serde_json::to_string(&OpenAiWriter.write_request(&req)).unwrap();
+    let o = serde_json::to_string(&openai_writer().write_request(&req)).unwrap();
     let a = serde_json::to_string(&anthropic_writer().write_request(&req)).unwrap();
     let g = serde_json::to_string(&gemini.write_request(&req)).unwrap();
     let b = serde_json::to_string(&bedrock.write_request(&req)).unwrap();
@@ -58,7 +58,7 @@ fn base64_image_projects_or_drops_cleanly() {
         data: "QUJD".to_string(),
     });
     // OpenAI emits a data URI carrying the base64 payload.
-    let o = OpenAiWriter.write_request(&req);
+    let o = openai_writer().write_request(&req);
     let s = serde_json::to_string(&o).unwrap();
     assert!(
         s.contains("QUJD"),

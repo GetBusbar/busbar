@@ -110,7 +110,7 @@ fn responses_part_logprobs_stay_a_bare_array_after_the_refusal_member_lands() {
 #[test]
 fn buffered_openai_choice_finish_reason_is_never_null() {
     let ir = resp(None, Vec::new(), "oracle-marker");
-    let wire = openai_chat::OpenAiWriter.write_response(&ir);
+    let wire = openai_chat::openai_writer().write_response(&ir);
     let fr = wire
         .pointer("/choices/0/finish_reason")
         .expect("finish_reason is a required member of a buffered choice");

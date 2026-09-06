@@ -561,7 +561,9 @@ impl ProtocolWriter for CohereWriter {
                 // Cohere v2 streams carry the response `id` on the message-start frame. Preserve a
                 // captured id; synthesize a shape-valid one for the cross-protocol case so the
                 // emitted stream is indistinguishable from a native Cohere stream.
-                let id = id.clone().unwrap_or_else(synthesize_cohere_id);
+                // The FIRST `message-start` decides this stream's id; a duplicate replays it rather
+                // than announcing the same message under a second identity.
+                let id = self.carried_stream_id(|| id.clone().unwrap_or_else(synthesize_cohere_id));
                 Some((
                     "".to_string(),
                     serde_json::json!({

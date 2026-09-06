@@ -52,7 +52,7 @@ fn openai_carry_request_sampling_and_output_controls() {
         "max_completion_tokens": 256
     });
     let ir = OpenAiReader.read_request(&body).expect("read");
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
 
     assert_eq!(out["frequency_penalty"], json!(0.5), "frequency_penalty");
     assert_eq!(out["presence_penalty"], json!(0.3), "presence_penalty");
@@ -121,7 +121,7 @@ fn openai_carry_request_provider_specific_extra_fields() {
         "verbosity": "low"
     });
     let ir = OpenAiReader.read_request(&body).expect("read");
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
 
     assert_eq!(out["logit_bias"], json!({"50256": -100}), "logit_bias");
     assert_eq!(out["modalities"], json!(["text", "audio"]), "modalities");
@@ -184,7 +184,7 @@ fn openai_carry_request_message_and_content_fields() {
         ]
     });
     let ir = OpenAiReader.read_request(&body).expect("read");
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     let m = out["messages"].as_array().expect("messages");
 
     // messages[].name — parked in the names sentinel, re-attached on same-protocol re-serialize.
@@ -305,7 +305,7 @@ fn openai_carry_response_identity_and_choice_fields() {
         ir.content
     );
 
-    let out = OpenAiWriter.write_response(&ir);
+    let out = openai_writer().write_response(&ir);
     assert_eq!(out["id"], json!("chatcmpl-x"), "response/id");
     assert_eq!(out["object"], json!("chat.completion"), "response/object");
     assert_eq!(out["created"], json!(123), "response/created");
@@ -355,7 +355,7 @@ fn openai_carry_response_message_refusal() {
         "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
     });
     let ir = OpenAiReader.read_response(&body).expect("read");
-    let out = OpenAiWriter.write_response(&ir);
+    let out = openai_writer().write_response(&ir);
     assert_eq!(
         out["choices"][0]["message"]["content"],
         json!("I cannot help with that"),
@@ -412,7 +412,7 @@ fn openai_carry_response_usage_sub_buckets() {
         "rejected_prediction_tokens → IR"
     );
 
-    let out = OpenAiWriter.write_response(&ir);
+    let out = openai_writer().write_response(&ir);
     assert_eq!(
         out["usage"]["prompt_tokens_details"]["cached_tokens"],
         json!(20),
@@ -467,7 +467,7 @@ fn openai_carry_stream_delta_fields() {
         )),
         "delta.role must open the stream as assistant: {ev:?}"
     );
-    let (_, start_chunk) = OpenAiWriter
+    let (_, start_chunk) = openai_writer()
         .write_response_event(
             ev.iter()
                 .find(|e| matches!(e, IrStreamEvent::MessageStart { .. }))
@@ -511,7 +511,7 @@ fn openai_carry_stream_delta_fields() {
             )
         })
         .expect("a TextDelta");
-    let (_, content_chunk) = OpenAiWriter
+    let (_, content_chunk) = openai_writer()
         .write_response_event(text_ev)
         .expect("content chunk");
     assert_eq!(
@@ -568,7 +568,7 @@ fn openai_carry_stream_delta_fields() {
             )
         })
         .expect("a ToolUse BlockStart");
-    let (_, tc_chunk) = OpenAiWriter
+    let (_, tc_chunk) = openai_writer()
         .write_response_event(start_ev)
         .expect("tool_calls chunk");
     assert_eq!(
@@ -615,7 +615,7 @@ fn openai_response_provider_specific_fields_drop_only_on_cross_proto_reserialize
 
     // Cross-protocol re-serialize is the ONLY path that touches these fields, and it drops them
     // cleanly (no IR carrier) rather than corrupting them.
-    let out = OpenAiWriter.write_response(&ir);
+    let out = openai_writer().write_response(&ir);
     assert!(
         out.get("service_tier").is_none(),
         "response/service_tier drops on cross-protocol re-serialize (no IR carrier): {out}"

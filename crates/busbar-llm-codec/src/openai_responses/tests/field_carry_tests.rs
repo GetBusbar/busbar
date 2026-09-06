@@ -1072,16 +1072,20 @@ fn responses_stream_events_emitted_by_writer() {
 #[test]
 fn responses_duplicate_message_start_does_not_restart_stream() {
     let w = ResponsesWriter;
-    let start = || crate::ir::IrStreamEvent::MessageStart {
+    // TWO DISTINCT ids. Passing the same literal twice cannot see the defect: a duplicate that
+    // re-minted the identity would still produce the id the first event produced, so the test
+    // would pass while `response.created` and `response.completed` disagreed for every real
+    // duplicate. The stream's id is decided by its FIRST opening event; the second must be ignored.
+    let start = |id: &str| crate::ir::IrStreamEvent::MessageStart {
         role: crate::ir::IrRole::Assistant,
         usage: None,
-        id: Some("resp_dup".to_string()),
+        id: Some(id.to_string()),
         created: Some(1_700_000_000),
         model: Some("gpt-dup".to_string()),
     };
 
     let mut frames: Vec<(String, serde_json::Value)> = Vec::new();
-    frames.extend(w.write_response_events(&start()));
+    frames.extend(w.write_response_events(&start("resp_first")));
     frames.extend(
         w.write_response_events(&crate::ir::IrStreamEvent::BlockStart {
             index: 0,
@@ -1094,8 +1098,9 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
             delta: crate::ir::IrDelta::TextDelta("hi".to_string()),
         }),
     );
-    // The duplicate. Everything after it must continue the SAME stream.
-    frames.extend(w.write_response_events(&start()));
+    // The duplicate, under a DIFFERENT id. Everything after it must continue the SAME stream, under
+    // the SAME identity.
+    frames.extend(w.write_response_events(&start("resp_second")));
     frames.extend(w.write_response_events(&crate::ir::IrStreamEvent::BlockStop { index: 0 }));
     frames.extend(
         w.write_response_events(&crate::ir::IrStreamEvent::MessageDelta {
@@ -1125,9 +1130,23 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
         .map(|(_, d)| d["response"]["id"].clone())
         .expect("response.completed must be emitted");
     assert_eq!(
+        created_id,
+        serde_json::json!("resp_first"),
+        "the stream's id is the one its FIRST opening event carried, not the duplicate's"
+    );
+    assert_eq!(
         created_id, completed_id,
         "the terminal event must replay the id response.created carried"
     );
+    // The duplicate's own `response.created` frame must state that same id — a client reading only
+    // the second frame must not be handed an identity nothing else in the stream mentions.
+    for (_, d) in frames.iter().filter(|(n, _)| n == EVT_RESPONSE_CREATED) {
+        assert_eq!(
+            d["response"]["id"],
+            serde_json::json!("resp_first"),
+            "every response.created in one stream states one id: {d}"
+        );
+    }
 
     assert!(
         frames.iter().any(|(n, _)| n == EVT_OUTPUT_TEXT_DONE),
@@ -1314,7 +1333,7 @@ fn top_logprobs_carries_responses_roundtrip_and_cross_to_openai() {
         Some(5),
         "IR must carry the top_logprobs ask"
     );
-    let openai = crate::openai_chat::OpenAiWriter.write_request(&ir);
+    let openai = crate::openai_chat::openai_writer().write_request(&ir);
     assert_eq!(
         openai.get("top_logprobs"),
         Some(&serde_json::json!(5)),

@@ -381,7 +381,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let tool_msg = out["messages"]
         .as_array()
         .and_then(|a| a.iter().find(|m| m["role"] == "tool"))
@@ -406,7 +406,7 @@ fn write_request_forces_logprobs_flag_when_only_top_logprobs_present() {
         }))
         .expect("parses");
     ir.logprobs = None; // only the top-count is set
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["logprobs"], true, "enabling flag must be forced");
     assert_eq!(out["top_logprobs"], 5);
 }
@@ -441,7 +441,7 @@ fn write_request_emits_max_tokens_from_modeled_cap() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     assert_eq!(out["max_tokens"], serde_json::json!(512));
     // No stray `max_completion_tokens` (it is folded into the single modeled cap).
     assert!(out
@@ -461,7 +461,7 @@ fn max_completion_tokens_survives_read_write_roundtrip() {
         "max_completion_tokens": 777
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(
         out["max_completion_tokens"],
         serde_json::json!(777),
@@ -491,7 +491,7 @@ fn max_completion_tokens_maps_to_max_tokens_cross_protocol() {
     });
     let mut ir = OpenAiReader.read_request(&body).expect("parses");
     ir.extra.clear(); // the translate seam clears extra on a cross-protocol hop
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(
         out["max_tokens"],
         serde_json::json!(777),
@@ -534,7 +534,7 @@ fn response_format_survives_same_protocol_roundtrip() {
             description: None,
         })
     );
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(
         out["response_format"],
         serde_json::json!({
@@ -575,7 +575,7 @@ fn write_request_omits_token_cap_when_absent() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let obj = out.as_object().expect("object");
     assert!(obj.get("max_completion_tokens").is_none());
     assert!(obj.get("max_tokens").is_none());
@@ -619,7 +619,7 @@ fn write_request_keeps_tool_use_on_user_message() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
     let user_msg = &msgs[0];
     let tcs = user_msg["tool_calls"]
@@ -672,7 +672,7 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
     assert_eq!(
         msgs.len(),
@@ -733,7 +733,7 @@ fn write_request_tool_role_mixed_content_not_dropped() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
     // One flat tool-result entry, plus the msg_obj carrying the stray text + tool_calls.
     assert_eq!(
@@ -807,7 +807,7 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
     // Exactly one flat tool-result entry; the now-empty User msg_obj (content null, no tool_calls)
     // is NOT re-pushed, so the ToolResult is neither dropped nor duplicated.
@@ -859,7 +859,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     let msg = &out["choices"][0]["message"];
     assert_eq!(msg["content"], serde_json::json!("Hello world"));
     assert_eq!(msg["tool_calls"][0]["id"], serde_json::json!("c1"));
@@ -897,7 +897,7 @@ fn write_response_content_null_when_no_text() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     assert_eq!(
         out["choices"][0]["message"]["content"],
         serde_json::Value::Null
@@ -908,7 +908,7 @@ fn write_response_content_null_when_no_text() {
 
 #[test]
 fn write_error_native_openai_shape() {
-    let v = OpenAiWriter.write_error(404, ERR_TYPE_NOT_FOUND, "model 'gpt-z' not found");
+    let v = openai_writer().write_error(404, ERR_TYPE_NOT_FOUND, "model 'gpt-z' not found");
     // Exact native shape: error.{message,type,param,code}, with param/code null.
     assert_eq!(
         v["error"]["message"],
@@ -936,7 +936,7 @@ fn write_error_maps_kind_vocabulary() {
             ERR_TYPE_INVALID_REQUEST,
         ),
     ] {
-        let v = OpenAiWriter.write_error(400, kind, "x");
+        let v = openai_writer().write_error(400, kind, "x");
         assert_eq!(v["error"]["type"], serde_json::json!(want), "kind={kind}");
     }
 }
@@ -944,9 +944,9 @@ fn write_error_maps_kind_vocabulary() {
 #[test]
 fn write_error_empty_kind_falls_back_to_status_bucket() {
     // Empty kind with a 5xx status derives "server_error"; with a 4xx, "invalid_request_error".
-    let v5 = OpenAiWriter.write_error(503, "", "down");
+    let v5 = openai_writer().write_error(503, "", "down");
     assert_eq!(v5["error"]["type"], serde_json::json!("server_error")); // golden wire-contract literal (kept bare on purpose)
-    let v4 = OpenAiWriter.write_error(400, "", "bad");
+    let v4 = openai_writer().write_error(400, "", "bad");
     assert_eq!(
         v4["error"]["type"],
         serde_json::json!("invalid_request_error") // golden wire-contract literal (kept bare on purpose)
@@ -994,7 +994,7 @@ fn same_protocol_roundtrip_preserves_identity() {
         "usage": {"prompt_tokens": 10, "completion_tokens": 2}
     });
     let ir = OpenAiReader.read_response(&body).expect("read_response");
-    let out = OpenAiWriter.write_response(&ir);
+    let out = openai_writer().write_response(&ir);
     assert_eq!(out["id"], serde_json::json!("chatcmpl-xyz789"));
     assert_eq!(out["object"], serde_json::json!("chat.completion")); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(out["created"], serde_json::json!(1_711_111_111u64));
@@ -1028,7 +1028,7 @@ fn cross_protocol_write_synthesizes_valid_id() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
     assert!(
         id.starts_with("chatcmpl-"), // golden wire-contract literal (kept bare on purpose)
@@ -1074,7 +1074,7 @@ fn cross_protocol_write_response_emits_fallback_model() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     let obj = out.as_object().expect("response object");
     assert!(
         obj.contains_key("model"),
@@ -1108,7 +1108,7 @@ fn write_response_preserves_upstream_model_over_fallback() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
 }
 
@@ -1123,7 +1123,7 @@ fn stream_message_start_emits_fallback_model_when_none() {
         created: None,
         model: None,
     };
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&no_model)
         .expect("message start emits a chunk");
     let obj = chunk.as_object().expect("chunk object");
@@ -1145,7 +1145,7 @@ fn stream_message_start_preserves_upstream_model_over_fallback() {
         created: None,
         model: Some("gpt-4o-2024-08-06".to_string()),
     };
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&with_model)
         .expect("message start emits a chunk");
     assert_eq!(chunk["model"], serde_json::json!("gpt-4o-2024-08-06"));
@@ -1170,7 +1170,7 @@ fn stream_message_start_emits_identity() {
         created: Some(1_722_222_222),
         model: Some("gpt-4o".to_string()),
     };
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&with_id)
         .expect("message start emits a chunk");
     assert_eq!(chunk["id"], serde_json::json!("chatcmpl-stream1"));
@@ -1186,7 +1186,7 @@ fn stream_message_start_emits_identity() {
         created: None,
         model: None,
     };
-    let (_, chunk2) = OpenAiWriter
+    let (_, chunk2) = openai_writer()
         .write_response_event(&no_id)
         .expect("message start emits a chunk");
     assert!(chunk2["id"]
@@ -1381,7 +1381,7 @@ fn write_response_total_tokens_saturates_on_overflow() {
         request_echo: None,
     };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     assert_eq!(out["usage"]["total_tokens"], serde_json::json!(u64::MAX));
 }
 
@@ -1422,7 +1422,7 @@ fn read_request_preserves_sampling_params_in_extra() {
     );
     // And they reach the upstream body on write: promoted controls via the typed fields, the
     // rest via the extra-forwarding loop.
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["top_p"], serde_json::json!(0.9));
     assert_eq!(out["stop"], serde_json::json!(["\n\n"]));
     assert_eq!(out["frequency_penalty"], serde_json::json!(0.5));
@@ -1467,7 +1467,7 @@ fn unknown_reasoning_effort_survives_in_extra() {
     );
 
     // And it reaches the upstream body on a same-protocol write via the extra-forwarding loop.
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["reasoning_effort"], serde_json::json!("xhigh"));
 }
 
@@ -1509,7 +1509,7 @@ fn write_request_tool_call_only_assistant_has_null_content() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let msg = &out["messages"][0];
     assert_eq!(msg["content"], serde_json::Value::Null);
     assert_eq!(msg["tool_calls"][0]["id"], serde_json::json!("t1"));
@@ -1613,7 +1613,7 @@ fn stream_error_uses_enumerated_openai_type() {
             provider_signal: Some("boom".to_string()),
             retry_after: None,
         });
-        let (_, chunk) = OpenAiWriter
+        let (_, chunk) = openai_writer()
             .write_response_event(&ev)
             .expect("error emits a chunk");
         assert_eq!(
@@ -1777,7 +1777,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages");
     // Both system blocks produce a system message (text forwarded, image projected to "").
     assert_eq!(msgs[0]["role"], serde_json::json!("system"));
@@ -1890,7 +1890,7 @@ fn stream_message_delta_none_stop_reason_serializes_null_not_empty_string() {
             detail: crate::ir::IrUsageDetail::default(),
         },
     };
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&ev)
         .expect("message delta emits a chunk");
     let fr = &chunk["choices"][0]["finish_reason"];
@@ -1921,7 +1921,7 @@ fn stream_message_delta_maps_stop_reasons_to_openai_enum() {
                 detail: crate::ir::IrUsageDetail::default(),
             },
         };
-        let (_, chunk) = OpenAiWriter
+        let (_, chunk) = openai_writer()
             .write_response_event(&ev)
             .expect("message delta emits a chunk");
         assert_eq!(
@@ -1976,7 +1976,7 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let msgs = out["messages"].as_array().expect("messages array");
     // The assistant message: its content array carries ONLY the text block, never the ToolResult.
     let assistant = msgs
@@ -2036,7 +2036,7 @@ fn write_request_thinking_block_dropped_from_message_content() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let content = out["messages"][0]["content"]
         .as_array()
         .expect("content array");
@@ -2190,7 +2190,7 @@ fn stream_error_envelope_includes_null_code_and_param() {
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
     });
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&ev)
         .expect("error emits a chunk");
     assert_eq!(chunk["error"]["message"], serde_json::json!("slow down"));
@@ -2216,10 +2216,10 @@ fn stream_error_shape_matches_write_error_shape() {
         provider_signal: Some("nope".to_string()),
         retry_after: None,
     });
-    let (_, stream_chunk) = OpenAiWriter
+    let (_, stream_chunk) = openai_writer()
         .write_response_event(&ev)
         .expect("error emits a chunk");
-    let non_stream = OpenAiWriter.write_error(401, "auth", "nope");
+    let non_stream = openai_writer().write_error(401, "auth", "nope");
     let mut stream_keys: Vec<&String> = stream_chunk["error"]
         .as_object()
         .expect("stream error object")
@@ -2264,7 +2264,7 @@ fn write_response_falls_back_to_stop_when_stop_reason_none() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     let choice = out["choices"][0].as_object().expect("choice object");
     assert!(
         choice.contains_key("finish_reason"),
@@ -2312,7 +2312,7 @@ fn write_response_maps_finish_reason_enum_values() {
 
             request_echo: None,
         };
-        let out = OpenAiWriter.write_response(&resp);
+        let out = openai_writer().write_response(&resp);
         assert_eq!(
             out["choices"][0]["finish_reason"], want,
             "stop_reason={stop_reason:?}"
@@ -3047,7 +3047,7 @@ fn stream_message_delta_emits_usage_when_counts_nonzero() {
             detail: crate::ir::IrUsageDetail::default(),
         },
     };
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&ev)
         .expect("message delta emits a chunk");
     // finish_reason still maps correctly...
@@ -3076,7 +3076,7 @@ fn stream_message_delta_omits_usage_when_all_counts_zero() {
             detail: crate::ir::IrUsageDetail::default(),
         },
     };
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&ev)
         .expect("message delta emits a chunk");
     assert!(
@@ -3134,7 +3134,7 @@ fn write_request_tools_use_nested_function_shape() {
         "properties": {"city": {"type": "string"}}
     });
     let req = req_with_tool(schema.clone(), Some("Look up the weather"));
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let tool = &out["tools"][0];
     // Native Chat Completions shape: {"type":"function","function":{name,description,parameters}}.
     assert_eq!(tool["type"], serde_json::json!("function")); // golden wire-contract literal (kept bare on purpose)
@@ -3161,7 +3161,7 @@ fn write_request_tool_round_trips_through_read_openai_tool() {
     // The writer's nested output must be readable by the reader (writer is the reader's inverse).
     let schema = serde_json::json!({"type": "object"});
     let req = req_with_tool(schema.clone(), Some("desc"));
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let ir = read_openai_tool(&out["tools"][0]).expect("nested tool parses");
     assert_eq!(ir.name, "get_weather");
     assert_eq!(ir.description.as_deref(), Some("desc"));
@@ -3171,7 +3171,7 @@ fn write_request_tool_round_trips_through_read_openai_tool() {
 #[test]
 fn write_request_tool_without_description_omits_it_inside_function() {
     let req = req_with_tool(serde_json::json!({"type": "object"}), None);
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let func = &out["tools"][0]["function"];
     assert!(func.get("description").is_none());
     // parameters always present (defaults to {} when schema is null) inside `function`.
@@ -3181,7 +3181,7 @@ fn write_request_tool_without_description_omits_it_inside_function() {
 #[test]
 fn write_request_tool_null_schema_defaults_to_empty_object_in_function() {
     let req = req_with_tool(serde_json::Value::Null, None);
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     assert_eq!(
         out["tools"][0]["function"]["parameters"],
         serde_json::json!({})
@@ -3204,7 +3204,7 @@ fn write_error_overloaded_maps_to_server_error() {
         "network",
         "5xx",
     ] {
-        let v = OpenAiWriter.write_error(503, kind, "Service overloaded");
+        let v = openai_writer().write_error(503, kind, "Service overloaded");
         assert_eq!(
             v["error"]["type"],
             serde_json::json!("server_error"), // golden wire-contract literal (kept bare on purpose)
@@ -3220,7 +3220,7 @@ fn write_error_overloaded_maps_to_server_error() {
 fn write_error_insufficient_quota_keeps_type_and_sets_code() {
     // The over-budget governance path passes "insufficient_quota"; real OpenAI sets BOTH the type
     // and the code to that value.
-    let v = OpenAiWriter.write_error(429, ERR_TYPE_INSUFFICIENT_QUOTA, "quota exceeded");
+    let v = openai_writer().write_error(429, ERR_TYPE_INSUFFICIENT_QUOTA, "quota exceeded");
     assert_eq!(v["error"]["type"], serde_json::json!("insufficient_quota")); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(v["error"]["code"], serde_json::json!("insufficient_quota"));
     // golden wire-contract literal (kept bare on purpose)
@@ -3307,7 +3307,7 @@ fn write_response_safety_round_trips_to_content_filter() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     assert_eq!(
         out["choices"][0]["finish_reason"],
         serde_json::json!("content_filter")
@@ -3327,7 +3327,7 @@ fn stream_message_delta_safety_round_trips_to_content_filter() {
             detail: crate::ir::IrUsageDetail::default(),
         },
     };
-    let (_, chunk) = OpenAiWriter
+    let (_, chunk) = openai_writer()
         .write_response_event(&ev)
         .expect("message delta emits a chunk");
     assert_eq!(
@@ -3525,7 +3525,7 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         response_format: None,
         extra: serde_json::Map::new(),
     };
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     let args = &out["messages"][0]["tool_calls"][0]["function"]["arguments"];
     assert_eq!(
         args,
@@ -3563,7 +3563,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
     assert_eq!(
         args,
@@ -3817,7 +3817,7 @@ fn test_openai_tool_choice_required_roundtrips() {
     assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Required));
     // It must NOT linger in `extra` (that would double-emit and not survive the seam).
     assert!(!ir.extra.contains_key("tool_choice"));
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["tool_choice"], serde_json::json!("required"));
 }
 
@@ -3836,7 +3836,7 @@ fn test_openai_tool_choice_specific_function() {
             name: "get_weather".to_string()
         })
     );
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(
         out["tool_choice"],
         serde_json::json!({"type": "function", "function": {"name": "get_weather"}}) // golden wire-contract literal (kept bare on purpose)
@@ -3851,7 +3851,7 @@ fn test_openai_tool_choice_absent_is_none() {
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.tool_choice, None);
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert!(
         out.get("tool_choice").is_none(),
         "no tool_choice should be emitted when the caller omitted it"
@@ -4153,7 +4153,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
         Some(1),
         "n>1 must clamp to 1 on the cross-protocol seam"
     );
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(
         out["n"],
         serde_json::json!(1),
@@ -4189,7 +4189,7 @@ fn test_openai_tool_choice_auto_roundtrips() {
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::Auto));
     assert!(!ir.extra.contains_key("tool_choice"));
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["tool_choice"], serde_json::json!("auto"));
 }
 
@@ -4204,7 +4204,7 @@ fn test_openai_tool_choice_none_roundtrips() {
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.tool_choice, Some(crate::ir::IrToolChoice::None));
     assert!(!ir.extra.contains_key("tool_choice"));
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["tool_choice"], serde_json::json!("none"));
 }
 
@@ -4240,7 +4240,7 @@ fn test_anthropic_to_openai_tool_choice_directions() {
             }],
             ..test_ir_request()
         };
-        let out = OpenAiWriter.write_request(&ir);
+        let out = openai_writer().write_request(&ir);
         assert_eq!(out["tool_choice"], expected, "tool_choice {tc:?}");
     }
 }
@@ -4327,7 +4327,7 @@ fn phase0_sampling_fields_written_from_ir() {
         }),
         ..test_ir_request()
     };
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["frequency_penalty"], serde_json::json!(1.5));
     assert_eq!(out["presence_penalty"], serde_json::json!(-2.0));
     assert_eq!(out["seed"], serde_json::json!(1234));
@@ -4350,7 +4350,7 @@ fn phase0_sampling_fields_written_from_ir() {
 #[test]
 fn phase0_sampling_fields_omitted_when_absent() {
     // None on every sampling field => the writer emits none of the keys.
-    let out = OpenAiWriter.write_request(&test_ir_request());
+    let out = openai_writer().write_request(&test_ir_request());
     let obj = out.as_object().expect("object");
     assert!(obj.get("frequency_penalty").is_none());
     assert!(obj.get("presence_penalty").is_none());
@@ -4372,7 +4372,7 @@ fn phase0_sampling_fields_roundtrip_same_protocol() {
         "response_format": { "type": RESP_FORMAT_JSON_OBJECT }
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["frequency_penalty"], serde_json::json!(0.75));
     assert_eq!(out["presence_penalty"], serde_json::json!(0.1));
     assert_eq!(out["seed"], serde_json::json!(-7));
@@ -4625,7 +4625,7 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     assert_eq!(
         out["usage"]["prompt_tokens"],
         serde_json::json!(100),
@@ -4663,7 +4663,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
 
         request_echo: None,
     };
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
     assert!(
         out["usage"].get("prompt_tokens_details").is_none(),
@@ -4671,7 +4671,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
     );
     // And a Some(0) cache read still emits the details object with 0 (native shape carries it).
     resp.usage.cache_read_input_tokens = Some(0);
-    let out2 = OpenAiWriter.write_response(&resp);
+    let out2 = openai_writer().write_response(&resp);
     assert_eq!(
         out2["usage"]["prompt_tokens_details"]["cached_tokens"],
         serde_json::json!(0)
@@ -4716,7 +4716,7 @@ fn response_format_json_schema_round_trips() {
     assert!(!ir.extra.contains_key("response_format"));
 
     // WRITE re-emits the native nested json_schema shape.
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(
         out["response_format"]["type"],
         serde_json::json!("json_schema")
@@ -4756,7 +4756,7 @@ fn read_response_unknown_finish_reason_maps_to_other_and_degrades_to_stop() {
     });
     let resp = OpenAiReader.read_response(&body).expect("read_response");
     assert_eq!(resp.stop_reason, Some(crate::ir::IrStopReason::Other));
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     assert_eq!(
         out["choices"][0]["finish_reason"],
         serde_json::json!("stop"),
@@ -4771,7 +4771,7 @@ fn read_response_unknown_finish_reason_maps_to_other_and_degrades_to_stop() {
 fn write_request_stop_sequences_array_and_empty_omitted() {
     let mut req = test_ir_request();
     req.stop = vec![".".to_string(), "!".to_string()];
-    let out = OpenAiWriter.write_request(&req);
+    let out = openai_writer().write_request(&req);
     assert_eq!(
         out["stop"],
         serde_json::json!([".", "!"]),
@@ -4781,7 +4781,7 @@ fn write_request_stop_sequences_array_and_empty_omitted() {
     // Empty stop → no `stop` key emitted.
     let mut empty = test_ir_request();
     empty.stop = vec![];
-    let out_empty = OpenAiWriter.write_request(&empty);
+    let out_empty = openai_writer().write_request(&empty);
     assert!(
         out_empty.get("stop").is_none(),
         "an empty stop vec must be omitted, not emitted as []"
@@ -4957,7 +4957,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         request_echo: None,
     };
 
-    let v = OpenAiWriter.write_response(&resp);
+    let v = openai_writer().write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
         .as_array()
         .expect("annotations must be emitted when sources exist");
@@ -5050,7 +5050,7 @@ fn url_annotation_base_accumulates_in_characters() {
 
         request_echo: None,
     };
-    let v = OpenAiWriter.write_response(&resp);
+    let v = openai_writer().write_response(&resp);
     let anns = v["choices"][0]["message"]["annotations"]
         .as_array()
         .expect("annotations must be emitted");
@@ -5120,7 +5120,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
 
         request_echo: None,
     };
-    let v = OpenAiWriter.write_response(&resp);
+    let v = openai_writer().write_response(&resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
 }
 
@@ -5425,7 +5425,7 @@ fn openai_write_drops_thinking_observably() {
 
     let cap = WarnCapture::default();
     let sub = tracing_subscriber::registry().with(cap.clone());
-    let out = tracing::subscriber::with_default(sub, || OpenAiWriter.write_response(&resp));
+    let out = tracing::subscriber::with_default(sub, || openai_writer().write_response(&resp));
 
     // The reasoning text never leaks into the completion content, and the drop warned.
     assert_eq!(out["choices"][0]["message"]["content"], "the answer");
@@ -5573,7 +5573,7 @@ fn plain_ir_response(logprobs: Vec<crate::ir::IrTokenLogprob>) -> crate::ir::IrR
 
 #[test]
 fn write_response_emits_required_null_logprobs_and_refusal_when_backend_carried_none() {
-    let out = OpenAiWriter.write_response(&plain_ir_response(Vec::new()));
+    let out = openai_writer().write_response(&plain_ir_response(Vec::new()));
     let choice = out["choices"][0].as_object().expect("choice is an object");
     assert_eq!(
         choice.get("logprobs"),
@@ -5599,7 +5599,7 @@ fn write_response_passes_carried_logprobs_through_instead_of_null() {
         bytes: None,
         top: vec![],
     }];
-    let out = OpenAiWriter.write_response(&plain_ir_response(carried));
+    let out = openai_writer().write_response(&plain_ir_response(carried));
     assert_eq!(
         out["choices"][0]["logprobs"]["content"][0]["token"],
         serde_json::json!("Hi"),
@@ -5622,7 +5622,7 @@ fn write_response_tool_call_only_turn_still_carries_refusal_and_logprobs() {
         cache_control: None,
     }];
     resp.stop_reason = Some(crate::ir::IrStopReason::ToolUse);
-    let out = OpenAiWriter.write_response(&resp);
+    let out = openai_writer().write_response(&resp);
     let message = &out["choices"][0]["message"];
     assert_eq!(message["content"], serde_json::Value::Null);
     assert_eq!(message["refusal"], serde_json::Value::Null);

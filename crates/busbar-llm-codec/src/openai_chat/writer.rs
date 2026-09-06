@@ -530,7 +530,10 @@ impl ProtocolWriter for OpenAiWriter {
                 // (role) chunk is sufficient for the SDKs, which latch the id/created/model from the
                 // first chunk that supplies them. When the backend supplied none (cross-protocol),
                 // SYNTHESIZE a protocol-correct id/created so a native SDK accepts the stream.
-                let chunk_id = id.clone().unwrap_or_else(synth_completion_id);
+                // The FIRST opening chunk decides this stream's id; a duplicate replays it rather
+                // than announcing the same completion under a second identity.
+                let chunk_id =
+                    self.carried_chunk_id(|| id.clone().unwrap_or_else(synth_completion_id));
                 let chunk_created = created.unwrap_or_else(busbar_substrate_values::store::now);
                 // `model` is REQUIRED and non-nullable in the OpenAI chunk schema. A cross-protocol
                 // backend (e.g. Bedrock) whose IR carries `model: None` must not yield a model-less

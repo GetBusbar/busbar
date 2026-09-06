@@ -473,7 +473,10 @@ impl ProtocolWriter for AnthropicWriter {
                 // `{role,usage}` message_start on every cross-protocol Anthropic-ingress stream —
                 // missing the mandatory `id`/`type`/`content`/`stop_reason`/`stop_sequence` an SDK
                 // requires to construct its streaming Message (a decode failure and a proxy tell).
-                let msg_id = id.clone().unwrap_or_else(synth_message_id);
+                // The FIRST `message_start` decides this stream's id; a duplicate replays it rather
+                // than announcing the same message under a second identity.
+                let msg_id =
+                    self.carried_message_id(|| id.clone().unwrap_or_else(synth_message_id));
                 msg_obj.insert("id".to_string(), serde_json::json!(msg_id));
                 msg_obj.insert("type".to_string(), serde_json::json!("message"));
                 msg_obj.insert("role".to_string(), serde_json::json!(role_str));

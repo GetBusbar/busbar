@@ -450,6 +450,18 @@
         "headers"
       ],
       "rationale": "Spec fidelity: Gemini returns synthesis as JSON with the audio at candidates[0].content.parts[0].inlineData; a mock or a direct passthrough returns the raw audio container instead, so the reader tries JSON and falls back to the bytes. 1.5.5's fallback caught the wrong bodies too: ANY body that parsed as JSON but carried no inlineData -- an error envelope, a SAFETY-blocked candidate, a text-only answer -- was handed back as a 200 whose Content-Type said audio/mpeg and whose bytes were a JSON object. A player could not open it and the upstream's own explanation was unreachable behind an audio label. 1.6.0 refuses a JSON body with no audio part (CodecError::Malformed, which the buffered seam turns into the upstream-shaped error) and leaves the not-JSON-at-all arm exactly as it was, so every real audio container reads byte-identically. This entry matches no cell in today's enumeration -- the llm cells all carry op=chat and no fixture drives the TTS leaf -- and is registered ahead of any speech fixture that would make it visible, the same posture S-8's caveat requires. No status or usage class is waived: the refusal REPLACES a 200 that was already the wrong answer. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-15 a duplicate message start keeps the stream id it opened with",
+      "kind": "improvement",
+      "changelog": "**One stream states one id.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error)$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
     }
   ]
 }

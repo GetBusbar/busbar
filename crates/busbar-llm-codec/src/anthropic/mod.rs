@@ -1973,6 +1973,15 @@ fn write_tool(tool: &crate::ir::IrTool) -> serde_json::Value {
 /// on the request path.
 pub struct AnthropicWriter {
     open_block_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// THIS STREAM'S `message.id`, minted ONCE and replayed on every later `message_start`.
+    ///
+    /// A stream is not guaranteed to carry exactly one `MessageStart`: five of the six readers gate
+    /// it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream frame,
+    /// so a duplicate reaches this writer. Without this cell the second one synthesized a FRESH
+    /// `msg_` id, so one message announced itself twice under two different identities and an SDK
+    /// that latched the first was left holding an id nothing else in the stream ever mentions. A
+    /// native stream's id is fixed for the life of the message, so the first one wins.
+    message_id: std::sync::Mutex<Option<String>>,
 }
 
 /// Value-namespace constructor for [`AnthropicWriter`], mirroring `BedrockWriter`'s and
@@ -1985,6 +1994,7 @@ pub struct AnthropicWriter {
 #[allow(clippy::declare_interior_mutable_const)]
 pub const AnthropicWriter: AnthropicWriter = AnthropicWriter {
     open_block_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    message_id: std::sync::Mutex::new(None),
 };
 
 /// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
@@ -2010,11 +2020,29 @@ impl Clone for AnthropicWriter {
                     .map(|set| set.clone())
                     .unwrap_or_default(),
             ),
+            // A mid-stream clone is still the SAME message, so the id it already announced comes
+            // with it — otherwise the clone would mint a new one on the next `message_start`.
+            message_id: std::sync::Mutex::new(
+                self.message_id.lock().map(|id| id.clone()).unwrap_or(None),
+            ),
         }
     }
 }
 
 impl AnthropicWriter {
+    /// THE STREAM'S `message.id`: the first one wins.
+    ///
+    /// Returns the id already captured for this stream if there is one, otherwise captures and
+    /// returns `mint()`. A duplicate `message_start` therefore re-states the identity the client
+    /// already has instead of announcing a second one. Lock poisoning degrades to the freshly
+    /// minted id rather than panicking on the request path.
+    fn carried_message_id(&self, mint: impl FnOnce() -> String) -> String {
+        match self.message_id.lock() {
+            Ok(mut slot) => slot.get_or_insert_with(mint).clone(),
+            Err(_) => mint(),
+        }
+    }
+
     /// Record that a `content_block_start` was WRITTEN for IR block `index`, so it owes a closing
     /// `content_block_stop`. Returns true when the index was newly opened, false when it was
     /// already open — a redacted-thinking block's start is deferred to its delta, and the boolean

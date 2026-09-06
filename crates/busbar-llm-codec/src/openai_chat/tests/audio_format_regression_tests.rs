@@ -41,7 +41,7 @@ fn input_audio_part(out: &serde_json::Value) -> Option<serde_json::Value> {
 
 #[test]
 fn gemini_audio_mpeg_to_openai_chat_emits_mp3_format() {
-    let out = OpenAiWriter.write_request(&audio_req("audio/mpeg"));
+    let out = openai_writer().write_request(&audio_req("audio/mpeg"));
     let part = input_audio_part(&out).expect("an input_audio part");
     assert_eq!(
         part["input_audio"]["format"], "mp3",
@@ -52,7 +52,7 @@ fn gemini_audio_mpeg_to_openai_chat_emits_mp3_format() {
 #[test]
 fn audio_wav_aliases_map_to_wav_format() {
     for mime in ["audio/wav", "audio/x-wav", "audio/wave"] {
-        let out = OpenAiWriter.write_request(&audio_req(mime));
+        let out = openai_writer().write_request(&audio_req(mime));
         let part = input_audio_part(&out).unwrap_or_else(|| panic!("input_audio for {mime}"));
         assert_eq!(
             part["input_audio"]["format"], "wav",
@@ -68,7 +68,7 @@ fn unsupported_audio_mime_dropped_with_warn_not_invalid_format() {
     let cap = WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     let out = tracing::subscriber::with_default(subscriber, || {
-        OpenAiWriter.write_request(&audio_req("audio/ogg"))
+        openai_writer().write_request(&audio_req("audio/ogg"))
     });
     assert!(
         input_audio_part(&out).is_none(),

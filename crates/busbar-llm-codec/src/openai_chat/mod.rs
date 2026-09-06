@@ -1286,8 +1286,76 @@ fn strip_folded_usage(chunk: &mut serde_json::Value) {
 }
 
 /// OpenAI writer implementation.
-#[derive(Clone)]
-pub struct OpenAiWriter;
+pub struct OpenAiWriter {
+    /// THIS STREAM'S chunk `id`, minted ONCE and replayed on every later opening chunk.
+    ///
+    /// A stream is not guaranteed to carry exactly one `MessageStart`: five of the six readers gate
+    /// it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream frame,
+    /// so an openai-egress stream fed from an Anthropic ingress can see two. Without this cell the
+    /// second synthesized a FRESH `chatcmpl-` id, so one completion announced itself twice under
+    /// two different ids — and the official SDKs latch `id` from the first chunk that supplies it,
+    /// leaving the client correlating against an id the rest of the stream never mentions. A native
+    /// OpenAI stream repeats ONE id on every chunk, so the first one wins.
+    ///
+    /// `Mutex` (not `Cell`) so the writer stays `Sync` as the `ProtocolWriter` trait requires; a
+    /// stream is single-threaded at any instant so contention is nil, and a poisoned lock degrades
+    /// to minting fresh rather than panicking on the request path.
+    chunk_id: std::sync::Mutex<Option<String>>,
+}
+
+/// Value-namespace constructor for [`OpenAiWriter`], mirroring the identically-shaped consts on the
+/// sibling writers (`AnthropicWriter`, `CohereWriter`, `GeminiWriter`, `ResponsesWriter`): a `const`
+/// and a struct may share a name, so every existing site that writes the bare `OpenAiWriter` literal
+/// keeps compiling while the type now carries per-stream state. Each USE inlines a FRESH writer with
+/// an empty id cell, so every `Protocol::openai()` call mints independent per-stream state — exactly
+/// the per-stream scoping a stream-long identity needs. `Mutex::new`/`None` are const, so this is
+/// valid in const context.
+///
+/// `clippy::declare_interior_mutable_const` is suppressed for the same reason it is on the siblings:
+/// the per-use fresh instance is precisely the semantics required, and a `static` would share ONE id
+/// cell across every stream in the process — one stream's id bleeding into another's chunks.
+#[allow(non_upper_case_globals)]
+#[allow(clippy::declare_interior_mutable_const)]
+pub const OpenAiWriter: OpenAiWriter = OpenAiWriter {
+    chunk_id: std::sync::Mutex::new(None),
+};
+
+/// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
+/// suites make — the exact twin of [`crate::anthropic::anthropic_writer`], and needed for the same
+/// reason. Borrowing the const directly (`OpenAiWriter.write_request(…)`) is
+/// `clippy::borrow_interior_mutable_const`: each borrow inlines its own copy of the interior-mutable
+/// cell, which is harmless for a stateless one-shot call but wrong for a STREAM (whose identity must
+/// be decided by one writer). This returns the value so the temporary is explicit, and a test that
+/// drives a sequence of stream events binds one writer to a local instead of calling this per event.
+#[cfg(test)]
+pub(crate) fn openai_writer() -> OpenAiWriter {
+    OpenAiWriter
+}
+
+impl Clone for OpenAiWriter {
+    fn clone(&self) -> Self {
+        // A mid-stream `Protocol::clone` is still the SAME completion, so the id it already
+        // announced comes with it; a poisoned lock degrades to an empty cell rather than panicking.
+        OpenAiWriter {
+            chunk_id: std::sync::Mutex::new(
+                self.chunk_id.lock().map(|id| id.clone()).unwrap_or(None),
+            ),
+        }
+    }
+}
+
+impl OpenAiWriter {
+    /// THE STREAM'S chunk `id`: the first one wins. Returns the id already captured for this stream
+    /// if there is one, otherwise captures and returns `mint()`, so a duplicate opening chunk
+    /// re-states the identity the client already latched. Lock poisoning degrades to the freshly
+    /// minted id rather than panicking on the request path.
+    fn carried_chunk_id(&self, mint: impl FnOnce() -> String) -> String {
+        match self.chunk_id.lock() {
+            Ok(mut slot) => slot.get_or_insert_with(mint).clone(),
+            Err(_) => mint(),
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

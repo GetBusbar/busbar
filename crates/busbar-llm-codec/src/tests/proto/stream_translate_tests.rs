@@ -1407,7 +1407,7 @@ fn redacted_reasoning_drops_on_writers_without_a_native_form() {
     let (gw, rw, cw) = (GeminiWriter, ResponsesWriter, CohereWriter);
     let gemini = gw.write_response(&ir).to_string();
     let responses = rw.write_response(&ir).to_string();
-    let openai = OpenAiWriter.write_response(&ir).to_string();
+    let openai = openai_writer().write_response(&ir).to_string();
     let cohere = cw.write_response(&ir).to_string();
     for (name, wire) in [
         ("gemini", &gemini),
@@ -3944,7 +3944,7 @@ fn test_cross_protocol_anthropic_to_openai() {
     let ir_resp = AnthropicReader
         .read_response(&anthropic_data)
         .expect("Anthropic read");
-    let openai_json = OpenAiWriter.write_response(&ir_resp);
+    let openai_json = openai_writer().write_response(&ir_resp);
 
     // Assert OpenAI-shaped output
     assert_eq!(

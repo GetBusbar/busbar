@@ -3842,13 +3842,14 @@ fn test_terminal_id_matches_forwarded_created_id() {
     );
 }
 
-/// A fresh stream's `response.created` REPLACES the
-/// carried id, so a reused/cloned writer never leaks the previous stream's id onto a new
-/// stream's terminal event. (`reset_sequence_number` clears the cell; `MessageStart` sets it.)
+/// A stream's id is scoped to ONE writer instance, and a second `MessageStart` on that instance is
+/// a DUPLICATE rather than a new stream — the same fact the `started` latch already uses to keep
+/// `sequence_number` from rewinding. So the first id holds for the whole stream, and a genuinely
+/// new stream (a fresh writer, which is what each use of the value-namespace const inlines) takes
+/// its own id with nothing leaked from the last one.
 #[test]
 fn test_carried_id_resets_per_stream() {
     let writer = ResponsesWriter;
-    // Stream A.
     let (_, a_created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
             role: crate::ir::IrRole::Assistant,
@@ -3859,8 +3860,8 @@ fn test_carried_id_resets_per_stream() {
         })
         .expect("emit");
     assert_eq!(a_created["response"]["id"].as_str(), Some("resp_A"));
-    // Stream B begins on the same writer instance.
-    let (_, b_created) = writer
+    // A duplicate opening event on the SAME instance, naming a different id.
+    let (_, dup_created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
             role: crate::ir::IrRole::Assistant,
             usage: None,
@@ -3869,8 +3870,12 @@ fn test_carried_id_resets_per_stream() {
             model: None,
         })
         .expect("emit");
-    assert_eq!(b_created["response"]["id"].as_str(), Some("resp_B"));
-    let (_, b_completed) = writer
+    assert_eq!(
+        dup_created["response"]["id"].as_str(),
+        Some("resp_A"),
+        "one stream states one id; the duplicate must not re-mint it"
+    );
+    let (_, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
@@ -3878,9 +3883,26 @@ fn test_carried_id_resets_per_stream() {
         })
         .expect("emit");
     assert_eq!(
-        b_completed["response"]["id"].as_str(),
+        completed["response"]["id"].as_str(),
+        Some("resp_A"),
+        "the terminal event replays the id the stream opened with"
+    );
+
+    // A genuinely NEW stream is a NEW writer, and carries nothing from the last one.
+    let next = ResponsesWriter;
+    let (_, b_created) = next
+        .write_response_event(&IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: Some("resp_B".to_string()),
+            created: None,
+            model: None,
+        })
+        .expect("emit");
+    assert_eq!(
+        b_created["response"]["id"].as_str(),
         Some("resp_B"),
-        "stream B's terminal id must be B's, not A's leaked id"
+        "a fresh stream's id is its own, not the previous stream's leaked id"
     );
 }
 
@@ -6524,7 +6546,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     assert_eq!(ir.tools[0].name, "get_weather");
 
     // The OpenAI-chat (non-Responses) writer now emits NO malformed empty-name function tool.
-    let out = super::super::openai_chat::OpenAiWriter.write_request(&ir);
+    let out = super::super::openai_chat::openai_writer().write_request(&ir);
     let tools = out["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 1, "only the function tool is written: {out}");
     for t in tools {

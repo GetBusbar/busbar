@@ -150,6 +150,15 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `response.output_item.done` ever followed and the item was missing from the terminal `output[]`
   as well. The frame and the open are now decided together, as the text and reasoning items always
   did. A stream within the bound is unchanged. See [Spec fidelity](#spec-fidelity).
+- **One stream states one id.** A stream is not guaranteed to carry exactly one opening event:
+  five of the six readers gate it, but the Anthropic reader emits one per upstream `message_start`
+  frame, so any egress fed from an Anthropic ingress can see two. 1.5.5 stamped the second with a
+  freshly synthesized id, so a single message announced itself twice under two different identities
+  — and the official SDKs latch the id from the first frame that supplies it, leaving the client
+  correlating against an id nothing else in the stream mentions. The Anthropic, Chat Completions,
+  Gemini, Cohere and Responses writers now all keep the id their stream opened with; the Responses
+  writer's terminal events already replayed it, and now its duplicate `response.created` does too.
+  A stream with one opening event is unchanged. See [Spec fidelity](#spec-fidelity).
 - **A Gemini speech response that carries no audio is no longer served as an MP3.** Gemini returns
   synthesis as JSON with the audio inline; the mock and a direct passthrough return the raw
   container instead, so Busbar tries JSON and falls back to the bytes. 1.5.5's fallback also caught

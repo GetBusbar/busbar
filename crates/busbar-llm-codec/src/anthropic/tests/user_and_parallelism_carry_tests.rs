@@ -1,7 +1,7 @@
 //! The two OpenAI<->Anthropic analog carries: `user` <-> `metadata.user_id` and
 //! `parallel_tool_calls` <-> `!tool_choice.disable_parallel_tool_use`. Same switch, different
 //! spelling/location — these must CROSS the seam instead of dying in `extra`.
-use super::super::openai_chat::{OpenAiReader, OpenAiWriter};
+use super::super::openai_chat::{openai_writer, OpenAiReader};
 use super::super::proto_codec::{ProtocolReader, ProtocolWriter};
 use super::{anthropic_writer, AnthropicReader};
 
@@ -56,7 +56,7 @@ fn anthropic_user_and_parallel_carry_to_openai() {
     assert_eq!(ir.user.as_deref(), Some("end-user-7"));
     assert_eq!(ir.parallel_tool_calls, Some(false));
 
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(out["user"], "end-user-7");
     assert_eq!(out["parallel_tool_calls"], false);
 }
@@ -73,7 +73,7 @@ fn parallel_tool_calls_omitted_on_openai_egress_without_tools() {
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
     assert_eq!(ir.parallel_tool_calls, Some(false));
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert!(
         out.get("parallel_tool_calls").is_none(),
         "must not emit parallel_tool_calls without tools: {out}"
@@ -101,7 +101,7 @@ fn absence_gains_nothing() {
             "messages": [{"role": "user", "content": "hi"}]
         }))
         .expect("parses");
-    let out2 = OpenAiWriter.write_request(&ir2);
+    let out2 = openai_writer().write_request(&ir2);
     assert!(out2.get("user").is_none());
     assert!(out2.get("parallel_tool_calls").is_none());
 }

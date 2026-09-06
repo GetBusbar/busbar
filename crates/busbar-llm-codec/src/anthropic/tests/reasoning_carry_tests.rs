@@ -78,7 +78,7 @@ fn budget_bucketizes_to_effort_words() {
         "thinking": {"type": "enabled", "budget_tokens": 6000}
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = super::super::openai_chat::OpenAiWriter.write_request(&ir);
+    let out = super::super::openai_chat::openai_writer().write_request(&ir);
     // 6000 sits between low (4096) and medium (8192) -> "low" (largest entry reached).
     assert_eq!(out["reasoning_effort"], "low");
 }
@@ -273,7 +273,7 @@ fn small_budget_maps_to_low_not_minimal_on_openai() {
         "thinking": {"type": "enabled", "budget_tokens": 1500}  // below low (4096)
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = super::super::openai_chat::OpenAiWriter.write_request(&ir);
+    let out = super::super::openai_chat::openai_writer().write_request(&ir);
     assert_eq!(
         out["reasoning_effort"], "low",
         "must not emit o-series-invalid 'minimal'"
