@@ -5,14 +5,16 @@
 
 mod common;
 
-use busbar_caps::{Canary, HoldCellState, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey};
+use busbar_caps::{
+    Canary, HoldCellState, MeterClassId, OriginKind, PostingFlags, ReasonCode, StepName, UnitKey,
+};
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
 use busbar_kernel::recovery::{
     frame, owed_after, recover_all, truncate_torn_tail, voids_claim, HoldRecord, KillPoint, Owed,
     TailVerdict, RECORD_HEADER_BYTES,
 };
 use busbar_kernel::slice::{bucket_all, ConcurrencyGauge, Epoch};
-use busbar_kernel::teller::{Evidence, Kernel};
+use busbar_kernel::teller::{Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
 use busbar_kernel::tick::{
     drain_outcome, drain_verdict, fleet_action, session_tick, sweep, sweep_settle, DrainVerdict,
     FleetAction, SessionTick, Sweep, MIN_QUORUM_PEERS, SESSION_IDLE_MAX_MS,
@@ -227,6 +229,83 @@ fn a_lost_task_is_settled_within_one_tick() {
     assert!(
         !slot.leases().take(bucket),
         "a reclaimed slot takes no lease"
+    );
+}
+
+/// THE SWEEP POSTS THE UNIT'S METER, not the kernel's fallback.
+///
+/// `KERNEL_ACCRUAL_CLASS` says of itself that the exit path, the sweep and the recovery path all
+/// post the same figure against the same class. The exit path reads `evidence.class` and falls back
+/// to the constant only when nothing named one; the sweep posted the constant unconditionally, with
+/// the same evidence in its hand. So a unit metering on `audio_seconds` that ended normally posted
+/// against `audio_seconds`, and the same unit whose task disappeared a moment earlier posted the
+/// same money against `nano_units` — one unit, two meters, decided by which of its two ends
+/// happened to run. The constant's own doc promised these agreed.
+///
+/// It was unobservable until `Posted::class()` existed: the posting kept the money and dropped the
+/// meter, so no test could tell the two settlements apart.
+#[test]
+fn a_swept_unit_is_metered_on_the_class_its_evidence_named() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let canary = Canary::new();
+    let gauge = ConcurrencyGauge::new();
+    let audio = MeterClassId::new("audio_seconds");
+
+    let evidence = Evidence {
+        accrued_floor: 42,
+        class: Some(audio),
+        ..Evidence::default()
+    };
+
+    let slot = |key| {
+        table
+            .insert(Enter {
+                key: UnitKey::new(key),
+                origin: OriginKind::Client,
+                session: None,
+                admin_listener: false,
+                provider_of_open_session: false,
+                zero_hold_tick: false,
+                arrival: arrival_hold(&kernel, &TestDoor, principal()),
+                now: 0,
+            })
+            .map_err(|_| ())
+            .expect("under the cap")
+    };
+
+    let swept = slot(1);
+    swept.mark();
+    let verdict = sweep(&swept, StepName::Route, 0, 30_000, true);
+    let end = sweep_settle(&kernel, &swept, verdict, &evidence, &canary, &gauge)
+        .expect("the sweep is the second key to the cell");
+    let posted = end.posted().expect("the sweep settles");
+    assert_eq!(
+        posted.class(),
+        Some(audio),
+        "the sweep posted against its own fallback while the evidence named a class"
+    );
+
+    // And a unit whose evidence names nothing still lands on the kernel's own class, which is what
+    // the fallback is for.
+    let plain = slot(2);
+    plain.mark();
+    let verdict = sweep(&plain, StepName::Route, 0, 30_000, true);
+    let end = sweep_settle(
+        &kernel,
+        &plain,
+        verdict,
+        &Evidence {
+            accrued_floor: 42,
+            ..Evidence::default()
+        },
+        &canary,
+        &gauge,
+    )
+    .expect("the sweep is the second key to the cell");
+    assert_eq!(
+        end.posted().expect("the sweep settles").class(),
+        Some(KERNEL_ACCRUAL_CLASS)
     );
 }
 
