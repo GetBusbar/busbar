@@ -32,6 +32,8 @@
 #       non-negative status -> record.sh cannot write a PASS row over a harness failure
 #   (x) no script driver steps a wall clock into effects (effects.script rates every such key
 #       MONEY, so an epoch second there is a permanent divergence about nothing)
+#   (y) every golden PASS id is named in owed-baseline.txt -- replay.sh only WARNS about an owed id
+#       missing from the baseline, so such a cell can stop being owed later with no red row
 #   (r) diff-cells.py --strict --id-filter used directly as a subset gate (land.sh's shape):
 #       a filter that selects a diverging cell exits 1, and a filter that selects NOTHING also
 #       exits 1 — a subset gate that compared zero cells has proven nothing
@@ -409,5 +411,19 @@ done
   && say PASS "no script driver steps a wall clock straight into effects (money-rated by effects.script)" \
   || say FAIL "script driver(s) step a raw wall clock into effects, which effects.script now compares as MONEY on every replay:${clock_in_eff}"
 
+# (y) THE OWED RATCHET MUST COVER EVERY GOLDEN PASS. replay.sh only prints "new coverage" to stderr
+# for an owed id missing from owed-baseline.txt — it is not a red row. So a golden PASS absent from
+# the baseline is a cell that can silently stop being owed later with nothing to catch it: exactly
+# the regression owed-baseline.txt exists to make impossible. (`http.crosscut|413|gemini-path` was
+# such a cell.) Only checked when the real golden is present in the tree.
+GOLD="${here}/golden/1.5.5"
+if [ -s "${GOLD}/ledger.tsv" ] && [ -s "${here}/owed-baseline.txt" ]; then
+  awk -F'\t' '$2=="PASS"{print $1}' "${GOLD}/ledger.tsv" | LC_ALL=C sort -u >"$W/gold-pass.txt"
+  grep -v '^[[:space:]]*$' "${here}/owed-baseline.txt" | LC_ALL=C sort -u >"$W/base.txt"
+  unowed="$(comm -23 "$W/gold-pass.txt" "$W/base.txt" | tr '\n' ' ')"
+  [ -z "$(printf '%s' "$unowed" | tr -d ' ')" ] \
+    && say PASS "every golden PASS id is named in owed-baseline.txt (the ratchet covers all of them)" \
+    || say FAIL "golden PASS id(s) missing from owed-baseline.txt, so they can stop being owed with no red row: ${unowed}"
+fi
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
