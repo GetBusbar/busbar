@@ -132,16 +132,26 @@ pub fn format_amz_time(epoch_secs: u64) -> (String, String) {
     )
 }
 
-/// Canonicalize a (non-quoted) signed-header value per AWS SigV4: trim leading/trailing ASCII
-/// spaces (0x20) and collapse each run of sequential ASCII spaces to a single space. ONLY the ASCII
-/// space character is treated as whitespace — tabs, NBSP (U+00A0), newlines, and every other Unicode
-/// whitespace codepoint are preserved verbatim, because AWS does the same. (This is intentionally
-/// NOT `split_whitespace`, which would also fold tabs/NBSP/newlines and break the signature.)
+/// Canonicalize a signed-header value per AWS SigV4: trim leading/trailing ASCII spaces (0x20) and
+/// collapse each run of sequential ASCII spaces to a single space — EXCEPT inside a quoted string,
+/// whose spaces are significant and pass through verbatim. ONLY the ASCII space character is treated
+/// as whitespace — tabs, NBSP (U+00A0), newlines, and every other Unicode whitespace codepoint are
+/// preserved verbatim, because AWS does the same. (This is intentionally NOT `split_whitespace`,
+/// which would also fold tabs/NBSP/newlines and break the signature.)
+///
+/// The quote state matters because a header whose value carries a quoted string (a `user-agent`
+/// comment, a `content-disposition` filename) is signed by the client with those interior spaces
+/// intact; folding them here produced a canonical value the client never signed, so a correctly
+/// signed request was rejected.
 fn canonicalize_header_value(v: &str) -> String {
     let mut out = String::with_capacity(v.len());
     let mut prev_space = false;
+    let mut in_quotes = false;
     for ch in v.chars() {
-        if ch == ' ' {
+        if ch == '"' {
+            in_quotes = !in_quotes;
+        }
+        if ch == ' ' && !in_quotes {
             // Defer emitting until we know it is not a trailing run; mark that a space is pending.
             prev_space = true;
         } else {
@@ -450,17 +460,33 @@ pub fn verify_inbound_sigv4(
     if !signed.iter().any(|h| h.eq_ignore_ascii_case("host")) {
         return Err(VerifyError::SignedHeadersMismatch);
     }
+    //
+    // A header name may legally appear SEVERAL times in one request. AWS canonicalizes such a name
+    // to ONE entry whose value is every occurrence's value joined with a comma, in the order the
+    // values appear in the request. Taking only the FIRST match reconstructs a different canonical
+    // request than the client signed, so every duplicate-header request failed verification with a
+    // signature mismatch — an auth REJECTION of a correctly signed request. Collect all matches.
     let mut selected: Vec<(String, String)> = Vec::with_capacity(signed.len());
     for name in &signed {
         let lname = name.to_ascii_lowercase();
-        let Some((_, value)) = req
+        let mut values = req
             .headers
             .iter()
-            .find(|(k, _)| k.eq_ignore_ascii_case(&lname))
-        else {
+            .filter(|(k, _)| k.eq_ignore_ascii_case(&lname))
+            .map(|(_, v)| v.as_str())
+            .peekable();
+        if values.peek().is_none() {
             return Err(VerifyError::SignedHeadersMismatch);
-        };
-        selected.push((lname, value.clone()));
+        }
+        // Canonicalize each occurrence BEFORE joining: AWS trims and collapses each value, then
+        // joins. Canonicalizing only the joined string would leave a trailing space of one value and
+        // a leading space of the next stranded around the comma. `sign_v4` canonicalizes again, which
+        // is idempotent and so leaves the joined value untouched.
+        let joined = values
+            .map(canonicalize_header_value)
+            .collect::<Vec<_>>()
+            .join(",");
+        selected.push((lname, joined));
     }
 
     // (4) Recompute via the SHARED signer — same canonicalization, byte-for-byte. `sign_v4` lowercases
