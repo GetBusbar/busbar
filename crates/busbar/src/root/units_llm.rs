@@ -265,22 +265,20 @@ pub struct LlmNode {
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
     durability_token: busbar_caps::DurabilityToken,
-    /// THE CARD THIS NODE PRICES AGAINST, once the composition root has bound one. See [`bind_card`].
-    ///
-    /// The cost unit's own card, and it belongs HERE rather than on the plane. The plane reports what
-    /// a unit consumed; what those quantities are worth is a question about the deployment's rates,
-    /// and the rates are the root's to hold — so a plane that priced its own traffic would be a second
-    /// place a rate lives, and two places a rate lives is two answers to what one request cost.
-    ///
-    /// It is also what carries the FLAT PER-REQUEST FEE onto the books. The card holds the configured
-    /// fee beside the per-token rates, and the cost unit's pricing puts it on the posting as a line of
-    /// its own — so a node that prices through the card cannot post the tokens and forget the fee.
-    ///
-    /// A cell for the same reason the book is one: the node is reached through a `static`, so it
-    /// exists before the boot that reads the configuration has finished.
-    ///
-    /// [`bind_card`]: LlmNode::bind_card
-    card: std::sync::OnceLock<Arc<busbar_unit_cost::RateCard>>,
+    // THE CARD THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
+    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is swappable rather than
+    // bound once, because a rate is a statement about a deployment and a deployment's rates change
+    // while it is running. A cell on the node would have frozen the boot reading: the engine's own
+    // spend projection would reprice on a config apply and this ledger would not, and the identity
+    // that says the two are one money would hold only until the first apply.
+    //
+    // The plane still never sees a rate. What a unit consumed is the plane's report; what those
+    // quantities are worth is read in the root, off the same configured figures the projection
+    // derives from — including the FLAT PER-REQUEST FEE, which the card holds beside the per-token
+    // rates so a node that prices through the card cannot post the tokens and forget the fee.
+    //
+    // Each unit PINS the card it was admitted under (see `answer_with`) and prices its whole life
+    // against that one, so an apply landing mid-body cannot reprice a request halfway through.
     /// The usage record's token, minted from this node's own kernel at construction and lent to the
     /// exit arm for the length of one pricing.
     ///
@@ -312,7 +310,6 @@ impl LlmNode {
             durability_token: kernel.durability_token(),
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
-            card: std::sync::OnceLock::new(),
             kernel,
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where this deployment's admission-to-the-node decision is made and has always
@@ -367,20 +364,6 @@ impl LlmNode {
     /// honest answer for a build with no root ledger in it, not a settlement quietly dropped.
     pub fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
         let _ = self.book.set(book);
-    }
-
-    /// Bind this node's exit arm to the card the process prices against.
-    ///
-    /// Built by the composition root from the SAME configured figures the previous release's usage
-    /// projection derives its spend from — the per-model rates and the flat per-request fee — so the
-    /// two sides of the reconciliation are two readings of one configuration rather than two
-    /// configurations that happen to agree.
-    ///
-    /// Unbound, a report is not priced and nothing is posted. That is the honest answer for a build
-    /// with no card in it: a node that fell back to a card of its own would post figures no operator
-    /// configured, and they would look exactly like figures somebody did.
-    pub fn bind_card(&self, card: Arc<busbar_unit_cost::RateCard>) {
-        let _ = self.card.set(card);
     }
 
     /// Put what the loop posted onto the book, if this node has one.
@@ -473,6 +456,12 @@ impl LlmNode {
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
         // kernel reads it at the exit. See `LlmUnit::meter`.
         let meter = Arc::new(AccrualMeter::new());
+        // THE CARD THIS UNIT IS ADMITTED UNDER, pinned here for the same reason `charged_at` below
+        // is: a live apply may replace the root's card at any instant, and a request that opened
+        // before one is priced on the rates it agreed to. Pinning at admission rather than reading
+        // at drain time is what makes that true even for the accrual that lands after the body has
+        // finished — the figure arrives late, but the price it is charged at was fixed at the door.
+        let card = crate::root::kernel::ROOT_CARD.pin();
         let unit = LlmUnit {
             node: self,
             seats,
@@ -563,7 +552,7 @@ impl LlmNode {
                 // plane that is the record a unit ran and ended and nothing else: the money is in a
                 // cell the response's own body fills when it DRAINS, which has not happened yet. So
                 // the body goes out wrapped, and the figure lands when it arrives.
-                self.attach_late_accrual(response, walk, &principal, arrived)
+                self.attach_late_accrual(response, walk, &principal, arrived, card)
             }
         }
     }
@@ -584,14 +573,15 @@ impl LlmNode {
         walk: Walk,
         principal: &PrincipalId,
         arrived: Arrived,
+        card: Option<Arc<busbar_unit_cost::RateCard>>,
     ) -> Response {
         let Some(book) = self.book.get() else {
             return response;
         };
-        // No card bound is the third: a report nothing can price is a report nothing can post, and
-        // wrapping the body to discover that when it drains would be a wrapper that only ever drops
-        // empty.
-        let Some(card) = self.card.get() else {
+        // No card pinned at admission is the third: a report nothing can price is a report nothing
+        // can post, and wrapping the body to discover that when it drains would be a wrapper that
+        // only ever drops empty.
+        let Some(card) = card else {
             return response;
         };
         let Some(tap) = Walk::tap_of(&response) else {
@@ -599,7 +589,7 @@ impl LlmNode {
         };
         let arm = LateAccrual {
             book: Arc::clone(book),
-            card: Arc::clone(card),
+            card,
             // MINTED FOR THIS ONE POSTING and dropped with it. A token is neither `Clone` nor `Copy`
             // and the node's own is lent by reference for the length of a call, which is exactly what
             // this is not: the posting outlives every call on this path. So the pair is minted where
@@ -1495,32 +1485,13 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     NODE.bind_book(book);
 }
 
-/// Bind the process's one node to the card it prices against, built from the configured rates.
-///
-/// `rates` is the deployment's `rate_card:` as the neutral per-lane raw view, and `fee_cents` is its
-/// flat per-request fee — the SAME two configured figures the previous release's usage projection
-/// derives a row's spend from. Read once at boot, in the composition root, because that is the one
-/// place entitled to hold a configuration; the plane below never sees a rate.
-///
-/// A deployment with no `rate_card:` binds an ABSENT card rather than no card at all, and the
-/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
-/// exactly what the previous release bills for that deployment. Skipping the binding instead would
-/// post nothing for a node that charges a fee.
-pub fn bind_card<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    fee_cents: i64,
-    present: bool,
-) {
-    NODE.bind_card(Arc::new(card_from_config(rates, fee_cents, present)));
-}
-
 /// The configured rates, in the cost unit's own card.
 ///
 /// The version is a constant name rather than a hash of the configuration, and that is a stated
 /// limit rather than an oversight: the postings this card prices are read back at the width the node
 /// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
 /// day the books grow that column, this is the one line that fills it.
-fn card_from_config<'r>(
+pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
     fee_cents: i64,
     present: bool,

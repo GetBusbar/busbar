@@ -106,6 +106,10 @@ busbar-transport-stdio = { path = "../busbar-transport-stdio" }
 # `rustls` config: the root builds the dial-side trust store, and the deployment's trust roots are
 # its own statement rather than a unit's.
 rustls = { workspace = true }
+# The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
+# which is one atomic store against many lock-free readers — the same shape, and the same crate, the
+# engine already swaps its config snapshot with.
+arc-swap = { workspace = true }
 # Behind `root-admin` only. The root-driven admin surface wraps the router the operations are already
 # mounted on and calls it as the tower service it is, so the inner surface answers exactly as it did
 # and no status, header or byte is re-derived on the way out.
