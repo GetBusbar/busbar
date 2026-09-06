@@ -1730,6 +1730,14 @@ pub(crate) async fn rotate_key(
         resource: &resource,
         actor: &actor,
     };
+    // BEFORE the id is carried anywhere. Rotate is the only `{id}` handler that STORES the id
+    // rather than just looking it up: it lands in the audit `resource` (a ring bounded by ENTRY
+    // COUNT, not bytes) and in the `rotate:{id}:{key}` idempotency cache key, whose stale entries
+    // are swept only on the next use of that cache. So an unbounded id here does not merely bloat a
+    // log line, it pins resident admin memory across requests. Guarded like every sibling.
+    if let Some(resp) = reject_overlong_id(who, &id) {
+        return resp;
+    }
     // IDEMPOTENT ROTATE (optional `Idempotency-Key`): rotate is the one other
     // destructive, secret-bearing POST — a network-level retry without this mints TWICE and the
     // first (lost) response's secret is silently dead. Same mechanics as create's idempotent mint
