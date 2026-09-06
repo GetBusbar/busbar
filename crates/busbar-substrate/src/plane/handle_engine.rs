@@ -360,6 +360,16 @@ impl DurableHandleEngine {
         Ok(())
     }
 
+    /// Delete one durable row (no-op with no sink). The COMPENSATION half of `submit`: the row is
+    /// deleted only when the write that was supposed to follow it did not land, so no handle the
+    /// caller was ever told about is reachable from here.
+    fn delete_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        if let Some(store) = self.sink() {
+            store.delete_plane_record(kind, id)?;
+        }
+        Ok(())
+    }
+
     /// Apply one [`Mutation`] to an already-locked `slot`: durable row upsert FIRST, then event append,
     /// then — only after both persist — the in-memory row/meta/position. A durable failure returns via
     /// `?` BEFORE any in-memory field is touched, so the slot is left untouched (the caller retries).
@@ -389,6 +399,15 @@ impl DurableHandleEngine {
     /// (the plane computes the digest); the engine persists row-then-event, runs the retention sweep,
     /// and inserts. The durable writes happen BEFORE the working-set lock is taken, exactly as the
     /// handle is announced accepted only after it is durable. Returns the installed opaque row.
+    ///
+    /// A GENESIS APPEND THAT FAILS TAKES THE ROW BACK WITH IT. The two writes are not one
+    /// transaction, and the caller is told the submit failed either way; what must not survive is
+    /// the row alone. A row with no chain is rehydrated ACTIVE at the next boot — a handle nobody
+    /// ever accepted, holding a working-set slot and answering reads, whose provenance chain starts
+    /// at an event that was never written. So the row is deleted before the failure is returned. If
+    /// the delete fails too there is nothing left to try: it is reported through `report_fail`, the
+    /// same channel a sweep's failed abandon uses, and the append's error is still what the caller
+    /// gets, because that is the failure that happened first.
     pub fn submit<P, A, R>(
         &self,
         now: u64,
@@ -411,8 +430,12 @@ impl DurableHandleEngine {
         // genesis link.
         let pos = match sr.event {
             Some(ev) => {
-                self.append_record(&ev.record)
-                    .map_err(HandleEngineError::Store)?;
+                if let Err(e) = self.append_record(&ev.record) {
+                    if let Err(undo) = self.delete_record(&sr.row_record.kind, &sr.row_record.id) {
+                        report_fail(&sr.id, &undo);
+                    }
+                    return Err(HandleEngineError::Store(e));
+                }
                 ChainPosition {
                     tail_hash: ev.tail_hash,
                     next_seq: genesis.next_seq.saturating_add(1),

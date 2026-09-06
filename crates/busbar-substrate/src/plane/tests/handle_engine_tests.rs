@@ -71,6 +71,9 @@ impl DemoRow {
 struct MemStore {
     rows: Mutex<Vec<PlaneRecord>>,
     events: Mutex<Vec<PlaneRecord>>,
+    /// When set, every append fails -- the durable half of a submit that lands its row and then
+    /// cannot open its chain.
+    append_fails: std::sync::atomic::AtomicBool,
 }
 
 impl PlaneStore for MemStore {
@@ -93,6 +96,9 @@ impl PlaneStore for MemStore {
             .map(|r| r.body.clone()))
     }
     fn append_plane_record(&self, record: &PlaneRecord) -> StoreResult<()> {
+        if self.append_fails.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(busbar_api::StoreError("the append did not land".into()));
+        }
         self.events.lock().unwrap().push(record.clone());
         Ok(())
     }
@@ -132,7 +138,11 @@ impl PlaneStore for MemStore {
         rows.retain(|r| !(r.disposition == PlaneDisposition::Terminal && r.ts < before));
         Ok((before_count - rows.len()) as u64)
     }
-    fn delete_plane_record(&self, _kind: &str, _id: &str) -> StoreResult<()> {
+    fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
+        self.rows
+            .lock()
+            .unwrap()
+            .retain(|r| !(r.kind == kind && r.id == id));
         Ok(())
     }
     fn redeem_plane_token(
@@ -621,4 +631,80 @@ fn scoped_mutate_owner_gates_the_write_with_one_indistinguishable_refusal() {
     assert!(plan_ran.get(), "the owner's plan runs");
     assert_eq!(out.downcast_ref::<DemoRow>().unwrap().cursor, 9);
     assert_eq!(engine.meta("a").unwrap().cursor, 9);
+}
+
+/// A SUBMIT WHOSE CHAIN NEVER OPENED LEAVES NOTHING BEHIND.
+///
+/// The row and the genesis event are two writes, not one transaction. When the second fails the
+/// caller is told the submit failed -- but the row was already durable, and a row with no chain is
+/// rehydrated ACTIVE at the next boot: a handle nobody was ever told about, holding a working-set
+/// slot and answering reads, whose provenance starts at an event that does not exist. The row is
+/// taken back with the failure.
+#[test]
+fn a_submit_whose_genesis_append_fails_leaves_no_durable_row() {
+    let store = Arc::new(MemStore::default());
+    let engine = DurableHandleEngine::new();
+    engine.set_sink(store.clone() as Arc<dyn PlaneStore>);
+    store
+        .append_fails
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    let row = DemoRow {
+        id: "orphan".into(),
+        owner: "alice".into(),
+        updated_at: 1,
+        terminal: false,
+        cursor: 0,
+    };
+    let outcome = engine.submit(
+        1,
+        bounds(),
+        |_pos| {
+            let record = row.record();
+            let meta = row.meta();
+            Ok(SubmitRecord {
+                id: row.id.clone(),
+                row: row.clone().arc(),
+                meta,
+                row_record: record.clone(),
+                event: Some(SealedEvent {
+                    record,
+                    tail_hash: "h-orphan".to_string(),
+                }),
+            })
+        },
+        demo_abandon,
+        no_report,
+    );
+    assert!(
+        matches!(outcome, Err(HandleEngineError::Store(_))),
+        "the caller is told the submit did not land"
+    );
+    assert!(
+        engine.meta("orphan").is_none(),
+        "no working-set slot is taken"
+    );
+    assert!(
+        store.rows.lock().unwrap().is_empty(),
+        "the row was taken back with the failure that followed it"
+    );
+
+    // The proof that matters is the one a restart would give: a boot rehydrate finds nothing to
+    // resume, so the handle nobody accepted never becomes active.
+    let counts = engine
+        .rehydrate(store.as_ref(), "demo", |_store, body| {
+            let Some(row) = DemoRow::from_body(body) else {
+                return Ok(RehydrateOutcome::Unreadable);
+            };
+            let meta = row.meta();
+            Ok(RehydrateOutcome::Active {
+                id: row.id.clone(),
+                pos: ChainPosition::genesis(),
+                row: row.arc(),
+                meta,
+                event_unreadable: 0,
+            })
+        })
+        .expect("rehydrate");
+    assert_eq!(counts.active, 0, "a boot resumes no orphan");
 }
