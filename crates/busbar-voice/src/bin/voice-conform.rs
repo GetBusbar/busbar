@@ -661,6 +661,16 @@ where
             .cloned()
             .unwrap_or_default();
         // Every FROM-side fixture this concept names, in the map's order.
+        //
+        // A FIXTURE THE MAP NAMES AND THE TREE DOES NOT HAVE IS A RIG DEFECT, AND IT USED TO BE
+        // INVISIBLE. `path.exists()` returned `None` into this filter, silently, so a fixture
+        // deleted or renamed just left the concept with fewer candidates — and a concept left with
+        // NONE falls through to the `chosen: None` arm below, which prints a `SUBITEM … PENDING`
+        // line the leg runner does not parse and the ledger never sees. The concept stops being
+        // exercised, the leg keeps every RESULT row it had, and the rig stays green having quietly
+        // dropped a shared-concept assertion. That is precisely the "counts that drift silently"
+        // shape, arriving through a file the map still claims exists.
+        let mut absent: Vec<&str> = Vec::new();
         let present: Vec<(String, Value)> = fixtures
             .iter()
             .filter_map(|fx| {
@@ -670,6 +680,7 @@ where
                 }
                 let path = dir_for(from_d).join(name);
                 if !path.exists() {
+                    absent.push(name);
                     return None;
                 }
                 Some((
@@ -678,6 +689,16 @@ where
                 ))
             })
             .collect();
+        if !absent.is_empty() {
+            fails += 1;
+            println!(
+                "RESULT {slice} FAIL shared:{concept} — the map names {} fixture(s) this tree does \
+                 not have ({}); the concept silently stopped being exercised rather than failing",
+                absent.len(),
+                absent.join(", ")
+            );
+            continue;
+        }
         // pick the first FROM-side fixture that actually decodes
         let mut chosen: Option<(String, Vec<Norm>, Vec<Norm>)> = None;
         for (name, v) in &present {
@@ -2506,7 +2527,10 @@ mod selftest {
     /// pinned here so the catch-all cannot be turned into a default-accept by a later edit.
     #[test]
     fn an_unhandled_asymmetry_id_is_refused() {
-        assert_eq!(asym_drop("something_nobody_wrote_a_handler_for", &[], &[]).0, "FAIL");
+        assert_eq!(
+            asym_drop("something_nobody_wrote_a_handler_for", &[], &[]).0,
+            "FAIL"
+        );
     }
 }
 
