@@ -2,12 +2,12 @@
   "_comment": [
     "Differences from the published 1.5.5 that the OWNER has accepted, each with a rationale and a kind:",
     "  improvement  additive or strictly better; a 1.5.5 client/operator keeps working unchanged",
-    "A matching cell reports as ACCEPTED in its own column \u2014 never as a silent pass \u2014 so a later change",
+    "A matching cell reports as ACCEPTED in its own column — never as a silent pass — so a later change",
     "to the same surface still shows. `cells` are id regexes; `classes` limits the acceptance to those",
     "divergence classes (a status or usage change on an 'improvement' entry is still red).",
     "Zero UNACCEPTED divergences is the ship gate.",
     "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS.",
-    "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) \u2014 the ONLY kind that may accept a `status` or `effects.usage` class",
+    "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) — the ONLY kind that may accept a `status` or `effects.usage` class",
     "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket)."
   ],
   "accepted": [
@@ -37,7 +37,7 @@
       "transform": {
         "candidate": [
           [
-            "^\\[info\\] jemalloc background purge thread unavailable on this target \\((.*?)\\) \u2014 EXPECTED on macOS, which has no background-thread mallctl; busbar's idle-purge fallback keeps RSS returning to idle after a load burst$",
+            "^\\[info\\] jemalloc background purge thread unavailable on this target \\((.*?)\\) — EXPECTED on macOS, which has no background-thread mallctl; busbar's idle-purge fallback keeps RSS returning to idle after a load burst$",
             "[warn] could not enable jemalloc background purge thread (\\1); enabling busbar's idle purge fallback so RSS still returns to idle after a load burst"
           ]
         ]
@@ -144,7 +144,7 @@
         "headers",
         "effects.metrics"
       ],
-      "rationale": "An auth/billing hard-down on a fallback/least-bad/queue hop now trips the lane in every breaker cell and, for busbar's own lane credential, answers with the ingress-native auth-failure envelope \u2014 the same rule the primary hop applies. Previously the degraded hop relayed the upstream 401 body verbatim and recorded nothing, leaving the dead lane Closed.",
+      "rationale": "An auth/billing hard-down on a fallback/least-bad/queue hop now trips the lane in every breaker cell and, for busbar's own lane credential, answers with the ingress-native auth-failure envelope — the same rule the primary hop applies. Previously the degraded hop relayed the upstream 401 body verbatim and recorded nothing, leaving the dead lane Closed.",
       "changelog": "1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native auth-failure envelope and recorded on the breaker"
     },
     {
@@ -288,7 +288,7 @@
         "body",
         "headers"
       ],
-      "rationale": "A request pinned to window M whose charge landed in place on a cell a concurrent admission had already rolled to M+1 now has its flat per-request fee refunded from that same cell. 1.5.5 resolved a charge on `window > cell.window_start` (charge in place on a rolled cell) but a refund on `cell.window_start == window`, so the two halves of one request could land on different cells and a failed straddling request kept its fee for the life of that window -- leaving the derived spend a budget cap reads one fee too high. refund_bucket now mirrors resolve_for_charge exactly (`cell.window_start >= window`): the refund reaches the cell the charge reached. A cell genuinely OLDER than the request's window is still a no-op under both rules. Strictly in the client's favour and only ever reachable on a boundary straddle, which no scripted oracle cell drives -- the recorded billing and limits cells are unchanged. The divergence class it WOULD produce is effects.usage, and this register's own rule reserves that class for a kind=breaking entry naming a CHANGELOG line, so if a cell ever does show it the entry must be promoted by the owner rather than widened here."
+      "rationale": "A request pinned to window M whose charge landed in place on a cell a concurrent admission had already rolled to M+1 now has its flat per-request fee refunded from that same cell. 1.5.5 resolved a charge on `window > cell.window_start` (charge in place on a rolled cell) but a refund on `cell.window_start == window`, so the two halves of one request could land on different cells and a failed straddling request kept its fee for the life of that window -- leaving the derived spend a budget cap reads one fee too high. refund_bucket now mirrors the charge's cell resolution exactly (`cell.window_start >= window`) in BOTH the served governance path and the ported admission unit, so the refund reaches the cell the charge reached and the two crates cannot drift. A cell genuinely OLDER than the request's window is still a no-op under both rules. Strictly in the client's favour and only ever reachable on a boundary straddle, which no scripted oracle cell drives -- the recorded billing and limits cells are unchanged. The divergence class it WOULD produce is effects.usage, and this register's own rule reserves that class for a kind=breaking entry naming a CHANGELOG line, so if a cell ever does show it the entry must be promoted by the owner rather than widened here. Named in the 1.6.0 CHANGELOG under Improvements."
     }
   ]
 }
