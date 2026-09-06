@@ -583,6 +583,42 @@ fn a_handshake_decoration_carries_its_two_bounds_in_the_order_it_declares_them()
     }
 }
 
+/// The journal spelling of an origin is a wire fact: it is what a metering row and an audit entry
+/// carry, so a renamed variant that quietly renamed its string would move rows nobody asked to
+/// move. All eight are pinned, in one table, so adding a ninth is a change to this test too.
+#[test]
+fn every_origin_spells_itself_the_way_the_journal_reads_it() {
+    let k = Kernel::new();
+    let table = [
+        (OriginKind::Client, "client"),
+        (OriginKind::Provider, "provider"),
+        (OriginKind::Tick, "tick"),
+        (OriginKind::Arrival, "arrival"),
+        (OriginKind::Handshake, "handshake"),
+        (OriginKind::Bootstrap, "bootstrap"),
+        (
+            OriginKind::Nested {
+                parent: UnitKey::new(1),
+            },
+            "nested",
+        ),
+        (
+            OriginKind::Delivery {
+                parent: UnitKey::new(2),
+            },
+            "delivery",
+        ),
+    ];
+    assert_eq!(table.len(), 8, "eight places a unit can come from");
+    for (kind, spelling) in table {
+        assert_eq!(kind.as_str(), spelling);
+        // The sealed value spells itself the same way the kind does; the seal decides who may
+        // write one, never what it is called.
+        assert_eq!(Origin::seal(&k.seal, kind).as_str(), spelling);
+        assert_eq!(Origin::seal(&k.seal, kind).kind(), kind);
+    }
+}
+
 #[test]
 fn the_canary_balances_a_clean_run_and_sees_a_missing_settlement() {
     let canary = Canary::new();
