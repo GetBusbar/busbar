@@ -210,6 +210,29 @@ pub fn client_settings(limits: &LimitsResolved) -> ClientSettings {
 /// release's silence.
 const GROUP_BUCKET_PREFIX: &str = "group:";
 
+/// THE TIER MULTIPLIER one configured group contributes to its chain.
+///
+/// It is money. The chain's tier is what the pricing divides every posting on that chain by once,
+/// over the summed pre-tier amount, and it is what the reconciliation identity projects the previous
+/// release's rows through — so a wrong answer here is not a wrong cap, it is a wrong bill, on every
+/// request the group serves, in both books at once.
+///
+/// The answer today is the NEUTRAL multiplier for every group, and that is a fact about the
+/// configuration grammar rather than a placeholder: `GroupCfg` declares a parent, an enabled flag, a
+/// list of limits and a child template, and nothing anywhere in it names a tier. There is no
+/// operator-written figure to read, so the honest projection is ×1 — the one value that charges what
+/// the card says and no more.
+///
+/// It is a function and not a literal at the construction site for two reasons. It is the ONE place
+/// a tier is decided, so the day the grammar grows the field this is the line that reads it and
+/// every chain moves together; and a literal inside a struct expression is not something a test can
+/// aim at, which is how a money figure comes to have no proof of its own. `a_configured_groups_tier_
+/// reaches_the_chain_it_is_charged_on` drives this value out through `group_table` and into a built
+/// chain, so the binding is checked rather than the constant restated.
+fn tier_bp_of(_cfg: &GroupCfg) -> u32 {
+    STANDARD_TIER_BP
+}
+
 /// Resolve the configured `groups:` tree into the table the door walks.
 ///
 /// **Why an empty table is the wrong answer.** The third default this file exists to refuse. A
@@ -332,7 +355,7 @@ pub fn group_table(
                 lease_id: lease_ids.get(name).copied(),
                 enabled: cfg.enabled,
                 concurrent_cap,
-                tier_bp: STANDARD_TIER_BP,
+                tier_bp: tier_bp_of(cfg),
                 buckets,
                 parent: cfg.parent.as_deref().and_then(|p| index_of.get(p).copied()),
             }
@@ -693,6 +716,55 @@ mod tests {
         assert_eq!(resolved.buckets.len(), 1);
         assert_eq!(resolved.buckets[0].bucket_id, "group:team@minute");
         assert_eq!(resolved.buckets[0].requests_cap, Some(40));
+    }
+
+    /// **THE TIER REACHES THE CHAIN IT IS CHARGED ON.** The multiplier every posting on a group's
+    /// traffic is divided by once, followed from the configuration through the table into a built
+    /// chain rather than read back off the constant it came from.
+    ///
+    /// The neutral value is what the grammar supports — no `groups:` entry names a tier — and this
+    /// is where that would stop being true silently. A projection that dropped the field, or that
+    /// resolved a parent's tier onto a child, or that handed the chain the derived default of zero,
+    /// would multiply every bill on that chain by nothing and read as a healthy node with an empty
+    /// ledger. So the value is taken off `BucketChain::tier_bp()` — the accessor the pricing itself
+    /// reads it from — over a chain with a parent on it, and the boot's own one-tier rule is asked
+    /// as well.
+    #[test]
+    fn a_configured_groups_tier_reaches_the_chain_it_is_charged_on() {
+        let (parent_name, parent) = configured(
+            "org",
+            vec![limit(LimitMetric::Budget, 500, Some(LimitWindow::Month))],
+        );
+        let (child_name, mut child) = configured(
+            "team",
+            vec![limit(LimitMetric::Requests, 40, Some(LimitWindow::Minute))],
+        );
+        child.parent = Some(parent_name.clone());
+        let groups = BTreeMap::from([(parent_name, parent), (child_name.clone(), child)]);
+
+        let table = group_table(&groups, &BTreeMap::new());
+        assert_eq!(table.groups().len(), 2);
+        // NOT ZERO, which is what a dropped field or a derived default resolves to and what would
+        // multiply every posting on this chain by nothing.
+        for g in table.groups() {
+            assert_ne!(g.tier_bp, 0, "group `{}` charges at nothing", g.name);
+        }
+
+        let chain = table
+            .chain_for("acct:someone", Some(&child_name))
+            .expect("the child names a group the table has");
+        assert_eq!(chain.groups().len(), 2, "the chain walked to the parent");
+        assert_eq!(
+            chain.tier_bp(),
+            STANDARD_TIER_BP,
+            "the configuration grammar names no tier, so every chain charges at the card's own rates"
+        );
+        // And the boot rule the multiplier exists under: one tier per chain, checked over the whole
+        // table. A projection that gave two groups different tiers would be a boot refusal, so a
+        // table that produced one is a table this root must not build.
+        table
+            .validate_tiers()
+            .expect("one configuration, one tier per chain");
     }
 
     /// One metric written twice for one window keeps the tighter amount, which is the same
