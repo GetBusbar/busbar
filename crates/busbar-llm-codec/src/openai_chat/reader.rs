@@ -748,14 +748,20 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|d| d.get("content"))
             .and_then(|c| c.as_str())
             .or(refusal_delta)
-            // Gate on `!text_block_closed`: once a `tool_calls` chunk closed the text block (step 4),
-            // a later text delta must NOT reopen it — that would emit a duplicate `BlockStart` at the
-            // already-closed index. Drop the out-of-spec resumed text instead (Cohere's discipline).
-            .filter(|_| !state.text_block_closed)
         {
             if state.thinking_block_open {
                 state.thinking_block_open = false;
                 out.push(IrStreamEvent::BlockStop { index: 0 });
+            }
+            // A `tool_calls` chunk (step 4) CLOSES the text block. That is a block boundary, not the
+            // end of the turn: OpenAI models narrate around their tool calls, and text after a tool
+            // call is ordinary output. The reader used to drop every such delta, so the client got
+            // the tool call and nothing the model said afterwards. Resume on a NEW block instead —
+            // clearing the claimed index makes the monotone counter hand out a fresh slot, so the
+            // already-stopped index is still never reopened.
+            if state.text_block_closed {
+                state.text_block_closed = false;
+                state.text_index = None;
             }
             let ti = match state.text_index {
                 Some(i) => i,
