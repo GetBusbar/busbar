@@ -169,6 +169,17 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   about a Gemini response changed, and a turn with no server-side tool use bills exactly as it did.
   See [Spec fidelity](#spec-fidelity) and
   [the recorded discrepancy](docs/design/gemini-usage-metadata-spec-discrepancy.md).
+- **Responses `input_tokens_details.cache_write_tokens` is read, and prices at the cache-write
+  tier.** The pinned OpenAI schema types it "the number of input tokens that were written to the
+  cache" and its own usage arithmetic makes it a slice of the `input_tokens` total
+  (`input_tokens` = `input_cached_tokens` + `input_cache_write_tokens` + `input_uncached_tokens`).
+  Busbar emitted the member but never read it, so a cache-write turn's tokens stayed inside the
+  plain input total, priced at the input tier, and the count vanished on a cross-protocol hop. It
+  now maps to the same additive cache-creation bucket Anthropic's `cache_creation_input_tokens` and
+  Bedrock's `cacheWriteInputTokens` populate, on the buffered path, the streamed terminal and the
+  truncated-body recovery alike. Totals are unchanged; what moves is which tier the tokens are
+  attributed to, and a Responses-backed response reaching a Bedrock client now carries the
+  `cacheWriteInputTokens` member the backend reported. See [Spec fidelity](#spec-fidelity).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).

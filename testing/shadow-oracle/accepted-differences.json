@@ -388,6 +388,17 @@
       "changelog": "1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both the buffered and the streamed path"
     },
     {
+      "id": "F-018 responses cache-write tokens are read",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-06 llm-codec pass-2 remediation",
+      "cells": "^llm\\|[a-z_]+\\|responses\\|request\\|ok(_stream)?$",
+      "classes": [
+        "body"
+      ],
+      "rationale": "The pinned OpenAI schema declares input_tokens_details.cache_write_tokens as 'the number of input tokens that were written to the cache', and its own usage arithmetic makes it a SLICE of the input_tokens total: the organization-usage example reports input_tokens 1000 = input_cached_tokens 400 + input_cache_write_tokens 100 + input_uncached_tokens 500. The Responses writer emitted the member; the reader never read it, so those tokens stayed inside the plain input total, priced at the INPUT tier rather than the cache-write tier, and the count was dropped on every cross-protocol hop. It now maps to the IR's additive cache_creation_input_tokens -- the same field Anthropic's cache_creation_input_tokens and Bedrock's cacheWriteInputTokens populate -- on the buffered path, the streamed terminal and the truncated-body recovery alike. THE MOVEMENT THIS ACCEPTS: the oracle's /v1/responses mock reports input_tokens_details.cache_write_tokens: 0, which the reader now carries as Some(0) rather than None, so a Responses-BACKED response written onto a dialect that emits the bucket when it is present gains that member at zero. Today that is exactly llm|bedrock|responses|request|ok (/usage/cacheWriteInputTokens: null -> 0). TOTALS ARE UNTOUCHED and no ledgered figure moves: the mock's cache-write count is zero, so input_tokens, the billable total and every effects.usage delta are byte-identical -- this entry accepts `body` only. Should a fixture ever report a NON-ZERO cache_write_tokens, the tier reassignment becomes an effects.usage delta and must be re-registered as kind=breaking with its own CHANGELOG line rather than folded in here.",
+      "changelog": "Responses `input_tokens_details.cache_write_tokens` is read, and prices at the cache-write"
+    },
+    {
       "id": "F-014 Bedrock totalTokens counts the cache tokens AWS counts",
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
