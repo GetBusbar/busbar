@@ -727,9 +727,8 @@ fn a_session_whose_lease_runs_dry_is_closed_and_its_next_frame_refused() {
     assert_eq!(end.outcome(), Outcome::Completed);
     assert_eq!(
         end.into_posted().expect("the report fits").settled(),
-        121,
-        "the frame that emptied the lease is charged exactly what it delivered: the 120 emitted \
-         audio tokens plus the one second of audio it took in"
+        120 * 5_000,
+        "the frame that emptied the lease is charged what its card prices what it delivered at"
     );
 
     // And the next frame on that session does not get in.
@@ -1444,13 +1443,16 @@ fn a_text_only_turn_settles_the_text_it_metered() {
     let evidence = unit.evidence(&ctx(1));
     assert_eq!(
         evidence.located,
-        Some(100),
-        "the located figure is every class the turn metered"
+        // 40 input tokens at 2 micro-units and 60 output at 5, in nano-units: the located figure
+        // is every class the turn metered, PRICED — a settlement is in the units a reservation is
+        // in, and a raw token count posted into one is invisible to every cap there is.
+        Some(40 * 2_000 + 60 * 5_000),
+        "the located figure is every class the turn metered, at the card's own rates"
     );
     assert_eq!(
         settle_amount(&Outcome::Completed, &evidence).0,
-        usage.total(),
-        "a completed turn posts what it metered, not what it drew the lease at"
+        40 * 2_000 + 60 * 5_000,
+        "a completed turn posts what it metered PRICED, not what it drew the lease at"
     );
 }
 
@@ -1495,31 +1497,36 @@ fn a_paid_turns_record_names_its_principal() {
     assert!(matches!(refused.subject, Subject::Arrival));
 }
 
-/// THE KERNEL'S OWN FLOOR IS THE AUDIO THAT CAME IN, IN THE UNIT ITS CLASS IS DENOMINATED IN.
+/// THE KERNEL'S OWN FLOOR IS MONEY, in the nano-units a reservation is in.
 ///
-/// The floor is what the one settlement row that reads it posts, so its unit and its label are
-/// money. It counts uplink milliseconds and the class the plane declares for uplink audio is in
-/// seconds: reported verbatim it is a thousand times the duration, and reported under the
-/// emitted-audio token class it is a duration priced at a token rate, in the wrong direction.
+/// The floor is what the one settlement row that reads it posts, so its unit is the settlement's:
+/// what the unit accrued, priced against the node's card. A duration accrued here — the uplink
+/// millisecond count this used to carry — is not a currency amount at all, and a card prices no
+/// such class; the classes that ARE priced are the token ones, and they are what the accrual
+/// carries now. The class label beside the floor still names the inbound side, so the figure and
+/// the label are read the same way they always were.
 #[test]
 fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
     use busbar_kernel::teller::settle_amount;
 
     let node = priced_node(serviceable());
     let kernel = Kernel::new();
-    // Two and a half seconds of uplink audio, and no report from the upstream at all: the shape
-    // that reaches the floor row.
+    // A turn that took audio in and answered in text, and nothing located: the shape that reaches
+    // the floor row. The uplink duration rides along and is priced by nobody — what the card
+    // prices are the token classes.
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
         .charging_through(ungoverned())
         .reporting(TurnUsage {
             audio_ms_in: 2_500,
+            audio_tokens_in: 4,
             ..TurnUsage::default()
         });
     let _ = run(&kernel, &unit);
     let evidence = unit.evidence(&ctx(1));
     assert_eq!(
-        evidence.accrued_floor, 3,
-        "2_500 ms is three seconds of billable audio, not 2_500 of anything"
+        evidence.accrued_floor,
+        4 * 2_000,
+        "the floor is what the unit accrued PRICED, not a duration posted as a currency amount"
     );
     let class = evidence.class.expect("the plane still declares the class");
     assert_ne!(
@@ -1540,7 +1547,7 @@ fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
         located: None,
         ..evidence
     };
-    assert_eq!(settle_amount(&end, &floor_only).0, 3);
+    assert_eq!(settle_amount(&end, &floor_only).0, 4 * 2_000);
 }
 
 /// A STREAM THAT ENDED ON AN ERROR BILLS NOTHING, even with a figure located.
@@ -1572,7 +1579,11 @@ fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
         evidence.terminal_error,
         "the plane sealed an error ending and the evidence says so"
     );
-    assert_eq!(evidence.located, Some(120), "the figure is still located");
+    assert_eq!(
+        evidence.located,
+        Some(120 * 5_000),
+        "the figure is still located, priced at the card's output rate"
+    );
     let end = Outcome::Refused(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded);
     assert_eq!(
         settle_amount(&end, &evidence).0,
@@ -1767,11 +1778,19 @@ fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
     // What the settlement table posts is the WHOLE report — every class the turn metered, which
     // here is 120 emitted audio tokens and the one second of audio the turn took in — not what
     // the kernel's meter counted; the accrual is the floor beside it, and the hold carries both.
-    assert_eq!(posted.settled(), 121, "what the turn metered");
+    // What the settlement table posts is what the destination reported, PRICED — the settlement
+    // is in the nano-units the reservation is in, and a token count posted into it would be a
+    // figure a five-thousandth of the size, inside every reservation there is and therefore
+    // invisible to every cap and every overdraft flag.
+    assert_eq!(
+        posted.settled(),
+        120 * 5_000,
+        "the 120 output tokens the upstream reported, at the card's five micro-units each"
+    );
     assert_eq!(posted.overdraft(), 0, "well inside the reservation");
     assert_eq!(
         posted.released(),
-        TURN_OPENING_TOKENS * 5_000 - 121,
+        TURN_OPENING_TOKENS * 5_000 - 120 * 5_000,
         "and the residual the settlement hands back"
     );
 
@@ -1781,7 +1800,7 @@ fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
         .expect("the memory-buffered journal takes it");
     assert_eq!(
         settled.settlement.released,
-        i128::from(TURN_OPENING_TOKENS * 5_000 - 121)
+        i128::from(TURN_OPENING_TOKENS * 5_000 - 120 * 5_000)
     );
     assert!(settled.overdraft.is_none());
 
@@ -1791,7 +1810,10 @@ fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
         busbar_unit_admission::window::WINDOW_DAY,
         1_700_000_000,
     );
-    assert_eq!(durability.ledger.book().get(&key, window).settled, 121);
+    assert_eq!(
+        durability.ledger.book().get(&key, window).settled,
+        120 * 5_000
+    );
     let replayed = durability
         .journal
         .replay()
@@ -1814,9 +1836,11 @@ fn a_turn_past_its_estimate_grows_the_reservation_out_of_the_offered_headroom() 
     let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
         .charging_through(ungoverned())
         .reporting(TurnUsage {
-            audio_tokens_out: 3,
-            // Far past what the door sized for, and the chain this node runs caps nothing.
-            audio_ms_in: reserved + 12_345,
+            // Three tokens past what the door sized for, which at this card's output rate is
+            // fifteen thousand nano-units past the reservation. The overrun is expressed in
+            // tokens because tokens are what a card prices; the millisecond count the cell used
+            // to overrun with is a duration, and no card prices one.
+            audio_tokens_out: TURN_OPENING_TOKENS + 3,
             ..TurnUsage::default()
         });
     assert_eq!(
@@ -1830,7 +1854,7 @@ fn a_turn_past_its_estimate_grows_the_reservation_out_of_the_offered_headroom() 
     let posted = end.into_posted().expect("the report fits the record");
     assert_eq!(
         posted.reserved(),
-        reserved + 12_345,
+        reserved + 3 * 5_000,
         "the reservation grew to cover the spend"
     );
     assert_eq!(posted.overdraft(), 0, "so nothing had to be carried");
