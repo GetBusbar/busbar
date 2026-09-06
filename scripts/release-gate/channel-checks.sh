@@ -271,7 +271,10 @@ YAML
           > "${WORK}/rendered.yaml" 2>"${WORK}/helm.err"; then
     # The rendered manifests must reference the released image, or the chart renders happily and
     # deploys the wrong thing — the appVersion and the image tag are two different fields.
-    if grep -qE "image: *\"?[^\"]*busbar:${NEWEST}\"?" "${WORK}/rendered.yaml"; then
+    # ANCHORED (version_re, lib.sh). `busbar:${NEWEST}"?` with the quote OPTIONAL matched
+    # `busbar:1.5.20` for NEWEST=1.5.2, so the chart could deploy a different release and this row
+    # would still say it pins the right one.
+    if grep -qE "image: *\"?[^\"]*busbar:$(version_re_after "$NEWEST")" "${WORK}/rendered.yaml"; then
       record "helm:render" PASS "the published chart renders (with a real config) and pins getbusbar/busbar:${NEWEST}${POINTER_NOTE}" ""
     else
       record "helm:render" FAIL "the published chart renders but does not deploy ${NEWEST}" \
@@ -433,7 +436,11 @@ if [ -n "$script_body" ]; then
   if ( cd "$ins" && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_ACTIONS -u CI \
          BUSBAR_INSTALL_DIR="$ins" sh ./install.sh >"${ins}/out.log" 2>&1 ); then
     got="$("${ins}/busbar" --version 2>&1 || true)"
-    if printf '%s' "$got" | grep -q "$NEWEST"; then
+    # ANCHORED (version_re, lib.sh). This was a bare `grep -q "$NEWEST"`, so `busbar 1.5.20` was
+    # accepted as `1.5.2` — the row that proves the DOCUMENTED first command installs the release
+    # under test, passing on a different release. The anchored form was already twenty-eight lines
+    # below, in site:download-page, with the reasoning written out.
+    if printf '%s' "$got" | grep -qE "$(version_re "$NEWEST")"; then
       record "install:e2e" PASS "the live install.sh installed busbar ${NEWEST} with GitHub credentials scrubbed${POINTER_NOTE}" ""
     else
       record "install:e2e" FAIL "the live install.sh installed the wrong version" \

@@ -138,6 +138,29 @@ is_cloudflare_block() {  # is_cloudflare_block <http-code>
   case "$1" in 403|503|000) return 0 ;; *) return 1 ;; esac
 }
 
+# ── Version matching ────────────────────────────────────────────────────────────────────────────
+#
+# ANCHORED ON BOTH SIDES, IN ONE PLACE. `grep -q "1.5.2"` matches "1.5.20", so a gate looking for
+# the release it just cut passes against a page, a chart or a binary advertising a DIFFERENT one —
+# and it hides until the patch number rolls into two digits, i.e. until exactly the release where
+# it matters. The left anchor is equally load-bearing: "21.5.4" contains "1.5.4". `.` is escaped
+# too, or "1.5.2" matches "1X5Y2".
+#
+# site:download-page already got this right and wrote the reasoning down; install:e2e (a bare
+# `grep -q "$NEWEST"` against `busbar --version`) and helm:render (`busbar:${NEWEST}"?`, where the
+# optional quote makes `busbar:1.5.20` a match for 1.5.2) did not, twenty-eight and one-hundred-
+# sixty lines away in the same file. One function, so a third caller cannot get a third answer.
+version_re() {  # version_re <version> -> an ERE matching exactly that version, anchored both sides
+  printf '(^|[^0-9.])v?%s([^0-9.]|$)' "${1//./\\.}"
+}
+
+# For use immediately after a literal left context that already supplies the left boundary
+# (`busbar:`, `appVersion: `, …). Only the RIGHT anchor is added; adding the left one too would
+# require a character between the prefix and the version and match nothing.
+version_re_after() {  # version_re_after <version>
+  printf 'v?%s([^0-9.]|$)' "${1//./\\.}"
+}
+
 # ── Contract ────────────────────────────────────────────────────────────────────────────────────
 # The single source of truth for what a release owes. Read with jq so a malformed contract is a
 # hard error at the first call rather than an empty loop that reports nothing and passes.
