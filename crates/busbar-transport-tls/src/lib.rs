@@ -557,10 +557,19 @@ impl Transport for TlsTransport {
             let server_name = ServerName::try_from(name)
                 .map_err(|_| TransportError::AddressRefused)?
                 .to_owned();
-            let tls_stream = connector
-                .connect(server_name, Box::new(stream) as BoxedIo)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
+            // The same budget `accept` and `upgrade` run under, for the same reason read from the
+            // other end: this handshake is inline too, and an upstream that answers the connect and
+            // then never sends a ServerHello leaves this await with nothing to wait for. It is the
+            // costlier end of the two — the dial happens inside the route step, under the unit's
+            // hold, so an upstream that goes quiet holds an in-flight slot and a concurrency lease
+            // for as long as it likes rather than merely stalling a task of its own.
+            let tls_stream = tokio::time::timeout(
+                self.handshake_timeout,
+                connector.connect(server_name, Box::new(stream) as BoxedIo),
+            )
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|_| TransportError::HandshakeFailed)?;
             Ok(self.insert_client(tls_stream, addr, vec!["tcp", "tls"], local_port))
         })
     }

@@ -193,6 +193,46 @@ async fn a_silent_client_cannot_park_the_listener() {
         .expect("and so does its client half");
 }
 
+/// The same budget, read from the other end: a server that accepts the TCP connection and then
+/// never sends a ServerHello must not be able to park the dial.
+///
+/// `dial` runs its handshake inline exactly as `accept` does, and it runs inside the route step,
+/// under the unit's hold — so an upstream that answers the connect and then goes quiet does not
+/// merely stall one task: it holds an in-flight slot and a concurrency lease for as long as it
+/// likes, and a handful of them shut the door on every other caller. The budget is one number for
+/// both directions, so the egress end gives up on the same terms the ingress end does.
+#[tokio::test]
+async fn a_silent_server_cannot_park_a_dial() {
+    let (_server_cfg, client_cfg) = self_signed();
+    let client =
+        StdArc::new(TlsTransport::new().with_handshake_timeout(Duration::from_millis(300)));
+    client.register_client_config(0, client_cfg);
+
+    // A listener that completes the TCP accept and then says nothing at all — no ServerHello, no
+    // close. The connection stays open, so nothing but the budget can end the dial.
+    let mute = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = mute.local_addr().unwrap().to_string();
+    let parked = tokio::spawn(async move {
+        let (held, _) = mute.accept().await.unwrap();
+        // Hold the accepted stream open and never write a byte.
+        std::future::pending::<()>().await;
+        drop(held);
+    });
+
+    let refused = tokio::time::timeout(
+        Duration::from_secs(5),
+        client.dial(&upstream_dest(&addr), &fixture_key(0)),
+    )
+    .await
+    .expect("the dial answers rather than parking on a server that says nothing");
+    assert_eq!(
+        refused.unwrap_err(),
+        TransportError::Timeout,
+        "a handshake that never started is a timeout, not a handshake failure"
+    );
+    parked.abort();
+}
+
 #[tokio::test]
 async fn byte_exact_round_trip_over_a_real_handshake() {
     let (server, listener, client) = bound_pair().await;
