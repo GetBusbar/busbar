@@ -334,6 +334,7 @@ impl ProductionUnits {
         breaker_policy: crate::root::adapters::BreakerPolicy,
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
+        auth_bindings: auth_bindings::AuthBindings,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     ) -> Self {
@@ -344,6 +345,7 @@ impl ProductionUnits {
             breaker_policy,
             meter_policy,
             scope_policy,
+            auth_bindings,
             #[cfg(feature = "root-admin")]
             admin,
             store,
@@ -365,6 +367,7 @@ impl ProductionUnits {
         breaker_policy: crate::root::adapters::BreakerPolicy,
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
+        auth_bindings: auth_bindings::AuthBindings,
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     ) -> Self {
@@ -381,11 +384,14 @@ impl ProductionUnits {
             ),
             egress: EgressUnit::new(),
             auth: Auth::new(auth_chain),
-            // The unbound posture, which is the one a node has until it is handed a directory:
-            // the cache is real, and the two authorities are absent rather than permissive. A
-            // deployment whose keys are busbar's own binds them through
-            // `ProductionUnits::with_auth_bindings` at boot, where the governance state exists.
-            auth_bindings: auth_bindings::AuthBindings::without_directory(),
+            // AN ARGUMENT, not a default. The unbound posture is a real one — a node that resolves
+            // no busbar-minted keys has no verifier to bind — but it is not a posture a constructor
+            // may CHOOSE on a caller's behalf: bound that way, a revoked credential whose subject is
+            // its own id passes the new-unit gate for the life of the process, and the node looks
+            // exactly like one whose directory said the credential was fine. A caller with no
+            // directory says so with `AuthBindings::without_directory()` and is making that choice
+            // out loud; a caller with one hands it in here, which is where the boot does.
+            auth_bindings,
             trust: Trust,
             arrival_door: AdmissionDoor,
             durability,
@@ -444,7 +450,16 @@ impl ProductionUnits {
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
-        ProductionUnits::admin_only_sharing(dispatch, Arc::new(Mutex::new(durability)), read)
+        ProductionUnits::admin_only_sharing(
+            dispatch,
+            Arc::new(Mutex::new(durability)),
+            read,
+            // THE EXPLICIT CHOICE, and it is the honest one here: an admin-only node built by this
+            // constructor has been handed no directory to resolve keys against, so it says so rather
+            // than inheriting an absence. A boot that HAS one uses `admin_only_sharing` directly and
+            // passes it.
+            auth_bindings::AuthBindings::without_directory(),
+        )
     }
 
     /// The same composition again, over a book the caller already opened.
@@ -464,6 +479,7 @@ impl ProductionUnits {
         dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
         durability: Arc<Mutex<crate::root::durability::Durability>>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+        auth_bindings: auth_bindings::AuthBindings,
     ) -> Self {
         let kernel = new_kernel();
         let mut units = ProductionUnits::new_sharing(
@@ -473,6 +489,7 @@ impl ProductionUnits {
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
+            auth_bindings,
             crate::root::units_admin::AdminBinding::new(dispatch),
             Arc::new(RefusingStore),
         );
@@ -897,6 +914,7 @@ mod tests {
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
+            auth_bindings::AuthBindings::without_directory(),
             #[cfg(feature = "root-admin")]
             crate::root::units_admin::AdminBinding::new(std::sync::Arc::new(
                 crate::root::units_admin::RefusingDispatch,
@@ -959,6 +977,7 @@ mod tests {
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
+            auth_bindings::AuthBindings::without_directory(),
             #[cfg(feature = "root-admin")]
             crate::root::units_admin::AdminBinding::new(Arc::new(
                 crate::root::units_admin::RefusingDispatch,

@@ -3406,6 +3406,43 @@ mod tests {
         assert_eq!(refused, error_answer(403, "forbidden"));
     }
 
+    /// The same refusal, through the CONSTRUCTOR rather than the setter.
+    ///
+    /// The setter above is a test's convenience and was, for a while, the only thing in the tree
+    /// that ever bound a directory — so the composed node, the one a boot builds, carried the
+    /// unbound posture and a revoked credential that is not a signed key served forever. Binding
+    /// through the constructor is what makes the absence impossible to inherit: a caller that has no
+    /// directory has to say so.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_revoked_credential_is_refused_through_the_composed_bindings() {
+        let answer_under = |revoked: bool| {
+            let book = crate::root::durability::node_book(
+                &crate::root::durability::DurabilityConfig::default(),
+                Box::new(busbar_unit_wal::NullShipper::new()),
+            )
+            .expect("a memory-buffered journal cannot fail to open");
+            let units = crate::root::kernel::ProductionUnits::admin_only_sharing(
+                Arc::new(AnsweringDispatch),
+                std::sync::Arc::clone(&book.durability),
+                book.rows as Arc<dyn LegacyRowsRead>,
+                crate::root::auth_bindings::AuthBindings::new(Arc::new(Denylist(revoked))),
+            );
+            AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request())
+        };
+
+        assert_eq!(
+            answer_under(false).status,
+            200,
+            "a credential on nobody's denylist reaches the operation"
+        );
+        assert_eq!(
+            answer_under(true).status,
+            403,
+            "a revoked credential is refused by a node composed the way the boot composes one"
+        );
+    }
+
     /// A binding holding one open unit, with the decode step run so the verb is resolved exactly as
     /// the loop resolves it. Returns the binding and the context every later step reads the unit
     /// through, so a cell drives the real steps rather than a table it filled in by hand.

@@ -1563,6 +1563,23 @@ async fn run(data_workers: usize) {
                 std::sync::Arc::clone(&book.durability),
                 std::sync::Arc::clone(&book.rows)
                     as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+                // THE NODE'S REVOCATION VIEW, bound to the governance state the keys live in. This
+                // is the deployment's own directory and the only one this binary has: revoking a
+                // subject through the administrative surface has to reach the gate that refuses the
+                // next unit, and until this line the gate had nothing behind it — a revoked
+                // credential whose subject IS its own id was refused nowhere and served for the life
+                // of the process. A deployment with governance disabled has no directory to bind and
+                // says so, which is the posture the chain already fails closed on.
+                app_handle.load().governance.as_ref().map_or_else(
+                    root::kernel::auth_bindings::AuthBindings::without_directory,
+                    |gov| {
+                        root::kernel::auth_bindings::AuthBindings::new(std::sync::Arc::new(
+                            root::kernel::auth_bindings::GovernanceDirectory::new(
+                                std::sync::Arc::clone(gov),
+                            ),
+                        ))
+                    },
+                ),
             )
         },
     );
