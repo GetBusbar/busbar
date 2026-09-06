@@ -52,6 +52,89 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     );
 }
 
+/// A MISSPELLED ASK METHOD REFUSES BOOT RATHER THAN REMOVING THE GATE. `elicitation/created` names
+/// no capability a caller can declare, so at dispatch the round is filtered away and the destructive
+/// tool runs with no confirmation at all — the failure mode of a typo must not be "the safety check
+/// is gone". The diagnostic names the path, the bad value and the three legal ones.
+#[test]
+fn an_ask_naming_a_method_outside_the_closed_set_refuses_boot_with_a_diagnostic() {
+    let err = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow:
+    delete_everything:
+      ask_caller:
+        - confirm: { method: "elicitation/created" }
+"#,
+    )
+    .expect_err(
+        "a method outside the closed set is dropped at dispatch, so accepting it at boot means a \
+         one-character typo silently deletes an operator's confirmation gate",
+    );
+    assert!(
+        err.contains("elicitation/created"),
+        "the diagnostic must quote what the operator wrote: {err}"
+    );
+    assert!(
+        err.contains("ask_caller[0].confirm.method"),
+        "and locate it precisely enough to fix without searching: {err}"
+    );
+    assert!(
+        err.contains("elicitation/create")
+            && err.contains("sampling/createMessage")
+            && err.contains("roots/list"),
+        "and name the legal set, read from `callerask::ASK_METHODS` rather than re-spelled: {err}"
+    );
+}
+
+/// The same rule on the task-scoped list and on prompts, because an ask is an ask: three lists that
+/// reach the same dispatch filter cannot have two of them unvalidated.
+#[test]
+fn every_ask_list_is_validated_and_the_three_legal_methods_still_parse() {
+    for field in ["ask_caller", "task_ask_caller"] {
+        let err = parse(&format!(
+            r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: {{ mechanism: cert_spki, key: "sha256/PIN==" }}
+  tools_allow:
+    wipe:
+      task_support: optional
+      {field}:
+        - confirm: {{ method: "roots/lists" }}
+"#
+        ));
+        let err = err.expect_err(&format!(
+            "`{field}` reaches the same dispatch filter as `ask_caller`, so leaving it unvalidated \
+             leaves the same hole"
+        ));
+        assert!(err.contains("roots/lists"), "{field}: {err}");
+    }
+    let cfg = parse(
+        r#"
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  prompts_allow:
+    summarise:
+      template: "hi"
+      ask_caller:
+        - a: { method: "elicitation/create" }
+        - b: { method: "sampling/createMessage" }
+        - c: { method: "roots/list" }
+"#,
+    )
+    .expect("all three legal methods must still parse — the rule refuses typos, not asks");
+    assert_eq!(
+        cfg.servers["filesystem"].prompts_allow["summarise"]
+            .ask_caller
+            .len(),
+        3
+    );
+}
+
 /// THE SECTION VALUE IS THE DEFAULT THE ENTRY OVERRIDES — asserted through the SNAPSHOT dispatch
 /// actually holds, not only through the combine accessor. `filesystem` says nothing, so it inherits
 /// `passthrough`; `archive` says `own`, so it keeps it. Before the combine reached
