@@ -146,13 +146,14 @@ def cmd_run(args):
         with open(args.json, "w") as fh:
             json.dump(rep, fh, indent=2, sort_keys=True)
         sys.stderr.write("wrote %s\n" % args.json)
-    bad = runner.print_human(rep, verbose=args.verbose)
+    runner.print_human(rep, verbose=args.verbose)
     if rep.get("known_deviations"):
         from . import deviations
         deviations.print_summary(rep, sys.stdout)
-    if args.allow_red:
-        return 0
-    return 1 if bad else 0
+    # The verdict comes from `runner.exit_code`, not from `print_human`'s return value, because a
+    # deviation recorded for a test that never ran produces no result row and so no outcome count.
+    # See runner.exit_code.
+    return runner.exit_code(rep, allow_red=args.allow_red)
 
 
 def _preflight(target):
