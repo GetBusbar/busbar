@@ -366,6 +366,41 @@ pub const fn group_lease(group: &'static str) -> BucketId {
     bucket_all(group)
 }
 
+/// THE DOOR'S OWN COUNT OF THIS UNIT, held for as long as the unit is running.
+///
+/// The door's `concurrent` cap is enforced on the door's own counters, and the thing that keeps one
+/// of them raised is the value its yes handed back. Held for the length of the decision, the cap is
+/// a comparison against a number that has already been given away: every unit is admitted, however
+/// many are in flight. Held for the length of the UNIT, it is a cap.
+///
+/// Opaque because the kernel has no business knowing what a door counts on. What it knows is the
+/// one rule that makes the count right — a count taken at the yes goes back at the unit's end,
+/// whatever the end was — and that rule is expressed here as ownership: the grant lives on the
+/// unit's slot beside its leases, and giving it back is dropping it. The kernel never reads it,
+/// never copies it and never hands it to anything but the slot.
+///
+/// `Send + Sync` because the slot outlives the task and the sweep is on another one; `'static`
+/// because a slot's lifetime is not the frame that admitted it.
+pub struct DoorGrant(Box<dyn std::any::Any + Send + Sync>);
+
+impl DoorGrant {
+    /// Carry a door's grant, whatever it is.
+    pub fn new<G: std::any::Any + Send + Sync>(grant: G) -> Self {
+        DoorGrant(Box::new(grant))
+    }
+}
+
+impl std::fmt::Debug for DoorGrant {
+    /// The type it carries, and nothing of what is inside it. A grant is a door's own counter and
+    /// the kernel neither knows nor prints what a door counts; what an operator reading a slot
+    /// needs is which door is holding it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("DoorGrant")
+            .field(&std::any::Any::type_id(&*self.0))
+            .finish()
+    }
+}
+
 /// Where the door names the capped groups its yes counted, for the slot to record.
 ///
 /// The door decides and the kernel counts, and this is the whole of the seam between the two. It is
@@ -380,6 +415,7 @@ pub const fn group_lease(group: &'static str) -> BucketId {
 #[derive(Debug, Default)]
 pub struct GroupLeaseSlip {
     named: std::sync::Mutex<Vec<BucketId>>,
+    grant: std::sync::Mutex<Option<DoorGrant>>,
 }
 
 impl GroupLeaseSlip {
@@ -399,6 +435,22 @@ impl GroupLeaseSlip {
     /// Take what the door named, emptying the slip. Called once, by the draw.
     pub fn taken(&self) -> Vec<BucketId> {
         std::mem::take(&mut *self.named.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Hand over the count the door's yes is holding, for the slot to keep.
+    ///
+    /// Written on the same line as the names and for the same reason: the door is the only thing
+    /// that has it, and the loop is the only thing that can put it somewhere both of the unit's
+    /// ends can reach. A slip that is dropped without ever being read gives the count straight
+    /// back, which is what a refused or exempt unit needs and is exactly what happened before
+    /// anything held it at all.
+    pub fn holding(&self, grant: DoorGrant) {
+        *self.grant.lock().unwrap_or_else(|e| e.into_inner()) = Some(grant);
+    }
+
+    /// Take what the door is holding, emptying the slip. Called once, by the draw.
+    pub fn grant_taken(&self) -> Option<DoorGrant> {
+        self.grant.lock().unwrap_or_else(|e| e.into_inner()).take()
     }
 }
 
@@ -423,6 +475,7 @@ pub fn takes_lease(origin: OriginKind, kernel_verb_only: bool) -> bool {
 #[must_use = "leases have to be released on the exit path, whatever the end"]
 pub struct LeaseSet {
     held: Vec<BucketId>,
+    grant: Option<DoorGrant>,
 }
 
 impl LeaseSet {
@@ -446,12 +499,31 @@ impl LeaseSet {
         self.held.push(bucket);
     }
 
+    /// Keep the door's own count of this unit alongside the kernel's.
+    ///
+    /// One per unit: the door answers once, so a second grant here would be a second yes, and the
+    /// first is given back rather than kept beside it.
+    pub fn hold_grant(&mut self, grant: DoorGrant) {
+        self.grant = Some(grant);
+    }
+
+    /// Whether the door's count is still being held here.
+    pub fn holds_grant(&self) -> bool {
+        self.grant.is_some()
+    }
+
     /// Give every lease back, and say how many were given.
+    ///
+    /// The door's count goes back in the same breath, and by the same rule: this runs on the one
+    /// path every unit leaves through, so the count the door took at the yes is released at the
+    /// unit's end whatever the end was — a completion, a refusal after the door, a caller who went
+    /// away, or the sweep on a task that is not there any more.
     pub fn release_all(&mut self, gauge: &ConcurrencyGauge) -> usize {
         let count = self.held.len();
         for bucket in self.held.drain(..) {
             gauge.release(&bucket);
         }
+        self.grant = None;
         count
     }
 }
@@ -493,6 +565,31 @@ impl LeaseCell {
             }
             None => false,
         }
+    }
+
+    /// Keep the door's own count of this unit here, for the life of the unit.
+    ///
+    /// True when the slot took it. False is a cell whose leases have already gone back — a unit
+    /// whose other end ran while the door was still answering — and the count is released here
+    /// instead of being parked on a slot nothing will ever empty. Either way the door's counter
+    /// comes back down exactly once, which is the only property the cap depends on.
+    pub fn hold_grant(&self, grant: DoorGrant) -> bool {
+        match self.held.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            Some(set) => {
+                set.hold_grant(grant);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether the door's count of this unit is still held here.
+    pub fn holds_grant(&self) -> bool {
+        self.held
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+            .is_some_and(LeaseSet::holds_grant)
     }
 
     /// How many leases the unit is holding.

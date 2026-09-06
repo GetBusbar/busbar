@@ -852,6 +852,122 @@ fn a_unit_the_door_refused_draws_no_lease() {
     );
 }
 
+/// A GROUP CAPPED AT ONE ADMITS ONE UNIT AND REFUSES THE NEXT WHILE IT FLIES.
+///
+/// The door's `concurrent` cap is a count it raises when it says yes and releases when the value
+/// that yes handed back is dropped. Dropped at the end of the door's own step, the cap compares
+/// every arrival against zero: N units in flight, N admissions, and a cap that has never refused
+/// anything in its life. This is the cell that says otherwise — and it has to be read WHILE the
+/// first unit is in flight, because that is the only moment the two behaviours differ.
+///
+/// Then the first unit ends, and the group admits again. A cap that refuses for ever is not a cap
+/// either.
+#[test]
+fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
+    let kernel = Kernel::new();
+    let group = common::CappedGroup::at(1);
+    let units = TestUnits::behind(&group);
+    let dropped = AtomicBool::new(false);
+    let route = NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let table = InFlight::new(4, 0);
+    let first = table
+        .insert(client(51))
+        .map_err(|_| ())
+        .expect("under the table's cap");
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let flying = ctx(51);
+
+    {
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &flying,
+            Run {
+                cell: first.cell(),
+                parent: None,
+                leases: first.leases(),
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(group.live(), 1, "the group is running the unit it admitted");
+        assert!(
+            first.leases().holds_grant(),
+            "and the count that says so is the slot's, not the door step's frame"
+        );
+
+        // THE SECOND UNIT, while the first is still in the air. The refusal is the door's own, at
+        // the door's own status, on a counter the first unit is still holding.
+        let second_units = TestUnits::behind(&group);
+        let second_cell = cell(&kernel);
+        let second_leases = LeaseCell::new();
+        let ended = run_unit(
+            &kernel,
+            &second_units,
+            &ctx(52),
+            Run {
+                cell: &second_cell,
+                parent: None,
+                leases: &second_leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+        );
+        assert!(matches!(ended, Ended::Settled { .. }));
+        assert_eq!(
+            second_units.doors(),
+            (true, false),
+            "it left through the refused audit door: it never passed the door at all"
+        );
+        assert_eq!(
+            group.live(),
+            1,
+            "and a refusal counted nothing, so the group still reads the one unit it is running"
+        );
+    }
+
+    assert_eq!(
+        group.live(),
+        0,
+        "the first unit ended, so the count it held is back"
+    );
+    assert!(first.leases().holds_grant().not());
+
+    // AND THE GROUP ADMITS AGAIN.
+    let third_units = TestUnits::behind(&group);
+    let third_cell = cell(&kernel);
+    let third_leases = LeaseCell::new();
+    let ended = run_unit(
+        &kernel,
+        &third_units,
+        &ctx(53),
+        Run {
+            cell: &third_cell,
+            parent: None,
+            leases: &third_leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    assert!(matches!(ended, Ended::Settled { .. }));
+    assert_eq!(
+        third_units.doors(),
+        (false, true),
+        "the room the first unit gave back is room the next unit is admitted into"
+    );
+}
+
 /// One client arrival, as the table weighs it against the cap.
 fn client(key: u64) -> Enter {
     Enter {

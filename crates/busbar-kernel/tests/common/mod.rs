@@ -21,6 +21,53 @@ use busbar_caps::{
 use busbar_kernel::registry::Generation;
 use busbar_kernel::teller::{AccrualMeter, Evidence, Kernel, UnitCtx, Units};
 
+/// A group with a `concurrent` cap, kept the way a real door keeps one.
+///
+/// The kernel depends on no door, so the door's counter is modelled here — and modelled exactly:
+/// a count raised while the decision is being taken, released by dropping the value the yes handed
+/// back, and a refusal for anything that arrives while the count is at the cap. That shape is the
+/// whole of what the fix is about. A grant nothing holds is a count released before the unit it
+/// admitted has run, and the N+1th unit is then measured against a gauge that has forgotten the N
+/// in flight.
+pub struct CappedGroup {
+    live: Arc<std::sync::atomic::AtomicUsize>,
+    cap: usize,
+}
+
+impl CappedGroup {
+    /// A group that will run at most `cap` units at once.
+    pub fn at(cap: usize) -> Arc<Self> {
+        Arc::new(CappedGroup {
+            live: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            cap,
+        })
+    }
+
+    /// How many units this group is running right now.
+    pub fn live(&self) -> usize {
+        self.live.load(Ordering::Acquire)
+    }
+
+    /// Count one unit, or say the group is full. The count comes back when the answer is dropped.
+    fn count_one(&self) -> Option<GroupCount> {
+        self.live
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < self.cap).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| GroupCount(Arc::clone(&self.live)))
+    }
+}
+
+/// One unit's count on a [`CappedGroup`], given back by dropping it.
+struct GroupCount(Arc<std::sync::atomic::AtomicUsize>);
+
+impl Drop for GroupCount {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// What the fake door answers.
 pub enum Door {
     /// Open a hold of this size.
@@ -54,6 +101,9 @@ pub struct TestUnits {
     /// The capped-`concurrent` groups this door names on its yes, as the root would have interned
     /// them. Empty is the door that names none, which is every case that predates the slip.
     pub groups: Vec<&'static str>,
+    /// The capped group this door enforces on its own counter, when it has one. `None` is a door
+    /// whose cap is somebody else's, which is every case that predates the grant.
+    pub capped: Option<Arc<CappedGroup>>,
 }
 
 impl Default for TestUnits {
@@ -69,6 +119,7 @@ impl Default for TestUnits {
             admitted_door: AtomicBool::new(false),
             approved_lanes: Mutex::new(Vec::new()),
             groups: Vec::new(),
+            capped: None,
         }
     }
 }
@@ -83,6 +134,15 @@ impl TestUnits {
     pub fn in_groups(groups: &[&'static str]) -> Self {
         TestUnits {
             groups: groups.to_vec(),
+            ..TestUnits::default()
+        }
+    }
+
+    /// Units whose door enforces a `concurrent` cap on its own counter, and hands the count it
+    /// took to the slot to hold.
+    pub fn behind(group: &Arc<CappedGroup>) -> Self {
+        TestUnits {
+            capped: Some(Arc::clone(group)),
             ..TestUnits::default()
         }
     }
@@ -352,6 +412,17 @@ impl Units for TestUnits {
         match self.refusal(StepName::Admit) {
             Some(refusal) => Decision::refuse(token, refusal),
             None => {
+                // The cap, on the door's own counter, exactly where a real door takes it: as part
+                // of the decision, before anything else is answered. A full group refuses, and the
+                // refusal is the rate-limited one the ratified table renders a concurrency cap as.
+                if let Some(group) = &self.capped {
+                    let Some(counted) = group.count_one() else {
+                        return Decision::refuse(token, Refusal::new(ReasonCode::RateLimited));
+                    };
+                    // And handed straight over, because the count is the cap and the cap has to
+                    // outlive the call that took it.
+                    leases.holding(busbar_kernel::slice::DoorGrant::new(counted));
+                }
                 // Named on the yes and only on the yes, exactly where the real door names them:
                 // after the decision, never as part of it.
                 for group in &self.groups {

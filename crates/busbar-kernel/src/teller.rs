@@ -467,6 +467,11 @@ pub trait Units {
     /// give them back. A door that names nothing is a unit counted only on the node-wide gauge,
     /// which is what every unit was counted on before, and the slip is written AFTER the decision —
     /// nothing in it can turn a yes into a no.
+    ///
+    /// The slip is also where a door hands over the count its own yes is holding, so the slot can
+    /// keep it for the life of the unit. A door whose cap is enforced elsewhere hands over nothing
+    /// and is unaffected; a door that keeps its count in the value it returns has to, or its cap is
+    /// released before the unit it admitted has run.
     fn admit(
         &self,
         token: &UnitToken<Admit>,
@@ -822,6 +827,13 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
 /// two ends in the same breath. The count here is a READING and never a gate: `record` is the entry
 /// point that cannot refuse, so a unit the door admitted is never turned away by the counting of it.
 /// A door that named nothing leaves the node-wide lease exactly as it was.
+///
+/// AND THE DOOR'S OWN COUNT COMES HERE TOO. The names above are the node's reading; the count the
+/// door took when it said yes is the `concurrent` cap itself, and it is a cap only for as long as
+/// something holds it. Held for the length of the door's call, it is released before the unit it
+/// admitted has done anything, and the N+1th unit is measured against a gauge that has already
+/// forgotten the N in flight. So the slot holds it, beside the leases, and the same two ends give
+/// it back.
 fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
     if !takes_lease(ctx.origin, ctx.kernel_verb_only) {
         return;
@@ -831,6 +843,13 @@ fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
         if !run.leases.take(bucket) {
             run.gauge.release(&bucket);
         }
+    }
+    // AND THE DOOR'S OWN COUNT, onto the same slot. The kernel's leases are a reading; the door's
+    // count is the cap, and a cap released the moment it is taken is a comparison against zero. It
+    // is parked here because this is the one place that has both the door's answer and the slot,
+    // and it goes back where the leases go back: at whichever of the unit's two ends arrives first.
+    if let Some(grant) = groups.grant_taken() {
+        run.leases.hold_grant(grant);
     }
 }
 

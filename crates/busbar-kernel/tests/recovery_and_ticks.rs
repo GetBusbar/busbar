@@ -380,6 +380,112 @@ fn the_sweep_gives_back_the_group_leases_of_a_lost_task_too() {
     assert_eq!(gauge.count(&busbar_kernel::slice::IN_FLIGHT), 0);
 }
 
+/// AND THE DOOR'S OWN COUNT OF THE LOST UNIT, which is the one that caps the group.
+///
+/// The kernel's per-group leases above are a reading. The count the door took when it said yes is
+/// the cap itself, and a task that disappears while holding one is a group whose ceiling drops by
+/// one for the life of the process — until it admits nothing at all, with no reading anywhere to
+/// say why. The slot is where the count lives for exactly this reason: the sweep is the unit's
+/// other end, and it can only give back what the slot holds.
+///
+/// The proof is that the group admits again afterwards. A count that came back is a unit that runs.
+#[test]
+fn the_sweep_gives_back_the_door_count_a_lost_task_was_holding() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let canary = Canary::new();
+    let group = common::CappedGroup::at(1);
+    let units = common::TestUnits::behind(&group);
+    let dropped = std::sync::atomic::AtomicBool::new(false);
+    let route = common::NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let gauge = ConcurrencyGauge::new();
+    let meter = busbar_kernel::teller::AccrualMeter::new();
+    let slot = table
+        .insert(Enter {
+            key: UnitKey::new(12),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+        })
+        .map_err(|_| ())
+        .expect("under the cap");
+
+    let unit = common::ctx(12);
+    let mut running = Box::pin(busbar_kernel::teller::run_unit_async(
+        &kernel,
+        &units,
+        &unit,
+        busbar_kernel::teller::Run {
+            cell: slot.cell(),
+            parent: None,
+            leases: slot.leases(),
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+        &route,
+    ));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(std::future::Future::poll(running.as_mut(), &mut cx).is_pending());
+    assert_eq!(group.live(), 1, "the door counted the unit it admitted");
+    assert!(slot.leases().holds_grant(), "and the slot is holding it");
+    // The task is gone. Nothing on its frame comes back on its own — which is the whole reason the
+    // count is not on its frame.
+    std::mem::forget(running);
+
+    slot.mark();
+    let verdict = sweep(&slot, StepName::Route, 0, 30_000, true);
+    sweep_settle(
+        &kernel,
+        &slot,
+        verdict,
+        &Evidence::default(),
+        &canary,
+        &gauge,
+    )
+    .expect("the sweep is the second key to the cell");
+
+    assert_eq!(group.live(), 0, "the lost unit's count is back");
+    assert!(!slot.leases().holds_grant());
+
+    // AND THE NEXT UNIT IS ADMITTED into the room the sweep gave back.
+    let next_units = common::TestUnits::behind(&group);
+    let cell = busbar_caps::HoldCell::new(busbar_kernel::inflight::arrival_hold(
+        &kernel,
+        &TestDoor,
+        principal(),
+    ));
+    let leases = busbar_kernel::slice::LeaseCell::new();
+    let ended = busbar_kernel::teller::run_unit(
+        &kernel,
+        &next_units,
+        &common::ctx(13),
+        busbar_kernel::teller::Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    assert!(matches!(
+        ended,
+        busbar_kernel::teller::Ended::Settled { .. }
+    ));
+    assert_eq!(
+        next_units.doors(),
+        (false, true),
+        "it passed the door: the group has room again"
+    );
+}
+
 /// A sweep that races a unit which is still running reclaims nothing of it.
 ///
 /// The unit's leases live on the slot now, where the sweep can reach them, so this is a rule and
