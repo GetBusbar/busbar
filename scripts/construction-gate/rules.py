@@ -2001,6 +2001,60 @@ def rule_legacy_reach(tree, cfg):
     return rows
 
 
+# ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
+
+
+def rule_no_test_doubles_in_production(tree, cfg):
+    """Every stand-in value the shipped binary constructs is one somebody reviewed.
+
+    Two rows out of one scan. The first is the ratchet nobody may add to without saying why: a
+    forbidden spelling on a production line of the composition root that no `known_sites` entry
+    names. The second is the WORKLIST: of the entries that ARE named, how many were reviewed and
+    found to be a test double in the shipped binary rather than the shipped node's real value.
+
+    Enumerated by file and spelling rather than by line, because a line number moves under an edit
+    that changes nothing about what is constructed, and a reason attached to a moving number is a
+    reason nobody can check."""
+    c = cfg["rules"]["no-test-doubles-in-production"]
+    files = _scoped_files(tree, c["scope_globs"])
+    known = {}
+    for entry in c["known_sites"].values():
+        known[(entry["file"].replace("/", os.sep), entry["symbol"])] = entry
+
+    unlisted, doubles = [], []
+    for rel in files:
+        for l in tree.files[rel]:
+            if l.intest:
+                continue
+            for symbol in c["forbidden"]:
+                if symbol not in l.code:
+                    continue
+                entry = known.get((rel, symbol))
+                if entry is None:
+                    unlisted.append(f"`{symbol}` at {rel}:{l.no}")
+                elif entry["verdict"] == "double":
+                    doubles.append(f"`{symbol}` at {rel}:{l.no} — {entry['because']}")
+
+    if not files:
+        detail = VACUOUS + "no composition-root source is present in this tree"
+        listed_detail = detail
+    else:
+        detail = (f"{len(unlisted)} stand-in construction(s) on a production line of the "
+                  f"composition root that no reviewed site names (ceiling {c['max_unlisted']}): "
+                  + ("; ".join(unlisted) if unlisted else "none"))
+        listed_detail = (f"{len(doubles)} reviewed site(s) that are a test double in the shipped "
+                         f"binary (ratchet {c['max_doubles']}, may only go down): "
+                         + ("; ".join(doubles) if doubles else "none"))
+    return [
+        row("no-test-doubles-in-production", len(unlisted) <= c["max_unlisted"],
+            "a stand-in the shipped binary constructs is one somebody reviewed",
+            detail, len(unlisted), c["max_unlisted"], c["why"], unlisted),
+        row("no-test-doubles-in-production:doubles", len(doubles) <= c["max_doubles"],
+            "the reviewed stand-ins that are doubles rather than real values only shrink",
+            listed_detail, len(doubles), c["max_doubles"], c["why"], doubles),
+    ]
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -2034,6 +2088,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_plane_no_money(tree, cfg)
     rows += rule_one_pricing_site(tree, cfg)
     rows += rule_legacy_reach(tree, cfg)
+    rows += rule_no_test_doubles_in_production(tree, cfg)
     return rows
 
 
@@ -2150,6 +2205,10 @@ def calibrate(rows, cfg, path):
     rules["legacy-reach"]["ceiling"] = by_id["legacy-reach"]["current"]
     for key in rules["legacy-reach"]["prefixes"]:
         rules["legacy-reach"]["prefixes"][key]["figure"] = by_id[f"legacy-reach:{key}"]["current"]
+    rules["no-test-doubles-in-production"]["max_unlisted"] = \
+        by_id["no-test-doubles-in-production"]["current"]
+    rules["no-test-doubles-in-production"]["max_doubles"] = \
+        by_id["no-test-doubles-in-production:doubles"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(

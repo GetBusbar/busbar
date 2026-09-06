@@ -408,3 +408,55 @@ fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
         "diagnostic SLUGS collide across the neutral and plane catalogues: {dup_slugs:?}"
     );
 }
+
+/// WHAT THE VOICE NODE COMPOSED AT THIS MOUNT IS ALLOWED TO BE READ FOR.
+///
+/// The node built in `compose_voice_governed_calls` carries values that are not the deployment's:
+/// a flat rate card, a chain of nothing, a journal that ships nowhere, unbound key authorities. It
+/// is shipped anyway because the port installed over it asks the node exactly two questions, and
+/// both are answered out of the open-call table — nothing under that port reads a price, a chain, a
+/// directory or a journal. That is a property of the code and not of the intention, so it is read
+/// off the code: every access the port makes through the node goes to `tool_calls`.
+///
+/// The region scanned is the whole of `NodeCalls` — its field, its `Debug`, its constructor and its
+/// `GovernedCalls` impl — up to the divider that begins the node's long-lived half. A reach added
+/// anywhere in it to a second field of the node fails here, which is the moment the stand-ins stop
+/// being unreachable and this mount owes the deployment's real parts instead.
+#[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+#[test]
+fn the_governed_call_port_reads_only_the_nodes_open_call_table() {
+    const SOURCE: &str = include_str!("../root/units_voice.rs");
+    const DIVIDER: &str = "// The node's long-lived half";
+
+    let from = SOURCE
+        .find("pub struct NodeCalls {")
+        .expect("the port's own type is still in this file");
+    let to = SOURCE[from..]
+        .find(DIVIDER)
+        .expect("the divider that ends the port's region is still there")
+        + from;
+    let region = &SOURCE[from..to];
+
+    let reaches: Vec<&str> = region
+        .match_indices("self.node.")
+        .map(|(at, _)| {
+            let rest = &region[at + "self.node.".len()..];
+            let end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .collect();
+
+    assert!(
+        !reaches.is_empty(),
+        "the port reaches the node somewhere, or this test is reading the wrong region"
+    );
+    for field in &reaches {
+        assert_eq!(
+            *field, "tool_calls",
+            "the port reached `{field}` — the node's stand-in parts are shipped on the \
+             understanding that nothing under this port reads them"
+        );
+    }
+}

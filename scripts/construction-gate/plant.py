@@ -356,6 +356,14 @@ def plant(rule, pristine, scratch, cfg, baseline):
     elif rule == "one-pricing-site:fee-fields":
         append(scratch, "crates/busbar-substrate/src/lib.rs",
                "pub fn planted_fee(card: &Card) -> i64 { card.per_request_fee_cents() }")
+    elif rule == "no-test-doubles-in-production":
+        # One more stand-in constructed on a production line of the composition root, in a file no
+        # reviewed site names for this spelling. `Pricer::flat(` is the one of the five spellings no
+        # other rule scans for, and vocabulary.rs carries no other rule's ceiling, so this plant
+        # trips exactly this row.
+        append(scratch, "crates/busbar/src/root/vocabulary.rs",
+               "pub(crate) fn planted_double() { let _ = "
+               "busbar_unit_admission::Pricer::flat(0); }")
     elif rule == "legacy-reach":
         # One MORE distinct symbol of a retiring crate, named from the composition root. The ratchet
         # is over the TOTAL and is calibrated to today's exact count, so a single new name breaches

@@ -913,3 +913,117 @@ prefix = "busbar_substrate::"
 exclude = []
 because = "the substrate seams the root installs; each moves onto the ABI as the kernel takes them"
 figure = 26
+
+# ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
+[rules.no-test-doubles-in-production]
+why = """The composition root is where a node's real parts are chosen, and it is also where a \
+stand-in is easiest to leave behind: a flat pricer, an all-pass chain of nothing, a shipper that \
+drops what it is handed, a rows table that only remembers, a bindings value with no directory \
+under it. Each of those is a legitimate value for SOME node -- a deployment with no `peers:` \
+really does ship a null shipper -- and each is also exactly what a fixture reaches for, so the two \
+are indistinguishable at the call site. They are not indistinguishable to a reader who went and \
+looked, which is what this rule is: every one of these spellings on a production line of \
+`crates/busbar/src` is either named here with a one-line reason, or it is a stand-in nobody \
+reviewed and the gate says so. The second row is the worklist: of the sites that WERE reviewed, the \
+ones the review found to be a test double in the shipped binary rather than the shipped node's own \
+value. That count is a ratchet -- it may go down. Scanned over production lines only, because a \
+double is what a test is FOR."""
+scope_globs = ["crates/busbar/src/*"]
+# The spellings. A stand-in is recognised by what it constructs, not by where it sits.
+forbidden = [
+  "Pricer::flat(",
+  "AuthChain::new(Vec::new()",
+  "NullShipper",
+  "RecordingRows",
+  "without_directory(",
+]
+max_unlisted = 0
+max_doubles = 5
+
+# THE REVIEWED SITES. `verdict = "real"` means the review found this to be the shipped node's own
+# value at this composition — a null shipper on a node with no `peers:`, a memory-buffered book on a
+# node that configured no data directory. `verdict = "double"` means the review found a fixture's
+# value in the shipped binary, and those are counted by the second row so the owner sees them.
+[rules.no-test-doubles-in-production.known_sites.voice-calls-shipper]
+file = "crates/busbar/src/main.rs"
+symbol = "NullShipper"
+verdict = "double"
+because = "the voice governed-call node's journal, built in the default binary from no deployment value at all"
+
+[rules.no-test-doubles-in-production.known_sites.voice-calls-rows]
+file = "crates/busbar/src/main.rs"
+symbol = "RecordingRows"
+verdict = "double"
+because = "the same node's rows: a recorder nothing reads, beside the node book the process already opened"
+
+[rules.no-test-doubles-in-production.known_sites.voice-calls-pricer]
+file = "crates/busbar/src/main.rs"
+symbol = "Pricer::flat("
+verdict = "double"
+because = "a zero rate card in the shipped binary, where the deployment's own card is what a priced node needs"
+
+[rules.no-test-doubles-in-production.known_sites.voice-calls-chain]
+file = "crates/busbar/src/main.rs"
+symbol = "AuthChain::new(Vec::new()"
+verdict = "double"
+because = "an empty chain in the shipped binary, not the door the deployment configured"
+
+[rules.no-test-doubles-in-production.known_sites.voice-calls-bindings]
+file = "crates/busbar/src/main.rs"
+symbol = "without_directory("
+verdict = "double"
+because = "the same node's unbound key authorities, where the sealed root has the governance directory"
+
+[rules.no-test-doubles-in-production.known_sites.bindings-constructor]
+file = "crates/busbar/src/root/auth_bindings.rs"
+symbol = "without_directory("
+verdict = "real"
+because = "this is where the unbound posture is declared; declaring it is not composing a node out of it"
+
+[rules.no-test-doubles-in-production.known_sites.node-book-rows]
+file = "crates/busbar/src/root/durability.rs"
+symbol = "RecordingRows"
+verdict = "real"
+because = "the one book a process settles onto keeps the previous release's rows, and a view reads that same value"
+
+[rules.no-test-doubles-in-production.known_sites.node-book-shipper]
+file = "crates/busbar/src/root/durability.rs"
+symbol = "NullShipper"
+verdict = "real"
+because = "no peer is configured, so shipping nowhere is what this node's journal really does"
+
+[rules.no-test-doubles-in-production.known_sites.assembly-bindings]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "without_directory("
+verdict = "real"
+because = "the posture the assembly starts from; a boot with governance state binds the directory over it"
+
+[rules.no-test-doubles-in-production.known_sites.admin-only-rows]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "RecordingRows"
+verdict = "real"
+because = "an admin-only node's two halves of one rows value, which is what its dual write and its views share"
+
+[rules.no-test-doubles-in-production.known_sites.admin-only-shipper]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "NullShipper"
+verdict = "real"
+because = "an admin-only node ships its journal nowhere, which is the previous release's shape for it"
+
+[rules.no-test-doubles-in-production.known_sites.assembly-chain]
+file = "crates/busbar/src/root/kernel.rs"
+symbol = "AuthChain::new(Vec::new()"
+verdict = "real"
+because = "the open door the assembly starts from, which the mount replaces with the deployment's own chain"
+
+[rules.no-test-doubles-in-production.known_sites.legacy-rows-read]
+file = "crates/busbar/src/root/units_admin.rs"
+symbol = "RecordingRows"
+verdict = "real"
+because = "the read half's impl on the previous release's rows type; an impl constructs nothing"
+
+[rules.no-test-doubles-in-production.known_sites.harness-rows-alias]
+file = "crates/busbar/src/root/harness.rs"
+symbol = "RecordingRows"
+verdict = "real"
+because = "a type alias over the rows the loop posted, and a reader of it; the name is spelled, nothing is constructed"
