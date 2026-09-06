@@ -173,6 +173,79 @@ fn an_unpriced_name_refuses_for_having_no_rate() {
     assert_eq!(refusal.reason(), ReasonCode::NoRate);
 }
 
+/// THE NETWORK GUARD IS PART OF THE SEALED STEP, not a library beside it.
+///
+/// The name is allow-listed, its transport key resolves and its lane is permitted — everything the
+/// deployment's own tables have to say about it says yes. What it ANSWERS with is the metadata
+/// address, and the address a name answers with is part of where a unit may go. A guard that only
+/// ran when a transport remembered to call it was a guard with one caller per carrier.
+#[test]
+fn a_name_answering_with_the_metadata_address_is_not_sealed() {
+    let (seal, trust, token) = kernel();
+    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let facts = AllYes {
+        resolves_to: Some("169.254.169.254"),
+        ..AllYes::default()
+    };
+    let sealed = Trust
+        .verify(
+            &request(&candidates, "p"),
+            &Pools::default(),
+            &facts,
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the step proceeds: an excluded candidate is not a refusal");
+    assert!(
+        sealed.is_empty(),
+        "an allow-listed name that resolves to the metadata address is not sealed"
+    );
+}
+
+/// The loopback answer is refused for the same reason, and the ordinary upstream still seals.
+#[test]
+fn a_loopback_answer_is_excluded_while_the_ordinary_upstream_still_seals() {
+    let (seal, trust, token) = kernel();
+    let candidates = vec![super::destination_tests::kinds::upstream()];
+    let loopback = AllYes {
+        resolves_to: Some("127.0.0.1"),
+        ..AllYes::default()
+    };
+    let excluded = Trust
+        .verify(
+            &request(&candidates, "p"),
+            &Pools::default(),
+            &loopback,
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the step proceeds");
+    assert!(excluded.is_empty());
+
+    let public = AllYes {
+        resolves_to: Some("93.184.216.34"),
+        ..AllYes::default()
+    };
+    let sealed = Trust
+        .verify(
+            &request(&candidates, "p"),
+            &Pools::default(),
+            &public,
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect("the step proceeds");
+    assert_eq!(
+        sealed.len(),
+        1,
+        "the normal upstream is sealed exactly as it was"
+    );
+    assert_eq!(sealed[0].lane(), &LaneId::new("lane-a"));
+}
+
 /// A DESTINATION WITH NO LANE IS NOT AN EXCLUSION AND NOT A REFUSAL — it is simply not priced on a
 /// lane, and the sealed set is the set of things that are.
 ///

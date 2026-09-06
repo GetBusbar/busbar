@@ -68,6 +68,7 @@ use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
 use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
 use busbar_unit_trust::destination::{KindFacts, OriginKind};
 use busbar_unit_trust::guard::PoolView;
+use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
 use busbar_unit_trust::{Trust, VerifyRequest};
 use busbar_unit_usage::{
     meter as fold_usage, KernelCounts, LegDeclaration, LocatedValue, Metered, RetainedLocatorValues,
@@ -253,30 +254,53 @@ pub fn authenticate_bound(
 /// question about the plane's own declarations: is the schema one it declared, and is the operation
 /// one that schema declares? Both answers are on the plane crate, so the root asks it rather than
 /// keeping a second table.
-pub struct Catalogue {
+pub struct Catalogue<'r> {
     plane: McpPlane,
     schema: RecordSchemaId,
     op: &'static str,
     lanes: Vec<LaneId>,
+    net: NetSeam<'r>,
 }
 
-impl Catalogue {
+/// What the network guard is run over, as this root binds it.
+///
+/// The three halves travel together because they are one decision: which resolver answers, how far
+/// the policy lets a hop reach, and what the operator added to or carved out of the metadata
+/// denylist. Passing them singly is how a caller ends up guarding with one deployment's policy and
+/// another deployment's denylist.
+#[derive(Clone, Copy)]
+pub struct NetSeam<'r> {
+    /// The one resolution the guard makes goes through here.
+    pub resolver: &'r dyn Resolver,
+    /// How far this plane's hops may reach.
+    pub policy: GuardPolicy,
+    /// The deployment's additions to and carve-outs from the metadata denylist.
+    pub denylist: &'r Denylist,
+}
+
+impl<'r> Catalogue<'r> {
     /// The facts for one unit, whose plan reaches one schema under one operation.
     #[must_use]
-    pub fn new(plane: McpPlane, schema: RecordSchemaId, op: &'static str) -> Self {
+    pub fn new(
+        plane: McpPlane,
+        schema: RecordSchemaId,
+        op: &'static str,
+        net: NetSeam<'r>,
+    ) -> Self {
         let lanes = plane.servers().iter().map(|s| s.lane).collect();
         Catalogue {
             plane,
             schema,
             op,
             lanes,
+            net,
         }
     }
 
     /// The facts for a unit that reaches no record at all — a hop straight to a server.
     #[must_use]
-    pub fn upstream_only(plane: McpPlane) -> Self {
-        Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN)
+    pub fn upstream_only(plane: McpPlane, net: NetSeam<'r>) -> Self {
+        Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN, net)
     }
 
     /// The registered server one destination names, where it names one.
@@ -286,7 +310,24 @@ impl Catalogue {
     }
 }
 
-impl KindFacts for Catalogue {
+impl KindFacts for Catalogue<'_> {
+    fn net_guard_passes(&self, dest: &DestinationFacts) -> bool {
+        match busbar_unit_trust::net::check_destination_facts(
+            dest,
+            &[],
+            self.net.resolver,
+            self.net.policy,
+            self.net.denylist,
+        ) {
+            // Only an upstream is dialled at an address; every other kind of this plane's
+            // destinations reaches where it is going without one, so "not an upstream" is this
+            // caller's pass rather than its refusal. A spawned stdio server has an address that is
+            // a program, and the guard answers `Ok(None)` for it for the same reason.
+            Ok(_) | Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => true,
+            Err(_) => false,
+        }
+    }
+
     fn allow_listed(&self, dest: &DestinationFacts) -> bool {
         match dest {
             // A hop is permitted when it reaches a server this deployment registered. The plane with
@@ -1288,6 +1329,34 @@ pub fn class_prices(rates: &BTreeMap<String, u64>) -> ClassPrices {
 mod tests {
     use super::*;
 
+    /// A resolver that answers every name with one public address.
+    ///
+    /// These tests are about which question the catalogue asks, not about what a live resolver would
+    /// say today; a fixed answer is what keeps them from depending on somebody's DNS.
+    struct FixedResolver;
+
+    impl Resolver for FixedResolver {
+        fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+            Ok(vec!["93.184.216.34".parse().expect("a fixture address")])
+        }
+    }
+
+    /// The guard seam these tests bind: the fixed resolver, a policy that admits the loopback
+    /// registrations the fixtures use, and an empty denylist.
+    fn seam() -> NetSeam<'static> {
+        static RESOLVER: FixedResolver = FixedResolver;
+        static DENYLIST: std::sync::LazyLock<Denylist> =
+            std::sync::LazyLock::new(Denylist::default);
+        NetSeam {
+            resolver: &RESOLVER,
+            policy: GuardPolicy {
+                allow_private: true,
+                ..GuardPolicy::default()
+            },
+            denylist: &DENYLIST,
+        }
+    }
+
     /// A store that keeps nothing.
     ///
     /// Every record operation the published protocol declares carries a default that accepts and
@@ -1450,17 +1519,28 @@ mod tests {
     /// declare fails it.
     #[test]
     fn a_record_leg_is_judged_against_the_planes_own_declaration() {
-        let declared = Catalogue::new(McpPlane::EMPTY, records::SCHEMA_CALL, records::OP_APPEND);
+        let declared = Catalogue::new(
+            McpPlane::EMPTY,
+            records::SCHEMA_CALL,
+            records::OP_APPEND,
+            seam(),
+        );
         assert!(declared.plane_record_ok());
 
         // The call log is append-and-read: an answer whose middle can be replaced is not an answer.
-        let rewritten = Catalogue::new(McpPlane::EMPTY, records::SCHEMA_CALL, records::OP_PUT);
+        let rewritten = Catalogue::new(
+            McpPlane::EMPTY,
+            records::SCHEMA_CALL,
+            records::OP_PUT,
+            seam(),
+        );
         assert!(!rewritten.plane_record_ok());
 
         let stranger = Catalogue::new(
             McpPlane::EMPTY,
             RecordSchemaId::new("ledger"),
             records::OP_GET,
+            seam(),
         );
         assert!(!stranger.plane_record_ok());
     }
@@ -1471,7 +1551,7 @@ mod tests {
     /// refusal happens at the step that owns it.
     #[test]
     fn an_unregistered_hop_is_not_allow_listed() {
-        let facts = Catalogue::upstream_only(McpPlane::EMPTY);
+        let facts = Catalogue::upstream_only(McpPlane::EMPTY, seam());
         let nowhere = DestinationFacts::Upstream {
             transport: claims::TRANSPORT_HTTP,
             address: busbar_contract::UpstreamAddress::socket(""),
@@ -1490,7 +1570,7 @@ mod tests {
             transport: claims::TRANSPORT_HTTP,
         }];
         let plane = McpPlane::new(SERVERS);
-        let facts = Catalogue::upstream_only(plane);
+        let facts = Catalogue::upstream_only(plane, seam());
         let hop = DestinationFacts::Upstream {
             transport: claims::TRANSPORT_HTTP,
             address: busbar_contract::UpstreamAddress::socket("127.0.0.1:9"),

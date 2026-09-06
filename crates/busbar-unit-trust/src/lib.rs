@@ -31,6 +31,11 @@
 //! AND over the paths joined to it, then exactly one resolution, then a judgement of every answered
 //! address, then a pin. What a transport receives is an address that has already been looked at.
 //!
+//! It is reached through [`KindFacts::net_guard_passes`], which the dialled kinds' own rules ask
+//! before anything is sealed — so the guard is part of the answer this unit produces rather than a
+//! library beside it that a caller may or may not have called. A guard nothing on the sealed path
+//! reaches is a guard that is not running, however carefully it is written.
+//!
 //! ## The exclusion rule
 //!
 //! A tripped, budget-exhausted or at-capacity lane is EXCLUDED from the walk, never "ordered last

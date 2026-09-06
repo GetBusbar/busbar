@@ -7,8 +7,25 @@ use crate::destination::{
     kind_permitted, kind_rule_passes, DestinationFacts, KindFacts, OriginKind,
 };
 
+/// A resolver that answers every name with one address, so a test can say what a name resolves to
+/// without a live one. The address is the whole point of the fake: the hazards the network guard
+/// exists for are all about WHAT a name answers with.
+pub(crate) struct Answering(pub(crate) &'static str);
+
+impl crate::net::Resolver for Answering {
+    fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+        Ok(vec![self.0.parse().expect("a fixture address")])
+    }
+}
+
 /// Facts that say yes to everything, so a test can turn exactly one answer off and see it land.
 pub(crate) struct AllYes {
+    /// What every name this fake is asked about resolves to. `None` scripts no resolver at all and
+    /// the plain `net_guard` answer stands; `Some` runs the REAL guard over the real address, which
+    /// is what makes a test about the metadata address a test about the guard rather than a test
+    /// about a boolean somebody set.
+    pub(crate) resolves_to: Option<&'static str>,
+    pub(crate) net_guard: bool,
     pub(crate) allow_listed: bool,
     pub(crate) transport_key: bool,
     pub(crate) lane_permitted: bool,
@@ -26,6 +43,8 @@ pub(crate) struct AllYes {
 impl Default for AllYes {
     fn default() -> Self {
         AllYes {
+            resolves_to: None,
+            net_guard: true,
             allow_listed: true,
             transport_key: true,
             lane_permitted: true,
@@ -43,6 +62,23 @@ impl Default for AllYes {
 }
 
 impl KindFacts for AllYes {
+    fn net_guard_passes(&self, dest: &DestinationFacts) -> bool {
+        let Some(address) = self.resolves_to else {
+            return self.net_guard;
+        };
+        !matches!(
+            crate::net::check_destination_facts(
+                dest,
+                &[],
+                &Answering(address),
+                crate::net::GuardPolicy::default(),
+                &crate::net::Denylist::default(),
+            ),
+            Err(crate::net::NetworkRefusal::MetadataDenied(_)
+                | crate::net::NetworkRefusal::Guard(_))
+        )
+    }
+
     fn allow_listed(&self, _d: &DestinationFacts) -> bool {
         self.allow_listed
     }
@@ -272,9 +308,30 @@ fn an_upstream_needs_the_allow_list_the_key_and_the_lane() {
                 ..AllYes::default()
             },
         ),
+        (
+            "the network guard refused the address",
+            AllYes {
+                net_guard: false,
+                ..AllYes::default()
+            },
+        ),
     ] {
         assert!(!kind_rule_passes(&d, &facts), "{label}");
     }
+}
+
+/// A peer is dialled over the network too, so its address is judged beside its lease.
+#[test]
+fn a_peer_needs_its_lease_and_its_address() {
+    let d = kinds::peer();
+    assert!(kind_rule_passes(&d, &AllYes::default()));
+    assert!(!kind_rule_passes(
+        &d,
+        &AllYes {
+            net_guard: false,
+            ..AllYes::default()
+        }
+    ));
 }
 
 #[test]
