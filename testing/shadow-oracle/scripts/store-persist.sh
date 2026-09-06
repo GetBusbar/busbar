@@ -111,5 +111,9 @@ i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); 
 # serves 200s and still answers /usage from whatever it holds in memory, so the request statuses
 # alone can look healthy while nothing is being persisted — this is the count that says so. It is a
 # COUNT, not the text: the message wording is the plugin's, but "more than zero" is the finding.
-step store_errors "$(( $(grep -c 'store error' "$W/busbar1.log") + $(grep -c 'store error' "$W/busbar2.log") ))"
-jq -n --argjson eff "$eff" --arg body "$u2" '{status:0, headers:{}, body:$body, effects:($eff | . + {warnings_boot1: $w1})}' --arg w1 "$(grep -ci 'warn' "$W/busbar1.log")" >"$RAW/captured.json"
+# awk, not `grep -c`: on a log with no match grep prints 0 and EXITS 1, so any `|| echo 0` guard
+# doubles the value and a missing log leaves the arithmetic below with nothing at all. awk always
+# prints exactly one number, including for a file that does not exist.
+count_matching() { awk -v re="$1" '$0 ~ re {n++} END{print n+0}' "$2" 2>/dev/null || echo 0; }
+step store_errors "$(( $(count_matching 'store error' "$W/busbar1.log") + $(count_matching 'store error' "$W/busbar2.log") ))"
+jq -n --argjson eff "$eff" --arg body "$u2" '{status:0, headers:{}, body:$body, effects:($eff | . + {warnings_boot1: $w1})}' --arg w1 "$(count_matching '[Ww][Aa][Rr][Nn]' "$W/busbar1.log")" >"$RAW/captured.json"
