@@ -536,6 +536,28 @@ jobs:
             exit 1
           fi
 
+      # `busbar-timing`'s real implementation lives entirely behind its `timing` feature, which is
+      # OFF by default and therefore OFF under `cargo test --workspace`. So the only suite that
+      # exercises the registry, the thread accounting and the runtime gate was never compiled by any
+      # step in this workflow: the default build collects only the zero-cost-when-off proof, prints
+      # `test result: ok`, and says nothing about the code that actually runs when an operator turns
+      # timing on. The floor is the same guard the voice step uses, for the same reason — a suite
+      # that stops being collected still exits 0.
+      - name: Timing implementation tests (the `timing`-gated suite `cargo test --workspace` never runs)
+        env:
+          TIMING_MIN_TESTS: "5"
+        run: |
+          cargo test -p busbar-timing --features timing \
+                     --locked --verbose | tee "$RUNNER_TEMP/timing-test.log"
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/timing-test.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "timing implementation: ${total} tests passed (floor: ${TIMING_MIN_TESTS})"
+          if [ "$total" -lt "$TIMING_MIN_TESTS" ]; then
+            echo "::error::the timing implementation suite ran ${total} tests, below its floor of ${TIMING_MIN_TESTS}."
+            exit 1
+          fi
+
       # A test that writes into the repo is a test that can leak. The docs example harness once
       # wrote its patched config and its secret stand-in next to the SHIPPED file it was validating,
       # which put four generated artifacts in the working tree, two of them carrying the absolute
