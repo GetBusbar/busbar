@@ -328,10 +328,10 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "PUBLIC-HYGIENE — nothing a customer can read describes how the software was built (0 hits)"
 # scripts/public-hygiene-lint.py: no shipped file (source, scripts/, docs/ outside design/, generated
-# artifacts) may carry an internal tracker/audit-round id, a private-doc pointer, TDD/mutation-testing
-# narration, phase-plan vocabulary, editor-directed prose, authoring meta-commentary, a named
-# individual, a developer home directory, or a bare commit-hash citation. DONE means 0 hits, not "0
-# hits we noticed."
+# artifacts) may carry an internal tracker/audit-round id, a private-doc pointer, how-it-was-built
+# process narration, delivery-plan vocabulary, editor-directed prose, authoring meta-commentary, a
+# named individual, a developer home directory, or a bare commit-hash citation. DONE means 0 hits,
+# not "0 hits we noticed."
 if [ -f scripts/public-hygiene-lint.py ]; then
   step "public-hygiene-lint --selftest" python3 scripts/public-hygiene-lint.py --selftest
   step "public-hygiene-lint --check"    python3 scripts/public-hygiene-lint.py --root . --quiet
