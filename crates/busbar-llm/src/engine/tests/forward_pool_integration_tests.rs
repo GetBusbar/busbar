@@ -5041,7 +5041,7 @@ async fn test_openai_ingress_same_protocol_passthrough() {
     // Call openai_ingress handler directly
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
@@ -5108,7 +5108,7 @@ async fn test_openai_ingress_missing_model() {
 
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
@@ -5149,7 +5149,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
     let resp = ingress::adhoc(
         busbar_core::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
-        axum::extract::Extension(busbar_core::governance::GovCtx::default()),
+        axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
         axum::extract::Extension(busbar_core::auth::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body.clone(),
@@ -5165,7 +5165,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
     let resp2 = ingress::adhoc(
         busbar_core::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
-        axum::extract::Extension(busbar_core::governance::GovCtx::default()),
+        axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
         axum::extract::Extension(busbar_core::auth::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body,
@@ -5197,7 +5197,7 @@ async fn test_openai_ingress_unknown_model() {
 
     let response = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         None,
         &HeaderMap::new(),
         body_bytes,
@@ -5342,7 +5342,7 @@ async fn test_openai_ingress_single_model_anthropic_response_translated() {
     let body = json!({"model": "glm-4.5", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 15});
     let resp = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
         Bytes::from(body.to_string()),
@@ -5402,7 +5402,7 @@ async fn forwarded_openai_to_anthropic(
 
     let resp = crate::native_ingress::operation_ingress_inner(
         &host,
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         None,
         &axum::http::HeaderMap::new(),
         Bytes::from(request_body.to_string()),

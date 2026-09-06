@@ -40,7 +40,7 @@ fn test_finish_emits_request_metrics() {
     let resp = (StatusCode::OK, "ok").into_response();
     let out = finish(
         &minimal_app(),
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         "openai",
         "mypool",
         Instant::now(),
@@ -213,7 +213,7 @@ fn test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -286,7 +286,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_with_key();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let govstate = app.governance.as_ref().unwrap().clone();
@@ -335,7 +335,7 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
     let resp = (StatusCode::SERVICE_UNAVAILABLE, "x").into_response();
     let _ = finish(
         &minimal_app(),
-        &busbar_core::governance::GovCtx::default(),
+        &busbar_api::PlaneRequestCtx::default(),
         "anthropic",
         "p2",
         Instant::now(),
@@ -386,7 +386,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
-    let govctx = busbar_core::governance::GovCtx {
+    let govctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -517,7 +517,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = cost.clone();
     }
-    let govctx = busbar_core::governance::GovCtx {
+    let govctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -3289,7 +3289,7 @@ async fn test_governance_rejection_is_counted_via_finish() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
@@ -3339,7 +3339,7 @@ async fn test_governance_guard_passes_when_allowed() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let passed = governance_guard(
@@ -3365,7 +3365,7 @@ async fn finish_admitted_does_not_refund_an_uncharged_admit() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = 1_700_000_000;
@@ -3417,7 +3417,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
 
     // --- 403: pool not allowed ---
     let (app, key) = governed_app_pool_restricted();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let resp =
@@ -3430,7 +3430,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // body-model protocols surface this as 429 (native OpenAI/Gemini quota semantics); no
     // vendor returns 402 here. ---
     let (app2, key2) = governed_app_over_budget();
-    let gov2 = busbar_core::governance::GovCtx {
+    let gov2 = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2.clone())),
     };
     let resp = admit_check(&app2, &gov2, "openai", "", busbar_substrate::store::now())
@@ -3442,7 +3442,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     // Bedrock ingress maps the same over-budget condition to a 400-class
     // ServiceQuotaExceededException (the native AWS shape), NOT 429.
     let (app2b, key2b) = governed_app_over_budget();
-    let gov2b = busbar_core::governance::GovCtx {
+    let gov2b = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2b.clone())),
     };
     let resp = admit_check(
@@ -3464,7 +3464,7 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
 
     // --- 429: rate limited. A group with `requests: 0, per: minute` blocks the first request. ---
     let (app3, key3) = governed_app_rate_limited();
-    let gov3 = busbar_core::governance::GovCtx {
+    let gov3 = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key3.clone())),
     };
     let resp = admit_check(&app3, &gov3, "openai", "", busbar_substrate::store::now())
@@ -6326,7 +6326,7 @@ async fn test_group_blocked_429_names_the_budget_group() {
     crate::testkit::install_test_seams();
     busbar_core::metrics::init();
     let (app, key) = governed_app_group_blocked();
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6363,7 +6363,7 @@ async fn test_missing_group_fails_closed_at_ingress() {
     let (app, key) = governed_app_group_blocked();
     let mut orphan = key.clone();
     orphan.group = Some("ghost".to_string());
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(orphan)),
     };
     let resp = admit_check(&app, &gov, "openai", "", busbar_substrate::store::now())
@@ -6416,7 +6416,7 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         inner.auth = crate::test_support::keys_chain_auth();
         inner.cost = std::sync::Arc::new(cost);
     }
-    let gov_ctx = busbar_core::governance::GovCtx {
+    let gov_ctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     // An arbitrary passthrough model string (not a pool, not a by-model lane, not priced).
@@ -6512,7 +6512,7 @@ fn governed_app_downgrade(
 async fn test_budget_exhaustion_downgrades_pool() {
     crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(None);
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6616,7 +6616,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
         .pools
         .insert("c".to_string(), vec![]);
 
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
@@ -6661,7 +6661,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
 async fn test_downgrade_never_bypasses_pool_acl() {
     crate::testkit::install_test_seams();
     let (app, key) = governed_app_downgrade(Some(vec!["frontier".to_string()]));
-    let gov = busbar_core::governance::GovCtx {
+    let gov = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
     let at = busbar_substrate::store::now();
