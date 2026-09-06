@@ -261,19 +261,30 @@ pub enum LaneMismatch {
 /// scheme's decoration could have moved; the seal is the authority, so it is the only thing this
 /// compares to. This field check stands in for the full three-way cross-check the kernel loop's
 /// Meter step runs, which also folds in the response-side locator this crate does not see.
+///
+/// The field name is matched case-insensitively (field names are case-insensitive on the wire), and
+/// a field carried twice is a refusal rather than a first-match: two spellings is not a request
+/// whose destination can be read at all.
 pub fn lane_cross_check(
     verified: &VerifiedDestination,
     field: &'static str,
     envelope: &[(String, String)],
 ) -> Result<(), LaneMismatch> {
-    let actual = envelope
+    let sealed = verified.lane().as_str();
+    let mut carrying = envelope
         .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case(field))
-        .map(|(_, v)| v.as_str());
-    if actual == Some(verified.lane().as_str()) {
+        .filter(|(k, _)| k.eq_ignore_ascii_case(field));
+    let diverged = Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field });
+    let Some((_, actual)) = carrying.next() else {
+        return diverged;
+    };
+    if carrying.next().is_some() {
+        return diverged;
+    }
+    if actual == sealed {
         Ok(())
     } else {
-        Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field })
+        diverged
     }
 }
 

@@ -2,10 +2,23 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_caps::KernelSeal;
+use busbar_caps::{KernelSeal, LaneId, TrustToken};
 
 fn token() -> EgressAuthToken {
     EgressAuthToken::mint(&KernelSeal::acquire_for_kernel())
+}
+
+fn trust_token() -> TrustToken {
+    TrustToken::mint(&KernelSeal::acquire_for_kernel())
+}
+
+/// The destination the trust unit judged for the Bedrock lane: the sealed lane is what the
+/// envelope's host field must still carry after decoration.
+fn sealed_destination() -> VerifiedDestination {
+    VerifiedDestination::seal(
+        &trust_token(),
+        LaneId::new("bedrock.us-east-1.amazonaws.com"),
+    )
 }
 
 fn empty_body() -> EgressBody<'static> {
@@ -246,6 +259,47 @@ fn lane_cross_check_is_against_the_sealed_lane_not_the_callers_belief() {
         lane_cross_check(&verified, "host", &[]),
         Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
     );
+}
+
+/// The value the check compares against comes from the SEAL and from nowhere else. A
+/// destination-changing hook that rewrites `host` after decoration is caught even where the caller
+/// read its own idea of the destination out of the same post-hook plan — the reading under which
+/// the sealed destination contributes anything at all.
+#[test]
+fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
+    let verified = sealed_destination();
+
+    let rewritten_by_a_hook = vec![("host".to_string(), "evil.example.com".to_string())];
+    assert_eq!(
+        lane_cross_check(&verified, "host", &rewritten_by_a_hook),
+        Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
+    );
+
+    // The field spelled twice is not a request whose destination can be read at all: refuse rather
+    // than answer about whichever copy the transport did not encode.
+    let two_spellings = vec![
+        (
+            "host".to_string(),
+            "bedrock.us-east-1.amazonaws.com".to_string(),
+        ),
+        ("Host".to_string(), "evil.example.com".to_string()),
+    ];
+    assert_eq!(
+        lane_cross_check(&verified, "host", &two_spellings),
+        Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
+    );
+
+    // And a destination the trust unit sealed with no host of its own compares against the lane it
+    // did seal, rather than against anything the caller holds.
+    let lane_only = VerifiedDestination::seal(&trust_token(), LaneId::new("bedrock-us-east-1"));
+    let named = vec![("lane".to_string(), "bedrock-us-east-1".to_string())];
+    assert!(lane_cross_check(&lane_only, "lane", &named).is_ok());
+    let renamed = vec![("lane".to_string(), "cheap-lane".to_string())];
+    assert!(lane_cross_check(&lane_only, "lane", &renamed).is_err());
+
+    // A decoration that DROPPED the field fails closed: an envelope with no destination in it is
+    // not one whose destination was checked.
+    assert!(lane_cross_check(&verified, "host", &[]).is_err());
 }
 
 /// The forwarded-header allow-list scopes each beta/version header to its own dialect(s),
