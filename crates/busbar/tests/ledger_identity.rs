@@ -499,6 +499,95 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         0,
         "the identity is reported as holding and names discrepancies: {reconciliation}"
     );
+
+    // ── THE CALLER THAT CLOSED ITS SOCKET ────────────────────────────────────────────────────────
+    //
+    // A fourth outcome class, and one no arrangement of the three above reaches: a request the node
+    // ADMITTED, over a connection the caller then closed while the upstream was still thinking. It
+    // is here rather than in a cell of its own because what it claims is a claim about THIS table —
+    // that such a request leaves both books exactly as this reconciliation just found them, and that
+    // the identity still holds over them afterwards.
+    //
+    // WHAT THIS CELL DOES NOT PIN is which of the two ends the node reaches. A FIN is a half-close,
+    // and a serving connection with the whole request already read need not observe one until it
+    // next writes — so this drives an admitted, never-delivered request and asserts what is true of
+    // BOTH its ends: the abandoned one the kernel's guard runs, and the failed transfer the attempt
+    // budget reaches if the close went unobserved. The abandoned end's own claims — that the guard's
+    // terminal posts to the root's journal, and that the flat fee is not reversed by it — are pinned
+    // where the abort can be driven exactly, beside the node in `root/units_llm.rs`.
+    //
+    // Either way no MONEY moves: the plane's money is in a cell the response body fills when it
+    // drains, and a body nobody drained reported nothing, so a settlement of zero is not a row and
+    // neither book grows. A row on one side with nothing to answer it on the other is exactly what
+    // the reads below would catch.
+    let before = rows_of(&first);
+    let charged_before = rig.key_usage(&rig.key_ok_id);
+    rig.upstream_slow(true);
+    rig.chat_and_hang_up(&rig.key_ok);
+    rig.upstream_slow(false);
+
+    // FIRST, THAT THE NODE TOOK IT. Every assertion below is that something did NOT move, and a
+    // request the node never admitted would satisfy all of them without proving anything. The
+    // request slot is drawn at the door and never released, whatever the unit's end, so a bucket
+    // that grew by exactly one is the node saying it admitted this unit — and then never answered it.
+    let charged_after = rig.key_usage(&rig.key_ok_id);
+    assert_eq!(
+        charged_after["requests"].as_u64().expect("requests"),
+        charged_before["requests"].as_u64().expect("requests") + 1,
+        "the node did not admit the request the caller then hung up on, so nothing below is a claim\
+         \nlog:\n{}",
+        rig.log()
+    );
+
+    // The rows, not the bytes: `as_of` is the read's own clock and moves between any two reads, so
+    // comparing the whole response would fail on the one field that carries no traffic.
+    let after = rows_of(&rig.settled_usage(delivered));
+    assert_eq!(
+        after, before,
+        "a client that went away mid-unit wrote a legacy metering row: only a DELIVERED response may"
+    );
+    let totals_after: serde_json::Value = serde_json::from_slice(&get_bytes(
+        PORTS.admin,
+        "/api/v1/admin/ledger/totals",
+        ADMIN_TOKEN,
+    ))
+    .expect("the totals response is JSON");
+    assert_eq!(
+        totals_after["rows"], totals["rows"],
+        "a client that went away mid-unit moved the node's own books; an abandoned unit reports no \
+         usage, so it prices at nothing and a settlement of nothing is not a row"
+    );
+    let reconciliation_after: serde_json::Value = serde_json::from_slice(&get_bytes(
+        PORTS.admin,
+        "/api/v1/admin/ledger/reconciliation",
+        ADMIN_TOKEN,
+    ))
+    .expect("the reconciliation response is JSON");
+    assert_eq!(
+        reconciliation_after["holds"],
+        serde_json::Value::Bool(true),
+        "the identity does not hold once a client has gone away mid-unit: {reconciliation_after}"
+    );
+    assert_eq!(
+        reconciliation_after["discrepancies"]
+            .as_array()
+            .expect("a discrepancies array")
+            .len(),
+        0,
+        "the identity is reported as holding and names discrepancies after an abort: \
+         {reconciliation_after}"
+    );
+}
+
+/// The legacy usage projection with the read's own clock taken off it: everything the traffic wrote
+/// and nothing the reading did. `as_of` is the only field a second read of an unmoved projection
+/// changes, so removing it is what makes "these two reads are the same rows" a statement about the
+/// rows.
+fn rows_of(usage: &[u8]) -> serde_json::Value {
+    let mut v: serde_json::Value =
+        serde_json::from_slice(usage).expect("the usage response is JSON");
+    v.as_object_mut().expect("an object").remove("as_of");
+    v
 }
 
 /// One administrative read, as bytes.
@@ -555,6 +644,9 @@ struct Rig {
     child: Child,
     mock: Child,
     key_ok: String,
+    /// The id of the key `key_ok` presents, for the administrative reads that are keyed by id
+    /// rather than by bearer. Kept beside the token because a mint hands both back exactly once.
+    key_ok_id: String,
     key_broke: String,
     key_noscope: String,
 }
@@ -640,6 +732,7 @@ impl Rig {
             child,
             mock,
             key_ok: String::new(),
+            key_ok_id: String::new(),
             key_broke: String::new(),
             key_noscope: String::new(),
         };
@@ -661,7 +754,7 @@ impl Rig {
             read_to_string(&rig.log_path)
         );
 
-        rig.key_ok = rig.mint(r#"{"name":"identity-ok","group":"oracle"}"#);
+        (rig.key_ok, rig.key_ok_id) = rig.mint_named(r#"{"name":"identity-ok","group":"oracle"}"#);
         rig.key_broke = rig.mint(r#"{"name":"identity-broke","group":"broke"}"#);
         rig.key_noscope = rig.mint(
             r#"{"name":"identity-noscope","group":"oracle","allowed_pools":["oracle-unused"]}"#,
@@ -670,6 +763,14 @@ impl Rig {
     }
 
     fn mint(&self, body: &str) -> String {
+        self.mint_named(body).0
+    }
+
+    /// The same mint, handing back the key's ID beside its bearer.
+    ///
+    /// A key is presented as a bearer and read back by id, and a mint answers with both exactly
+    /// once — so a caller that needs the second has to keep it here rather than go looking for it.
+    fn mint_named(&self, body: &str) -> (String, String) {
         let r = request(
             PORTS.admin,
             "POST",
@@ -683,10 +784,30 @@ impl Rig {
             r.status, r.body
         );
         let v: serde_json::Value = serde_json::from_str(&r.body).expect("a key response");
-        v["token"]
-            .as_str()
-            .expect("a minted key carries its token once")
-            .to_string()
+        (
+            v["token"]
+                .as_str()
+                .expect("a minted key carries its token once")
+                .to_string(),
+            v["id"]
+                .as_str()
+                .expect("a minted key carries an id")
+                .to_string(),
+        )
+    }
+
+    /// What the node's own attribution bucket says this key has spent and consumed.
+    ///
+    /// The read that sees a request the LEGACY METERING ROWS never will: the flat fee and the
+    /// request slot are charged at the door, so a unit that was admitted and never answered moves
+    /// this and moves nothing on the projection beside it.
+    fn key_usage(&self, id: &str) -> serde_json::Value {
+        serde_json::from_slice(&get_bytes(
+            PORTS.admin,
+            &format!("/api/v1/admin/keys/{id}/usage"),
+            ADMIN_TOKEN,
+        ))
+        .expect("the key usage response is JSON")
     }
 
     fn chat(&self, token: &str) -> Response {
@@ -738,6 +859,62 @@ impl Rig {
             self.probe_mock(),
             PORTS.mock
         );
+    }
+
+    /// Order the mock to answer SLOWLY, and wait until it is doing so.
+    ///
+    /// The same atomic write and the same read-back `upstream_down` uses, for the same two hazards.
+    /// The read-back is what makes the abort below a real one: an upstream still answering promptly
+    /// would serve the request before the socket closed, and the cell would pass by testing nothing.
+    /// A slow answer is not an error — busbar's own attempt budget is far longer than this cell
+    /// holds the socket open for — so the unit is under its hold, awaiting, when the caller leaves.
+    fn upstream_slow(&self, slow: bool) {
+        if slow {
+            let next = self.control.with_file_name("mock.control.next");
+            std::fs::write(&next, b"slow").unwrap();
+            std::fs::rename(&next, &self.control).unwrap();
+        } else {
+            let _ = std::fs::remove_file(&self.control);
+        }
+        // The probe goes through the same handler, so a `slow` the mock has read costs the probe the
+        // sleep and answers 200 at the end of it — which is the acknowledgement. What is being
+        // waited for is the mock ANSWERING at all; the verb it is answering under is asserted by the
+        // request that follows never being served.
+        let acknowledged = wait_until(Duration::from_secs(60), || self.probe_mock() == 200);
+        assert!(
+            acknowledged.is_some(),
+            "the mock upstream never acknowledged `slow = {slow}` on port {}",
+            PORTS.mock
+        );
+    }
+
+    /// One admitted request whose caller GOES AWAY before it is answered.
+    ///
+    /// The bytes of `Rig::chat`, written onto a socket that is then shut down and dropped without a
+    /// single byte being read back. That is a client hanging up, spelled the only way a test can
+    /// spell it: the connection the node is answering into stops existing while the answer is still
+    /// being fetched. Nothing is asserted about the response, because there is no response — the
+    /// claim this drives is entirely about what the node's two books say afterwards.
+    fn chat_and_hang_up(&self, token: &str) {
+        let body =
+            format!(r#"{{"model":"{LANE}","messages":[{{"role":"user","content":"ping"}}]}}"#);
+        let mut stream =
+            TcpStream::connect(("127.0.0.1", PORTS.data)).expect("the node is listening");
+        let head = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\
+             Authorization: Bearer {token}\r\nContent-Type: application/json\r\n\
+             Content-Length: {}\r\n\r\n",
+            body.len()
+        );
+        stream.write_all(head.as_bytes()).expect("the head");
+        stream.write_all(body.as_bytes()).expect("the body");
+        stream.flush().expect("flushed");
+        // The request is on the wire and the upstream is sleeping on it. Long enough for the node to
+        // have admitted the unit and dialled — a hang-up before the door is a refusal, not an
+        // abandonment, and would leave both books untouched for the wrong reason.
+        std::thread::sleep(Duration::from_millis(500));
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        drop(stream);
     }
 
     /// One request straight at the mock upstream, bypassing busbar entirely — the read-back

@@ -572,6 +572,24 @@ pub trait Units {
 
     /// What the unit's evidence looks like once it has run. Read by the settlement table.
     fn evidence(&self, ctx: &UnitCtx) -> Evidence;
+
+    /// WHERE THE END OF AN ABANDONED UNIT GOES.
+    ///
+    /// Every other end leaves through the value [`run_unit_async`] returns, and the caller settles it
+    /// onto the plane's own book. A unit the client went away from has no such caller — the frame
+    /// that would have read the return value is the one being unwound — so the end the guard's
+    /// terminal sealed is handed HERE instead, to the unit, which is the one thing that outlives the
+    /// await and still knows the plane it belongs to.
+    ///
+    /// Called at most once per unit, and only from [`Abandoned`]'s drop: a unit that reached its own
+    /// end never reaches this, so a plane that settles in both places settles once.
+    ///
+    /// The default drops it, which is what every plane did before there was a seam to hand it to. A
+    /// plane whose book is posted by the caller has to implement this or its abandoned units post
+    /// nowhere.
+    fn abandoned(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, ended: Ended) {
+        let _ = (token, ctx, ended);
+    }
 }
 
 /// The Route step, as the loop AWAITS it.
@@ -1027,10 +1045,12 @@ impl<'k, 'r, U: Units> Abandoned<'k, 'r, U> {
 impl<U: Units> Drop for Abandoned<'_, '_, U> {
     fn drop(&mut self) {
         if let Some((run, settling)) = self.ending.take() {
-            // The end is discarded because there is nobody left to hand it to: the caller that
-            // would have read it is the one that went away. What matters is that it was REACHED —
-            // the audit door sealed it, the cell is empty and the leases are back.
-            let _ended = terminal(
+            // The end is REACHED — the audit door sealed it, the cell is empty and the leases are
+            // back — and it is a POSTING, which has moved no balance and left no record until
+            // something settles it. The caller that would have settled it is the one that went away,
+            // so the end goes to the unit instead: dropping it here is a unit the legacy book has a
+            // row for and the plane's own journal does not, on every abort.
+            let ended = terminal(
                 self.kernel,
                 self.units,
                 self.ctx,
@@ -1039,6 +1059,11 @@ impl<U: Units> Drop for Abandoned<'_, '_, U> {
                     reason: ReasonCode::ClientGone,
                 }),
                 settling,
+            );
+            self.units.abandoned(
+                &UnitToken::<Audit>::mint(&self.kernel.seal),
+                self.ctx,
+                ended,
             );
         }
     }
