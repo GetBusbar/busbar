@@ -1142,3 +1142,83 @@ async fn write_backpressures_a_peer_that_never_reads() {
         "a writer outran a peer that never read: every message was accepted onto the heap"
     );
 }
+
+/// A refusal that could not be delivered says so.
+///
+/// Refusing names a call, and the refusal's whole point is that the caller is told. When the stream
+/// named had no entry — already over, never opened, or the call's channel gone — the refusal was
+/// dropped on the floor and `Ok(())` was returned anyway, so the kernel recorded a unit as refused
+/// on a connection where nothing had been written.
+#[tokio::test]
+async fn a_refusal_that_reaches_no_call_is_an_error() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (served, _f) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+
+    // The first refusal reaches the call and ends it.
+    server_t
+        .unit0_refusal(
+            server_conn.clone(),
+            Some(served),
+            &refusal,
+            ArenaBytes::new(b"no"),
+        )
+        .await
+        .unwrap();
+
+    // The second names a call this connection no longer has: there is nothing left to refuse, and
+    // saying so is the difference between a refusal delivered and a refusal imagined.
+    let err = server_t
+        .unit0_refusal(
+            server_conn.clone(),
+            Some(served),
+            &refusal,
+            ArenaBytes::new(b"no"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Closed);
+
+    // And a stream this connection never carried at all.
+    let err = server_t
+        .unit0_refusal(
+            server_conn,
+            Some(StreamId(9999)),
+            &refusal,
+            ArenaBytes::new(b"no"),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Closed);
+}

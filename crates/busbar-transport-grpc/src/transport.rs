@@ -384,7 +384,7 @@ impl Transport for GrpcTransport {
         Box::pin(async move {
             let id = conn.id();
             let Some(state) = self.state_of(id) else {
-                return Ok(());
+                return Err(TransportError::Closed);
             };
             let payload = bytes.as_slice().to_vec();
             match stream {
@@ -393,20 +393,37 @@ impl Transport for GrpcTransport {
                     // call's response stream (and so emits its `grpc-status` trailer), which is the
                     // difference between refusing one call and leaving it half-served.
                     let call = state.outbound.lock().unwrap().remove(&stream.0);
-                    if let Some(call) = call {
-                        if let Ok(tx) = call.await {
-                            let _ = tx.send(payload).await;
-                        }
-                    }
+                    // A refusal nothing carried is not a refusal. Every leg below is reported
+                    // rather than swallowed: the caller is being told a unit was refused, and that
+                    // is only true if the refusal actually went somewhere.
+                    let Some(call) = call else {
+                        return Err(TransportError::Closed);
+                    };
+                    let tx = call.await?;
+                    tx.send(payload).await.map_err(|_| TransportError::Reset)?;
                 }
                 None => {
                     let calls: Vec<_> = state.outbound.lock().unwrap().values().cloned().collect();
+                    // A refusal that names no stream is about the connection, so the connection is
+                    // finalised whatever any one call did — and the first failure among them is
+                    // still what the caller is told.
+                    let mut failed = None;
                     for call in calls {
-                        if let Ok(tx) = call.await {
-                            let _ = tx.send(payload.clone()).await;
+                        let delivered = match call.await {
+                            Ok(tx) => tx
+                                .send(payload.clone())
+                                .await
+                                .map_err(|_| TransportError::Reset),
+                            Err(e) => Err(e),
+                        };
+                        if let Err(e) = delivered {
+                            failed.get_or_insert(e);
                         }
                     }
                     self.close(conn, CloseReason::Normal);
+                    if let Some(e) = failed {
+                        return Err(e);
+                    }
                 }
             }
             Ok(())
