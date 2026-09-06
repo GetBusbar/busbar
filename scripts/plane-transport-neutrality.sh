@@ -39,6 +39,9 @@
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — the same bare-runner posture as the
 # sibling lints (plane-purity-lint.sh, structure-lint.sh).
 set -uo pipefail
+# Resolved BEFORE the cd, so the self-test can re-invoke this exact file as a child process (the root
+# guard below exits the process, which a `$(…)` subshell would swallow).
+SELF="$(cd "$(dirname "$0")" >/dev/null && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -46,8 +49,36 @@ grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 hdr()  { printf '\n== %s ==\n' "$*"; }
 
-# The neutral crates (the ABI side) — single edit here if a neutral crate appears/disappears.
-NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-substrate-values/src crates/api/src"
+# The neutral crates (the ABI side). Single-sourced from scripts/plane-keys.sh — the same list
+# plane-purity-lint.sh scans, so the two companion gates can never disagree about what "neutral"
+# means, and a crate that is drained leaves the set by ONE named deletion there.
+# shellcheck source=scripts/plane-keys.sh
+. "$(dirname "$0")/plane-keys.sh"
+# The env override exists for ONE caller: the self-test's blind-scan cases below. Nothing in CI sets it.
+NEUTRAL_ROOTS="${PLANE_TRANSPORT_NEUTRAL_ROOTS:-$(neutral_src_roots)}"
+
+# ── THE ROOT GUARD — a missing root is RED, never silence ──────────────────────────────────────────
+# `find $ROOTS … 2>/dev/null | sort` swallows the diagnostic for a root that has been renamed, split or
+# drained, and loses find's status through the pipe. The result is an EMPTY file list, a hit total of 0
+# and a green PASS over a tree this gate never opened. Every root is proven to be a directory first,
+# and a missing one aborts. Exits the PROCESS, so it is called from run_check directly, never inside
+# a `$(…)`.
+require_roots() {
+  local r missing=""
+  for r in "$@"; do
+    [ -d "$r" ] || missing="${missing:+$missing }$r"
+  done
+  [ -z "$missing" ] && return 0
+  red "plane-transport-neutrality gate: FAIL — neutral root(s) listed but not present on disk: $missing"
+  note "A listed root that does not exist is scanned as ZERO files, and zero passes every ban."
+  note "If the crate is legitimately gone, DELETE its entry from scripts/plane-keys.sh in a reviewed"
+  note "diff that says so. Never leave a stale root in the list: this gate must not go quiet by accident."
+  exit 1
+}
+
+count_files() { [ -n "$1" ] || { printf '0'; return 0; }; printf '%s\n' "$1" | wc -l | tr -d ' '; }
+# shellcheck disable=SC2086  # the split is the measurement
+count_roots() { local n; set -f; set -- $1; n=$#; set +f; printf '%d' "$n"; }
 
 # The banned voice-transport/media nouns (Plane-4, docs/design/plane4-duplex-session.md §7.2). The
 # lowercase forms drive the WORD rule; the Capitalized forms drive the CamelCase-token rule. Every one
@@ -55,7 +86,9 @@ NEUTRAL_ROOTS="crates/busbar-core/src crates/busbar-substrate/src crates/busbar-
 NOUNS_LC="rtc sdp webrtc twilio dtmf rtp sideband realtime audio mulaw g711 barge"
 CAMEL_ALT="Rtc|Sdp|Webrtc|Twilio|Dtmf|Rtp|Sideband|Realtime|Audio|Mulaw|G711|Barge"
 
-neutral_files() { find $NEUTRAL_ROOTS -name '*.rs' 2>/dev/null | sort; }
+# No `2>/dev/null` — require_roots has already proven every root exists, so any remaining find
+# diagnostic is real and must be seen.
+neutral_files() { find $NEUTRAL_ROOTS -name '*.rs' | sort; }
 
 # ── THE SCANNER (one copy; the self-test drives THIS function, never a duplicate) ─────────────────
 # Emits one TSV line per hit:  NOUN<TAB>file:line<TAB>trimmed-source
@@ -193,6 +226,23 @@ CTL
     fail=1; note "CONTROL FAILED: real-code SdpOffer/webrtc must flag (got: $out)"
   fi
 
+  # ── THE BLIND-SCAN CASES: the gate must not be able to pass by scanning NOTHING ──────────────────
+  # Every fixture above proves what the scanner SEES. These prove what happens when it is handed
+  # nothing to look at — the failure mode where `--check` prints PASS over a tree it never opened.
+  # Both run this script as a CHILD process, because the guards exit/return by design.
+  if PLANE_TRANSPORT_NEUTRAL_ROOTS="crates/busbar-core-does-not-exist/src" \
+     bash "$SELF" --check >"$tmp/missing.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a non-existent neutral root still exited 0 (the gate scanned nothing and passed)"
+  else
+    note "BLIND-SCAN: a non-existent neutral root exits non-zero (a missing root is RED, not silence)"
+  fi
+  mkdir -p "$tmp/emptyroot"
+  if PLANE_TRANSPORT_NEUTRAL_ROOTS="$tmp/emptyroot" bash "$SELF" --check >"$tmp/empty.log" 2>&1; then
+    fail=1; note "BLIND-SCAN FAILED: a zero-file neutral root still exited 0 (0 hits over 0 files read as clean)"
+  else
+    note "BLIND-SCAN: a real-but-empty neutral root exits non-zero (zero files scanned is RED)"
+  fi
+
   if [ "$fail" -ne 0 ]; then
     red "plane-transport-neutrality SELF-TEST FAILED — the scanner would let a transport noun through"
     return 1
@@ -203,15 +253,33 @@ CTL
 
 # ── THE REAL RUN ──────────────────────────────────────────────────────────────────────────────────
 run_check() {
+  # shellcheck disable=SC2086  # a space-separated root list; splitting is the point
+  require_roots $NEUTRAL_ROOTS
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   local nf; nf="$(neutral_files)"
+  local n_nf n_nr
+  n_nf="$(count_files "$nf")"; n_nr="$(count_roots "$NEUTRAL_ROOTS")"
+
+  # ── THE ZERO-FILE GUARD — trusted before the total is ────────────────────────────────────────────
+  # require_roots has ruled out a missing directory; this catches every OTHER way the list comes back
+  # empty (a root that exists but holds no .rs, a layout move that left the sources one level down).
+  # A zero-file scan and a perfectly clean tree produce the IDENTICAL number — 0 hits — so the count
+  # alone can never tell them apart. Resolved here, before it means anything.
+  if [ "$n_nf" -eq 0 ]; then
+    red "plane-transport-neutrality gate: FAIL — scanned $n_nf file(s) across $n_nr neutral root(s); zero is RED"
+    note "A scan of zero files reports zero nouns, which is indistinguishable from a clean tree."
+    note "neutral roots: $NEUTRAL_ROOTS"
+    note "Fix the root list in scripts/plane-keys.sh rather than letting the gate pass on an empty list."
+    return 1
+  fi
+
   : >"$tmp/hits"
   # shellcheck disable=SC2086
-  [ -n "$nf" ] && scan $nf >>"$tmp/hits"
+  scan $nf >>"$tmp/hits"
   local total; total="$(wc -l <"$tmp/hits" | tr -d ' ')"
 
   hdr "VOICE-TRANSPORT/MEDIA neutrality — banned transport nouns in the neutral crates"
-  note "neutral roots: $NEUTRAL_ROOTS"
+  note "neutral roots: $NEUTRAL_ROOTS ($n_nf .rs file(s) across $n_nr root(s))"
   note "banned nouns:  $NOUNS_LC"
 
   hdr "verdict"
