@@ -305,21 +305,21 @@ struct ReqSpec {
 /// Build the [`ReqSpec`] from the [`EgressDesc`] outbound tail, reading each tail field only behind
 /// the sized-struct guard (a sender that predates the tail yields a bodyless `GET`).
 fn build_req_spec(d: &EgressDesc) -> ReqSpec {
-    let method = read_sized_field!(d, EgressDesc, verb_ptr)
-        .zip(read_sized_field!(d, EgressDesc, verb_len))
+    let method = read_sized_field!(d, d.size, EgressDesc, verb_ptr)
+        .zip(read_sized_field!(d, d.size, EgressDesc, verb_len))
         .and_then(|(ptr, len)| method_of(ptr, len))
         .unwrap_or(http::Method::GET);
     let headers = match (
-        read_sized_field!(d, EgressDesc, headers_ptr),
-        read_sized_field!(d, EgressDesc, headers_len),
+        read_sized_field!(d, d.size, EgressDesc, headers_ptr),
+        read_sized_field!(d, d.size, EgressDesc, headers_len),
     ) {
         // SAFETY: a non-null `(headers_ptr, headers_len)` is a live borrowed range for the call (ABI).
         (Some(ptr), Some(len)) => unsafe { parse_headers(ptr, len) },
         _ => Vec::new(),
     };
     let body = match (
-        read_sized_field!(d, EgressDesc, body_ptr),
-        read_sized_field!(d, EgressDesc, body_len),
+        read_sized_field!(d, d.size, EgressDesc, body_ptr),
+        read_sized_field!(d, d.size, EgressDesc, body_len),
     ) {
         // SAFETY: a non-null `(body_ptr, body_len)` is a live borrowed range for the call (ABI).
         (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => {
@@ -448,8 +448,8 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec, destination: &str) -> C
         return CredInjection::Done; // the plane named no credential — nothing to inject.
     }
     let header_name = match (
-        read_sized_field!(d, EgressDesc, cred_header_ptr),
-        read_sized_field!(d, EgressDesc, cred_header_len),
+        read_sized_field!(d, d.size, EgressDesc, cred_header_ptr),
+        read_sized_field!(d, d.size, EgressDesc, cred_header_len),
     ) {
         // SAFETY: a non-null `(cred_header_ptr, cred_header_len)` is a live borrowed range (ABI).
         (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe {
@@ -458,8 +458,8 @@ fn inject_credential(d: &EgressDesc, spec: &mut ReqSpec, destination: &str) -> C
         _ => return CredInjection::Done, // no placement header → nothing to inject the credential into.
     };
     let scheme = match (
-        read_sized_field!(d, EgressDesc, cred_scheme_ptr),
-        read_sized_field!(d, EgressDesc, cred_scheme_len),
+        read_sized_field!(d, d.size, EgressDesc, cred_scheme_ptr),
+        read_sized_field!(d, d.size, EgressDesc, cred_scheme_len),
     ) {
         // SAFETY: a non-null `(cred_scheme_ptr, cred_scheme_len)` is a live borrowed range (ABI).
         (Some(ptr), Some(len)) if !ptr.is_null() && len != 0 => unsafe {
@@ -569,7 +569,7 @@ fn open_http(
     // The per-hop deadline the plane named (`0` ⇒ the host's default ceiling). Applied to BOTH the
     // request and the connect-head wait below, so a plane's own card/relay/stream/operator ceiling is
     // honored byte-for-byte rather than replaced by the host's fixed fallback.
-    let timeout = match read_sized_field!(d, EgressDesc, timeout_ms).unwrap_or(0) {
+    let timeout = match read_sized_field!(d, d.size, EgressDesc, timeout_ms).unwrap_or(0) {
         0 => EGRESS_TIMEOUT,
         ms => Duration::from_millis(ms),
     };
@@ -612,8 +612,8 @@ fn open_http(
     // plane-supplied address BEFORE connecting, exactly as the resolve-then-pin path judges every
     // resolved address. A plane can no longer pin 169.254.169.254 (or a 10.x internal) past the guard.
     let pinned: Option<std::net::SocketAddr> = {
-        let kind = read_sized_field!(d, EgressDesc, resolved_addr_kind).unwrap_or(0);
-        let bytes = read_sized_field!(d, EgressDesc, resolved_addr).unwrap_or([0u8; 16]);
+        let kind = read_sized_field!(d, d.size, EgressDesc, resolved_addr_kind).unwrap_or(0);
+        let bytes = read_sized_field!(d, d.size, EgressDesc, resolved_addr).unwrap_or([0u8; 16]);
         ip_from_resolved(kind, bytes).map(|ip| std::net::SocketAddr::new(ip, port))
     };
     if let Some(addr) = pinned {
@@ -641,7 +641,7 @@ fn open_http(
     // path). The sized-struct guard means a sender that predates the field leaves it `0` → no extra
     // roots. See [`super::trust_anchor`].
     let extra_roots = super::trust_anchor::resolve(
-        read_sized_field!(d, EgressDesc, trust_anchor_ref).unwrap_or(0),
+        read_sized_field!(d, d.size, EgressDesc, trust_anchor_ref).unwrap_or(0),
     );
     // BUSBAR'S OWN END OF THE HANDSHAKE, decided HERE — before the streaming thread MOVES `identity`.
     // `1` when a client certificate is carried into the handshake (offered if the peer asks), `0`
@@ -672,7 +672,8 @@ fn open_http(
     // the host client-pool key (two registrations with different identities against one address
     // must never share a connection), and the refs — not the parsed secrets — are the honest key.
     let d_client_identity_ref = d.client_identity_ref;
-    let d_trust_anchor_ref = read_sized_field!(d, EgressDesc, trust_anchor_ref).unwrap_or(0);
+    let d_trust_anchor_ref =
+        read_sized_field!(d, d.size, EgressDesc, trust_anchor_ref).unwrap_or(0);
 
     let (head_tx, head_rx) = sync_channel::<HeadMsg>(1);
     let (chunk_tx, chunk_rx) = sync_channel::<ChunkMsg>(CHUNK_CHANNEL_DEPTH);

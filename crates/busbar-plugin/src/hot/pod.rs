@@ -952,15 +952,22 @@ pub fn pack_usage_units(units: &std::collections::BTreeMap<String, u64>) -> Vec<
 /// egress packed-record decoders) — it never over-reads the borrowed block.
 ///
 /// # Safety
-/// When the guard reports the tail present, `units_ptr`/`units_len` MUST describe a live, initialized
-/// byte range (the `with_units` borrow discipline guarantees this for a `&Usage` under its guard).
+/// `usage` must address the live, initialized leading prefix its own `size` field advertises — a
+/// WHOLE `Usage` is sufficient but not required, since an older peer's struct is genuinely shorter.
+/// When the guard reports the tail present, `units_ptr`/`units_len` MUST in turn describe a live,
+/// initialized byte range (the `with_units` borrow discipline guarantees this under its guard).
 #[must_use]
-pub fn decode_usage_units(usage: &Usage) -> std::collections::BTreeMap<String, u64> {
+pub unsafe fn decode_usage_units(usage: *const Usage) -> std::collections::BTreeMap<String, u64> {
     let mut out = std::collections::BTreeMap::new();
+    // The advertised size lives at offset 0 and is written by EVERY sender, so it is the one field
+    // readable before the guard has said anything.
+    // SAFETY: the caller guarantees at least the advertised prefix — which always includes `size`
+    // itself — is live; `read_unaligned` assumes no alignment the peer did not promise.
+    let advertised = unsafe { core::ptr::read_unaligned(core::ptr::addr_of!((*usage).size)) };
     // Read the (ptr, len) ONLY when the sender's advertised `size` proves they were written.
     let (ptr, len) = match (
-        crate::read_sized_field!(usage, Usage, units_ptr),
-        crate::read_sized_field!(usage, Usage, units_len),
+        crate::read_sized_field!(usage, advertised, Usage, units_ptr),
+        crate::read_sized_field!(usage, advertised, Usage, units_len),
     ) {
         (Some(p), Some(l)) if !p.is_null() && l != 0 => (p, l),
         _ => return out,

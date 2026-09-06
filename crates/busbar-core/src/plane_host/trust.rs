@@ -385,7 +385,8 @@ pub(crate) extern "C-unwind" fn drift_quarantine(host: HostCtx, key: *const Key)
         };
         // The caller's disposition, read ONLY when `size` proves the field was written; a predating
         // sender (or an unknown value) falls back to the demote-only `Quarantined`.
-        let settle_state = trust_state_from_u8(read_sized_field!(k, Key, drift_state).unwrap_or(0));
+        let settle_state =
+            trust_state_from_u8(read_sized_field!(k, k.size, Key, drift_state).unwrap_or(0));
         // THE ONE settle rule, written once: `Quarantined` records the demotion, `Approved` clears it.
         quarantine_drift(&state.app.demotion_record, &subject, settle_state);
         StatusClass::Ok
@@ -568,11 +569,11 @@ fn legacy_drift_verdict(state: &HostState, cp: &CounterpartyRef) -> TrustVerdict
 fn fold_facts(cp: &CounterpartyRef) -> TrustVerdict {
     // ── 1. IDENTITY ──────────────────────────────────────────────────────────────────────────────
     // `0` not-live, `1` live, `2` no-principal (honest ungoverned `None` — passes identity).
-    if read_sized_field!(cp, CounterpartyRef, identity_live).unwrap_or(0) == 0 {
+    if read_sized_field!(cp, cp.size, CounterpartyRef, identity_live).unwrap_or(0) == 0 {
         return TrustVerdict::IdentityNotLive;
     }
     // ── 2. GRANT ─────────────────────────────────────────────────────────────────────────────────
-    match read_sized_field!(cp, CounterpartyRef, grant_outcome).unwrap_or(0) {
+    match read_sized_field!(cp, cp.size, CounterpartyRef, grant_outcome).unwrap_or(0) {
         1 => return TrustVerdict::NotGranted,
         2 => return TrustVerdict::EgressDenied,
         _ => {}
@@ -581,7 +582,7 @@ fn fold_facts(cp: &CounterpartyRef) -> TrustVerdict {
     // Only `Approved` serves; every other state is a `NotServing` refusal mapped to the verdict that
     // names its remedy (quarantine/failed → re-establish; pending → redeem approval; suspended →
     // operator denial; absent/unknown → fail closed).
-    match read_sized_field!(cp, CounterpartyRef, registration_state).unwrap_or(0) {
+    match read_sized_field!(cp, cp.size, CounterpartyRef, registration_state).unwrap_or(0) {
         reg_state::APPROVED => {}
         reg_state::QUARANTINED | reg_state::FAILED => return TrustVerdict::Quarantined,
         reg_state::PENDING => return TrustVerdict::NeedsApproval,
@@ -590,13 +591,14 @@ fn fold_facts(cp: &CounterpartyRef) -> TrustVerdict {
     }
     // ── 3b. ARTIFACT ─────────────────────────────────────────────────────────────────────────────
     // `2` drifted, `3` unobservable — both are the plane's `ARTIFACT_DRIFTED` refusal word.
-    match read_sized_field!(cp, CounterpartyRef, artifact_outcome).unwrap_or(0) {
+    match read_sized_field!(cp, cp.size, CounterpartyRef, artifact_outcome).unwrap_or(0) {
         2 | 3 => return TrustVerdict::ArtifactDrifted,
         _ => {}
     }
     // ── 4. GENERATION ────────────────────────────────────────────────────────────────────────────
-    let admitted = read_sized_field!(cp, CounterpartyRef, generation_admitted).unwrap_or(0);
-    let live = read_sized_field!(cp, CounterpartyRef, generation_live).unwrap_or(0);
+    let admitted =
+        read_sized_field!(cp, cp.size, CounterpartyRef, generation_admitted).unwrap_or(0);
+    let live = read_sized_field!(cp, cp.size, CounterpartyRef, generation_live).unwrap_or(0);
     if admitted != live {
         return TrustVerdict::GenerationMoved;
     }
@@ -630,8 +632,8 @@ pub(crate) extern "C-unwind" fn trust_evaluate(
         // the host would ALLOW does the plane's fact tail get to fold in, and it can only tighten that
         // `Allow` into a specific refusal — never loosen a host refusal into `Allow`.
         let host_verdict = legacy_drift_verdict(state, cp);
-        let facts_written =
-            read_sized_field!(cp, CounterpartyRef, fact_flags).is_some_and(|f| f & 0x01 != 0);
+        let facts_written = read_sized_field!(cp, cp.size, CounterpartyRef, fact_flags)
+            .is_some_and(|f| f & 0x01 != 0);
         if host_verdict != TrustVerdict::Allow {
             // The host refuses; the plane cannot override it. (Also covers the null-identity `Denied`.)
             host_verdict

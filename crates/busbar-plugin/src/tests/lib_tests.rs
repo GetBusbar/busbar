@@ -52,11 +52,14 @@ fn check_preamble_fails_closed_on_magic_and_major() {
 fn sized_field_guard_hides_truncated_tail() {
     let g = Facts::new(10, 100, 1, 0, 0, b"pool");
     // A full-size struct reveals a tail field.
-    assert_eq!(read_sized_field!(&*g, Facts, flags), Some(0));
+    assert_eq!(read_sized_field!(&*g, g.size, Facts, flags), Some(0));
     // A sender that advertised only the preamble reveals nothing past it.
     let mut truncated = *g;
     truncated.size = 6; // size(u32)=4 + version(u16)=2 — preamble only
-    assert_eq!(read_sized_field!(&truncated, Facts, flags), None);
+    assert_eq!(
+        read_sized_field!(&truncated, truncated.size, Facts, flags),
+        None
+    );
 }
 
 #[test]
@@ -97,7 +100,7 @@ fn usage_units_pack_decode_round_trips() {
         &packed,
     );
     // A full minor-20 Usage decodes the exact map back.
-    assert_eq!(decode_usage_units(&guard), units);
+    assert_eq!(unsafe { decode_usage_units(&*guard) }, units);
 }
 
 #[test]
@@ -123,12 +126,37 @@ fn usage_units_tail_hidden_from_a_pre_minor_20_sender() {
     // sized-struct guard must hide `units_ptr`/`units_len`, so the host bills via the legacy scalar.
     let mut old = *guard;
     old.size = 80;
-    assert_eq!(read_sized_field!(&old, Usage, units_ptr), None);
+    assert_eq!(read_sized_field!(&old, old.size, Usage, units_ptr), None);
     assert!(
-        decode_usage_units(&old).is_empty(),
+        unsafe { decode_usage_units(&old) }.is_empty(),
         "a pre-minor-20 sender must expose NO keyed units (append-only back-compat)"
     );
 
     // The current sender (full size) still exposes them.
-    assert_eq!(decode_usage_units(&guard), units);
+    assert_eq!(unsafe { decode_usage_units(&*guard) }, units);
+}
+
+/// The sized-field guard must be safe to point at a peer buffer that is SHORTER than the struct it
+/// describes. Reading through a `&Usage` cannot be: the reference asserts the full 96 bytes are a
+/// valid, dereferenceable `Usage` the instant it is formed, which over a 64-byte peer buffer is a
+/// claim about memory that does not exist. The pointer form makes the advertised size the only thing
+/// consulted, and touches nothing past it.
+#[test]
+fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
+    use crate::hot::pod::decode_usage_units;
+    use crate::hot::Usage;
+
+    // A peer that advertises only the pre-units prefix, in a buffer that is only that long — there
+    // are no bytes at all where `units_ptr`/`units_len` would sit.
+    const PREFIX: usize = 64;
+    let mut buf = vec![0u8; PREFIX];
+    buf[..4].copy_from_slice(&(PREFIX as u32).to_ne_bytes());
+    let p = buf.as_ptr().cast::<Usage>();
+
+    // `p` addresses `PREFIX` live bytes whose leading `size` says exactly that; the guard reads
+    // nothing beyond it.
+    assert_eq!(read_sized_field!(p, PREFIX as u32, Usage, units_ptr), None);
+    assert_eq!(read_sized_field!(p, PREFIX as u32, Usage, units_len), None);
+    // SAFETY: as above — the hidden tail means the decoder yields an empty map without a read.
+    assert!(unsafe { decode_usage_units(p) }.is_empty());
 }
