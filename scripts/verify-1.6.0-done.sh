@@ -230,6 +230,10 @@ begin_group "PARITY — the shadow oracle: this build vs the published 1.5.5 bin
 # NAMED gap in the report, never a pass. SHADOW_ORACLE_GOLDEN may point at an existing recording.
 if [ -x testing/shadow-oracle/replay.sh ]; then
   step "replay-selftest (the differ can see a diff)" bash testing/shadow-oracle/replay-selftest.sh
+  # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
+  # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
+  # --write for, would make this whole group measure a cell set that was never reviewed.
+  step "enumerate-cells --check (cells.json is what the generator derives)" python3 testing/shadow-oracle/enumerate-cells.py --check
   step "fetch-golden --check (1.5.5 by pinned digest)" bash testing/shadow-oracle/fetch-golden.sh --check
   ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
   GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"

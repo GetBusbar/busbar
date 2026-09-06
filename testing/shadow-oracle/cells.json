@@ -40,21 +40,25 @@
     {
       "outcome": "ok_stream_array",
       "why": "happy path, streamed as a JSON array (gemini without alt=sse)"
+    },
+    {
+      "outcome": "stream_upstream_error",
+      "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event"
     }
   ],
   "counts": {
-    "total": 2283,
+    "total": 2293,
     "by_plane": {
       "a2a": 468,
-      "core": 769,
-      "llm": 134,
+      "core": 773,
+      "llm": 140,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
       "admin.ops": 234,
       "auth.lifecycle": 3,
-      "billing": 11,
+      "billing": 12,
       "boot.refusal": 205,
       "boot.warning": 31,
       "cli": 14,
@@ -65,8 +69,8 @@
       "documented": 28,
       "hazard": 2,
       "hooks": 10,
-      "http.crosscut": 20,
-      "llm.wire": 127,
+      "http.crosscut": 23,
+      "llm.wire": 133,
       "mcp": 912,
       "neutrality": 18,
       "ops.scrape": 14,
@@ -10325,6 +10329,38 @@
       "why": "a 403 at Approve charges nothing"
     },
     {
+      "id": "billing|key-usage|refund-across-window",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/{KEY_OK}/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}",
+            "mock_control": {
+              "m-openai-chat": "down"
+            }
+          }
+        ]
+      },
+      "why": "a request that straddles the window roll: its flat per-request fee must be refunded from the SAME cell the charge landed on, so the view reads spend 0 and not one fee too high (M-1)",
+      "needs_fixture": true
+    },
+    {
       "id": "boot.refusal|BOOT-001|validate",
       "plane": "core",
       "family": "boot.refusal",
@@ -17592,6 +17628,25 @@
       "config_variant": "hooks"
     },
     {
+      "id": "http.crosscut|413|a2a-jsonrpc",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/a2a",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "@oversize:33MiB",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "oversize on the A2A JSON-RPC mount (busbar-a2a-codec MOUNT_PATH) \u2014 needs a recorder config that mounts the agents: block",
+      "needs_fixture": true
+    },
+    {
       "id": "http.crosscut|413|anthropic",
       "plane": "core",
       "family": "http.crosscut",
@@ -17624,6 +17679,42 @@
         "listener": "admin"
       },
       "why": "admin envelope discards status/kind (PB-60)"
+    },
+    {
+      "id": "http.crosscut|413|gemini-path",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/v1beta/models/m-gemini:generateContent",
+        "headers": {},
+        "body": "@oversize:33MiB",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "oversize on the gemini path: the gemini door detects by PATH, not by header or body, so it is the one dialect whose 413 envelope the openai/anthropic cells above cannot stand in for"
+    },
+    {
+      "id": "http.crosscut|413|mcp-streamable-http",
+      "plane": "core",
+      "family": "http.crosscut",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/mcp",
+        "headers": {
+          "Content-Type": "application/json",
+          "Accept": "application/json, text/event-stream"
+        },
+        "body": "@oversize:33MiB",
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "oversize on the MCP streamable-http mount: which envelope answers before the plane is reached (JSON-RPC error vs the path-inferred dialect envelope) \u2014 needs a recorder config that mounts the mcp: block",
+      "needs_fixture": true
     },
     {
       "id": "http.crosscut|413|openai",
@@ -17982,6 +18073,22 @@
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
     },
     {
+      "id": "llm|anthropic|anthropic|request|stream_upstream_error",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_error",
+      "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
+      "needs_fixture": true,
+      "mock_control": {
+        "stream-error": true
+      }
+    },
+    {
       "id": "llm|anthropic|anthropic|request|unauthenticated",
       "plane": "llm",
       "family": "llm.wire",
@@ -18275,6 +18382,22 @@
       "op": "chat",
       "outcome": "over_budget",
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
+    },
+    {
+      "id": "llm|bedrock|bedrock|request|stream_upstream_error",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_error",
+      "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
+      "needs_fixture": true,
+      "mock_control": {
+        "stream-error": true
+      }
     },
     {
       "id": "llm|bedrock|bedrock|request|unauthenticated",
@@ -18572,6 +18695,22 @@
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
     },
     {
+      "id": "llm|cohere|cohere|request|stream_upstream_error",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_error",
+      "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
+      "needs_fixture": true,
+      "mock_control": {
+        "stream-error": true
+      }
+    },
+    {
       "id": "llm|cohere|cohere|request|unauthenticated",
       "plane": "llm",
       "family": "llm.wire",
@@ -18865,6 +19004,22 @@
       "op": "chat",
       "outcome": "over_budget",
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
+    },
+    {
+      "id": "llm|gemini|gemini|request|stream_upstream_error",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_error",
+      "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
+      "needs_fixture": true,
+      "mock_control": {
+        "stream-error": true
+      }
     },
     {
       "id": "llm|gemini|gemini|request|unauthenticated",
@@ -19162,6 +19317,22 @@
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
     },
     {
+      "id": "llm|openai|openai|request|stream_upstream_error",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_error",
+      "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
+      "needs_fixture": true,
+      "mock_control": {
+        "stream-error": true
+      }
+    },
+    {
       "id": "llm|openai|openai|request|unauthenticated",
       "plane": "llm",
       "family": "llm.wire",
@@ -19455,6 +19626,22 @@
       "op": "chat",
       "outcome": "over_budget",
       "why": "budget exhausted -> refused at Admit (native 429, names the bucket)"
+    },
+    {
+      "id": "llm|responses|responses|request|stream_upstream_error",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_error",
+      "why": "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event",
+      "needs_fixture": true,
+      "mock_control": {
+        "stream-error": true
+      }
     },
     {
       "id": "llm|responses|responses|request|unauthenticated",

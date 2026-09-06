@@ -21,6 +21,14 @@ Outcome controls (the recorder sets them per cell):
   header  X-Oracle-Upstream: down   -> 503 with a fixed body (drives busbar's failover / upstream-error path)
   header  X-Oracle-Upstream: slow   -> reserved (timeout cells), currently same as down
   header  X-Oracle-Upstream: 401    -> 401 with a fixed body (the member's credential is rejected: a hard-down)
+  header  X-Oracle-Upstream: stream-error
+                                    -> a 200 stream that FAILS PART WAY THROUGH: the dialect's normal
+                                       events up to and including the text delta, then an IN-BAND error
+                                       event in that dialect's own error shape, and no terminal usage /
+                                       [DONE] frame. Distinct from `cut`, which kills the socket with no
+                                       error at all: here the upstream says WHY, in band, after the
+                                       response has already begun — so the door cannot answer with a
+                                       status code and has to translate the failure into its own stream
   body    {"stream": true} (openai/anthropic/cohere) or the *stream* path (gemini/bedrock)
                                     -> a fixed SSE / streamed sequence in that dialect
 
@@ -217,6 +225,89 @@ def bedrock_stream(model, marker):
     return b"".join(_eventstream_frame(et, j(body)) for et, body in events)
 
 
+# ── the mid-stream failure: N good events, then an IN-BAND error in the dialect's own shape ───────
+# The response has already been committed 200 with its first frames, so this is the one upstream
+# failure a door cannot answer with a status code. Each dialect's error event below is the shape that
+# dialect actually defines for it; the terminal usage/[DONE] frame is deliberately NOT sent, because
+# a failed stream does not get one.
+ERR_MSG = "oracle: upstream failed mid-stream"
+
+
+def _sse_error_openai():
+    return sse([{"error": {"type": "server_error", "code": None, "param": None, "message": ERR_MSG}}])
+
+
+def openai_chat_stream_error(model, marker):
+    base = {"id": "chatcmpl-oracle", "object": "chat.completion.chunk", "created": 0, "model": model}
+    return sse([
+        {**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": marker}, "finish_reason": None}]},
+    ]) + _sse_error_openai()
+
+
+def anthropic_stream_error(model, marker):
+    def ev(t, body):
+        return f"event: {t}\ndata: {json.dumps(body, separators=(',', ':'), sort_keys=True)}\n\n".encode()
+    return b"".join([
+        ev("message_start", {"type": "message_start", "message": {
+            "id": "msg_oracle", "type": "message", "role": "assistant", "model": model, "content": [],
+            "stop_reason": None, "stop_sequence": None, "stop_details": None, "container": None,
+            "usage": {**anthropic_usage(), "output_tokens": 0}}}),
+        ev("content_block_start", {"type": "content_block_start", "index": 0,
+                                   "content_block": {"type": "text", "text": "", "citations": None}}),
+        ev("content_block_delta", {"type": "content_block_delta", "index": 0,
+                                   "delta": {"type": "text_delta", "text": marker}}),
+        # Anthropic's documented in-band stream failure: an `error` event, no message_stop.
+        ev("error", {"type": "error", "error": {"type": "overloaded_error", "message": ERR_MSG}}),
+    ])
+
+
+def gemini_stream_error(model, marker):
+    good = json.loads(gemini(model, marker))
+    good.pop("usageMetadata", None)
+    return sse([good, {"error": {"code": 500, "message": ERR_MSG, "status": "INTERNAL"}}])
+
+
+def cohere_stream_error(model, marker):
+    return sse([
+        {"type": "message-start", "id": "cohere-oracle", "delta": {"message": {"role": "assistant", "content": []}}},
+        {"type": "content-delta", "index": 0, "delta": {"message": {"content": {"type": "text", "text": marker}}}},
+        {"type": "error", "id": "cohere-oracle", "message": ERR_MSG},
+    ])
+
+
+def responses_stream_error(model, marker):
+    # /v1/responses answers buffered in every other cell; the ONLY streaming it does here is this
+    # failure, so no recorded cell's bytes move by adding it.
+    return sse([
+        {"type": "response.created", "sequence_number": 0,
+         "response": {"id": "resp_oracle", "object": "response", "status": "in_progress", "model": model}},
+        {"type": "response.output_text.delta", "sequence_number": 1, "item_id": "msg_oracle",
+         "output_index": 0, "content_index": 0, "delta": marker},
+        {"type": "error", "sequence_number": 2, "code": "server_error", "param": None, "message": ERR_MSG},
+    ])
+
+
+def bedrock_stream_error(model, marker):
+    # A real ConverseStream reports a mid-stream failure as an EXCEPTION frame: :message-type is
+    # `exception`, not `event`, and :exception-type names the modelled error.
+    def exception_frame(exc_type, payload):
+        headers = (_eventstream_header(":exception-type", exc_type)
+                   + _eventstream_header(":content-type", "application/json")
+                   + _eventstream_header(":message-type", "exception"))
+        headers_len = len(headers)
+        total_len = 12 + headers_len + len(payload) + 4
+        prelude = struct.pack(">II", total_len, headers_len)
+        frame = prelude + struct.pack(">I", zlib.crc32(prelude) & 0xFFFFFFFF) + headers + payload
+        return frame + struct.pack(">I", zlib.crc32(frame) & 0xFFFFFFFF)
+
+    good = [
+        ("messageStart", {"role": "assistant"}),
+        ("contentBlockDelta", {"contentBlockIndex": 0, "delta": {"text": marker}}),
+    ]
+    return (b"".join(_eventstream_frame(et, j(body)) for et, body in good)
+            + exception_frame("internalServerException", j({"message": ERR_MSG})))
+
+
 class H(BaseHTTPRequestHandler):
     server_version = "oracle-upstream/1"
     sys_version = ""
@@ -303,6 +394,8 @@ class H(BaseHTTPRequestHandler):
         # Verbs: down (503) | 429 (Retry-After: 7) | 5xx (500) | 401 (credential rejected: a hard-down)
         #        | slow (sleep past busbar's attempt cap)
         #        | cut (close the socket after the first streamed event / mid-body)
+        #        | stream-error (N good events, then an IN-BAND error event in the dialect's own
+        #          error shape — the failure a 200 stream cannot report as a status code)
         ctl = (self.headers.get("X-Oracle-Upstream") or "").strip().lower()
         ctl_file = self.server.control_file  # type: ignore[attr-defined]
         if ctl_file and os.path.exists(ctl_file):
@@ -333,23 +426,39 @@ class H(BaseHTTPRequestHandler):
         self.cut = (ctl == "cut")
 
         want_stream = bool(req.get("stream"))
+        # `stream-error` only ever applies to a request that IS a stream — a buffered request that
+        # fails is already covered by `down`/`5xx`, and answering one with half a stream would be a
+        # shape no upstream produces.
+        stream_error = (ctl == "stream-error")
         if p == "/v1/messages":
+            if want_stream and stream_error:
+                return self._send(200, anthropic_stream_error(model, marker), "text/event-stream")
             body = anthropic_stream(model, marker) if want_stream else anthropic(model, marker)
             return self._send(200, body, "text/event-stream" if want_stream else "application/json")
         if p == "/v1/chat/completions":
+            if want_stream and stream_error:
+                return self._send(200, openai_chat_stream_error(model, marker), "text/event-stream")
             body = openai_chat_stream(model, marker) if want_stream else openai_chat(model, marker)
             return self._send(200, body, "text/event-stream" if want_stream else "application/json")
         if p == "/v1/responses":
+            if want_stream and stream_error:
+                return self._send(200, responses_stream_error(model, marker), "text/event-stream")
             return self._send(200, openai_responses(model, marker))
         if p.startswith("/v1beta/models/") and ":streamGenerateContent" in p:
+            if stream_error:
+                return self._send(200, gemini_stream_error(model, marker), "text/event-stream")
             return self._send(200, gemini_stream(model, marker), "text/event-stream")
         if p.startswith("/v1beta/models/") and ":generateContent" in p:
             return self._send(200, gemini(model, marker))
         if p.startswith("/model/") and p.endswith("/converse-stream"):
+            if stream_error:
+                return self._send(200, bedrock_stream_error(model, marker), "application/vnd.amazon.eventstream")
             return self._send(200, bedrock_stream(model, marker), "application/vnd.amazon.eventstream")
         if p.startswith("/model/") and p.endswith("/converse"):
             return self._send(200, bedrock(model, marker))
         if p == "/v2/chat":
+            if want_stream and stream_error:
+                return self._send(200, cohere_stream_error(model, marker), "text/event-stream")
             body = cohere_stream(model, marker) if want_stream else cohere(model, marker)
             return self._send(200, body, "text/event-stream" if want_stream else "application/json")
         return self._send(404, j({"error": f"oracle mock: no dialect for path {p}"}))
