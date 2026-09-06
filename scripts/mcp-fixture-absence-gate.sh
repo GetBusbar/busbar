@@ -74,16 +74,52 @@ discover_forbidden() {
     | sort -u
 }
 
+# THE FLOOR IS CHECKED IN THE PARENT SHELL, and it was not.
+#
+# This function was called as `while read … done < <(require_forbidden_set | grep -E '^test_')`. A
+# process substitution is a CHILD: its `die` exited the child, the parent saw a closed pipe, read
+# zero lines, and carried on with `forbidden=()`. Both axes then looped over nothing and printed
+# "ok: axis 1 — 0 fixture identifier(s), none present" — the collapse the floor exists to refuse,
+# reported as the cleanest possible pass, and the floor's own `die` is what made the set empty.
+#
+# So this function no longer decides anything from inside a subshell. It prints the set on stdout,
+# every word of narration on stderr (so a caller may capture the set without filtering prose out of
+# it), and RETURNS non-zero when the floor is not met. `run_gate` reads the status and dies in the
+# parent, where dying still stops the gate.
 require_forbidden_set() {
   local set count
   set="$(discover_forbidden)"
   count="$(printf '%s\n' "$set" | grep -c . || true)"
-  [ "$count" -ge "$MIN_FORBIDDEN" ] || die "discovery found only $count forbidden \`test_*\` \
-identifier(s), below the floor of $MIN_FORBIDDEN. An empty or collapsed forbidden set makes every \
-assertion below trivially true, which is a false green and not a clean tree."
-  say "  discovered $count forbidden identifier(s):"
-  printf '%s\n' "$set" | sed 's/^/    /'
+  if [ "$count" -lt "$MIN_FORBIDDEN" ]; then
+    fail "discovery found only $count forbidden \`test_*\` identifier(s), below the floor of \
+$MIN_FORBIDDEN. An empty or collapsed forbidden set makes every assertion below trivially true, \
+which is a false green and not a clean tree."
+    return 1
+  fi
+  say "  discovered $count forbidden identifier(s):" >&2
+  printf '%s\n' "$set" | sed 's/^/    /' >&2
   printf '%s\n' "$set"
+}
+
+# The set the axes assert over, filled by `load_forbidden_set` in the CALLING shell. A global array
+# rather than a captured pipeline for one reason: the capture is what put the floor in a child.
+FORBIDDEN=()
+
+load_forbidden_set() {
+  local line set
+  # Command substitution, not process substitution: its exit status reaches THIS shell, so the
+  # floor's refusal stops the gate instead of quietly emptying the forbidden set.
+  set="$(require_forbidden_set)" \
+    || die "the forbidden set did not meet its floor, so there is nothing to assert absence of."
+  FORBIDDEN=()
+  while IFS= read -r line; do
+    case "$line" in test_*) FORBIDDEN+=("$line") ;; esac
+  done <<<"$set"
+  # And the floor again on what actually survived into the array — the two are the same number only
+  # as long as nothing between them drops a line.
+  [ "${#FORBIDDEN[@]}" -ge "$MIN_FORBIDDEN" ] || die "only ${#FORBIDDEN[@]} forbidden identifier(s) \
+reached the assertions, below the floor of $MIN_FORBIDDEN. Both axes would have looped over \
+nothing and reported clean."
 }
 
 # ── AXIS 1: the artifact ──────────────────────────────────────────────────────────────────────────
@@ -237,11 +273,8 @@ run_gate() {
   # Read with `read -r` rather than `mapfile`, which is bash 4+ and absent from the bash macOS
   # ships. A gate that only runs on the CI runner cannot be exercised by hand, and a gate nobody
   # can watch fail is a gate nobody has evidence works.
-  local -a forbidden=()
-  local line
-  while IFS= read -r line; do
-    [ -n "$line" ] && forbidden+=("$line")
-  done < <(require_forbidden_set | grep -E '^test_')
+  load_forbidden_set
+  local -a forbidden=("${FORBIDDEN[@]}")
 
   hdr "building the release artifact (default features, exactly as a release builds it)"
   cargo build --release --locked -p "$BIN_NAME" 2>&1 | tail -5
@@ -330,8 +363,32 @@ run_selftest() {
     say "  ok: axis 2 is RED when it never reached a running binary"
   fi
 
+  # RED 5: THE FLOOR MUST REACH THE CALLER. RED 3 above only proves the floor refuses when it is
+  # called directly; the gate used to call it through a process substitution, where the refusal
+  # exited a CHILD and the parent read an empty set and reported both axes clean over zero
+  # identifiers. The two asserts below are the difference: the first is the shape the gate uses now
+  # (the caller sees the status), the second re-runs the OLD shape so this case cannot pass by
+  # accident on a day the floor stops refusing at all.
+  if ( MIN_FORBIDDEN=999999 load_forbidden_set ) >/dev/null 2>&1; then
+    say "  MISS: the floor's refusal did not reach the calling shell — the axes would run over an empty set"
+    failures=$((failures+1))
+  else
+    say "  ok: a forbidden set below the floor stops the gate in the CALLING shell"
+  fi
+  local swallowed=()
+  while IFS= read -r line; do
+    [ -n "$line" ] && swallowed+=("$line")
+  done < <( MIN_FORBIDDEN=999999 require_forbidden_set 2>/dev/null | grep -E '^test_' || true )
+  if [ "${#swallowed[@]}" -eq 0 ]; then
+    say "  ok: and the old process-substitution shape really did swallow it (${#swallowed[@]} identifier(s) read),"
+    say "      so RED 5 is testing a difference that exists"
+  else
+    say "  MISS: the old shape did not collapse, so RED 5 proves nothing"
+    failures=$((failures+1))
+  fi
+
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
-  say "  self-test: 6 fixture(s) passed"
+  say "  self-test: 8 fixture(s) passed"
 }
 
 case "${1:---help}" in
