@@ -54,7 +54,8 @@ use busbar_unit_scope::Scope;
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_unit_verbs::rate::{MutationClass, CONFIG_CLASS_RULES};
 use busbar_unit_verbs::{
-    KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES, NEW_VERBS,
+    ApprovalState, KernelVerb, PostureCtx, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NAMED_SURFACES,
+    NEW_VERBS,
 };
 
 /// The transport an admin claim is declared over, and therefore the one a sealed destination for an
@@ -1131,8 +1132,61 @@ pub struct AdminBinding {
     /// figures that surface never kept, so they need somewhere else to reach, and giving them their
     /// own read-only seam is what stops the dispatch from acquiring a way to read money.
     pub ledger: Arc<dyn LedgerView>,
+    /// Where the money-governance posture is read from.
+    ///
+    /// A third seam, and it has to be one: the two gates the 17 verbs are checked against are sealed
+    /// state, not request state, so nothing on the request can answer them and nothing this file
+    /// holds is entitled to decide them. Bound to [`UnsealedPosture`] until a root binds a reader for
+    /// the journal the ceremony writes.
+    pub posture: Arc<dyn PostureView>,
     /// The requests currently being walked.
     pub units: AdminUnits,
+}
+
+/// Where the two sealed gates a money-governance verb is checked against are read from.
+///
+/// The verbs unit takes both as plain values and says so: resolving them is the integrator's, which
+/// is this file. What the integrator may NOT do is invent them — a posture invented at the call site
+/// is a gate that reports whatever the call site wrote rather than what the fleet sealed, which is
+/// the same thing as no gate at all in one direction and an unliftable refusal in the other.
+///
+/// So the answer is an option, and `None` means "this node cannot read what the fleet sealed". A
+/// verb whose posture is unresolved is refused by the verbs unit rather than admitted under a
+/// guessed one, which is the only safe reading: a reader that has stopped working must not look like
+/// a fleet that never ran a ceremony.
+pub trait PostureView: Send + Sync {
+    /// The posture this verb is checked against, and this actor's approval standing for it.
+    ///
+    /// The actor is named because the approval half is per-maker: whether an `approve` exists for a
+    /// pending mutation, and whether its approver is somebody other than the principal now asking,
+    /// is a question about this caller and not about the node.
+    fn resolve(&self, verb: KernelVerb, actor: &str) -> Option<(PostureCtx, ApprovalState)>;
+}
+
+/// The posture of a node that has sealed no policy at all.
+///
+/// Exactly what the design says a fresh install and an upgrade are, said as data rather than assumed
+/// at the call site: no operator ceremony has run, so the irreducible verbs that need one are
+/// refused, and dual control is single, so every other mutation applies immediately. The approval
+/// standing is `NotYetApproved` because nothing has approved anything — under `Single` it is never
+/// consulted, and stating the true value rather than a convenient one is what stops this default
+/// from becoming a pass the moment a real posture is bound beside it.
+///
+/// This is a statement about a node with no journal, NOT a fallback for one whose journal could not
+/// be read. That case answers `None` and is refused.
+#[derive(Debug, Default)]
+pub struct UnsealedPosture;
+
+impl PostureView for UnsealedPosture {
+    fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
+        Some((
+            PostureCtx {
+                operator: busbar_unit_verbs::OperatorState::Unset,
+                dual_control: busbar_unit_verbs::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        ))
+    }
 }
 
 impl std::fmt::Debug for AdminBinding {
@@ -1156,6 +1210,7 @@ impl AdminBinding {
         AdminBinding {
             dispatch,
             ledger: Arc::new(UnopenedLedger),
+            posture: Arc::new(UnsealedPosture),
             units: AdminUnits::new(),
         }
     }
@@ -1164,6 +1219,13 @@ impl AdminBinding {
     #[must_use]
     pub fn with_ledger_view(mut self, ledger: Arc<dyn LedgerView>) -> Self {
         self.ledger = ledger;
+        self
+    }
+
+    /// Bind the money-governance gates to the posture a fleet actually sealed.
+    #[must_use]
+    pub fn with_posture_view(mut self, posture: Arc<dyn PostureView>) -> Self {
+        self.posture = posture;
         self
     }
 }
@@ -1488,20 +1550,28 @@ pub(crate) fn route(
         CONFIG_CLASS_RULES,
     );
 
+    // The same identity the record attributes to, so the rate-limit bucket, the audit row and the
+    // maker half of the maker-checker rule all name one actor. Keying any of them on the credential
+    // instead let one principal be two by presenting a second token.
+    let actor = actor_of(binding, ctx.key);
+    // Both gates come from the seam, together, because they are one question about one fleet asked
+    // at one moment. An unresolvable posture travels as `None` and the verbs unit refuses the verb
+    // for it: the two gates exist to stop an irreversible money operation, so a node that cannot say
+    // what its fleet sealed must not run one.
+    let resolved_posture = binding.posture.resolve(verb, &actor);
+    let (posture, approval) = match resolved_posture {
+        Some((posture, approval)) => (Some(posture), approval),
+        None => (None, busbar_unit_verbs::ApprovalState::NotYetApproved),
+    };
+
     match verbs.execute(
         verb,
         admin,
-        // The same identity the record attributes to, so the rate-limit bucket and the audit row
-        // name one actor. Keying the limiter on the credential instead let one principal evade its
-        // own mutation budget by presenting a second token.
-        &actor_of(binding, ctx.key),
+        &actor,
         granted,
         request.at,
-        Some(busbar_unit_verbs::PostureCtx {
-            operator: busbar_unit_verbs::OperatorState::Unset,
-            dual_control: busbar_unit_verbs::DualControl::Single,
-        }),
-        busbar_unit_verbs::ApprovalState::Approved,
+        posture,
+        approval,
         &request.body,
     ) {
         Ok(packed) => match AdminAnswer::unpack(&packed) {
@@ -2540,6 +2610,113 @@ mod tests {
                 "the presented credential reached the administrative chain"
             );
         }
+    }
+
+    /// The two money-governance gates are the fleet's, and the route step reads them rather than
+    /// writing them.
+    ///
+    /// Three postures over the same step, and each one is a different failure if the seam is not
+    /// consulted. Under a fleet that sealed dual control, one principal's export is REFUSED — a step
+    /// that wrote `approved` for itself would let a single operator take the keyset out of a node
+    /// whose whole reason for sealing the posture was that no single operator can. Under a fleet that
+    /// HAS run the ceremony, a disaster-recovery verb is ADMITTED — a step that wrote `unset` for
+    /// itself refused the very operators who ran the ceremony, permanently and with no way to lift
+    /// it. And a posture the node cannot read at all is refused rather than guessed.
+    #[test]
+    #[cfg(feature = "root-admin")]
+    fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
+        struct Sealed(Option<(PostureCtx, ApprovalState)>);
+        impl PostureView for Sealed {
+            fn resolve(
+                &self,
+                _verb: KernelVerb,
+                _actor: &str,
+            ) -> Option<(PostureCtx, ApprovalState)> {
+                self.0
+            }
+        }
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admin = crate::root::kernel::new_kernel().admin_token();
+
+        let under = |path: &str, sealed: Sealed| -> Result<(), ReasonCode> {
+            let binding =
+                AdminBinding::new(Arc::new(AnsweringDispatch)).with_posture_view(Arc::new(sealed));
+            let key = UnitKey::new(1);
+            let mut request = a_request();
+            request.method = "POST".to_string();
+            request.path = path.to_string();
+            binding.units.open(key, request);
+            let ctx = UnitCtx {
+                key,
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: true,
+                kernel_verb_only: true,
+            };
+            let decode_token: UnitToken<Decode> = UnitToken::mint(&seal);
+            decode(&binding, &decode_token, &ctx)
+                .into_result(&seal)
+                .expect("the plane's table declares this operation");
+            binding.units.set_granted(key, VerbScope::Full);
+            let token: UnitToken<Route> = UnitToken::mint(&seal);
+            let outcome = route(
+                &binding,
+                Arc::new(RefusingStore),
+                &admin,
+                &token,
+                &ctx,
+                &busbar_kernel::teller::AccrualMeter::new(),
+            )
+            .into_result(&seal);
+            binding.units.close(key);
+            outcome.map(|_| ()).map_err(|refusal| refusal.reason())
+        };
+
+        let required = Sealed(Some((
+            PostureCtx {
+                operator: busbar_unit_verbs::OperatorState::Unset,
+                dual_control: busbar_unit_verbs::DualControl::Required,
+            },
+            ApprovalState::NotYetApproved,
+        )));
+        assert!(
+            under("/api/v1/admin/export-keyset", required).is_err(),
+            "one principal exported the keyset out of a fleet that sealed dual control"
+        );
+
+        let ceremony_run = Sealed(Some((
+            PostureCtx {
+                operator: busbar_unit_verbs::OperatorState::Set,
+                dual_control: busbar_unit_verbs::DualControl::Single,
+            },
+            ApprovalState::NotYetApproved,
+        )));
+        assert_eq!(
+            under("/api/v1/admin/chain-break", ceremony_run),
+            Ok(()),
+            "a fleet that ran the ceremony was still refused for not having run it"
+        );
+
+        assert_eq!(
+            under("/api/v1/admin/adjust", Sealed(None)),
+            Err(ReasonCode::DecodeFailed),
+            "a verb whose posture the node cannot read was admitted under a guessed one"
+        );
+    }
+
+    /// The posture a node with no sealed journal is in is the one the design names for a fresh
+    /// install, and it is that node's TRUE state rather than a permissive default: the ceremony has
+    /// not run, so the irreducible verbs that need one are still refused.
+    #[test]
+    fn an_unsealed_node_reports_the_posture_a_fresh_install_is_actually_in() {
+        let (posture, approval) = UnsealedPosture
+            .resolve(KernelVerb::Adjust, "admin")
+            .expect("a node with no journal knows what it has not sealed");
+        assert_eq!(posture.operator, busbar_unit_verbs::OperatorState::Unset);
+        assert_eq!(posture.dual_control, busbar_unit_verbs::DualControl::Single);
+        assert_eq!(approval, ApprovalState::NotYetApproved);
     }
 
     /// Both tables were extracted from the same pinned tag. Every row the plane decodes to has to
