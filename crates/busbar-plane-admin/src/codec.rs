@@ -144,13 +144,13 @@ impl Plane for AdminPlane {
         } else {
             OP_WRITE
         };
-        Ok(Ingress::OneShot(UnitDraft {
+        Ok(Ingress::OneShot(Box::new(UnitDraft {
             op,
             body_ir: ir,
             correlates: None,
             correlation_out: None,
             facts,
-        }))
+        })))
     }
 
     fn encode_egress<'u>(

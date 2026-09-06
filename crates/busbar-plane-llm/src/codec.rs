@@ -380,13 +380,13 @@ impl Plane for LlmPlane {
             let _ = facts.set(meta::FACT_MAX_RESPONSE, FactValue::Int(i64::from(max)));
         }
 
-        Ok(Ingress::OneShot(UnitDraft {
+        Ok(Ingress::OneShot(Box::new(UnitDraft {
             op: op_class_for(path),
             body_ir: request_view(d, body.as_slice(), ctx)?,
             correlates: None,
             correlation_out: None,
             facts,
-        }))
+        })))
     }
 
     fn encode_egress<'u>(
@@ -520,11 +520,11 @@ impl Plane for LlmPlane {
                 let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("event"));
                 return Ok(Progress::Terminal {
                     for_: None,
-                    r: Response {
+                    r: Box::new(Response {
                         ir: response_view(egress, body.as_slice(), ctx)?,
                         finish: FinishClass::Complete,
                         facts,
-                    },
+                    }),
                 });
             }
             let value = parse(data)?;
@@ -552,9 +552,15 @@ impl Plane for LlmPlane {
                 facts,
             };
             return Ok(if terminal {
-                Progress::Terminal { for_: None, r }
+                Progress::Terminal {
+                    for_: None,
+                    r: Box::new(r),
+                }
             } else {
-                Progress::Frame { for_: None, r }
+                Progress::Frame {
+                    for_: None,
+                    r: Box::new(r),
+                }
             });
         }
 
@@ -567,11 +573,11 @@ impl Plane for LlmPlane {
         response_facts(ctx, &response, &mut facts);
         Ok(Progress::Terminal {
             for_: None,
-            r: Response {
+            r: Box::new(Response {
                 ir: response_view(egress, body.as_slice(), ctx)?,
                 finish: finish_of(response.stop_reason),
                 facts,
-            },
+            }),
         })
     }
 

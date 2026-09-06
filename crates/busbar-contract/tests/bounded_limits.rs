@@ -194,6 +194,29 @@ fn a_unit_refuses_the_leg_reply_past_its_ceiling_and_hands_it_back() {
     );
 }
 
+/// The two answers a plane returns per frame stay small enough to return by value.
+///
+/// A fact map is a fixed array of MAX_KEYS entries — over a kilobyte — and both of these carried
+/// one (or two) inline. Every frame of every open unit crosses the dyn call returning one of them,
+/// so the kilobyte was memcpy'd on the hottest path in the node, twice per relayed frame, for a
+/// map that is usually a handful of keys. The payloads are behind a pointer now, and this is the
+/// number that says so: a future arm that embeds a fact map by value turns this red.
+#[test]
+fn the_per_frame_plane_answers_are_pointer_sized_payloads() {
+    use busbar_contract::plane::{Ingress, Progress};
+
+    assert!(
+        std::mem::size_of::<Ingress<'static>>() <= 128,
+        "an ingress answer is {} bytes",
+        std::mem::size_of::<Ingress<'static>>()
+    );
+    assert!(
+        std::mem::size_of::<Progress<'static>>() <= 128,
+        "a progress answer is {} bytes",
+        std::mem::size_of::<Progress<'static>>()
+    );
+}
+
 /// A journal record refuses past the record ceiling and hands back the length it was given.
 #[test]
 fn a_journal_record_refuses_past_the_record_ceiling() {

@@ -573,13 +573,13 @@ fn decode_one_shot<'u>(frames: &mut FrameCursor<'u>, ctx: &Ctx<'u>) -> Result<In
     facts
         .set(meta::FACT_DIALECT, FactValue::Str(dialect.name()))
         .map_err(|_| Decode::Oversize)?;
-    Ok(Ingress::OneShot(UnitDraft {
+    Ok(Ingress::OneShot(Box::new(UnitDraft {
         op,
         body_ir: view(body, ctx)?,
         correlates: None,
         correlation_out: None,
         facts,
-    }))
+    })))
 }
 
 /// Decode one frame of a duplex session bound to one of the two WS dialects (OpenAI Realtime or
@@ -655,7 +655,7 @@ fn decode_twilio_frame<'u>(
             let _ = state.close_turn();
             Ok(Ingress::Close {
                 for_,
-                facts: Facts::new(),
+                facts: Box::new(Facts::new()),
             })
         }
     }
@@ -712,18 +712,18 @@ fn open_or_relay<'u>(
         let correlation = state.open_turn();
         let _ = facts.set(meta::FACT_DIALECT, FactValue::Str(dialect.name()));
         let ir = view(relay.as_slice(), ctx)?;
-        Ok(Ingress::Open(UnitDraft {
+        Ok(Ingress::Open(Box::new(UnitDraft {
             op: OpClassId::new("duplex_turn"),
             body_ir: ir,
             correlates: None,
             correlation_out: Some(correlation),
             facts,
-        }))
+        })))
     } else {
         Ok(Ingress::Frame {
             for_: state.turn_correlation,
             relay,
-            facts,
+            facts: Box::new(facts),
         })
     }
 }
@@ -755,7 +755,7 @@ fn progress_from_server_event<'u>(
             facts
                 .set(meta::FACT_CALL_ID, FactValue::Str(call_id_arena))
                 .map_err(|_| Decode::Oversize)?;
-            Ok(Progress::OneShot(UnitDraft {
+            Ok(Progress::OneShot(Box::new(UnitDraft {
                 op: OpClassId::new("tool_call"),
                 body_ir: Ir::empty(),
                 correlates: None,
@@ -767,15 +767,15 @@ fn progress_from_server_event<'u>(
                     value: CorrelationValue::Str(call_id_arena),
                 }),
                 facts,
-            }))
+            })))
         }
         IrServerEvent::Tool(_) => Ok(Progress::Frame {
             for_,
-            r: Response {
+            r: Box::new(Response {
                 ir: Ir::empty(),
                 finish: FinishClass::Partial,
                 facts: Facts::new(),
-            },
+            }),
         }),
         IrServerEvent::SpeechStarted { .. } => {
             let ms = state.codec.flush_playback();
@@ -788,21 +788,21 @@ fn progress_from_server_event<'u>(
                 .map_err(|_| Decode::Oversize)?;
             Ok(Progress::Frame {
                 for_,
-                r: Response {
+                r: Box::new(Response {
                     ir: Ir::empty(),
                     finish: FinishClass::Partial,
                     facts,
-                },
+                }),
             })
         }
         IrServerEvent::SpeechStopped { .. } | IrServerEvent::AudioDone { .. } => {
             Ok(Progress::Frame {
                 for_,
-                r: Response {
+                r: Box::new(Response {
                     ir: Ir::empty(),
                     finish: FinishClass::Partial,
                     facts: Facts::new(),
-                },
+                }),
             })
         }
         IrServerEvent::AudioFrame(f) => {
@@ -830,11 +830,11 @@ fn progress_from_server_event<'u>(
             let _ = media_len;
             Ok(Progress::Frame {
                 for_,
-                r: Response {
+                r: Box::new(Response {
                     ir: view(bytes.as_slice(), ctx)?,
                     finish: FinishClass::Partial,
                     facts,
-                },
+                }),
             })
         }
         IrServerEvent::Usage(usage) => {
@@ -880,11 +880,11 @@ fn progress_from_server_event<'u>(
             }
             Ok(Progress::Terminal {
                 for_,
-                r: Response {
+                r: Box::new(Response {
                     ir: Ir::empty(),
                     finish: FinishClass::TurnComplete,
                     facts,
-                },
+                }),
             })
         }
         IrServerEvent::Error { code, message } => {
@@ -903,11 +903,11 @@ fn progress_from_server_event<'u>(
                 .map_err(|_| Decode::Oversize)?;
             Ok(Progress::Terminal {
                 for_,
-                r: Response {
+                r: Box::new(Response {
                     ir: Ir::empty(),
                     finish: FinishClass::Error,
                     facts,
-                },
+                }),
             })
         }
     }

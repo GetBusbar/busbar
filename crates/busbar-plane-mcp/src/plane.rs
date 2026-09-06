@@ -304,13 +304,13 @@ impl Plane for McpPlane {
                     reason: DiscardCode::Unsupported,
                 });
             }
-            return Ok(Ingress::OneShot(UnitDraft {
+            return Ok(Ingress::OneShot(Box::new(UnitDraft {
                 op: ops::OP_NOTIFICATION,
                 body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
                 correlates: None,
                 correlation_out: None,
                 facts,
-            }));
+            })));
         }
 
         let row = ops::row_for(method).ok_or(Decode::UnsupportedOperation)?;
@@ -329,9 +329,9 @@ impl Plane for McpPlane {
             facts,
         };
         if row.streaming {
-            Ok(Ingress::Open(draft))
+            Ok(Ingress::Open(Box::new(draft)))
         } else {
-            Ok(Ingress::OneShot(draft))
+            Ok(Ingress::OneShot(Box::new(draft)))
         }
     }
 
@@ -445,7 +445,7 @@ impl Plane for McpPlane {
                     let _ = facts.set(f::FACT_SUBJECT, FactValue::Str(subject));
                 }
             }
-            return Ok(Progress::OneShot(UnitDraft {
+            return Ok(Progress::OneShot(Box::new(UnitDraft {
                 op: row.op,
                 body_ir: view(body, jsonrpc::REQUEST_PTRS, ctx)?,
                 // A server's own request answers nothing; it is answered.
@@ -454,7 +454,7 @@ impl Plane for McpPlane {
                     .id_bytes(body)
                     .and_then(|raw| f::correlation_for(raw, ctx.arena())),
                 facts,
-            }));
+            })));
         }
 
         let id = read_raw(body, jsonrpc::PTR_ID);
@@ -503,7 +503,7 @@ impl Plane for McpPlane {
         // frame that carries a result carries all of it.
         Ok(Progress::Terminal {
             for_: id.and_then(|raw| f::correlation_for(raw, ctx.arena())),
-            r,
+            r: Box::new(r),
         })
     }
 

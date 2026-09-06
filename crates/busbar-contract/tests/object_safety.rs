@@ -169,13 +169,13 @@ impl Plane for FixturePlane {
     ) -> Result<Ingress<'u>, Decode> {
         match frames.next_frame() {
             None => Ok(Ingress::NeedMore),
-            Some(_) => Ok(Ingress::OneShot(UnitDraft {
+            Some(_) => Ok(Ingress::OneShot(Box::new(UnitDraft {
                 op: OpClassId::new("echo"),
                 body_ir: Ir::new(&[], &[]),
                 correlates: None,
                 correlation_out: None,
                 facts: Facts::new(),
-            })),
+            }))),
         }
     }
 

@@ -994,12 +994,12 @@ impl busbar_contract::Plane for TestPlane {
         if frame.bytes.as_slice() == b"end" {
             Ok(Progress::Terminal {
                 for_: None,
-                r: response,
+                r: Box::new(response),
             })
         } else {
             Ok(Progress::Frame {
                 for_: None,
-                r: response,
+                r: Box::new(response),
             })
         }
     }
