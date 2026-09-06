@@ -388,6 +388,32 @@ pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
     }
 }
 
+/// Split SSE frame text into lines on the event-stream grammar's own line-terminator rule — CRLF, a
+/// lone LF, **or** a lone CR each end a line — rather than `str::lines()`, which recognizes only
+/// LF/CRLF. Shared by [`parse_sse_frame`] here and `proxy::sse::sse_data`, which both used
+/// `str::lines()` and so silently produced no fields at all on a frame framed by a bare-CR
+/// terminator (a frame `find_frame_terminator` above correctly frames).
+pub(crate) fn sse_lines(text: &str) -> Vec<&str> {
+    let bytes = text.as_bytes();
+    let mut lines = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match terminator_len(bytes, i) {
+            Some(len) => {
+                lines.push(&text[start..i]);
+                i += len;
+                start = i;
+            }
+            None => i += 1,
+        }
+    }
+    if start < bytes.len() {
+        lines.push(&text[start..]);
+    }
+    lines
+}
+
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
 /// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a
@@ -396,7 +422,7 @@ pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     let text = std::str::from_utf8(frame).ok()?;
     let mut event_type = String::new();
     let mut data_lines: Vec<&str> = Vec::new();
-    for line in text.lines() {
+    for line in sse_lines(text) {
         if let Some(rest) = line.strip_prefix("event:") {
             event_type = rest.trim().to_string();
         } else if let Some(rest) = line.strip_prefix("data:") {
@@ -456,6 +482,30 @@ mod frame_terminator_tests {
         assert_eq!(find_frame_terminator(b"data: a\n\nrest"), Some((7, 2)));
         assert_eq!(find_frame_terminator(b"data: a\r\n\r\nrest"), Some((7, 4)));
         assert_eq!(find_frame_terminator(b"data: a"), None);
+    }
+
+    /// `parse_sse_frame` used `str::lines()`, which does not split on a bare CR — a bare-CR frame
+    /// (correctly framed by `find_frame_terminator` above) yielded no `data:` line at all, and a
+    /// multi-field bare-CR frame swallowed later fields into the first value.
+    #[test]
+    fn parse_sse_frame_splits_on_bare_cr() {
+        assert_eq!(
+            parse_sse_frame(b"event: message\rdata: {\"a\":1}"),
+            Some(("message".to_string(), "{\"a\":1}".to_string()))
+        );
+        assert_eq!(
+            parse_sse_frame(b"data: line1\rdata: line2"),
+            Some((String::new(), "line1\nline2".to_string()))
+        );
+        // CRLF and LF frames stay byte-identical to today.
+        assert_eq!(
+            parse_sse_frame(b"event: message\r\ndata: {\"a\":1}\r\n"),
+            Some(("message".to_string(), "{\"a\":1}".to_string()))
+        );
+        assert_eq!(
+            parse_sse_frame(b"data: line1\ndata: line2"),
+            Some((String::new(), "line1\nline2".to_string()))
+        );
     }
 }
 

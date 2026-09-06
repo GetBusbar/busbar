@@ -118,12 +118,13 @@ fn frame_end(buf: &[u8]) -> Option<(usize, usize)> {
 }
 
 /// The `data:` payload of one SSE frame, concatenated across continuation lines as the specification
-/// requires.
+/// requires. Splits on [`crate::proto::sse_lines`], the grammar-based splitter (CRLF, lone LF, or
+/// lone CR each end a line) — `str::lines()` does not split on a bare CR, so a bare-CR frame
+/// yielded no data at all.
 pub fn sse_data(frame: &str) -> Option<String> {
     let mut data = String::new();
     let mut any = false;
-    for line in frame.lines() {
-        let line = line.strip_suffix('\r').unwrap_or(line);
+    for line in crate::proto::sse_lines(frame) {
         // A `data:`-prefixed line carries the value after the colon; a BARE `data` line (no colon)
         // is a `data` field with an EMPTY value per the event-stream format — both contribute to the
         // payload (the bare form as an empty continuation line), so recognise both.

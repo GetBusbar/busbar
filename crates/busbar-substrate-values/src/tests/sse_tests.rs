@@ -137,3 +137,30 @@ fn test_terminator_split_across_chunks_still_frames() {
         );
     }
 }
+
+/// A frame that was framed by a bare-CR terminator must still split into fields on a bare-CR line
+/// break — `str::lines()` only splits on LF/CRLF, so a bare-CR frame yielded NO data at all (the
+/// A2A relay then answered 502), and a multi-field bare-CR frame swallowed later fields into the
+/// first value.
+#[test]
+fn test_sse_data_splits_on_bare_cr() {
+    assert_eq!(
+        sse_data("event: message\rdata: {\"a\":1}\r\r"),
+        Some("{\"a\":1}".to_string())
+    );
+    // Two `data:` lines joined by a bare CR must still concatenate with `\n`, not swallow the
+    // second line into the first's value.
+    assert_eq!(
+        sse_data("data: line1\rdata: line2\r\r"),
+        Some("line1\nline2".to_string())
+    );
+    // LF and CRLF frames stay byte-identical to today.
+    assert_eq!(
+        sse_data("event: message\ndata: {\"a\":1}\n\n"),
+        Some("{\"a\":1}".to_string())
+    );
+    assert_eq!(
+        sse_data("data: line1\r\ndata: line2\r\n\r\n"),
+        Some("line1\nline2".to_string())
+    );
+}
