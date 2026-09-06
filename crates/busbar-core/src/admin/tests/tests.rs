@@ -11206,6 +11206,14 @@ async fn drive_keys_error_surface() {
         ),
         // ── POST /keys/{id}/rotate ────────────────────────────────────────────────────────────
         c(
+            "rotate_overlong_id",
+            KeysFixture::Signing,
+            "POST",
+            "/keys/{overlong}/rotate",
+            &[],
+            None,
+        ),
+        c(
             "rotate_unknown",
             KeysFixture::Signing,
             "POST",
