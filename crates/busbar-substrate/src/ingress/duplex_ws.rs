@@ -37,6 +37,25 @@ use crate::plane_host::{run_gauntlet_session, GauntletPlane, GauntletRequest};
 /// Deep enough that ordinary jitter between a peer's writes and a plane's reads never touches it.
 pub(crate) const MAX_QUEUED_INBOUND_FRAMES: usize = 64;
 
+/// The largest ONE inbound WS message may be, and the largest ONE frame of it: the deployment's
+/// front-door request-body cap (`limits.request_body_max_bytes`), read live so a config apply that
+/// moves the cap moves this with it, and falling back to the historical default before anything is
+/// installed — the same slot-and-fallback shape every other reader of that limit uses.
+///
+/// THE BOUND ON HOW MANY FRAMES ARE QUEUED IS NOT A BOUND ON HOW BIG ONE IS.
+/// [`MAX_QUEUED_INBOUND_FRAMES`] holds the count; without this, one message's size was whatever the
+/// WS library defaults to — a number this deployment never chose, orders of magnitude above the cap
+/// an operator set on the front door — and the queue bound then multiplied it. The byte sibling
+/// ([`crate::ingress::byte_duplex::serve`]) already states the rule this restores: a payload this
+/// transport carries may not be larger than one the gateway would accept through its front door.
+/// BOTH ceilings are set, because a message ceiling alone still lets one oversized FRAME be buffered
+/// before the message is refused.
+fn max_message_bytes() -> usize {
+    crate::config::limits::installed()
+        .map(|l| l.request_body_max_bytes)
+        .unwrap_or(crate::config::limits::DEFAULT_REQUEST_BODY_MAX_BYTES)
+}
+
 /// Bridge an already-upgraded [`WebSocket`] into the neutral `(frame-stream, frame-sink)` the pump
 /// speaks, over two mpsc channels (both `Unpin + Send`, the shape `serve_messages` requires): inbound
 /// text/binary → one `Vec<u8>` frame; an outbound frame → one binary WS message. Control frames and
@@ -98,10 +117,17 @@ where
     F: FnOnce(Receiver<Vec<u8>>, UnboundedSender<Vec<u8>>) -> Fut + Send + 'static,
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
-    upgrade.on_upgrade(move |socket| async move {
-        let (stream, sink) = channel(socket);
-        on_socket(stream, sink).await;
-    })
+    // The size ceilings ride the UPGRADE, before any socket exists — see [`max_message_bytes`].
+    // Applied here, at the one door every accept path reaches (`serve`, `accept_gauntlet` and
+    // `serve_gauntlet` all funnel through this fn), so no caller can bind a socket without them.
+    let cap = max_message_bytes();
+    upgrade
+        .max_message_size(cap)
+        .max_frame_size(cap)
+        .on_upgrade(move |socket| async move {
+            let (stream, sink) = channel(socket);
+            on_socket(stream, sink).await;
+        })
 }
 
 /// SERVE one inbound WS session on the neutral pump: accept the upgrade, then drive `plane`'s two

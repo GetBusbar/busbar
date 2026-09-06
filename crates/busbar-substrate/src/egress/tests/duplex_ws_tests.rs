@@ -484,3 +484,48 @@ fn ws_arrival_spec_installs_and_drains_verbatim() {
         "take is read-many, not destructive"
     );
 }
+
+/// A BOUND ON HOW MANY FRAMES ARE QUEUED IS NOT A BOUND ON HOW BIG ONE IS. The byte sibling
+/// (`byte_duplex::serve`) already states the rule the whole ingress holds to — a payload this
+/// transport carries may not be larger than one the gateway would accept through its front door —
+/// and caps a frame at `limits.request_body_max_bytes`. The WS acceptor reached the socket through
+/// the library's own default ceiling instead, which is a number this deployment never chose: an
+/// operator who lowers the front-door body cap still admitted messages orders of magnitude past it,
+/// and the queue bound multiplies whatever one message costs.
+#[tokio::test]
+async fn the_acceptor_refuses_a_message_larger_than_the_front_door_body_cap() {
+    // The installed cap is process-global; serialize with every other test that moves it.
+    let _guard = crate::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let prior = crate::config::limits::installed();
+    let cap = 64 * 1024;
+    crate::config::limits::install(
+        &crate::config::limits::LimitsResolved::with_request_body_max_bytes(cap),
+    );
+
+    let addr = spawn_echo_ws_server().await;
+    let url = format!("ws://{addr}/");
+    let (mut stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+        .await
+        .expect("dial through the guard to the loopback acceptor");
+
+    // A frame INSIDE the cap proves the pair is live, so the assertion below is about the size and
+    // not about a session that never worked.
+    sink.send(b"ping".to_vec()).await.ok();
+    let small = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
+        .await
+        .expect("the in-cap frame was answered")
+        .expect("the stream yielded the echo");
+    assert_eq!(small, b"ping", "an in-cap frame still round-trips");
+
+    // One byte over the front-door cap: the acceptor must not carry it to the plane, so no echo.
+    sink.send(vec![b'x'; cap + 1]).await.ok();
+    let over = tokio::time::timeout(std::time::Duration::from_secs(3), stream.next()).await;
+    let echoed = matches!(&over, Ok(Some(frame)) if frame.len() > cap);
+
+    crate::config::limits::set_installed(prior);
+    assert!(
+        !echoed,
+        "a {} byte message crossed an acceptor whose front-door body cap is {cap}",
+        cap + 1
+    );
+}
