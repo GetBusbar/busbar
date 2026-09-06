@@ -22,7 +22,9 @@ const TEST_CEILING: u64 = 256 * FRAME_BYTES as u64;
 /// Write `written` into a fresh memory segment and return exactly the committed bytes — not the
 /// claimed-ahead zeros after them, which are not part of what a crash can tear.
 fn lay_down(written: &[Record]) -> Vec<u8> {
-    let mut factory = MemoryFactory::new();
+    // Retaining, because the bytes are read back after the log that wrote them is gone: a plain
+    // factory releases a segment the moment nothing is writing to it.
+    let mut factory = MemoryFactory::retaining();
     let mut wal = crate::wal::Wal::with_parts(
         Box::new(factory.clone()),
         Box::new(crate::ship::NullShipper::new()),
@@ -158,7 +160,9 @@ fn recovery_cuts_the_backing_so_the_next_append_lands_on_a_boundary() {
 
 #[test]
 fn a_restart_replays_to_the_recovered_head_and_appends_after_it() {
-    let mut factory = MemoryFactory::new();
+    // Retaining: the segment has to outlive the first log so the tail can be torn and a second log
+    // opened over the same bytes, which is the whole shape of a restart here.
+    let mut factory = MemoryFactory::retaining();
     let token = durability_token();
     let first = records(1, 1, 3, 50);
     {

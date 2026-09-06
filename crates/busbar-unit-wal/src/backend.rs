@@ -140,36 +140,83 @@ impl SegmentBackend for MemorySegment {
     }
 }
 
+/// What a factory remembers about the segments it has handed out.
+///
+/// The slots are WEAK on purpose. A memory-backed log rolls to a fresh segment when the current one
+/// fills or is poisoned, and it drops the one it left behind — so a factory that held a strong
+/// reference to every index it had ever opened would be the one thing keeping a rolled-past
+/// segment's ceiling alive, forever, on precisely the deployment that has no disk to spill it to.
+/// Holding the slots weakly means the factory can still hand the SAME bytes back to a caller that
+/// asks for a segment that is still open, and stops being a reason for a closed one to stay resident.
+#[derive(Debug, Default)]
+struct Segments {
+    /// The segments somebody is still holding, by index. Keyed rather than indexed, and swept of
+    /// dead entries as it goes, so that the table itself does not become the small version of the
+    /// same leak on a node that has rolled through segments for a year.
+    slots: std::collections::HashMap<u64, std::sync::Weak<std::sync::Mutex<Vec<u8>>>>,
+    /// Strong references, kept only by a retaining factory.
+    retained: Vec<SharedBytes>,
+    /// Whether this factory keeps every segment alive itself.
+    retain: bool,
+}
+
 /// Hands out memory segments. The default, and the only backing a node without a data directory
 /// ever sees.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryFactory {
-    segments: std::sync::Arc<std::sync::Mutex<Vec<SharedBytes>>>,
+    segments: std::sync::Arc<std::sync::Mutex<Segments>>,
 }
 
 impl MemoryFactory {
-    /// A factory with no segments yet.
+    /// A factory with no segments yet, keeping nothing the log has finished with.
     pub fn new() -> Self {
         MemoryFactory::default()
     }
 
-    /// The shared bytes of segment `index`, creating the slot if it does not exist yet. A test uses
-    /// this to reach in and damage a tail.
-    pub fn segment_bytes(&self, index: u64) -> SharedBytes {
-        let index = usize::try_from(index).unwrap_or(usize::MAX);
-        let mut held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
-        while held.len() <= index {
-            held.push(SharedBytes::default());
-        }
-        std::sync::Arc::clone(&held[index])
+    /// A factory that keeps every segment's bytes alive for as long as it itself lives.
+    ///
+    /// For a caller that has to look at a segment after the log holding it is gone — reading back
+    /// what a log wrote once it has been dropped, or posing a torn tail on a segment before opening
+    /// a second log over the same bytes, which is what a restart looks like from inside a test. A
+    /// running node never wants this, which is why it is a separate constructor rather than the
+    /// behaviour of the one [`Wal`](crate::wal::Wal) builds for itself.
+    pub fn retaining() -> Self {
+        let factory = MemoryFactory::default();
+        factory
+            .segments
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain = true;
+        factory
     }
 
-    /// How many segments have been opened.
+    /// The shared bytes of segment `index`, creating the slot if it does not exist yet — or if the
+    /// only references to it are gone, which on a factory that does not retain is what a segment the
+    /// log has rolled past looks like. A test uses this to reach in and damage a tail.
+    pub fn segment_bytes(&self, index: u64) -> SharedBytes {
+        let mut held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(bytes) = held.slots.get(&index).and_then(std::sync::Weak::upgrade) {
+            return bytes;
+        }
+        held.slots.retain(|_, slot| slot.strong_count() > 0);
+        let bytes = SharedBytes::default();
+        held.slots.insert(index, std::sync::Arc::downgrade(&bytes));
+        if held.retain {
+            held.retained.push(std::sync::Arc::clone(&bytes));
+        }
+        bytes
+    }
+
+    /// How many segments' bytes are still resident. On a log that is writing, that is the segment it
+    /// is writing to — the ones it has rolled past have been released.
     pub fn segment_count(&self) -> usize {
         self.segments
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .len()
+            .slots
+            .values()
+            .filter(|slot| slot.strong_count() > 0)
+            .count()
     }
 }
 
