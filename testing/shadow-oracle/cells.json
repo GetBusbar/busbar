@@ -5841,7 +5841,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|DeleteKeysId|unauth",
@@ -6971,7 +6971,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|GetKeysIdUsage|unauth",
@@ -7035,7 +7035,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|GetKeysId|unauth",
@@ -8137,7 +8137,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|PatchKeysId|unauth",
@@ -8845,7 +8845,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|PostKeysIdRevoke|unauth",
@@ -8955,7 +8955,7 @@
         "auth": "admin",
         "listener": "admin"
       },
-      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+      "why": "an unbounded caller-supplied identifier: a 203-character id on the `{id}` path segment. RECORDED TRUTH (published 1.5.5): five of the six `/keys/{id}` handlers refuse it 400 `invalid_request` / \"id must be <= 64 characters\" before the store lookup; PostKeysIdRotate \u2014 the one handler that never calls the bound \u2014 falls through to 404 `not_found` / \"key not found\", which is indistinguishable from an ordinary miss. On every one of the six the audit row is still written with the FULL id in `resource`, so the 400 bounds the lookup and the rotate idempotency cache key, not the audit string. See accepted-differences.json K-1"
     },
     {
       "id": "admin.ops|PostKeysIdRotate|unauth",
@@ -10652,7 +10652,7 @@
             "headers": {
               "Content-Type": "application/json"
             },
-            "body": "{\"rate_card\":{\"m-openai-chat\":{\"input_utok\":1000000,\"output_utok\":2000000}}}"
+            "body": "{\"per_request_fee\":3,\"rate_card\":{\"m-anthropic\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-bedrock\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cd-lane\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cohere\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-gemini\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-lane-c1\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-chat\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-responses\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-queue-lane\":{\"input_utok\":10000000,\"output_utok\":20000000}}}"
           },
           {
             "method": "POST",
@@ -10666,7 +10666,8 @@
           }
         ]
       },
-      "why": "RECORDED TRUTH (published 1.5.5): a `rate_card` written through PUT /api/v1/admin/config/settings mid-window prices NEITHER request at the new rate \u2014 the read-time derivation both before and after the 200 uses the card the process booted with, so the write is restart-to-apply in practice even though docs/admin-api.md lists `rate_card` as live and hot-applied and the usage views promise reprice-on-read. The money class this pins: an operator's rate correction is accepted with a 200 and silently does not reach the bill."
+      "why": "RECORDED TRUTH (published 1.5.5, binary 48e2800c). Three hypotheses, three totals: read-time derivation over the whole ledger = 1000120000; priced per row at charge time = 257530000; restart-to-apply = 10000000. RECORDED: 1000120000 \u2014 4 requests at 250030000 each. A complete `rate_card` (+ per_request_fee) written through PUT /api/v1/admin/config/settings mid-window is LIVE and RETROACTIVE: /admin/usage prices the entire ledger off the card in force at READ time, so the request before the write, the request after it, and the recorder's two boot priming requests all come back at the new rate. No restart, no epoch boundary, no row left at the old price. The money class this pins is the retroactivity itself \u2014 a rate correction silently re-prices history, so an invoice already read off this endpoint is not reproducible from it afterwards. (An earlier pass concluded restart-to-apply by driving a PARTIAL card, which 1.5.5 refuses 400 as incomplete; the write never landed and a `pre` need only be answered, not 2xx, so the refusal was invisible. This card is complete and the write is a 200.)",
+      "config_variant": "rate-card-epoch"
     },
     {
       "id": "boot.refusal|BOOT-001|validate",
