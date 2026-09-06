@@ -177,16 +177,10 @@ fn the_watermark_reaches_the_head_every_pass() {
     let pass = recompute(Watermark::start(), &postings, &policy());
     assert!(pass.is_clean());
     assert_eq!(pass.checked, 50);
-    assert_eq!(
-        pass.watermark,
-        Watermark {
-            node: 1,
-            node_seq: 50
-        }
-    );
+    assert_eq!(pass.watermark, Watermark::from_pairs([(1, 50)]));
 
     // A second pass over the same postings checks nothing, because the watermark is already there.
-    let again = recompute(pass.watermark, &postings, &policy());
+    let again = recompute(pass.watermark.clone(), &postings, &policy());
     assert_eq!(again.checked, 0);
     assert_eq!(again.watermark, pass.watermark);
 }
@@ -211,10 +205,7 @@ fn a_posting_edited_before_the_last_checkpoint_still_alarms() {
     ));
     assert_eq!(
         pass.watermark,
-        Watermark {
-            node: 1,
-            node_seq: 100
-        },
+        Watermark::from_pairs([(1, 100)]),
         "the watermark reaches the head even though a posting diverged"
     );
 }
@@ -241,7 +232,7 @@ fn a_watermark_that_survives_a_restart_resumes_where_it_stopped() {
     // whole run and checks only what is new.
     let second = recompute(first.watermark, &postings, &policy());
     assert_eq!(second.checked, 10);
-    assert_eq!(second.watermark.node_seq, 20);
+    assert_eq!(second.watermark.mark_for(1), Some(20));
 }
 
 #[test]
@@ -332,6 +323,59 @@ fn the_tier_multiplier_saturates_rather_than_wrapping() {
     assert_eq!(apply_tier(10_000, 9_999), 9_999);
 }
 
+/// The watermark is PER NODE, and the reason is that postings arrive interleaved.
+///
+/// A single `(node, node_seq)` pair compared lexicographically is a watermark that, the moment it
+/// passes the highest node, is ahead of every later posting every lower-numbered node will ever
+/// write. Those postings are then skipped forever and never repriced, and the pass reports itself
+/// clean over a corrupted amount — the recompute answering "nothing wrong here" about a posting it
+/// declined to look at.
+#[test]
+fn a_later_posting_from_a_lower_numbered_node_is_still_repriced() {
+    // Tick one: two nodes, interleaved, both correct.
+    let mut tick_one = Vec::new();
+    for seq in 1..=2u64 {
+        for node in 1..=2u64 {
+            let mut p = correct_posting(seq);
+            p.node = node;
+            tick_one.push(p);
+        }
+    }
+    let first = recompute(Watermark::start(), &tick_one, &policy());
+    assert!(first.is_clean());
+    assert_eq!(first.checked, 4);
+
+    // Tick two: one more posting from each node, and the one from the LOWER-numbered node has had
+    // its priced amount edited by hand.
+    let mut tick_two = tick_one.clone();
+    let mut corrupted = correct_posting(3);
+    corrupted.node = 1;
+    corrupted.priced_amount -= 11;
+    tick_two.push(corrupted);
+    let mut fine = correct_posting(3);
+    fine.node = 2;
+    tick_two.push(fine);
+
+    let second = recompute(first.watermark, &tick_two, &policy());
+    assert_eq!(
+        second.checked, 2,
+        "both new postings are owed a recompute, whichever node wrote them"
+    );
+    assert_eq!(second.findings.len(), 1);
+    assert_eq!(
+        (second.findings[0].node, second.findings[0].node_seq),
+        (1, 3)
+    );
+    assert!(matches!(
+        second.findings[0].divergence,
+        Divergence::Priced { .. }
+    ));
+    assert!(
+        !second.is_clean(),
+        "a corrupted posting is not a clean pass"
+    );
+}
+
 #[test]
 fn a_run_across_two_nodes_orders_by_node_then_sequence() {
     let mut postings = Vec::new();
@@ -344,11 +388,22 @@ fn a_run_across_two_nodes_orders_by_node_then_sequence() {
     }
     let pass = recompute(Watermark::start(), &postings, &policy());
     assert_eq!(pass.checked, 6);
-    assert_eq!(
-        pass.watermark,
-        Watermark {
-            node: 2,
-            node_seq: 3
-        }
-    );
+    // Both nodes reached their own head: node 2 at three, and node 1 at three as well rather than
+    // stranded behind the higher-numbered node's progress.
+    assert_eq!(pass.watermark, Watermark::from_pairs([(1, 3), (2, 3)]));
+    assert_eq!(pass.watermark.mark_for(2), Some(3));
+    assert_eq!(pass.watermark.nodes(), 2);
+}
+
+#[test]
+fn a_mark_only_ever_moves_forward() {
+    // A posting that arrives behind a number already recomputed must not re-open the ones after it.
+    let mut watermark = Watermark::from_pairs([(1, 9)]);
+    watermark.advance(1, 4);
+    assert_eq!(watermark.mark_for(1), Some(9));
+    let mut behind = correct_posting(4);
+    behind.node = 1;
+    assert!(!watermark.is_behind(&behind));
+    assert_eq!(watermark.to_string(), "1/9");
+    assert_eq!(Watermark::start().to_string(), "nothing recomputed yet");
 }

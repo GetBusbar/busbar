@@ -19,10 +19,15 @@
 //! skips the rest. Worse, a posting edited before the last checkpoint would then never be looked at
 //! again — which is exactly the posting somebody would edit.
 //!
-//! So the watermark is the last `(node, node_seq)` that was actually recomputed, it is carried in
-//! the reconciliation entry so it survives a restart, and the requirement is that it REACHES THE
+//! So the watermark is the last `node_seq` that was actually recomputed FOR EACH NODE, it is carried
+//! in the reconciliation entry so it survives a restart, and the requirement is that it REACHES THE
 //! HEAD each tick. A hand-corrupted amount older than the last checkpoint still alarms, and that is
 //! stated as a test rather than as a paragraph.
+//!
+//! Per node, because postings arrive interleaved. One `(node, node_seq)` pair for the whole run,
+//! compared lexicographically, is ahead of every posting a lower-numbered node writes from the
+//! moment it passes a higher-numbered one — so those postings are skipped permanently and the pass
+//! calls itself clean over money it never looked at.
 //!
 //! ## The origin rule on the fee line
 //!
@@ -248,15 +253,21 @@ impl std::fmt::Display for Finding {
     }
 }
 
-/// The last posting that was actually recomputed. Carried in the reconciliation entry so it
-/// survives a restart, because a watermark that resets at boot checks nothing on a node that
-/// restarts often.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// How far the recompute has got, PER NODE. Carried in the reconciliation entry so it survives a
+/// restart, because a watermark that resets at boot checks nothing on a node that restarts often.
+///
+/// One mark per node rather than one pair for the whole run, and the reason is that postings arrive
+/// interleaved. A single `(node, node_seq)` pair compared lexicographically is ahead of everything a
+/// lower-numbered node writes as soon as it passes a higher-numbered one, so those postings are
+/// skipped — not deferred, skipped, permanently — and the pass reports itself clean over an amount
+/// it declined to look at. A mark per node cannot do that: each node's postings are measured against
+/// that node's own progress and nobody else's.
+///
+/// Nodes are few and their marks are numbers, so this is a small ordered map. Ordered because it is
+/// sealed into a reconciliation entry that gets digested, exactly like the book's own keys.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Watermark {
-    /// The node of the last recomputed posting.
-    pub node: u64,
-    /// Its sequence number.
-    pub node_seq: u64,
+    marks: BTreeMap<u64, u64>,
 }
 
 impl Watermark {
@@ -265,9 +276,60 @@ impl Watermark {
         Watermark::default()
     }
 
-    /// Whether `posting` is after this watermark and therefore still owed a recompute.
+    /// A watermark from marks a reconciliation entry carried, or a test states.
+    pub fn from_pairs(pairs: impl IntoIterator<Item = (u64, u64)>) -> Self {
+        let mut watermark = Watermark::start();
+        for (node, node_seq) in pairs {
+            watermark.advance(node, node_seq);
+        }
+        watermark
+    }
+
+    /// How far `node` has been recomputed, if it has been at all.
+    pub fn mark_for(&self, node: u64) -> Option<u64> {
+        self.marks.get(&node).copied()
+    }
+
+    /// Every mark, by node, in the order a sealed entry writes them.
+    pub fn pairs(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.marks.iter().map(|(&node, &seq)| (node, seq))
+    }
+
+    /// How many nodes have a mark.
+    pub fn nodes(&self) -> usize {
+        self.marks.len()
+    }
+
+    /// Whether `posting` is after its own node's mark and therefore still owed a recompute.
     pub fn is_behind(&self, posting: &Posting) -> bool {
-        (posting.node, posting.node_seq) > (self.node, self.node_seq)
+        match self.marks.get(&posting.node) {
+            Some(&mark) => posting.node_seq > mark,
+            None => true,
+        }
+    }
+
+    /// Move `node`'s mark to `node_seq`. A mark only ever moves forward: a posting that arrived out
+    /// of order behind a number already recomputed must not re-open everything after it.
+    pub fn advance(&mut self, node: u64, node_seq: u64) {
+        let mark = self.marks.entry(node).or_insert(node_seq);
+        *mark = u64::max(*mark, node_seq);
+    }
+}
+
+impl std::fmt::Display for Watermark {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.marks.is_empty() {
+            return f.write_str("nothing recomputed yet");
+        }
+        let mut first = true;
+        for (node, seq) in self.pairs() {
+            if !first {
+                write!(f, ", ")?;
+            }
+            write!(f, "{node}/{seq}")?;
+            first = false;
+        }
+        Ok(())
     }
 }
 
@@ -381,10 +443,7 @@ pub fn recompute(watermark: Watermark, postings: &[Posting], policies: &dyn Poli
                 divergence,
             });
         }
-        at = Watermark {
-            node: posting.node,
-            node_seq: posting.node_seq,
-        };
+        at.advance(posting.node, posting.node_seq);
     }
     Pass {
         watermark: at,
