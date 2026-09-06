@@ -83,6 +83,20 @@ pub struct ConfigKeys {
     pub groups: Vec<String>,
     /// Every window name a configured group bucket is declared over.
     pub bucket_windows: Vec<String>,
+    /// Every meter class a configured bucket declares a cap or a price over.
+    ///
+    /// A meter class is open vocabulary in the strictest sense: the four token classes are the
+    /// previous release's whole set and a migrated plane's classes are whatever its own configuration
+    /// names. The unit counts them under a `&'static str`, so a class discovered at a rate lookup
+    /// would be a leak per priced line rather than per boot.
+    pub meter_classes: Vec<String>,
+    /// Every meter class sealed as one this deployment prices at zero.
+    ///
+    /// The migration's own list, and a separate field rather than a subset of the one above because
+    /// it is separately sourced: the classes the previous release never priced are sealed at the
+    /// opening, not read off a bucket. A class in both is one leak, which is what the interner is
+    /// idempotent for.
+    pub unpriced_classes: Vec<String>,
 }
 
 impl ConfigKeys {
@@ -105,6 +119,8 @@ impl ConfigKeys {
             .chain(&self.slot_fingerprints)
             .chain(&self.groups)
             .chain(&self.bucket_windows)
+            .chain(&self.meter_classes)
+            .chain(&self.unpriced_classes)
             .map(String::as_str)
     }
 }

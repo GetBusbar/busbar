@@ -75,7 +75,23 @@ fn main() {
     // lto is not exposed to build scripts; surface what CAN be seen (a -Clto flag if any) and defer
     // the profile-table `lto = "fat"` guarantee to scripts/profile-lock.sh. Reported honestly as
     // "(profile-table; see Cargo.toml)" when governed by the profile rather than a flag.
-    let lto = flag_value(&flags, "lto").unwrap_or_else(|| "(profile-table)".into());
+    // `-Clto=`, with the `-C` — not a bare `lto=`. The bare form matches ANY flag whose text happens
+    // to contain those four characters (`-Cllvm-args=…lto=…`, a `-Cprofile-use` path under a
+    // directory named `lto=fat`), and the value it then reports is whatever followed that
+    // coincidence. A stamp that can be wrong about the build it describes is worse than one that
+    // says it does not know, and the whole reason this field exists is a misdiagnosis.
+    let lto = flag_value(&flags, "-Clto")
+        .map(|value| sanitized(&value))
+        .unwrap_or_else(|| "(profile-table)".into());
+
+    // EVERY VALUE BELOW THAT CAME OUT OF `RUSTFLAGS` IS SANITISED FIRST. A `cargo:` directive is
+    // line-oriented and cargo reads whatever the build script prints, so a rustflag carrying a
+    // newline would end the directive early and let the rest of its own text be read as a FRESH
+    // directive — a `RUSTFLAGS` value choosing this crate's link flags, its rerun-if triggers or any
+    // other `cargo:` key. The stamp is a self-report of how the binary was built and nothing more;
+    // it has no business being an instruction channel.
+    let target_cpu = sanitized(&target_cpu);
+    let target_features = sanitized(&target_features);
 
     println!("cargo:rustc-env=BUSBAR_BUILD_PROFILE={profile}");
     println!("cargo:rustc-env=BUSBAR_BUILD_OPT_LEVEL={opt_level}");
@@ -87,4 +103,24 @@ fn main() {
         "cargo:rustc-env=BUSBAR_BUILD_PGO={}",
         if pgo { "true" } else { "false" }
     );
+}
+
+/// One `RUSTFLAGS`-derived value, safe to put after `cargo:rustc-env=NAME=`.
+///
+/// Two rules, and both are about the line rather than about the value's meaning. Anything that could
+/// END the directive — a newline, a carriage return, the `\x1f` the flags arrive separated by — is
+/// dropped, because everything after it would be read by cargo as a directive of its own. A space is
+/// dropped for a different reason: the stamp is one space-separated line, so a value containing one
+/// would split into two fields and every reader downstream would parse the wrong thing. An empty
+/// result reads as the honest `default` rather than as a name nothing wrote.
+fn sanitized(value: &str) -> String {
+    let kept: String = value
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect();
+    if kept.is_empty() {
+        "default".to_string()
+    } else {
+        kept
+    }
 }

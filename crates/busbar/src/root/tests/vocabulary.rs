@@ -24,6 +24,8 @@ fn a_configured_deployment() -> ConfigKeys {
         slot_fingerprints: vec!["fingerprint-0".into()],
         groups: vec!["tenant-acme".into(), "team-platform".into()],
         bucket_windows: vec!["60s".into()],
+        meter_classes: vec!["input".into(), "output".into(), "session_seconds".into()],
+        unpriced_classes: vec!["session_seconds".into()],
     }
 }
 
@@ -36,7 +38,7 @@ fn every_config_derived_key_is_interned_once() {
     let interned = vocabulary.intern_all(&keys);
 
     assert_eq!(interned.len(), keys.all().count());
-    assert_eq!(vocabulary.len(), 19);
+    assert_eq!(vocabulary.len(), 22);
     for (name, value) in interned.iter().zip(keys.all()) {
         assert_eq!(*name, value);
     }
@@ -126,7 +128,7 @@ fn the_walk_order_is_stable() {
     let second: Vec<&str> = keys.all().collect();
     assert_eq!(first, second);
     assert_eq!(first[0], "lane-primary");
-    assert_eq!(first[first.len() - 1], "60s");
+    assert_eq!(first[first.len() - 1], "session_seconds");
 }
 
 /// A key that appears in two sections — a pool and a lane sharing a name, which configuration
