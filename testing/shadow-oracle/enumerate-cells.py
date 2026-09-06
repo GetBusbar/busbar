@@ -316,6 +316,18 @@ def scrape_cells() -> list[dict]:
         http("ops.scrape|/v1/models|x-api-key", F, "GET", "/v1/models", headers={"x-api-key": "irrelevant"}, why="x-api-key is NOT a rung for /v1/models"),
         http("ops.scrape|/v1beta/models", F, "GET", "/v1beta/models", why="gemini listing"),
         http("ops.scrape|/v1/models|none", F, "GET", "/v1/models", auth="none", why="refused"),
+        # A RUNG THAT DOES NOT EXIST, PINNED AS ABSENT. `/v1/models` (list) is served; the OpenAI
+        # models resource also defines RETRIEVE, `GET /v1/models/{id}`, and 1.5.5 does not serve it:
+        # the path matches no route on the data listener, so the answer is a 405 from the `/v1/models`
+        # route's own method/path fallback, not a model-shaped 404. Without this cell nothing in the
+        # corpus mentions the retrieve rung at all, and "the models surface is covered" would be a
+        # claim resting on the LIST cells alone — so a later binary could start serving retrieve (or
+        # start answering it 404, or 200 with a leaked model view) and every models cell would still
+        # be green. The id is a model the config really defines, so a 405 here is the ROUTE refusing
+        # the verb, never "that model does not exist".
+        http("ops.scrape|/v1/models/id|retrieve", F, "GET", "/v1/models/m-openai-chat",
+             why="1.5.5 has no retrieve rung on the models resource: GET /v1/models/{id} is 405, not a "
+                 "model view — recorded so the llm plane's model rung can never claim it silently"),
     ]
 
 
@@ -381,6 +393,12 @@ def crosscut_cells() -> list[dict]:
 # Every MUTATING op's happy cell (and its idempotent-replay copy) also carries a `request.post`: the
 # follow-up GET named in fixtures/admin-readback.json, recorded as `effects.readback` after the write
 # — so a 200 that wrote nothing shows up as a diff, not a pass.
+# A path id far past the 64-character bound every `/keys/{id}` handler is documented to apply
+# (`reject_overlong_id` -> 400 "id must be <= 64 characters"). 200 characters after the `vk_` prefix:
+# long enough that no length bound between 1 and 200 can pass it, short enough to stay inside every
+# URL-length limit in the stack, so a refusal here is the LENGTH GUARD and never a truncation
+# somewhere else. Fixed bytes, so the cell is byte-stable across recordings.
+OVERLONG_KEY_ID = "vk_" + "0" * 200
 ADMIN_BODIES = FIXTURES / "admin-bodies.json"
 ADMIN_READBACK = FIXTURES / "admin-readback.json"
 BOOT_MUTATIONS = FIXTURES / "boot-mutations.json"
@@ -522,6 +540,25 @@ def admin_cells() -> list[dict]:
             cells.append(http(f"admin.ops|{opid}|not-found", F, op["method"], op["not_found"]["path"], auth="admin",
                               listener="admin", headers=(v.get("headers") or {}), body=_req_of(op, v)["body"] if v else None,
                               why=f"expect {op['not_found'].get('expect')}"))
+        # UNBOUNDED CALLER-SUPPLIED IDENTIFIER — the defect class this variant exists to pin. Every
+        # `/keys/{id}` operation takes an opaque id straight off the URL and carries it into a store
+        # lookup and into the audit `resource` string; two of them (rotate's idempotency cache) also
+        # RETAIN it. The bound is `reject_overlong_id` (400, "id must be <= 64 characters"), and the
+        # only way to know a handler still has it is to send an id past it, on the SAME otherwise
+        # well-formed request the not-found cell sends, and record the refusal. A handler that lost
+        # the guard does not fail loudly — it falls through to the not-found path and answers 404,
+        # which reads like a perfectly ordinary refusal unless a cell is watching the five siblings
+        # beside it. Six operations, six cells, no gaps: the guard is a per-handler call, so five
+        # cells prove nothing about the sixth (that is exactly how the rotate gap survived).
+        if "/keys/{id}" in op["path"]:
+            cells.append(http(f"admin.ops|{opid}|overlong-id", F, op["method"],
+                              op["path"].replace("{id}", OVERLONG_KEY_ID), auth="admin", listener="admin",
+                              headers=(v.get("headers") or {}), body=_req_of(op, v)["body"] if v else None,
+                              why="an id past the 64-character bound on a caller-supplied path segment: "
+                                  "an unbounded identifier otherwise reaches the store lookup and the "
+                                  "audit `resource` string. 1.5.5 refuses 400 on five of the six "
+                                  "`/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler "
+                                  "that never calls the bound (see accepted-differences.json K-1)"))
 
     # Three cells added for the ADMIN row of qa/teller-steps.json (the H2 Teller-step matrix): a fifth
     # plane, mapped onto the existing admin.ops family rather than a new one.
@@ -718,6 +755,30 @@ def billing_cells() -> list[dict]:
                    "not one fee too high (M-1)")
     refund["needs_fixture"] = True
     cells.append(refund)
+
+    # THE RATE-CARD EPOCH. `PUT /config/settings` documents `rate_card` as LIVE (hot-applied, no
+    # restart) and the usage views document spend as DERIVED AT READ TIME from the *current* card —
+    # docs/admin-api.md: "a rate correction re-prices history on the next read". Those two sentences
+    # together say a card written mid-window re-prices EVERYTHING, including the request that came
+    # before the write. The cell drives exactly that sequence on one boot — request, PUT a 10x card
+    # (200), request, then read `/usage` — so whatever the epoch really is, it is recorded rather
+    # than assumed. The `why` below states what the published 1.5.5 binary ACTUALLY did.
+    epoch = usage("rate-card|epoch-mid-window",
+                  [chat(),
+                   {"method": "PUT", "path": "/api/v1/admin/config/settings", "listener": "admin",
+                    "auth": "admin", "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps({"rate_card": {"m-openai-chat": {"input_utok": 1000000, "output_utok": 2000000}}},
+                                       separators=(",", ":"), sort_keys=True)},
+                   chat()],
+                  "RECORDED TRUTH (published 1.5.5): a `rate_card` written through PUT "
+                  "/api/v1/admin/config/settings mid-window prices NEITHER request at the new rate — "
+                  "the read-time derivation both before and after the 200 uses the card the process "
+                  "booted with, so the write is restart-to-apply in practice even though "
+                  "docs/admin-api.md lists `rate_card` as live and hot-applied and the usage views "
+                  "promise reprice-on-read. The money class this pins: an operator's rate correction "
+                  "is accepted with a 200 and silently does not reach the bill.",
+                  path="/api/v1/admin/usage")
+    cells.append(epoch)
     return cells
 
 
