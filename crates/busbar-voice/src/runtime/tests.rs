@@ -74,10 +74,12 @@ fn audio_delta(b64: &str) -> WireEvent {
 
 #[test]
 fn usage_folds_five_classes_onto_the_four_reserved_keys() {
-    // The 5→4 map: audio_in+text_in→input, audio_out+text_out→output, cached→cache_read. No new
-    // unit/label/constant — only the existing reserved keys, and only non-zero classes are keyed.
+    // The 5→4 map: (audio_in+text_in)-cached→input, audio_out+text_out→output, cached→cache_read. No
+    // new unit/label/constant — only the existing reserved keys, and only non-zero classes are keyed.
+    // `cached` is a SUBSET of the input classes in both dialects, so it is netted out of the input
+    // lane and billed once, on the cache-read lane.
     let u = IrDuplexUsage {
-        audio_in: 2,
+        audio_in: 20,
         audio_out: 3,
         text_in: 5,
         text_out: 7,
@@ -86,8 +88,8 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
     let usage = u.to_billing_usage();
     assert_eq!(
         usage.usage_units.get(busbar_api::UNIT_INPUT).copied(),
-        Some(2 + 5),
-        "audio_in + text_in fold onto `input`"
+        Some(20 + 5 - 11),
+        "audio_in + text_in fold onto `input`, less the cached subset"
     );
     assert_eq!(
         usage.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
@@ -104,6 +106,35 @@ fn usage_folds_five_classes_onto_the_four_reserved_keys() {
         3,
         "only the three touched reserved keys"
     );
+    // The billed lanes never exceed the turn the provider reported.
+    assert_eq!(
+        usage.usage_units.values().sum::<u64>(),
+        20 + 5 + 3 + 7,
+        "the four classes bill once each, never the cached subset twice"
+    );
+    // A fully-cached turn bills nothing on the input lane (and keys no zero component).
+    let all_cached = IrDuplexUsage {
+        audio_in: 40,
+        cached: 40,
+        ..IrDuplexUsage::default()
+    }
+    .to_billing_usage();
+    assert_eq!(all_cached.usage_units.get(busbar_api::UNIT_INPUT), None);
+    assert_eq!(
+        all_cached
+            .usage_units
+            .get(busbar_api::UNIT_CACHE_READ)
+            .copied(),
+        Some(40)
+    );
+    // An over-reported cache figure FLOORS the input lane at zero — it never wraps to a huge charge.
+    let over = IrDuplexUsage {
+        audio_in: 10,
+        cached: 999,
+        ..IrDuplexUsage::default()
+    }
+    .to_billing_usage();
+    assert_eq!(over.usage_units.get(busbar_api::UNIT_INPUT), None);
     // An empty turn keys nothing (no zero components ever price).
     assert!(IrDuplexUsage::default()
         .to_billing_usage()

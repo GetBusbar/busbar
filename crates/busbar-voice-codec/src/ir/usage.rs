@@ -37,16 +37,33 @@ impl IrDuplexUsage {
     /// rate-card MODEL lanes, never separate unit keys), so NO new unit/label/constant is introduced —
     /// only the four EXISTING reserved keys ([`busbar_api::UNIT_INPUT`]/`UNIT_OUTPUT`/`UNIT_CACHE_READ`):
     ///
-    /// - `audio_in + text_in` → `input`
+    /// - `(audio_in + text_in) - cached` → `input`
     /// - `audio_out + text_out` → `output`
     /// - `cached` → `cache_read`
     ///
+    /// `cached` is NETTED OUT of the input lane because in BOTH dialects the cached figure is a SUBSET
+    /// of the input figure, not a class beside it — OpenAI Realtime reports `cached_tokens` INSIDE
+    /// `input_token_details` alongside `audio_tokens`/`text_tokens`, and Gemini's
+    /// `cachedContentTokenCount` is part of `promptTokenCount` (which is what `promptTokensDetails`
+    /// breaks out by modality). Billing the full input figure AND the cache figure would charge the
+    /// cached tokens on two lanes at once. This is the same normalization the LLM plane's reader makes
+    /// (`prompt_tokens` minus `cached_tokens` is what lands on the input lane), so a cached turn prices
+    /// identically whichever plane carried it.
+    ///
+    /// The IR carrier itself stays wire-faithful (extraction-only, raw provider figures, so the
+    /// re-frame writers round-trip); the netting happens HERE, at the billing fold, and nowhere else.
+    ///
     /// Only non-zero classes are keyed (the pricer reads absent keys as zero, so this is purely tidy —
     /// no zero component ever prices). Saturating sums: a runaway turn pins the count, never wraps small.
+    /// The subtraction saturates too: a provider that over-reports `cached` floors the input lane at
+    /// zero rather than wrapping to a colossal charge.
     #[must_use]
     pub fn to_billing_usage(&self) -> busbar_substrate_values::billing::Usage {
         let mut usage_units = std::collections::BTreeMap::new();
-        let input = self.audio_in.saturating_add(self.text_in);
+        let input = self
+            .audio_in
+            .saturating_add(self.text_in)
+            .saturating_sub(self.cached);
         let output = self.audio_out.saturating_add(self.text_out);
         if input != 0 {
             usage_units.insert(busbar_api::UNIT_INPUT.to_string(), input);
