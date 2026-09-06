@@ -2047,3 +2047,86 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
         failures.join("\n")
     );
 }
+
+/// **THE FLAT FEE IS NOT REVERSED BY A CLIENT GOING AWAY.**
+///
+/// `docs/design/ARCHITECTURE.md`, PB-27: "a client disconnect bills the partial tokens and
+/// refunds the LANE max_requests unit; the flat fee (billable_requests) is KEPT, as on every
+/// exit after 2xx headers were relayed". The settlement table on the same page says it of
+/// `fee_count` too: "the fee is DECIDED at that frame and NEVER reversed by a later abort".
+///
+/// The published release keeps it by ARRANGEMENT rather than by rule — its one refund site sits
+/// after the await, so a caller that went away never reaches it. The loop reaches one terminal
+/// from both ends, so what was a consequence of where the code sat has to be said out loud.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_client_that_goes_away_does_not_get_the_flat_fee_back() {
+    let rig = rig(Fixture::BufferedOk).await;
+    let node = LlmNode::new();
+    node.bind_book(a_book());
+
+    drive_and_go_away(&rig, &node, Fixture::BufferedOk).await;
+    rig.server.shutdown().await;
+
+    let gov = rig
+        .app
+        .governance
+        .clone()
+        .expect("governance is configured");
+    gov.flush_metering();
+    let derived = gov
+        .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
+        .expect("usage read");
+    assert_eq!(
+        derived.requests, 1,
+        "the request slot is drawn at the door and never released"
+    );
+    assert_eq!(
+        derived.spend_cents, FEE_CENTS,
+        "one flat per-request fee, kept: a client that hung up mid-unit is not a refund"
+    );
+}
+
+/// A memory-buffered book, as the composition root binds one.
+fn a_book() -> Arc<Mutex<crate::root::durability::Durability>> {
+    Arc::new(Mutex::new(
+        crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open"),
+    ))
+}
+
+/// The drive, DROPPED where a client that hangs up drops it: inside the one await.
+///
+/// This is the abort, and it is driven rather than simulated. The loop yields in exactly one
+/// place — Route, under the hold, with the leases drawn — so a future that has been polled once
+/// and answered `Pending` is parked in that place and nowhere else. Dropping it there is
+/// byte-for-byte what the server does when the connection goes away: the frame unwinds, the
+/// kernel's abandoned guard runs the unit's one terminal, and nothing is left to read the end.
+///
+/// The pending assertion is the fixture's own premise, not decoration: a drive that had already
+/// finished would be a completed unit dropped afterwards, which proves nothing about the arm
+/// this test is about.
+async fn drive_and_go_away(rig: &Rig, node: &LlmNode, fixture: Fixture) {
+    let arrival = WalkArrival {
+        host: rig.host(),
+        gov: rig.gov(),
+        proto: PROTO,
+        operation: busbar_api::operation::Operation::CHAT,
+        caller_token: None,
+        headers: json_headers(),
+        body: fixture.body(),
+        path: None,
+    };
+    let drive =
+        node.answer_arriving_at(arrival, None, NATIVE_SEATS, Arrived::at(EPOCH * 1_000, 0));
+    let mut drive = std::pin::pin!(drive);
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    assert!(
+        std::future::Future::poll(drive.as_mut(), &mut cx).is_pending(),
+        "the unit must still be parked in its one await for the drop below to be a client \
+         going away MID-UNIT rather than one that left after being served"
+    );
+}
