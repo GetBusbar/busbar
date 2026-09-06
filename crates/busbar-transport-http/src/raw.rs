@@ -26,17 +26,6 @@ pub enum RawStartLine {
     },
 }
 
-impl RawStartLine {
-    /// The method, when this is a request line; otherwise a caller-supplied default.
-    #[must_use]
-    pub fn method_or<'a>(&'a self, default: &'a str) -> &'a str {
-        match self {
-            Self::Request { method, .. } => method,
-            Self::Status { .. } => default,
-        }
-    }
-}
-
 /// One parsed message: its start line, its headers in wire order, and its body.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RawMessage {

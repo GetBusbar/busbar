@@ -68,6 +68,72 @@ async fn fixed_response_server(response: &'static [u8]) -> String {
     format!("http://{addr}/")
 }
 
+/// An upstream that answers with the request line it actually received, so a test can assert what
+/// went out on the wire rather than what the caller meant to put there.
+async fn request_line_echo_server() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut stream, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0_u8; 4096];
+                let n = tokio::io::AsyncReadExt::read(&mut stream, &mut buf)
+                    .await
+                    .unwrap_or(0);
+                let text = String::from_utf8_lossy(&buf[..n]).into_owned();
+                let line = text.lines().next().unwrap_or("").trim_end().to_string();
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{}",
+                    line.len(),
+                    line
+                );
+                let _ = tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes()).await;
+            });
+        }
+    });
+    format!("http://{addr}/")
+}
+
+#[tokio::test]
+async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
+    let uri = request_line_echo_server().await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let req = b"POST /v1/messages HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    transport
+        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .await
+        .unwrap();
+
+    let mut frames = transport.frames(conn);
+    let (_s, _head) = frames.next().await.unwrap().unwrap();
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    let echoed = String::from_utf8(body.bytes.as_slice().to_vec()).unwrap();
+    assert!(
+        echoed.starts_with("POST /v1/messages "),
+        "the upstream saw {echoed:?}, not the request the envelope named"
+    );
+}
+
+#[tokio::test]
+async fn a_status_line_is_not_a_request_this_transport_can_send() {
+    let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let msg = b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n";
+    let err = transport
+        .write(&conn, StreamId(0), ArenaBytes::new(msg))
+        .await
+        .unwrap_err();
+    assert_eq!(err, TransportError::Framing);
+}
+
 #[tokio::test]
 async fn egress_round_trip_reports_status_class_on_the_first_frame() {
     let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello").await;

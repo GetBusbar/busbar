@@ -563,9 +563,19 @@ impl Transport for HttpTransport {
                         armed: true,
                     };
 
+                    // The dial URI names WHERE this connection goes; the envelope names WHAT is
+                    // being asked for there. A per-request path is not a decoration — an upstream
+                    // whose whole API surface is its path (`/model/{id}/converse`) answers a
+                    // different question, or none, when the path is dropped for the dial URI's.
+                    let RawStartLine::Request { method, path } = &raw.start else {
+                        // A status line is an ANSWER. There is no request in it to send, and
+                        // sending some default in its place would put a request on the wire the
+                        // caller never wrote.
+                        return Err(TransportError::Framing);
+                    };
                     let mut builder = http::Request::builder()
-                        .method(raw.start.method_or("GET"))
-                        .uri(uri.clone());
+                        .method(method.as_str())
+                        .uri(request_target(uri, path)?);
                     for (k, v) in &raw.headers {
                         // `Transfer-Encoding` and `Content-Length` describe a framing this
                         // transport has already undone: the body below is the decoded one, and
@@ -753,6 +763,26 @@ impl Transport for HttpTransport {
             Ok(())
         })
     }
+}
+
+/// Where an egress request actually goes: the dialled scheme and authority, carrying the path the
+/// ENVELOPE named.
+///
+/// A dial pins a destination — scheme, host, port. It does not pin a request: one connection to an
+/// upstream carries many requests, and on an API whose surface is its path they are different
+/// requests only because their paths differ. So the path travels with the message, and the dial
+/// URI's own path stands in only when the message names none (`/` or empty), which is the shape a
+/// caller writes when the dial URI already spells the whole target.
+fn request_target(dial: &http::Uri, path: &str) -> Result<http::Uri, TransportError> {
+    if path.is_empty() || path == "/" {
+        return Ok(dial.clone());
+    }
+    let mut parts = dial.clone().into_parts();
+    parts.path_and_query = Some(
+        path.parse::<http::uri::PathAndQuery>()
+            .map_err(|_| TransportError::Framing)?,
+    );
+    http::Uri::from_parts(parts).map_err(|_| TransportError::Framing)
 }
 
 /// Drain an upstream response body into the connection's frame channel, one frame per chunk hyper
