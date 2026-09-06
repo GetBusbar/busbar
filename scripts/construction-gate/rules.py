@@ -37,6 +37,15 @@ import subprocess
 import sys
 import tomllib
 
+# The gate's SECOND measuring module, imported as a sibling so `python3 rules.py` works from any
+# directory. It carries the rules born from the construction-class audit (gate-script hygiene,
+# unused waivers, assertion-free tests, the settled floor's source, pinned live configuration,
+# claimed routes with no decode arm) and is a separate file for one reason: two authors adding a
+# rule in the same week collide in one file line by line. The seam is two calls, `evaluate` and
+# `calibrate`, and nothing else crosses it.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import rules_extra  # noqa: E402
+
 # ── Source scanning (a faithful port of the purity lint's awk `strip()` + test tracking) ──────────
 
 
@@ -2111,6 +2120,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_one_pricing_site(tree, cfg)
     rows += rule_legacy_reach(tree, cfg)
     rows += rule_no_test_doubles_in_production(tree, cfg)
+    rows += rules_extra.evaluate(tree, cfg)
     return rows
 
 
@@ -2247,6 +2257,7 @@ def calibrate(rows, cfg, path):
             r["id"].split(":", 1)[1] for r in rows
             if r["id"].startswith(rid + ":") and r["current"] > 0
         )
+    rules_extra.calibrate(rows, cfg)
     out = ["# calibrated copy of qa/construction.toml: every ceiling equals the measured value", ""]
     _emit_table("", cfg, out)
     with open(path, "w", encoding="utf-8") as fh:

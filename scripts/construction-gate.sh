@@ -259,7 +259,11 @@ run_selftest() {
               hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
               token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls seal-sites \
               plane-no-money one-pricing-site one-pricing-site:fee-fields \
-              legacy-reach no-test-doubles-in-production; do
+              legacy-reach no-test-doubles-in-production \
+              legacy-reach:busbar_core legacy-reach:busbar_llm legacy-reach:busbar_substrate \
+              gate-script-hygiene:strict-mode gate-script-hygiene:muffled-subject unused-waiver \
+              assertion-free-tests accrued-floor-metered live-config-pinned \
+              claimed-path-has-arm:busbar-plane-voice; do
     python3 "$planter" "$rule" "$pristine" "$tree" "$scratch/calibrated.toml" "$scratch/baseline-rows.json"; rc=$?
     # exit 3 = the rule's subject is absent from this tree (nothing to plant): noted, not failed
     [ "$rc" -ne 3 ] || { skipped=$((skipped+1)); skipped_rules="$skipped_rules $rule"
