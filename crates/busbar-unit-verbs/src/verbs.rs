@@ -41,7 +41,9 @@ use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
 use crate::store::{Store, StoreError};
-use crate::verb::{KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS};
+use crate::verb::{
+    KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS, READ_ONLY_NEW_VERBS,
+};
 use busbar_caps::{AdminToken, SecretOnce, UnitKey};
 
 /// The nonce seam. This crate has no CSPRNG dependency of its own, so the 128-bit nonce a
@@ -130,15 +132,22 @@ impl MintOutcome {
     }
 }
 
-/// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; the 17
-/// money-governance verbs are `Full` (every one of them mutates state or reads privileged
-/// material); the five ledger views are `ReadOnly` (they are the one group of 1.6.0 additions that
-/// only looks); the named surfaces split by their own nature (`Get*` reads, the two
+/// Resolve the scope a [`KernelVerb`] requires. Legacy verbs read [`LEGACY_VERBS`]; fifteen of the
+/// 17 money-governance verbs are `Full` (they mutate state or read privileged material) and the two
+/// the document binds as `GET` ([`READ_ONLY_NEW_VERBS`]) are `ReadOnly`, by exactly 1.5.5's own
+/// method rule; the five ledger views are `ReadOnly` (the one group of 1.6.0 additions that only
+/// looks); the named surfaces split by their own nature (`Get*` reads, the two
 /// `/auth/token` methods are their own thing and never checked against this two-rung scope model at
 /// all — see the module doc on why `Verbs::execute` is not the caller for them).
 pub fn required_scope(verb: KernelVerb) -> VerbScope {
     if let Some(row) = LEGACY_VERBS.iter().find(|r| r.verb == verb) {
         return row.scope;
+    }
+    // Checked before the group as a whole, because these two are members of it: `verify` and
+    // `plane_facts` are bound `GET`, and 1.5.5's rule is that a `GET` asks for `read-only`. Asking
+    // `full` of them refuses the operator whose credential was only ever meant to look.
+    if READ_ONLY_NEW_VERBS.contains(&verb) {
+        return VerbScope::ReadOnly;
     }
     if NEW_VERBS.contains(&verb) {
         return VerbScope::Full;
