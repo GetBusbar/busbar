@@ -83,6 +83,9 @@ const PCM_24K_MIME: &str = "audio/pcm;rate=24000";
 ///
 /// `None` for a format Gemini has no PCM mime for: this dialect has no g711 mode at all (the map
 /// records the telephony codecs as having no Gemini twin), and there is no honest mime to write.
+///
+/// WHICH format is a per-DIRECTION question: an uplink frame is labelled from the negotiated INPUT
+/// format, because that is what the bytes in that frame are.
 fn pcm_mime(fmt: AudioFormat) -> Option<&'static str> {
     match fmt {
         AudioFormat::Pcm16 => Some(PCM_24K_MIME),
@@ -331,19 +334,24 @@ fn setup_from_session_config(cfg: &SessionConfig) -> Value {
 // ── usage ↔ usageMetadata ─────────────────────────────────────────────────────────────────────────
 
 /// Pull a per-modality token count out of a Gemini `*TokensDetails` array (`[{modality, tokenCount}]`).
+///
+/// EVERY ROW OF THE MODALITY COUNTS, not the first one. The breakdown is a LIST, and Gemini states a
+/// modality across several rows when a turn has several content parts of it; taking the first row is
+/// taking one part's cost for the whole turn's, which under-meters the audio that is most of the
+/// charge on this plane. The sum saturates for the reason the totals beside it do: these are
+/// untrusted upstream counts, and a wrapped total is a small number that is false.
 fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
     details
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .find(|d| {
+        .filter(|d| {
             d.get("modality")
                 .and_then(Value::as_str)
-                .map(str::to_ascii_uppercase)
-                == Some(modality.to_string())
+                .is_some_and(|m| m.eq_ignore_ascii_case(modality))
         })
-        .and_then(|d| d.get("tokenCount").and_then(Value::as_u64))
-        .unwrap_or_default()
+        .filter_map(|d| d.get("tokenCount").and_then(Value::as_u64))
+        .fold(0u64, u64::saturating_add)
 }
 
 /// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` — audio vs text are
@@ -413,6 +421,16 @@ impl DuplexReader for GeminiLiveCodec {
             // Gemini's downlink synthesis is 24 kHz PCM — the format the truncate math measures.
             if cfg.modalities.iter().any(|m| m == "audio") || cfg.modalities.is_empty() {
                 st.set_output_format(AudioFormat::Pcm16);
+            }
+            // The uplink is its own negotiation, and this dialect's setup names no format for it
+            // because it has only one: Gemini requires signed-16 LE PCM in, whatever the response
+            // modality is (a text-only response still listens). So a Gemini client's input format is
+            // stated here rather than inferred from the response side — the two directions are read
+            // in the same place on both dialects, and neither is taken from the other.
+            if let Some(fmt) = cfg.input_audio_format {
+                st.set_input_format(fmt);
+            } else {
+                st.set_input_format(AudioFormat::Pcm16);
             }
             return vec![IrClientEvent::Control(IrDuplexControl::SessionConfigure {
                 config: cfg,
@@ -678,7 +696,12 @@ impl DuplexWriter for GeminiLiveCodec {
             // `mediaChunks[]` array is still READ (a peer may speak it) but no longer written.
             IrClientEvent::AudioFrame(f) => json!({
                 wire::REALTIME_INPUT: {
-                    "audio": { "mimeType": pcm_mime(st.output_format())?, "data": encode_audio(&f.media) }
+                    // THE LABEL NAMES THE BYTES IN THIS FRAME, so it comes from the INPUT format.
+                    // The output format describes the other direction: a session taking µ-law down
+                    // to a phone while the caller's capture goes up as pcm16 is ordinary, and
+                    // labelling the uplink with the downlink's format drops EVERY uplink frame the
+                    // moment that format has no Gemini mime — a call in which nobody is heard.
+                    "audio": { "mimeType": pcm_mime(st.input_format())?, "data": encode_audio(&f.media) }
                 }
             }),
             IrClientEvent::Control(c) => match c {
