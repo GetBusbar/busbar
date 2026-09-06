@@ -150,14 +150,19 @@ pub struct Usage {
 
 impl Usage {
     /// Report what the unit used.
+    ///
+    /// A report carrying even one line the node floored is a floored report. The whole-report mark
+    /// and the per-line mark are one claim at two widths, and a fold that reads one class off the
+    /// destination and derives another itself has to come through here — `estimate` would say the
+    /// destination confirmed nothing, which is not what happened. Deriving the report's mark from
+    /// the lines is what stops such a report settling clean, with a node-derived figure carried on
+    /// a posting that says the destination confirmed it.
     pub fn report(_token: &UsageToken, lines: Vec<UsageLine>) -> Result<Self, UsageError> {
         if lines.len() > MAX_USAGE_LINES {
             return Err(UsageError::TooManyLines);
         }
-        Ok(Usage {
-            lines,
-            estimated: false,
-        })
+        let estimated = lines.iter().any(|l| l.estimated);
+        Ok(Usage { lines, estimated })
     }
 
     /// Report the kernel's own floor, because the destination reported nothing.
@@ -185,7 +190,7 @@ impl Usage {
             .fold(0u64, |acc, l| acc.saturating_add(l.quantity))
     }
 
-    /// Whether this is the kernel's floor rather than a reported figure.
+    /// Whether any of this is the kernel's floor rather than a reported figure.
     pub fn is_estimated(&self) -> bool {
         self.estimated
     }
