@@ -2088,7 +2088,13 @@ impl AdminService {
         // store/auth/hook/secret REFERENCE against the plugins that are ACTUALLY installed — the
         // meaningful check, and the CI dry-run use case (does this config resolve against what is
         // deployed?). The caller's `plugins.dir` string was already structurally checked by
-        // `config_validate::validate` above (no FS access); only the SCAN is pinned.
+        // `config_validate::validate` above, which never opens it; only the SCAN is pinned.
+        //
+        // `validate` is not FS-free, though, and this endpoint is why it must stay bounded: it
+        // resolves a provider's `file:` credential to dry-run the credential FORMAT check, on a
+        // config the CALLER wrote. That read is stat-gated and size-capped
+        // (`config_validate::resolve_validate_time_secret`) precisely so a read-scope admin cannot
+        // aim it at an endless or enormous path.
         deploy.plugins.dir = self.app.plugins_dir.to_string_lossy().into_owned();
         // The SAME post-resolve pre-flight `--validate` runs. Without it this endpoint answered
         // `ok: true` for configs the CLI rejects -- a plugin whose trust posture or store reference
