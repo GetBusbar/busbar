@@ -391,10 +391,26 @@ jobs:
       # the plugin list was duplicated across 5+ places and the "full plugin gate" silently ran
       # 6 of 8. Adding a plugin = one plugins.yaml entry; this gate stays red until every
       # consumer actually covers it.
+      - name: Plugin registry gate self-test (the org sweep cannot be lied to)
+        run: bash scripts/plugin-registry-check.sh --selftest
       - name: Plugin registry gate
         env:
           GH_TOKEN: ${{ github.token }}
         run: scripts/plugin-registry-check.sh
+      # RELEASE-GATE self-test. gate.sh is release-stage/verify-deploy's single verdict (every
+      # ledger diffed against the ids the contract owes); this proves its floors and its plugin-row
+      # matcher still discriminate offline, no network, no release, before anything trusts its
+      # verdict on a real run. Same "self-test proves the gate before the gate is trusted" discipline
+      # as every other lint in this job.
+      - name: Release-gate self-test (the single verdict's own floors and matcher)
+        run: bash scripts/release-gate/gate.sh --selftest
+      # PROOF-MANIFEST self-test. The Build-Proof-Dashboard collator (scripts/proof-manifest.py,
+      # invoked below on dev/qa/main only) changes no gate: it re-runs the cheap grep gates and
+      # records their verdicts, so every published claim must map to evidence that actually exists.
+      # This proves the collator's own claim-to-evidence wiring holds before any branch's manifest is
+      # trusted to represent it.
+      - name: Proof-manifest self-test (every published claim finds its evidence)
+        run: python3 scripts/proof-manifest.py --selftest
       # QA-GATE SEGMENTATION self-test. qa/segments.toml is the umbrella's single
       # source of truth (registry-driven fan-out, mirroring plugins.yaml). This self-test proves the
       # manifest's SHAPE before any segment is trusted to run: it lists both active and reserved
