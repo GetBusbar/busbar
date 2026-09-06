@@ -133,8 +133,17 @@ mod virtual_key_wire {
         /// so a registered kind's field sits inline exactly where its named field used to
         /// (`allowed_mcp_servers`/`allowed_mcp_tools`/…), and an empty map emits nothing — so a
         /// pool-only key's wire shape is byte-identical to the pre-generalization one.
+        ///
+        /// The captured value is an untyped [`serde_json::Value`], NOT a `Vec<String>`, and that is
+        /// load-bearing: `#[serde(flatten)]` routes EVERY unnamed field of the row into this map, not
+        /// just the scope ones. Typed as a string array, a single foreign field of any other shape —
+        /// a newer busbar's added scalar column, a JSON backend's own bookkeeping stamp — failed the
+        /// WHOLE `VirtualKey` deserialization and took a live credential's row down with it. Shape is
+        /// therefore judged in [`assemble_scopes`], where a non-scope field can be ignored (as this
+        /// module's doc already promised) while a MALFORMED `allowed_*s` field still fails loudly
+        /// rather than reading as an omitted — i.e. wildcard — grant.
         #[serde(flatten)]
-        pub allowed_by_kind: BTreeMap<String, Vec<String>>,
+        pub allowed_by_kind: BTreeMap<String, serde_json::Value>,
         pub enabled: bool,
         pub created_at: u64,
         #[serde(default)]
@@ -157,7 +166,7 @@ mod virtual_key_wire {
 
     /// The per-kind wire partition: `(allowed_pools, {allowed_{kind}s → values})`. The map carries
     /// every non-`pool` kind's grant under its frozen wire-field name.
-    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, Vec<String>>);
+    pub(super) type ScopePartition = (Option<Vec<String>>, BTreeMap<String, serde_json::Value>);
 
     /// Partition `allowed_scopes` into the per-kind wire fields. `Err` names the offending kind:
     /// an unregistered kind must fail the WRITE, loudly, at the boundary - see the module doc.
@@ -189,26 +198,59 @@ mod virtual_key_wire {
         // `allowed_pools` is ALWAYS present for an explicit grant (even empty) so `Some([])` =
         // no-scopes survives the trip; the per-kind fields are additive and omitted when empty
         // (a kind with no values never gets a map entry above).
+        let by_kind = by_kind
+            .into_iter()
+            .map(|(field, values)| {
+                let arr = values
+                    .into_iter()
+                    .map(serde_json::Value::String)
+                    .collect::<Vec<_>>();
+                (field, serde_json::Value::Array(arr))
+            })
+            .collect();
         Ok((Some(pools), by_kind))
     }
 
     /// Reassemble the per-kind wire fields into kind-tagged scopes. All three absent = the
     /// omitted-grant wildcard (`None`); any present field makes the grant an explicit
     /// (fail-closed, exhaustive-across-kinds) list.
+    ///
+    /// The two directions this has to keep apart, and neither may be softened into the other:
+    /// - a field that is NOT `allowed_*s`-shaped is not a scope grant at all — a foreign column from
+    ///   a newer busbar or a backend's own stamp — and is IGNORED, so it never becomes a phantom
+    ///   scope kind and never takes the row's read down with it;
+    /// - a field that IS `allowed_*s`-shaped but is not a string array is a CORRUPT grant, and it is
+    ///   an `Err`. Dropping it would leave a scoped key with no scope fields at all, which reads as
+    ///   the OMITTED grant — every scope of every kind. A malformed grant must not widen to a
+    ///   wildcard, so it fails the read instead.
     pub(super) fn assemble_scopes(
         pools: Option<Vec<String>>,
-        by_kind: BTreeMap<String, Vec<String>>,
-    ) -> Option<Vec<ScopeRef>> {
-        // Only `allowed_*` wire fields carry scopes; any other flattened key is ignored so a
-        // foreign top-level field never becomes a phantom scope kind.
-        let scope_fields: Vec<(String, Vec<String>)> = by_kind
-            .into_iter()
-            .filter_map(|(field, values)| {
-                scope_kinds::kind_for_wire_field(&field).map(|kind| (kind, values))
-            })
-            .collect();
+        by_kind: BTreeMap<String, serde_json::Value>,
+    ) -> Result<Option<Vec<ScopeRef>>, String> {
+        let mut scope_fields: Vec<(String, Vec<String>)> = Vec::new();
+        for (field, value) in by_kind {
+            let Some(kind) = scope_kinds::kind_for_wire_field(&field) else {
+                continue; // not a scope field — a foreign column, ignored
+            };
+            let values = value
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .map(|v| v.as_str().map(str::to_string))
+                        .collect::<Option<Vec<String>>>()
+                })
+                .unwrap_or(None)
+                .ok_or_else(|| {
+                    format!(
+                        "scope field '{field}' must be an array of strings: a malformed grant is \
+                         refused, never dropped (dropping it would read as the omitted grant, which \
+                         is the every-scope wildcard)"
+                    )
+                })?;
+            scope_fields.push((kind, values));
+        }
         if pools.is_none() && scope_fields.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut list = Vec::new();
         list.extend(pools.into_iter().flatten().map(ScopeRef::pool));
@@ -219,7 +261,7 @@ mod virtual_key_wire {
                 value,
             }));
         }
-        Some(list)
+        Ok(Some(list))
     }
 
     impl serde::Serialize for VirtualKey {
@@ -260,7 +302,8 @@ mod virtual_key_wire {
                 id: w.id,
                 generation_hash: w.generation_hash,
                 name: w.name,
-                allowed_scopes: assemble_scopes(w.allowed_pools, w.allowed_by_kind),
+                allowed_scopes: assemble_scopes(w.allowed_pools, w.allowed_by_kind)
+                    .map_err(serde::de::Error::custom)?,
                 enabled: w.enabled,
                 created_at: w.created_at,
                 group: w.group,
