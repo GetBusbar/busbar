@@ -888,6 +888,33 @@ impl ProtocolReader for CohereReader {
                     Some(read_cohere_stop_reason(raw_finish_reason))
                 };
 
+                // The generic infra `ERROR` is a mid-stream upstream FAILURE, but the only thing it
+                // produced was `IrStopReason::Error` on the terminal MessageDelta — and no
+                // cross-protocol writer has a native error token for that reason, so every one of
+                // them renders it as a SUCCESS terminator (`stop` / `end_turn`). With no
+                // `IrStreamEvent::Error` alongside it, `terminal_error()` stays None, the breaker
+                // records no fault, and the failed stream is billed as a completed one. Push the
+                // Error event as well, mirroring the gemini/bedrock inline-error arms, so the
+                // failure reaches the breaker and the downstream client sees a real error frame.
+                // The MessageDelta/MessageStop below still ride along, so the stream stays properly
+                // terminated and its usage is still folded.
+                //
+                // Scoped to the GENERIC `ERROR` only. `ERROR_TOXIC` maps to `IrStopReason::Safety`:
+                // a content-moderation refusal is a successful, correctly-served response, and
+                // faulting a lane for one would trip the breaker on ordinary safety behaviour.
+                if stop_reason == Some(crate::ir::IrStopReason::Error) {
+                    out.push(IrStreamEvent::Error(
+                        busbar_substrate_values::proto::IrError {
+                            // The upstream gives no code or message on this frame — only the
+                            // `ERROR` token — so classify it as a TRANSIENT server fault: the lane
+                            // recovers via cooldown rather than being permanently penalized.
+                            class: busbar_substrate_values::breaker::StatusClass::ServerError,
+                            provider_signal: Some(raw_finish_reason.to_string()),
+                            retry_after: None,
+                        },
+                    ));
+                }
+
                 let usage = data
                     .get("delta")
                     .and_then(|d| d.get("usage"))
