@@ -379,8 +379,29 @@ pub(super) fn credential_mode(server: &ServerEntry) -> Result<UpstreamCredential
          issued token is spendable at any backend the authorization server serves"
             .to_string()
     })?;
-    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token)
-        .map_err(|e| format!("busbar's own subject token for this upstream cannot resolve: {e}"))?;
+    // THE DETAIL GOES TO THE OPERATOR AND THE SENTENCE GOES TO THE CALLER, because this string does
+    // not stop here: `SetupRefusal::Credential` is rendered into the body busbar's own caller reads.
+    // `resolve_builtin_string`'s error names the SOURCE it could not read — `secret env:FOO cannot
+    // resolve: environment variable 'FOO' is unset`, `secret file:/etc/busbar/secrets/idp-subject
+    // cannot resolve: No such file or directory` — so any authenticated caller holding a grant on a
+    // registration whose secret was rotated out learned the operator's env-var names and absolute
+    // secret paths by issuing one call. The exchange arm 340 lines below already refuses to echo the
+    // authorization server's body for exactly this reason; the rule is the same one and it applies
+    // here too. The secret VALUE was never in the message, and is not now.
+    let subject_token = busbar_api::resolve_builtin_string(&tx.subject_token).map_err(|e| {
+        tracing::error!(
+            server = %server.id,
+            error = %e,
+            "mcp upstream: busbar's own subject token for this registration could not be resolved; \
+             the call is refused"
+        );
+        format!(
+            "busbar's own subject token for MCP server `{}` cannot resolve; the call is refused \
+             rather than made unauthenticated. The reason is in the gateway's log — it names a \
+             secret source and is not the caller's to read.",
+            server.id
+        )
+    })?;
     Ok(UpstreamCredential::Exchange(ExchangeCfg {
         token_url: tx.token_url.clone(),
         subject_token: Redacted::new(subject_token),
