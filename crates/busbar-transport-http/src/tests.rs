@@ -1645,36 +1645,92 @@ fn a_start_line_with_no_http_version_is_not_a_message() {
     assert!(raw::parse_message(b"HTTP/1.1 200 OK\r\n\r\n").is_some());
 }
 
-#[test]
-fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+/// Frame meta is honest on the frames this transport REALLY emits, on both sides.
+///
+/// A predicate applied to hand-built `Frame` literals proves the predicate, not the transport: the
+/// fixtures agree with themselves by construction and the transport is never asked. So the frames
+/// here come out of a live ingress read and a live egress round trip, and the check is shown to
+/// discriminate by perturbing a real one either way.
+///
+/// The egress HEAD frame is the one with somewhere to go wrong: its bytes are rebuilt from the
+/// upstream's status line and headers with `Content-Length` and `Transfer-Encoding` stripped, so its
+/// meta must count the bytes that survived the strip and not the head that arrived.
+#[tokio::test]
+async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
     fn honest(frame: &Frame) -> bool {
         frame.meta.bytes == frame.bytes.len() as u64
     }
-    let base = Frame {
-        direction: Direction::Inbound,
-        stream: StreamId(0),
-        bytes: SlabBytes::new(StdArc::from(&b"abcd"[..])),
-        meta: FrameMeta {
-            bytes: 4,
-            transport_units: None,
-            status: None,
-        },
+
+    // Egress: a HEAD frame rebuilt past a stripped `Content-Length`, and the body frame after it.
+    let uri =
+        fixed_response_server(b"HTTP/1.1 200 OK\r\nX-Tag: t\r\nContent-Length: 5\r\n\r\nhello").await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    let head_text = String::from_utf8(head.bytes.as_slice().to_vec()).unwrap();
+    assert!(
+        !head_text.to_ascii_lowercase().contains("content-length"),
+        "the head that goes up is the stripped one: {head_text:?}"
+    );
+    assert!(
+        honest(&head),
+        "the HEAD frame's meta counts the bytes that survived the strip, not the ones that arrived"
+    );
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    assert_eq!(body.bytes.as_slice(), b"hello");
+    assert!(honest(&body));
+
+    // Ingress: the HEAD frame is the verbatim header prefix, the body frame is the decoded body.
+    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
     };
-    assert!(honest(&base));
-    let inflated = Frame {
-        meta: FrameMeta {
-            bytes: 40,
-            ..base.meta
-        },
-        ..base.clone()
-    };
-    assert!(!honest(&inflated));
-    let deflated = Frame {
-        meta: FrameMeta {
-            bytes: 1,
-            ..base.meta
-        },
-        ..base
-    };
-    assert!(!honest(&deflated));
+    let listener = served.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let served = served.clone();
+        async move { served.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut client,
+        b"POST /units HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nabcd",
+    )
+    .await
+    .unwrap();
+    let accepted = accept_fut.await.unwrap();
+    let mut served_frames = served.frames(accepted);
+    let (_s, in_head) = served_frames.next().await.unwrap().unwrap();
+    let (_s, in_body) = served_frames.next().await.unwrap().unwrap();
+    assert!(honest(&in_head) && honest(&in_body));
+    assert_eq!(in_body.bytes.as_slice(), b"abcd");
+
+    // And the check discriminates: a real frame perturbed either way fails it.
+    for drift in [1_i64, -1] {
+        for real in [&head, &body, &in_head, &in_body] {
+            let perturbed = Frame {
+                meta: FrameMeta {
+                    bytes: real.meta.bytes.wrapping_add_signed(drift),
+                    ..real.meta
+                },
+                ..real.clone()
+            };
+            assert!(
+                !honest(&perturbed),
+                "a frame claiming {drift:+} bytes against what it carries is not an honest one"
+            );
+        }
+    }
 }
