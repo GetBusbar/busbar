@@ -140,12 +140,25 @@ fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
     out
 }
 
-/// The admin audit's pre-framed content SUFFIX (Option A leading `|`): `|ts|action|resource|outcome|
-/// principal`. With `digests_scope = false` the host frames the prelude `prev_hash|seq`, and
-/// `prelude ⧺ suffix` reproduces the legacy [`AuditEntry`] digest input `prev_hash | seq | ts | action
-/// | resource | outcome | principal` byte-for-byte, so a chain appended through the seam verifies
-/// byte-identically against records written before the seam existed.
-pub(crate) fn audit_suffix(
+/// The admin audit's LEGACY pre-framed content SUFFIX (Option A leading `|`): `|ts|action|resource|
+/// outcome|principal`. With `digests_scope = false` the host frames the prelude `prev_hash|seq`, and
+/// `prelude ⧺ suffix` reproduces the pre-1.6.0 [`AuditEntry`] digest input `prev_hash | seq | ts |
+/// action | resource | outcome | principal` byte-for-byte.
+///
+/// IT IS AMBIGUOUS, AND THAT IS A DEFECT, NOT A QUIRK. `resource` and `principal` are free text a
+/// caller hands to [`crate::admin::audit::AuditLog::record_by`], and neither is validated. So a
+/// resource of `hook:x|rejected` with outcome `applied` and principal `mallory` joins to the same
+/// bytes as a resource of `hook:x` with outcome `rejected` and principal `applied|mallory` — two
+/// DIFFERENT things that happened, one digest. An attacker who can choose one field's bytes can
+/// present a record that says a mutation was REJECTED as one saying it was APPLIED, or move the
+/// attribution onto somebody who was not there, and [`verify_chain`] passes it: the digest really is
+/// the digest of those bytes.
+///
+/// It is retained for exactly one reason — records sealed under it are already on disk, cannot be
+/// re-sealed, and must keep verifying. It NEVER seals a new record: [`emit_admin_hostless`] and
+/// [`emit`] build [`audit_suffix`] instead, and the one-time legacy-table migration below COPIES
+/// bytes rather than re-sealing, which is why it is the only other caller.
+pub(crate) fn audit_suffix_legacy(
     ts: u64,
     action: &str,
     resource: &str,
@@ -155,19 +168,132 @@ pub(crate) fn audit_suffix(
     format!("|{ts}|{action}|{resource}|{outcome}|{principal}").into_bytes()
 }
 
-/// Parse a `PipeSeparated` admin audit SUFFIX back into its typed fields — the inverse of
-/// [`audit_suffix`], for reconstructing an [`AuditEntry`] from a stored neutral body. The leading `|`
-/// is stripped and the five fields are split; the framing contract guarantees no field carries a `|`.
-fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String) {
+/// DIGEST SCHEME 1 — the legacy pipe join built by [`audit_suffix_legacy`]. Never seals a new record.
+pub(crate) const DIGEST_SCHEME_LEGACY_PIPE: u8 = 1;
+
+/// DIGEST SCHEME 2 — the INJECTIVE LENGTH-PREFIXED content framing every new entry is sealed under:
+/// a leading scheme tag, then every field carrying its own big-endian eight-byte length ahead of its
+/// bytes and every integer in its fixed eight-byte big-endian form.
+///
+/// Because a field's length precedes its bytes, the boundary between two fields is not something any
+/// field's CONTENT can move. The collision scheme 1 admits is therefore not merely unlikely under
+/// this framing, it is unrepresentable: recovering the fields from the preimage is unambiguous, so
+/// two distinct tuples cannot share one.
+pub(crate) const DIGEST_SCHEME_LEN_PREFIXED: u8 = 2;
+
+/// The fixed leading tag of every scheme 2 content suffix.
+///
+/// It DOMAIN-SEPARATES this preimage space: a scheme 1 suffix begins with a vertical bar and this one
+/// begins with the eight zero-ish bytes of a length, so no scheme 2 digest can coincide with a
+/// scheme 1 digest and an entry cannot be relabelled from one scheme to the other and still recompute
+/// to its stored digest. The version is INSIDE what is digested, not merely beside it.
+///
+/// The spelling is [`busbar_unit_audit`'s] — the unit crate's framing is the source of truth for this
+/// scheme and the two are pinned against each other by the cross-crate witness in `crates/busbar`.
+const DIGEST_SCHEME_2_TAG: &str = "busbar.audit.adminchain.v2";
+
+/// Append one length-framed field: its big-endian `u64` length, then its bytes. THE primitive the
+/// whole scheme rests on — the length precedes the bytes, so no field's content can move the boundary
+/// that follows it.
+fn lp_field(out: &mut Vec<u8>, bytes: &[u8]) {
+    out.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+    out.extend_from_slice(bytes);
+}
+
+/// Read one length-framed field back, returning it and the rest. `None` when the buffer is truncated
+/// — a body that does not parse is reported as unreadable rather than silently read as something
+/// shorter, because on this surface a body that will not decode may be tamper evidence.
+fn lp_take(buf: &[u8]) -> Option<(&[u8], &[u8])> {
+    let (len_bytes, rest) = buf.split_at_checked(8)?;
+    let len = u64::from_be_bytes(len_bytes.try_into().ok()?) as usize;
+    let (field, rest) = rest.split_at_checked(len)?;
+    Some((field, rest))
+}
+
+/// THE CONTENT SUFFIX EVERY NEW ADMIN AUDIT RECORD IS SEALED UNDER — scheme 2, length-framed:
+/// `lp(tag) ⧺ lp(be64(ts)) ⧺ lp(action) ⧺ lp(resource) ⧺ lp(outcome) ⧺ lp(principal)`.
+///
+/// ONE IMPLEMENTATION, TWO CALLERS. The durable seam frames the prelude host-side and concatenates
+/// this suffix; the in-process ring's [`crate::admin::audit::AuditEntry`] digest calls this same
+/// function, so the ring and the seam cannot drift into two answers about what happened.
+///
+/// The PRELUDE stays [`Framing::PipeSeparated`] (`prev_hash|seq`) and does not need to move: both of
+/// its fields are allocated by the chain, never by a caller — `prev_hash` is a hex digest or empty and
+/// `seq` is decimal digits, so neither can contain a bar and neither can move the boundary into this
+/// suffix, which begins with a length whose leading bytes are not `|` and not a digit. Every field a
+/// CALLER supplies is inside the length framing. That is the whole defect, closed.
+pub(crate) fn audit_suffix(
+    ts: u64,
+    action: &str,
+    resource: &str,
+    outcome: &str,
+    principal: &str,
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    lp_field(&mut out, DIGEST_SCHEME_2_TAG.as_bytes());
+    lp_field(&mut out, &ts.to_be_bytes());
+    lp_field(&mut out, action.as_bytes());
+    lp_field(&mut out, resource.as_bytes());
+    lp_field(&mut out, outcome.as_bytes());
+    lp_field(&mut out, principal.as_bytes());
+    out
+}
+
+/// WHICH SCHEME a stored content suffix was sealed under, read off the bytes themselves.
+///
+/// Nothing new is persisted to carry it: the two framings are distinguishable BY CONSTRUCTION — a
+/// scheme 1 suffix opens with `|` and a scheme 2 suffix opens with the eight-byte length of the tag
+/// followed by the tag. Deriving it is what lets a store written by 1.5.5 be read without a migration
+/// and without a field those rows do not have.
+fn scheme_of(content: &[u8]) -> u8 {
+    let mut expected = Vec::new();
+    lp_field(&mut expected, DIGEST_SCHEME_2_TAG.as_bytes());
+    if content.starts_with(&expected) {
+        DIGEST_SCHEME_LEN_PREFIXED
+    } else {
+        DIGEST_SCHEME_LEGACY_PIPE
+    }
+}
+
+/// Parse an admin audit content SUFFIX of EITHER scheme back into its typed fields plus the scheme it
+/// was sealed under — the inverse of [`audit_suffix`] and [`audit_suffix_legacy`], for reconstructing
+/// an [`AuditEntry`] from a stored neutral body.
+fn parse_audit_suffix(content: &[u8]) -> (u8, u64, String, String, String, String) {
+    if scheme_of(content) == DIGEST_SCHEME_LEN_PREFIXED {
+        if let Some(fields) = parse_len_prefixed_suffix(content) {
+            return fields;
+        }
+    }
     let s = String::from_utf8_lossy(content);
     let f: Vec<&str> = s.trim_start_matches('|').splitn(5, '|').collect();
     (
+        DIGEST_SCHEME_LEGACY_PIPE,
         f.first().and_then(|v| v.parse().ok()).unwrap_or(0),
         f.get(1).copied().unwrap_or_default().to_string(),
         f.get(2).copied().unwrap_or_default().to_string(),
         f.get(3).copied().unwrap_or_default().to_string(),
         f.get(4).copied().unwrap_or_default().to_string(),
     )
+}
+
+/// The scheme 2 read: tag, then the five fields, each behind its own length. `None` on a truncated or
+/// mis-framed body, so the caller falls back rather than inventing fields out of a short buffer.
+fn parse_len_prefixed_suffix(content: &[u8]) -> Option<(u8, u64, String, String, String, String)> {
+    let (_tag, rest) = lp_take(content)?;
+    let (ts, rest) = lp_take(rest)?;
+    let ts = u64::from_be_bytes(ts.try_into().ok()?);
+    let (action, rest) = lp_take(rest)?;
+    let (resource, rest) = lp_take(rest)?;
+    let (outcome, rest) = lp_take(rest)?;
+    let (principal, _rest) = lp_take(rest)?;
+    Some((
+        DIGEST_SCHEME_LEN_PREFIXED,
+        ts,
+        String::from_utf8_lossy(action).into_owned(),
+        String::from_utf8_lossy(resource).into_owned(),
+        String::from_utf8_lossy(outcome).into_owned(),
+        String::from_utf8_lossy(principal).into_owned(),
+    ))
 }
 
 /// THE DECODE BRIDGE (reframe): turn one stored `audit` body back into a chain record.
@@ -190,8 +316,10 @@ fn reframe_audit(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
             AUDIT_DIGESTS_SCOPE,
         ));
     }
+    // A legacy `AuditRecord` row predates the scheme, so its content is rebuilt with the LEGACY
+    // suffix: it must reproduce the bytes its stored `hash` was sealed over, not this build's.
     let row: busbar_api::AuditRecord = decode(body)?;
-    let content = audit_suffix(
+    let content = audit_suffix_legacy(
         row.ts,
         &row.action,
         &row.resource,
@@ -216,7 +344,8 @@ fn reframe_audit(scope: &str, body: &[u8]) -> StoreResult<PlaneJournalRecord> {
 /// constant `admin` log, never read from the body.
 pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<AuditEntry> {
     if let Ok(nb) = decode::<NeutralBody>(body) {
-        let (ts, action, resource, outcome, principal) = parse_audit_suffix(&nb.content);
+        let (digest_scheme, ts, action, resource, outcome, principal) =
+            parse_audit_suffix(&nb.content);
         return Ok(AuditEntry {
             seq: nb.seq,
             ts,
@@ -226,6 +355,10 @@ pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<Au
             principal,
             prev_hash: nb.prev_hash,
             hash: nb.hash,
+            // READ OFF THE STORED BYTES, never assumed: a record sealed before this release is
+            // reported as what sealed it, so it keeps verifying and re-serialises without a field
+            // its writer never wrote.
+            digest_scheme,
             recorded_here: false,
         });
     }
@@ -239,6 +372,8 @@ pub(crate) fn audit_entry_from_body(_scope: &str, body: &[u8]) -> StoreResult<Au
         principal: row.principal,
         prev_hash: row.prev_hash,
         hash: row.hash,
+        // A legacy typed row is by definition pre-scheme: it was sealed under the pipe join.
+        digest_scheme: DIGEST_SCHEME_LEGACY_PIPE,
         recorded_here: false,
     })
 }
@@ -512,7 +647,11 @@ pub(crate) fn migrate_legacy_table_to_plane_records(
         return Ok(0);
     }
     for r in &records {
-        let content = audit_suffix(r.ts, &r.action, &r.resource, &r.outcome, &r.principal);
+        // THE LEGACY SUFFIX, deliberately: these records were sealed under the pipe join and the
+        // migration COPIES bytes, it never re-seals. Building this build's suffix here would move
+        // every migrated record's digest input away from the `hash` crossing over verbatim beside
+        // it, and report a correctly migrated history as tampered at the next boot.
+        let content = audit_suffix_legacy(r.ts, &r.action, &r.resource, &r.outcome, &r.principal);
         let body = encode(&NeutralBody {
             seq: r.seq,
             prev_hash: r.prev_hash.clone(),
@@ -627,6 +766,9 @@ pub(crate) fn emit_admin_hostless(
                 principal: principal.to_string(),
                 prev_hash,
                 hash,
+                // Sealed by `audit_suffix` above, which has no branch: every record this build
+                // appends is scheme 2.
+                digest_scheme: DIGEST_SCHEME_LEN_PREFIXED,
                 recorded_here: true,
             });
         }

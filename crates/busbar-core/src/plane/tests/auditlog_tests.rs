@@ -25,6 +25,8 @@ fn assert_roundtrip(seq: u64, prev_hash: &str, ts: u64, act: &str, res: &str, ou
         principal: pr.to_string(),
         prev_hash: prev_hash.to_string(),
         hash: String::new(),
+        // Built by `audit_suffix` above, which is scheme 2 and has no branch.
+        digest_scheme: DIGEST_SCHEME_LEN_PREFIXED,
         recorded_here: true,
     };
     let legacy = digest(&entry);
@@ -90,6 +92,7 @@ fn a_converted_sites_seam_record_matches_the_legacy_ring_hash() {
         principal: pr.to_string(),
         prev_hash: prev,
         hash: String::new(),
+        digest_scheme: DIGEST_SCHEME_LEN_PREFIXED,
         recorded_here: true,
     };
     assert_eq!((seq1, prev1.as_str()), (1, ""), "genesis position");
@@ -292,6 +295,7 @@ fn seam_write_then_reboot_restore_roundtrips_byte_identically() {
         principal: pr.to_string(),
         prev_hash: prev,
         hash: String::new(),
+        digest_scheme: DIGEST_SCHEME_LEN_PREFIXED,
         recorded_here: false,
     };
     let legacy_head = mk(1, ts, "hook.register", String::new());

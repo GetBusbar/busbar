@@ -486,10 +486,53 @@ fn the_a2a_task_event_digest_is_unchanged_by_the_unification() {
     );
 }
 
-/// The admin audit digest is byte-for-byte what `admin/audit.rs` computed before the unification,
-/// and byte-for-byte the formula `busbar_api::AuditRecord` publishes.
+/// THE LEGACY ADMIN AUDIT DIGEST — the pipe join — is byte-for-byte what `admin/audit.rs` computed
+/// before the unification AND before the framing was versioned. It is pinned here because records
+/// sealed under it are already on disk and cannot be re-sealed: if this vector moved, every 1.5.5
+/// chain would report its own history as TAMPERED at the next boot.
+///
+/// It is reached by naming the LEGACY scheme on the entry, which is the only way to reach it — `seal`
+/// has no branch, so nothing can ask for a NEW record under this framing.
 #[test]
-fn the_admin_audit_digest_is_unchanged_by_the_unification() {
+fn the_legacy_admin_audit_digest_is_unchanged_so_a_155_chain_still_verifies() {
+    let entry = AuditEntry {
+        seq: 4,
+        ts: 1_700_000_000,
+        action: "hook.register".to_string(),
+        resource: "hook:compress".to_string(),
+        outcome: crate::audit::vocab::OUTCOME_APPLIED.to_string(),
+        principal: "admin".to_string(),
+        prev_hash: "deadbeef".to_string(),
+        hash: String::new(),
+        digest_scheme: crate::plane::auditlog::DIGEST_SCHEME_LEGACY_PIPE,
+        recorded_here: false,
+    };
+    let canonical = format!(
+        "{}|{}|{}|{}|{}|{}|{}",
+        entry.prev_hash,
+        entry.seq,
+        entry.ts,
+        entry.action,
+        entry.resource,
+        entry.outcome,
+        entry.principal
+    );
+    assert_eq!(
+        digest(&entry),
+        busbar_api::sha256_hex(canonical.as_bytes()),
+        "the LEGACY admin audit digest moved — every persisted 1.5.5 chain would report as tampered"
+    );
+}
+
+/// THE 1.6.0 ADMIN AUDIT DIGEST MOVES, ONCE, AND THIS IS THE VECTOR IT MOVES TO. Every record `seal`
+/// produces is scheme 2: the host-framed prelude `prev_hash|seq`, then a content suffix that leads
+/// with the scheme tag and carries every caller-supplied field behind its own big-endian eight-byte
+/// length.
+///
+/// The expectation is recomputed HERE, independently of the suffix builder, so a change to the
+/// framing has to be made in two places on purpose rather than in one place by accident.
+#[test]
+fn a_sealed_admin_audit_record_is_scheme_two_and_its_fields_are_length_framed() {
     let entry: AuditEntry = seal(
         "admin",
         4,
@@ -502,20 +545,121 @@ fn the_admin_audit_digest_is_unchanged_by_the_unification() {
             principal: "admin".to_string(),
         },
     );
-    let canonical = format!(
-        "{}|{}|{}|{}|{}|{}|{}",
-        entry.prev_hash,
-        entry.seq,
-        entry.ts,
-        entry.action,
-        entry.resource,
-        entry.outcome,
-        entry.principal
+    assert_eq!(
+        entry.digest_scheme,
+        crate::plane::auditlog::DIGEST_SCHEME_LEN_PREFIXED,
+        "`seal` has no branch: a new record can only be scheme 2"
     );
+
+    let mut expected = Vec::new();
+    // The prelude, framed by the host exactly as the durable seam frames it.
+    expected.extend_from_slice(b"deadbeef|4");
+    // The content suffix: tag, ts, action, resource, outcome, principal, each length-framed.
+    let lp = |out: &mut Vec<u8>, b: &[u8]| {
+        out.extend_from_slice(&(b.len() as u64).to_be_bytes());
+        out.extend_from_slice(b);
+    };
+    lp(&mut expected, b"busbar.audit.adminchain.v2");
+    lp(&mut expected, &1_700_000_000u64.to_be_bytes());
+    lp(&mut expected, b"hook.register");
+    lp(&mut expected, b"hook:compress");
+    lp(&mut expected, b"applied");
+    lp(&mut expected, b"admin");
     assert_eq!(
         entry.hash,
-        busbar_api::sha256_hex(canonical.as_bytes()),
-        "an admin audit digest that moved would report every persisted chain as tampered"
+        busbar_api::sha256_hex(&expected),
+        "the 1.6.0 admin audit digest is not the length-framed vector this release publishes"
+    );
+}
+
+/// THE DEFECT, PERFORMED. Two DIFFERENT things that happened produce ONE digest under the pipe join:
+/// a resource of `hook:x|rejected` with outcome `applied` and principal `mallory`, and a resource of
+/// `hook:x` with outcome `rejected` and principal `applied|mallory`. `resource` and `principal` are
+/// free text a caller hands to `record_by` and neither is validated, so an attacker who can choose
+/// one field's bytes can present a REJECTED mutation as an APPLIED one, or move the attribution onto
+/// somebody who was not there, and the verifier passes it — the digest really is the digest of those
+/// bytes.
+///
+/// RED BEFORE GREEN: the first assertion is the defect, and it still holds, because the framing that
+/// admits it is on disk and cannot be re-sealed. The second is the fix: under scheme 2 the collision
+/// is not merely unlikely, it is unrepresentable, because a field's length precedes its bytes and no
+/// field's CONTENT can move a boundary.
+#[test]
+fn the_forged_pair_collides_under_the_legacy_framing_and_cannot_under_scheme_two() {
+    let mk = |scheme: u8, resource: &str, outcome: &str, principal: &str| AuditEntry {
+        seq: 7,
+        ts: 1_700_000_000,
+        action: "hook.register".to_string(),
+        resource: resource.to_string(),
+        outcome: outcome.to_string(),
+        principal: principal.to_string(),
+        prev_hash: "deadbeef".to_string(),
+        hash: String::new(),
+        digest_scheme: scheme,
+        recorded_here: false,
+    };
+    let legacy = crate::plane::auditlog::DIGEST_SCHEME_LEGACY_PIPE;
+    let fixed = crate::plane::auditlog::DIGEST_SCHEME_LEN_PREFIXED;
+
+    let truth = ("hook:x", "rejected", "applied|mallory");
+    let lie = ("hook:x|rejected", "applied", "mallory");
+
+    assert_eq!(
+        digest(&mk(legacy, truth.0, truth.1, truth.2)),
+        digest(&mk(legacy, lie.0, lie.1, lie.2)),
+        "the legacy pipe join is the defect: two different records must collide under it, and a \
+         chain of them verifies either reading"
+    );
+    assert_ne!(
+        digest(&mk(fixed, truth.0, truth.1, truth.2)),
+        digest(&mk(fixed, lie.0, lie.1, lie.2)),
+        "scheme 2 must not admit the collision — a field's content moved a boundary"
+    );
+}
+
+/// A CHAIN THAT SPANS THE UPGRADE IS LEGITIMATELY MIXED, AND IT VERIFIES. Two records sealed under
+/// the legacy framing, then one appended under scheme 2 linking onto them, in ONE sequence. Each is
+/// checked against ITS OWN scheme, so nobody has to choose between reading their history and being
+/// safe. Editing the scheme 2 record's outcome in place is then caught as a `DigestMismatch` — the
+/// evidence property the whole change exists to restore.
+#[test]
+fn a_chain_spanning_the_framing_upgrade_verifies_and_still_catches_an_edit() {
+    let mut mk = |seq: u64, scheme: u8, prev: String, outcome: &str| {
+        let mut e = AuditEntry {
+            seq,
+            ts: 1_700_000_000 + seq,
+            action: "hook.register".to_string(),
+            resource: "hook:compress".to_string(),
+            outcome: outcome.to_string(),
+            principal: "admin".to_string(),
+            prev_hash: prev,
+            hash: String::new(),
+            digest_scheme: scheme,
+            recorded_here: false,
+        };
+        e.hash = digest(&e);
+        e
+    };
+    let legacy = crate::plane::auditlog::DIGEST_SCHEME_LEGACY_PIPE;
+    let fixed = crate::plane::auditlog::DIGEST_SCHEME_LEN_PREFIXED;
+
+    let a = mk(1, legacy, String::new(), "applied");
+    let b = mk(2, legacy, a.hash.clone(), "rejected");
+    let c = mk(3, fixed, b.hash.clone(), "applied");
+    let mut chain = vec![a, b, c];
+    assert!(
+        verify_chain(&chain).is_ok(),
+        "a chain that crosses the framing upgrade must verify: {:?}",
+        verify_chain(&chain).err()
+    );
+
+    chain[2].outcome = "rejected".to_string();
+    assert!(
+        matches!(
+            verify_chain(&chain).unwrap_err().kind,
+            ChainBreakKind::DigestMismatch { .. }
+        ),
+        "an edited scheme 2 record must be caught"
     );
 }
 
