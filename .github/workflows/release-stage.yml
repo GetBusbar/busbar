@@ -149,7 +149,7 @@ jobs:
       sha: ${{ steps.p.outputs.sha }}
       release: ${{ steps.p.outputs.release }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0  # so `git rev-parse vX.Y.Z` can see every existing tag
       - id: p
@@ -529,13 +529,13 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.98.0
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
         with:
           components: rustfmt, clippy
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # THE LOCKFILE IS THE BUILD'S INPUT, SO SAY SO OUT LOUD AND EARLY. Every build in this
       # workflow now passes --locked, including the ones that produce the shipped binaries
       # (scripts/release-build.sh, scripts/pgo-build.sh), so a lockfile that does not satisfy the
@@ -612,7 +612,7 @@ jobs:
     needs: [plan, gate]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # THE BODY NAMES WHAT CHANGED. `--generate-notes` alone produced a one-line compare link, so
       # v1.5.3's published body did not mention that `--validate` now RESOLVES `env:`/`file:` secret
       # references and exits 1 when one cannot resolve (boot behaviour unchanged). An operator
@@ -697,9 +697,9 @@ jobs:
     env:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --locked
       - name: Generate SBOM
@@ -726,9 +726,9 @@ jobs:
     env:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Emit the OpenAPI document from the release code
         # `openapi_doc()` (and the `emit_openapi_artifact` test) live behind the CI-ONLY
         # `openapi-schema` feature — schemars is not in the shipped binary. The generated doc is the
@@ -777,7 +777,7 @@ jobs:
       # was supposed to be verified" are literally the same computation and cannot drift apart.
       targets: ${{ steps.emit.outputs.targets }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Emit the target matrix and the asset names it must produce
         id: emit
         env:
@@ -1054,7 +1054,7 @@ jobs:
     # red anyway; this line is what lets the other four legs still report what they found.
     if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Download this artifact from the draft, and its build evidence
         shell: bash
@@ -1074,7 +1074,7 @@ jobs:
             --pattern "${{ matrix.plugin_asset }}" --dir plugin-probe --clobber
           ls -l "$archive" plugin-probe
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: build-evidence-${{ matrix.target }}
           path: build-evidence
@@ -1112,7 +1112,7 @@ jobs:
           set -euo pipefail
           mkdir -p verified
           echo "${{ matrix.target }}" > "verified/${{ matrix.target }}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: verified-${{ matrix.target }}
           path: verified
@@ -1152,7 +1152,7 @@ jobs:
     runs-on: ubuntu-latest
     if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: receipts
           pattern: "*-*"
@@ -1432,7 +1432,7 @@ jobs:
             echo "retag ${DIGEST} as ${VERSION} + 'latest' without rebuilding."
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: staged-manifest
           path: staged.json

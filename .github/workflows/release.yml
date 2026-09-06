@@ -140,7 +140,7 @@ jobs:
       sha: ${{ steps.p.outputs.sha }}
       release: ${{ steps.p.outputs.release }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0  # so `git rev-parse vX.Y.Z` can see every existing tag
       - id: p
@@ -810,7 +810,7 @@ jobs:
       TAG: ${{ needs['resolve-staged'].outputs.promote_tag }}
       IS_RC: ${{ needs['resolve-staged'].outputs.is_rc }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       # GATE 0, RE-ASSERTED IMMEDIATELY BEFORE THE TAG IS MINTED. `branch-green` is already upstream
@@ -1001,7 +1001,7 @@ jobs:
     if: ${{ needs['promote-release'].outputs.is_rc != '1' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Dispatch upstream-release to every listed downstream repo
         env:
           # A fine-grained PAT (or GitHub App installation token) with Contents:read + Actions:write

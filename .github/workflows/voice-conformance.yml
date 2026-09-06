@@ -72,12 +72,12 @@ jobs:
       # shells out to the conformance harness — so this job builds it too and points the legs at it.
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # THE ONE BUILD. Every downstream leg consumes this exact binary as an artifact (uploaded at
       # the end of this job), so the harness every verdict is drawn from is the harness the
       # self-test below proved.
@@ -106,7 +106,7 @@ jobs:
       - name: The verdict must depend on, and judge, every leg
         run: python3 testing/verdict-covers-every-leg.py
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-gate-selftest
@@ -121,7 +121,7 @@ jobs:
       # It also removes a real hazard: seven independent builds of the same source can only agree by
       # luck, and a leg judging a differently-built harness is exactly the kind of green this
       # workflow exists to refuse.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: voice-conform-bin
           path: target/debug/voice-conform
@@ -139,11 +139,11 @@ jobs:
       matrix:
         dialect: [openai, gemini]
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voice-conform-bin
           path: target/debug
@@ -159,7 +159,7 @@ jobs:
           bash testing/voice-conformance/voice-conformance.sh \
             --leg spec-per-dialect --slice ${{ matrix.dialect }} \
             | tee voice-spec-${{ matrix.dialect }}.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-spec-${{ matrix.dialect }}
@@ -173,11 +173,11 @@ jobs:
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voice-conform-bin
           path: target/debug
@@ -187,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           bash testing/voice-conformance/voice-conformance.sh --leg replay | tee voice-replay.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-replay
@@ -201,11 +201,11 @@ jobs:
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voice-conform-bin
           path: target/debug
@@ -215,7 +215,7 @@ jobs:
         run: |
           set -euo pipefail
           bash testing/voice-conformance/voice-conformance.sh --leg cross-parity | tee voice-cross-parity.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-cross-parity
@@ -229,11 +229,11 @@ jobs:
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voice-conform-bin
           path: target/debug
@@ -246,7 +246,7 @@ jobs:
         run: |
           set -euo pipefail
           bash testing/voice-conformance/voice-conformance.sh --leg provider-dial | tee voice-provider-dial.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-provider-dial
@@ -260,11 +260,11 @@ jobs:
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voice-conform-bin
           path: target/debug
@@ -286,7 +286,7 @@ jobs:
                      admit-refusal route-failover audit-record exit-terminal; do
             bash testing/voice-conformance/voice-conformance.sh --leg "$leg"
           done | tee voice-composition.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-composition
@@ -298,9 +298,9 @@ jobs:
     needs: gate-selftest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # M5: the composition root LINKS busbar-voice under `plane-voice`, the plane OWNS the `streams:`
       # section, and its grammar is reached at config validation. This leg proves that end to end, so a
       # regression that unwires `parse_section`/`owned_config_sections` — or one that lets a second
@@ -317,7 +317,7 @@ jobs:
           #     registered, and (c) the dup-claim guard admits the real voice decl and REFUSES a
           #     planted second claimant of `streams`.
           cargo test -p busbar --features plane-voice --test voice_boot -- --nocapture | tee -a voice-boot-validate.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-boot-validate
@@ -331,11 +331,11 @@ jobs:
     env:
       VOICE_CONFORM_BIN: ${{ github.workspace }}/target/debug/voice-conform
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # The harness this leg drives is the ONE gate-selftest built and proved itself against; no
       # Rust toolchain is needed here because $VOICE_CONFORM_BIN short-circuits conform-bin.sh's
       # build. The executable bit does not survive the artifact zip, so restore it.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: voice-conform-bin
           path: target/debug
@@ -348,7 +348,7 @@ jobs:
         run: |
           set -euo pipefail
           bash testing/voice-conformance/voice-conformance.sh --leg governance | tee voice-governance.log
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: voice-governance-probe
