@@ -1600,7 +1600,12 @@ async fn the_close_notify_gives_up_on_a_peer_that_never_takes_it() {
 
     server.close(server_conn, CloseReason::Normal);
 
-    let gave_up = tokio::time::timeout(crate::CLOSE_NOTIFY_BUDGET * 8, async {
+    // A FIXED wall-clock bound, not `CLOSE_NOTIFY_BUDGET * 8`. A bound derived from the constant
+    // under test scales with it, so widening the budget widens the bound and the cell can never go
+    // red for any value of it — including a value that holds the rustls session and its socket open
+    // for minutes after the close. What a deployment cannot afford is measured against the wall, so
+    // the number is written here rather than computed from the thing it is checking.
+    let gave_up = tokio::time::timeout(Duration::from_secs(10), async {
         while StdArc::strong_count(&captured) > 1 {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
