@@ -57,6 +57,7 @@ use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::plane::{Plane, PlaneMeta};
 use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
+use busbar_kernel::teller::Evidence;
 use busbar_plane_mcp::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
 use busbar_plane_mcp::{claims, ops, records, McpPlane, Server};
 use busbar_plugin_loader::store_adapter::StoreAdapter;
@@ -64,6 +65,7 @@ use busbar_unit_admission::{
     Admission, AdmissionUnit, BucketChain, ClassEstimate, Door, Estimate, InMemoryCells, Pricer,
 };
 use busbar_unit_audit::legacy::{AuditInput, OUTCOME_APPLIED, OUTCOME_REJECTED};
+use busbar_unit_audit::AuditInputs;
 use busbar_unit_auth::{Auth, AuthRequest, CredentialCache, KeyVerifier, RevocationView};
 use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
 use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
@@ -1246,6 +1248,123 @@ pub fn meter(
 // The exit — the reservation the door opened is closed here, and only here
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// What one unit of this plane IS, as far as the money is concerned.
+///
+/// Two facts and not one: the operation class the record names, and whether the plan the plane
+/// returned reaches the registered server. The second is what the flat fee turns on, and it is READ
+/// OFF THE PLAN rather than written down here as a list of which classes hop — a list here would be
+/// a second copy of the plane's routing, and the copy that drifts is the one nobody re-derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Shape {
+    /// Which operation class ran.
+    pub op: OpClassId,
+    /// Whether any leg of the plan goes to the registered server.
+    pub hops_upstream: bool,
+}
+
+impl Shape {
+    /// The shape of one unit, from its class and the plan the root already classified.
+    #[must_use]
+    pub fn of(op: OpClassId, legs: &[LegKind]) -> Self {
+        Self {
+            op,
+            hops_upstream: legs
+                .iter()
+                .any(|leg| matches!(leg, LegKind::Upstream { .. })),
+        }
+    }
+}
+
+/// The facts this plane's flat per-request fee is decided from.
+///
+/// Written once, as a function over the unit's shape rather than as a table each caller fills in,
+/// because the exit path and the audit record are two readers of ONE decision: a settlement that
+/// posted a fee against a record that says none is a discrepancy nothing downstream can resolve, and
+/// the only way to make that unrepresentable is to have one place decide it. The estimate takes a fee
+/// into the hold; without this, the hold reserved a fee no path could ever post, and the reservation
+/// was money set aside against a charge that did not exist.
+///
+/// The origin is the client rule the request slot is drawn under — a notification the server pushed
+/// is not a caller's request and pays nothing. The upstream is the KIND of leg the plan carries, not
+/// its price: with no rate card the fee still posts, which is why a listing answered entirely from
+/// this node's own records draws none. The relayed frame is the metering step's own locator, which is
+/// set when the plane read an answer to hand back; a unit that never got that far relayed nothing.
+/// This protocol carries no status leg of its own — the answer document IS the response — so the
+/// plane's finish is the single source, and an error ending posts nothing.
+#[must_use]
+pub fn fee_evidence(
+    shape: Shape,
+    origin: busbar_caps::OriginKind,
+    relayed_first_response_frame: bool,
+    finish: busbar_contract::unit::FinishClass,
+) -> busbar_kernel::teller::FeeEvidence {
+    busbar_kernel::teller::FeeEvidence {
+        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client,
+        selected_upstream: shape.hops_upstream,
+        relayed_first_response_frame,
+        status_at: None,
+        status: None,
+        finish: Some(finish),
+    }
+}
+
+/// What one ended unit of this plane consumed, as the exit and the record both read it.
+///
+/// One borrowed value rather than a list of arguments, for the same reason the door's is one: the
+/// settlement and the audit record are two READERS of one set of facts, and two call sites filling
+/// the same figures in independently is exactly where a posting that says one thing and a row that
+/// says another comes from.
+pub struct Ended<'a> {
+    /// What the unit is, as far as the money is concerned.
+    pub shape: Shape,
+    /// Where the unit came from.
+    pub origin: busbar_caps::OriginKind,
+    /// The plane's own verdict on the ending.
+    pub finish: busbar_contract::unit::FinishClass,
+    /// The request document the hold was sized against, which is the kernel's own floor.
+    pub request_bytes: u64,
+    /// What the metering step located, where it ran. `None` is a unit that never got an answer to
+    /// hand back — and it is also this plane's answer to "was a response relayed".
+    pub metered: Option<u64>,
+    /// Whether any leg of the plan was dispatched.
+    pub dispatched: bool,
+    /// Who was calling, where the loop resolved them.
+    pub principal: Option<&'a PrincipalId>,
+    /// What the record names as the thing acted on.
+    pub resource: Option<Resource>,
+}
+
+/// The evidence one ended unit settles against.
+///
+/// The class is the byte-shaped one: the floor and the located figure are both readings of the
+/// document, and the call-shaped line is a flat count rather than what the amount is denominated in.
+#[must_use]
+pub fn evidence(ended: &Ended<'_>) -> Evidence {
+    Evidence {
+        located: ended.metered,
+        accrued_floor: ended.request_bytes,
+        // Nothing is required of a card that does not price this class. With a card that does, the
+        // located figure is what settles and the floor is the tripwire beside it.
+        locator_required: false,
+        terminal_error: matches!(ended.finish, busbar_contract::unit::FinishClass::Error),
+        recovered: false,
+        dispatched: ended.dispatched,
+        checkpointed: 0,
+        variance: None,
+        lane_mismatch: None,
+        settle_record_lost: false,
+        class: Some(CLASS_BYTES),
+        // The fee's upstream rule and the request slot's are the same rule, read from the same fact.
+        upstream_candidate: ended.shape.hops_upstream,
+        fee: fee_evidence(
+            ended.shape,
+            ended.origin,
+            ended.metered.is_some(),
+            ended.finish,
+        ),
+    }
+}
+
 /// **The exit arm.** Move the books for what one unit posted, and put the posting on the journal.
 ///
 /// The loop's exit path takes the hold out of its cell, applies what the unit spent and settles it —
@@ -1334,6 +1453,68 @@ impl Mono {
 // ─────────────────────────────────────────────────────────────────────────────
 // Step 7 — audit, on both chains
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// The record one ending seals on the audit chain.
+///
+/// The record does not decide the fee a second time. It reads the same evidence the exit path
+/// settles from, through the same function, so a row that says one fee and a posting that says none
+/// cannot both be true of one unit.
+///
+/// The clocks are the unit's pinned pair, exactly as the settlement's are: a record stamped at the
+/// exit and a posting stamped at arrival are two accounts of one moment.
+#[must_use]
+pub fn audit_inputs(
+    ended: &Ended<'_>,
+    outcome: busbar_caps::Outcome,
+    origin: busbar_caps::Origin,
+    at: Clocks,
+) -> AuditInputs {
+    let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
+        ended.shape,
+        ended.origin,
+        ended.metered.is_some(),
+        ended.finish,
+    ));
+    AuditInputs {
+        subject: match ended.principal {
+            Some(who) => busbar_unit_audit::Subject::PrincipalId(who.as_str().to_string()),
+            None => busbar_unit_audit::Subject::Arrival,
+        },
+        what: busbar_unit_audit::What {
+            unit_key: busbar_contract::ids::UnitKey::new(0),
+            op_class: record_op_class(ended.shape.op),
+            destination: ended
+                .resource
+                .map(|resource| format!("{}:{}", resource.kind, resource.name)),
+            parent: None,
+            pre_hook_head: None,
+            post_hook_head: None,
+        },
+        wall: at.wall,
+        mono: at.mono,
+        origin,
+        outcome: busbar_unit_audit::OutcomeFacts {
+            unit_end: outcome,
+            step: outcome.step(),
+            finish: record_finish(ended.finish),
+            hook_failed: false,
+            emission_delta: 0,
+            stale_policy: false,
+        },
+        amount: busbar_unit_audit::Amount {
+            lines: Vec::new(),
+            pre_tier: 0,
+            priced: 0,
+            tier_bp: 0,
+            fee_count,
+            currency: String::new(),
+            rate_card_version: 0,
+            bucket_chain_ref: String::new(),
+        },
+        controls: busbar_unit_audit::Controls::default(),
+        correlation_label: None,
+    }
+}
 
 /// The administrative-chain entry a served unit of this plane leaves.
 ///
@@ -2671,6 +2852,160 @@ mod tests {
             BucketScope::All,
             "an attribution bucket is not a budget"
         );
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // The fee, decided once
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// A unit of this plane, ended, with everything the money is decided from.
+    fn ended(shape: Shape, origin: busbar_caps::OriginKind, answered: bool) -> Ended<'static> {
+        Ended {
+            shape,
+            origin,
+            finish: if answered {
+                busbar_contract::unit::FinishClass::Complete
+            } else {
+                busbar_contract::unit::FinishClass::Error
+            },
+            request_bytes: 10,
+            metered: answered.then_some(40),
+            dispatched: true,
+            principal: None,
+            resource: Some(Resource {
+                kind: SCOPE_KIND_TOOL,
+                name: "fs",
+            }),
+        }
+    }
+
+    /// The shape's upstream fact is read off the plan the plane returned, not off a list of classes
+    /// kept here — which is what stops it from drifting the day a plan changes.
+    #[test]
+    fn the_shape_reads_the_hop_off_the_plan() {
+        let hops = [
+            LegKind::Record {
+                schema: records::SCHEMA_CATALOGUE,
+                op: records::OP_GET,
+            },
+            LegKind::Upstream {
+                transport: claims::TRANSPORT_HTTP,
+                lane: LaneId::new("fs-lane"),
+            },
+        ];
+        assert!(Shape::of(ops::OP_TOOL_CALL, &hops).hops_upstream);
+
+        let from_the_node_alone = [LegKind::Record {
+            schema: records::SCHEMA_CATALOGUE,
+            op: records::OP_SCAN,
+        }];
+        assert!(!Shape::of(ops::OP_TOOLS_LIST, &from_the_node_alone).hops_upstream);
+        assert!(!Shape::of(ops::OP_TOOLS_LIST, &[]).hops_upstream);
+    }
+
+    /// **The flat fee is posted for a delivered client call and for nothing else.** The estimate
+    /// takes a fee into the hold; a leg with no way to POST one reserves money against a charge that
+    /// cannot happen, and every unit of this plane over-reserves for the life of the deployment.
+    #[test]
+    fn the_flat_fee_is_posted_for_a_delivered_client_call_and_for_nothing_else() {
+        use busbar_caps::OriginKind as CameFrom;
+        use busbar_kernel::teller::fee_count;
+
+        let called = Shape {
+            op: ops::OP_TOOL_CALL,
+            hops_upstream: true,
+        };
+        let fee = |origin, answered| fee_count(&evidence(&ended(called, origin, answered)).fee).0;
+        assert_eq!(fee(CameFrom::Client, true), 1, "a delivered call pays once");
+        assert_eq!(
+            fee(CameFrom::Client, false),
+            0,
+            "a call that never got an answer to hand back pays nothing"
+        );
+        assert_eq!(
+            fee(CameFrom::Provider, true),
+            0,
+            "what the server pushed is not a caller's request"
+        );
+
+        let listed = Shape {
+            op: ops::OP_TOOLS_LIST,
+            hops_upstream: false,
+        };
+        assert_eq!(
+            fee_count(&evidence(&ended(listed, CameFrom::Client, true)).fee).0,
+            0,
+            "a listing answered from this node's own records reaches no server and pays no hop"
+        );
+    }
+
+    /// **One decision, two readers.** The settlement's evidence and the audit record count the same
+    /// fee, because both read it through the same function. A posting that charged one and a row
+    /// that says none is a discrepancy nothing downstream can resolve, and this is what makes it
+    /// unrepresentable rather than merely unlikely.
+    #[test]
+    fn the_settlement_and_the_record_read_one_fee_decision() {
+        use busbar_caps::OriginKind as CameFrom;
+        use busbar_kernel::teller::fee_count;
+        let origin = busbar_kernel::teller::Kernel::new().origin(CameFrom::Client);
+        let at = Clocks {
+            wall: 1_700_000_000,
+            mono: Mono::new().tick(),
+        };
+        let called = Shape {
+            op: ops::OP_TOOL_CALL,
+            hops_upstream: true,
+        };
+
+        for (who, answered) in [
+            (CameFrom::Client, true),
+            (CameFrom::Client, false),
+            (CameFrom::Provider, true),
+        ] {
+            let unit = ended(called, who, answered);
+            let record = audit_inputs(&unit, busbar_caps::Outcome::Completed, origin, at);
+            assert_eq!(
+                record.amount.fee_count,
+                fee_count(&evidence(&unit).fee).0,
+                "the row and the posting agree about the fee"
+            );
+        }
+    }
+
+    /// The record names the caller, the operation class the plane declares and the resource it acted
+    /// on, and it is stamped with the unit's own two clocks rather than a fresh read at the exit.
+    #[test]
+    fn the_record_names_the_caller_the_class_and_the_resource() {
+        let who = PrincipalId::new("vk_mcp");
+        let origin = busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client);
+        let at = Clocks {
+            wall: 1_700_000_000,
+            mono: 7,
+        };
+        let mut unit = ended(
+            Shape {
+                op: ops::OP_TOOL_CALL,
+                hops_upstream: true,
+            },
+            busbar_caps::OriginKind::Client,
+            true,
+        );
+        unit.principal = Some(&who);
+
+        let record = audit_inputs(&unit, busbar_caps::Outcome::Completed, origin, at);
+        assert_eq!(
+            record.subject,
+            busbar_unit_audit::Subject::PrincipalId("vk_mcp".to_string())
+        );
+        assert_eq!(record.what.op_class, record_op_class(ops::OP_TOOL_CALL));
+        assert_eq!(
+            record.what.destination.as_deref(),
+            Some("mcp_tool:fs"),
+            "the resource pair the approve step judged"
+        );
+        assert_eq!(record.wall, 1_700_000_000);
+        assert_eq!(record.mono, 7, "the unit's own reading, not the wall clock");
+        assert_eq!(record.amount.fee_count, 1);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
