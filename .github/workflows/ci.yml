@@ -535,6 +535,18 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
+      # ALL-FEATURES clippy. The default-features run above compiles ONE feature combination; a
+      # combination that only compiles with a different set (default-features off, an additive
+      # feature on, two additive features together) went uncaught by it and by the two narrower
+      # feature runs elsewhere in this file (`openapi-schema` on one crate pair, `--no-default-
+      # features` on the whole workspace) — neither exercises "every feature this workspace
+      # declares, together, on every crate". This is the run that would have caught it.
+      # KNOWN RED: this may fail until `keep-allfeatures-fix` lands (a feature-gate collision this
+      # combination surfaces and that fix resolves). Not `continue-on-error`: a step allowed to fail
+      # quietly the day it is added is a step nobody looks at the day it starts mattering.
+      - name: Clippy (all features)
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+
       - name: Build
         run: cargo build --workspace --locked --verbose
 
