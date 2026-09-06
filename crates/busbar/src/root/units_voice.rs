@@ -1975,6 +1975,27 @@ mod tests {
     }
 
     fn node_governed_by(io: VoiceIo, groups: busbar_unit_admission::GroupTable) -> VoiceNode {
+        node_behind(
+            io,
+            groups,
+            // The chain these tests run is the empty one — the open front door — so the seams have
+            // nothing to answer and the unbound posture is the honest fixture for them.
+            Auth::new(AuthChain::new(Vec::new(), false)),
+            crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+        )
+    }
+
+    /// The same node behind a door a deployment actually shut.
+    ///
+    /// Split out of `node` rather than duplicated because the only thing an authenticate cell may
+    /// vary is the door: a fixture that also swapped the pricer, the scope table or the journal
+    /// would be asserting about a different node than every other cell in this file.
+    fn node_behind(
+        io: VoiceIo,
+        groups: busbar_unit_admission::GroupTable,
+        auth: Auth,
+        auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+    ) -> VoiceNode {
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
@@ -1985,10 +2006,8 @@ mod tests {
             plane: VoicePlane::new(UPSTREAMS),
             groups,
             pricer: Pricer::flat(0),
-            auth: Auth::new(AuthChain::new(Vec::new(), false)),
-            // The chain these tests run is the empty one — the open front door — so the seams have
-            // nothing to answer and the unbound posture is the honest fixture for them.
-            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+            auth,
+            auth_bindings,
             scope: scope_policy(),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
@@ -2070,6 +2089,145 @@ mod tests {
         let ended = run(&kernel, &unit);
         assert!(matches!(ended, Ended::Settled { .. }));
         assert_eq!(unit.dial_outcome(), Some(Ok(())));
+    }
+
+    /// A CREDENTIAL THE NODE'S OWN DOOR DOES NOT ACCEPT ENDS THE SESSION AT THE AUTHENTICATE STEP,
+    /// and the audience is the thing that decides it.
+    ///
+    /// Authenticate is a gating step, and until this cell existed nothing drove one over the loop on
+    /// this plane: the conformance rig's credential leg proves the credential the node dials OUT
+    /// under, which is the other direction entirely. A plane that ships through the composition root
+    /// with its inbound credential check driven by nobody is a door whose lock has never been turned.
+    ///
+    /// The audience is where the turn happens. Every one of this plane's credentialed claims carries
+    /// one, so a token minted for a SIBLING plane's audience is a well-formed, unexpired, correctly
+    /// signed token — and must still be refused here, at the plane boundary, rather than at whatever
+    /// it was going to reach. That is the shape a wrong-audience token has to be refused in for the
+    /// audience to be a boundary rather than a decoration.
+    ///
+    /// The accepted control runs beside it, because a door that refuses everything is not a door: the
+    /// same directory, the same chain, the plane's own audience, and the unit runs to its end.
+    #[test]
+    fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
+        use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+
+        /// One issued key, accepted only under the audience this plane declares — and a record of
+        /// the audience it was asked under, so the boundary is measured and not merely stated.
+        #[derive(Default)]
+        struct OneKey {
+            asked_under: Mutex<Vec<Option<String>>>,
+        }
+
+        impl VirtualKeyDirectory for OneKey {
+            fn verify(
+                &self,
+                credential: &str,
+                _now: u64,
+                expected_aud: Option<&str>,
+            ) -> Option<KeyFacts> {
+                self.asked_under
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(expected_aud.map(str::to_string));
+                (credential == "tok"
+                    && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
+                .then(|| KeyFacts {
+                    id: "key-voice-1".to_string(),
+                    name: "an approved key".to_string(),
+                })
+            }
+
+            fn revoked(&self, _credential: &str) -> bool {
+                false
+            }
+        }
+
+        // A chain naming the signed-key arm and no boxed module: the front door is SHUT, and the arm
+        // is the one thing that can open it — which is what makes this cell about the arm.
+        let shut = || Auth::new(AuthChain::new(Vec::new(), true));
+        assert!(!shut().chain().is_open());
+
+        // ONE directory across all three runs, so what it was asked can be read at the end.
+        let directory = std::sync::Arc::new(OneKey::default());
+        let kernel = Kernel::new();
+        let door = |credential: Option<&str>| -> Outcome {
+            let node = node_behind(
+                serviceable(),
+                busbar_unit_admission::GroupTable::default(),
+                shut(),
+                AuthBindings::new(std::sync::Arc::clone(&directory) as _),
+            );
+            let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+            let unit = match credential {
+                Some(c) => unit.with_credential(c),
+                None => unit,
+            };
+            let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+                panic!("a refused unit settles through the same exit");
+            };
+            let outcome = end.outcome();
+            if matches!(outcome, Outcome::Refused(_, _)) {
+                // Read while the node is still alive: a unit refused at the door must not have
+                // dialed, and the dial is the first thing a half-opened session would show.
+                assert_eq!(
+                    unit.dial_outcome(),
+                    None,
+                    "a session refused at authenticate never reaches the provider"
+                );
+            }
+            outcome
+        };
+
+        // A token this node's directory never issued, and no token at all — the two shapes an
+        // unauthenticated open arrives in.
+        for presented in [Some("nope"), None] {
+            let outcome = door(presented);
+            assert!(
+                matches!(
+                    outcome,
+                    Outcome::Refused(
+                        busbar_caps::StepName::Authenticate,
+                        ReasonCode::Unauthenticated
+                    )
+                ),
+                "presented {presented:?}, got {outcome:?}"
+            );
+        }
+
+        // THE CONTROL: the key the directory did issue. A door that refuses everything is not a
+        // door, and a refusal cell without one proves only that nothing gets in.
+        let outcome = door(Some("tok"));
+        assert!(
+            matches!(outcome, Outcome::Completed),
+            "the accepted credential runs the session to its end, got {outcome:?}"
+        );
+
+        // AND THE AUDIENCE IS THE PLANE'S OWN, every time it was asked. The expected audience is
+        // what makes a sibling plane's well-formed token refusable HERE rather than at whatever it
+        // was going to reach — a root that passed `None` would verify signatures and check no
+        // boundary, and every assertion above would still read the same.
+        let asked = directory
+            .asked_under
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!asked.is_empty(), "the arm was reached at all");
+        for aud in asked.iter() {
+            assert_eq!(
+                aud.as_deref(),
+                Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY)
+            );
+        }
+    }
+
+    /// The alternatives the authenticate step offers the auth unit are the ones the claim declared.
+    ///
+    /// The unit refuses a narrowing OUTSIDE the declared set before it looks at a credential, so a
+    /// root that offered a smaller set than the claims declare would refuse a caller the deployment
+    /// meant to admit, and one that offered a larger set would let the plane pick a scheme no claim
+    /// ever made.
+    #[test]
+    fn the_declared_alternatives_are_the_claims_own() {
+        assert_eq!(SESSION_SCHEME_ALTERNATIVES, &["bearer", "api-key"]);
     }
 
     /// The grant a caller holds is compared against what the class requires, and a caller who holds
