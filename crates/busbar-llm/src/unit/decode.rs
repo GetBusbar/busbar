@@ -228,17 +228,25 @@ pub fn decode_body<'a>(
 }
 
 /// STEP 1, PATH-MODEL PATH: the model is already known, so only the handler is left.
+///
+/// THE LADDER'S FLOOR IS THE BODY'S FLOOR, AND ONLY THE BODY'S. An empty name here is passed
+/// through, not refused, because the shipped path-model entry point passes it through: it injects
+/// whatever the URL gave into the body and lets pool resolution answer, which for a name nothing
+/// matches is the ordinary model-miss 404 — taken after the door, and therefore charged. The
+/// body-model entry point is the one that carries an empty-model rung, and it carries it because a
+/// JSON document with `"model": ""` is a document that failed to name one.
+///
+/// The difference matters because the empty URL model is reachable: bedrock's path parse ends
+/// `unwrap_or_default()`, so a converse path whose model segment the handler did not recognise
+/// arrives with an empty string in hand. Refusing it here would turn that request from a charged
+/// 404 into an uncharged 400 — a different status, a different envelope and a different ledger than
+/// the node has ever given it.
 pub fn decode_path_model<'a>(
     proto: &str,
     operation: Operation,
     model: &'a str,
 ) -> Result<DecodeFacts<'a>, DecodeRefusal> {
     let op_handler = handler_for_path_model(proto, operation)?;
-    // The URL carried it, but an empty one is still not a model, and the ladder's floor holds for
-    // every rung.
-    if model.is_empty() {
-        return Err(DecodeRefusal::MissingModel);
-    }
     Ok(DecodeFacts { op_handler, model })
 }
 
@@ -487,14 +495,18 @@ mod tests {
                 String::from_utf8_lossy(raw)
             );
         }
-        // And an empty URL model is no better than an empty body one.
+        // And the floor is the BODY'S floor. An empty URL model is NOT refused here, because the
+        // shipped path-model entry point does not refuse it: it hands the name to resolution, which
+        // answers a name nothing matches with the charged model-miss 404. Refusing it would make
+        // one dialect's unrecognised path segment an uncharged 400 instead.
         registered();
         let proto = busbar_substrate::proto::residual_default_protocol().expect("a chat dialect");
         assert_eq!(
             decode_path_model(proto, Operation::CHAT, "")
-                .map(|_| ())
-                .expect_err("must refuse"),
-            DecodeRefusal::MissingModel
+                .expect("an empty URL model is resolution's answer to give, not this step's")
+                .model,
+            "",
+            "the empty name must reach the route step intact"
         );
     }
 

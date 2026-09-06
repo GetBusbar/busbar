@@ -1980,6 +1980,98 @@ mod tests {
         );
     }
 
+    /// A URL THAT NAMED NO MODEL ENDS WHERE THE SHIPPED ENTRY POINT ENDS IT.
+    ///
+    /// The empty URL model is REACHABLE: bedrock's own path parse ends `unwrap_or_default()`, so a
+    /// converse path whose model segment the handler did not recognise arrives as a `PathModelFacts`
+    /// carrying an empty string. The shipped path-model entry point has no empty-model rung at all —
+    /// it injects whatever the URL gave into the body and lets resolution answer, which for an empty
+    /// name is the ordinary model-miss 404, taken after the door and therefore charged.
+    ///
+    /// That is the answer the loop has to give too, and it is the whole reason this case is pinned:
+    /// the body-model entry point DOES carry an empty-model rung (`Some(m) if !m.is_empty()` → a
+    /// 400 "Missing required parameter"), and a step file that copies that rung onto the URL surface
+    /// turns one dialect's unrecognised path segment from a charged 404 into an uncharged 400. Two
+    /// different statuses, two different ledgers, on a request the shipped node answers one way.
+    ///
+    /// Compared field for field against the shipped entry point rather than asserted as a number, so
+    /// the body, the headers and the money all have to agree and not merely the status.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn an_empty_url_model_ends_where_the_shipped_path_model_entry_point_ends_it() {
+        /// The fixture's facts with the model taken out — the shape bedrock's parse produces for a
+        /// path whose model segment resolved to nothing.
+        fn nameless(proto: &'static str) -> PathFacts {
+            let mut facts = path_facts(proto, Fixture::UnknownModel);
+            facts.model = String::new();
+            facts.model_not_found_message = (proto == GEMINI).then(|| {
+                "models/ is not found for API version v1beta, or is not supported for the task \
+                 you are trying to perform."
+                    .to_string()
+            });
+            facts
+        }
+
+        let mut failures: Vec<String> = Vec::new();
+        for proto in [GEMINI, BEDROCK] {
+            let shipped = {
+                let rig = rig(Fixture::UnknownModel).await;
+                let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+                    host: rig.host(),
+                    gov: rig.gov(),
+                    caller_token: None,
+                });
+                let facts = nameless(proto);
+                let resp = busbar_llm::native_ingress::ingress_path_model(
+                    &ctx,
+                    json_headers(),
+                    path_body(proto),
+                    facts.model,
+                    facts.operation,
+                    facts.stream,
+                    facts.gemini_json_array,
+                    proto,
+                    facts.model_not_found_message,
+                )
+                .await;
+                let observed = observe(&rig, resp).await;
+                rig.server.shutdown().await;
+                observed
+            };
+            let looped = {
+                let rig = rig(Fixture::UnknownModel).await;
+                let node = LlmNode::new();
+                let arrival = WalkArrival {
+                    host: rig.host(),
+                    gov: rig.gov(),
+                    proto,
+                    operation: busbar_api::operation::Operation::CHAT,
+                    caller_token: None,
+                    headers: json_headers(),
+                    body: path_body(proto),
+                    path: Some(nameless(proto)),
+                };
+                let resp = node.answer(arrival, None).await;
+                let observed = observe(&rig, resp).await;
+                rig.server.shutdown().await;
+                observed
+            };
+            for ((field, want), (_, got)) in shipped.0.iter().zip(looped.0.iter()) {
+                if want != got {
+                    failures.push(format!(
+                        "{proto}: field `{field}` diverges on a URL that named no model\n  \
+                         shipped: {want}\n  loop:    {got}"
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "{} divergence(s) on the empty URL model:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
     /// THE PATH TABLE IS THE PLANE'S PATH TABLE. Same dialects, same names, same order — the
     /// path-axis twin of the body-table comparison below, and for the same reason: a dialect missing
     /// from the replacement resolves no arrival and the surface 404s, which is a deletion wearing a
@@ -2001,7 +2093,6 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_url_facts_ride_the_unit_and_not_the_thread() {
         let rig = rig(Fixture::BufferedOk).await;
-        let node = LlmNode::new();
         let facts = path_facts(GEMINI, Fixture::BufferedOk);
         let base = |path| WalkArrival {
             host: rig.host(),
