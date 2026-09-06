@@ -124,9 +124,10 @@
         "status": "new",
         "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-llm",
-          "note": "the six fixtures present a well-formed key or none at all, so no run drives a bad credential through the loop's authenticate step"
+          "test": "crates/busbar/src/root/units_llm.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
+          "note": "three credentials through the deployment's own door (EngineHost::identity_admit -- the configured chain plus the one verdict resolution the HTTP middleware runs): the live bearer is admitted and the hold the loop opens names the key it resolved, while a bearer this deployment never minted and one whose exp has passed are both refused before the plane, and the shape the middleware leaves when it binds no key settles on the anonymous actor rather than on the key that was turned away"
         }
       },
       "verify": {

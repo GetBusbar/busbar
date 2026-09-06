@@ -1205,10 +1205,28 @@ mod tests {
     struct Rig {
         app: Arc<busbar_core::state::App>,
         key: Arc<busbar_api::VirtualKey>,
+        /// The BEARER the deployment's own door will resolve back to [`Rig::key`]. Minted rather
+        /// than synthesized, so a fixture that presents it is presenting the thing a client sends.
+        token: String,
+        /// A bearer for a SECOND key on the same deployment whose lifetime has already run out.
+        /// It verifies against the same signer and names a live, enabled binding — the only thing
+        /// wrong with it is the clock, which is what makes it an expiry fixture rather than a
+        /// forgery fixture.
+        expired_token: String,
         server: MockServer,
         charged_at: u64,
         group: String,
     }
+
+    /// The signing secret every rig's door verifies against. One process-wide constant, because a
+    /// per-rig secret would make "this token is not ours" and "this token has expired" the same
+    /// failure.
+    const SIGNING_SECRET: [u8; 32] = [7u8; 32];
+    /// When a rig's tokens are minted, and when the live one runs out. The live `exp` is far enough
+    /// out that a wall clock reads it as valid; the expired one is already behind every clock.
+    const MINTED_AT: u64 = 1_700_000_000;
+    const LIVE_EXP: u64 = 4_000_000_000;
+    const DEAD_EXP: u64 = 1_000_000_000;
 
     async fn rig(fixture: Fixture) -> Rig {
         busbar_llm::testkit::install_test_seams();
@@ -1256,29 +1274,41 @@ mod tests {
                 )
                 .expect("seed the durable bucket");
         }
+        // A SIGNER, so the keys below are minted as the credentials a client actually presents and
+        // the deployment's own door can be asked to resolve them. Without one a rig could only ever
+        // hand the plane a hand-built context, which is the one thing an authenticate fixture must
+        // not do.
+        let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
+            &SIGNING_SECRET,
+            busbar_substrate::governance::signing::DEFAULT_KID,
+        );
         let gov = Arc::new(
-            busbar_core::governance::GovState::new_with_signer(store, None, None)
+            busbar_core::governance::GovState::new_with_signer(store, None, Some(signer))
                 .expect("governance"),
         );
-        let (key, _) = gov
-            .create_key(
-                busbar_substrate::governance::NewKeySpec {
-                    name: "root-llm".to_string(),
-                    allowed_pools: fixture.key_scopes(),
-                    group: fixture
-                        .seeded_group_requests()
-                        .is_some()
-                        .then(|| group.clone()),
-                    labels: Default::default(),
-                    ..Default::default()
-                },
-                1_700_000_000,
-            )
-            .expect("create key");
+        let spec = |name: &str| busbar_substrate::governance::NewKeySpec {
+            name: name.to_string(),
+            allowed_pools: fixture.key_scopes(),
+            group: fixture
+                .seeded_group_requests()
+                .is_some()
+                .then(|| group.clone()),
+            labels: Default::default(),
+            ..Default::default()
+        };
+        let (key, token) = gov
+            .mint_signed(spec("root-llm"), LIVE_EXP, MINTED_AT)
+            .expect("mint the deployment's key");
+        let (_, expired_token) = gov
+            .mint_signed(spec("root-llm-expired"), DEAD_EXP, MINTED_AT)
+            .expect("mint the expired key");
         let cost = busbar_core::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
         gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
         let app = TestApp::new()
+            // THE CONFIGURED AUTH CHAIN, so `identity_admit` runs the same resolution the HTTP
+            // middleware runs rather than falling through an open front door.
+            .keys_chain()
             .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
             .pool(POOL, &[(0, 1)])
             .governance(gov)
@@ -1288,6 +1318,8 @@ mod tests {
         Rig {
             app,
             key: Arc::new(key),
+            token,
+            expired_token,
             server,
             charged_at: busbar_substrate::store::now(),
             group,
@@ -1546,7 +1578,7 @@ mod tests {
     async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         let rig = rig(Fixture::BufferedOk).await;
         let node = LlmNode::new();
-        let ended = drive_to_end(&rig, &node, Fixture::BufferedOk).await;
+        let ended = drive_to_end(&rig, &node, Fixture::BufferedOk, rig.gov()).await;
         rig.server.shutdown().await;
 
         let Ended::Settled { end, .. } = ended else {
@@ -1594,10 +1626,20 @@ mod tests {
     /// The same drive [`LlmNode::answer`] performs — the same table, the same slot, the same
     /// `run_unit_async` — kept apart only because the entry point answers a client and this answers
     /// the exit arm's proof.
-    async fn drive_to_end(rig: &Rig, node: &LlmNode, fixture: Fixture) -> Ended {
+    ///
+    /// `gov` is the caller's own resolved context rather than the rig's, because what the
+    /// authenticate step ANSWERS is only visible on this side of the loop: the hold the door opens
+    /// is opened for the principal that step settled on, and the posting the exit hands back names
+    /// it. A drive that always used the rig's key could not tell the step's answer from the walk's.
+    async fn drive_to_end(
+        rig: &Rig,
+        node: &LlmNode,
+        fixture: Fixture,
+        gov: busbar_api::PlaneRequestCtx,
+    ) -> Ended {
         let arrival = WalkArrival {
             host: rig.host(),
-            gov: rig.gov(),
+            gov,
             proto: PROTO,
             operation: busbar_api::operation::Operation::CHAT,
             caller_token: None,
@@ -2425,6 +2467,245 @@ mod tests {
             "{} divergence(s) across {} dialect(s):\n{}",
             failures.len(),
             body_dialects().len(),
+            failures.join("\n")
+        );
+    }
+
+    // ── STEP 2, AUTHENTICATE — the three credentials, over the loop ─────────────────────────────
+
+    /// The three credentials a client can present to a governed deployment.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Credential {
+        /// The deployment's own live bearer.
+        Good,
+        /// A bearer this deployment did not mint. It is not the right shape and it is not signed by
+        /// the rig's signer, which is the ordinary "wrong key" a door sees.
+        Bad,
+        /// A bearer this deployment DID mint, for a live and enabled binding, whose `exp` has
+        /// passed. The only thing wrong with it is the clock.
+        Expired,
+    }
+
+    impl Credential {
+        fn present(self, rig: &Rig) -> String {
+            match self {
+                Credential::Good => rig.token.clone(),
+                Credential::Bad => "vk_not_this_deployments_key".to_string(),
+                Credential::Expired => rig.expired_token.clone(),
+            }
+        }
+    }
+
+    /// THE DOOR, asked exactly as a transport asks it: the deployment's configured auth chain plus
+    /// the one verdict resolution the HTTP middleware runs, over this rig's live governance state.
+    /// No audience is expected, because the data-plane boundary expects none.
+    async fn admit(rig: &Rig, cred: Credential) -> Result<busbar_api::PlaneRequestCtx, String> {
+        rig.host()
+            .identity_admit(Some(cred.present(rig)), String::new(), String::new())
+            .await
+            .map(|(_, gov)| gov)
+            .map_err(|refusal| format!("{refusal:?}"))
+    }
+
+    /// WHO THE LOOP DECIDED THIS UNIT IS, taken from the far end of the loop rather than from the
+    /// fixture: the door opens the kernel's hold for the principal the AUTHENTICATE step settled
+    /// on, and the posting the exit path hands back carries it. Nothing else on this plane reads
+    /// that answer — the walk keeps its own context for the money and the record — so this is the
+    /// one observation that is about step 2 and about nothing else.
+    async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> String {
+        let node = LlmNode::new();
+        let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov).await;
+        let Ended::Settled { end, .. } = ended else {
+            panic!("the exit path settles a delivered unit");
+        };
+        end.into_posted()
+            .expect("the usage report fits the record")
+            .principal()
+            .as_str()
+            .to_string()
+    }
+
+    /// LEG 1 — the shipped entry point, driven with a context the DOOR produced.
+    async fn leg_legacy_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
+        let ctx = busbar_substrate::ingress::arrival::ArrivalCtx::new(ArrivalPayload {
+            host: rig.host(),
+            gov,
+            caller_token: None,
+        });
+        let resp = busbar_llm::native_ingress::operation_ingress(
+            &ctx,
+            json_headers(),
+            Fixture::BufferedOk.body(),
+            PROTO,
+            busbar_api::operation::Operation::CHAT,
+            None,
+        )
+        .await;
+        observe(rig, resp).await
+    }
+
+    /// LEG 2 — the loop, driven with the same context the door produced.
+    async fn leg_loop_as(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> Observed {
+        let node = LlmNode::new();
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov,
+            proto: PROTO,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: Fixture::BufferedOk.body(),
+            lanes: node.lanes(),
+            path: None,
+        };
+        let resp = node.answer(arrival, None).await;
+        observe(rig, resp).await
+    }
+
+    /// **STEP 2 OVER THE LOOP: THE UNIT IS ATTRIBUTED TO WHAT THE DOOR RESOLVED, AND TO NOTHING
+    /// ELSE.**
+    ///
+    /// The plane's authenticate step is a READ of an outcome the auth middleware already produced —
+    /// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context
+    /// and handed it to the loop would prove nothing about that, because it would be asserting the
+    /// fixture. So every credential here goes through the deployment's OWN door
+    /// (`EngineHost::identity_admit`: the configured chain plus the one verdict resolution the HTTP
+    /// middleware runs) and the loop is driven with whatever the door left behind.
+    ///
+    /// Three credentials, and the door's answer decides which half of the cell runs:
+    ///
+    /// * the deployment's live bearer is ADMITTED, so both legs run with the resolved context and
+    ///   are compared — and the unit's one link lands on that key's chain, which is the attribution
+    ///   claim spelled as something a reader can see;
+    /// * a bearer this deployment never minted, and a bearer whose lifetime has run out, are both
+    ///   REFUSED at the door, so neither leg is ever entered. The loop cannot be softer than the
+    ///   shipped path here, because on both paths the plane is downstream of the same refusal; what
+    ///   it could do wrong is invent an identity for the request that follows, so the shape the
+    ///   middleware leaves when it binds no key is driven through both legs and must attribute the
+    ///   anonymous actor — never the refused key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_loop_attributes_the_identity_the_door_resolved_and_invents_none() {
+        use busbar_core::proxy::reqlog::REQUESTS;
+
+        let mut failures: Vec<String> = Vec::new();
+        for cred in [Credential::Good, Credential::Bad, Credential::Expired] {
+            // LEG 1, on its own deployment: its own door, its own key, its own counters.
+            let legacy_rig = rig(Fixture::BufferedOk).await;
+            let legacy_admit = admit(&legacy_rig, cred).await;
+            // LEG 2, on another.
+            let loop_rig = rig(Fixture::BufferedOk).await;
+            let loop_admit = admit(&loop_rig, cred).await;
+
+            // THE DOOR AGREES WITH ITSELF across the two deployments. A cell whose two rigs made
+            // different admission decisions would compare two different requests.
+            if legacy_admit.is_ok() != loop_admit.is_ok() {
+                failures.push(format!(
+                    "{cred:?}: the two deployments' doors disagree ({legacy_admit:?} vs \
+                     {loop_admit:?})"
+                ));
+            }
+
+            match (legacy_admit, loop_admit) {
+                (Ok(legacy_gov), Ok(loop_gov)) => {
+                    if cred != Credential::Good {
+                        failures.push(format!("{cred:?}: the door admitted a credential it must refuse"));
+                    }
+                    // THE RESOLVED KEY IS THE DEPLOYMENT'S KEY — the door read the bearer back to
+                    // the binding it was minted for, which is what makes the attribution below a
+                    // statement about a credential rather than about a struct literal.
+                    if loop_gov.key().map(|k| k.id.clone()).as_deref()
+                        != Some(loop_rig.key.id.as_str())
+                    {
+                        failures.push(format!(
+                            "{cred:?}: the door resolved a key that is not this deployment's"
+                        ));
+                    }
+                    // THE STEP'S OWN ANSWER, read at the far end of the loop: the hold the door
+                    // opened names the principal step 2 settled on, and it is the resolved key. On
+                    // its OWN deployment, because a second drive would double the counters the
+                    // comparison below reads.
+                    let settle_rig = rig(Fixture::BufferedOk).await;
+                    match admit(&settle_rig, cred).await {
+                        Ok(settle_gov) => {
+                            let settled =
+                                principal_the_loop_settled_on(&settle_rig, settle_gov).await;
+                            if settled != settle_rig.key.id {
+                                failures.push(format!(
+                                    "{cred:?}: the loop settled on principal {settled:?}, not the \
+                                     key the door resolved"
+                                ));
+                            }
+                        }
+                        Err(why) => failures.push(format!(
+                            "{cred:?}: a third deployment's door refused the same bearer ({why})"
+                        )),
+                    }
+                    settle_rig.server.shutdown().await;
+
+                    let legacy = leg_legacy_as(&legacy_rig, legacy_gov).await;
+                    let looped = leg_loop_as(&loop_rig, loop_gov).await;
+                    compare(&format!("{cred:?}"), &legacy, &looped, &mut failures);
+                    if field(&looped, "ledger_requests") != "1" {
+                        failures.push(format!("{cred:?}: the admitted unit was not charged to the key"));
+                    }
+                    // THE ATTRIBUTION, as an operator reads it: one link, on the resolved key's own
+                    // chain. A step that answered with any other principal would leave it elsewhere.
+                    let links = REQUESTS.records_for(&loop_rig.key.id);
+                    if links.len() != 1 {
+                        failures.push(format!(
+                            "{cred:?}: the loop left {} link(s) on the resolved key's chain",
+                            links.len()
+                        ));
+                    }
+                }
+                (Err(_), Err(_)) => {
+                    if cred == Credential::Good {
+                        failures.push(format!("{cred:?}: the door refused the deployment's own bearer"));
+                    }
+                    // The door refused, so no unit exists on either leg. What the loop must not do
+                    // is invent one: driven with the context the middleware leaves when it binds no
+                    // key, both legs attribute the anonymous actor and leave the refused key's
+                    // chain empty.
+                    let open = busbar_api::PlaneRequestCtx { key: None };
+                    let anonymous = busbar_api::AuthPrincipal(None).actor_id().to_string();
+                    if authenticate::principal_id(&open).as_str() != anonymous {
+                        failures.push(format!(
+                            "{cred:?}: an unbound request is not attributed to the anonymous actor"
+                        ));
+                    }
+                    // And the loop SETTLES on that actor: the hold the door opened for this unit
+                    // names the anonymous caller, not the key whose bearer was just turned away.
+                    let settle_rig = rig(Fixture::BufferedOk).await;
+                    let settled =
+                        principal_the_loop_settled_on(&settle_rig, open.clone()).await;
+                    if settled != anonymous || settled == settle_rig.key.id {
+                        failures.push(format!(
+                            "{cred:?}: the loop settled on principal {settled:?} for a request the \
+                             door bound no key to"
+                        ));
+                    }
+                    settle_rig.server.shutdown().await;
+
+                    let legacy = leg_legacy_as(&legacy_rig, open.clone()).await;
+                    let looped = leg_loop_as(&loop_rig, open).await;
+                    compare(&format!("{cred:?}/unbound"), &legacy, &looped, &mut failures);
+                    if !REQUESTS.records_for(&loop_rig.key.id).is_empty() {
+                        failures.push(format!(
+                            "{cred:?}: a refused credential's key carries a link it never earned"
+                        ));
+                    }
+                }
+                (legacy_admit, loop_admit) => failures.push(format!(
+                    "{cred:?}: the doors disagreed ({legacy_admit:?} / {loop_admit:?})"
+                )),
+            }
+            legacy_rig.server.shutdown().await;
+            loop_rig.server.shutdown().await;
+        }
+        assert!(
+            failures.is_empty(),
+            "{} divergence(s) across the three credentials:\n{}",
+            failures.len(),
             failures.join("\n")
         );
     }
