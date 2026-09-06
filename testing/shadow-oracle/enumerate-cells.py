@@ -75,6 +75,22 @@ STREAM_UPSTREAM_ERROR_OUTCOME = (
     "stream_upstream_error",
     "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event")
 
+# TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT CARRY. `ok` sends a bare `ping` and the mock answers with
+# bare text, so two whole surfaces are unrecorded: an ANSWER that annotates its text with a source,
+# and a REQUEST whose content array mixes a cache marker with a native attachment. Both are ordinary
+# 200s — nothing about them is an error path — which is exactly why a golden built from `ping` never
+# sees them, and why a codec defect in either is invisible to the differ.
+RESPONSES_CITATION_OUTCOME = (
+    "ok_citation",
+    "happy path whose ANSWER carries a URL citation: the Responses annotation the published "
+    "UrlCitationBody FLATTENS onto the annotation object, which the `ok` fixture's bare-text answer "
+    "never exercises")
+BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME = (
+    "ok_cachepoint_document",
+    "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that "
+    "yields no IR block, ahead of a block the reader parks by wire position — the index-space "
+    "disagreement the `ping` fixture's single text block cannot produce")
+
 
 # Refusals are produced BEFORE Route, so they never depend on the egress dialect: enumerate them
 # same-proto only (ingress == egress). Forwarded outcomes reach Route and exercise the cross-protocol
@@ -155,6 +171,29 @@ def llm_cells(inv: dict) -> list[dict]:
         c = cell(d, d, *STREAM_UPSTREAM_ERROR_OUTCOME)
         c["needs_fixture"] = True
         c["mock_control"] = {"stream-error": True}
+        cells.append(c)
+    # THE TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT COVER. Same SKIP-able posture as the mid-stream
+    # failure above: definitions only, `needs_fixture` until the integrator records them from the
+    # published 1.5.5 binary, so each reads as a NAMED golden gap rather than a silent pass.
+    #
+    # THE CITATION, on the DIAGONAL (responses -> responses). The annotation is a property of the
+    # ANSWER, so the egress dialect is what decides its shape; the diagonal is the striking case
+    # because a same-dialect hop READS BACK bytes it has just written, so a reader that only knows
+    # the nested Chat spelling drops an annotation its own writer produced in the flat one. Driven by
+    # the mock's `citation` verb, which answers with the published flat `UrlCitationBody`.
+    if "responses" in dialects:
+        c = cell("responses", "responses", *RESPONSES_CITATION_OUTCOME)
+        c["needs_fixture"] = True
+        c["mock_control"] = {"citation": True}
+        cells.append(c)
+    # THE cachePoint-BEFORE-A-DOCUMENT REQUEST. Bedrock-shaped both ends: `cachePoint` and the native
+    # `document` block are Converse's own vocabulary, so only the bedrock DOOR can receive one, and
+    # only the bedrock EGRESS can emit one. Nothing about the answer matters here — the whole cell is
+    # what busbar SENDS UPSTREAM, which the recorder captures alongside the response. No mock verb:
+    # the fixture is the request body, built by build-request.py.
+    if "bedrock" in dialects:
+        c = cell("bedrock", "bedrock", *BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME)
+        c["needs_fixture"] = True
         cells.append(c)
     return cells
 
@@ -1342,7 +1381,8 @@ def main() -> int:
         "derived_from": {"method_inventory": str(METHOD_INV.relative_to(ROOT)),
                           "field_inventory": str(FIELD_INV.relative_to(ROOT))},
         "outcomes": [{"outcome": o, "why": w} for o, w in OUTCOMES + STREAMING_OUTCOMES
-                     + [ARRAY_STREAM_OUTCOME, STREAM_UPSTREAM_ERROR_OUTCOME]],
+                     + [ARRAY_STREAM_OUTCOME, STREAM_UPSTREAM_ERROR_OUTCOME,
+                        RESPONSES_CITATION_OUTCOME, BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME]],
         "counts": {
             "total": len(cells),
             "by_plane": {p: sum(1 for c in cells if c["plane"] == p) for p in sorted({c["plane"] for c in cells})},
