@@ -378,6 +378,75 @@ async fn an_upstream_frame_past_the_cursor_budget_ends_the_stream() {
     );
 }
 
+/// An upstream error response reaches the plane as a frame carrying its status leg, not as a clean
+/// empty success.
+///
+/// A rate-limited provider answers a JSON body with no blank line anywhere in it: nothing to carve
+/// a frame at, nothing that parses as an event. The re-segmenter therefore had a status leg in hand
+/// (`ClientError`, off `http`'s HEAD frame) and ended the stream without ever attaching it to
+/// anything, so a consumer polling this stream saw `None` on the first poll — indistinguishable
+/// from a provider that answered 200 with an empty event stream. The upstream's own answer has to
+/// survive the composition: 1.5.5 surfaces the 429 to the client, and it cannot if the transport
+/// swallowed it.
+#[tokio::test]
+async fn an_upstream_error_body_reaches_the_plane_with_its_status_leg() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let body = br#"{"error":{"type":"rate_limit_error","message":"slow down"}}"#;
+    tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        let resp = format!(
+            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut stream, resp.as_bytes())
+            .await
+            .unwrap();
+        tokio::io::AsyncWriteExt::write_all(&mut stream, body)
+            .await
+            .unwrap();
+    });
+
+    let uri = format!("http://{addr}/");
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    sse.write(
+        &conn,
+        StreamId(0),
+        ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+    )
+    .await
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    let (_s, only) = frames
+        .next()
+        .await
+        .expect("the error response is an item, not an empty stream")
+        .expect("the error body is carried as a frame, not thrown away");
+    assert_eq!(
+        only.meta.status,
+        Some(busbar_contract_transport::wire::StatusClass::ClientError),
+        "the status leg http read off the 429 is attached to the frame that carries the body"
+    );
+    assert_eq!(
+        only.bytes.as_slice(),
+        body.as_slice(),
+        "the upstream's own error body is what the frame carries"
+    );
+    assert_eq!(only.meta.bytes, body.len() as u64);
+    assert!(
+        frames.next().await.is_none(),
+        "exactly one item: the error is reported once"
+    );
+}
+
 /// Frame meta is honest on frames a REAL `SseTransport` emitted, and the check that says so is one
 /// an inflating or a deflating fixture turns red.
 ///

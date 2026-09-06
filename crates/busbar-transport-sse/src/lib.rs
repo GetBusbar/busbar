@@ -252,9 +252,32 @@ impl Transport for SseTransport {
                         return Some((Err(e), st));
                     }
                     None => {
+                        st.done = true;
+                        // An upstream that answered with an error status and then a body that is
+                        // not an event stream — a rate limiter's JSON, say — carves into no frames
+                        // at all, so the status leg `http` read off the response head has nothing
+                        // to ride out on and the consumer sees a clean empty success. The upstream's
+                        // own answer has to survive the composition: the buffered body goes out as
+                        // one final frame wearing that leg. When there is no body to carry it, no
+                        // frame is defensible and the framing error is what is left.
+                        let failing = matches!(
+                            st.status,
+                            Some(busbar_contract_transport::wire::StatusClass::ClientError)
+                                | Some(busbar_contract_transport::wire::StatusClass::ServerError)
+                                | Some(busbar_contract_transport::wire::StatusClass::Other)
+                        );
+                        if failing && !st.status_attached {
+                            if st.buf.is_empty() {
+                                return Some((Err(TransportError::Framing), st));
+                            }
+                            st.status_attached = true;
+                            let raw = std::mem::take(&mut st.buf);
+                            st.pending.push_back((raw, st.status));
+                            continue;
+                        }
                         // A trailing frame with no terminator (a stream that ends mid-frame) is
-                        // dropped rather than guessed complete — the design's own rule that a
-                        // stream dying before its trailer posts the lower evidence.
+                        // otherwise dropped rather than guessed complete — the design's own rule
+                        // that a stream dying before its trailer posts the lower evidence.
                         return None;
                     }
                 }
