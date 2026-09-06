@@ -24,6 +24,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/keys/vk_<KEY>",
+        "status": 200,
         "body": {
           "json": {
             "allowed_pools": [
@@ -37,9 +39,7 @@
             "name": "oracle-noscope",
             "state": "tombstoned"
           }
-        },
-        "path": "/api/v1/admin/keys/vk_<KEY>",
-        "status": 200
+        }
       }
     ]
   },

@@ -9,6 +9,7 @@
 
 use busbar_caps::StepName;
 
+use crate::backend::MemoryFactory;
 use crate::record::FRAME_BYTES;
 use crate::ship::NullShipper;
 use crate::wal::{Mode, Wal};
@@ -53,6 +54,54 @@ fn the_idempotence_check_costs_one_mark_per_node_not_one_entry_per_record() {
         "3200 records must not cost 3200 remembered identities, got {}",
         wal.tracked_identities()
     );
+}
+
+/// A node with no data directory holds ONE segment's bytes, however many it has rolled through.
+///
+/// The memory backing is the whole of such a node's storage, so a factory that kept a reference to
+/// every segment it ever opened would turn a long-running node into a process whose footprint grows
+/// by a segment's ceiling on every roll — sixty-four megabytes at a time in production, and never
+/// released, because nothing above it ever asks for those bytes again. The record bound above governs
+/// what the log will HOLD for a store; this one governs what it leaves behind after it has moved on.
+#[test]
+fn a_memory_backed_log_keeps_only_the_segment_it_is_writing_to() {
+    let factory = MemoryFactory::new();
+    let mut wal = Wal::with_parts(
+        Box::new(factory.clone()),
+        Box::new(NullShipper::new()),
+        Mode::MemoryBuffered,
+        CEILING,
+    )
+    .unwrap();
+    let token = durability_token();
+
+    let mut seq = 1u64;
+    for _ in 0..200 {
+        let batch = records(1, seq, 16, 300);
+        seq += 16;
+        wal.append_batch(&token, StepName::Meter, &batch)
+            .expect("a memory backing takes every batch");
+    }
+
+    assert!(
+        wal.segments_used() > 4,
+        "the run has to roll several times for this to be the bound it claims to be, got {}",
+        wal.segments_used()
+    );
+    assert_eq!(
+        factory.segment_count(),
+        1,
+        "only the segment being written to is still resident, after {} rolls",
+        wal.segments_used() - 1
+    );
+
+    // And the one that is resident is the one the log is actually writing to: a bound that held by
+    // dropping the LIVE segment would pass the count above and lose the log.
+    let ack = wal
+        .append_batch(&token, StepName::Meter, &records(2, 1, 1, 300))
+        .expect("the live segment still takes a batch");
+    assert_eq!(ack.appended, 1);
+    assert_eq!(factory.segment_count(), 1);
 }
 
 /// Bounding the check must not weaken it: an identity the log already holds is still passed over,

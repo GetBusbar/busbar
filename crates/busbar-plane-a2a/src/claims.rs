@@ -250,62 +250,42 @@ mod tests {
 
     /// The claim list matches the route table the codec actually mounts.
     ///
-    /// The route table is built inside the codec crate and is not reachable as a value from here, so
-    /// this reads the codec's own source and asserts that every path literal it mounts is one this
-    /// plane claims. A route the codec serves and this plane does not claim would arrive and find no
-    /// plane; a claim with no route behind it would take bytes nothing can answer.
+    /// Every path is a VALUE, composed by the codec's own [`mounted_route`] join. This read the
+    /// SERVER half's source once — six `include_str!`s over `../../busbar-a2a/src/a2a/*.rs`,
+    /// searched for `format!` template fragments — which coupled this crate to a sibling its
+    /// manifest does not name, so the plane could be neither built nor deleted on its own. Worse
+    /// than the coupling, the substring search could only ever say the fragment still APPEARS
+    /// somewhere in six files, not that it is what gets mounted. Both halves now join one set of
+    /// suffixes to one mount: a route the server serves and this plane does not claim would arrive
+    /// and find no plane, and a claim with no route behind it would take bytes nothing can answer.
     #[test]
     fn every_mounted_route_is_claimed() {
-        let sources = concat!(
-            include_str!("../../busbar-a2a/src/a2a/rest.rs"),
-            include_str!("../../busbar-a2a/src/a2a/receive.rs"),
-            include_str!("../../busbar-a2a/src/a2a/serve.rs"),
-            include_str!("../../busbar-a2a/src/a2a/card.rs"),
-            include_str!("../../busbar-a2a/src/a2a/pushback.rs"),
-            include_str!("../../busbar-a2a/src/a2a/grpc.rs"),
-        );
-        // Each row is the route as this plane claims it, beside the fragment the codec's own source
-        // composes it from. The codec builds most of its paths by formatting a mount constant into a
-        // template, so the fragment is the template rather than the finished string: what is being
-        // pinned is that the codec still spells this route, not that it spells it as one literal.
-        let mounted: [(&str, &str); 11] = [
-            ("/a2a/message:send", r#"{mount}/message:send"#),
-            ("/a2a/message:stream", r#"{mount}/message:stream"#),
-            ("/a2a/tasks", r#"{mount}/tasks"#),
-            ("/a2a/tasks/{id}", r#"{mount}/tasks/{{id}}"#),
-            (
-                "/a2a/tasks/{id}/pushNotificationConfigs",
-                r#"{mount}/tasks/{{id}}/pushNotificationConfigs"#,
-            ),
-            (
-                "/a2a/tasks/{id}/pushNotificationConfigs/{config_id}",
-                r#"{mount}/tasks/{{id}}/pushNotificationConfigs/{{config_id}}"#,
-            ),
-            ("/a2a/extendedAgentCard", r#"{mount}/extendedAgentCard"#),
-            (
-                "/.well-known/oauth-protected-resource/a2a",
-                "/.well-known/oauth-protected-resource/a2a",
-            ),
-            (
-                "/.well-known/agent-card.json",
-                "/.well-known/agent-card.json",
-            ),
-            ("/a2a/agents/{agent_id}", r#"{}/agents/{{agent_id}}"#),
-            ("/a2a/push", r#"PUSH_PATH_SUFFIX: &str = "/push""#),
-        ];
-        for (path, fragment) in mounted {
+        for suffix in busbar_a2a_codec::MOUNTED_ROUTE_SUFFIXES {
+            let path = busbar_a2a_codec::mounted_route(suffix);
             assert!(
-                sources.contains(fragment),
-                "the codec no longer spells {path} as {fragment}, so the claim for it is stale"
+                claims_match(&path),
+                "the codec mounts {path} and this plane claims nothing that matches it"
             );
+        }
+        // The two well-known paths are properties of the ORIGIN and so are not under the mount.
+        for path in [
+            busbar_a2a_codec::METADATA_PATH,
+            busbar_a2a_codec::WELL_KNOWN_CARD_PATH,
+        ] {
             assert!(
                 claims_match(path),
                 "the codec mounts {path} and this plane claims nothing that matches it"
             );
         }
+        // busbar's own push callback: the mount joined to the suffix a delivery is posted to.
+        assert!(claims_match(&busbar_a2a_codec::mounted_route(
+            busbar_a2a_codec::PUSH_PATH_SUFFIX
+        )));
         // The framed binding is one service and one method segment, composed from the same constant.
-        assert!(sources.contains(r#"format!("{}/{{method}}", super::serve::GRPC_MOUNT_PATH)"#));
-        assert!(claims_match("/lf.a2a.v1.A2AService/{method}"));
+        assert!(claims_match(&format!(
+            "{}/{{method}}",
+            busbar_a2a_codec::GRPC_MOUNT_PATH
+        )));
     }
 
     /// Whether some claim of this plane matches a mounted route shape.

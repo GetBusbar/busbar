@@ -211,6 +211,21 @@ sys.exit(0 if any(c['ref']=='$real_fn' and c['kind']=='test' for c in b['checks'
     say FAIL "--write dropped the hand-added check"
   fi
 
+  # (g) the inversion this gate's verdict rests on: an OWED id with NO ledger row is DID NOT RUN,
+  #     red, and named. Every gate in this tree is only as honest as that branch — a run whose
+  #     second step died before it could record must not read as green just because the first
+  #     step's PASS row is the only row present. Driven straight through verdict.sh with a
+  #     hand-built ledger, the same way the cases above drive it through run_check.
+  printf 'PB-1\tPASS\tprobe ran\t\n' >"$tmp/norow.tsv"
+  GATE_NAME="design bindings" EXPECTED_IDS="PB-1 PB-DID-NOT-RUN" LEDGER="$tmp/norow.tsv" \
+    bash "${repo}/testing/fleet-fixtures/verdict.sh" >"$tmp/g.log" 2>&1; rc=$?
+  if [ "$rc" != 0 ] && grep -q "DID NOT RUN *PB-DID-NOT-RUN" "$tmp/g.log" \
+     && grep -q "DID NOT RUN: PB-DID-NOT-RUN" "$tmp/g.log" && grep -q "PASS *PB-1" "$tmp/g.log"; then
+    say PASS "an owed id with no ledger row -> red, named DID NOT RUN (the PASS row does not carry it)"
+  else
+    say FAIL "owed id with no row: rc=$rc (expected rc!=0 and a named DID NOT RUN line)"; cat "$tmp/g.log"
+  fi
+
   echo
   if [ "$fails" -eq 0 ]; then echo "design bindings selftest: GREEN (${cases} cases)"; return 0; fi
   echo "design bindings selftest: RED (${fails}/${cases} cases failed)"; return 1

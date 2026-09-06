@@ -27,7 +27,9 @@
 
 use super::abi2_store_ops_tests::EventLog;
 use super::*;
-use crate::store_adapter::{speaks_new_ops, StoreAdapter, STORE_ABI_WITH_NEW_OPS};
+use crate::store_adapter::{
+    speaks_new_ops, ShimClock, StoreAdapter, REPLAY_TTL_SECS, STORE_ABI_WITH_NEW_OPS,
+};
 use busbar_caps::{AdminToken, KernelSeal};
 use busbar_kernel::slice::{bucket_all, CapDimension, Epoch, SliceId, SliceRequest, SliceStore};
 use busbar_unit_verbs::store::Store as VerbStore;
@@ -380,6 +382,135 @@ fn the_verb_seam_replay_cache_reserves_then_replays_the_committed_bytes() {
             .expect("a different key"),
         None,
         "a different idempotency key is a different slot"
+    );
+}
+
+/// A clock the test moves by hand, so the replay window can be watched closing without waiting it
+/// out in real time.
+#[derive(Clone, Default)]
+struct TestClock(Arc<std::sync::atomic::AtomicU64>);
+
+impl TestClock {
+    fn advance(&self, secs: u64) {
+        self.0.fetch_add(secs, std::sync::atomic::Ordering::Relaxed);
+    }
+    fn shim_clock(&self) -> ShimClock {
+        let ticks = Arc::clone(&self.0);
+        Arc::new(move || ticks.load(std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
+/// [`adapter_over_published_schema`] whose sealed replay cache ages against `clock`.
+fn adapter_at(clock: &TestClock) -> Option<StoreAdapter> {
+    let store = dyn_example_store_with_fake_call_at_abi(crate::registry::STORE_ABI_FLOOR)?;
+    let abi_version = store.abi_version;
+    Some(StoreAdapter::with_clock(
+        Arc::new(store),
+        abi_version,
+        clock.shim_clock(),
+    ))
+}
+
+fn replay_key(name: &str) -> (String, String) {
+    ("set_operator_key".to_string(), name.to_string())
+}
+
+/// Inside the window the shim is a replay cache: the committed bytes come back.
+#[test]
+fn a_replay_inside_the_window_returns_the_committed_bytes() {
+    let clock = TestClock::default();
+    let Some(adapter) = adapter_at(&clock) else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let key = replay_key("idem-a");
+    assert_eq!(adapter.replay_new_verb(&key).expect("first sighting"), None);
+    adapter
+        .commit_new_verb_replay(&key, b"the minted key")
+        .expect("commit");
+    clock.advance(REPLAY_TTL_SECS - 1);
+    assert_eq!(
+        adapter.replay_new_verb(&key).expect("replay"),
+        Some(b"the minted key".to_vec()),
+        "a replay inside the window is the whole point of the cache"
+    );
+}
+
+/// Past the window the slot is gone: it no longer answers, and it is no longer held. A cache with no
+/// ceiling would keep every response of every credential-minting verb the node ever served, for the
+/// life of the process — a map that grows with exactly the traffic it exists to serve.
+#[test]
+fn a_slot_past_the_window_is_neither_answered_nor_held() {
+    let clock = TestClock::default();
+    let Some(adapter) = adapter_at(&clock) else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let committed = replay_key("idem-a");
+    adapter.replay_new_verb(&committed).expect("first sighting");
+    adapter
+        .commit_new_verb_replay(&committed, b"the minted key")
+        .expect("commit");
+    adapter
+        .replay_new_verb(&replay_key("idem-b"))
+        .expect("a reservation nobody came back for");
+    assert_eq!(adapter.shim_state().replay_slots, 2);
+
+    clock.advance(REPLAY_TTL_SECS);
+    assert_eq!(
+        adapter
+            .replay_new_verb(&replay_key("idem-c"))
+            .expect("a fresh key"),
+        None,
+        "a first sighting is still a first sighting"
+    );
+    assert_eq!(
+        adapter.shim_state().replay_slots,
+        1,
+        "both expired slots are swept; only the fresh reservation is held"
+    );
+    assert_eq!(
+        adapter.shim_state().replay_committed,
+        0,
+        "the expired response bytes are not kept either"
+    );
+    assert_eq!(
+        adapter
+            .replay_new_verb(&committed)
+            .expect("past the window"),
+        None,
+        "a slot past the window does not answer"
+    );
+}
+
+/// A restore keeps the sealed slots — and keeps them ageing, so surviving a restore is not a way for
+/// a slot to outlive its window.
+#[test]
+fn a_slot_that_survives_a_restore_still_expires() {
+    let clock = TestClock::default();
+    let Some(adapter) = adapter_at(&clock) else {
+        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        return;
+    };
+    let key = replay_key("idem-a");
+    adapter.replay_new_verb(&key).expect("first sighting");
+    adapter
+        .commit_new_verb_replay(&key, b"the minted key")
+        .expect("commit");
+    adapter
+        .store_restore(&admin(), "a-backup")
+        .expect("store_restore");
+    assert_eq!(adapter.shim_state().replay_slots, 1);
+
+    clock.advance(REPLAY_TTL_SECS);
+    assert_eq!(
+        adapter.replay_new_verb(&key).expect("past the window"),
+        None
+    );
+    assert_eq!(
+        adapter.shim_state().replay_committed,
+        0,
+        "the slot that survived the restore did not survive its TTL"
     );
 }
 

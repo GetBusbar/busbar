@@ -28,6 +28,9 @@
 #       This is the guard that stops a class being quietly dropped from MONEY_CLASSES: removing
 #       effects.usage (or effects.egress / effects.readback / effects.files / ...) from that set
 #       makes the matching case here go green-when-it-should-be-red, i.e. RED in this selftest.
+#   (r) diff-cells.py --strict --id-filter used directly as a subset gate (land.sh's shape):
+#       a filter that selects a diverging cell exits 1, and a filter that selects NOTHING also
+#       exits 1 — a subset gate that compared zero cells has proven nothing
 # The tracked fixture recording under fixtures/selftest-recording is used read-only: every case
 # below works on a `cp -R` of it, never the tracked copy itself.
 set -uo pipefail
@@ -282,6 +285,58 @@ json.dump({"accepted":[{"id":"bad money accept","kind":"improvement","by":"selft
     && say PASS "improvement accepting '${mc}' -> loader refuses (money class)" \
     || say FAIL "improvement accepting '${mc}' was NOT refused (rc=$rc msg_ok=$msg_ok) — is ${mc} still in MONEY_CLASSES?"
 done
+
+# (s) THE MONEY GUARD MUST TEST WHAT AN ENTRY *DOES*, NOT WHAT IT SAYS. An entry that omits
+# `classes` forgives a whole default set, and for kind=breaking that default used to be every class
+# there is — while the loader's guard looked only at the (empty) `classes` literal and so found no
+# money class to refuse and demanded no changelog line. Four lines of JSON with `cells: "."` then
+# forgave a 200 -> 418 and a changed bill on every cell and the oracle reported GREEN.
+cp -R "$FIX" "$W/blanket"
+python3 -c 'import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["status"]=418; d["effects"]["usage"]["spend_micros"]=999999
+json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)' "$W/blanket/cells/self__a__ok.json"
+cat >"$W/blanket-accept.json" <<'JSON'
+{"accepted":[{"id":"classless breaking","kind":"breaking","by":"selftest","cells":"^self\\|a\\|ok$","rationale":"no classes, no changelog"}]}
+JSON
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/blanket" --out "$W/out-s" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/blanket-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-s.log" 2>&1
+rc=$?
+grep -q "not kind=breaking with a changelog" "$W/out-s.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "classless 'breaking' entry -> loader refuses (it would forgive every money class)" \
+  || say FAIL "classless 'breaking' entry was NOT refused (rc=$rc msg_ok=$msg_ok) — it forgives status/effects.usage with no changelog line (see $W/out-s.log)"
+
+# (t) `missing.golden` — the golden's ledger saying PASS for a cell it never wrote — is a RECORDER
+# bug, and CLASS_WEIGHT's own assertion calls it never acceptable at all. Naming it in the register
+# must be refused by the loader rather than waiving a golden that recorded nothing.
+cat >"$W/mg-accept.json" <<'JSON'
+{"accepted":[{"id":"waive a recorder bug","kind":"improvement","by":"selftest","cells":".","classes":["missing.golden"],"rationale":"should be refused"}]}
+JSON
+bash "${here}/replay.sh" --golden "$W/mg-golden" --candidate "$W/mg-cand" --out "$W/out-t" --cells "$CELLS" \
+  --allow-harness-skew --accepted "$W/mg-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-t.log" 2>&1
+rc=$?
+grep -q "recorder bug" "$W/out-t.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "an entry naming 'missing.golden' -> loader refuses (recorder bug, never acceptable)" \
+  || say FAIL "'missing.golden' acceptance was NOT refused (rc=$rc msg_ok=$msg_ok) — a golden that recorded nothing can be waived (see $W/out-t.log)"
+
+# (p) --strict on a filtered subset: the differ is a gate on its own when a caller (land.sh) uses it
+# that way. A filter that selects the mutated cell must exit 1 …
+DC="python3 ${here}/diff-cells.py"
+$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-p" --cells "$CELLS" --accepted "$W/no-accept.json" \
+  --allow-harness-skew --strict --id-filter '^self\|a\|ok$' >"$W/out-p.log" 2>&1
+rc=$?
+owed_p="$(wc -l <"$W/out-p/owed.txt" | tr -d ' ')"
+[ "$rc" = 1 ] && [ "$owed_p" = 1 ] && grep -q "unaccepted divergence" "$W/out-p.log" && say PASS "--strict with a filter selecting the mutated cell -> exit 1" || say FAIL "strict filtered rc=$rc owed=$owed_p (see $W/out-p.log)"
+
+# … and a filter that selects NOTHING is red too: a subset gate that compared zero cells proved
+# nothing, and must never be mistaken for a clean run.
+$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-q" --cells "$CELLS" --accepted "$W/no-accept.json" \
+  --allow-harness-skew --strict --id-filter 'no-such-cell-anywhere' >"$W/out-q.log" 2>&1
+rc=$?
+grep -q "no owed cells matched" "$W/out-q.log" && msg_ok=1 || msg_ok=0
+[ "$rc" = 1 ] && [ "$msg_ok" = 1 ] && say PASS "--strict with a filter matching nothing -> exit 1 (nothing was compared)" || say FAIL "strict empty filter rc=$rc msg_ok=$msg_ok (see $W/out-q.log)"
+
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }

@@ -901,16 +901,12 @@ impl ProtocolWriter for BedrockWriter {
                 // returned sources at `stream: false` and none at `stream: true`. Nothing about the
                 // request explained that difference to the caller.
                 //
-                // `max_citations_per_delta()` is overridden to `Some(1)` for this writer, so
-                // `StreamTranslate` has already fanned a multi-citation delta out to one citation per
-                // event by the time it reaches here; `first()` is therefore the whole delta, and the
-                // debug_assert pins the invariant rather than silently truncating if the seam changes.
+                // A native `citation` delta carries ONE citation, so this SINGLE-frame arm frames the
+                // FIRST of the batch; `write_response_events` is what walks a multi-citation delta,
+                // re-entering here once per citation. A caller reaching this method directly (a
+                // stream driven outside the framing seam's `max_citations_per_delta` fan-out)
+                // therefore still gets a well-formed frame rather than a dropped or malformed one.
                 crate::ir::IrDelta::CitationsDelta(cits) => {
-                    debug_assert!(
-                        cits.len() <= 1,
-                        "bedrock writer expects the citation fan-out to have split multi-citation \
-                         deltas (max_citations_per_delta() == Some(1))"
-                    );
                     let c = cits.first()?;
                     match super::write_bedrock_citation(c) {
                         Some(citation) => Some((
@@ -1012,6 +1008,35 @@ impl ProtocolWriter for BedrockWriter {
                 ))
             }
         }
+    }
+
+    /// A Converse `citation` delta carries ONE citation, so a delta holding several must frame as
+    /// several events at the same `contentBlockIndex` — which is exactly how a native ConverseStream
+    /// interleaves them. The framing seam splits multi-citation deltas on their way to the writer
+    /// (`max_citations_per_delta`), but it is not the only caller (the plane codec drives
+    /// `write_response_events` directly), and a batch that arrives whole here must emit all of its
+    /// citations rather than silently keep the first. Each is framed by re-entering the single-frame
+    /// arm with a one-citation delta, so that arm stays the ONE source of truth for the `citation`
+    /// delta's shape. Every other event keeps the base wrapper's one-frame behaviour.
+    fn write_response_events(&self, ev: &IrStreamEvent) -> Vec<(String, serde_json::Value)> {
+        if let IrStreamEvent::BlockDelta {
+            index,
+            delta: crate::ir::IrDelta::CitationsDelta(cits),
+        } = ev
+        {
+            if cits.len() > 1 {
+                return cits
+                    .iter()
+                    .filter_map(|c| {
+                        self.write_response_event(&IrStreamEvent::BlockDelta {
+                            index: *index,
+                            delta: crate::ir::IrDelta::CitationsDelta(vec![c.clone()]),
+                        })
+                    })
+                    .collect();
+            }
+        }
+        self.write_response_event(ev).into_iter().collect()
     }
 
     /// A Bedrock-ingress stream signals a mid-stream error with a MODELED-EXCEPTION event-stream

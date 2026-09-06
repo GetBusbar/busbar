@@ -17,7 +17,12 @@
 #
 # Per-cell principal (minted by oracle_mint_keys — every refusal is REAL, not a stub):
 #   ok / ok_stream / malformed / upstream_down  -> the OK key
-#   over_budget                                 -> the BROKE key (1-cent/day budget -> 429 at Admit)
+#   over_budget                                 -> the BROKE key (group `broke`: requests 1/day trips
+#                                                   FIRST, so this is the requests-cap refusal)
+#   over_budget_total                           -> the QUOTA key (group `broke-quota`: budget 1/day is
+#                                                   the ONLY cap, so this is the group's own budget-cap
+#                                                   refusal — the arm the Anthropic writer projects as
+#                                                   `billing_error` rather than `rate_limit_error`)
 #   out_of_scope                                -> the NOSCOPE key (allowed only an unused pool -> 403)
 #   unauthenticated                             -> no Authorization header at all
 # upstream_down flips the mock's CONTROL FILE for the duration of the cell; busbar sees nothing.
@@ -46,9 +51,94 @@ case "$PLANE" in llm|core|all) ;; *) echo "record.sh: planes recorded natively: 
 
 LISTEN_PORT="${ORACLE_LISTEN_PORT:-48811}" ADMIN_PORT="${ORACLE_ADMIN_PORT:-48812}" MOCK_PORT="${ORACLE_MOCK_PORT:-48781}"
 
+# A RECORDING MAY NOT DEPEND ON WHERE IT WAS STARTED FROM. Some cells carry a REPO-RELATIVE path in
+# their own argv — every `config.migrate|*` cell runs `--migrate-config
+# tests/migration-corpus/from-tags/<v>_config.yaml` — so the binary resolved it against whatever
+# directory the operator happened to be in. Recorded from testing/shadow-oracle instead of the repo
+# root, all 78 of those cells recorded `busbar: cannot read '...': No such file or directory` with
+# exit 1 and the ledger said PASS for every one of them (their `why` accepts exit 0/1/2), i.e. a
+# golden re-recorded from the wrong directory is quietly a golden of the file-not-found path. The
+# effects.files class has the same exposure: capture.py watches THE PROCESS'S WORKING DIRECTORY.
+# So: absolutize the two paths the caller gave us and record from the repo root, always. (The
+# absolutize also makes a relative --out/--bin safe everywhere downstream, which the script-cell
+# path already had to re-derive for itself.)
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")"
+cd "$repo" || { echo "record.sh: cannot cd to the repo root $repo" >&2; exit 2; }
+
 mkdir -p "$OUT/cells" "$OUT/raw"
 LEDGER="$OUT/ledger.tsv"; : >"$LEDGER"; export LEDGER
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/shadow-oracle-record.XXXXXX")"; export WORK
+# AN UNCHECKED `mktemp -d` POINTS THE WHOLE RUN AT `/`. Every path below is built as "$WORK/…", so a
+# mktemp that failed (a full or read-only temp filesystem, a TMPDIR that does not exist) left WORK
+# empty and the run went on writing "/config.yaml", "/egress", "/mock.control" — and `rm -rf "$WORK"`
+# in the cleanup trap became `rm -rf /`. Checked, and checked to be a directory we can write.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/shadow-oracle-record.XXXXXX")" \
+  || { echo "record.sh: could not create a work directory under ${TMPDIR:-/tmp}" >&2; exit 2; }
+[ -n "$WORK" ] && [ -d "$WORK" ] && [ -w "$WORK" ] \
+  || { echo "record.sh: mktemp -d gave no usable work directory (got '${WORK}')" >&2; exit 2; }
+export WORK
+# WORK holds a config, a signing key, the egress captures and every cell's scratch — tens of MB per
+# run, and a full recording is ~900 cells. Nothing removed it, so every run (and every run that died
+# in its preamble) left one behind until the machine was rebooted. lib.sh has already installed
+# `trap _reap_fixtures EXIT`; replacing that trap outright would strand every busbar and mock this
+# script spawned, so the reaper is called FIRST and the tree goes only once nothing is writing to it.
+# ORACLE_KEEP_WORK=1 keeps it, for the forensics the `raw/` tree cannot answer (busbar.log mid-run,
+# the mock's control file, a half-written mutation config).
+_oracle_cleanup() {
+  _reap_fixtures
+  [ "${ORACLE_KEEP_WORK:-0}" = 1 ] || rm -rf "$WORK"
+}
+trap _oracle_cleanup EXIT
+
+# ── A RECORDING MAY NOT DEPEND ON THE ORDER ITS CELLS RAN IN ────────────────────────────────────
+# busbar sweeps orphaned plugin staging directories at boot: `busbar_plugin_loader::sweep_dead_staging`
+# walks `std::env::temp_dir()` (i.e. `$TMPDIR`) for `busbar-plugins-<pid>-<random>` directories whose
+# owning pid is DEAD, removes them, and — only when it removed at least one — prints
+#
+#     [info] removed N orphaned plugin staging dir(s) left by a crashed prior run
+#
+# on stdout. That is correct behaviour for an operator and poison for a golden: THIS recorder kills
+# busbars on purpose (every `fresh` cell reboots, script cells stop the recording busbar,
+# store-persist kills its first busbar by design), so a plugin-loading boot that is killed leaves a
+# staging directory behind and WHICHEVER BOOT COMES NEXT prints the line — a different cell on every
+# run (documented|readme|tls-mtls, neutrality|boot-lines, documented|readme|docker-defaults,
+# documented|changelog|admin-restart have all been seen wearing it). One random boot-log cell per full
+# `--plane all` run carried an extra line that says nothing about the binary and everything about
+# which cell happened to run before it.
+#
+# BOTH HALVES, and each closes a different hole — this is deliberately not one-or-the-other:
+#
+#   (1) A PRIVATE PER-RUN TMPDIR. busbar is pointed at a temp base this run owns, so it can never see
+#       a staging directory left by a PARALLEL recording, by an earlier run of this script, by the
+#       test suite, or by any other busbar on the machine. Cross-RUN and cross-PROCESS contamination
+#       goes away by construction rather than by racing it. It is inside $WORK, so the existing
+#       cleanup already removes it and the existing `--strip-path "$WORK"` already scrubs any path
+#       that reaches a capture.
+#   (2) A DEAD-PID SWEEP BEFORE EVERY BOOT. (1) alone does NOT fix this: the directories that cause
+#       the line are made by THIS run's own busbars, inside this run's own TMPDIR. So the harness
+#       sweeps them itself, before each boot, and busbar's own sweep then always finds nothing and
+#       stays silent. The sweep lives HERE, in the harness, never in busbar: busbar's boot-time
+#       sweep is a documented behaviour the oracle exists to record, and a recorder that needed the
+#       binary changed to be recordable would be recording the harness.
+#
+# Dead pids only, exactly like busbar's own sweep: a live busbar's staging directory is in use (the
+# recording busbar is still up while an exec `boot` cell spawns a second one), and removing it would
+# manufacture a failure this cell is not about.
+export TMPDIR="$WORK/tmp"
+mkdir -p "$TMPDIR"
+sweep_orphan_staging() {  # remove busbar-plugins-<dead pid>-* under this run's private TMPDIR
+  local d pid
+  for d in "$TMPDIR"/busbar-plugins-*; do
+    # a glob that matched nothing expands to itself; a symlink is not a staging dir (never followed)
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
+    pid="${d##*/busbar-plugins-}"; pid="${pid%%-*}"
+    case "$pid" in ''|*[!0-9]*) continue ;; esac
+    kill -0 "$pid" 2>/dev/null && continue
+    rm -rf "$d"
+  done
+}
+
 export BUSBAR_BIN="$BIN"
 declaw "$BIN"
 VER="$("$BIN" --version 2>/dev/null | head -1)"
@@ -161,25 +251,71 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
   # it is recorded against a process this script never started and cannot configure.
   assert_port_free "$LISTEN_PORT" || return 4
   assert_port_free "$ADMIN_PORT" || return 4
+  # BEFORE THE SPAWN, not after: what busbar prints at boot is decided by what it finds when it
+  # boots. A staging dir left by the busbar this cell's `stop_busbar` just killed would otherwise be
+  # swept BY BUSBAR, and this cell's boot log would carry an extra line the previous cell caused.
+  sweep_orphan_staging
   BUSBAR_PID="$(oracle_spawn "$WORK/busbar.log" "$BIN")"; track_pid "$BUSBAR_PID"
   # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second).
-  # The bound is 60 s, not 20: a hooks-variant boot loads the published plugins, and on a machine
-  # running a test suite beside the recording that took longer than 20 s and read as a failed cell.
-  local w=0; while [ $w -lt 2400 ]; do
+  # The bound is ORACLE_BOOT_BOUND_SECS (default 60), not 20: a hooks-variant boot loads the
+  # published plugins, and on a machine running a test suite beside the recording that took longer
+  # than 20 s and read as a failed cell. ONE KNOB: scripts/store-persist.sh does its own real double
+  # boot of a published store plugin and reads this SAME env var, so a host slow enough to blow one
+  # bound blows both consistently instead of the harness inventing a second, independently-drifting
+  # hard-code.
+  local boot_bound="${ORACLE_BOOT_BOUND_SECS:-60}" w_max
+  w_max=$(( boot_bound * 40 ))  # 40 polls/sec at the 25ms step below
+  local w=0; while [ $w -lt "$w_max" ]; do
     curl -fsS -m 1 -o /dev/null "http://127.0.0.1:${LISTEN_PORT}/healthz" 2>/dev/null && break
     kill -0 "$BUSBAR_PID" 2>/dev/null || return 1
     sleep 0.025; w=$((w+1))
   done
-  [ $w -lt 2400 ] || return 1
+  [ $w -lt "$w_max" ] || return 1
   # /healthz answered — but by WHOM. Both listeners must be held by the pid we just spawned.
   assert_port_is_ours "$LISTEN_PORT" "$BUSBAR_PID" || return 4
   assert_port_is_ours "$ADMIN_PORT" "$BUSBAR_PID" || return 4
   oracle_mint_keys "$ADMIN_PORT" || return 2
+  # A HOOK THAT HAS NOT ANSWERED YET IS NOT A HOOK THAT CANNOT ANSWER. /healthz gates the boot, but
+  # under the `hooks` variant busbar also spawns the published headroom plugin, and that process is
+  # ready some milliseconds LATER. The hook is configured `timeout_ms: 50`, so a status read that
+  # lands in that window comes back
+  #     {"drift": null, "reported": null, "note": "hook did not answer status (unsupported or unreachable)"}
+  # instead of the drift report — and admin.ops|GetHooksNameStatus|ok recorded whichever of the two
+  # this machine happened to produce (three full 1.5.5 recordings gave the drift report, a fourth
+  # gave the note). Same class of defect as the boot-log sweep: the cell records the recorder's
+  # timing, not busbar's behaviour. So the boot is not finished until the hook has answered once,
+  # exactly as it is not finished until /healthz has: readiness is waited for, never sampled.
+  if [ "$variant" = hooks ]; then
+    local hw=0 hw_max=$(( boot_bound * 10 ))
+    while [ $hw -lt "$hw_max" ]; do
+      curl -fsS -m 2 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
+        "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/hooks/busbar-headroom/status" 2>/dev/null \
+        | jq -e '.reported != null' >/dev/null 2>&1 && break
+      kill -0 "$BUSBAR_PID" 2>/dev/null || return 1
+      sleep 0.1; hw=$((hw + 1))
+    done
+    [ $hw -lt "$hw_max" ] || return 6
+  fi
   # PRIME the BROKE key: its group admits exactly one request per day, so one un-recorded request
   # now makes every over_budget cell a real 429 at Admit (the first request would be admitted).
-  curl -sS -m 20 -o /dev/null -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
-    -H "Authorization: Bearer ${ORACLE_TOKEN_BROKE}" -H "Content-Type: application/json" \
-    -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' || true
+  # PRIME the QUOTA key too: group `broke-quota` carries only a budget cap (no requests cap), so one
+  # un-recorded request exhausts that TOTAL and every over_budget_total cell is a real 429 at Admit
+  # with metric: budget, not metric: requests.
+  #
+  # THE PRIMING IS THE CELL'S PRECONDITION, SO IT IS ASSERTED. `|| true` made the ONE request that
+  # exhausts each cap optional: if it never landed (a connection reset in the boot window, a mock
+  # blip, a 500) the cap was still intact and every `over_budget` / `over_budget_total` cell that
+  # followed recorded a cheerful 200 instead of the 429 it exists to pin — a whole refusal family
+  # silently re-recorded as the success path, on both binaries, agreeing with each other. An
+  # admitted request is a 2xx; anything else (including curl's own 000) means the cap was not
+  # exhausted and this boot cannot serve those cells.
+  local pk pcode
+  for pk in "$ORACLE_TOKEN_BROKE" "$ORACLE_TOKEN_QUOTA"; do
+    pcode="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
+      -H "Authorization: Bearer ${pk}" -H "Content-Type: application/json" \
+      -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"prime"}]}' 2>/dev/null || echo 000)"
+    case "$pcode" in 2??) ;; *) PRIME_CODE="$pcode"; return 5 ;; esac
+  done
 }
 stop_busbar() {  # stop the current busbar and wait until BOTH its ports are free again
   [ -n "$BUSBAR_PID" ] || return 0
@@ -212,16 +348,42 @@ case "$rc" in
   1) fail_setup "busbar (${VER}) did not come up" "$(tr '\n' '|' <"$WORK/busbar.log" | tail -c 500)" ;;
   4) fail_setup "the listeners on ${LISTEN_PORT}/${ADMIN_PORT} are not the busbar this run spawned" \
        "pid ${BUSBAR_PID:-?} vs port owners '$(port_owner_pid "$LISTEN_PORT")'/'$(port_owner_pid "$ADMIN_PORT")'; refusing to record a foreign process as ${BIN}" ;;
+  6) fail_setup "the headroom hook never answered status on a hooks-variant boot" \
+       "the hooks cells would record the recorder's timing (the 'hook did not answer status' note) instead of the drift report" ;;
+  5) fail_setup "the over-budget priming request was not admitted (HTTP ${PRIME_CODE:-?})" \
+       "the broke/broke-quota caps are therefore intact, and every over_budget cell would record a 200 where the refusal belongs" ;;
   *) fail_setup "could not mint the three oracle keys" "admin API on ${ADMIN_PORT}; see $WORK/busbar.log" ;;
 esac
 
 # ── effect snapshots ────────────────────────────────────────────────────────────────────────────
+# A SNAPSHOT THAT FAILED IS RECORDED AS {"unavailable": true} — AND {"unavailable": true} COMPARES
+# EQUAL TO ITSELF. capture.py writes that marker for a usage/audit/metrics snapshot it could not
+# read, which is right for the cells whose OWN behaviour makes the snapshot impossible (`PostRestart`
+# restarts busbar out from under it; `PostKeysIdRotate` rotates the key the metrics scrape presents),
+# and those cells' goldens carry the marker deliberately. What is NOT right is the harness's own
+# failure wearing the same mask: if the admin API was up and answering and the usage/audit read still
+# failed, the delta this cell is about — the money — never got measured, and BOTH sides record the
+# same marker, so the differ sees a match. That is a green built out of two blind spots.
+#
+# So the recorder asks the question it can actually answer: is the admin API answering RIGHT NOW? If
+# it is, a failed usage/audit snapshot is the harness's fault and the cell is refused. If it is not,
+# the unavailability belongs to the cell and is recorded exactly as before. (metrics is deliberately
+# NOT judged here: it is scraped off the DATA listener with the client key, and a cell that revokes,
+# rotates or expires that key makes its own scrape fail on purpose.)
+SNAPSHOT_FAIL=""
+_admin_api_answering() {
+  curl -fsS -m 5 -o /dev/null -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
+    "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys" 2>/dev/null
+}
 snapshot() {  # snapshot <dir> <key-id>
   local d="$1" kid="$2"; mkdir -p "$d"
   curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" -o "$d/usage.json" 2>/dev/null || rm -f "$d/usage.json"
   curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" \
     "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/audit?limit=1000" -o "$d/audit.json" 2>/dev/null || rm -f "$d/audit.json"
+  if { [ ! -s "$d/usage.json" ] || [ ! -s "$d/audit.json" ]; } && _admin_api_answering; then
+    SNAPSHOT_FAIL="the ${d##*/} usage/audit snapshot failed while the admin API was still answering"
+  fi
   # /metrics on the data listener is key-authed in 1.5.5 (RouteAuth::Key): present the OK client key.
   oracle_scrape_metrics "$LISTEN_PORT" "$ORACLE_TOKEN_OK" "$d/metrics.txt" || true
 }
@@ -322,6 +484,10 @@ PY
         || { record "$id" FAIL "boot-cell port ${BOOT_LISTEN_PORT} is already in use" \
                "owner pid '$(port_owner_pid "$BOOT_LISTEN_PORT")'; set ORACLE_BOOT_LISTEN_PORT/ORACLE_BOOT_ADMIN_PORT"; return; }
       envcmd+=(BUSBAR_CONFIG="$xwork/boot.yaml")
+      # A boot cell's contract IS its stdout (neutrality|boot-lines pins the exact ordered set of
+      # INFO-and-above lines), so it is the loudest victim of a staging dir some earlier cell's
+      # killed busbar left behind: sweep it before this boot, exactly as boot_busbar does.
+      sweep_orphan_staging
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null &
       local bpid=$! i=0 healthy=0
       while [ $i -lt 100 ]; do
@@ -380,6 +546,9 @@ _digest() {  # stdin -> one hex digest line
 }
 settle_then_snapshot() {  # <dir> <key-id>
   local d="$1" kid="$2" i=0 prev="" cur=""
+  # the `before` snapshot opens a cell: clear the previous cell's verdict here, so SNAPSHOT_FAIL is
+  # always a statement about THIS cell (both snapshots of it) and never a leak from the last one
+  case "${d##*/}" in before) SNAPSHOT_FAIL="" ;; esac
   while [ $i -lt 20 ]; do
     cur="$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" 2>/dev/null | jq -c 'del(.as_of)' 2>/dev/null)$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" 2>/dev/null | grep -v '^#' | grep -v '_seconds' | sort | _digest)"
     [ -n "$prev" ] && [ "$cur" = "$prev" ] && [ $i -ge 2 ] && break
@@ -406,7 +575,23 @@ subst_placeholders() {  # <cell-json> -> cell-json
 }
 mkdir -p "$WORK/tmp"
 # a plugin tarball as base64 is ~1.5 MB: far past the argv limit, so it rides in as a --rawfile
-base64 <"$(bash "${here}/fetch-plugin.sh" webrequest-hook)" | tr -d '\n' >"$WORK/tmp/webrequest.b64"
+#
+# AN EMPTY FILE HERE IS AN EMPTY TARBALL IN EVERY CELL THAT UPLOADS ONE. `base64 <"$(fetch-plugin.sh
+# …)"` was unchecked from end to end: a fetch that failed printed its reason on stderr and NOTHING on
+# stdout, so the redirect was from the empty filename, base64 read nothing, and webrequest.b64 was
+# written EMPTY — every `{TARBALL_B64:webrequest-hook}` cell then POSTed a zero-byte tarball and
+# recorded busbar's answer to THAT as the plugin-install contract. Both binaries would agree, and
+# the golden would freeze "busbar rejects an empty upload" in place of "busbar installs a published
+# plugin". A plugin the recorder could not fetch is a setup failure, not a cell.
+_webrequest_tarball="$(bash "${here}/fetch-plugin.sh" webrequest-hook)" \
+  || fail_setup "the published webrequest-hook plugin could not be fetched" \
+       "every {TARBALL_B64:webrequest-hook} cell would upload an empty tarball and record the refusal as the contract"
+[ -n "$_webrequest_tarball" ] && [ -s "$_webrequest_tarball" ] \
+  || fail_setup "fetch-plugin.sh named no webrequest-hook tarball (or an empty one): '${_webrequest_tarball}'" \
+       "refusing to record an empty upload as the plugin-install contract"
+base64 <"$_webrequest_tarball" | tr -d '\n' >"$WORK/tmp/webrequest.b64"
+[ -s "$WORK/tmp/webrequest.b64" ] \
+  || fail_setup "the webrequest-hook tarball encoded to nothing" "base64 of ${_webrequest_tarball} produced an empty file"
 case "$(uname -sm)" in "Darwin arm64") ORACLE_TRIPLE=aarch64-apple-darwin ;; "Darwin x86_64") ORACLE_TRIPLE=x86_64-apple-darwin ;; "Linux aarch64"|"Linux arm64") ORACLE_TRIPLE=aarch64-unknown-linux-gnu ;; *) ORACLE_TRIPLE=x86_64-unknown-linux-gnu ;; esac
 
 run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> — unrecorded setup call
@@ -419,7 +604,20 @@ run_pre_request() {  # <request-json {method,path,headers,body,auth,listener}> �
   [ -z "$tok" ] || h+=(-H "Authorization: Bearer ${tok}")
   local b; b="$(jq -r '.body // empty' <<<"$rq")"
   [ -z "$b" ] || h+=(-H "Content-Type: application/json")
-  echo "pre $m $pth -> $(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X "$m" "http://127.0.0.1:${port}${pth}" "${h[@]}" ${b:+--data-binary "$b"} 2>&1)"
+  # A `pre` IS THE CELL'S SETUP, AND IT WAS NEVER CHECKED. The status was printed into pre.log and
+  # the caller ignored it, so a `pre` that never reached busbar at all (curl's own "000": connection
+  # refused, a timeout, a boot window that had not opened yet) left the cell recording the UNPREPARED
+  # state — a breaker that was never tripped, a hook that was never registered, a key that was never
+  # rotated — as if that were the contract. Both binaries then agree on the wrong cell.
+  #
+  # The bar is deliberately "busbar ANSWERED", not "the answer was 2xx": several cells prime state
+  # with a request that is SUPPOSED to be refused (a 5xx from a downed upstream is how the failover
+  # family trips its breaker), and demanding success there would refuse cells that are working. What
+  # can never be right is no answer at all.
+  local code
+  code="$(curl -sS -m 30 -o /dev/null -w '%{http_code}' -X "$m" "http://127.0.0.1:${port}${pth}" "${h[@]}" ${b:+--data-binary "$b"} 2>&1)"
+  echo "pre $m $pth -> $code"
+  case "$code" in [1-5]??) return 0 ;; *) return 1 ;; esac
 }
 
 run_readback() {  # <request-json {path,headers,auth,listener}> <write-response-body-file> <key-id>
@@ -442,10 +640,21 @@ run_readback() {  # <request-json {path,headers,auth,listener}> <write-response-
   [ -z "$tok" ] || h+=(-H "Authorization: Bearer ${tok}")
   rbody="$(mktemp "$raw/readback.XXXXXX")"
   rstatus="$(curl -sS -m 10 -X GET "http://127.0.0.1:${port}${pth}" "${h[@]}" -o "$rbody" -w '%{http_code}' 2>/dev/null)"
-  [[ "$rstatus" =~ ^[0-9]+$ ]] || rstatus=0
-  cap="$(jq -n --argjson s "$rstatus" --rawfile b "$rbody" '{status: $s, headers: {}, body: $b, effects: {}}')"
-  normd="$(printf '%s' "$cap" | python3 "${here}/normalize.py" --key-id "$kid" 2>/dev/null)"
-  [ -n "$normd" ] || normd='{"status":0,"body":{"text":""}}'
+  # curl's own "no HTTP response" placeholder is the 3-digit literal "000": it PASSES a [0-9]+ test
+  # but is not a valid JSON number (leading zero), so `--argjson` below rejected it, normalize.py
+  # then read an empty document and died, and the old fallback wrote a synthetic
+  # {"status":0,"body":{"text":""}} into effects.readback as though the readback had answered it.
+  # Golden and candidate produce the SAME placeholder, so a readback that never happened compares
+  # clean on a weight-10 class. Base-10 it, exactly as the concurrent driver does with its own
+  # %{http_code}, and let a real failure be a FAIL row rather than a value nobody measured.
+  if [[ "$rstatus" =~ ^[0-9]+$ ]]; then rstatus=$((10#$rstatus)); else rstatus=0; fi
+  if ! cap="$(jq -n --argjson s "$rstatus" --rawfile b "$rbody" '{status: $s, headers: {}, body: $b, effects: {}}' 2>"$raw/readback.err")"; then
+    rm -f "$rbody"; printf 'could not build the readback capture for %s: %s\n' "$pth" "$(tr '\n' ' ' <"$raw/readback.err" | tail -c 200)"; return 1
+  fi
+  normd="$(printf '%s' "$cap" | python3 "${here}/normalize.py" --key-id "$kid" 2>"$raw/readback.err")"
+  if [ -z "$normd" ]; then
+    rm -f "$rbody"; printf 'normalize.py failed on the readback of %s: %s\n' "$pth" "$(tr '\n' ' ' <"$raw/readback.err" | tail -c 200)"; return 1
+  fi
   rm -f "$rbody"
   # the path names the minted key by id, which differs per boot: normalize it as bodies are
   pth="$(sed -E 's/vk_[0-9a-f]+/vk_<KEY>/g' <<<"$pth")"
@@ -479,7 +688,10 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
   port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
   mc="$(jq -c '.mock_control // empty' <<<"$cell")"
-  [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
+  if [ -n "$mc" ] && [ "$mc" != "{}" ]; then
+    oracle_write_control "$CONTROL" "$MOCK_PORT" "$mc" \
+      || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; return; }
+  fi
   settle_then_snapshot "$raw/before" "$kid"
   mkdir -p "$raw/par"
   local pids=() i
@@ -490,18 +702,35 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   done
   for p in "${pids[@]}"; do wait "$p" 2>/dev/null; done
   settle_then_snapshot "$raw/after" "$kid"
-  rm -f "$CONTROL"
+  oracle_clear_control "$CONTROL" "$MOCK_PORT" || true
   # each par/<i>.status file holds exactly the one %{http_code} curl wrote for that request; a
   # missing/empty file (curl itself never got a status line) counts as 0, same convention capture.py
   # uses for "no HTTP response" elsewhere in this recorder.
-  local codes=()
+  local codes=() no_answer=0
   for ((i = 1; i <= cn; i++)); do
     local c; c="$(cat "$raw/par/$i.status" 2>/dev/null)"
     # curl's own "no HTTP response" placeholder is the 3-digit literal "000", which is a leading
     # zero and therefore not a valid JSON number: force base-10 so it becomes the plain integer 0.
     [[ "$c" =~ ^[0-9]+$ ]] && c=$((10#$c)) || c=0
+    [ "$c" -eq 0 ] && no_answer=$((no_answer + 1))
     codes+=("$c")
   done
+  # A 0 IS THE DRIVER FAILING, NOT THE POOL REFUSING. The single-request path has always treated
+  # curl's 000 as a FAIL row ("no HTTP response (curl)"); this driver instead folded the same 0 into
+  # the recorded multiset, so `[200,0,503]` went into the golden as if "no answer" were one of the
+  # outcomes a concurrency cell can pin. It is not: the shed arm answers 503, the queued arm answers
+  # 200, and a request that got no status line at all means the recorder could not run the cell —
+  # a connection this harness failed to make, recorded on both binaries, agreeing.
+  if [ "$no_answer" -gt 0 ]; then
+    record "$id" FAIL "${no_answer} of ${cn} concurrent requests got no HTTP response (curl)" \
+      "$(cat "$raw/par/1.err" 2>/dev/null | tr '\n' ' ' | tail -c 200)"
+    return
+  fi
+  if [ -n "$SNAPSHOT_FAIL" ]; then
+    record "$id" FAIL "$SNAPSHOT_FAIL" \
+      "the usage/audit delta this cell is about was never measured; recorded as {\"unavailable\":true} it would compare equal on both sides"
+    return
+  fi
   statuses="$(printf '%s\n' "${codes[@]}" | sort -n | paste -sd, - | sed 's/^/[/; s/$/]/')"
   printf '%s\n' "$statuses" >"$raw/statuses.json"
   if ! python3 "${here}/capture-concurrent.py" "$statuses" "$raw/before" "$raw/after" >"$raw/captured.json" 2>"$raw/capture.err"; then
@@ -517,23 +746,31 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
 
 # ── the cells ───────────────────────────────────────────────────────────────────────────────────
 n=0
-while IFS= read -r cell; do
-  id="$(jq -r .id <<<"$cell")"
+# THE PRODUCER PROJECTS THE DISPATCH FIELDS; the loop reads them, it does not re-parse the cell to
+# find them. Every cell used to pay for seven `jq` processes BEFORE the filter and the skip guards
+# had even run — ~16k processes across the 2283-cell corpus, most of them for cells a --filter run
+# then discarded. The fields below are the same expressions, evaluated once, in the one jq pass that
+# was already reading the file. Joined on US (), with the whole cell LAST so it absorbs
+# anything after it; no projected value contains that byte or a newline (checked across cells.json).
+# NOT a tab: a tab is IFS *whitespace*, so bash collapses runs of them and drops leading/trailing
+# ones — and `.body_lines`/`.keep` are empty on almost every cell, so every field after them shifted
+# by one and the loop drove its requests with an empty `$cell`. A non-whitespace separator keeps
+# empty fields. `.why` is deliberately NOT projected: it is free text, and it is only wanted on the
+# rare skip path, which can afford its own jq.
+#
+#   `.outcome | tostring` and the `// ` defaults reproduce `jq -r` exactly, including "null".
+while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture plane cell; do
   [ -z "$FILTER" ] || [[ "$id" =~ $FILTER ]] || continue
-  outcome="$(jq -r .outcome <<<"$cell")"
   safe="${id//|/__}"
   raw="$OUT/raw/$safe"; mkdir -p "$raw"
-  driver="$(jq -r '.driver // "llm"' <<<"$cell")"
-  # `body_lines`: the cell's contract is the ABSENCE of matching lines; the normalizer keeps only those
-  keep_lines="$(jq -r '.body_lines // empty' <<<"$cell")"
-  # `keep`: the cell's contract is the PRESENCE of a specific header/JSON-key/metrics-line value that
-  # normalize.py would otherwise strip/blank by default — passed through verbatim as compact JSON.
-  keep_spec="$(jq -c '.keep // empty' <<<"$cell")"
-  if [ "$(jq -r '.needs_fixture // false' <<<"$cell")" = true ]; then
+  # `keep_lines` (.body_lines): the cell's contract is the ABSENCE of matching lines; the normalizer
+  # keeps only those. `keep_spec` (.keep): the contract is the PRESENCE of a specific
+  # header/JSON-key/metrics-line value normalize.py would otherwise strip — passed through verbatim.
+  if [ "$needs_fixture" = true ]; then
     record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
   fi
-  case "$(jq -r .plane <<<"$cell")" in
-    mcp|a2a) record "$id" SKIP "UNSUPPORTED: $(jq -r .plane <<<"$cell") is proven by its conformance rig, not recorded here" "named gap on the golden, never owed"; continue ;;
+  case "$plane" in
+    mcp|a2a) record "$id" SKIP "UNSUPPORTED: ${plane} is proven by its conformance rig, not recorded here" "named gap on the golden, never owed"; continue ;;
   esac
   if [ "$driver" = exec ]; then
     record_exec_cell "$id" "$cell" "$raw" "$safe"; continue
@@ -553,14 +790,53 @@ while IFS= read -r cell; do
     # the script reuses this recording's own (now free) listen/admin ports so two recordings never
     # collide; the recording's mock upstream is still up on MOCK_PORT, so the script's mock takes
     # the port after the admin one (inside this recording's own block)
-    BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" \
+    # A script cell boots busbar ITSELF, several times in some cells (store-persist kills its first
+    # busbar by design, admin-restart restarts one), and the recorder cannot reach in to sweep
+    # between those boots. So each script cell gets its OWN empty temp base: the only staging dirs
+    # its busbars can ever see are the ones that cell made, which makes what it records a property
+    # of the cell instead of a property of which cell ran before it. (Two scripts —
+    # durable-governance-precondition, plugins-fetch-reload-miss — already did this for themselves;
+    # this makes it true for every script, including the ones that boot no plugins today and might
+    # tomorrow.) The sweep still runs first, for the recording busbar's dirs this cell inherits.
+    sweep_orphan_staging
+    local_tmp="$WORK/cell-tmp/$safe"; rm -rf "$local_tmp"; mkdir -p "$local_tmp"
+    BUSBAR_BIN="$BIN" RAW="$raw" WORK="$WORK" ORACLE_ADMIN_TOKEN="$ORACLE_ADMIN_TOKEN" TMPDIR="$local_tmp" \
       SCRIPT_LISTEN_PORT="$LISTEN_PORT" SCRIPT_ADMIN_PORT="$ADMIN_PORT" SCRIPT_MOCK_PORT="$((ADMIN_PORT+1))" \
       bash "${here}/scripts/${sname}" "${local_args[@]}" >"$raw/script.log" 2>&1
     [ -s "$raw/captured.json" ] || { record "$id" FAIL "script ${sname} produced no captured.json" "$(tail -c 300 "$raw/script.log")"; continue; }
+    # STRIP THE DIRECTORIES THIS RUN CHOSE, exactly as record_exec_cell does for an exec cell. A
+    # script cell quotes busbar's own stdout back into its effects ("plugins dir: <path>", a
+    # --validate tail), and those name $OUT/$raw/$WORK/$repo/$BIN — so the same binary recorded to
+    # two different --out dirs produced two different cell files and the diff was about where the
+    # harness put things. In place, because renormalize.sh re-derives cells from this exact file:
+    # writing a second scrubbed copy would make a re-normalized cell disagree with the recorded one.
+    # Both the given and the absolute form of each dir: a relative --out still reaches busbar's own
+    # output absolutized, and a relative one survives in the strings the script built itself.
+    abs_out="$(cd "$OUT" 2>/dev/null && pwd)"; abs_raw="$(cd "$raw" 2>/dev/null && pwd)"
+    abs_bin="$(cd "$(dirname "$BIN")" 2>/dev/null && pwd)/$(basename "$BIN")"
+    if python3 "${here}/capture-exec.py" --scrub-paths "$raw/captured.json" \
+         --strip-path "$abs_raw" --strip-path "$raw" --strip-path "$abs_out" --strip-path "$OUT" \
+         --strip-path "$WORK" --strip-path "$repo" --strip-path "$abs_bin" --strip-path "$BIN" \
+         >"$raw/captured.scrubbed" 2>"$raw/scrub.err"; then
+      mv "$raw/captured.scrubbed" "$raw/captured.json"
+    else
+      record "$id" FAIL "could not strip the harness paths out of ${sname}'s capture" "$(tail -c 300 "$raw/scrub.err")"; continue
+    fi
     python3 "${here}/normalize.py" "$raw/captured.json" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err" \
       || { record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; continue; }
     st="$(jq -r .status "$raw/captured.json")"
     if [ "$st" = "-1" ]; then record "$id" SKIP "UNSUPPORTED: $(jq -r '.effects.error // "script could not run"' "$raw/captured.json")" "named gap"; continue; fi
+    # A SCRIPT THAT GAVE UP IS NOT A CELL. Every status other than -1 was recorded PASS, so each
+    # script's own `fail 1 …` / `fail 2 …` path (openssl produced no cert, a boot never answered, an
+    # admin call came back empty) wrote a captured.json that became the golden — and the candidate,
+    # failing the same way for the same reason, matched it. Those paths now carry
+    # `effects.harness_error`; a cell wearing it is red, and its half-made cell file goes with it so
+    # no cells/<id>.json survives without a PASS row behind it.
+    if [ "$(jq -r 'has("effects") and (.effects | has("harness_error"))' "$raw/captured.json")" = true ]; then
+      rm -f "$OUT/cells/$safe.json"
+      record "$id" FAIL "script ${sname} gave up (status ${st})" "$(jq -r '.effects.harness_error' "$raw/captured.json" | tr '\n' ' ' | cut -c1-200)"
+      continue
+    fi
     record "$id" PASS "script ${sname}: status ${st}" ""; n=$((n + 1)); continue
   fi
 
@@ -581,10 +857,16 @@ while IFS= read -r cell; do
     # pre: [requests run UNRECORDED first, same boot], repeat: N (record the LAST response)}.
     # Placeholders in path/headers/body are bound to this boot's values.
     cell="$(subst_placeholders "$cell")"
+    pre_failed=""
     while IFS= read -r pre; do
       [ -n "$pre" ] || continue
-      run_pre_request "$pre" >>"$raw/pre.log" 2>&1
+      run_pre_request "$pre" >>"$raw/pre.log" 2>&1 || pre_failed="$pre"
     done < <(jq -c '.request.pre[]? // empty' <<<"$cell")
+    if [ -n "$pre_failed" ]; then
+      record "$id" FAIL "a pre-request never reached busbar" \
+        "$(printf '%s' "$pre_failed" | cut -c1-160); see $(basename "$raw")/pre.log — the state this cell needs was not set up, so what follows would be recorded against the unprepared boot"
+      continue
+    fi
     method="$(jq -r .request.method <<<"$cell")"; path="$(jq -r .request.path <<<"$cell")"
     listener="$(jq -r '.request.listener // "data"' <<<"$cell")"
     repeat="$(jq -r '.request.repeat // 1' <<<"$cell")"
@@ -626,7 +908,10 @@ PY
     port="$LISTEN_PORT"; [ "$listener" = admin ] && port="$ADMIN_PORT"
     local_m=(-X "$method" --data-binary "@$raw/request.body"); [ "$method" = HEAD ] && local_m=(--head)
     mc="$(jq -c '.mock_control // empty' <<<"$cell")"
-    [ -z "$mc" ] || [ "$mc" = "{}" ] || printf '%s' "$mc" >"$CONTROL"
+    if [ -n "$mc" ] && [ "$mc" != "{}" ]; then
+      oracle_write_control "$CONTROL" "$MOCK_PORT" "$mc" \
+        || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; continue; }
+    fi
     settle_then_snapshot "$raw/before" "$kid"
     ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
     k=1
@@ -640,6 +925,7 @@ PY
   else
   case "$outcome" in
     over_budget) sig_akid="$ORACLE_AWS_AKID_BROKE"; sig_secret="$ORACLE_AWS_SECRET_BROKE" ;;
+    over_budget_total) sig_akid="$ORACLE_AWS_AKID_QUOTA"; sig_secret="$ORACLE_AWS_SECRET_QUOTA" ;;
     out_of_scope) sig_akid="$ORACLE_AWS_AKID_NOSCOPE"; sig_secret="$ORACLE_AWS_SECRET_NOSCOPE" ;;
     *) sig_akid="$ORACLE_AWS_AKID_OK"; sig_secret="$ORACLE_AWS_SECRET_OK" ;;
   esac
@@ -655,6 +941,7 @@ PY
 
   case "$outcome" in
     over_budget) token="$ORACLE_TOKEN_BROKE"; kid="$ORACLE_KEY_BROKE" ;;
+    over_budget_total) token="$ORACLE_TOKEN_QUOTA"; kid="$ORACLE_KEY_QUOTA" ;;
     out_of_scope) token="$ORACLE_TOKEN_NOSCOPE"; kid="$ORACLE_KEY_NOSCOPE" ;;
     unauthenticated) token=""; kid="$ORACLE_KEY_OK" ;;
     *) token="$ORACLE_TOKEN_OK"; kid="$ORACLE_KEY_OK" ;;
@@ -665,7 +952,10 @@ PY
   # a signed request already carries its Authorization (SigV4); a bearer cell gets the token here
   [ "$auth" = sigv4-signed ] || [ -z "$token" ] || hdr_args+=(-H "Authorization: Bearer ${token}")
 
-  [ "$outcome" != upstream_down ] || echo down >"$CONTROL"
+  if [ "$outcome" = upstream_down ]; then
+    oracle_write_control "$CONTROL" "$MOCK_PORT" "down" \
+      || { record "$id" FAIL "mock control write never landed" "wrote 'down' to ${CONTROL}"; continue; }
+  fi
   settle_then_snapshot "$raw/before" "$kid"
   ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
   status="$(curl -sS -m 20 -N -X POST "http://127.0.0.1:${LISTEN_PORT}${path}" "${hdr_args[@]}" \
@@ -673,7 +963,7 @@ PY
   case "$curl_rc:$status" in 0:*|18:[1-5]??|56:[1-5]??) printf '%s\n' "$curl_rc" >"$raw/curl.rc" ;; *) status="000" ;; esac
   fi
   settle_then_snapshot "$raw/after" "$kid"
-  rm -f "$CONTROL"
+  oracle_clear_control "$CONTROL" "$MOCK_PORT" || true
   ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.after"
   egress_files=()
   while IFS= read -r f; do [ -n "$f" ] && egress_files+=("$WORK/egress/$f"); done < <(comm -13 "$raw/egress.before" "$raw/egress.after")
@@ -682,6 +972,11 @@ PY
 
   if [ "$status" = "000" ]; then
     record "$id" FAIL "no HTTP response (curl)" "$(tr '\n' ' ' <"$raw/curl.err" | tail -c 300)"; continue
+  fi
+  if [ -n "$SNAPSHOT_FAIL" ]; then
+    record "$id" FAIL "$SNAPSHOT_FAIL" \
+      "the usage/audit delta this cell is about was never measured; recorded as {\"unavailable\":true} it would compare equal on both sides"
+    continue
   fi
   if ! python3 "${here}/capture.py" "$raw/headers" "$status" "$raw/body" "$raw/before" "$raw/after" "${egress_files[@]}" >"$raw/captured.json" 2>"$raw/capture.err"; then
     record "$id" FAIL "capture.py failed" "$(tail -c 300 "$raw/capture.err")"; continue
@@ -694,21 +989,50 @@ PY
   # normalized {path,status,body} triples into this cell's own effects, so a write that answered 200
   # but touched nothing is a byte diff on THIS cell, not a silent pass.
   if [ "$driver" = http ]; then
-    readback="[]"
+    readback="[]"; rb_err=""
     while IFS= read -r rb; do
       [ -n "$rb" ] || continue
-      item="$(run_readback "$rb" "$raw/body" "$kid")"
+      if ! item="$(run_readback "$rb" "$raw/body" "$kid")"; then rb_err="$item"; break; fi
       readback="$(jq -c --argjson it "$item" '. + [$it]' <<<"$readback")"
     done < <(jq -c '.request.post[]? // empty' <<<"$cell")
+    # A readback that could not be captured is not a readback that returned nothing. Recording the
+    # placeholder here was a PASS on a cell whose whole point is "the write actually touched the
+    # resource" — so it is a FAIL row, with what went wrong, and this cell is not counted.
+    if [ -n "$rb_err" ]; then
+      # and drop the half-made cell: a cells/ file with no ledger PASS behind it is exactly the
+      # silence-read-as-green the ledger exists to refuse.
+      rm -f "$OUT/cells/$safe.json"
+      record "$id" FAIL "readback capture failed" "$rb_err"; continue
+    fi
     if [ "$readback" != "[]" ]; then
-      jq --argjson rb "$readback" '.effects.readback = $rb' "$OUT/cells/$safe.json" >"$raw/with-readback.json" \
-        && mv "$raw/with-readback.json" "$OUT/cells/$safe.json"
+      # A READBACK THAT WAS CAPTURED AND THEN LOST IS WORSE THAN ONE NEVER ASKED FOR. The `&& mv`
+      # was the only thing standing between a failed fold and a cell recorded WITHOUT its readback —
+      # and the row below still said PASS. The class this cell exists for (`effects.readback`: the
+      # write answered 200 but touched nothing) would then be absent from the golden, so it could
+      # never diverge, and the money-weighted class would be silently unarmed for that cell.
+      if jq --argjson rb "$readback" '.effects.readback = $rb' "$OUT/cells/$safe.json" >"$raw/with-readback.json"; then
+        mv "$raw/with-readback.json" "$OUT/cells/$safe.json"
+      else
+        rm -f "$raw/with-readback.json" "$OUT/cells/$safe.json"
+        record "$id" FAIL "the captured readback could not be folded into the cell" \
+          "$(printf '%s' "$readback" | cut -c1-160); recording this cell without its readback would drop the class it exists for"
+        continue
+      fi
     fi
   fi
   usage_note="$(jq -c '.effects.usage' "$OUT/cells/$safe.json")"
   record "$id" PASS "HTTP ${status}; usage Δ ${usage_note}" ""
   n=$((n + 1))
-done < <(jq -c --arg p "$PLANE" '.cells[] | select($p == "all" or .plane == $p)' "${here}/cells.json")
+done < <(jq -r --arg p "$PLANE" '
+  .cells[] | select($p == "all" or .plane == $p)
+  | [ .id,
+      (.outcome | tostring),
+      (.driver // "llm"),
+      (.body_lines // ""),
+      (if (.keep // null) == null then "" else (.keep | tojson) end),
+      ((.needs_fixture // false) | tostring),
+      .plane,
+      tojson ] | join("\u001f")' "${here}/cells.json")
 
 # Provenance: which harness revision (cells.json/normalize.py/etc — see harness-rev.sh) and which
 # exact binary file produced this recording, plus the host triple, so a later diff can tell "busbar
@@ -720,7 +1044,27 @@ source "${here}/harness-rev.sh"
 BIN_SHA256="$(binary_sha256 "$BIN")"
 HARNESS_REV="$(harness_rev)"
 HOST_TRIPLE="$(host_triple)"
-jq -n --arg ver "$VER" --arg bin "$BIN" --argjson recorded "$n" \
+# `binary` IS BOOKKEEPING, AND IT IS COMMITTED. The golden recording's meta.json is a checked-in
+# public file, and `--bin ~/.cache/busbar-oracle/1.5.5/busbar` wrote an absolute path under a
+# personal home directory into it — which names a person AND a machine, the one thing
+# scripts/public-hygiene-lint.py's `machine-path` rule exists to keep out of published files. It
+# also says nothing: merge-recordings.py and fetch-golden.sh --check-golden both identify a
+# recording's source by `binary_sha256`, never by where the file sat (see e0923a7a).
+# So the path is written in a MACHINE-INDEPENDENT form — the same information about WHICH
+# well-known location it came from, with the operator's name and home layout removed:
+#   under this repo             -> <repo>/target/release/busbar
+#   under the oracle cache      -> <oracle-cache>/1.5.5/busbar   (BUSBAR_ORACLE_CACHE or ~/.cache/busbar-oracle)
+#   anywhere else under $HOME   -> <home>/some/path/busbar
+#   anywhere else               -> unchanged (/usr/local/bin/busbar names no person)
+# The digest beside it is unchanged and is still the identity.
+_oracle_cache_root="${BUSBAR_ORACLE_CACHE:-${HOME:-/nonexistent}/.cache/busbar-oracle}"
+case "$BIN" in
+  "$repo"/*) BIN_DISPLAY="<repo>/${BIN#"$repo"/}" ;;
+  "$_oracle_cache_root"/*) BIN_DISPLAY="<oracle-cache>/${BIN#"$_oracle_cache_root"/}" ;;
+  "${HOME:-/nonexistent}"/*) BIN_DISPLAY="<home>/${BIN#"${HOME:-/nonexistent}"/}" ;;
+  *) BIN_DISPLAY="$BIN" ;;
+esac
+jq -n --arg ver "$VER" --arg bin "$BIN_DISPLAY" --argjson recorded "$n" \
   --arg binsha "$BIN_SHA256" --arg hrev "$HARNESS_REV" --arg host "$HOST_TRIPLE" \
   '{binary: $bin, version: $ver, recorded: $recorded, binary_sha256: $binsha, harness_rev: $hrev,
     host_triple: $host, at: (now | todate)}' >"$OUT/meta.json"

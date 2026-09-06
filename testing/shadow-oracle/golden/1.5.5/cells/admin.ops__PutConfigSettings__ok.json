@@ -34,6 +34,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/config/settings",
+        "status": 200,
         "body": {
           "json": {
             "applied": false,
@@ -44,9 +46,7 @@
               }
             }
           }
-        },
-        "path": "/api/v1/admin/config/settings",
-        "status": 200
+        }
       }
     ]
   },

@@ -151,7 +151,7 @@ fn handle_cli_flags() -> Option<i32> {
                                 "warning: {code}: config at {config_path} did not parse; printing the \
                                  built-in metadata denylist only (security.blocked_metadata_hosts \
                                  skipped). Run busbar normally to see the parse error.",
-                                code = busbar_core::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                                code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                             );
                             }
                         }
@@ -165,7 +165,7 @@ fn handle_cli_flags() -> Option<i32> {
                             "warning: {code}: config at {config_path} failed to interpolate; printing \
                              the built-in metadata denylist only (security.blocked_metadata_hosts \
                              skipped). Run busbar normally to see the interpolation error.",
-                            code = busbar_core::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
+                            code = busbar_substrate::diagnostics::CLI_METADATA_BLOCKLIST_CONFIG_UNREADABLE.banner()
                         );
                     }
                 }
@@ -300,7 +300,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_core::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
             );
             return 1;
         }
@@ -320,7 +320,7 @@ fn validate_config_command() -> i32 {
         Err(errs) => {
             eprintln!(
                 "[error] {}: config errors:\n  - {}",
-                busbar_core::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+                busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
                 errs.join("\n  - ")
             );
             return 1;
@@ -334,7 +334,7 @@ fn validate_config_command() -> i32 {
     if let Err(errs) = config_validate::validate_with_unset(&cfg, &unset_env_vars) {
         eprintln!(
             "[error] {}: config validation failed:\n  - {}",
-            busbar_core::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
+            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner(),
             errs.join("\n  - ")
         );
         return 1;
@@ -349,7 +349,7 @@ fn validate_config_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: {e}",
-                busbar_core::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
+                busbar_substrate::diagnostics::CLI_VALIDATE_PLUGIN_PREFLIGHT_FAILED.banner()
             );
             return 1;
         }
@@ -361,7 +361,7 @@ fn validate_config_command() -> i32 {
     if let Err(e) = validate_builtin_secrets_resolve(&cfg) {
         eprintln!(
             "[error] {}: {e}",
-            busbar_core::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
+            busbar_substrate::diagnostics::CLI_VALIDATE_CONFIG_INVALID.banner()
         );
         return 1;
     }
@@ -426,7 +426,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[warn] {}: config not readable ({e}); using the default plugins block",
-                busbar_core::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
+                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_CONFIG_UNREADABLE.banner()
             );
             (
                 config::PluginsCfg::default(),
@@ -439,7 +439,7 @@ fn list_plugins_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "[error] {}: plugins.trust is invalid: {e}",
-                busbar_core::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
+                busbar_substrate::diagnostics::CLI_LIST_PLUGINS_TRUST_INVALID.banner()
             );
             return 1;
         }
@@ -496,7 +496,7 @@ fn list_plugins_command() -> i32 {
 fn die(msg: impl std::fmt::Display) -> ! {
     eprintln!(
         "[error] {}: {msg}",
-        busbar_core::diagnostics::BOOT_FATAL_ERROR.banner()
+        busbar_substrate::diagnostics::BOOT_FATAL_ERROR.banner()
     );
     std::process::exit(1);
 }
@@ -532,7 +532,7 @@ fn worker_threads_from_env(name: &str) -> Option<usize> {
                 eprintln!(
                     "[warn] {code}: {name}={v:?} is not a positive integer; ignoring it and using \
                      the default worker-thread count",
-                    code = busbar_core::diagnostics::WORKER_THREADS_INVALID.banner()
+                    code = busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
                 );
                 None
             }
@@ -561,7 +561,7 @@ fn worker_threads_from_config() -> Option<usize> {
             // it goes to STDERR like the other boot diagnostics.
             eprintln!(
                 "[warn] {}: {msg}",
-                busbar_core::diagnostics::WORKER_THREADS_INVALID.banner()
+                busbar_substrate::diagnostics::WORKER_THREADS_INVALID.banner()
             );
             None
         }
@@ -603,7 +603,7 @@ fn register_protocols() {
     // `mut` is used only under the protocol features below; with every protocol compiled out
     // (`--no-default-features`) nothing pushes, so the binding is legitimately unmutated there.
     #[allow(unused_mut)]
-    let mut installed: Vec<&'static busbar_core::proto::ProtocolDecl> = Vec::new();
+    let mut installed: Vec<&'static busbar_substrate::proto::ProtocolDecl> = Vec::new();
     // THE SECOND SEAM, FOLDED IN (Batch C-6): a path-model dialect's arrival split off `ProtocolDecl`
     // when the decl relocated to `busbar-substrate`, so each protocol crate contributes its
     // `(name, arrival)` pairs BESIDE its declarations here — the ONE composition-root write into both
@@ -762,7 +762,7 @@ fn register_ws_arrivals() {
 }
 
 /// SEAL THE COMPOSITION ROOT AND MOUNT THE VOICE PLANE ONTO IT — the switch-over, behind
-/// `root-voice`, which is off by default.
+/// `root-voice`, which the shipped binary carries.
 ///
 /// The root is built before any plane is switched onto it, and this is where one is. Sealing is the
 /// whole mount: seven transports composed bottom-up, five planes registered over them, every claim
@@ -803,6 +803,67 @@ fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
             std::process::exit(2);
         }
     }
+    // THE OTHER HALF OF THE MOUNT: the node this root serves the plane's units on, and the one seam
+    // the half of the plane that owns sockets reaches it through. Without this the seal composed a
+    // node nothing on a socket could name — a client-served tool call's wait was entered where the
+    // leg was planned, and no frame arriving on any session could wake it and no tick could sweep it.
+    compose_voice_governed_calls();
+}
+
+/// COMPOSE THE VOICE NODE'S OPEN-CALL TABLE onto the served door — the composition root's one write
+/// of the governed-call port, and the moment a served voice session becomes a governed one.
+///
+/// The node is built here rather than passed in because nothing about the table configuration
+/// decides: [`root::units_voice::OpenToolCalls`] is empty at boot and its whole contents are what the
+/// sessions running on this node have opened since. What the served path reaches through the port is
+/// that table and nothing else — two questions, `replied` and `expired`, neither of which reads the
+/// node's door, its pricer, its auth chain or its journal.
+///
+/// So the parts below are the ones the table's own two answers need, and the rest are the root's
+/// unbound posture: the plane with the upstream list configuration composed (none today — the
+/// `streams:` reader that fills it is the same work that switches the serving path onto these units),
+/// a flat pricer, an unbound auth chain, and a memory-buffered journal. That posture is honest for
+/// exactly as long as this node serves no unit, which is the window `root-voice` exists to hold open;
+/// the switch that routes a frame through it is the one that has to thread the deployment's real
+/// auth, rate cards and data directory in, and it fails to compile until it does.
+///
+/// Set-once on the plane's side: a second call is a no-op rather than a silent swap of the table
+/// this node's live sessions are already keyed into.
+#[cfg(feature = "root-voice")]
+fn compose_voice_governed_calls() {
+    use root::units_voice::{NodeCalls, VoiceNode, VoiceNodeParts};
+
+    let durability = match root::durability::build(
+        &root::durability::DurabilityConfig { data_dir: None },
+        Box::new(busbar_unit_wal::NullShipper::new()),
+        Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+    ) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("busbar: the voice node's journal did not open: {e}");
+            std::process::exit(2);
+        }
+    };
+    let node = std::sync::Arc::new(VoiceNode::new(VoiceNodeParts {
+        plane: busbar_plane_voice::VoicePlane::new(&[]),
+        // No group reaches this node's door: the table's two answers read no cap, and the served
+        // sessions' admissions are the sealed root's, not this stub's.
+        groups: root::policy::group_table(
+            &std::collections::BTreeMap::new(),
+            &std::collections::BTreeMap::new(),
+        ),
+        pricer: busbar_unit_admission::Pricer::flat(0),
+        auth: busbar_unit_auth::Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        auth_bindings: root::kernel::auth_bindings::AuthBindings::without_directory(),
+        scope: root::units_voice::scope_policy(),
+        meter_policy: root::policy::build(&root::policy::MeterPolicyConfig::default()),
+        durability,
+        io: root::units_voice::VoiceIo::default(),
+        // Minted from the root's own kernel, which is the only place a sealed origin can come from:
+        // a unit is lent its audit token and nothing else, so it cannot mint one where it is used.
+        origin: root::kernel::new_kernel().origin(busbar_caps::OriginKind::Client),
+    }));
+    busbar_voice::mount::install_governed_calls(std::sync::Arc::new(NodeCalls::new(node)));
 }
 
 fn main() {
@@ -865,7 +926,7 @@ fn main() {
     busbar_substrate::admin_verbs::install_plane_admin_envelope(
         &busbar_core::admin::planeverbs::CorePlaneAdminEnvelope,
     );
-    // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a` and default off. The root is built
+    // THE A2A PLANE'S KERNEL COMPOSITION, behind `root-a2a`, which is default-ON. The root is built
     // before any plane is switched onto it, so what this installs is the scope entries the approve
     // step reads for this plane's twelve operation classes — every one of them, because the scope
     // unit reads silence as a refusal and a partly-declared policy leaves the rest unreachable. It
@@ -938,10 +999,10 @@ fn main() {
     // BUSBAR_PROFILE set → periodically dump the per-stage breakdown to stderr (every 20 s), so a
     // live benchmark run reports stage timings without the in-process test driver. Measurement-only
     // opt-in, absent from any production deployment; zero cost when the env is unset.
-    if busbar_core::profile::enabled() {
+    if busbar_substrate::profile::enabled() {
         std::thread::spawn(|| loop {
             std::thread::sleep(std::time::Duration::from_secs(20));
-            busbar_core::profile::dump();
+            busbar_substrate::profile::dump();
         });
     }
     // Worker-thread count. `advanced.worker_threads` in config.yaml is the operator override; the
@@ -1009,7 +1070,7 @@ fn main() {
     // Publish the data-plane worker count to core BEFORE anything builds: the egress client
     // shards (and later per-worker state stripes) size themselves to it. A process-topology fact,
     // exactly like the runtimes themselves — set once here, immutable, no config surface.
-    busbar_core::state::set_data_workers(worker_threads);
+    busbar_substrate::topology::set_data_workers(worker_threads);
     #[cfg(unix)]
     {
         tokio::runtime::Builder::new_current_thread()
@@ -1159,7 +1220,7 @@ async fn run(data_workers: usize) {
         // `resolve_backend` already warned with the remediation; repeat the posture here so the one
         // line an operator greps for ("config is ...") never claims a durability busbar does not have.
         tracing::warn!(
-            diag = %busbar_core::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
+            diag = %busbar_substrate::diagnostics::CONFIG_OVERLAY_NOT_WRITABLE.banner(),
             "config is READ-ONLY (the overlay backend is not writable): busbar serves traffic \
              normally, but admin-API config mutations are refused. Set `config.locked: true` to \
              declare this deliberately, or give `config.overlay.file` a writable path."
@@ -1187,7 +1248,7 @@ async fn run(data_workers: usize) {
     // flag that dumps the full list.
     if cfg.allow_all_metadata {
         tracing::warn!(
-            diag = %busbar_core::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
+            diag = %busbar_substrate::diagnostics::METADATA_PROTECTION_DISABLED.banner(),
             "metadata protection DISABLED — all cloud-metadata endpoints reachable"
         );
     } else {
@@ -1208,24 +1269,23 @@ async fn run(data_workers: usize) {
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
+    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH, captured here — before `cfg` moves into the
+    // router builder below — for the same reason the voice credential a few lines down is. These two
+    // are the whole of what a card is: the per-model rates and the flat per-request fee, exactly the
+    // pair the usage projection derives a row's spend from.
+    #[cfg(feature = "root-llm")]
+    let llm_rate_card = cfg.rate_card.clone();
+    #[cfg(feature = "root-llm")]
+    let llm_per_request_fee = cfg.per_request_fee;
     // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
     // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
     // for another few hundred lines. The transports it composes are built from THESE limits — the
     // same `request_body_max_bytes` the line above hands the served door — so a switched-over plane's
     // transport and the door in front of it cannot disagree about which bodies exist. Behind
-    // `root-voice`, off by default: with it off the line is not compiled and the binary is what it
-    // was, which is what the neutrality cells read.
+    // `root-voice`, which the shipped binary carries; the leg stays switchable, and with it off the
+    // line is not compiled and the binary is what it was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
     mount_root_voice(&cfg.limits);
-    // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
-    // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
-    // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
-    // (that branch is gated on `prior.is_some()`) — the discarded closure is always `None`.
-    //
-    // blocking-ffi-lint: allow — BOOT. Two independent reasons, either sufficient: (1) `run()` is
-    // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
-    // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
-    // `serve_listener` below, so neither listener has been bound, let alone is accepting.
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
     // the one already serving the model that section targets: `streams.session.model` names a model,
@@ -1240,6 +1300,19 @@ async fn run(data_workers: usize) {
         .and_then(|provider| cfg.providers.get(&provider))
         .map(|p| (p.base_url.clone(), p.api_key.clone()));
 
+    // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
+    // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
+    // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
+    // (that branch is gated on `prior.is_some()`) — the discarded closure is always `None`.
+    //
+    // blocking-ffi-lint: allow — BOOT. Two independent reasons, either sufficient: (1) `run()` is
+    // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
+    // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
+    // `serve_listener` below, so neither listener has been bound, let alone is accepting.
+    //
+    // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
+    // the comment block that starts it and no further, so the voice-credential capture that used to
+    // stand between the two silently ate this exemption and left the build itself flagged.
     let (boot_app, _boot_gov_rotate) = build_app_from_config(
         cfg,
         plugins_cfg,
@@ -1343,10 +1416,39 @@ async fn run(data_workers: usize) {
         max_inbound,
         response_headers_cfg.server_timing,
     );
-    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default off. The router that
+    // THE ROOT-DRIVEN ADMIN SURFACE (composition-root switch-over S1), default-ON. The router that
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
+    // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
+    // views read it, which is a property of there being ONE: a mount that opened its own would post
+    // onto books nothing serves and serve books nothing posts to, and both halves of that would look
+    // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
+    // directory, so nothing appears beside a configuration that asked for none, and it is built
+    // before either listener binds because the first accepted connection can settle.
+    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    let book = root::durability::node_book();
+
+    // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
+    // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
+    // arm settles nothing, which is the honest answer for a build with no root ledger in it.
+    #[cfg(feature = "root-llm")]
+    root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
+
+    // AND TO THE CARD IT PRICES AGAINST. The plane reports what a unit consumed; what that is worth
+    // is read here, off the same configured `rate_card:` and `per_request_fee:` the usage projection
+    // derives its spend from. One configuration, two readings — which is what makes the node's books
+    // and the previous release's rows the same money rather than two numbers that agree by habit.
+    #[cfg(feature = "root-llm")]
+    root::units_llm::bind_card(
+        llm_rate_card
+            .iter()
+            .flat_map(|c| c.iter())
+            .map(|(lane, entry)| (lane.as_str(), entry.raw_tier_rates())),
+        llm_per_request_fee,
+        llm_rate_card.is_some(),
+    );
+
     #[cfg(feature = "root-admin")]
     let admin_router = root::units_admin::mount(
         admin_router,
@@ -1354,7 +1456,14 @@ async fn run(data_workers: usize) {
         // The same ingress cap the router below the wrap was built with, because the wrap reads the
         // body before that router's own limit can.
         req_body_max,
-        root::kernel::ProductionUnits::admin_only,
+        |dispatch| {
+            root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                std::sync::Arc::clone(&book.durability),
+                std::sync::Arc::clone(&book.rows)
+                    as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+            )
+        },
     );
 
     // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot
@@ -1446,7 +1555,7 @@ async fn run(data_workers: usize) {
         // The WORKER-SHUTDOWN WATCH: the broadcast, refolded into a level (a `watch<bool>`) so
         // detached work spawned at any moment — including after the signal — can still observe
         // that shutdown has fired. Each data worker registers a clone
-        // (`busbar_core::state::set_worker_shutdown`) beside its detached tracker, and an MCP task
+        // (`busbar_substrate::detached::set_worker_shutdown`) beside its detached tracker, and an MCP task
         // runner selects on it to write its CANCELLED terminal status within the drain grace
         // instead of being aborted with a caller left polling forever.
         let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
@@ -1570,7 +1679,7 @@ fn serve_thread_per_core(
     n: usize,
     addr: String,
     data_router: Router,
-    tls_cfg: Option<busbar_core::config::TlsCfg>,
+    tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
     shutdown_tx: &tokio::sync::broadcast::Sender<()>,
     worker_shutdown: tokio::sync::watch::Receiver<bool>,
@@ -1624,17 +1733,17 @@ fn serve_thread_per_core(
                 // This thread IS data-plane worker `i` for its whole lifetime: everything core
                 // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
                 // stages) indexes by this id. Set after the pin, before the runtime serves.
-                busbar_core::state::set_worker_id(i);
+                busbar_substrate::topology::set_worker_id(i);
                 // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, MCP
                 // runners, A2A watchers) — the post-drain grace below waits on it so a graceful
                 // stop gives such work a bounded window instead of an instant abort.
-                let detached = busbar_core::state::DetachedTasks::new();
-                busbar_core::state::set_worker_detached(detached.clone());
+                let detached = busbar_substrate::detached::DetachedTasks::new();
+                busbar_substrate::detached::set_worker_detached(detached.clone());
                 // The shutdown level, registered beside the tracker: detached work spawned on
                 // this worker captures it and can settle its own terminal state (an MCP task
                 // runner writes CANCELLED) inside the drain grace below instead of being aborted
                 // silently when the runtime drops.
-                busbar_core::state::set_worker_shutdown(worker_shutdown);
+                busbar_substrate::detached::set_worker_shutdown(worker_shutdown);
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -1672,7 +1781,7 @@ fn serve_thread_per_core(
                     // Connections are drained; give this worker's detached work its bounded
                     // grace before the runtime drops (and aborts whatever remains).
                     let _ = tokio::time::timeout(
-                        busbar_core::state::DETACHED_DRAIN_GRACE,
+                        busbar_substrate::detached::DETACHED_DRAIN_GRACE,
                         detached.drained(),
                     )
                     .await;
@@ -1726,7 +1835,7 @@ fn bind_reuseport_listener(addr: &str) -> std::io::Result<std::net::TcpListener>
 async fn serve_listener(
     listener: tokio::net::TcpListener,
     router: Router,
-    tls_cfg: Option<busbar_core::config::TlsCfg>,
+    tls_cfg: Option<busbar_substrate::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_core::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
@@ -1784,7 +1893,7 @@ async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
             tracing::warn!(
-                diag = %busbar_core::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                 error = %e, "failed to install ctrl_c handler; SIGINT shutdown disabled"
             );
             std::future::pending::<()>().await;
@@ -1799,7 +1908,7 @@ async fn shutdown_signal() {
             }
             Err(e) => {
                 tracing::warn!(
-                    diag = %busbar_core::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                    diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                     error = %e, "failed to install SIGTERM handler; SIGTERM shutdown disabled"
                 );
                 std::future::pending::<()>().await;
@@ -1830,7 +1939,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_core::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_close handler; CTRL_CLOSE shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -1844,7 +1953,7 @@ async fn shutdown_signal() {
                 }
                 Err(e) => {
                     tracing::warn!(
-                        diag = %busbar_core::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
+                        diag = %busbar_substrate::diagnostics::SHUTDOWN_SIGNAL_HANDLER_INSTALL_FAILED.banner(),
                         error = %e, "failed to install ctrl_shutdown handler; CTRL_SHUTDOWN shutdown disabled"
                     );
                     std::future::pending::<()>().await;
@@ -1908,7 +2017,8 @@ fn spawn_jemalloc_idle_purge_fallback() {
                     eprintln!(
                         "[warn] {}: jemalloc idle-purge fallback disabled: could not read \
                          opt.dirty_decay_ms ({e})",
-                        busbar_core::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+                        busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE
+                            .banner()
                     );
                     return;
                 }
@@ -1936,7 +2046,7 @@ fn spawn_jemalloc_idle_purge_fallback() {
     if let Err(e) = spawned {
         eprintln!(
             "[warn] {}: could not spawn the jemalloc idle-purge fallback thread ({e})",
-            busbar_core::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
+            busbar_substrate::diagnostics::JEMALLOC_IDLE_PURGE_FALLBACK_UNAVAILABLE.banner()
         );
     }
 }
@@ -2116,7 +2226,7 @@ fn generate_signing_key_command() -> i32 {
         Err(e) => {
             eprintln!(
                 "busbar: {}: could not generate a signing key: {e}",
-                busbar_core::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
+                busbar_substrate::diagnostics::SIGNING_KEY_GENERATION_FAILED.banner()
             );
             return 1;
         }

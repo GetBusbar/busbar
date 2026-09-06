@@ -30,6 +30,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/export/oracle-log",
+        "status": 200,
         "body": {
           "json": {
             "module": "request-log-file",
@@ -38,9 +40,7 @@
               "path"
             ]
           }
-        },
-        "path": "/api/v1/admin/export/oracle-log",
-        "status": 200
+        }
       }
     ]
   },

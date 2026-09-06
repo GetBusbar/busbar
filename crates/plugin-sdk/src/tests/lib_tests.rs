@@ -691,7 +691,11 @@ fn dispatch_handles_audit_variants() {
     }
     match dispatch(&store, StoreRequest::ListAudit).unwrap() {
         StoreResponse::Audit(v) => {
-            assert_eq!(v.len(), 1, "the RAM store lists the one record it was handed");
+            assert_eq!(
+                v.len(),
+                1,
+                "the RAM store lists the one record it was handed"
+            );
             assert_eq!(v[0].hash, "h");
         }
         other => panic!("expected Audit, got {other:?}"),
@@ -743,7 +747,10 @@ fn dispatch_handles_neutral_plane_variants() {
         id: "t-1".into(),
     }) {
         StoreResponse::PlaneRecord(b) => {
-            assert!(b.is_some(), "the RAM store keeps the plane record it was handed")
+            assert!(
+                b.is_some(),
+                "the RAM store keeps the plane record it was handed"
+            )
         }
         other => panic!("expected PlaneRecord, got {other:?}"),
     }
@@ -764,7 +771,11 @@ fn dispatch_handles_neutral_plane_variants() {
         selector: PlaneSelector::Parent("p-1".into()),
     }) {
         StoreResponse::PlaneRecords(v) => {
-            assert_eq!(v.len(), 1, "the one record appended under this parent is listed");
+            assert_eq!(
+                v.len(),
+                1,
+                "the one record appended under this parent is listed"
+            );
             assert_eq!(v[0], vec![9u8], "and it is the body that was appended");
         }
         other => panic!("expected PlaneRecords, got {other:?}"),
@@ -773,7 +784,11 @@ fn dispatch_handles_neutral_plane_variants() {
         kind: "call".into(),
     }) {
         StoreResponse::PlaneRecordParents(v) => {
-            assert_eq!(v, vec!["p-1".to_string()], "the parent the append named is listed")
+            assert_eq!(
+                v,
+                vec!["p-1".to_string()],
+                "the parent the append named is listed"
+            )
         }
         other => panic!("expected PlaneRecordParents, got {other:?}"),
     }
@@ -781,7 +796,9 @@ fn dispatch_handles_neutral_plane_variants() {
         kind: "task".into(),
         before: 100,
     }) {
-        StoreResponse::Purged(n) => assert_eq!(n, 1, "the terminal task row older than the cut is purged"),
+        StoreResponse::Purged(n) => {
+            assert_eq!(n, 1, "the terminal task row older than the cut is purged")
+        }
         other => panic!("expected Purged, got {other:?}"),
     }
     match roundtrip(&StoreRequest::DeletePlaneRecord {

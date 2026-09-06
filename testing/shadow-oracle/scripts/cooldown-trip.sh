@@ -85,7 +85,7 @@ snap "$before_dir"
 #    consecutive-1 breaker on oracle-cd's one member opens on this first failure. The trip is
 #    issued just after a wall-clock second boundary so the breaker's whole-second `floor(trip)` is
 #    the second we are about to measure both later waits against (see the header's arithmetic).
-echo down >"$CONTROL"
+oracle_write_control "$CONTROL" "$MOCK_PORT" "down" || fail "mock control write (down) never landed"
 python3 -c 'import time; t = time.time(); time.sleep((-t) % 1.0 + 0.02)'
 trip_at="$(python3 -c 'import time; print(repr(time.time()))')"
 curl -sS -m 20 -o "$RAW/trip.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
@@ -95,7 +95,7 @@ curl -sS -m 20 -o "$RAW/trip.body" -w '%{http_code}' -X POST "http://127.0.0.1:$
 #    trip is the same wall-clock second, so the deadline (`floor(trip) + 1` at the very shortest)
 #    cannot have passed. The upstream is healthy by now, so a 200 here would mean the breaker never
 #    suppressed anything and the recovery arm below would be proving nothing.
-rm -f "$CONTROL"
+oracle_clear_control "$CONTROL" "$MOCK_PORT" || fail "mock control clear never landed"
 sleep 0.3
 cooling="$(curl -sS -m 20 -o "$RAW/cooling.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LISTEN_PORT}/v1/chat/completions" \
   -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" -H 'Content-Type: application/json' -d "$BODY" 2>"$RAW/cooling.err")"

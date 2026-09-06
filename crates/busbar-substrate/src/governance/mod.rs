@@ -46,3 +46,25 @@ pub const METERING_BUCKET_SECS: u64 = 86_400;
 pub fn metering_bucket(now: u64) -> u64 {
     now - (now % METERING_BUCKET_SECS)
 }
+
+/// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
+/// the token ledger x the current rate card at the moment of the read - never stored.
+///
+/// A pure three-field figure with no engine dependency at all, so it lives HERE (the neutral
+/// governance vocabulary) rather than in the engine: a plane's tests read it back off the neutral
+/// registry seam (`testkit::engine_kit::GovKit::usage_for`), and the engine re-exports this very
+/// type as `busbar_core::governance::DerivedUsage` — the same type, one home.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DerivedUsage {
+    /// The spend derived from the token ledger at the CURRENT card, truncated to whole cents.
+    pub spend_cents: i64,
+    /// The token count the ledger holds for the bucket.
+    pub tokens: u64,
+    /// The admission count the ledger holds for the bucket.
+    pub requests: u64,
+}
+
+/// Seconds in a UTC day — the day boundary the budget windows and the metering buckets are floored
+/// to. A bare calendar constant with no engine dependency, so it lives here in the neutral
+/// governance vocabulary; the engine re-exports it as `busbar_core::governance::SECS_PER_DAY`.
+pub const SECS_PER_DAY: u64 = 86_400;

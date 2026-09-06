@@ -29,7 +29,15 @@ request, so absolute counters (which differ per run) never enter a golden:
                    {"unavailable": true}, same convention as the other snapshot-derived effects.
 A snapshot file that is missing or unparseable is recorded as {"unavailable": true} — visible in the
 golden, never silently zero (a binary that cannot expose its ledger must not look like one that
-metered nothing).
+metered nothing). That holds for the BEFORE snapshot exactly as much as for the after one: the
+recorder writes both with `curl ... -o <dir>/usage.json || rm -f <dir>/usage.json`, so a transient
+admin-API failure leaves the file ABSENT, and a delta taken against an absent "before" is not a
+delta at all — it is the running total. `after - 0` would put an absolute counter in a golden (the
+one thing effects.* exists to keep out) and, for the audit log, would report every entry the process
+has ever written as "added by this request". Both sides must be present, or the effect is
+unavailable.
+
+  capture.py --selftest    # prove the above; no busbar, no network
 """
 import base64
 import json
@@ -94,6 +102,11 @@ def metrics_delta(before_dir: str, after_dir: str):
         a = parse_metrics(open(os.path.join(after_dir, "metrics.txt")).read())
     except OSError:
         return {"unavailable": True}
+    # The recorder scrapes with `oracle_scrape_metrics ... || true`, so a scrape that failed after
+    # creating (or part-writing) the file leaves a metrics.txt with no parseable samples. Subtracting
+    # that from a healthy "after" reports every counter's RUNNING TOTAL as this request's delta.
+    if not b and a:
+        return {"unavailable": True}
     out = {}
     for k in sorted(set(a) | set(b)):
         d = a.get(k, 0.0) - b.get(k, 0.0)
@@ -145,7 +158,12 @@ def audit_diff(before, after) -> dict:
     time a normalizer could look, prev_hash == hash would trivially hold for ANY two items. So each
     item's chain_ok is computed now and carried forward as a plain boolean; the raw hash/prev_hash
     values themselves are never put in the output (only actor/action/resource/outcome/chain_ok are)."""
-    if after is None:
+    # Either side missing means there is no delta to take. With `before` absent the subtraction below
+    # would read as "this request added every entry in the log" (added_n = len(items_after), up to the
+    # recorder's whole ?limit=1000 page) and would compute the oldest item's chain_ok against genesis
+    # ("") rather than against the entry that really preceded it — a confidently wrong answer that
+    # looks exactly like a right one in the golden.
+    if after is None or before is None:
         return {"unavailable": True}
     items_before = audit_items(before)
     items_after = audit_items(after)
@@ -189,6 +207,21 @@ def audit_diff(before, after) -> dict:
     return {"added": added_n, "items": items_out, **extra}
 
 
+def usage_delta(before: str, after: str) -> dict:
+    """The usage view's after-before delta, or {"unavailable": True} when EITHER snapshot is missing
+    or unparseable. Shared with capture-concurrent.py so the two drivers cannot drift on what counts
+    as a delta. `as_of` is the snapshot's own wall clock — its delta is 0 or 1 depending on which
+    side of a second boundary each fetch landed, never a fact about the request — so it is dropped
+    before the subtraction rather than allowed to flap."""
+    ub, ua = load_json(before, "usage.json"), load_json(after, "usage.json")
+    if ub is None or ua is None:
+        return {"unavailable": True}
+    for snap in (ub, ua):
+        if isinstance(snap, dict):
+            snap.pop("as_of", None)
+    return num_delta(ub, ua)
+
+
 def load_egress(paths: list) -> list:
     """Read the egress record files the recorder found for this cell, in the order given (the order
     the recorder discovered them, which — because mock-upstream.py names them so filenames sort in
@@ -203,7 +236,69 @@ def load_egress(paths: list) -> list:
     return out
 
 
+def selftest() -> int:
+    """Prove the missing-BEFORE guards, which is the only way a delta driver can put an ABSOLUTE in a
+    golden while still looking like it worked. Each case is red without the guard it names.
+
+    No busbar, no network, no ports: two directories and a handful of files.
+    """
+    import shutil
+    import tempfile
+    fails = 0
+
+    def say(ok, what):
+        nonlocal fails
+        print(f"{'PASS' if ok else 'FAIL'}  {what}")
+        if not ok:
+            fails += 1
+
+    w = tempfile.mkdtemp(prefix="capture-selftest.")
+    try:
+        b, a = os.path.join(w, "before"), os.path.join(w, "after")
+        os.makedirs(b); os.makedirs(a)
+
+        # usage: an after-snapshot showing a lifetime total of 41 requests, with the before-snapshot
+        # ABSENT (the recorder's `|| rm -f` path). Without the guard this reports requests: 41 — the
+        # running total, presented as this one request's delta.
+        json.dump({"requests": 41, "tokens": 900, "spend_cents": 12}, open(os.path.join(a, "usage.json"), "w"))
+        say(usage_delta(b, a) == {"unavailable": True}, "usage: before-snapshot absent -> unavailable, not the absolute")
+        json.dump({"requests": 40, "tokens": 882, "spend_cents": 12}, open(os.path.join(b, "usage.json"), "w"))
+        say(usage_delta(b, a) == {"requests": 1, "tokens": 18}, "usage: both snapshots present -> the real delta")
+        os.remove(os.path.join(a, "usage.json"))
+        say(usage_delta(b, a) == {"unavailable": True}, "usage: after-snapshot absent -> unavailable")
+
+        # audit: a 3-entry log, none of it added by this request. Without the guard, an absent
+        # before-snapshot makes added_n = 3 and the oldest item's chain_ok is judged against genesis.
+        log = {"items": [{"seq": 3, "hash": "cc", "prev_hash": "bb", "principal": "p", "action": "x",
+                          "resource": "r", "outcome": "ok"},
+                         {"seq": 2, "hash": "bb", "prev_hash": "aa", "principal": "p", "action": "x",
+                          "resource": "r", "outcome": "ok"},
+                         {"seq": 1, "hash": "aa", "prev_hash": "", "principal": "p", "action": "x",
+                          "resource": "r", "outcome": "ok"}]}
+        say(audit_diff(None, log) == {"unavailable": True}, "audit: before-snapshot absent -> unavailable, not 'added 3'")
+        say(audit_diff(log, None) == {"unavailable": True}, "audit: after-snapshot absent -> unavailable")
+        d = audit_diff({"items": log["items"][1:]}, log)
+        say(d.get("added") == 1 and len(d.get("items", [])) == 1 and d["items"][0]["chain_ok"] is True,
+            "audit: both present -> exactly the one added entry, chained to its real predecessor")
+
+        # metrics: an empty/part-written before scrape (the recorder's `|| true` path) against a
+        # healthy after. Without the guard every counter's running total becomes this cell's delta.
+        open(os.path.join(b, "metrics.txt"), "w").write("")
+        open(os.path.join(a, "metrics.txt"), "w").write("busbar_requests_total{pool=\"p\"} 41\n")
+        say(metrics_delta(b, a) == {"unavailable": True}, "metrics: unparseable before scrape -> unavailable, not the absolute")
+        open(os.path.join(b, "metrics.txt"), "w").write("busbar_requests_total{pool=\"p\"} 40\n")
+        say(metrics_delta(b, a) == {'busbar_requests_total{pool="p"}': 1}, "metrics: both scrapes present -> the real delta")
+        os.remove(os.path.join(b, "metrics.txt"))
+        say(metrics_delta(b, a) == {"unavailable": True}, "metrics: before scrape absent -> unavailable")
+    finally:
+        shutil.rmtree(w, ignore_errors=True)
+    print(f"\ncapture selftest: {'GREEN' if not fails else f'RED ({fails} failing)'}")
+    return 1 if fails else 0
+
+
 def main() -> int:
+    if sys.argv[1:2] == ["--selftest"]:
+        return selftest()
     hdr_file, status, body_file, before, after = sys.argv[1:6]
     egress = load_egress(sys.argv[6:])
     raw = open(body_file, "rb").read()
@@ -212,13 +307,7 @@ def main() -> int:
     except UnicodeDecodeError:
         body = "base64:" + base64.b64encode(raw).decode()
 
-    ub, ua = load_json(before, "usage.json"), load_json(after, "usage.json")
-    # `as_of` is the snapshot's own wall clock: its delta is 0 or 1 depending on the second boundary,
-    # never a fact about the request. Drop it before the delta so its presence cannot flap.
-    for snap in (ub, ua):
-        if isinstance(snap, dict):
-            snap.pop("as_of", None)
-    usage = num_delta(ub, ua) if ua is not None else {"unavailable": True}
+    usage = usage_delta(before, after)
     ab, aa = load_json(before, "audit.json"), load_json(after, "audit.json")
     audit = audit_diff(ab, aa)
 

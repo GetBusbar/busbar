@@ -8,6 +8,8 @@ use crate::governance::{GovState, MemoryStore, Store, VirtualKey};
 use crate::store::LaneRuntime;
 use crate::test_support::{LaneSpec, TestApp};
 use std::sync::Arc;
+// Named directly now that the recorder-install half (which imported it) lives in the substrate.
+use std::time::Duration;
 
 #[test]
 fn test_render_exposes_emitted_counter() {

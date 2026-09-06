@@ -70,35 +70,43 @@ pub const RESULT_TYPE_INPUT_REQUIRED: &str = "input_required";
 /// The discriminator on a result that hands back a task rather than an answer.
 pub const RESULT_TYPE_TASK: &str = "task";
 
+// Every code below is the CODEC's, read by identity rather than restated. This plane and the server
+// half both write these onto the same wire and the plane cannot name the server half, so a value
+// spelled on both sides is a value the two sides can silently come to disagree about — and a wrong
+// JSON-RPC code reads entirely plausibly. The compiler holds the equality now; the assertion below
+// holds the remaining question, which is whether the SET this plane may write is one the codec knows.
+
 /// The bytes could not be read at all.
-pub const CODE_PARSE_ERROR: i64 = -32700;
+pub const CODE_PARSE_ERROR: i64 = busbar_mcp_codec::codec::CODE_PARSE_ERROR;
 
 /// The envelope was not a request.
-pub const CODE_INVALID_REQUEST: i64 = -32600;
+pub const CODE_INVALID_REQUEST: i64 = busbar_mcp_codec::codec::CODE_INVALID_REQUEST;
 
 /// The method named is not one this node answers.
-pub const CODE_METHOD_NOT_FOUND: i64 = -32601;
+pub const CODE_METHOD_NOT_FOUND: i64 = busbar_mcp_codec::codec::CODE_METHOD_NOT_FOUND;
 
 /// The parameters were not admissible.
-pub const CODE_INVALID_PARAMS: i64 = -32602;
+pub const CODE_INVALID_PARAMS: i64 = busbar_mcp_codec::codec::CODE_INVALID_PARAMS;
 
 /// Something on this side failed.
-pub const CODE_INTERNAL: i64 = -32603;
+pub const CODE_INTERNAL: i64 = busbar_mcp_codec::codec::CODE_INTERNAL;
 
 /// A mirrored header did not agree with the body it was mirrored from.
-pub const CODE_HEADER_MISMATCH: i64 = -32020;
+pub const CODE_HEADER_MISMATCH: i64 = busbar_mcp_codec::codec::CODE_HEADER_MISMATCH;
 
 /// The caller did not declare a capability the answer would have needed.
-pub const CODE_MISSING_CLIENT_CAPABILITY: i64 = -32021;
+pub const CODE_MISSING_CLIENT_CAPABILITY: i64 =
+    busbar_mcp_codec::codec::CODE_MISSING_CLIENT_CAPABILITY;
 
 /// The revision the caller asked for is not one this node speaks.
-pub const CODE_UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
+pub const CODE_UNSUPPORTED_PROTOCOL_VERSION: i64 =
+    busbar_mcp_codec::codec::CODE_UNSUPPORTED_PROTOCOL_VERSION;
 
 /// A policy said no.
-pub const CODE_REFUSED: i64 = -32000;
+pub const CODE_REFUSED: i64 = busbar_mcp_codec::codec::CODE_REFUSED;
 
 /// The server this call would have reached could not be reached.
-pub const CODE_UPSTREAM_UNAVAILABLE: i64 = -32030;
+pub const CODE_UPSTREAM_UNAVAILABLE: i64 = busbar_mcp_codec::codec::CODE_UPSTREAM_UNAVAILABLE;
 
 /// Every code this plane may write.
 pub const CODES: &[i64] = &[
@@ -119,7 +127,7 @@ pub const CODES: &[i64] = &[
 /// Declared so the test below can assert this plane writes none of them. A retired code is worse
 /// than an unknown one: a peer that still recognises it will act on a meaning this node did not
 /// intend.
-pub const RETIRED_CODES: &[i64] = &[-32002, -32042];
+pub const RETIRED_CODES: &[i64] = busbar_mcp_codec::codec::RETIRED_CODES;
 
 /// What kind of scalar the identifier member held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -487,16 +495,16 @@ mod tests {
 
     /// Every code this plane may write is one the codec names.
     ///
-    /// The codec's own tables are visible to its crate only, so this reads their source. Two of the
-    /// ten belong to the shared reader rather than to this protocol, and they are checked there.
+    /// A VALUE comparison against the codec's own table. It read the server half's SOURCE for this
+    /// once — `include_str!` over `../../busbar-mcp/src/…` — which coupled this crate to a sibling
+    /// the manifest does not name, so the plane could not be built, or deleted, on its own. The
+    /// codes are the codec's now, so the question that is left is about the SET rather than about
+    /// any one value.
     #[test]
     fn every_code_is_the_codecs_own() {
-        let envelope = include_str!("../../busbar-mcp/src/mcp/envelope.rs");
-        let method = include_str!("../../busbar-mcp/src/mcp/method.rs");
         for code in CODES {
-            let text = format!("{code}");
             assert!(
-                envelope.contains(&text) || method.contains(&text),
+                busbar_mcp_codec::codec::CODES.contains(code),
                 "the codec no longer names the code {code}"
             );
         }

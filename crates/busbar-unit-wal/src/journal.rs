@@ -55,7 +55,10 @@
 //!
 //! What happens at the bound is a NAMED decision and is on the chain. The oldest unshipped records
 //! are dropped, and a [`RecordClass::ChainBreak`] record is sealed naming how many went and the
-//! identity range they covered. Three things about that are deliberate:
+//! identity range they covered. That break is a record like any other and is buffered like any
+//! other, so the room made at the bound accounts for it as well as for the batch — a bound that
+//! counted only the batch would be one the buffer sat above for the whole length of an outage.
+//! Three things about the decision are deliberate:
 //!
 //! - It is not a silent drop. The loss is a record, in the chain, in order, and it is the class the
 //!   contract already uses for a lost durable write.
@@ -757,6 +760,10 @@ impl Journal {
     /// This is the seam a battery drives, and it is also how the on-disk case resumes: the log's
     /// recovered tail IS the chain, so the head and the next sequence number come off it rather than
     /// being carried in a side file that could disagree with it.
+    ///
+    /// That tail is the end of the log wherever the log has got to — the last segment that holds a
+    /// record, not the first segment ever written. A journal resumed from anything else would number
+    /// its next record with a number it has already used.
     #[must_use]
     pub fn over(log: Wal, node: u64) -> Self {
         let mut journal = Journal {
@@ -948,13 +955,19 @@ impl Journal {
 
     /// Make room for `incoming` records, dropping the oldest unacknowledged ones if the bound would
     /// otherwise be passed. Returns what went, so the caller can seal a break for it.
+    ///
+    /// Room is made for one record more than the batch when the bound is reached, because the break
+    /// the caller then seals is itself a record the buffer holds — a chained `ChainBreak` that goes
+    /// through the log with the batch and is retained beside it if the store refuses again. Counting
+    /// only the batch leaves the buffer one record over the bound for as long as the outage lasts,
+    /// which is the one thing a pinned bound exists to make impossible.
     fn make_room(&mut self, incoming: usize) -> Option<Overflow> {
         let held = self.log.owed().len();
-        let wanted = held.saturating_add(incoming);
-        if wanted <= self.capacity {
+        if held.saturating_add(incoming) <= self.capacity {
             return None;
         }
-        let excess = wanted - self.capacity;
+        let wanted = held.saturating_add(incoming).saturating_add(1);
+        let excess = wanted.saturating_sub(self.capacity);
         let dropped = self.log.forget_owed(excess);
         let first = dropped.first()?.identity();
         let last = dropped.last()?.identity();

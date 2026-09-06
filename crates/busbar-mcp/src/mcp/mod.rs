@@ -1036,7 +1036,11 @@ impl std::fmt::Display for McpCfgError {
 
 /// The RFC 9728 §3.1 well-known prefix. The resource's own path is appended AFTER this, per the
 /// "path insertion" rule the RFC defines for a resource that is not at an origin root.
-const PROTECTED_RESOURCE_WELL_KNOWN: &str = "/.well-known/oauth-protected-resource";
+///
+/// The join itself is on the CODEC side, so the plane — which declares an OPEN claim on the composed
+/// discovery path and may not name this crate — reads the same composer rather than a second one.
+/// The well-known prefix went with it; there is one place the two are put together now.
+use busbar_mcp_codec::codec::protected_resource_metadata_path;
 
 impl McpResource {
     /// Validate and derive. Every refusal is fail-closed at BOOT rather than at first request: an
@@ -1063,7 +1067,7 @@ impl McpResource {
                 return Err(McpCfgError::AuthorizationServerNotAbsolute(issuer.clone()));
             }
         }
-        let metadata_path = format!("{PROTECTED_RESOURCE_WELL_KNOWN}{mount_path}");
+        let metadata_path = protected_resource_metadata_path(&mount_path);
         Ok(Self {
             metadata_url: format!("{origin}{metadata_path}"),
             canonical_uri: uri.to_string(),

@@ -147,14 +147,14 @@ impl<T, const N: usize> BoundedVec<T, N> {
     }
 
     /// The items, in insertion order.
+    ///
+    /// Read-only, and only read-only. The mutable twin of this accessor had no caller anywhere in
+    /// the workspace and no reader outside one: it handed out a view through which every item of a
+    /// bounded container could be rewritten with the bound proving nothing about the contents, and
+    /// the two ways to change one of these — `push` and `clear` — both go past the ceiling check.
     #[must_use]
     pub fn as_slice(&self) -> &[T] {
         &self.items
-    }
-
-    /// The items, in insertion order, mutably.
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
-        &mut self.items
     }
 }
 

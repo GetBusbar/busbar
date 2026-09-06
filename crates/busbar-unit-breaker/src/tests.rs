@@ -469,6 +469,48 @@ fn the_oracle_cooldown_pool_draws_a_whole_second_in_one_to_three() {
     );
 }
 
+/// A CONFIGURATION THAT INVERTS THE COOLDOWN BOUNDS ANSWERS; IT DOES NOT BRING THE NODE DOWN.
+///
+/// The jitter band is clamped between a floor derived from the duration and the configured ceiling,
+/// and `Ord::clamp` panics outright when the floor is above the ceiling. `BreakerCfg` is plain data
+/// with public fields and nothing in the tree refuses either shape below, so both are configurations
+/// an operator can write — and the panic would land inside `record_failure`, on the response path,
+/// at the moment an upstream first fails. The two cases are different routes to the same inversion:
+/// a zero ceiling, where the floor is one by construction, and a base cooldown above the ceiling on a
+/// FRESH trip, where the escalation branch that would have capped the duration never ran.
+#[test]
+fn a_cooldown_ceiling_below_the_floor_is_answered_rather_than_panicked_on() {
+    for (label, cfg) in [
+        (
+            "a zero ceiling",
+            BreakerCfg {
+                base_cooldown_secs: 15,
+                max_cooldown_secs: 0,
+                honor_retry_after: false,
+                trip: TripConfig::default(),
+                bench_below_trip_threshold: true,
+            },
+        ),
+        (
+            "a base cooldown above the ceiling",
+            BreakerCfg {
+                base_cooldown_secs: 1_000,
+                max_cooldown_secs: 10,
+                honor_retry_after: false,
+                trip: TripConfig::default(),
+                bench_below_trip_threshold: true,
+            },
+        ),
+    ] {
+        let cell = BreakerCell::new();
+        let duration = cell.compute_cooldown_with_retry_after(NOW, &cfg, None, 86_400);
+        assert_eq!(
+            duration, cfg.max_cooldown_secs,
+            "{label}: the ceiling is what a ceiling means"
+        );
+    }
+}
+
 #[test]
 fn retry_after_is_honored_as_a_floor_under_the_computed_cooldown() {
     let cell = BreakerCell::new();
@@ -858,6 +900,56 @@ fn a_probe_that_closed_the_cell_is_always_journaled_as_succeeded() {
     assert_eq!(
         orphans, 0,
         "a won probe whose cell then closed left no Succeeded record in the journal"
+    );
+}
+
+/// A reader must never pair a cell's stale cooldown with its freshly stored state.
+///
+/// Every writer that moves a cell stores the cooldown FIRST and the state SECOND. A reader that
+/// loads them in that SAME order can slip between the two stores: it takes the old cooldown (zero,
+/// on a cell that has never tripped) and then the new Open state, and decodes a cell that was just
+/// tripped for an hour as probe-winnable — an admission the cooldown forbids. Loading state first
+/// and cooldown second is the reverse of the write order, which is what makes an observed fresh
+/// state imply an at-least-as-fresh cooldown.
+#[test]
+fn a_verdict_never_pairs_a_stale_cooldown_with_a_fresh_state() {
+    use crate::cell::BreakerVerdict;
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+
+    const CELLS: usize = 50_000;
+    let now = 1_000u64;
+    // Each cell is tripped exactly ONCE, from a never-cooled Closed cell to a long Open cooldown,
+    // so "probe-winnable" is not a legitimate answer at any point in the cell's life here.
+    let cells: Vec<BreakerCell> = (0..CELLS).map(|_| BreakerCell::new()).collect();
+    let violations = AtomicUsize::new(0);
+
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            for cell in &cells {
+                cell.hard_down(now, 3_600);
+            }
+        });
+        scope.spawn(|| {
+            for cell in &cells {
+                loop {
+                    match cell.verdict(now) {
+                        // Not tripped yet from this thread's point of view: keep watching.
+                        BreakerVerdict::Ready => continue,
+                        BreakerVerdict::ProbeWinnable => {
+                            violations.fetch_add(1, AtomicOrdering::Relaxed);
+                            break;
+                        }
+                        _ => break,
+                    }
+                }
+            }
+        });
+    });
+
+    assert_eq!(
+        violations.load(AtomicOrdering::Relaxed),
+        0,
+        "a cell tripped with an hour of cooldown decoded as probe-winnable"
     );
 }
 

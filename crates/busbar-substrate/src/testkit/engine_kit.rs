@@ -28,8 +28,10 @@
 //! opaque `Box<dyn Any>` for the one fixture (the hook plugin environment) that has no neutral shape.
 
 use super::TestAppSeam;
+use crate::config::groups::GroupCfg;
+use crate::config::sections::RateEntryCfg;
 use crate::governance::signing::TokenSigner;
-use crate::governance::NewKeySpec;
+use crate::governance::{DerivedUsage, NewKeySpec};
 use crate::plane::calllog::CallRecorded;
 use crate::plane::registry::CardIssuer;
 use crate::plane::store::PlaneStore;
@@ -73,6 +75,17 @@ pub enum AdminScope {
 /// the engine downcasts it on the other side.
 pub type HookEnvHandle = Box<dyn Any + Send>;
 
+/// THE RESOLVED PRICING TABLE a test prices its fixture with — the engine's own cost model, built
+/// from the SAME inputs the config path resolves it from (an optional rate card, the flat
+/// per-request fee in whole cents, the `groups:` tree) and held opaque behind this handle so a
+/// plane states those inputs without naming the engine's `CostModel`.
+///
+/// There is deliberately no verb on it: a plane's tests never interrogate the table, they hand it
+/// to [`TestAppKit::set_cost`] / [`GovKit::hydrate_budgets`] and then assert on what the engine
+/// bills through it. `Any` so the engine takes its concrete model back out by upcast + downcast,
+/// exactly as it does for [`GovKit`]; a plane never downcasts through it.
+pub trait CostKit: Any + Send + Sync {}
+
 /// THE GOVERNANCE REGISTRY a test mints keys against and reads metering back out of — the engine's
 /// own (a real registry over a real `Store`), reached by verb. Object-safe so a plane holds it as
 /// `Arc<dyn GovKit>` and hands it to [`TestAppKit::set_governance`]. `Any` so the engine can take
@@ -87,10 +100,51 @@ pub trait GovKit: Any + Send + Sync {
         exp: u64,
         now: u64,
     ) -> Result<(VirtualKey, String), String>;
+    /// Mint a key that ALSO carries a generated AWS SigV4 credential (the Bedrock-native auth
+    /// shape): the persisted key, its plaintext bearer secret, and the credential's access-key id
+    /// and secret access key. What a test needs to sign a SigV4 request against its own fixture.
+    fn create_key_with_aws(
+        &self,
+        spec: NewKeySpec,
+        now: u64,
+    ) -> Result<(VirtualKey, String, String, String), String>;
+    /// The SHA-256 hex digest of this registry's configured operator admin token, or `None` when no
+    /// admin token was supplied. The one fact the admin-token auth link keys its own INERTNESS on,
+    /// so a test asserts an unconfigured deployment stays inert without holding the plaintext.
+    fn admin_token_hash(&self) -> Option<String>;
     /// Delete key `id` and drop it from every cache.
     fn delete_key(&self, id: &str) -> Result<(), String>;
     /// Revoke the principal with subject id `sub` (every credential it holds), for `reason`.
     fn revoke(&self, sub: &str, reason: &str) -> Result<(), String>;
+    /// Every key this registry holds, tombstones included — the registry's whole view, for a test
+    /// that minted through a path which did not hand the key back (a boot-time provision).
+    fn all_keys(&self) -> Result<Vec<VirtualKey>, String>;
+    /// Whether subject id `sub` is on the revocation denylist — the fact a standing credential is
+    /// re-checked against, so a test asserts a revoke LANDED and not merely that the call returned.
+    fn is_revoked(&self, sub: &str) -> bool;
+    /// PATCH key `id`: flip `enabled` and/or rebind its `group` (the outer `Option` is
+    /// "field present", the inner one "bound / unbound"). `None` when no such key exists. What a
+    /// test disables a key with, so the next request meets a real disabled-key refusal.
+    fn update_key(
+        &self,
+        id: &str,
+        enabled: Option<bool>,
+        group: Option<Option<String>>,
+    ) -> Result<Option<VirtualKey>, String>;
+    /// Run THE DOOR's check-then-charge for `key` on `pool` at `now`, priced through `cost` — the
+    /// same admission the live path takes. `Err` carries the blocking bucket's reason.
+    ///
+    /// A test drives this for its CHARGE, not its grant: seeding a window's spend through the
+    /// authoritative in-memory path is the only way a later assertion sees the door enforce it (a
+    /// store-side poke is invisible to the in-memory gate). The grant itself is the engine's
+    /// accounting handle and has no assertion on it here, so it is not carried out through the seam.
+    fn try_admit(
+        &self,
+        cost: &dyn CostKit,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+    ) -> Result<(), String>;
     /// Re-read the registry from its store.
     fn refresh(&self) -> Result<(), String>;
     /// This registry as the neutral live-principal resolver a standing permission re-checks
@@ -102,6 +156,30 @@ pub trait GovKit: Any + Send + Sync {
     fn flush_metering(&self) -> usize;
     /// The metering rows persisted for `bucket`.
     fn metering_for(&self, bucket: u64) -> Result<Vec<MeteringRow>, String>;
+    /// Hydrate the in-memory budget cells from the DURABLE ledger at `now`, priced through `cost` —
+    /// the very step boot runs, so a test that seeded a durable bucket sees the door enforce it.
+    fn hydrate_budgets(&self, cost: &dyn CostKit, now: u64) -> Result<(), String>;
+    /// Flush the pending budget deltas to the store, so a test can read the durable ledger row back.
+    fn flush_budgets(&self);
+    /// The DERIVED usage view for key `id` at `now`, priced through `cost` — the figures the admin
+    /// read and the dashboards see. `None` when no such key exists.
+    fn usage_for(
+        &self,
+        cost: &dyn CostKit,
+        id: &str,
+        now: u64,
+    ) -> Result<Option<DerivedUsage>, String>;
+    /// The DERIVED usage view for an arbitrary BUCKET (a key's, or a bound group's `@window` one) in
+    /// `budget_period`, priced through `cost` at `now`. `include_request_fee` folds the flat
+    /// per-request fee into the derived spend exactly as the door's own lookahead does.
+    fn derived_bucket_usage(
+        &self,
+        cost: &dyn CostKit,
+        bucket_id: &str,
+        budget_period: &str,
+        include_request_fee: bool,
+        now: u64,
+    ) -> Result<DerivedUsage, String>;
 }
 
 /// THE SWAPPABLE HANDLE over a built App — the engine's live snapshot holder the route adapter, the
@@ -161,6 +239,9 @@ pub trait EngineApp: PlaneSlots + Any + Send + Sync {
 pub trait TestAppKit: TestAppSeam {
     /// Attach a governance registry (keys, budgets, metering) to the built App.
     fn set_governance(&mut self, gov: Arc<dyn GovKit>);
+    /// Attach the pricing table the built App bills through (from [`EngineTestKit::cost_flat`] /
+    /// [`EngineTestKit::cost_parts`]).
+    fn set_cost(&mut self, cost: Arc<dyn CostKit>);
     /// Register one `hooks:` entry from its config document, through the engine's own parser.
     fn add_hook(&mut self, name: &str, def: serde_json::Value);
     /// Attach a loaded hook plugin environment (from [`EngineTestKit::hook_env`]).
@@ -187,6 +268,8 @@ pub trait TestAppKit: TestAppSeam {
 pub trait TestAppKitExt: Sized {
     /// Chaining twin of [`TestAppKit::set_governance`].
     fn governance(self, gov: Arc<dyn GovKit>) -> Self;
+    /// Chaining twin of [`TestAppKit::set_cost`].
+    fn cost(self, cost: Arc<dyn CostKit>) -> Self;
     /// Chaining twin of [`TestAppKit::add_hook`].
     fn hook(self, name: &str, def: serde_json::Value) -> Self;
     /// Chaining twin of [`TestAppKit::set_hook_env`].
@@ -208,6 +291,10 @@ pub trait TestAppKitExt: Sized {
 impl TestAppKitExt for Box<dyn TestAppKit> {
     fn governance(mut self, gov: Arc<dyn GovKit>) -> Self {
         self.set_governance(gov);
+        self
+    }
+    fn cost(mut self, cost: Arc<dyn CostKit>) -> Self {
+        self.set_cost(cost);
         self
     }
     fn hook(mut self, name: &str, def: serde_json::Value) -> Self {
@@ -305,6 +392,18 @@ pub trait EngineTestKit: Send + Sync {
         admin_token: Option<String>,
         signer: Option<TokenSigner>,
     ) -> Result<Arc<dyn GovKit>, String>;
+    /// A pricing table that charges a FLAT `price_per_request_cents` per request and nothing per
+    /// token — the shape a test takes when the figure under assertion is the fee, not the card.
+    fn cost_flat(&self, price_per_request_cents: i64) -> Arc<dyn CostKit>;
+    /// A pricing table resolved from the config path's own three inputs: the optional `rate_card`,
+    /// the flat per-request fee in whole cents, and the `groups:` tree whose per-group cards and
+    /// caps it folds in.
+    fn cost_parts(
+        &self,
+        rate_card: Option<&BTreeMap<String, RateEntryCfg>>,
+        price_per_request_cents: i64,
+        groups: &BTreeMap<String, GroupCfg>,
+    ) -> Arc<dyn CostKit>;
     /// A hook plugin environment loading the hermetic test hook cdylib under `aliases`, declaring
     /// `prompt`/`user` intent. `None` when the cdylib is not built (the caller decides whether that
     /// is a skip or a failure).

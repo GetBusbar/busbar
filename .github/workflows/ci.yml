@@ -261,6 +261,47 @@ jobs:
         run: scripts/blocking-ffi-lint.sh --selftest
       - name: Blocking-FFI lint
         run: scripts/blocking-ffi-lint.sh
+      # THE FOUR GATES BELOW EACH SHIPPED WITH A --selftest AND A --check AND WERE INVOKED BY
+      # NOTHING: no workflow step, no qa/segments.toml row, and so nothing scripts/full-gate.sh could
+      # discover. A gate nobody runs measures nothing — it is a script with the SHAPE of a gate, which
+      # is worse than no gate at all, because its existence reads as coverage. All four are GREEN on
+      # this tree today, which is exactly why they are being wired now rather than after a regression
+      # makes one of them red. Each runs its --selftest FIRST, the discipline every lint above uses.
+      #
+      # KERNEL TOKEN-WIRE PURITY: the kernel never re-derives a usage token class from a raw provider
+      # wire field; it reads the plane-normalized locator. The whole point of the plane extraction is
+      # that a provider's wire vocabulary stops short of the kernel, and this is the only thing that
+      # checks it.
+      - name: Kernel token-wire purity self-test (the scanner cannot be lied to)
+        run: scripts/kernel-token-wire-purity-lint.sh --selftest
+      - name: Kernel token-wire purity (BLOCKING — no raw provider wire token field reaches the kernel)
+        run: scripts/kernel-token-wire-purity-lint.sh --check
+      # NO-DEFERRAL: every reachable unimplemented!()/todo!() (Class A) and every self-declared debt
+      # label (Class B) in shipped source must be a floor-checked entry in the committed
+      # scripts/no-deferral.waivers allowlist. verify-1.6.0-done.sh runs the stricter --strict-done
+      # form as part of the DONE claim; that is a release-time question. THIS is the per-push posture
+      # that stops a NEW unwaived deferral landing in the first place, and it was the half nothing ran.
+      - name: No-deferral self-test (the deferral scanner cannot be lied to)
+        run: scripts/no-deferral-gate.sh --selftest
+      - name: No-deferral gate (BLOCKING — every deferral marker is a floor-checked waiver)
+        run: scripts/no-deferral-gate.sh --check
+      # INVENTORY-REF LINT: the companion to the design-bindings job below. design-bindings proves
+      # every Appendix B binding's CHECKS still exist; this proves every binding's INVENTORY citation
+      # still resolves to a docs/design inventory file that exists, so a renamed or deleted inventory
+      # cannot leave a binding pointing at nothing while still reading as mapped.
+      - name: Inventory-ref lint self-test
+        run: python3 scripts/inventory-ref-lint.py --selftest
+      - name: Inventory-ref lint (BLOCKING — every binding's inventory column resolves)
+        run: python3 scripts/inventory-ref-lint.py --check
+      # CHANGELOG REGISTER: the second half of the shadow-oracle register's money rule. diff-cells.py
+      # refuses at LOAD time to let an `improvement` entry forgive a status or a billing figure — only
+      # a `kind: breaking` entry carrying a changelog line may. This proves that changelog line is not
+      # a string nobody ever read: it must appear VERBATIM in CHANGELOG.md. Without it an accepted
+      # breaking difference could cite a line that was reworded, or never written at all.
+      - name: Changelog register self-test
+        run: scripts/changelog-register-check.sh --selftest
+      - name: Changelog register (BLOCKING — every accepted `breaking` names a real CHANGELOG line)
+        run: scripts/changelog-register-check.sh --check
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
@@ -723,7 +764,7 @@ jobs:
   # generator that has quietly stopped deriving anything cannot pass vacuously. Pure stdlib python
   # over tracked files — no toolchain, no build — so it is FAST TIER and runs on every push.
   generated-artifact-drift:
-    name: generated-artifact drift (field · method inventories regen-clean)
+    name: generated-artifact drift (field · method inventories · oracle cells regen-clean)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -750,6 +791,12 @@ jobs:
         run: python3 scripts/method-inventory.py --selftest
       - name: method-inventory drift (committed == fresh derivation)
         run: python3 scripts/method-inventory.py --check
+      # cells.json is a THIRD generated artifact of the same shape, and the one with the widest
+      # blast radius: the shadow oracle's recorder and replayer iterate it, so a stale or hand-edited
+      # cell list silently changes what the whole 1.5.5 parity battery even asks. It derives from the
+      # two inventories checked immediately above, which is exactly why it can fall behind them.
+      - name: shadow-oracle cells drift (committed == fresh derivation)
+        run: python3 testing/shadow-oracle/enumerate-cells.py --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
@@ -779,6 +826,44 @@ jobs:
         run: python3 scripts/public-hygiene-lint.py --selftest
       - name: Public-hygiene gate
         run: python3 scripts/public-hygiene-lint.py --root .
+
+  # SERVICE-IMAGE PINS. The durable-store QA cycle (docs/design/store-qa-cycle.md) rests on the
+  # four backend services being the SAME BYTES everywhere they are stood up. They were not: the
+  # service containers were provisioned in five places — this file's `check` and `coverage` jobs,
+  # release-stage.yml's `gate`, plugin-ci.yml's `build-test-signoff`, and scripts/release-check.sh.
+  # The four workflows agreed on a digest; release-check.sh, which is what the QA GATE runs, used
+  # floating tags. So the gate that decides a release was not pinned to the bytes CI was pinned to,
+  # and nothing said so out loud.
+  #
+  # testing/fleet-fixtures/service-images.tsv is now the one pinned list. Actions cannot read a file
+  # into a `services:` block, so the `image:` lines must stay literal and the pin cannot be enforced
+  # by construction — this lint is what enforces it instead. A digest bump lands in one commit and
+  # this job is what proves the fan-out was complete rather than three-quarters complete.
+  #
+  # FAST TIER, deliberately, for the same reason workspace-deps-lint is: a pin can drift on ANY
+  # branch push, the whole job is one python process over tracked files with no toolchain, and a
+  # drift first noticed on a dev merge is a drift that has already been reviewed as if it were
+  # pinned. Self-test runs FIRST — every rule is proven RED on a planted fixture (a bumped digest, a
+  # floating tag, an image with no row, a pin nobody uses, an empty scan) before the lint's verdict
+  # on the real tree is trusted, and it includes the ZERO-ROWS-IS-RED proof against the real
+  # testing/fleet-fixtures/verdict.sh.
+  service-image-pins:
+    name: service image pins (one pinned list, every workflow reads it)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Service-image lint self-test (every rule proven RED)
+        run: scripts/service-images-check.sh --selftest
+      - name: Service-image pin gate
+        run: scripts/service-images-check.sh
+      # The local store fixtures read the same table. Their self-test needs NO docker: it asserts the
+      # properties of the table and of the script's own rules — that the local port band stays
+      # disjoint from the shadow oracle's 487xx/488xx band, that a namespace token cannot reach DDL
+      # unvalidated, that a valkey namespace never lands on the index `url` hands out, that `down` is
+      # safe with nothing up. Each of those is a way this fixture could go quietly wrong on a laptop,
+      # where nobody is watching.
+      - name: Store-service fixtures self-test
+        run: testing/fleet-fixtures/store-services.sh --selftest
 
   # EXECUTABLE-CONFIG gate. Every config-grammar guard that existed before this one was scoped to
   # DOCS — `crates/busbar/tests/docs_examples.rs` reads `docs/**`, marketing's check-config-blocks.mjs
@@ -1489,7 +1574,12 @@ jobs:
         run: |
           set -euo pipefail
           bash testing/shadow-oracle/fetch-golden.sh
-          for pl in store-sqlite headroom-hook webrequest-hook auth-oidc auth-ldap auth-github hashicorp-vault store-postgres store-mysql store-valkey; do
+          # The plugin set is DERIVED from the same digest file the cells and fetch-plugin.sh read,
+          # not restated here: a hand-kept copy of it goes stale the day a plugin is added, and the
+          # symptom is a plugins-family cell recording against a plugin that was never fetched.
+          plugins="$(cut -f1 testing/shadow-oracle/plugin-digests.tsv | grep -v '^#' | sort -u)"
+          [ -n "$plugins" ] || { echo "::error::no plugins derived from plugin-digests.tsv"; exit 1; }
+          for pl in $plugins; do
             bash testing/shadow-oracle/fetch-plugin.sh "$pl" >/dev/null
           done
       - name: Build the candidate (release, with the release public key)
@@ -1635,6 +1725,43 @@ jobs:
   # the verdict as information rather than counting it. THE FLIP: when `--check` is green on HEAD
   # (every row within its ceiling), delete `continue-on-error: true` from this job and move
   # `construction-gate` into the umbrella's RESULTS list as a `fast` row. Nothing else changes.
+  # TELLER STEPS — tracker H2's claim in executable form: "conformance rigs carry one cell per Teller
+  # step per plane". Three assertions, each doing something the other two cannot:
+  #   1. --selftest  the matrix LOADER refuses a matrix that lies — root evidence borrowed from
+  #      another leg's file, a root verdict carrying a label instead of an argument, a plane no root
+  #      leg answers to, a leg that proves zero steps over the loop.
+  #   2. --check     every GATING plane x step cell in qa/teller-steps.json names a real scenario and
+  #      not "none". This reads the JSON.
+  #   3. --root-legs the part that reads nothing and PROVES something: it builds the binary crate with
+  #      all five root legs on (root-admin,root-mcp,root-a2a,root-voice,root-llm) and EXECUTES every
+  #      named root-leg cell. A matrix can only be verified against cells that run; verified against
+  #      itself it is a spreadsheet.
+  # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
+  # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
+  # is a per-run fact instead. (There is no `--root-legs-gating` flag: the script dispatches on
+  # `--selftest` and `--root-legs` and silently ignores anything else, so spelling one would quietly
+  # run plain `--root-legs` while reading as though it had asked for more.)
+  teller-steps:
+    name: teller steps (one cell per Teller step per plane, and the cells RUN)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # FULL TIER. --root-legs compiles the binary crate under a feature combination no other job
+    # builds, so it cannot ride a warm cache from the `check` job; it runs on every pull request, on
+    # dev/qa/main and on workflow_dispatch, not on every branch push. See the tier note at the top.
+    if: github.event_name != 'push' || contains(fromJSON('["refs/heads/main", "refs/heads/dev", "refs/heads/qa"]'), github.ref)
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+      - name: Teller-steps self-test (a lying matrix is refused)
+        run: python3 scripts/teller-steps-check.py --selftest
+      - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)
+        run: python3 scripts/teller-steps-check.py --check
+      - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
+        run: python3 scripts/teller-steps-check.py --root-legs
+
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)
     runs-on: ubuntu-latest
@@ -1725,6 +1852,7 @@ jobs:
       - config-stability
       - generated-artifact-drift
       - public-hygiene
+      - service-image-pins
       - executable-config-lint
       - no-default-features
       - no-plugins-gate
@@ -1735,6 +1863,7 @@ jobs:
       - shadow-oracle
       - llm-conformance
       - design-bindings
+      - teller-steps
       # In `needs` so the umbrella waits for it and can print its verdict, but NOT in RESULTS below:
       # the job is report-only (continue-on-error) until its check is green on HEAD. See the job.
       - construction-gate
@@ -1756,6 +1885,7 @@ jobs:
         config-stability|fast|${{ needs.config-stability.result }}
         generated-artifact-drift|fast|${{ needs.generated-artifact-drift.result }}
         public-hygiene|fast|${{ needs.public-hygiene.result }}
+        service-image-pins|fast|${{ needs.service-image-pins.result }}
         shadow-oracle|fast|${{ needs.shadow-oracle.result }}
         llm-conformance|fast|${{ needs.llm-conformance.result }}
         design-bindings|fast|${{ needs.design-bindings.result }}
@@ -1768,6 +1898,7 @@ jobs:
         timing|full|${{ needs.timing.result }}
         windows|full|${{ needs.windows.result }}
         perf-build-gate|full|${{ needs.perf-build-gate.result }}
+        teller-steps|full|${{ needs.teller-steps.result }}
     steps:
       - name: Assert every required job reported green (skip-allowlist only on a fast-tier run)
         run: |

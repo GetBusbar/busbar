@@ -232,11 +232,15 @@ async fn apply_global_rewrites_chains_in_order() {
 #[test]
 fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, SECS_PER_DAY};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::governance::SECS_PER_DAY;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
     // No per-request fee, no rate card: token accrual changes `tokens`, never `spend_cents`.
     // Keys attribute all-time now, so the per-DAY window under test lives on the bound GROUP's
     // day bucket (a loose day budget materialises it without ever blocking).
@@ -256,9 +260,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(
-        None, 0, &groups,
-    ));
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -317,7 +319,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 
     // The 1000 tokens must be ledgered in the charged_at day's window of the GROUP day bucket...
     let in_window = gov
-        .derived_bucket_usage(&cost, "group:daygrp@day", "day", true, charged_at)
+        .derived_bucket_usage(&*cost, "group:daygrp@day", "day", true, charged_at)
         .expect("usage read")
         .tokens;
     assert_eq!(
@@ -327,7 +329,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     // ...and NOT in today's window (which the old `now()`-based code would have used).
     let in_today = gov
         .derived_bucket_usage(
-            &cost,
+            &*cost,
             "group:daygrp@day",
             "day",
             true,
@@ -341,7 +343,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
     // The key's all-time attribution bucket sees the tokens regardless of the day (sanity).
     assert_eq!(
-        gov.usage_for(&cost, &key.id, busbar_substrate::store::now())
+        gov.usage_for(&*cost, &key.id, busbar_substrate::store::now())
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0),
@@ -357,13 +359,16 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
 #[test]
 fn test_nonstream_token_sum_saturates_no_panic_on_overflow() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     // No fee, no rate card → the derived-spend math can't overflow, isolating the SUM under test.
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -436,11 +441,14 @@ fn test_stable_hash_is_deterministic() {
 #[test]
 fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
     // A rate card keyed by the CONFIG model name — the only key space it is allowed to use.
     // 1000 micro-units per token on input and output (a micro-unit is 1e-4 cents), nothing else.
     let card = std::collections::BTreeMap::from([(
@@ -468,11 +476,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(
-        Some(&card),
-        0,
-        &groups,
-    ));
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(Some(&card), 0, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -528,7 +532,7 @@ fn ledger_prices_an_aliased_lane_at_the_rate_card() {
     );
 
     let derived = gov
-        .derived_bucket_usage(&cost, "group:g@day", "day", true, charged_at)
+        .derived_bucket_usage(&*cost, "group:g@day", "day", true, charged_at)
         .expect("usage read");
     assert_eq!(derived.tokens, 1000, "tokens are ledgered either way");
     // 1000 tokens x 1000 micro-units/token = 1_000_000 micro-units = 100 cents.

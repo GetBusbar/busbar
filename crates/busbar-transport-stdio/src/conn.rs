@@ -56,6 +56,11 @@ pub(crate) struct ConnState {
     /// promise about what reached the wire, so the connection is FENCED rather than reused. See
     /// the crate report's note on the "cancel mid-frame" battery cell.
     pub(crate) poisoned: AtomicBool,
+    /// Set once the connection has been closed. A `frames()` pump captured its own clone of this
+    /// state before the close, so removing the transport's registry entry does not reach it; this
+    /// is the flag that pump checks, so a closed connection stops delivering inbound frames at the
+    /// same moment its writes start answering `Closed`.
+    pub(crate) closed: AtomicBool,
 }
 
 impl ConnState {
@@ -72,11 +77,16 @@ impl ConnState {
             writer: AsyncMutex::new(writer),
             child: AsyncMutex::new(child),
             poisoned: AtomicBool::new(false),
+            closed: AtomicBool::new(false),
         })
     }
 
     pub(crate) fn is_poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Acquire)
     }
 }
 

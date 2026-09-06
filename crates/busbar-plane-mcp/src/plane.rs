@@ -7,13 +7,10 @@
 //! ## The one shape worth reading before the code
 //!
 //! The intermediate representation the contract asks a plane to build carries the body AND the
-//! resolved pointer spans. The arena a plane is handed allocates bytes and strings, and nothing
-//! else, so a plane cannot put a table of spans into it and hand back a borrow that lives as long as
-//! the unit. Every draft below therefore carries the body with an EMPTY span table, and everything
-//! this plane read is reported as a fact or as a span on the admit facts, both of which are
-//! by-value. The kernel's own scanner is what resolves pointers over the body. That is a finding
-//! about the contract's allocator, not a decision taken here, and it is written down in the crate's
-//! notes.
+//! resolved pointer spans, and `view` builds both: it resolves the pointers this plane declares
+//! through the contract's own span grammar and allocates the resulting table in the unit's arena,
+//! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
+//! handed back an empty table because the arena could not allocate one; it can, and this does.
 
 use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};
@@ -30,7 +27,7 @@ use busbar_contract::wire::{Decode, DiscardCode, Encode, Frame, FrameCursor, Tra
 
 use crate::facts as f;
 use crate::jsonrpc;
-use crate::meta::{CLASS_BYTES, CLASS_TOOL_CALLS};
+use crate::meta::{self, CLASS_BYTES, CLASS_TOOL_CALLS};
 use crate::ops;
 use crate::records as rec;
 use crate::McpPlane;
@@ -181,52 +178,164 @@ fn request_facts<'u>(body: &'u [u8], envelope: &jsonrpc::Envelope) -> Facts<'u> 
     // block's keys carry separators, which a pointer would read as levels, so the whole block is
     // located by pointer and its members are read by name out of it.
     if let Some(block) = read_raw(body, "/params/_meta") {
-        if let Some(version) = member_of(block, f::META_PROTOCOL_VERSION_QUOTED) {
+        if let Some(version) = member_of(block, f::META_PROTOCOL_VERSION) {
             let _ = facts.set(f::FACT_PROTOCOL_VERSION, FactValue::Str(version));
         }
-        if let Some(token) = member_of(block, f::META_PROGRESS_TOKEN_QUOTED) {
+        if let Some(token) = member_of(block, f::META_PROGRESS_TOKEN) {
             let _ = facts.set(f::FACT_PROGRESS_TOKEN, FactValue::Str(token));
         }
     }
     facts
 }
 
-/// One quoted member of a flat object, by its exact quoted name.
+/// One quoted member of an object, by its exact name, one level down and no further.
 ///
 /// The metadata block's own keys contain separators, and a pointer reads a separator as a level, so
-/// they cannot be reached by pointer at all. This reads the member by name instead, which is the
-/// same walk one level down and no more.
+/// they cannot be reached by pointer at all. This walks the block's own members instead.
 ///
-/// The name arrives ALREADY QUOTED, as the constant it is. A member is looked for by its quoted
-/// name, and quoting a compile-time constant at request time buys nothing but a heap allocation on
-/// a path that runs once per metadata key on every request that carries a metadata block.
-fn member_of<'u>(object: &'u [u8], needle: &[u8]) -> Option<&'u str> {
-    let at = find(object, needle)?;
-    let mut i = at + needle.len();
-    while i < object.len() && matches!(object[i], b' ' | b'\t' | b'\n' | b'\r' | b':') {
+/// It used to scan the block's bytes for the quoted name and take whatever followed. That finds the
+/// name wherever it appears — as a key of a NESTED object, or written inside another member's
+/// string value — and hands back a value the caller never put at that name. The progress token in
+/// particular is a correlation, and a correlation read off a decoy answers the wrong request.
+///
+/// A member spelled twice reads as the LAST one. This is the only place a member is read without
+/// the span grammar, and the span grammar takes the last occurrence because serde_json and the
+/// servers' own parsers do; a walk that stopped at the first would let the client attribute a fact
+/// to a value the server never sees, which is the same decoy in a different spelling.
+fn member_of<'u>(object: &'u [u8], name: &str) -> Option<&'u str> {
+    let mut i = skip_space(object, 0);
+    if object.get(i) != Some(&b'{') {
+        return None;
+    }
+    i += 1;
+    let mut latest: Option<&'u str> = None;
+    loop {
+        i = skip_space(object, i);
+        match object.get(i) {
+            Some(b'}') => return latest,
+            None => return None,
+            Some(b',') => {
+                i += 1;
+                continue;
+            }
+            Some(b'"') => {}
+            Some(_) => return None,
+        }
+        let (key, after_key) = string_at(object, i)?;
+        i = skip_space(object, after_key);
+        if object.get(i) != Some(&b':') {
+            return None;
+        }
+        i = skip_space(object, i + 1);
+        let matched = key_is(key, name);
+        if object.get(i) == Some(&b'"') {
+            let (value, after_value) = string_at(object, i)?;
+            if matched {
+                // A member present as a string reads as its own bytes, unescaped no more than
+                // before.
+                latest = core::str::from_utf8(value).ok();
+            }
+            i = after_value;
+        } else {
+            i = skip_value(object, i)?;
+            if matched {
+                // A member present and not a string reads as absent, as it always has — and a later
+                // spelling that is not a string takes the answer back off an earlier one that was,
+                // because the last spelling is the one the server reads.
+                latest = None;
+            }
+        }
+    }
+}
+
+/// Past any whitespace, from one position.
+fn skip_space(bytes: &[u8], mut i: usize) -> usize {
+    while matches!(bytes.get(i), Some(b' ' | b'\t' | b'\n' | b'\r')) {
         i += 1;
     }
-    if object.get(i) != Some(&b'"') {
+    i
+}
+
+/// The content of the quoted string beginning at `i`, and the position just past its closing quote.
+fn string_at(bytes: &[u8], i: usize) -> Option<(&[u8], usize)> {
+    if bytes.get(i) != Some(&b'"') {
         return None;
     }
     let start = i + 1;
     let mut j = start;
-    while j < object.len() {
-        match object[j] {
+    while j < bytes.len() {
+        match bytes[j] {
             b'\\' => j += 2,
-            b'"' => return core::str::from_utf8(object.get(start..j)?).ok(),
+            b'"' => return Some((bytes.get(start..j)?, j + 1)),
             _ => j += 1,
         }
     }
     None
 }
 
-/// Where a byte run first appears in another, if it does.
-fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > haystack.len() {
-        return None;
+/// Whether one member's raw key names exactly this member.
+///
+/// The comparison is against the key as WRITTEN, which is what a name is: the two-character escapes
+/// stand for the characters they name, and a `\u` escape is answered "not this member" rather than
+/// half-decoded — no key this plane looks for is spelled that way, and a wrong answer here is a
+/// fact attributed to the wrong member.
+fn key_is(raw: &[u8], name: &str) -> bool {
+    let mut want = name.bytes();
+    let mut i = 0;
+    while i < raw.len() {
+        let (byte, width) = match raw[i] {
+            b'\\' => match raw.get(i + 1) {
+                Some(b'"') => (b'"', 2),
+                Some(b'\\') => (b'\\', 2),
+                Some(b'/') => (b'/', 2),
+                Some(b'n') => (b'\n', 2),
+                Some(b't') => (b'\t', 2),
+                Some(b'r') => (b'\r', 2),
+                Some(b'b') => (0x08, 2),
+                Some(b'f') => (0x0c, 2),
+                _ => return false,
+            },
+            other => (other, 1),
+        };
+        if want.next() != Some(byte) {
+            return false;
+        }
+        i += width;
     }
-    (0..=haystack.len() - needle.len()).find(|&i| &haystack[i..i + needle.len()] == needle)
+    want.next().is_none()
+}
+
+/// Past one whole non-string member value, from its first byte.
+///
+/// Objects and arrays are stepped over by depth, with strings inside them consumed whole so a brace
+/// written in one does not move the depth. Anything else runs to the member separator.
+fn skip_value(bytes: &[u8], mut i: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    loop {
+        match bytes.get(i)? {
+            b'"' => {
+                let (_, after) = string_at(bytes, i)?;
+                i = after;
+                if depth == 0 {
+                    return Some(i);
+                }
+                continue;
+            }
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            b',' if depth == 0 => return Some(i),
+            _ => {}
+        }
+        i += 1;
+    }
 }
 
 /// Which code and words this dialect answers one refusal reason with.
@@ -266,6 +375,18 @@ fn refusal_render(reason: RefusalReason) -> (i64, &'static str) {
             jsonrpc::CODE_INTERNAL,
             "the request could not be served at this time",
         ),
+    }
+}
+
+/// THE nested destination a sampling request reaches, named ONCE.
+///
+/// `verify` seals a destination and `route` then dials one, and a unit routed somewhere it was not
+/// verified for is the failure this seam exists to make impossible. Two hand-written copies of the
+/// same pair are two things that can drift; one expression cannot.
+const fn sampling_destination() -> DestinationFacts {
+    DestinationFacts::NestedPlane {
+        plane: meta::SAMPLING_PLANE,
+        op: meta::SAMPLING_OP,
     }
 }
 
@@ -585,7 +706,7 @@ impl Plane for McpPlane {
     fn authenticate<'u>(&self, _u: &Unit<'u>, ctx: &Ctx<'u>) -> CredentialLocator {
         // A locally launched server has no request to carry a header on: its credential is handed to
         // it when it starts. Everything on the document transport presents a bearer credential.
-        let over_stdio = ctx.transport().key() == crate::claims::TRANSPORT_STDIO;
+        let over_stdio = crate::claims::is_stdio(ctx.transport().key());
         let alt = if over_stdio { "environment" } else { "bearer" };
         // A notice asks for nothing, and it used to be narrowed to an invented "anonymous"
         // alternative for that reason. A notice arrives on the SAME claim a request does, though,
@@ -631,12 +752,9 @@ impl Plane for McpPlane {
                 op: rec::OP_PUT,
             },
             // A server asking for a completion is answered by the OTHER plane, one level down. This
-            // is the one nested destination this plane names, and it names it by a key its claim
-            // configuration declares rather than by reaching for that plane directly.
-            ops::OP_SAMPLING => DestinationFacts::NestedPlane {
-                plane: "llm",
-                op: busbar_contract::ids::OpClassId::new("chat"),
-            },
+            // is the one nested destination this plane names, and it is written once so that what
+            // this step seals and what `route` dials are the same expression, not two agreeing ones.
+            ops::OP_SAMPLING => sampling_destination(),
             // A server asking which roots it may work under is answered from configuration, which
             // this plane reads through its own settings records.
             ops::OP_ROOTS_LIST => DestinationFacts::PlaneRecord {
@@ -743,10 +861,7 @@ impl Plane for McpPlane {
             ops::OP_SAMPLING => {
                 leg(Self::record_leg(rec::SCHEMA_APPROVAL, rec::OP_REDEEM));
                 leg(Leg {
-                    destination: DestinationFacts::NestedPlane {
-                        plane: "llm",
-                        op: busbar_contract::ids::OpClassId::new("chat"),
-                    },
+                    destination: sampling_destination(),
                 });
             }
             ops::OP_ROOTS_LIST => leg(Self::record_leg(rec::SCHEMA_SETTINGS, rec::OP_GET)),
@@ -890,8 +1005,28 @@ impl SessionPlane for McpPlane {
 
 #[cfg(test)]
 mod tests {
-    use super::{finish_of, member_of, refusal_render, Codec};
+    use super::{finish_of, member_of, refusal_render, sampling_destination, Codec};
+    use busbar_contract::dest::DestinationFacts;
     use busbar_contract::unit::{AbortBy, FailureReason, RefusalReason, Step, UnitEnd};
+
+    /// The nested destination a sampling request reaches is the declared pair, and it is the SAME
+    /// value on both steps -- `verify` seals it and `route` dials it out of one expression, so a
+    /// change to either constant moves both or neither.
+    #[test]
+    fn verify_and_route_reach_one_declared_sampling_destination() {
+        assert_eq!(
+            sampling_destination(),
+            DestinationFacts::NestedPlane {
+                plane: crate::meta::SAMPLING_PLANE,
+                op: crate::meta::SAMPLING_OP,
+            }
+        );
+        let DestinationFacts::NestedPlane { plane, op } = sampling_destination() else {
+            panic!("a sampling request is answered by another plane, not by anything else");
+        };
+        assert_eq!(plane, "llm");
+        assert_eq!(op.as_str(), "chat");
+    }
 
     /// Every closed refusal reason has an answer, and every answer is a code this plane may write.
     ///
@@ -995,20 +1130,72 @@ mod tests {
     fn a_member_whose_name_carries_separators_is_read() {
         let block = br#"{"io.modelcontextprotocol/protocolVersion":"2026-07-28","other":1}"#;
         assert_eq!(
-            member_of(block, b"\"io.modelcontextprotocol/protocolVersion\""),
+            member_of(block, "io.modelcontextprotocol/protocolVersion"),
             Some("2026-07-28")
         );
-        assert_eq!(
-            member_of(block, b"\"io.modelcontextprotocol/clientInfo\""),
-            None
-        );
+        assert_eq!(member_of(block, "io.modelcontextprotocol/clientInfo"), None);
+    }
+
+    /// A member of a nested object is not a member of the block.
+    ///
+    /// The scan used to be for the quoted name anywhere in the block's bytes, so the first thing
+    /// that LOOKED like the member won — a nested object's own key, or the name written inside
+    /// somebody else's string value. Either one hands a later step a value the caller never put at
+    /// that name, and the progress token in particular is a correlation.
+    #[test]
+    fn a_nested_or_quoted_decoy_is_not_read_as_the_member() {
+        let nested = br#"{"inner":{"progressToken":"decoy"},"progressToken":"real"}"#;
+        assert_eq!(member_of(nested, "progressToken"), Some("real"));
+
+        let quoted =
+            br#"{"note":"the \"progressToken\":\"decoy\" is only prose","progressToken":"real"}"#;
+        assert_eq!(member_of(quoted, "progressToken"), Some("real"));
+
+        let only_nested = br#"{"inner":{"progressToken":"decoy"}}"#;
+        assert_eq!(member_of(only_nested, "progressToken"), None);
+
+        let suffix = br#"{"notTheProgressToken":"decoy"}"#;
+        assert_eq!(member_of(suffix, "progressToken"), None);
     }
 
     /// A member that is present and is not a string reads as absent.
     #[test]
     fn a_member_that_is_not_a_string_reads_as_absent() {
         let block = br#"{"progressToken":42}"#;
-        assert_eq!(member_of(block, b"\"progressToken\""), None);
+        assert_eq!(member_of(block, "progressToken"), None);
+    }
+
+    /// A member spelled twice reads as the LAST one, which is what the server will read.
+    ///
+    /// Every other reading of a body here goes through the span grammar, and the span grammar takes
+    /// the last occurrence because serde_json and the servers' own parsers do. This walk is the one
+    /// place a member is read WITHOUT the grammar — the block's keys carry separators a pointer
+    /// would read as levels — so it owes the same answer. Taking the first lets the client attribute
+    /// a fact to a value the server never sees: the progress token is a correlation, and a
+    /// correlation read off the losing duplicate answers a different request than the one that asked.
+    #[test]
+    fn a_member_spelled_twice_reads_as_the_last_one() {
+        let block = br#"{"progressToken":"decoy","progressToken":"real"}"#;
+        assert_eq!(member_of(block, "progressToken"), Some("real"));
+
+        let three = br#"{"progressToken":"a","progressToken":"b","progressToken":"c"}"#;
+        assert_eq!(member_of(three, "progressToken"), Some("c"));
+
+        // The last one deciding also means a last one that is not a string reads as absent, however
+        // many string-valued spellings came before it.
+        let shadowed = br#"{"progressToken":"real","progressToken":42}"#;
+        assert_eq!(member_of(shadowed, "progressToken"), None);
+
+        // And a non-string first spelling does not blind the walk to the string that follows it.
+        let recovered = br#"{"progressToken":42,"progressToken":"real"}"#;
+        assert_eq!(member_of(recovered, "progressToken"), Some("real"));
+
+        // The same for the separator-carrying name the block actually uses.
+        let version = br#"{"io.modelcontextprotocol/protocolVersion":"old","io.modelcontextprotocol/protocolVersion":"new"}"#;
+        assert_eq!(
+            member_of(version, "io.modelcontextprotocol/protocolVersion"),
+            Some("new")
+        );
     }
 
     /// The codec state starts at nothing and counts up on both axes.

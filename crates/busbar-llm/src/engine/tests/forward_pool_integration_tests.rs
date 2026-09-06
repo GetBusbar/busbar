@@ -269,7 +269,7 @@ async fn test_mock_server_5xx_error() {
 async fn test_non_stream_json_relay() {
     crate::testkit::install_test_seams();
     // ensure the Prometheus recorder is live so the forward path's counters record.
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -310,7 +310,7 @@ async fn test_non_stream_json_relay() {
     // the forward path (forward → forward_with_pool) must have emitted the
     // upstream-attempt counter into the Prometheus exposition.
     assert!(
-        busbar_core::metrics::render()
+        busbar_substrate::metrics::render()
             .contains(busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL),
         "forward path should emit {} into /metrics",
         busbar_substrate::telemetry::UPSTREAM_ATTEMPTS_TOTAL
@@ -326,7 +326,7 @@ async fn test_non_stream_json_relay() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_preserves_model() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -392,8 +392,9 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
-    busbar_core::metrics::init();
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..2 {
@@ -413,9 +414,9 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -459,10 +460,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -522,8 +521,9 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
-    busbar_core::metrics::init();
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    busbar_substrate::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
     // (prompt 100 + completion 60). The OpenAI reader decodes bare `data:`-framed chunks the
@@ -550,9 +550,9 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -597,10 +597,8 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         )
         .pool("pas", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -658,7 +656,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_max_requests_budget_caps_lane_and_counts_ok() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..3 {
         state.push(MockResponse::Ok {
@@ -757,7 +755,7 @@ async fn test_max_requests_budget_caps_lane_and_counts_ok() {
 #[tokio::test]
 async fn test_failover_exclusions_remove_member_from_pool() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let mk_server = |model: &'static str| async move {
         let state = Arc::new(MockServerState::new());
         for _ in 0..6 {
@@ -867,8 +865,8 @@ async fn test_failover_exclusions_remove_member_from_pool() {
 #[tokio::test]
 async fn test_metrics_admitted_in_open_relay_mode() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
-    metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_substrate::metrics::init();
+    metrics::counter!(busbar_substrate::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let app = TestApp::new().build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -895,7 +893,7 @@ async fn test_metrics_admitted_in_open_relay_mode() {
     assert!(ct.starts_with("text/plain"), "content-type was {ct}");
     let body = resp.text().await.unwrap();
     assert!(
-        body.contains(busbar_core::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_substrate::metrics::REQUESTS_TOTAL),
         "exposition should contain a metric; got:\n{body}"
     );
 
@@ -914,14 +912,13 @@ async fn test_metrics_admitted_in_open_relay_mode() {
 #[tokio::test]
 async fn test_metrics_requires_auth_in_chain_mode() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
-    metrics::counter!(busbar_core::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
+    busbar_substrate::metrics::init();
+    metrics::counter!(busbar_substrate::metrics::REQUESTS_TOTAL, "outcome" => "ok").increment(1);
 
     let token = "grp:metrics-scrapers";
-    let auth_cfg =
-        busbar_substrate::config::auth::AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
-            "test-groups-module",
-        )]);
+    let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
+        busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
+    ]);
     let app = TestApp::new()
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
         .build();
@@ -962,7 +959,7 @@ async fn test_metrics_requires_auth_in_chain_mode() {
     );
     let body = authed.text().await.unwrap();
     assert!(
-        body.contains(busbar_core::metrics::REQUESTS_TOTAL),
+        body.contains(busbar_substrate::metrics::REQUESTS_TOTAL),
         "authed exposition should contain a metric; got:\n{body}"
     );
 
@@ -973,17 +970,18 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -999,7 +997,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
         .unwrap();
     let secret = token.as_str();
 
-    let app = TestApp::new().keys_chain().governance(gov).build();
+    let app = TestApp::new().keys_chain().governance_kit(gov).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -1054,18 +1052,18 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
     use busbar_api::Store;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
-            .unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store.clone(), Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1110,16 +1108,16 @@ async fn test_governance_budget_over_quota() {
             ..Default::default()
         },
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, 1, &groups);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 1, &groups);
     // Enforcement is now IN-MEMORY (authoritative): hydrate the budget cells from the store — exactly
     // as boot does — so the admission gate sees the pre-seeded over-budget spend. (Without this the
     // store seed would be invisible to the in-memory gate and the request would be admitted.)
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
 
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(cost)
+        .governance_kit(gov)
+        .cost_kit(cost)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1178,17 +1176,17 @@ async fn test_governance_budget_over_quota() {
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_api::Store;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
-            .unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store.clone(), Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1233,15 +1231,15 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
             ..Default::default()
         },
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, 1, &groups);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 1, &groups);
     // Enforcement is IN-MEMORY (authoritative): hydrate the budget cells from the durable store — as
     // boot does — so the pre-seeded over-budget spend is visible to the admission gate.
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
 
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(cost)
+        .governance_kit(gov)
+        .cost_kit(cost)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let router = busbar_substrate::testkit::build_router(app);
@@ -1256,7 +1254,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
 #[tokio::test]
 async fn test_budget_over_quota_openai_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1289,7 +1287,7 @@ async fn test_budget_over_quota_openai_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_responses_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1323,7 +1321,7 @@ async fn test_budget_over_quota_responses_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_cohere_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1352,7 +1350,7 @@ async fn test_budget_over_quota_cohere_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_gemini_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1390,7 +1388,7 @@ async fn test_budget_over_quota_gemini_envelope() {
 #[tokio::test]
 async fn test_budget_over_quota_bedrock_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_budget_router().await;
 
     let r = reqwest::Client::new()
@@ -1429,17 +1427,18 @@ async fn test_budget_over_quota_bedrock_envelope() {
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1474,10 +1473,8 @@ async fn test_governance_rate_limit_429() {
     )]);
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1544,16 +1541,17 @@ async fn test_governance_rate_limit_429() {
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1587,10 +1585,8 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
     )]);
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let router = busbar_substrate::testkit::build_router(app);
@@ -1605,7 +1601,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
 #[tokio::test]
 async fn test_rate_limit_429_openai_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1643,7 +1639,7 @@ async fn test_rate_limit_429_openai_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_responses_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1674,7 +1670,7 @@ async fn test_rate_limit_429_responses_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_cohere_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1706,7 +1702,7 @@ async fn test_rate_limit_429_cohere_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_gemini_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1747,7 +1743,7 @@ async fn test_rate_limit_429_gemini_native_envelope() {
 #[tokio::test]
 async fn test_rate_limit_429_bedrock_native_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (addr, handle, secret) = over_rpm_router().await;
 
     let r = reqwest::Client::new()
@@ -1793,20 +1789,22 @@ async fn test_rate_limit_429_bedrock_native_envelope() {
 #[tokio::test]
 async fn test_governance_admin_api() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
     // A signing key is required to MINT signed-token keys (1.5.0).
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[9u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
 
-    let app = TestApp::new().keys_chain().governance(gov).build();
+    let app = TestApp::new().keys_chain().governance_kit(gov).build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2382,7 +2380,9 @@ async fn test_section6_passthrough_401_no_trip_vs_token_mode() {
     });
 
     let auth_cfg_token =
-        AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare("keys")]);
+        AuthCfg::with_chain(vec![busbar_substrate::config::auth::AuthChainEntry::bare(
+            "keys",
+        )]);
     let app_token = TestApp::new()
         .lane(
             LaneSpec::new(
@@ -3581,7 +3581,8 @@ mod disposition_matrix_tests {
                 listen: "0.0.0.0:8080".into(),
                 public_url: None,
                 tls: None,
-                admin_listen: busbar_substrate::config::sections::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
+                admin_listen: busbar_substrate::config::sections::DEFAULT_ADMIN_LISTEN_ADDR
+                    .to_string(),
                 admin_tls: None,
                 auth: None,
                 admin_auth: vec!["admin-tokens".to_string()],
@@ -3936,7 +3937,10 @@ async fn test_exhaustion_least_bad_selects_soonest() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1), (1, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -4023,7 +4027,10 @@ async fn test_forward_once_records_success_and_spends_budget() {
             .budget(2), // limited lane: 2 lifetime requests remaining
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -4073,7 +4080,7 @@ async fn test_forward_once_records_success_and_spends_budget() {
 #[tokio::test]
 async fn test_gemini_json_array_shim_ignored_for_body_model_ingress() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
             events: vec![
@@ -4175,7 +4182,10 @@ async fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
                 .err(5),
             )
             .pool("leastbad", &[(0, 1)])
-            .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+            .on_exhausted(
+                "leastbad",
+                busbar_substrate::config::pools::OnExhausted::LeastBad,
+            )
             .build();
         let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -5149,7 +5159,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         busbar_core::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
         axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_core::auth::CallerToken::default()),
+        axum::extract::Extension(busbar_api::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body.clone(),
     )
@@ -5165,7 +5175,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         busbar_core::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
         axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_core::auth::CallerToken::default()),
+        axum::extract::Extension(busbar_api::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body,
     )
@@ -5437,7 +5447,7 @@ async fn test_openai_omits_max_tokens_injects_fallback_for_anthropic() {
     .await;
     assert_eq!(
             got.get("max_tokens").and_then(|v| v.as_u64()),
-            Some(busbar_core::proto::DEFAULT_MAX_TOKENS as u64),
+            Some(busbar_substrate::config::limits::DEFAULT_MAX_TOKENS as u64),
             "absent max_tokens must be backfilled with the fallback on →anthropic translation; got: {got}"
         );
 }
@@ -5937,7 +5947,7 @@ async fn test_same_size_pool_exhausts() {
 #[tokio::test]
 async fn test_clean_sse_end_records_success_not_failure() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
 
     // Push several clean SSE responses (each ends normally with message_stop + [DONE]).
@@ -6011,7 +6021,7 @@ async fn test_clean_sse_end_records_success_not_failure() {
 #[tokio::test]
 async fn test_429_retry_after_header_sets_cooldown_floor() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Single lane; a 429 with Retry-After: 45. streak=0 → computed backoff is the base (15s),
     // so a floor of 45 must dominate, proving the header was honored end-to-end.
@@ -6077,7 +6087,7 @@ async fn test_429_retry_after_header_sets_cooldown_floor() {
 #[tokio::test]
 async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state.clone()).await;
 
@@ -6148,7 +6158,7 @@ async fn test_saturated_lane_respects_deadline_no_infinite_spin() {
 #[tokio::test]
 async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 
@@ -6196,7 +6206,7 @@ async fn test_unbounded_max_concurrent_never_throttles_a_burst() {
 #[tokio::test]
 async fn test_bounded_max_concurrent_still_enforces_the_cap() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
 

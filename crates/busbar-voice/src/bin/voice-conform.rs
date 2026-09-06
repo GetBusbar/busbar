@@ -1268,6 +1268,7 @@ fn composition(slice: &str) -> i32 {
         "route-failover" => probe_route_failover(),
         "audit-record" => probe_audit_record(),
         "exit-terminal" => probe_exit_terminal(),
+        "tool-reply" => probe_tool_reply(),
         other => ("FAIL", format!("unknown composition slice '{other}'")),
     };
     println!("RESULT {slice} {verdict} {detail}");
@@ -1336,6 +1337,290 @@ fn probe_provider_credential() -> (&'static str, String) {
          composes the endpoint the mint / SDP passes serve under (set-once; an unresolvable \
          reference composes nothing)"
             .into(),
+    )
+}
+
+// ── the governed tool-call wait, driven through a real session ───────────────────────────────────
+
+/// The node's open-call table, as a session reaches it — the same two questions the composition root's
+/// own implementor answers, over a table this probe can watch.
+#[derive(Debug, Default)]
+struct ProbeCalls {
+    open: std::sync::Mutex<Vec<ProbeCall>>,
+    woken: std::sync::Mutex<Vec<String>>,
+    refused: std::sync::Mutex<Vec<String>>,
+    /// The calls the tick ended because nobody answered them, and the wall each was ended at.
+    ended: std::sync::Mutex<Vec<(String, u64)>>,
+}
+
+/// One call this session has open, and the wall it stops waiting at.
+#[derive(Debug)]
+struct ProbeCall {
+    session: u64,
+    call_id: String,
+    deadline: u64,
+}
+
+/// How long a tool call's reply leg waits, in milliseconds — the PLANE's own declaration, read from
+/// the crate the composition root builds its leg out of rather than restated here. A second spelling
+/// of thirty seconds would let this leg keep passing after the figure it is meant to be pinning had
+/// moved.
+fn tool_reply_deadline_ms() -> u64 {
+    u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000
+}
+
+impl ProbeCalls {
+    /// Enter a call as waiting, at `now_ms`, under the deadline the plane's leg declares — the same
+    /// arithmetic the kernel's own wait table does when the root plans the leg.
+    fn enter(&self, session: u64, call_id: &str, now_ms: u64) {
+        self.open.lock().unwrap().push(ProbeCall {
+            session,
+            call_id: call_id.to_string(),
+            deadline: now_ms + tool_reply_deadline_ms(),
+        });
+    }
+}
+
+impl busbar_voice::runtime::GovernedCalls for ProbeCalls {
+    fn replied(
+        &self,
+        session: u64,
+        call_id: &str,
+    ) -> Result<(), busbar_voice::runtime::ReplyRefusal> {
+        let mut open = self.open.lock().unwrap();
+        if !open.iter().any(|c| c.session == session) {
+            self.refused.lock().unwrap().push(call_id.to_string());
+            return Err(busbar_voice::runtime::ReplyRefusal::NoSuchSession);
+        }
+        match open
+            .iter()
+            .position(|c| c.session == session && c.call_id == call_id)
+        {
+            Some(i) => {
+                let call = open.remove(i);
+                self.woken.lock().unwrap().push(call.call_id);
+                Ok(())
+            }
+            None => {
+                self.refused.lock().unwrap().push(call_id.to_string());
+                Err(busbar_voice::runtime::ReplyRefusal::UnknownCall)
+            }
+        }
+    }
+
+    fn expired(&self, now_ms: u64) -> usize {
+        let mut open = self.open.lock().unwrap();
+        let (done, still): (Vec<ProbeCall>, Vec<ProbeCall>) = std::mem::take(&mut *open)
+            .into_iter()
+            .partition(|c| c.deadline <= now_ms);
+        *open = still;
+        let mut ended = self.ended.lock().unwrap();
+        for c in &done {
+            ended.push((c.call_id.clone(), now_ms));
+        }
+        done.len()
+    }
+}
+
+/// A tool executor that serves nothing at all — every call this session sees is the client's to
+/// answer, which is the shape the governed wait exists for.
+#[derive(Debug)]
+struct ServesNothing;
+
+#[async_trait::async_trait]
+impl busbar_voice::runtime::ToolExecutor for ServesNothing {
+    fn serves(&self, _name: &str) -> bool {
+        false
+    }
+    async fn execute(&self, _name: &str, _arguments: &[u8]) -> Vec<u8> {
+        b"{}".to_vec()
+    }
+}
+
+/// One dialect's three wire shapes for this leg: the frames that announce a call, the client's own
+/// reply to it, and a reply naming a call nobody opened.
+struct ToolWire {
+    dialect: &'static str,
+    announce: Vec<Value>,
+    reply: Value,
+    wrong: Value,
+}
+
+fn openai_tool_wire() -> ToolWire {
+    ToolWire {
+        dialect: "openai-realtime",
+        announce: vec![
+            serde_json::json!({"type":"response.output_item.added",
+                "item":{"type":"function_call","call_id":"call_x","name":"lookup"}}),
+            serde_json::json!({"type":"response.function_call_arguments.delta",
+                "call_id":"call_x","delta":"{\"q\":1}"}),
+            serde_json::json!({"type":"response.function_call_arguments.done","call_id":"call_x"}),
+        ],
+        reply: serde_json::json!({"type":"conversation.item.create",
+            "item":{"type":"function_call_output","call_id":"call_x","output":"ok"}}),
+        wrong: serde_json::json!({"type":"conversation.item.create",
+            "item":{"type":"function_call_output","call_id":"call_forged","output":"ok"}}),
+    }
+}
+
+fn gemini_tool_wire() -> ToolWire {
+    ToolWire {
+        dialect: "gemini-live",
+        // Gemini delivers a call ATOMICALLY; the codec expands it into the same open/args/close
+        // triple, which is exactly why one runtime serves both dialects.
+        announce: vec![serde_json::json!({"toolCall":{"functionCalls":[
+            {"id":"call_x","name":"lookup","args":{"q":1}}]}})],
+        reply: serde_json::json!({"toolResponse":{"functionResponses":[
+            {"id":"call_x","name":"lookup","response":{"ok":true}}]}}),
+        wrong: serde_json::json!({"toolResponse":{"functionResponses":[
+            {"id":"call_forged","name":"lookup","response":{"ok":true}}]}}),
+    }
+}
+
+/// Drive one dialect's whole leg over a real [`SessionCore`]: announce a client-served call, answer
+/// it, forge an answer, and let the tick sweep an unanswered one. `Ok(())` or the first failure.
+fn drive_tool_reply<C>(codec: C, w: &ToolWire) -> Result<(), String>
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+{
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("tokio runtime");
+    let table = Arc::new(ProbeCalls::default());
+    let lease = LocalMeteringPort
+        .reserve(1_000, 0, None)
+        .expect("an uncapped lease always opens");
+    let core = SessionCore::new(
+        codec,
+        lease,
+        None,
+        Arc::new(ServesNothing),
+        Carrier::sideband(),
+        None,
+    )
+    .with_governed(busbar_voice::runtime::GovernedSession {
+        session: 7,
+        calls: Arc::clone(&table) as Arc<dyn busbar_voice::runtime::GovernedCalls>,
+    });
+
+    // The call is announced. Nothing goes upstream: the node serves no tool, so it authors no
+    // answer — the wait the root planned is the only thing that can end this call.
+    for f in &w.announce {
+        let plan = rt.block_on(core.on_server_frame(wire_of(f)));
+        if !plan.upstream.is_empty() {
+            return Err(format!(
+                "{}: the node answered a call it does not serve",
+                w.dialect
+            ));
+        }
+    }
+
+    // THE WAKE. The root entered the wait where it planned the leg; the client's reply names it.
+    table.enter(7, "call_x", 0);
+    let plan = core.on_client_frame(wire_of(&w.reply));
+    if plan.refused_reply {
+        return Err(format!(
+            "{}: an open wait refused its own answer",
+            w.dialect
+        ));
+    }
+    if table.woken.lock().unwrap().as_slice() != ["call_x"] {
+        return Err(format!(
+            "{}: the reply never reached the node's table",
+            w.dialect
+        ));
+    }
+    let up: String = plan
+        .upstream
+        .iter()
+        .map(|e| String::from_utf8_lossy(&e.0).to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !up.contains("call_x") {
+        return Err(format!(
+            "{}: the woken reply never reached the model: {up}",
+            w.dialect
+        ));
+    }
+
+    // THE REFUSAL. A reply naming a call nobody is waiting on reaches the model on no wire at all.
+    table.enter(7, "call_y", 0);
+    let plan = core.on_client_frame(wire_of(&w.wrong));
+    if !plan.refused_reply || !plan.upstream.is_empty() {
+        return Err(format!(
+            "{}: a reply naming no open call was carried upstream anyway",
+            w.dialect
+        ));
+    }
+    if table.refused.lock().unwrap().as_slice() != ["call_forged"] {
+        return Err(format!(
+            "{}: the forged reply was not refused by identifier",
+            w.dialect
+        ));
+    }
+
+    // THE SWEEP, AT THE DEADLINE THE PLANE DECLARES. `call_y` is still open and nobody answered it;
+    // the tick beside the pump is what ends it, and WHEN it ends it is the whole of what this half of
+    // the leg pins. The wall is the plane's own `TOOL_REPLY_DEADLINE_SECS`, read from the plane crate
+    // the composition root builds its reply leg from, so a change to that figure moves this leg with
+    // it instead of leaving it asserting the old one. Not one millisecond early: a tick that ended a
+    // call before its declared deadline would be settling a hold the client still had time to close.
+    let deadline = tool_reply_deadline_ms();
+    if core.sweep_expired(deadline - 1) != 0 {
+        return Err(format!(
+            "{}: a call was ended one millisecond before the deadline its leg declared",
+            w.dialect
+        ));
+    }
+    if core.sweep_expired(deadline) != 1 {
+        return Err(format!(
+            "{}: the tick did not end the unanswered call at the declared deadline ({deadline} ms)",
+            w.dialect
+        ));
+    }
+    // And what it left behind is an ENDING, not a settlement: this call was ended by the deadline,
+    // and nothing was ever woken for it. On the composition root's own table that ending is what the
+    // unit's exit path reads to end as `Failed(Route, DeadlineExceeded)`; here it is read as the fact
+    // the served path put there — the call, and the wall it was ended at.
+    if table.ended.lock().unwrap().as_slice() != [("call_y".to_string(), deadline)] {
+        return Err(format!(
+            "{}: the unanswered call was not ended at its own deadline: {:?}",
+            w.dialect,
+            table.ended.lock().unwrap()
+        ));
+    }
+    if table.woken.lock().unwrap().as_slice() != ["call_x"] {
+        return Err(format!(
+            "{}: an unanswered call was settled as though its answer had arrived",
+            w.dialect
+        ));
+    }
+    Ok(())
+}
+
+/// A client-served tool call's reply reaches the node's own table through a REAL session, on every
+/// dialect the plane serves a duplex session on. Without this the root entered a wait that the served
+/// path could never wake and no tick ever swept — the call's hold was held open by a client that
+/// simply never replied, and a forged reply rode upstream under whatever call happened to be open.
+fn probe_tool_reply() -> (&'static str, String) {
+    if let Err(e) = drive_tool_reply(OpenAiRealtimeCodec, &openai_tool_wire()) {
+        return ("FAIL", e);
+    }
+    if let Err(e) = drive_tool_reply(GeminiLiveCodec, &gemini_tool_wire()) {
+        return ("FAIL", e);
+    }
+    (
+        "PASS",
+        format!(
+            "on both duplex dialects a call for a tool the node does not serve is answered by \
+             nobody but the client: the reply wakes the wait the root planned and only then reaches \
+             the model, a reply naming no open call is refused and carried on no wire, and the tick \
+             beside the pump ends a call nobody answered at exactly the {} s its leg declares — not \
+             one millisecond early — so its unit exits under that deadline rather than settling as \
+             though the answer had arrived",
+            busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS
+        ),
     )
 }
 
@@ -2082,7 +2367,7 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let usage = || -> ! {
         eprintln!(
-            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>\n  voice-conform composition <provider-credential|metering-lease|session-scope|gemini-live-route|provider-dial|admit-refusal|route-failover|audit-record|exit-terminal>"
+            "usage:\n  voice-conform spec <openai|gemini> <fixtures_dir>\n  voice-conform replay <fixtures_root>\n  voice-conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>\n  voice-conform governance <checkpoint>\n  voice-conform composition <provider-credential|metering-lease|session-scope|gemini-live-route|provider-dial|admit-refusal|route-failover|audit-record|exit-terminal|tool-reply>"
         );
         std::process::exit(2);
     };

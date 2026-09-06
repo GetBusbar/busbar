@@ -11,6 +11,12 @@
 # it on EVERY invocation, not just at install time. Add a row here for a triple by running
 # fetch-golden.sh on that host once — it prints the digest to pin. A triple with no row falls back to
 # re-hashing the cached tarball against its pinned digest (also a real pin, never a sidecar).
+# The EXTRACTED busbar inside each archive, keyed busbar-<triple>: the archive digest proves the
+# download; these prove the bytes that get executed, on the cache-hit path, on --check and after
+# install. Derived by extracting each archive whose own digest matched its row.
 1.5.5	busbar-aarch64-apple-darwin	48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48
 1.5.5	busbar-openapi-v1.5.5.json	1c1a60798156bf7ca9b99f38852fec36a08de1ad297af9832088fccd9f663c7d
+1.5.5	busbar-x86_64-apple-darwin	7b91b797294f89a347dc645a572b1dcd135493de3adee404f4189ab7d1433317
+1.5.5	busbar-aarch64-unknown-linux-gnu	17339161e28a09b4474d1027724b358b9c96f93c557a33d309f7809e7f6fc807
+1.5.5	busbar-x86_64-unknown-linux-gnu	84bde0a047fe368b661e9f6f14b2916390c40b71a6d91cdff1dbfa350aaf80e7
 1.5.5	busbar-v1.5.5.cdx.json	b412f9520bce639220cba8580c1c031d7ce6f69ffbdcfa31e0fb069ed75ba558

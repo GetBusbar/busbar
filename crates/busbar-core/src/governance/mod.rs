@@ -16,11 +16,14 @@ use crate::diagnostics::{
     diag_debug, diag_warn, GOVERNANCE_KEY_RESERVED_NAMESPACE_COLLISION, LIMIT_WINDOW_UNRECOGNIZED,
 };
 
-/// Seconds in a UTC day, for `budget_window`'s day/month arithmetic. `pub(crate)` so cross-module
-/// TEST code can reference it as `crate::governance::SECS_PER_DAY`; production modules that need the
-/// same value independently (e.g. `sigv4.rs`) keep a private copy where layering prohibits importing
-/// it for a one-line constant.
-pub const SECS_PER_DAY: u64 = 86_400;
+/// Seconds in a UTC day, for `budget_window`'s day/month arithmetic.
+///
+/// Re-export BY IDENTITY of its canonical home, `busbar_substrate::governance::SECS_PER_DAY`: it is
+/// a bare calendar constant, so it belongs to the neutral governance vocabulary a plane's tests
+/// spell a day boundary with. `crate::governance::SECS_PER_DAY` resolves to the same value.
+/// Production modules that need it where layering prohibits the import (e.g. `sigv4.rs`) keep a
+/// private copy, as before.
+pub use busbar_substrate::governance::SECS_PER_DAY;
 
 // ── Window sentinel tokens (nouns; matched in `budget_window`). The SAME strings are the
 // `groups:` config vocabulary (`per: minute|hour|day|month|total`), the ledger-bucket window
@@ -332,12 +335,12 @@ impl std::fmt::Debug for AdmitGrant {
 
 /// A derived (read-time) usage view for admin/metrics consumers: `spend_cents` is COMPUTED from
 /// the token ledger x the current rate card at the moment of the read - never stored.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct DerivedUsage {
-    pub spend_cents: i64,
-    pub tokens: u64,
-    pub requests: u64,
-}
+///
+/// Re-export BY IDENTITY of its canonical home, `busbar_substrate::governance::DerivedUsage`: the
+/// figure is three integers with no engine dependency, so it belongs to the neutral governance
+/// vocabulary a plane reads it back through. `crate::governance::DerivedUsage` resolves to the very
+/// same type it always did.
+pub use busbar_substrate::governance::DerivedUsage;
 
 /// THE REVOCATION STALENESS WINDOW (seconds). The in-memory denylist is a CACHE of the durable
 /// store's revocation set, not the truth: every auth path re-reads the store denylist when its copy

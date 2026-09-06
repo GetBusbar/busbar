@@ -46,10 +46,12 @@
 //!   is constant and a reservation is granted in full, stamped with that epoch — a request carrying
 //!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
 //!   there is no fleet for it to be stale against. The grant never expires for the same reason.
-//! - **The sealed replay cache.** Node-local and process-lifetime, which is exactly the durability
-//!   the journal has on such a deployment. A restore does NOT clear it: dropping a committed replay
-//!   slot is precisely how a credential-minting verb re-mints, which is the one thing the sealed
-//!   cache exists to prevent.
+//! - **The sealed replay cache.** Node-local, which is exactly the durability the journal has on
+//!   such a deployment. A restore does NOT clear it: dropping a committed replay slot is precisely
+//!   how a credential-minting verb re-mints, which is the one thing the sealed cache exists to
+//!   prevent. It is not process-lifetime, though: a slot answers for [`REPLAY_TTL_SECS`] — the same
+//!   window the in-process sibling keeps — and is swept after, or the map would grow forever with
+//!   every minted response the node ever served.
 //! - **Shipping.** The shim ACKNOWLEDGES and keeps nothing but a count and the last identity. It
 //!   does not retain the records: the log's own memory buffer is already the record on such a
 //!   deployment, and a second copy here would be an unbounded leak on a long-running node. It never
@@ -147,11 +149,41 @@ struct Inner {
     /// The payload schema its signed manifest declares.
     abi_version: u32,
     shim: Shim,
+    /// What the sealed replay cache ages its slots against.
+    clock: ShimClock,
 }
 
-/// The sealed replay cache's map: the verb's idempotency key to the committed response bytes, or
-/// `None` for a slot that is reserved and not yet committed.
-type ReplaySlots = HashMap<(String, String), Option<Vec<u8>>>;
+/// The sealed replay cache's map: the verb's idempotency key to the moment the slot was written and
+/// the committed response bytes, or `None` for a slot that is reserved and not yet committed.
+///
+/// The moment is held beside the slot because the seam this shim answers for names a TTL, and a map
+/// with no TTL is not a cache — it is a leak that grows with every credential-minting verb the node
+/// ever serves, and it holds each minted response for the life of the process.
+type ReplaySlots = HashMap<(String, String), (u64, Option<Vec<u8>>)>;
+
+/// How long a sealed replay slot answers for, in seconds.
+///
+/// The seam's own contract names the window, and the in-process sibling
+/// [`busbar_unit_verbs::idempotency`] keeps exactly this one — so a deployment whose store predates
+/// the durable cache gets the same replay window it would get from the store, rather than a
+/// different one because the shim is answering.
+pub const REPLAY_TTL_SECS: u64 = busbar_unit_verbs::idempotency::IDEMPOTENCY_TTL_SECS;
+
+/// The clock the sealed replay cache ages its slots against, in unix seconds.
+///
+/// Injected rather than read where it is needed: the sweep is the whole of the cache's bound, and a
+/// bound that can only be observed by waiting ten minutes is a bound nothing checks.
+pub type ShimClock = Arc<dyn Fn() -> u64 + Send + Sync>;
+
+/// The wall clock, for an adapter whose caller did not name one.
+fn system_clock() -> ShimClock {
+    Arc::new(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    })
+}
 
 /// The node-local answer for the operations the loaded store predates.
 ///
@@ -227,11 +259,19 @@ impl StoreAdapter {
     /// the first accepted connection can settle and the ledger's dual write is already holding this
     /// adapter's legacy-rows path by then.
     pub fn new(store: Arc<dyn AbiStore>, abi_version: u32) -> Self {
+        StoreAdapter::with_clock(store, abi_version, system_clock())
+    }
+
+    /// [`StoreAdapter::new`] against a named clock. The composition root has no reason to name one;
+    /// anything that must watch the sealed replay cache age its slots does, because the alternative
+    /// is waiting out the TTL in real time.
+    pub fn with_clock(store: Arc<dyn AbiStore>, abi_version: u32, clock: ShimClock) -> Self {
         StoreAdapter {
             inner: Arc::new(Inner {
                 store,
                 abi_version,
                 shim: Shim::default(),
+                clock,
             }),
         }
     }
@@ -287,7 +327,7 @@ impl StoreAdapter {
             let replay = self.inner.shim.replay();
             (
                 replay.len(),
-                replay.values().filter(|v| v.is_some()).count(),
+                replay.values().filter(|(_, v)| v.is_some()).count(),
             )
         };
         let records_shipped = self.inner.shim.shipped().count;
@@ -807,13 +847,19 @@ impl VerbStore for StoreAdapter {
     ///
     /// A reserved-but-uncommitted slot reads as `None`: the first caller is still in flight and has
     /// not decided what the answer is.
+    ///
+    /// Every probe first drops the slots past [`REPLAY_TTL_SECS`], which is what bounds the cache:
+    /// the only other thing that ever touches it is a commit, so a sweep anywhere else would leave
+    /// the map growing on exactly the traffic that fills it. The in-process sibling sweeps here too.
     fn replay_new_verb(&self, key: &(String, String)) -> Result<Option<Vec<u8>>, VerbStoreError> {
+        let now = (self.inner.clock)();
         let mut replay = self.inner.shim.replay();
+        replay.retain(|_, (written, _)| now.saturating_sub(*written) < REPLAY_TTL_SECS);
         match replay.get(key) {
-            Some(Some(response)) => Ok(Some(response.clone())),
-            Some(None) => Ok(None),
+            Some((_, Some(response))) => Ok(Some(response.clone())),
+            Some((_, None)) => Ok(None),
             None => {
-                replay.insert(key.clone(), None);
+                replay.insert(key.clone(), (now, None));
                 Ok(None)
             }
         }
@@ -825,10 +871,11 @@ impl VerbStore for StoreAdapter {
         key: &(String, String),
         response: &[u8],
     ) -> Result<(), VerbStoreError> {
+        let now = (self.inner.clock)();
         self.inner
             .shim
             .replay()
-            .insert(key.clone(), Some(response.to_vec()));
+            .insert(key.clone(), (now, Some(response.to_vec())));
         Ok(())
     }
 }

@@ -48,6 +48,7 @@
 //! belongs in the transport, and until it lands a deployment with two TLS listeners is exposed.
 
 use busbar_contract::{ConfigView, Listener, Transport, TransportConfigView, TransportError};
+#[cfg(feature = "plane-voice")]
 use busbar_transport_ws::MESSAGE_MAX_BYTES_KEY;
 
 use std::sync::Arc;
@@ -228,8 +229,17 @@ impl ConfigView for ListenerView {
         // The one key answered, and it is answered because a transport that assembles a message
         // before anything above it sees a byte has no other place to learn the ceiling. Every other
         // key is still `None`: this is a limit the node states, not an opening onto configuration.
-        (key == MESSAGE_MAX_BYTES_KEY)
-            .then(|| i64::try_from(self.request_body_max_bytes).unwrap_or(i64::MAX))
+        #[cfg(feature = "plane-voice")]
+        {
+            (key == MESSAGE_MAX_BYTES_KEY)
+                .then(|| i64::try_from(self.request_body_max_bytes).unwrap_or(i64::MAX))
+        }
+        // Without the voice plane there is no transport assembling messages, so no key is answered.
+        #[cfg(not(feature = "plane-voice"))]
+        {
+            let _ = key;
+            None
+        }
     }
 
     fn get_bool(&self, _key: &str) -> Option<bool> {
@@ -581,6 +591,7 @@ mod tests {
     /// chose — while the operator's configuration said something four orders of magnitude smaller,
     /// and every other listener on the node honoured it. That is not a refusal to disclose: it is a
     /// limit the node states everywhere else silently not applying here.
+    #[cfg(feature = "plane-voice")]
     #[test]
     fn the_listener_view_answers_the_operators_message_ceiling() {
         const CAP: usize = 1024;

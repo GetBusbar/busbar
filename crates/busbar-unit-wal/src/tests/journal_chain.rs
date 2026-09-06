@@ -365,7 +365,8 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
         "the bound is not reached yet"
     );
 
-    // Three more would make six against a bound of four, so two of the oldest go.
+    // Three more against a bound of four, and the break record sealed to account for the drop is a
+    // record the buffer holds too: seven wanting four, so three of the oldest go.
     journal
         .append(
             &token,
@@ -374,11 +375,18 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
         )
         .expect_err("the store is still refusing");
 
+    assert!(
+        journal.buffered() <= journal.capacity(),
+        "the bound counts every record the buffer holds, the break record included: {} held against a bound of {}",
+        journal.buffered(),
+        journal.capacity()
+    );
+
     let overflows = journal.overflows();
     assert_eq!(overflows.len(), 1, "the bound was reached exactly once");
-    assert_eq!(overflows[0].dropped, 2);
+    assert_eq!(overflows[0].dropped, 3);
     assert_eq!(overflows[0].first, (4, 1), "the OLDEST go, not the newest");
-    assert_eq!(overflows[0].last, (4, 2));
+    assert_eq!(overflows[0].last, (4, 3));
 
     // And the loss is on the chain, as the class the contract already has for it.
     let on_the_medium =
@@ -415,6 +423,12 @@ fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
                 &entries(RecordClass::Transaction, 2, round),
             )
             .expect_err("the store refuses every time");
+        assert!(
+            journal.buffered() <= journal.capacity(),
+            "round {round} left {} records buffered against a bound of {}",
+            journal.buffered(),
+            journal.capacity()
+        );
     }
 
     assert!(

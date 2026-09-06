@@ -25,12 +25,18 @@ pub enum ClientMode {
     Deliver,
     /// Send it and wait for a correlated answer.
     AwaitReply {
-        /// The correlation the answer must carry.
+        /// The declared fact key the answer's correlation is carried under.
         ///
-        /// A destination is sealed and held past the frame it was built in, so its correlation
-        /// cannot borrow the per-unit arena the way a draft's does: what a leg waits on is fixed
-        /// when the leg is planned, and it outlives the bytes that planned it.
-        correlation: crate::ids::CorrelationRef<'static>,
+        /// The KEY, not the value, because a destination is sealed and held past the frame it was
+        /// built in while an identifier lives in the unit's arena. The value is not missing: the
+        /// unit's own draft already carries it, under this key, as
+        /// [`crate::plane::UnitDraft::correlation_out`] — that is the definition of that field, and
+        /// it is a `CorrelationRef<'u>` borrowed from the arena, so it is the identifier itself and
+        /// never a fold of it. The kernel copies it into its own waiting table while the leg is
+        /// being planned, which is inside the frame that built it, and matches an inbound reply's
+        /// `correlates` against it by whole value. Nothing sealed ever holds arena bytes, and
+        /// nothing on the path compares two identifiers by a digest of them.
+        correlation_key: &'static str,
         /// How long to wait, in seconds, bounded by the configured turn ceiling.
         deadline_secs: u32,
     },
@@ -139,7 +145,6 @@ impl DestinationFacts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedDestination {
     facts: DestinationFacts,
-    lane: Option<LaneId>,
     transport: &'static str,
     budget_remaining: Option<i64>,
 }
@@ -154,7 +159,6 @@ impl VerifiedDestination {
         budget_remaining: Option<i64>,
     ) -> Self {
         Self {
-            lane: facts.lane(),
             facts,
             transport,
             budget_remaining,
@@ -167,10 +171,14 @@ impl VerifiedDestination {
         self.facts
     }
 
-    /// The priced lane the trust unit sealed, re-derived against the allow-list.
+    /// The priced lane the trust unit sealed.
+    ///
+    /// Read off the sealed facts rather than stored beside them. It was stored beside them, set at
+    /// seal from exactly this expression and copied unchanged through re-addressing, which is a
+    /// second copy of one fact and the only way the two could ever disagree.
     #[must_use]
-    pub fn lane(&self) -> Option<LaneId> {
-        self.lane
+    pub const fn lane(&self) -> Option<LaneId> {
+        self.facts.lane()
     }
 
     /// Which transport dials it.
@@ -200,7 +208,6 @@ impl VerifiedDestination {
                 address,
                 lane,
             },
-            lane: self.lane,
             transport,
             budget_remaining: self.budget_remaining,
         })

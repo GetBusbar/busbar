@@ -38,6 +38,9 @@ export LEDGER
 mkdir -p "$(dirname "$LEDGER")"
 [ -f "$LEDGER" ] || : > "$LEDGER"
 
+# GATE_NAME, not a hardcoded "plugin-functional": these annotations are what a reader sees in the
+# Actions summary, and verdict.sh already names the gate from this variable. The shadow oracle sources
+# this same file, so every one of its FAIL rows was annotating itself as a plugin gate it is not.
 record() {  # record <id> <PASS|FAIL|SKIP> <title> <detail>
   local id="$1" status="$2" title="$3" detail="${4:-}"
   title="$(printf '%s' "$title" | tr '\t\n' '  ')"
@@ -48,12 +51,12 @@ record() {  # record <id> <PASS|FAIL|SKIP> <title> <detail>
     FAIL)
       printf 'FAIL  %-40s %s\n' "$id" "$title"
       printf '      %s\n' "$detail"
-      echo "::error title=plugin-functional ${id}::${title} — ${detail}"
+      echo "::error title=${GATE_NAME:-plugin-functional} ${id}::${title} — ${detail}"
       ;;
     SKIP)
       printf 'SKIP  %-40s %s\n' "$id" "$title"
       printf '      %s\n' "$detail"
-      echo "::warning title=plugin-functional ${id} DID NOT VERIFY::${title} — ${detail}"
+      echo "::warning title=${GATE_NAME:-plugin-functional} ${id} DID NOT VERIFY::${title} — ${detail}"
       ;;
   esac
 }
@@ -125,6 +128,43 @@ rc = s.connect_ex(("127.0.0.1", int(sys.argv[1])))
 s.close()
 sys.exit(0 if rc == errno.ECONNREFUSED else 1)
 PY
+}
+
+# ── Oracle mock control-file writes (atomic + confirmed) ──────────────────────────────────────────
+# testing/shadow-oracle/mock-upstream.py re-reads its control file on every request. A plain
+# `> "$CONTROL"` truncates the file in place, so a request that lands mid-write can observe an EMPTY
+# file -- and the mock now holds its last-known verb rather than treat that as "no outage", but the
+# writer side of that contract is: never let a reader observe a partial write in the first place.
+# Every writer of that file goes through these two functions:
+#   * the write is temp-file-beside-then-rename (atomic on the same filesystem: a reader either sees
+#     the old, complete content or the new, complete content, never a torn mix);
+#   * the write is CONFIRMED by polling the mock's own `GET /__control` echo before the caller is
+#     allowed to fire the cell's request that depends on it -- a write nobody can prove landed is not
+#     a write.
+oracle_write_control() {  # oracle_write_control <control-file> <mock-port> <value>
+  local file="$1" port="$2" val="$3" tmp got i=0
+  tmp="$(mktemp "${file}.XXXXXX")" || return 1
+  printf '%s' "$val" >"$tmp" || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$file" || return 1
+  while [ "$i" -lt 100 ]; do
+    got="$(curl -sS -m 2 "http://127.0.0.1:${port}/__control" 2>/dev/null | jq -r '.raw // empty' 2>/dev/null)"
+    [ "$got" = "$val" ] && return 0
+    sleep 0.02; i=$((i + 1))
+  done
+  echo "oracle_write_control: mock on port ${port} never echoed the write to ${file} (wrote '${val}', last saw '${got}')" >&2
+  return 1
+}
+
+oracle_clear_control() {  # oracle_clear_control <control-file> <mock-port>
+  local file="$1" port="$2" got i=0
+  rm -f "$file"  # unlink is already atomic: no reader ever observes a partially-removed file
+  while [ "$i" -lt 100 ]; do
+    got="$(curl -sS -m 2 "http://127.0.0.1:${port}/__control" 2>/dev/null | jq -r '.raw // empty' 2>/dev/null)"
+    [ -z "$got" ] && return 0
+    sleep 0.02; i=$((i + 1))
+  done
+  echo "oracle_clear_control: mock on port ${port} still echoes a control value for ${file} after removal (last saw '${got}')" >&2
+  return 1
 }
 
 # ── Binary / plugin resolution ──────────────────────────────────────────────────────────────────

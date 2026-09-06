@@ -2,10 +2,23 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 use super::*;
-use busbar_caps::KernelSeal;
+use busbar_caps::{KernelSeal, LaneId, TrustToken};
 
 fn token() -> EgressAuthToken {
     EgressAuthToken::mint(&KernelSeal::acquire_for_kernel())
+}
+
+fn trust_token() -> TrustToken {
+    TrustToken::mint(&KernelSeal::acquire_for_kernel())
+}
+
+/// The destination the trust unit judged for the Bedrock lane: the sealed lane is what the
+/// envelope's host field must still carry after decoration.
+fn sealed_destination() -> VerifiedDestination {
+    VerifiedDestination::seal(
+        &trust_token(),
+        LaneId::new("bedrock.us-east-1.amazonaws.com"),
+    )
 }
 
 fn empty_body() -> EgressBody<'static> {
@@ -175,25 +188,37 @@ fn substitute_applies_each_slot_exactly_once() {
     assert_eq!(twice, once);
 }
 
-/// A slot's substitution never reaches anything other than the envelope it is handed: passing a
-/// separate "content" vector alongside proves the substitution touches only the envelope, never a
-/// content-facts-shaped structure a plane might hold — a `SecretSlot` is substituted into the wire
-/// envelope and nowhere else.
+/// A slot's substitution reaches the slot's own field and NOTHING ELSE in the envelope it is
+/// handed. Checked against an envelope that already carries the fields encoding wrote — the host,
+/// the content type, a forwarded client header — every one of which stays byte-identical while
+/// exactly one `authorization` entry appears.
 #[test]
-fn substitute_never_touches_anything_but_the_envelope_it_is_given() {
+fn substitute_touches_only_the_field_the_slot_names() {
     let t = token();
     let decoration = decorate(&t, &Scheme::Bearer, "key-b", &empty_body());
-    let content_facts: Vec<(String, String)> =
-        vec![("unrelated".to_string(), "untouched".to_string())];
-    let envelope = substitute(&decoration, "key-b", Vec::new());
-    // The content-shaped vector was never passed to `substitute` and is unchanged by definition —
-    // asserted here so the test fails loudly if a future edit widens `substitute`'s signature to
-    // accept (and so risk touching) anything beyond the envelope.
-    assert_eq!(
-        content_facts,
-        vec![("unrelated".to_string(), "untouched".to_string())]
-    );
-    assert!(!envelope.iter().any(|(k, _)| k == "unrelated"));
+    let before: Vec<(String, String)> = vec![
+        ("host".to_string(), "api.openai.com".to_string()),
+        ("content-type".to_string(), "application/json".to_string()),
+        ("openai-beta".to_string(), "responses=v1".to_string()),
+    ];
+    let after = substitute(&decoration, "key-b", before.clone());
+
+    let authorization: Vec<_> = after
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+        .collect();
+    assert_eq!(authorization.len(), 1, "exactly one credential header");
+    assert_eq!(authorization[0].1, "Bearer key-b");
+
+    // Every pair that was already there is the same pair, in the same order: substitution never
+    // rewrites, reorders or drops what encoding put on the wire.
+    let untouched: Vec<_> = after
+        .iter()
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("authorization"))
+        .cloned()
+        .collect();
+    assert_eq!(untouched, before);
+    assert_eq!(after.len(), before.len() + 1);
 }
 
 /// The lane cross-check: the decorated envelope's `host` must still equal what the trust unit
@@ -246,6 +271,47 @@ fn lane_cross_check_is_against_the_sealed_lane_not_the_callers_belief() {
         lane_cross_check(&verified, "host", &[]),
         Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
     );
+}
+
+/// The value the check compares against comes from the SEAL and from nowhere else. A
+/// destination-changing hook that rewrites `host` after decoration is caught even where the caller
+/// read its own idea of the destination out of the same post-hook plan — the reading under which
+/// the sealed destination contributes anything at all.
+#[test]
+fn lane_cross_check_reads_the_sealed_destination_not_the_callers_expectation() {
+    let verified = sealed_destination();
+
+    let rewritten_by_a_hook = vec![("host".to_string(), "evil.example.com".to_string())];
+    assert_eq!(
+        lane_cross_check(&verified, "host", &rewritten_by_a_hook),
+        Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
+    );
+
+    // The field spelled twice is not a request whose destination can be read at all: refuse rather
+    // than answer about whichever copy the transport did not encode.
+    let two_spellings = vec![
+        (
+            "host".to_string(),
+            "bedrock.us-east-1.amazonaws.com".to_string(),
+        ),
+        ("Host".to_string(), "evil.example.com".to_string()),
+    ];
+    assert_eq!(
+        lane_cross_check(&verified, "host", &two_spellings),
+        Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field: "host" })
+    );
+
+    // And a destination the trust unit sealed with no host of its own compares against the lane it
+    // did seal, rather than against anything the caller holds.
+    let lane_only = VerifiedDestination::seal(&trust_token(), LaneId::new("bedrock-us-east-1"));
+    let named = vec![("lane".to_string(), "bedrock-us-east-1".to_string())];
+    assert!(lane_cross_check(&lane_only, "lane", &named).is_ok());
+    let renamed = vec![("lane".to_string(), "cheap-lane".to_string())];
+    assert!(lane_cross_check(&lane_only, "lane", &renamed).is_err());
+
+    // A decoration that DROPPED the field fails closed: an envelope with no destination in it is
+    // not one whose destination was checked.
+    assert!(lane_cross_check(&verified, "host", &[]).is_err());
 }
 
 /// The forwarded-header allow-list scopes each beta/version header to its own dialect(s),

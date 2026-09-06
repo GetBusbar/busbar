@@ -56,6 +56,7 @@
 //! isolation; the guard above them takes its ONE resolution through a [`Resolver`] seam for the same
 //! reason, and because a unit that opened a socket would not be a unit.
 
+use std::borrow::Cow;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// Well-known cloud-metadata / internal DNS names that resolve, at connect time, to the IMDS family
@@ -368,20 +369,22 @@ pub enum AddressRefusal {
     /// `gopher:`, `smb:`, `ftp:`, `data:` — is refused by ABSENCE rather than by a blocklist,
     /// because a blocklist of schemes is a list somebody has to keep up with.
     Scheme {
-        /// The URL as written.
+        /// The URL, with any authority credential replaced by a marker.
         url: String,
         /// The scheme it claimed.
         scheme: String,
     },
     /// `http` where the policy admits no plaintext.
     Plaintext {
-        /// The URL as written.
+        /// The URL, with any authority credential replaced by a marker.
         url: String,
         /// The scheme it claimed.
         scheme: String,
     },
     /// The URL had no host component, or an unusable authority (userinfo, an unclosed IPv6
-    /// bracket, an unparseable port).
+    /// bracket, an unparseable port). Carried with any authority credential replaced by a marker,
+    /// since a refusal naming a rejected userinfo would otherwise be the one place a password is
+    /// written down twice.
     NoHost(String),
     /// The host is an alternate IPv4 encoding (`0x7f000001`, `2130706433`, `127.1`) that the OS
     /// resolver expands but a canonical IP-literal check misses.
@@ -431,7 +434,7 @@ pub enum AddressRefusal {
     },
     /// The body exceeded [`GuardPolicy::max_body_bytes`].
     BodyTooLarge {
-        /// The URL the body came from.
+        /// The URL the body came from, with any authority credential replaced by a marker.
         url: String,
         /// How many bytes it was.
         bytes: usize,
@@ -576,7 +579,7 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
         (false, r)
     } else {
         return Err(AddressRefusal::Scheme {
-            url: url.to_string(),
+            url: redact_userinfo(url),
             scheme: scheme_of(url),
         });
     };
@@ -588,17 +591,17 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
     // `good.example` to a parser and as `evil.test` to a human skimming a config diff, and a value
     // whose two readings differ has no place on a fetch path.
     if authority.contains('@') || authority.is_empty() {
-        return Err(AddressRefusal::NoHost(url.to_string()));
+        return Err(AddressRefusal::NoHost(redact_userinfo(url)));
     }
     let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
         // Bracketed IPv6 literal.
         let (h, tail) = inner
             .split_once(']')
-            .ok_or_else(|| AddressRefusal::NoHost(url.to_string()))?;
+            .ok_or_else(|| AddressRefusal::NoHost(redact_userinfo(url)))?;
         let port = match tail.strip_prefix(':') {
             Some(p) => p
                 .parse::<u16>()
-                .map_err(|_| AddressRefusal::NoHost(url.to_string()))?,
+                .map_err(|_| AddressRefusal::NoHost(redact_userinfo(url)))?,
             None => default_port(https),
         };
         (h.to_string(), port)
@@ -607,15 +610,38 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
             Some((h, p)) => (
                 h.to_string(),
                 p.parse::<u16>()
-                    .map_err(|_| AddressRefusal::NoHost(url.to_string()))?,
+                    .map_err(|_| AddressRefusal::NoHost(redact_userinfo(url)))?,
             ),
             None => (authority.to_string(), default_port(https)),
         }
     };
     if host.is_empty() {
-        return Err(AddressRefusal::NoHost(url.to_string()));
+        return Err(AddressRefusal::NoHost(redact_userinfo(url)));
     }
     Ok((https, host, port, path.to_string()))
+}
+
+/// The URL as a refusal may repeat it: everything an authority put before its last `@` replaced by a
+/// fixed marker.
+///
+/// A refusal names the URL that caused it because an operator cannot fix what they cannot see. But a
+/// URL's authority is also where a password goes — `https://svc:hunter2@upstream.example/` — and a
+/// refusal is written into a card and a log, which are read by more people than the config is and
+/// kept for longer. The host stays, because the host is the diagnosis; the credential goes, because
+/// it never was.
+///
+/// Only the authority is touched. A `@` later in the path is part of what the operator wrote and
+/// says nothing about a secret.
+fn redact_userinfo(url: &str) -> String {
+    let (prefix, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
+        None => ("", url),
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{prefix}<redacted>@{}", &rest[at + 1..]),
+        None => url.to_string(),
+    }
 }
 
 /// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it — the decision is
@@ -641,7 +667,7 @@ pub fn default_port(https: bool) -> u16 {
 pub fn judge_scheme(url: &str, https: bool, policy: GuardPolicy) -> Result<(), AddressRefusal> {
     if !https && !policy.plaintext_admissible() {
         return Err(AddressRefusal::Plaintext {
-            url: url.to_string(),
+            url: redact_userinfo(url),
             scheme: "http".to_string(),
         });
     }
@@ -803,7 +829,7 @@ pub fn refuse_oversized_body(
 ) -> Result<(), AddressRefusal> {
     if bytes > policy.max_body_bytes {
         return Err(AddressRefusal::BodyTooLarge {
-            url: url.to_string(),
+            url: redact_userinfo(url),
             bytes,
         });
     }
@@ -840,7 +866,14 @@ fn strip_scheme(url: &str) -> Option<&str> {
 /// and be allowed, but it can never be SMUGGLED PAST a check by hiding a blocked literal behind an
 /// escape). Only ASCII results are surfaced as decoded bytes; non-UTF-8 decoded output falls back to
 /// the original so we never fabricate a misleading host. No new dependency — a small manual scan.
-fn percent_decode_host(host: &str) -> String {
+///
+/// A host carrying no `%` at all decodes to itself, and is handed back borrowed: the overwhelmingly
+/// common host is an ordinary name, and a guard on the request path should not build a copy of it to
+/// discover it had nothing to decode.
+fn percent_decode_host(host: &str) -> Cow<'_, str> {
+    if !host.contains('%') {
+        return Cow::Borrowed(host);
+    }
     let bytes = host.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
     let mut i = 0;
@@ -858,9 +891,21 @@ fn percent_decode_host(host: &str) -> String {
         i += 1;
     }
     match String::from_utf8(out) {
-        Ok(s) => s,
+        Ok(s) => Cow::Owned(s),
         // Decoded bytes are not valid UTF-8: keep the original literal rather than a lossy host.
-        Err(_) => host.to_string(),
+        Err(_) => Cow::Borrowed(host),
+    }
+}
+
+/// Strip every ASCII tab, LF and CR, borrowing when there are none to strip.
+///
+/// The WHATWG removal is unconditional in meaning but almost never has anything to do: an ordinary
+/// configured URL carries none of the three, and that case should cost a scan and no allocation.
+fn strip_whatwg_removed(s: &str) -> Cow<'_, str> {
+    if s.contains(['\t', '\n', '\r']) {
+        Cow::Owned(s.replace(['\t', '\n', '\r'], ""))
+    } else {
+        Cow::Borrowed(s)
     }
 }
 
@@ -882,8 +927,8 @@ pub fn extract_normalized_host(url: &str) -> Option<String> {
     // connects to `169.254.169.254` — the real IMDS address. Doing this before the backslash→`/`
     // fold matters too: a stripped tab could otherwise sit between characters that only become a
     // delimiter after this removal (WHATWG strips tab/newline before it looks for `\`/`/` at all).
-    let url = url.replace(['\t', '\n', '\r'], "");
-    let url = url.as_str();
+    let url = strip_whatwg_removed(url);
+    let url = url.as_ref();
     // Strip the scheme (case-insensitively — see `scheme_is`). The host extraction is
     // scheme-agnostic; accept either prefix so an `http://` upstream is still metadata-checked.
     let rest = strip_scheme(url)?;
@@ -897,7 +942,7 @@ pub fn extract_normalized_host(url: &str) -> Option<String> {
 /// alike. Anything carrying a `://` is left to [`extract_normalized_host`], so a scheme this guard
 /// does not speak still extracts no host here rather than having its scheme read as a hostname.
 pub fn extract_normalized_authority_host(authority: &str) -> Option<String> {
-    let authority = authority.replace(['\t', '\n', '\r'], "");
+    let authority = strip_whatwg_removed(authority);
     if authority.contains("://") {
         return None;
     }
@@ -915,9 +960,15 @@ fn normalize_authority(rest: &str) -> Option<String> {
     // whole `10.0.0.1\x.allowed.com` as the host — an SSRF credential-relay bypass. Mirroring
     // reqwest's `\`→`/` rewrite here makes the guard see the SAME authority boundary the connecting
     // stack will, closing the bypass.
-    let rest = rest.replace('\\', "/");
+    // Borrowed when there is no backslash to fold, which is every well-formed URL: the fold exists
+    // for the hostile spelling, and paying for it on every dial would be paying for the rare case.
+    let rest: Cow<'_, str> = if rest.contains('\\') {
+        Cow::Owned(rest.replace('\\', "/"))
+    } else {
+        Cow::Borrowed(rest)
+    };
     // Authority is everything before the first path/query/fragment delimiter.
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest.as_str());
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest.as_ref());
     // Drop any "userinfo@" prefix.
     let host_port = authority.rsplit('@').next().unwrap_or(authority);
 
@@ -949,14 +1000,13 @@ fn normalize_authority(rest: &str) -> Option<String> {
     // `IpAddr`, and the `%` defeats `is_alternate_ipv4_encoding`) yet resolve to the IMDS target
     // downstream. Decoding here makes the safety property independent of URL-library details.
     let host_decoded = percent_decode_host(host);
+    let host_decoded = host_decoded.as_ref();
 
     // Normalize a single trailing FQDN-root dot. glibc getaddrinfo treats a trailing dot as a rooted
     // FQDN and still resolves the literal it precedes — so `169.254.169.254.` connects to exactly the
     // IMDS target the bare form does. Without stripping, an IP-literal+dot does NOT parse as
     // `IpAddr`, defeating every range check.
-    let host = host_decoded
-        .strip_suffix('.')
-        .unwrap_or(host_decoded.as_str());
+    let host = host_decoded.strip_suffix('.').unwrap_or(host_decoded);
 
     Some(host.to_string())
 }
@@ -1013,58 +1063,89 @@ pub fn host_is_private_or_loopback(host: &str) -> bool {
     }
 }
 
-/// True when the already-normalized `host` (as produced by [`extract_normalized_host`]) matches any
-/// entry in `entries`, using the EXACT canonicalization the denylist block check uses for operator-
-/// supplied `blocked_metadata_hosts`. This is shared by the allow-override path so an allow entry
-/// unblocks every spelling of an IP the same way a block entry blocks every spelling:
-/// * a hostname entry matches case-insensitively, trailing dot stripped;
-/// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
-///   alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+/// An operator's allow or block list, canonicalized once instead of once per dial.
 ///
-/// Empty / whitespace-only entries never match.
-fn host_matches_any(host: &str, entries: &[String]) -> bool {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+/// The entries an operator writes are strings, and judging a host against them means trimming each
+/// entry, dropping its trailing FQDN dot, and parsing the ones that are IP literals. None of that
+/// depends on the host being judged, so none of it belongs on the request path: a deployment with a
+/// denylist of any size re-did the whole parse for every candidate of every dial. It is done here,
+/// where the list is stated, and a judgement is then a scan over values already in their final form.
+#[derive(Debug, Default, Clone)]
+struct HostSet {
+    /// Hostname (and verbatim) entries, trimmed, trailing dots dropped, lowercased. Empty and
+    /// whitespace-only entries are not kept, so they can never match.
+    names: Vec<String>,
+    /// The entries that are IPv4 literals, parsed.
+    v4: Vec<std::net::Ipv4Addr>,
+    /// The entries that are IPv6 literals, parsed.
+    v6: Vec<std::net::Ipv6Addr>,
+}
 
-    if entries.is_empty() {
-        return false;
+impl HostSet {
+    /// Canonicalize a list of operator-written entries.
+    fn parse(entries: &[String]) -> Self {
+        let mut set = HostSet::default();
+        for entry in entries {
+            let norm = entry.trim().trim_end_matches('.');
+            if norm.is_empty() {
+                continue;
+            }
+            if let Ok(v4) = norm.parse::<std::net::Ipv4Addr>() {
+                set.v4.push(v4);
+            } else if let Ok(v6) = norm.parse::<std::net::Ipv6Addr>() {
+                set.v6.push(v6);
+            }
+            set.names.push(norm.to_ascii_lowercase());
+        }
+        set
     }
 
-    // Hostname / verbatim match (case-insensitive, trailing dot stripped on the entry).
-    for entry in entries {
-        let entry_norm = entry.trim().trim_end_matches('.');
-        if !entry_norm.is_empty() && entry_norm.eq_ignore_ascii_case(host) {
+    /// True when the list names nothing at all — the common case, and the one a dial should spend
+    /// no work on.
+    fn is_empty(&self) -> bool {
+        self.names.is_empty()
+    }
+
+    /// True when the already-normalized `host` (as produced by [`extract_normalized_host`]) matches
+    /// any entry, using the EXACT canonicalization the denylist block check uses for operator-
+    /// supplied `blocked_metadata_hosts`. This is shared by the allow-override path so an allow
+    /// entry unblocks every spelling of an IP the same way a block entry blocks every spelling:
+    /// * a hostname entry matches case-insensitively, trailing dot stripped;
+    /// * an IP-literal entry matches the parsed connect-host AND its IPv4-mapped/compatible-IPv6 and
+    ///   alternate-encoding (decimal-int / hex / octal / short-dotted) spellings.
+    fn matches(&self, host: &str) -> bool {
+        use std::net::IpAddr;
+
+        if self.is_empty() {
+            return false;
+        }
+
+        // Hostname / verbatim match (case-insensitive).
+        if self.names.iter().any(|n| n.eq_ignore_ascii_case(host)) {
             return true;
         }
-    }
 
-    // IP-literal entries: parse each once so an entry like `169.254.169.254` also matches this host's
-    // mapped-IPv6 and alternate-encoding spellings, mirroring the block path's `extra_v4`/`extra_v6`.
-    let entry_v4: Vec<Ipv4Addr> = entries
-        .iter()
-        .filter_map(|e| e.trim().trim_end_matches('.').parse::<Ipv4Addr>().ok())
-        .collect();
-    let entry_v6: Vec<Ipv6Addr> = entries
-        .iter()
-        .filter_map(|e| e.trim().trim_end_matches('.').parse::<Ipv6Addr>().ok())
-        .collect();
-    if entry_v4.is_empty() && entry_v6.is_empty() {
-        return false;
-    }
-
-    // Alternate / obfuscated encodings of THIS host expand to a canonical v4 and re-check.
-    if let Some(expanded) = expand_alternate_ipv4(host) {
-        if entry_v4.contains(&expanded) {
-            return true;
+        // An IP-literal entry also matches this host's mapped-IPv6 and alternate-encoding
+        // spellings, mirroring the block path's `extra_v4`/`extra_v6`.
+        if self.v4.is_empty() && self.v6.is_empty() {
+            return false;
         }
-    }
 
-    match host.parse::<IpAddr>() {
-        Ok(IpAddr::V4(v4)) => entry_v4.contains(&v4),
-        Ok(IpAddr::V6(v6)) => {
-            let embedded = v6.to_ipv4();
-            entry_v6.contains(&v6) || embedded.is_some_and(|m| entry_v4.contains(&m))
+        // Alternate / obfuscated encodings of THIS host expand to a canonical v4 and re-check.
+        if let Some(expanded) = expand_alternate_ipv4(host) {
+            if self.v4.contains(&expanded) {
+                return true;
+            }
         }
-        Err(_) => false,
+
+        match host.parse::<IpAddr>() {
+            Ok(IpAddr::V4(v4)) => self.v4.contains(&v4),
+            Ok(IpAddr::V6(v6)) => {
+                let embedded = v6.to_ipv4();
+                self.v6.contains(&v6) || embedded.is_some_and(|m| self.v4.contains(&m))
+            }
+            Err(_) => false,
+        }
     }
 }
 
@@ -1205,12 +1286,25 @@ pub fn ssrf_blocked_host(
     allow_all: bool,
     extra_blocked: &[String],
 ) -> Option<String> {
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
-
-    // Nuclear override: the metadata guard is disabled wholesale.
+    // The one-shot spelling: a caller holding raw entries pays the canonicalization here. A caller
+    // that dials repeatedly states its lists once, as a [`Denylist`], and pays it never again.
     if allow_all {
         return None;
     }
+    judge_against_lists(
+        url,
+        &HostSet::parse(allow_overrides),
+        &HostSet::parse(extra_blocked),
+    )
+}
+
+/// The denylist judgement over lists already canonicalized, which is what every arm of it wanted.
+fn judge_against_lists(
+    url: &str,
+    allow_overrides: &HostSet,
+    extra_blocked: &HostSet,
+) -> Option<String> {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
     // A destination may be spelled as a URL or as a bare `host:port`, and the destination check
     // supports both. Judging only the first spelling meant the operator's denylist never fired for
@@ -1221,7 +1315,7 @@ pub fn ssrf_blocked_host(
     // Surgical allow-override: if THIS host matches any allow entry (with the same canonicalization
     // the block check uses), it is permitted regardless of the denylist. Computed up front so allow
     // unconditionally wins over every block arm below.
-    if host_matches_any(host, allow_overrides) {
+    if allow_overrides.matches(host) {
         return None;
     }
 
@@ -1229,8 +1323,7 @@ pub fn ssrf_blocked_host(
     // this guard and the resolved-name guard cannot know different names. The IPv4 / IPv6 metadata
     // literals are caught in the IP arms below; these are the DNS names a connecting stack would
     // resolve.
-    let host_lc = host.to_ascii_lowercase();
-    if METADATA_HOSTS.contains(&host_lc.as_str()) {
+    if METADATA_HOSTS.iter().any(|m| m.eq_ignore_ascii_case(host)) {
         return Some(host.to_string());
     }
 
@@ -1238,8 +1331,8 @@ pub fn ssrf_blocked_host(
     // the SAME canonicalization the allow-override path uses (hostname case-insensitive; IP literal
     // matched against the parsed connect-host and its mapped-IPv6 / alternate-encoding spellings), so
     // an operator who writes `10.99.99.99` also blocks `[::ffff:10.99.99.99]` and the decimal-int
-    // form. `host_matches_any` is the single shared canonicalizer for both allow and block.
-    if host_matches_any(host, extra_blocked) {
+    // form. [`HostSet`] is the single shared canonicalizer for both allow and block.
+    if extra_blocked.matches(host) {
         return Some(host.to_string());
     }
 
@@ -1299,15 +1392,42 @@ pub fn ssrf_blocked_host(
 /// hardcoded set union `blocked`) AND NOT in `allowed`. Allow always wins over block, and
 /// `allow_all` wins over both — an operator who has disabled the guard has disabled it, and a guard
 /// that half-applied would be worse than either answer.
+///
+/// The two lists are held canonicalized rather than as the strings an operator wrote, and that is
+/// why they are stated once through [`Denylist::new`] rather than assigned field by field: trimming
+/// an entry, dropping its trailing FQDN dot and parsing the IP literals among them does not depend
+/// on the host being judged, so a dial that re-did it was paying for a deployment's configuration
+/// on the request path. A field a caller could edit afterwards would be a second, stale answer.
 #[derive(Debug, Default, Clone)]
 pub struct Denylist {
     /// Operator additions to the denylist: the answer to an unknown cloud's metadata address.
-    pub blocked: Vec<String>,
+    blocked: HostSet,
     /// Surgical carve-outs. An IP entry unblocks every spelling of that address, the same way a
     /// block entry blocks every spelling of one.
-    pub allowed: Vec<String>,
+    allowed: HostSet,
     /// The nuclear override. When set, the metadata guard is off wholesale.
-    pub allow_all: bool,
+    allow_all: bool,
+}
+
+impl Denylist {
+    /// State a deployment's additions, carve-outs and override, canonicalizing both lists once.
+    ///
+    /// `blocked` is `security.blocked_metadata_hosts`, `allowed` is the union of the provider's
+    /// `allow_metadata_hosts` and the global one, and `allow_all` is `security.allow_all_metadata`.
+    #[must_use]
+    pub fn new(blocked: &[String], allowed: &[String], allow_all: bool) -> Self {
+        Denylist {
+            blocked: HostSet::parse(blocked),
+            allowed: HostSet::parse(allowed),
+            allow_all,
+        }
+    }
+
+    /// Whether the guard is off wholesale, for a caller reporting what it is running under.
+    #[must_use]
+    pub fn allows_all(&self) -> bool {
+        self.allow_all
+    }
 }
 
 /// Why the trust unit would not let a destination be dialled.
@@ -1407,16 +1527,15 @@ pub fn check_destination_facts(
     };
 
     // The denylist, over the base and over every path it is joined with.
-    for candidate in
-        std::iter::once(authority.to_string()).chain(paths.iter().map(|p| join_path(authority, p)))
-    {
-        if let Some(host) = ssrf_blocked_host(
-            &candidate,
-            &denylist.allowed,
-            denylist.allow_all,
-            &denylist.blocked,
-        ) {
-            return Err(NetworkRefusal::MetadataDenied(host));
+    if !denylist.allow_all {
+        for candidate in std::iter::once(authority.to_string())
+            .chain(paths.iter().map(|p| join_path(authority, p)))
+        {
+            if let Some(host) =
+                judge_against_lists(&candidate, &denylist.allowed, &denylist.blocked)
+            {
+                return Err(NetworkRefusal::MetadataDenied(host));
+            }
         }
     }
 
@@ -1429,7 +1548,7 @@ pub fn check_destination_facts(
         }
         Err(AddressRefusal::Scheme { .. }) => {
             let (host, port) = split_authority(authority).ok_or_else(|| {
-                NetworkRefusal::Guard(AddressRefusal::NoHost(authority.to_string()))
+                NetworkRefusal::Guard(AddressRefusal::NoHost(redact_userinfo(authority)))
             })?;
             (true, host, port)
         }

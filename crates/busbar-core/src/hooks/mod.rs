@@ -421,14 +421,136 @@ pub(crate) fn resolve_pool_rewrites(
             continue;
         }
         if let Some(ResolvedPolicy::Policy {
-            policy, timeout, ..
+            policy,
+            timeout,
+            on_error,
+            ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
-            ranked.push((hook.priority, timeout, policy));
+            // The hook's `on_error` rides with the transport into the rewrite chain: a failed call
+            // to a hook the operator declared load-bearing refuses the request instead of being
+            // silently skipped.
+            ranked.push((
+                hook.priority,
+                timeout,
+                with_rewrite_on_error(policy, on_error),
+            ));
         }
     }
     ranked.sort_by_key(|(p, _, _)| *p);
     ranked.into_iter().map(|(_, t, p)| (t, p)).collect()
+}
+
+/// THE `on_error` DECORATOR for the READ-WRITE (transform) seat: wraps a resolved `prompt: rw`
+/// transport with the hook's configured `on_error` and maps a call that FAILED
+/// ([`TransformOutcome::Failed`](busbar_api::TransformOutcome::Failed)) to that disposition —
+/// `reject` refuses the unit, anything else proceeds with the ORIGINAL body.
+///
+/// A DECORATOR rather than a branch at each firing site: the rewrite chain fires from four places
+/// (the model plane's global + per-pool passes and the neutral `transform_over` seam the MCP, A2A
+/// and voice planes share), and a per-site branch would have to be written — and kept correct —
+/// four times. Wrapping at RESOLUTION means every firing site, present and future, gets the
+/// operator's disposition for free, and the sites keep their fail-safe shape.
+///
+/// The refusal is minted as the transform path's own `Reject` verb ([`
+/// REQUIRED_HOOK_UNAVAILABLE_STATUS`](busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS) +
+/// message) so it travels the reject route every firing site already implements — byte-identical to
+/// what the read-only decide seat renders for the same condition.
+///
+/// `decide` is NOT intercepted: the read-only seat resolves `on_error` itself, and richer — it
+/// walks the configured FALLBACK CHAIN before it reaches a terminal. Both seats bottom out on the
+/// SAME rule (`busbar_substrate::hooks::failed_call_refuses`), which is what keeps them from
+/// drifting. Every other trait method is a transparent delegate.
+struct RewriteOnError {
+    inner: Arc<dyn RoutingPolicy>,
+    on_error: crate::config::PolicyOnError,
+}
+
+#[async_trait::async_trait]
+impl RoutingPolicy for RewriteOnError {
+    async fn decide(
+        &self,
+        req: &RoutingRequest<'_>,
+        candidates: &[Candidate<'_>],
+        ctx: &RoutingContext<'_>,
+        budget: std::time::Duration,
+    ) -> PolicyResult {
+        self.inner.decide(req, candidates, ctx, budget).await
+    }
+
+    fn name(&self) -> &'static str {
+        self.inner.name()
+    }
+
+    async fn transform(
+        &self,
+        req: &RoutingRequest<'_>,
+        budget: std::time::Duration,
+    ) -> busbar_api::TransformOutcome {
+        match self.inner.transform(req, budget).await {
+            busbar_api::TransformOutcome::Failed { message } => {
+                if busbar_substrate::hooks::failed_call_refuses(&self.on_error) {
+                    tracing::warn!(
+                        hook = self.inner.name(),
+                        error = %message,
+                        "rewrite hook call failed and the hook is declared load-bearing \
+                         (on_error: reject); refusing the request"
+                    );
+                    // The hook's own words go to the OPERATOR's log, never into the refusal: what
+                    // reaches the client is the shared, content-free body, the same one the
+                    // read-only seat renders for the same condition.
+                    busbar_api::TransformOutcome::Reject {
+                        status: busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        message: busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+                            .to_string(),
+                    }
+                } else {
+                    // Not load-bearing: the request proceeds with the ORIGINAL body. The failure is
+                    // carried on rather than swallowed, so the firing site still logs it as the
+                    // failure it is — this decorator decides the DISPOSITION, not the diagnostics.
+                    busbar_api::TransformOutcome::Failed { message }
+                }
+            }
+            other => other,
+        }
+    }
+
+    async fn configure(
+        &self,
+        hook_name: &str,
+        settings: &serde_json::Map<String, serde_json::Value>,
+        settings_version: u64,
+        budget: std::time::Duration,
+    ) -> Result<(), PolicyError> {
+        self.inner
+            .configure(hook_name, settings, settings_version, budget)
+            .await
+    }
+
+    async fn describe(&self, budget: std::time::Duration) -> Option<serde_json::Value> {
+        self.inner.describe(budget).await
+    }
+
+    async fn status(&self, budget: std::time::Duration) -> Option<busbar_api::HookStatus> {
+        self.inner.status(budget).await
+    }
+
+    async fn notify(&self, projection: &[u8], budget: std::time::Duration) {
+        self.inner.notify(projection, budget).await;
+    }
+}
+
+/// Wrap a resolved rewrite transport in the [`RewriteOnError`] decorator. The ONE construction site
+/// for the decorator, shared by the global and per-pool rewrite resolvers so the two chains cannot
+/// resolve the same hook to different dispositions.
+fn with_rewrite_on_error(
+    policy: Arc<dyn RoutingPolicy>,
+    on_error: crate::config::PolicyOnError,
+) -> Arc<dyn RoutingPolicy> {
+    Arc::new(RewriteOnError {
+        inner: policy,
+        on_error,
+    })
 }
 
 /// Resolve a GATE hook into a [`ResolvedPolicy`]. The prompt/identity projections are gated by BOTH
@@ -1370,10 +1492,20 @@ pub(crate) fn resolve_rewrite_hooks(
             continue;
         }
         if let Some(ResolvedPolicy::Policy {
-            policy, timeout, ..
+            policy,
+            timeout,
+            on_error,
+            ..
         }) = resolve_gate_transport(name, hook, hooks, env, settings_version)
         {
-            ranked.push((hook.priority, timeout, policy));
+            // The hook's `on_error` rides with the transport into the rewrite chain: a failed call
+            // to a hook the operator declared load-bearing refuses the request instead of being
+            // silently skipped.
+            ranked.push((
+                hook.priority,
+                timeout,
+                with_rewrite_on_error(policy, on_error),
+            ));
         }
     }
     ranked.sort_by_key(|(p, _, _)| *p);

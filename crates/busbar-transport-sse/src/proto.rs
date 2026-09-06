@@ -71,35 +71,64 @@ pub fn find_frame_terminator_from(buf: &[u8], start: usize) -> (Option<(usize, u
 /// handed here is already complete (its own trailing blank line was stripped when it was carved
 /// out of the buffer), so a CR at the very end IS a terminator, not a "wait for more" ambiguity;
 /// this never yields the empty final line a trailing terminator would otherwise leave behind.
-fn split_frame_lines(buf: &[u8]) -> Vec<&[u8]> {
-    let mut lines = Vec::new();
-    let mut start = 0;
-    let mut i = 0;
-    while i < buf.len() {
-        match buf[i] {
-            b'\r' => {
-                lines.push(&buf[start..i]);
-                i += if buf.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
-                start = i;
+///
+/// Yielded one at a time rather than collected: a caller that only needs to know whether SOME line
+/// is a `data:` line pays for no buffer at all, and the caller that reads them all borrows straight
+/// out of the frame either way.
+fn split_frame_lines(buf: &[u8]) -> impl Iterator<Item = &[u8]> {
+    let mut start = 0_usize;
+    let mut i = 0_usize;
+    std::iter::from_fn(move || {
+        while i < buf.len() {
+            match buf[i] {
+                b'\r' => {
+                    let line = &buf[start..i];
+                    i += if buf.get(i + 1) == Some(&b'\n') { 2 } else { 1 };
+                    start = i;
+                    return Some(line);
+                }
+                b'\n' => {
+                    let line = &buf[start..i];
+                    i += 1;
+                    start = i;
+                    return Some(line);
+                }
+                _ => i += 1,
             }
-            b'\n' => {
-                lines.push(&buf[start..i]);
-                i += 1;
-                start = i;
-            }
-            _ => i += 1,
         }
-    }
-    if start < buf.len() {
-        lines.push(&buf[start..]);
-    }
-    lines
+        if start < buf.len() {
+            let line = &buf[start..];
+            start = buf.len();
+            return Some(line);
+        }
+        None
+    })
+}
+
+/// Whether this frame carries anything a full parse would return a payload for — a `data:` line,
+/// in a frame that is valid UTF-8.
+///
+/// The re-segmenter asks exactly this of every frame it carves, and asking it by parsing the frame
+/// and throwing the answer away costs a `String`, a `Vec` and a join per frame on the streaming
+/// path, all of it dropped before the frame is handed on untouched. The UTF-8 check is the one the
+/// parse makes, kept here so a frame this admits is a frame that parser can read.
+#[must_use]
+pub fn frame_carries_data(frame: &[u8]) -> bool {
+    std::str::from_utf8(frame).is_ok()
+        && split_frame_lines(frame).any(|line| line.starts_with(b"data:"))
 }
 
 /// Parse one SSE frame into `(event_type, data_payload)`. `event_type` is "" when the frame has
 /// no `event:` line (OpenAI style). Multiple `data:` lines in a single frame are concatenated with
 /// `\n` per the SSE spec. Returns `None` if the frame carries no `data:` line (including a frame
 /// with only an `event:` line) or is invalid UTF-8.
+///
+/// TEST ONLY, and compiled out of a production build entirely. `sse` declares `DECODES_PAYLOAD =
+/// false`: it hands each frame's bytes on exactly as they arrived and never reads the payload, so
+/// the only question its re-segmenter asks of a frame is [`frame_carries_data`]'s. What this is
+/// still for is the reading those tests check that predicate and their own payload assertions
+/// against — the parse the transport would have to agree with if it ever did decode one.
+#[cfg(test)]
 #[must_use]
 pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
     // UTF-8 is validated once, over the whole frame; every split point below lands on a `\r` or

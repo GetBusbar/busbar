@@ -22,12 +22,12 @@
 //! a node decides whether stopping is even the right thing to do when it cannot reach the store.
 
 use busbar_caps::{
-    Abort, Canary, ExitToken, HoldCell, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
+    Abort, Canary, ExitToken, LedgerToken, Outcome, Posted, PostingFlags, QuantitySource,
     ReasonCode, StepName, UnitEnd, Usage, UsageLine, UsageToken,
 };
 
 use crate::inflight::UnitSlot;
-use crate::slice::{ConcurrencyGauge, LeaseSet};
+use crate::slice::ConcurrencyGauge;
 use crate::teller::{settle_amount, Evidence, Kernel, KERNEL_ACCRUAL_CLASS};
 use crate::Millis;
 
@@ -174,8 +174,6 @@ pub enum DrainVerdict {
         /// How long it may keep going.
         grace: Millis,
     },
-    /// End it now.
-    Abort,
 }
 
 /// Decide what drain does to a unit.
@@ -194,18 +192,6 @@ pub fn drain_outcome() -> Outcome {
     Outcome::Aborted(Abort::Kernel {
         reason: ReasonCode::Drain,
     })
-}
-
-/// How this node is behaving, as its peers see it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NodeState {
-    /// Everything is reachable.
-    Serving,
-    /// A staleness bound has been crossed. Broadcast the moment it happens, BEFORE acting on it,
-    /// so peers can count it.
-    Stale,
-    /// On the way out.
-    Draining,
 }
 
 /// What a node decides to do when it cannot reach the store.
@@ -282,61 +268,59 @@ pub fn fleet_action(
 /// function both take by compare-and-set, so whichever arrives second is told the unit is already
 /// settled and does nothing — which is why a lost task costs one tick of delay and never a lost
 /// posting, and why a unit that ends normally a moment later is not settled twice.
+///
+/// The whole SLOT is what the sweep is given, because the slot is what the unit owns: its hold and
+/// its leases, reclaimed together or not at all. A verdict that says the unit is still running
+/// reclaims nothing of either, and an abandoned slot gives back both at its deadline.
 pub fn sweep_settle(
     kernel: &Kernel,
-    cell: &HoldCell,
+    slot: &UnitSlot,
     verdict: Sweep,
     evidence: &Evidence,
     canary: &Canary,
-    leases: &mut LeaseSet,
     gauge: &ConcurrencyGauge,
 ) -> Option<UnitEnd> {
     match sweep_outcome(verdict) {
         None => None,
         Some(outcome) => {
-            let taken = cell.take(&ExitToken::mint(kernel.seal()));
+            // One token witnesses both ends of this path: the take and the seal are the same
+            // exit, and the token carries no state that could tell them apart.
+            let exit = ExitToken::mint(kernel.seal());
+            let taken = slot.cell().take(&exit);
             // A lost task holds its concurrency leases until somebody gives them back, and the
             // exit path it would have used is never going to run. The rule is that leases go back
             // on every end; this is one of the two ends, so they go back here, in the same breath
-            // as the take — including when the take loses, because the unit ended either way.
-            leases.release_all(gauge);
-            match taken {
-                None => None,
-                Some(hold) => {
-                    let (amount, flags) = settle_amount(&outcome, evidence);
-                    let lines = vec![UsageLine {
-                        class: KERNEL_ACCRUAL_CLASS,
-                        quantity: amount,
-                        source: QuantitySource::Count,
-                        estimated: flags.contains(PostingFlags::ESTIMATED),
-                    }];
-                    let token = UsageToken::mint(kernel.seal());
-                    // Estimated or reported is the settlement table's answer, not the sweep's: a
-                    // unit whose locator DID arrive before its task disappeared is settled at the
-                    // figure the destination reported, unflagged, exactly as the table says.
-                    let usage = if flags.contains(PostingFlags::ESTIMATED) {
-                        Usage::estimate(&token, lines)
-                    } else {
-                        Usage::report(&token, lines)
-                    }
-                    .expect("one usage line is always within the record's bound");
-                    // As every other settling site: the table's `amount` is the money, and the
-                    // one line is the evidence it was derived from.
-                    let posted = Posted::settle(
-                        hold,
-                        u128::from(amount),
-                        &usage,
-                        &LedgerToken::mint(kernel.seal()),
-                    )
-                    .flagged(flags);
-                    canary.settled();
-                    Some(UnitEnd::seal(
-                        &ExitToken::mint(kernel.seal()),
-                        outcome,
-                        Ok(posted),
-                    ))
+            // as the take — including when the take loses, because the unit ended either way. They
+            // are the unit's OWN leases: the slot owns them, so the sweep no longer has to be
+            // handed a set that a gone task took with it.
+            slot.leases().release_all(gauge);
+            taken.map(|hold| {
+                let (amount, flags) = settle_amount(&outcome, evidence);
+                // Estimated or reported is the settlement table's answer, not the sweep's: a unit
+                // whose locator DID arrive before its task disappeared is settled at the figure
+                // the destination reported, unflagged, exactly as the table says.
+                let estimated = flags.contains(PostingFlags::ESTIMATED);
+                let lines = vec![UsageLine {
+                    class: KERNEL_ACCRUAL_CLASS,
+                    quantity: amount,
+                    source: QuantitySource::Count,
+                    estimated,
+                }];
+                let token = UsageToken::mint(kernel.seal());
+                let usage = if estimated {
+                    Usage::estimate(&token, lines)
+                } else {
+                    Usage::report(&token, lines)
                 }
-            }
+                .expect("one usage line is always within the record's bound");
+                // As every other settling site: the table's `amount` is the money, and the one
+                // line is the evidence it was derived from.
+                let ledger = LedgerToken::mint(kernel.seal());
+                let posted =
+                    Posted::settle(hold, u128::from(amount), &usage, &ledger).flagged(flags);
+                canary.settled();
+                UnitEnd::seal(&exit, outcome, Ok(posted))
+            })
         }
     }
 }

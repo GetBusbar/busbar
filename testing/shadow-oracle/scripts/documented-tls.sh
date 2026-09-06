@@ -30,7 +30,12 @@ done
 
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
 
 if ! command -v openssl >/dev/null; then
   step openssl_available "false"
@@ -79,8 +84,16 @@ YAML
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN=shadow-oracle-admin RUST_LOG=warn "$BIN" ) \
   >"$W/stdout.log" 2>"$W/stderr.log" &
 pid=$!; track_pid $pid
+# ONE BOOT BOUND FOR THE WHOLE HARNESS. This loop's 100 × 0.1 s was 10 seconds while every sibling
+# waits ORACLE_BOOT_BOUND_SECS (default 60, and record.sh/store-persist.sh both read that same
+# knob). A TLS boot generates no key material of its own but it does load the cert, and on a machine
+# running a test suite beside the recording 10 s was not always enough — and what this cell then
+# recorded was `booted_https: false`, i.e. "native TLS does not serve traffic", frozen into the
+# golden as the documented behaviour. Same knob, same bound, same answer on a slow machine.
+_tls_bound="${ORACLE_BOOT_BOUND_SECS:-60}"
+_tls_polls=$(( _tls_bound * 10 ))   # 10 polls/sec at the 0.1 s step below
 i=0; healthy=0
-while [ $i -lt 100 ]; do
+while [ $i -lt "$_tls_polls" ]; do
   if ! kill -0 "$pid" 2>/dev/null; then break; fi
   if curl -k -fsS -m 1 -o /dev/null "https://127.0.0.1:${LP}/healthz" 2>/dev/null; then healthy=1; break; fi
   sleep 0.1; i=$((i+1))

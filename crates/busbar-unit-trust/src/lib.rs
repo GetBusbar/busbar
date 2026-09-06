@@ -31,6 +31,11 @@
 //! AND over the paths joined to it, then exactly one resolution, then a judgement of every answered
 //! address, then a pin. What a transport receives is an address that has already been looked at.
 //!
+//! It is reached through [`KindFacts::net_guard_passes`], which the dialled kinds' own rules ask
+//! before anything is sealed — so the guard is part of the answer this unit produces rather than a
+//! library beside it that a caller may or may not have called. A guard nothing on the sealed path
+//! reaches is a guard that is not running, however carefully it is written.
+//!
 //! ## The exclusion rule
 //!
 //! A tripped, budget-exhausted or at-capacity lane is EXCLUDED from the walk, never "ordered last
@@ -38,7 +43,9 @@
 //!
 //! - Weight-zero (an operator draining a member), not-admissible (dead or over its lifetime request
 //!   budget) and breaker-open lanes are filtered BEFORE the weighted credit walk, so they never
-//!   consume a turn.
+//!   consume a turn. The verify step excludes an open lane too, and it asks the SAME question
+//!   through [`BreakerQuery::admits_lane`] rather than forming its own opinion — one exclusion,
+//!   spelled once, so the pick order the walk produces is the pick order the seal agrees with.
 //! - Only an at-capacity lane reaches the admission after selection, and so does consume one.
 //!
 //! A pool with every lane excluded still proceeds through the door — the slot is drawn and retained
@@ -70,7 +77,9 @@ pub use guard::{
     destination_guard, fallback_pools_authorized, pool_authorized, priced, GuardRefusal, PoolView,
     RefusalKind,
 };
-pub use lane::{survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable};
+pub use lane::{
+    survives_prewalk_filter, BreakerQuery, BreakerView, LaneCandidate, LaneTable, Unavailable,
+};
 pub use net::{
     check_destination, check_destination_facts, AddressRefusal, Denylist, GuardPolicy,
     NetworkRefusal, PinnedTarget, Resolver,

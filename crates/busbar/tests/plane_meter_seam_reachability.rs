@@ -186,7 +186,9 @@ fn has_teller_usage_seam(line: &str) -> bool {
         Some(i) => &line[..i],
         None => line,
     };
-    TELLER_USAGE_SEAM_TOKENS.iter().any(|tok| code.contains(tok))
+    TELLER_USAGE_SEAM_TOKENS
+        .iter()
+        .any(|tok| code.contains(tok))
 }
 
 /// The count of usage-seam reaches in a file's production text.
@@ -267,8 +269,12 @@ fn every_billing_plane_reaches_the_usage_seam_on_its_teller_meter_step() {
 fn selftest_the_seam_scanners_discriminate() {
     // The legacy scanner: a real call counts, the same token in a comment does not.
     assert!(has_meter_seam_call("        host.meter_charge(&scope, n);"));
-    assert!(!has_meter_seam_call("        // host.meter_charge(&scope, n);"));
-    assert!(!has_meter_seam_call("        let x = 1; // meter_ledger(y)"));
+    assert!(!has_meter_seam_call(
+        "        // host.meter_charge(&scope, n);"
+    ));
+    assert!(!has_meter_seam_call(
+        "        let x = 1; // meter_ledger(y)"
+    ));
     assert!(!has_meter_seam_call("        let x = record_metering;")); // no call parens
 
     // The Teller scanner: same discrimination over the usage seam's own tokens.

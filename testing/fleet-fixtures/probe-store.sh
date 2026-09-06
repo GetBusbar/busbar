@@ -107,10 +107,11 @@ models:
     provider: mock
 EOF
 
-busbar_env() {
-  BUSBAR_CONFIG="${WORK}/config.yaml" BUSBAR_PROVIDERS="${WORK}/providers.yaml" \
-    MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=fleet-fixture-admin RUST_LOG=warn "$@"
-}
+# One list, used by both the foreground calls and the background spawn, so the process the probe
+# kills is configured exactly like the one it validated.
+BUSBAR_ENV=(BUSBAR_CONFIG="${WORK}/config.yaml" BUSBAR_PROVIDERS="${WORK}/providers.yaml"
+            MOCK_KEY=unused BUSBAR_ADMIN_TOKEN=fleet-fixture-admin RUST_LOG=warn)
+busbar_env() { env "${BUSBAR_ENV[@]}" "$@"; }
 
 # --validate first: the same fail-closed preflight boot performs, with zero side effects. If the
 # plugin cannot be loaded at all this is where it says so, cleanly.
@@ -119,15 +120,25 @@ if ! busbar_env "$BUSBAR_BIN" --validate >"${WORK}/validate.log" 2>&1; then
     "$(tr '\n' '|' <"${WORK}/validate.log" | tail -c 500). The ${ALIAS} plugin does not load into this busbar at all."
 fi
 
-# THE SPAWN IS INLINE, and it has to be. `PID="$(boot)"` runs boot() in a COMMAND SUBSTITUTION, so
-# `track_pid` appends to a copy of FIXTURE_PIDS that dies with the subshell — the reaper's trap runs
-# in the parent and never learns busbar's pid. Its captured stdout is the right number, so the probe
-# could kill the process it named and still leave every OTHER fixture pid unreaped; and the
-# post-restart boot below, whose pid is captured nowhere at all, was left running on the listen port
-# after the probe exited, where the next probe's port guard finds it. Spawn in this shell, take $!
-# here, and track it here — the shape probe-auth.sh already uses.
-busbar_env "$BUSBAR_BIN" >"${WORK}/busbar.log" 2>&1 &
-PID=$!; track_pid "$PID"
+# SETS `PID` IN THE CALLER'S SHELL — deliberately, and never called as `PID="$(boot)"`. A command
+# substitution runs the function in a SUBSHELL: `track_pid` there appends to a copy of FIXTURE_PIDS
+# the parent's EXIT reaper never sees, and the pid it prints is not a child of the parent, so the
+# `wait` below returns instantly with "not a child" instead of waiting for the process to die. The
+# restart then re-binds the same ports while the first busbar may still hold them, and the
+# persistence verdict gets read from the process that never restarted.
+PID=""
+: >"${WORK}/busbar.log"
+boot() {
+  # `exec` inside the subshell, the same shape the shadow oracle's oracle_spawn uses: without it
+  # bash keeps a wrapper shell in front of busbar, `$!` names the WRAPPER, and the kill below stops
+  # the wrapper while busbar keeps both listeners. The restart then cannot bind, and whatever
+  # answers is the process the probe believes it killed.
+  ( exec env "${BUSBAR_ENV[@]}" "$BUSBAR_BIN" ) >>"${WORK}/busbar.log" 2>&1 &
+  PID=$!
+  track_pid "$PID"
+}
+
+boot
 if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
   fail_here "busbar did not come up with the ${ALIAS} store plugin" \
     "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"
@@ -175,9 +186,29 @@ echo "  usage before restart: requests=${REQ_BEFORE} tokens=${TOK_BEFORE}"
 
 # THE DURABILITY PROOF: kill, restart against the SAME store, assert the key + usage survived.
 kill "$PID" 2>/dev/null || true
+# THE OLD PROCESS MUST BE PROVEN GONE BEFORE THE RESTART BINDS THE SAME PORTS. `kill` only asks;
+# a busbar draining connections keeps both listeners for a while after it. If the restart's
+# /healthz poll is answered by the process we just tried to stop, "the key survived a restart" is
+# read from an instance that never restarted — a PASS a store that persists nothing would also get.
+# Same bounded spin the oracle recorder's stop_busbar uses; refuse rather than record either verdict.
+i=0
+while [ "$i" -lt 100 ]; do
+  assert_port_free "$LISTEN_PORT" && assert_port_free "$ADMIN_PORT" && break
+  sleep 0.1; i=$((i + 1))
+done
+for p in "$LISTEN_PORT" "$ADMIN_PORT"; do
+  if ! assert_port_free "$p"; then
+    # SIGKILL first: a busbar that ignored the TERM would also outlast the EXIT reaper's own
+    # `kill`+`wait`, and this probe would hang instead of recording — the one outcome that is
+    # neither red nor green until the whole job times out.
+    kill -9 "$PID" 2>/dev/null || true
+    fail_here "port ${p} still answers after the busbar under test was killed" \
+      "the restart would bind a port the old process still holds, so the persistence verdict would come from the instance that never restarted. Refusing to record either verdict."
+  fi
+done
+# only now, with both listeners proven gone, is this wait bounded
 wait "$PID" 2>/dev/null || true
-busbar_env "$BUSBAR_BIN" >>"${WORK}/busbar.log" 2>&1 &
-PID=$!; track_pid "$PID"
+boot
 if ! wait_for_http "http://127.0.0.1:${LISTEN_PORT}/healthz" 30; then
   fail_here "busbar did not restart against the ${ALIAS} store" \
     "$(tr '\n' '|' <"${WORK}/busbar.log" | tail -c 500)"

@@ -10,6 +10,7 @@
 
 use super::translate_request_cross_protocol;
 use crate::test_support::{LaneSpec, TestApp};
+use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 use serde_json::json;
 
 fn http() -> busbar_substrate::transport::Transport {
@@ -57,7 +58,7 @@ fn openai_to_anthropic_response_format_forwards_and_audits_degraded() {
         !bytes.is_empty(),
         "the request body must still be rebuilt and forwarded"
     );
-    let entries = busbar_core::admin::audit::AUDIT.export();
+    let entries = crate::test_support::engine_kit::CORE_ENGINE_KIT.audit_entries();
     let hit = entries.iter().find(|e| {
         e.principal == caller
             && e.action == "egress.control_unrepresentable"
@@ -112,7 +113,7 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
         !bytes.is_empty(),
         "the request body must still be forwarded"
     );
-    let entries = busbar_core::admin::audit::AUDIT.export();
+    let entries = crate::test_support::engine_kit::CORE_ENGINE_KIT.audit_entries();
     let hit = entries
         .iter()
         .find(|e| {

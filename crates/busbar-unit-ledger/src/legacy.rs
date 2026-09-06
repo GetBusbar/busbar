@@ -88,6 +88,23 @@ impl RecordingRows {
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
+
+    /// Show each posting to a fold, in order, without copying any of them.
+    ///
+    /// What a reader that only wants a sum should take. [`written`](Self::written) copies the whole
+    /// history — every posting, every owned string in it — to produce an answer whose size does not
+    /// depend on the history at all, and a reader holding a lock while it does that makes the copy
+    /// everyone else's problem too.
+    pub fn fold_written(&self, take: &mut dyn FnMut(&LegacyPosting)) {
+        for posting in self
+            .written
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            take(posting);
+        }
+    }
 }
 
 impl LegacyRows for RecordingRows {

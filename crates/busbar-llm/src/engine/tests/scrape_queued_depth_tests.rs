@@ -27,7 +27,7 @@ fn gauge_value(out: &str, metric: &str, pool: &str) -> Option<f64> {
 #[test]
 fn test_scrape_gauges_pool_queued_reads_live_depth() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     // Unique pool/model labels: the `metrics` recorder is process-global, so sharing a label with
     // another test would cross-contaminate this gauge across tests.
     let app = TestApp::new()
@@ -42,7 +42,7 @@ fn test_scrape_gauges_pool_queued_reads_live_depth() {
     // Hold a park guard, as a real queued request would for the duration of its wait.
     let guard = app.engine_tables().queued_depth().park("q-live-pool");
     app.refresh_scrape_gauges();
-    let out = busbar_core::metrics::render();
+    let out = busbar_substrate::metrics::render();
     assert_eq!(
         gauge_value(&out, POOL_QUEUED, "q-live-pool"),
         Some(1.0),
@@ -52,7 +52,7 @@ fn test_scrape_gauges_pool_queued_reads_live_depth() {
     // Dropping the guard (request left the queue) returns the depth to 0.
     drop(guard);
     app.refresh_scrape_gauges();
-    let out = busbar_core::metrics::render();
+    let out = busbar_substrate::metrics::render();
     assert_eq!(
         gauge_value(&out, POOL_QUEUED, "q-live-pool"),
         Some(0.0),

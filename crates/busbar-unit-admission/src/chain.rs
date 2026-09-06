@@ -109,6 +109,15 @@ impl ChainBucket {
 pub struct ChainGroup {
     /// The group's name — the gauge's key, and the name a refusal prints.
     pub name: String,
+    /// The same name, as the composition root interned it at registration.
+    ///
+    /// The door works in `String`s because a group name is config-derived, and a caller that wants
+    /// to record what the door counted somewhere with a static vocabulary needs the name in that
+    /// vocabulary. Interning is the root's job and happens once, at boot; this field is where the
+    /// result is handed over. `None` is a group the root did not intern, and it is not an error:
+    /// the decision is unaffected either way, and a caller reading the names back simply does not
+    /// see this one.
+    pub lease_id: Option<&'static str>,
     /// `false` freezes the group: every request charging through it, its own principals and every
     /// descendant's, is refused while its history is kept.
     pub enabled: bool,
@@ -255,6 +264,9 @@ impl GroupBucket {
 pub struct GroupRuntime {
     /// The group's name.
     pub name: String,
+    /// The same name as the composition root interned it, handed over at registration. See
+    /// [`ChainGroup::lease_id`], which is where it is read.
+    pub lease_id: Option<&'static str>,
     /// `false` freezes the group and every descendant.
     pub enabled: bool,
     /// The instantaneous in-flight cap, if any.
@@ -273,6 +285,7 @@ impl GroupRuntime {
     pub fn new(name: impl Into<String>) -> Self {
         GroupRuntime {
             name: name.into(),
+            lease_id: None,
             enabled: true,
             concurrent_cap: None,
             tier_bp: STANDARD_TIER_BP,
@@ -344,6 +357,7 @@ impl GroupTable {
             walked += 1;
             groups.push(ChainGroup {
                 name: g.name.clone(),
+                lease_id: g.lease_id,
                 enabled: g.enabled,
                 concurrent_cap: g.concurrent_cap,
                 tier_bp: g.tier_bp,

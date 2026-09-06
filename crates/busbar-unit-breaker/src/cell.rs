@@ -243,8 +243,16 @@ impl BreakerCell {
     /// no probe CAS. Every "is the breaker open" question resolves here so the notions can never
     /// drift between the selection filter, observability, and the mutating admit path.
     pub fn verdict(&self, now: u64) -> BreakerVerdict {
+        // The load order is an obligation, not a style choice: every writer that moves this cell
+        // stores the cooldown FIRST and the state SECOND, so a reader must take them in the reverse
+        // order — state first, then cooldown. Reading them in the same order the writer wrote them
+        // lets a reader slip between the two stores and pair a stale cooldown with a fresh state,
+        // decoding a cell that has just been tripped for an hour as probe-winnable. Taking the
+        // state first means an observed fresh state was published after the cooldown it belongs to,
+        // so the cooldown read that follows is at least as fresh as the state.
+        let state = self.breaker_state.load(Ordering::Acquire);
         let until = self.cooldown_until.load(Ordering::Acquire);
-        match self.breaker_state.load(Ordering::Acquire) {
+        match state {
             ST_CLOSED => {
                 if now >= until {
                     BreakerVerdict::Ready
@@ -363,7 +371,17 @@ impl BreakerCell {
             } else {
                 duration.saturating_sub(jitter.unsigned_abs())
             };
-            duration = jittered.clamp((duration / 2).max(1), cfg.max_cooldown_secs);
+            // The floor never rises above the ceiling. `Ord::clamp` PANICS when handed a minimum
+            // above its maximum, and this runs on the response path the moment an upstream first
+            // fails, so the two ways a configuration can invert the pair are two ways to bring the
+            // node down: a zero ceiling (the floor is one), and a base cooldown larger than the
+            // ceiling on a fresh trip, where the escalation branch that would have capped it never
+            // ran. Neither is refused anywhere — `BreakerCfg` is plain data with public fields and
+            // no validation — so the bound is made safe here rather than assumed. Where the pair is
+            // the right way round the `min` changes nothing, and where it is inverted the answer is
+            // the ceiling, which is what the ceiling means.
+            let floor = (duration / 2).max(1).min(cfg.max_cooldown_secs);
+            duration = jittered.clamp(floor, cfg.max_cooldown_secs);
         }
 
         match (cfg.honor_retry_after, retry_after) {

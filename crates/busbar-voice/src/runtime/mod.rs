@@ -10,18 +10,20 @@
 //! governed carrier — exposed to both topologies (`crate::topology`).
 
 pub mod carrier;
+pub mod governed;
 pub mod metering;
 pub mod scope;
 pub mod session;
 pub mod tools;
 
 pub use carrier::Carrier;
+pub use governed::{GovernedCalls, GovernedSession, ReplyRefusal};
 pub use metering::{
     cap_nanos_from_buckets, principal_cap_nanos, HostLease, HostMeteringPort, LeaseCloseGuard,
     LeaseState, LocalLease, LocalMeteringPort, MeteringLease, MeteringPort,
 };
 pub use scope::{SessionHandle, VoiceSessionRow};
-pub use session::{Outbound, SessionCore, UplinkForwarder, VoiceSession};
+pub use session::{serve_with_sweep, Outbound, SessionCore, UplinkForwarder, VoiceSession};
 pub use tools::{EchoToolExecutor, ToolExecutor};
 
 use busbar_substrate::plane::handle_engine::DurableHandleEngine;

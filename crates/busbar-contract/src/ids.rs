@@ -13,7 +13,8 @@
 use core::fmt;
 
 macro_rules! declare_id {
-    ($(#[$meta:meta])* $name:ident, $what:literal) => {
+    ($($(#[$meta:meta])* $name:ident => $what:literal;)*) => {
+        $(
         $(#[$meta])*
         #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize)]
         pub struct $name(&'static str);
@@ -37,68 +38,44 @@ macro_rules! declare_id {
                 f.write_str(self.0)
             }
         }
+        )*
     };
 }
 
-declare_id!(
+declare_id! {
     /// One class of operation a plane declares, priced through the lanes it permits.
-    OpClassId,
-    "an operation class"
-);
-declare_id!(
+    OpClassId => "an operation class";
     /// One read-only introspection verb a plane declares.
-    AdminVerbId,
-    "a plane admin verb"
-);
-declare_id!(
+    AdminVerbId => "a plane admin verb";
     /// One claim a plane declares, named so policy can be written against it.
     ///
     /// The scope step's lookup key is the pair `(claim, operation class)`, so the claim needs a
     /// name of its own: without one a plane's operations can be declared but never scoped, because
     /// there is no way to say which of its claims a policy entry is about.
-    ClaimKey,
-    "a declared claim"
-);
-declare_id!(
+    ClaimKey => "a declared claim";
     /// One class of metered quantity.
     ///
     /// A meter class is the unit of both pricing and capping: the cap-dimension shape below is
     /// closed over an open key, so any declared class is cappable without a new variant.
-    MeterClassId,
-    "a meter class"
-);
-declare_id!(
+    MeterClassId => "a meter class";
     /// One record schema a plane declares for its kernel-held durable records.
-    RecordSchemaId,
-    "a record schema"
-);
-declare_id!(
+    RecordSchemaId => "a record schema";
     /// A transport's registry identity.
     ///
     /// This is a registry name and never key material; the opaque key handle is the only thing
     /// that carries a key.
-    TransportId,
-    "a transport"
-);
-declare_id!(
+    TransportId => "a transport";
     /// The priced axis: a config-declared name per plane and upstream.
     ///
     /// The type index calls the lane the rate card's first key. It is carried on a verified
     /// destination, located in the request by the admit facts, located in the response by the
     /// plane's own facts, and all three readings are compared through the lane-alias map.
-    LaneId,
-    "a lane"
-);
-declare_id!(
+    LaneId => "a lane";
     /// One credential scheme key.
-    SchemeKey,
-    "an auth scheme"
-);
-declare_id!(
+    SchemeKey => "an auth scheme";
     /// One alternative a plane may narrow a claim's scheme to.
-    SchemeAlt,
-    "a declared scheme alternative"
-);
+    SchemeAlt => "a declared scheme alternative";
+}
 
 /// A stream inside one connection.
 ///

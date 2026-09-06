@@ -754,11 +754,18 @@ pub(crate) async fn forward_with_pool_parsed_inner(
                     ));
                 }
                 PolicyOutcome::Reject => {
+                    // The refusal a load-bearing hook's FAILED call produces — the SAME status,
+                    // kind and message the read-write (transform) seat renders for the same
+                    // condition, from the same constants, so a caller cannot tell which seat's
+                    // hook was down.
                     return gate_rejected(ingress_error(
                         ingress_protocol,
-                        StatusCode::SERVICE_UNAVAILABLE,
+                        StatusCode::from_u16(
+                            busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS,
+                        )
+                        .unwrap_or(StatusCode::SERVICE_UNAVAILABLE),
                         KIND_OVERLOADED,
-                        "A required gate could not complete. Please retry shortly.",
+                        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE,
                     ));
                 }
                 _ => {}

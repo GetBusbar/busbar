@@ -191,6 +191,120 @@ async fn egress_maps_4xx_and_5xx_status_classes() {
     }
 }
 
+/// The number, not just the class. A 401, a 403 and a 404 all read `ClientError`, and only one of
+/// the three is a malformed request — the layer that has to tell them apart reads this field.
+#[tokio::test]
+async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {
+    for status in [401_u16, 403, 404, 429, 503] {
+        let resp: &'static [u8] = Box::leak(
+            format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n")
+                .into_bytes()
+                .into_boxed_slice(),
+        );
+        let uri = fixed_response_server(resp).await;
+        let transport = HttpTransport::new(ClientSettings::default());
+        let conn = transport
+            .dial(&upstream_dest(&uri), &fixture_key())
+            .await
+            .unwrap();
+        transport
+            .write(
+                &conn,
+                StreamId(0),
+                ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            )
+            .await
+            .unwrap();
+        let mut frames = transport.frames(conn);
+        let (_s, head) = frames.next().await.unwrap().unwrap();
+        assert_eq!(head.meta.status_code, Some(status));
+    }
+}
+
+/// The wait the upstream asked for rides the same frame as the status it asked it on, already in
+/// whole seconds — and an answer that asked for nothing carries nothing.
+#[tokio::test]
+async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
+    let uri =
+        fixed_response_server(b"HTTP/1.1 429 X\r\nRetry-After: 7\r\nContent-Length: 0\r\n\r\n")
+            .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert_eq!(head.meta.status_code, Some(429));
+    assert_eq!(head.meta.retry_after_secs, Some(7));
+}
+
+#[tokio::test]
+async fn egress_reports_no_retry_after_when_the_upstream_asked_for_none() {
+    let uri = fixed_response_server(b"HTTP/1.1 503 X\r\nContent-Length: 0\r\n\r\n").await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert_eq!(head.meta.status_code, Some(503));
+    assert_eq!(head.meta.retry_after_secs, None);
+}
+
+/// Both RFC 9110 forms, and nothing else. A value nobody can read is a value nobody asked for.
+#[test]
+fn retry_after_parses_both_normative_forms() {
+    // delay-seconds, which ignores `now` entirely.
+    assert_eq!(super::parse_retry_after("7", 1_000), Some(7));
+    assert_eq!(super::parse_retry_after("  120 ", 9_999), Some(120));
+    assert_eq!(super::parse_retry_after("0", 0), Some(0));
+
+    // IMF-fixdate. 06 Nov 1994 08:49:37 GMT is 784_111_777 in Unix seconds.
+    assert_eq!(
+        super::parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", 784_111_777 - 30),
+        Some(30)
+    );
+    // Already past: floored at zero rather than wrapping into a lifetime of suppression.
+    assert_eq!(
+        super::parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", 784_111_777 + 90),
+        Some(0)
+    );
+
+    // Neither form.
+    assert_eq!(super::parse_retry_after("", 0), None);
+    assert_eq!(super::parse_retry_after("soon", 0), None);
+    assert_eq!(super::parse_retry_after("-5", 0), None);
+    assert_eq!(super::parse_retry_after("7.5", 0), None);
+    // An obsolete HTTP-date form: parsed by nobody here, so it is absent rather than guessed.
+    assert_eq!(
+        super::parse_retry_after("Sunday, 06-Nov-94 08:49:37 GMT", 0),
+        None
+    );
+    // Right length, wrong month.
+    assert_eq!(
+        super::parse_retry_after("Sun, 06 Xxx 1994 08:49:37 GMT", 0),
+        None
+    );
+}
+
 #[tokio::test]
 async fn ingress_reads_a_head_and_body_frame_from_a_real_client() {
     let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
@@ -1413,6 +1527,72 @@ impl tokio::io::AsyncWrite for FlushFailsWriter {
     }
 }
 
+/// A close ends a frame stream that is parked mid-request, and the socket really goes with it.
+///
+/// The registry entry is not the connection: a pump started before the close holds its own clone of
+/// the state, parked on a read for the rest of a half-written request the peer may never finish.
+/// Removing the registry's clone alone leaves that pump waiting forever — one leaked socket per
+/// closed connection. The flag is what ends it, after which the last clone goes and the peer sees
+/// the socket shut.
+#[tokio::test]
+async fn a_close_ends_a_parked_ingress_pump_and_releases_the_socket() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    // A pump that is live before the close, parked on the rest of a header block that never ends.
+    let pump = tokio::spawn({
+        let transport = transport.clone();
+        let conn = conn.clone();
+        async move { transport.frames(conn).next().await.is_none() }
+    });
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"POST / HTTP/1.1\r\nHost: x\r\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    transport.close(conn, CloseReason::Normal);
+
+    // The peer keeps writing, as a peer that has not heard about the close will.
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"X-More: y\r\n")
+        .await
+        .unwrap();
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+        .await
+        .expect("a closed connection's frame stream must end rather than park on the socket")
+        .unwrap();
+    assert!(ended, "a closed connection yields no further frames");
+
+    // The pump was the last holder: with it finished the socket is really gone.
+    let mut sink = [0_u8; 32];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut client, &mut sink),
+    )
+    .await
+    .expect("the closed socket must be released, which the peer reads as end-of-stream");
+    assert_eq!(
+        read.unwrap(),
+        0,
+        "the closed connection's socket must close"
+    );
+}
+
+/// One read buffer per ingress connection, not a fresh `READ_CHUNK_BYTES` one per read syscall.
+///
+/// The ingress reader takes as many reads as the message arrives in — the header, then each piece of
+/// the body — and a buffer allocated inside that loop is an allocation and a 64 KiB zero-fill on the
+/// frame path for every one of them. The buffer belongs to the connection, behind the same lock as
+/// the read half, which is what makes reusing it sound: one pump reads a connection at a time.
 /// The refusal is the client-visible answer to an authentication failure, so "delivered" has to
 /// mean the bytes left. `write_all` only proves they reached the writer's own buffer; the flush is
 /// the evidence, and swallowing its failure reports a refusal nobody ever received. The sibling
@@ -1579,36 +1759,93 @@ fn a_start_line_with_no_http_version_is_not_a_message() {
     assert!(raw::parse_message(b"HTTP/1.1 200 OK\r\n\r\n").is_some());
 }
 
-#[test]
-fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+/// Frame meta is honest on the frames this transport REALLY emits, on both sides.
+///
+/// A predicate applied to hand-built `Frame` literals proves the predicate, not the transport: the
+/// fixtures agree with themselves by construction and the transport is never asked. So the frames
+/// here come out of a live ingress read and a live egress round trip, and the check is shown to
+/// discriminate by perturbing a real one either way.
+///
+/// The egress HEAD frame is the one with somewhere to go wrong: its bytes are rebuilt from the
+/// upstream's status line and headers with `Content-Length` and `Transfer-Encoding` stripped, so its
+/// meta must count the bytes that survived the strip and not the head that arrived.
+#[tokio::test]
+async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
     fn honest(frame: &Frame) -> bool {
         frame.meta.bytes == frame.bytes.len() as u64
     }
-    let base = Frame {
-        direction: Direction::Inbound,
-        stream: StreamId(0),
-        bytes: SlabBytes::new(StdArc::from(&b"abcd"[..])),
-        meta: FrameMeta {
-            bytes: 4,
-            transport_units: None,
-            status: None,
-        },
+
+    // Egress: a HEAD frame rebuilt past a stripped `Content-Length`, and the body frame after it.
+    let uri =
+        fixed_response_server(b"HTTP/1.1 200 OK\r\nX-Tag: t\r\nContent-Length: 5\r\n\r\nhello")
+            .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    let head_text = String::from_utf8(head.bytes.as_slice().to_vec()).unwrap();
+    assert!(
+        !head_text.to_ascii_lowercase().contains("content-length"),
+        "the head that goes up is the stripped one: {head_text:?}"
+    );
+    assert!(
+        honest(&head),
+        "the HEAD frame's meta counts the bytes that survived the strip, not the ones that arrived"
+    );
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    assert_eq!(body.bytes.as_slice(), b"hello");
+    assert!(honest(&body));
+
+    // Ingress: the HEAD frame is the verbatim header prefix, the body frame is the decoded body.
+    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
     };
-    assert!(honest(&base));
-    let inflated = Frame {
-        meta: FrameMeta {
-            bytes: 40,
-            ..base.meta
-        },
-        ..base.clone()
-    };
-    assert!(!honest(&inflated));
-    let deflated = Frame {
-        meta: FrameMeta {
-            bytes: 1,
-            ..base.meta
-        },
-        ..base
-    };
-    assert!(!honest(&deflated));
+    let listener = served.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let served = served.clone();
+        async move { served.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    tokio::io::AsyncWriteExt::write_all(
+        &mut client,
+        b"POST /units HTTP/1.1\r\nHost: x\r\nContent-Length: 4\r\n\r\nabcd",
+    )
+    .await
+    .unwrap();
+    let accepted = accept_fut.await.unwrap();
+    let mut served_frames = served.frames(accepted);
+    let (_s, in_head) = served_frames.next().await.unwrap().unwrap();
+    let (_s, in_body) = served_frames.next().await.unwrap().unwrap();
+    assert!(honest(&in_head) && honest(&in_body));
+    assert_eq!(in_body.bytes.as_slice(), b"abcd");
+
+    // And the check discriminates: a real frame perturbed either way fails it.
+    for drift in [1_i64, -1] {
+        for real in [&head, &body, &in_head, &in_body] {
+            let perturbed = Frame {
+                meta: FrameMeta {
+                    bytes: real.meta.bytes.wrapping_add_signed(drift),
+                    ..real.meta
+                },
+                ..real.clone()
+            };
+            assert!(
+                !honest(&perturbed),
+                "a frame claiming {drift:+} bytes against what it carries is not an honest one"
+            );
+        }
+    }
 }

@@ -739,6 +739,44 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
     client.close(client_conn, CloseReason::Normal);
 }
 
+/// The arrival record names the port the connection actually arrived on.
+///
+/// `tls` binds its own listener, so the local port is a fact it holds rather than one only the
+/// layer below could know — and a resolver that distinguishes a data listener from an admin one by
+/// port reads this field. A constant zero is not that fact: it is every listener looking alike.
+#[tokio::test]
+async fn the_arrival_record_names_the_port_the_connection_arrived_on() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let bound_port: u16 = addr
+        .parse::<SocketAddr>()
+        .expect("the listener binds a socket address")
+        .port();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    assert_eq!(
+        server.arrival(&server_conn).port,
+        bound_port,
+        "an accepted connection reports the port its listener is bound to"
+    );
+    // The dialling side's own local port is an ephemeral one, but it is still a port this transport
+    // holds rather than a zero standing in for one.
+    assert_ne!(
+        client.arrival(&client_conn).port,
+        0,
+        "a dialled connection reports the local port it went out on"
+    );
+    client.close(client_conn, CloseReason::Normal);
+}
+
 /// The registration check: every reserved key this transport publishes is one it declares.
 ///
 /// The declaration is what a boot compares a plane's expectations against, so a key written and not
@@ -1302,6 +1340,91 @@ async fn a_unit0_refusal_reaches_a_healthy_peer() {
     let mut frames = client.frames(client_conn);
     let (_s, frame) = frames.next().await.unwrap().unwrap();
     assert_eq!(frame.bytes.as_slice(), b"refused");
+}
+
+/// A refusal that never reached the wire still finalises the connection.
+///
+/// The error is the caller's to see, but it is not a reason to leave the connection registered: the
+/// bytes are gone either way, and a refusal that returned early would leave the entry behind with a
+/// pump parked on the session — the leak the delivered-refusal cell rules out, reappearing on
+/// exactly the path where the peer is already gone. Closing runs on every path out, and the
+/// delivery result is reported after it.
+#[tokio::test]
+async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let id = server_conn.id();
+
+    // A pump that is live before the refusal, holding its own clone of the state.
+    let mut frames = server.frames(server_conn.clone());
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"first");
+
+    // Make the write leg fail for certain: with this side's write half already shut down, the
+    // session refuses the refusal's bytes rather than putting them on the wire. This is the "the
+    // peer never sees it" case without a timing race.
+    let captured = server.inner(id).expect("the connection is registered");
+    {
+        let mut guard = captured.write.lock().await;
+        match &mut *guard {
+            InnerWrite::Server(w) => tokio::io::AsyncWriteExt::shutdown(w).await.ok(),
+            InnerWrite::Client(w) => tokio::io::AsyncWriteExt::shutdown(w).await.ok(),
+        };
+    }
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let err = server
+        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal that never left this host is not a delivered refusal");
+    assert!(
+        matches!(
+            err,
+            TransportError::Closed | TransportError::Reset | TransportError::HandshakeFailed
+        ),
+        "the write failure is reported through the same table every other I/O path uses: {err:?}"
+    );
+
+    assert!(
+        server.inner(id).is_none(),
+        "an undelivered refusal still ends the connection: the registry entry must be gone"
+    );
+    assert!(
+        captured.closed.load(Ordering::Acquire),
+        "an undelivered refusal still sets the flag a live pump reads, or the pump keeps the session"
+    );
+
+    // The pump ends, which is what the flag exists for.
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .await
+        .ok();
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("a refused connection's frame stream must end rather than park on the session");
+    assert!(
+        next.is_none() || next.is_some_and(|r| r.is_err()),
+        "the pump ends on a failed refusal too"
+    );
 }
 
 /// A transport may not advertise a selector form it cannot serve.

@@ -63,9 +63,16 @@ impl Span {
     }
 
     /// The bytes themselves, from the buffer the span was found in.
+    ///
+    /// Total, for every span and every buffer. `Span::new` is public, so a span the scanner never
+    /// produced — one read back out of a journal, one a caller did its own arithmetic on — can still
+    /// arrive here, and both ends are clamped so that reading one is an empty answer rather than a
+    /// panic in the middle of a request. A span whose start is past its end covers no bytes, which
+    /// is already what [`Span::len`] says about it.
     #[must_use]
     pub fn of(self, buf: &[u8]) -> &[u8] {
-        &buf[self.start.min(buf.len())..self.end.min(buf.len())]
+        let end = self.end.min(buf.len());
+        &buf[self.start.min(end)..end]
     }
 }
 
@@ -242,8 +249,16 @@ fn element(b: &[u8], at: usize, index: &str, depth: usize) -> Result<Option<Span
         let element_start = i;
         i = skip_ws(b, end);
         if seen == wanted {
+            // What follows the element has to be this array's own punctuation, and it has to have
+            // ARRIVED. A value that self-terminates on the last byte — a closed string, a matched
+            // container, a literal — is followed by nothing yet, and what follows it is what says
+            // whether this is an array at all: the same bytes continued `}` make the document
+            // malformed. The object walk already waits for its closing brace for its own reason, and
+            // an answer that a later chunk turns into a refusal is the one thing the incremental
+            // scan must not hand back.
             return match b.get(i) {
-                Some(b',') | Some(b']') | None => Ok(Some(Span::new(element_start, end))),
+                Some(b',') | Some(b']') => Ok(Some(Span::new(element_start, end))),
+                None => Err(ScanErr::NeedMore),
                 Some(_) => Err(ScanErr::Malformed),
             };
         }
@@ -530,11 +545,20 @@ fn next_token_char(token: &mut &[u8]) -> Decoded {
     Decoded::Char(ch)
 }
 
-/// How far the scanner got before it ran out of bytes.
+/// One past the last byte of the document that starts the input, or the whole input if there is no
+/// such document.
 ///
-/// The pump uses this when a body arrives in chunks: it re-runs the scan over the longer prefix and
-/// stops as soon as the deepest declared pointer resolves, so a pointer is never read off a
-/// truncated document and a body whose interesting key comes last is still found.
+/// The answer is an INDEX and never a verdict. A complete value followed by trailing bytes ends
+/// where the value ends; bytes that ran out mid-value, and bytes that are not JSON structure at all,
+/// both come back as the length of the input — so a caller reading this as "the document is whole"
+/// is reading something the scanner never said, and a caller that needs that answer has to ask
+/// [`resolve_pointer`] with the empty pointer, which distinguishes the three.
+///
+/// What it is FOR is a body arriving in chunks: re-run over the longer prefix and stop as soon as
+/// the deepest declared pointer resolves, so a pointer is never read off a truncated document and a
+/// body whose interesting key comes last is still found. The kernel's pump does that with
+/// [`resolve_pointer`] directly and does not call this; it is on the surface for a plane that spools
+/// its own body, and the sentence that used to be here said the pump called it, which it does not.
 pub fn scan_frontier(input: &[u8]) -> usize {
     let start = skip_ws(input, 0);
     match skip_value(input, start, 0) {

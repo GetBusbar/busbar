@@ -67,14 +67,16 @@ fn body_with_metadata() -> Vec<u8> {
 /// COMMITTED BASELINE — the exact allocation count of decoding ONE request whose metadata block
 /// carries both read keys.
 ///
-/// One, and it is the span table the decode resolves into the arena for the loop to read. Nothing
-/// else about reading a request of this protocol needs memory: the body is read where it lies and a
+/// Two: the span table the decode resolves into the arena for the loop to read, and the box the
+/// draft travels in (the plane's per-frame answer is an enum whose largest arm would otherwise be
+/// copied by value at every hand-over, so the draft is heap-placed once, at decode). Nothing else
+/// about reading a request of this protocol needs memory: the body is read where it lies and a
 /// numeric identifier correlates as the number it is.
 ///
-/// It was seven. The six that are gone were the search text the member lookup built for each of the
+/// It was eight. The six that are gone were the search text the member lookup built for each of the
 /// two keys it reads — a formatted string apiece, and formatting a string is more than one
 /// allocation — to spell out names the crate was compiled holding.
-const DECODE_WITH_METADATA_ALLOCS: u64 = 1;
+const DECODE_WITH_METADATA_ALLOCS: u64 = 2;
 
 #[test]
 fn reading_the_metadata_block_builds_no_search_text() {

@@ -783,7 +783,7 @@ async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
 #[tokio::test]
 async fn completion_tap_fires_synthetic_rejected_by_auth() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .lane(LaneSpec::new(
@@ -827,7 +827,7 @@ async fn completion_tap_fires_synthetic_rejected_by_auth() {
 #[tokio::test]
 async fn completion_tap_status_is_protocol_native_gemini_400() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let (cap, tap) = webhook_tap().await;
     let mut app = TestApp::new()
         .auth(Arc::new(busbar_core::auth::AuthMiddleware::new_builtin(
@@ -1662,16 +1662,17 @@ async fn max_tokens_saturates_not_wraps() {
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = std::sync::Arc::new(
-        GovState::new_with_signer(store, None, Some(signer)).expect("gov state"),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, Some(signer))
+        .expect("gov state");
     let (key, secret) = gov
         .mint_signed(
             NewKeySpec {
@@ -1693,7 +1694,7 @@ async fn send_user_projects_governance_key_identity() {
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));
@@ -1838,10 +1839,13 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
 #[tokio::test]
 async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov state");
     let (disabled_key, secret) = gov
         .create_key(
             NewKeySpec {
@@ -1865,7 +1869,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));
@@ -2149,6 +2153,13 @@ fn reject_kind_mapping_matches_status_semantics() {
     assert_eq!(reject_kind_for_status(404), KIND_NOT_FOUND);
     assert_eq!(reject_kind_for_status(408), KIND_TIMEOUT);
     assert_eq!(reject_kind_for_status(429), KIND_RATE_LIMIT);
+    // The refusal a load-bearing REWRITE hook's failed call produces travels this same map (it is
+    // minted as the transform path's `reject` verb). It must read as RETRYABLE — the identical kind
+    // the read-only seat renders for the same condition — never as a client error.
+    assert_eq!(
+        reject_kind_for_status(busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS),
+        KIND_OVERLOADED
+    );
     for other in [400, 422, 451, 499] {
         assert_eq!(reject_kind_for_status(other), KIND_INVALID_REQUEST);
     }

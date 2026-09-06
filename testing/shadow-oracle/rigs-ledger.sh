@@ -100,7 +100,10 @@ repo="$(cd "${here}/../.." && pwd)"
 say() { printf '%s\n' "$*"; }
 die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
-usage() { sed -n '2,80p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+# Print the whole leading comment block, however long it grows. A fixed line range (this was
+# `2,80p`) silently starts truncating the moment the header gains a paragraph — and it already had:
+# the USAGE and ARMING sections sit past line 80, so `--help` had stopped printing the usage.
+usage() { sed -n '2,${/^[^#]/q;p;}' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 BIN="" REBASELINE=0 CHECK=0 SELFTEST=0
 BASELINE="${here}/rigs-baseline.json"

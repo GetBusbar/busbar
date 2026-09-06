@@ -69,6 +69,17 @@ pub(crate) fn build_runtime(
         .and_then(|slot| slot.downcast_ref::<NativeRuntime>())
     });
 
+    // THE GENERATION'S OWN REGISTRATION, for the two names a planned leg is written in.
+    //
+    // A registration value bounds nothing on its own — the leaked strings are the resource and the
+    // resource is the PROCESS's, held behind one static vocabulary that every registration in the
+    // image reads and writes. So a local one here resolves exactly the names the composition root
+    // registered, and interns a name the root has not reached yet at most once for the image. What
+    // it buys is that the lane table is seated with its static names at BUILD time, off the request
+    // path, and therefore before this generation can be published.
+    #[cfg(feature = "teller-waist")]
+    let mut registration = busbar_contract::Registration::new();
+
     // ── lanes (one per model, in the carrier's deterministic sorted order — `lanes[i]` IS lane `i`) ──
     let mut lanes: Vec<Lane> = Vec::with_capacity(input.lanes.len());
     let mut by_model: HashMap<String, usize> = HashMap::with_capacity(input.lanes.len());
@@ -133,11 +144,37 @@ pub(crate) fn build_runtime(
         .unwrap_or_else(|e| panic!("provider for '{}': {e}", li.model));
         let signing_host = host_from_base(&base_url);
         let prebuilt_auth = egress_auth::prebuild_auth(&credential, &api_key, &signing_host);
+        // THE TWO SEATED NAMES. A refusal here is not a lane this node can plan a leg to, and this
+        // fn's rule for a lane whose row cannot be built is the loud one every other arm above
+        // takes: 1.5.5's answer to a lane that will not lower is a failed apply with the previous
+        // generation still serving, never a pool that quietly serves fewer members than the
+        // operator configured. The only way to reach it is a vocabulary that is closed or past
+        // `MAX_VOCABULARY`, both of which the contract calls a defect of the image rather than a
+        // shape of configuration — so it is surfaced, not absorbed.
+        #[cfg(feature = "teller-waist")]
+        let authority = registration.key(&base_url).unwrap_or_else(|| {
+            panic!(
+                "lane '{}' names dial target '{base_url}', which this image's vocabulary cannot \
+                 hold — it is closed, or past capacity",
+                li.model
+            )
+        });
+        #[cfg(feature = "teller-waist")]
+        let lane_id = registration.key(&li.model).unwrap_or_else(|| {
+            panic!(
+                "lane '{}' cannot be named — this image's vocabulary is closed, or past capacity",
+                li.model
+            )
+        });
         lanes.push(Lane {
             model: li.model.clone(),
             provider: li.provider.clone(),
             signing_host,
             base_url,
+            #[cfg(feature = "teller-waist")]
+            authority,
+            #[cfg(feature = "teller-waist")]
+            lane_id,
             api_key: busbar_api::Redacted::new(api_key),
             protocol,
             credential,

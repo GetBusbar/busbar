@@ -105,7 +105,12 @@ pub(crate) async fn issue(
         host.call_log_emit_hostless(
             &principal,
             busbar_substrate::plane::calllog::CallInput {
-                ts: busbar_substrate::store::now(),
+                // C10 (state/store port): the chain entry's timestamp is read off the SAME host this
+                // record emits through — `ClockHost::clock_now_secs`, inherited by `EngineHost` —
+                // rather than the ambient `store::now()` free function. Value-identical (the wired
+                // `clock_now` slot is that same `SystemTime` epoch clock), so the durable chain's
+                // bytes are unchanged; the leg now takes its clock from the port it already holds.
+                ts: host.clock_now_secs(),
                 server: server.as_str().to_string(),
                 // See the module header for why this is `verb:`-prefixed and why that prefix cannot
                 // collide with any `mcp_tool` grant an operator can write.

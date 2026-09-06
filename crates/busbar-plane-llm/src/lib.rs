@@ -83,11 +83,13 @@ impl LlmPlane {
         self.upstreams
     }
 
-    /// The upstream a unit of this operation class should be offered, if any is configured.
+    /// The FIRST configured upstream, if any is configured.
     ///
-    /// First match wins, which is the declaration order the operator wrote. Choosing among several
-    /// is the trust unit's and the ranking hooks' business, not this plane's: a plane that picked a
-    /// winner would be making a decision, and a plane makes none.
+    /// It takes no operation class and filters on none. Declaration order is the operator's own
+    /// ordering and the first entry is what a unit is offered, whatever it asks for: choosing among
+    /// several is the trust unit's and the ranking hooks' business, not this plane's, and a plane
+    /// that narrowed the list by op class would be taking exactly the decision a plane makes none
+    /// of.
     #[must_use]
     pub fn first_upstream(&self) -> Option<&'static Upstream> {
         self.upstreams.first()

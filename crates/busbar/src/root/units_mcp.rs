@@ -50,8 +50,8 @@ use std::sync::Arc;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
 use busbar_caps::{
-    Admit, AdmitToken, Authenticate, Decision, PrincipalId, TrustToken, UnitToken, UsageToken,
-    Verify,
+    Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, Decode, PrincipalId,
+    ReasonCode, Refusal, TrustToken, UnitToken, UsageToken, Verify,
 };
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
@@ -68,6 +68,8 @@ use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
 use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
 use busbar_unit_trust::destination::{KindFacts, OriginKind};
 use busbar_unit_trust::guard::PoolView;
+use busbar_unit_trust::lane::{BreakerQuery, BreakerView};
+use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
 use busbar_unit_trust::{Trust, VerifyRequest};
 use busbar_unit_usage::{
     meter as fold_usage, KernelCounts, LegDeclaration, LocatedValue, Metered, RetainedLocatorValues,
@@ -124,6 +126,145 @@ pub fn claim_key() -> ClaimKey {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Step 0 — arrival, over the connection the transport recorded
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One connection as the transport stack recorded it, paired with the claim it was matched by.
+///
+/// The record is borrowed rather than owned because the kernel holds it for the whole unit and this
+/// step neither keeps nor edits it.
+#[derive(Debug, Clone, Copy)]
+pub struct Arrived<'a> {
+    /// What the transports wrote about the connection, bottom layer first.
+    pub record: &'a ArrivalRecord,
+    /// The transport named by the claim that matched, which is the layer this plane believes it is
+    /// answering on.
+    pub claim_transport: &'a str,
+}
+
+/// The connection's own facts, carried forward for the steps that resolve against them.
+///
+/// The gate itself is the kernel's — the in-flight table, the rate, the cursor and spill budgets are
+/// all decided before any plane is known, and this step never sees them. What a plane's binding owes
+/// here is the handover, and the handover has one way of going wrong that only the plane can catch:
+/// the claim and the stack must be describing the same connection. Everything downstream depends on
+/// it. The scheme narrowing is a function of the transport; the audience is a function of whether
+/// the claim carries a scheme at all; every location the later steps resolve is resolved against
+/// this record and re-resolved after an upgrade. A record handed on under the wrong claim is a unit
+/// authenticated for one surface and answered on another.
+pub fn arrival(arrived: &Arrived<'_>, token: &UnitToken<Arrival>) -> Decision<Arrival> {
+    // A claim is the ONLY way this plane names a transport, so a transport no claim names is one no
+    // unit of this plane may arrive on — whatever else the node has registered.
+    if !claims::CLAIMS
+        .iter()
+        .any(|claim| claim.transport == arrived.claim_transport)
+    {
+        return Decision::refuse(token, Refusal::new(ReasonCode::HandoffMismatch));
+    }
+    // And the claim's transport is the TOP of the composed chain, not merely somewhere in it. The
+    // streamed surface stands on the document one, so a chain that ended at `sse` contains `http`;
+    // reading membership rather than the top would let a stream be matched as a request.
+    if arrived.record.transport_chain.last() != Some(&arrived.claim_transport) {
+        return Decision::refuse(token, Refusal::new(ReasonCode::HandoffMismatch));
+    }
+    Decision::proceed(token, arrived.record.clone())
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 0b — decode, through the plane's own reading of the envelope
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// What the plane made of one inbound frame.
+///
+/// Three answers rather than two, because "not a unit" is not one thing. A notice nothing
+/// recognises is dropped and a partial frame is waited on, and neither is a refusal: this protocol
+/// forbids answering a message that carries no identifier, so refusing one would be an answer to a
+/// caller who is owed silence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Read<'u> {
+    /// A draft the loop runs. Boxed because the fact map is a fixed array sized for the declared
+    /// key ceiling, and an enum whose other arms are empty should not be that wide everywhere.
+    Unit(Box<Decoded<'u>>),
+    /// A notice this node does not recognise. Counted, never answered.
+    Dropped,
+    /// Not a whole frame yet.
+    NeedMore,
+}
+
+/// What the plane's read of one request body yielded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Decoded<'u> {
+    /// The operation class the plane's method table named.
+    pub op: OpClassId,
+    /// Whether the unit holds its direction open rather than being answered once.
+    pub streaming: bool,
+    /// The facts the plane read off the bytes, including the caller's metadata block.
+    pub facts: busbar_contract::bounded::Facts<'u>,
+}
+
+/// Read one inbound frame through the plane's own ingress decoder.
+///
+/// The root does not parse this protocol and must not: the envelope shape, the method table and the
+/// pointer table are all the plane's, and a second reading here would be a second grammar. What the
+/// root owns is the mapping from the plane's decode failure onto the loop's closed reason
+/// vocabulary, which is the thing the journal and the refusal both name.
+///
+/// # Errors
+/// Returns the reason a refusal at the decode step carries when the plane could not read the bytes.
+pub fn read_ingress<'u>(
+    plane: &McpPlane,
+    frames: &mut busbar_contract::wire::FrameCursor<'u>,
+    ctx: &busbar_contract::unit::Ctx<'u>,
+) -> Result<Read<'u>, ReasonCode> {
+    let ingress = plane
+        .decode_ingress(frames, None, ctx)
+        .map_err(|failure| match failure {
+            // The arena running out is a budget, not a misread body, and the two carry different
+            // reasons because a caller who is over a bound and a caller who sent nonsense are owed
+            // different answers.
+            busbar_contract::wire::Decode::Oversize => ReasonCode::ArenaBudget,
+            _ => ReasonCode::DecodeFailed,
+        })?;
+    Ok(match ingress {
+        busbar_contract::plane::Ingress::OneShot(draft) => Read::Unit(Box::new(Decoded {
+            op: draft.op,
+            streaming: false,
+            facts: draft.facts,
+        })),
+        busbar_contract::plane::Ingress::Open(draft) => Read::Unit(Box::new(Decoded {
+            op: draft.op,
+            streaming: true,
+            facts: draft.facts,
+        })),
+        busbar_contract::plane::Ingress::Discard { .. } => Read::Dropped,
+        busbar_contract::plane::Ingress::NeedMore => Read::NeedMore,
+        // This plane opens no handshake unit and closes no session of its own — every claim it
+        // makes carries its credential on the first frame. A decoder that started answering either
+        // would be a plane whose shape changed, and carrying such a frame on as a unit would give
+        // it a class nobody decoded.
+        _ => return Err(ReasonCode::DecodeFailed),
+    })
+}
+
+/// Answer the decode step with the class the plane named.
+///
+/// The bytes are read once, at the one step entitled to read them, and this restates that answer
+/// rather than re-deriving it: re-reading here would advance the codec a second time over the same
+/// frame and could disagree with the draft every later step is built from.
+pub fn decode(read: &Result<Read<'_>, ReasonCode>, token: &UnitToken<Decode>) -> Decision<Decode> {
+    match read {
+        Ok(Read::Unit(decoded)) => Decision::proceed(token, decoded.op),
+        // Neither of these opens a unit, so neither should have reached a step. Refusing rather
+        // than inventing a class is the honest answer to a caller of this binding that got the
+        // sequencing wrong.
+        Ok(Read::Dropped | Read::NeedMore) => {
+            Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed))
+        }
+        Err(reason) => Decision::refuse(token, Refusal::new(*reason)),
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Step 1 — authenticate, over the schemes the claim declared
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -165,15 +306,22 @@ pub fn declared_schemes() -> Vec<&'static str> {
     out
 }
 
-/// The alternative the plane narrows a unit on this transport to.
+/// The alternative the plane narrows a unit on this claim key to.
 ///
 /// A locally launched server has no request to carry a header on: its credential was handed to it
 /// when it started. Everything on the document transport presents a bearer credential. This is the
-/// plane's own answer, restated over the transport key because the root reaches the plane's
+/// plane's own answer, restated over the claim key because the root reaches the plane's
 /// `authenticate` only with a live unit in hand and the narrowing depends on nothing else.
+///
+/// The question is asked by NAME (`claims::is_stdio`) rather than compared here. What arrives is a
+/// `&str` claim key out of the plane's own claim vocabulary, never the engine's `Transport` axis —
+/// but a bare `if transport == claims::TRANSPORT_STDIO` is indistinguishable, to a reader and to the
+/// axis lint alike, from the agnostic root forking on the wire carrier it may not see. Asking the
+/// plane its own named question says what is meant and leaves the comparison in the plane that owns
+/// the constant.
 #[must_use]
-pub fn narrowed_scheme(transport: &str) -> &'static str {
-    if transport == claims::TRANSPORT_STDIO {
+pub fn narrowed_scheme(claim_key: &str) -> &'static str {
+    if claims::is_stdio(claim_key) {
         "environment"
     } else {
         "bearer"
@@ -253,30 +401,59 @@ pub fn authenticate_bound(
 /// question about the plane's own declarations: is the schema one it declared, and is the operation
 /// one that schema declares? Both answers are on the plane crate, so the root asks it rather than
 /// keeping a second table.
-pub struct Catalogue {
+pub struct Catalogue<'r> {
     plane: McpPlane,
     schema: RecordSchemaId,
     op: &'static str,
     lanes: Vec<LaneId>,
+    net: NetSeam<'r>,
 }
 
-impl Catalogue {
+/// What the network guard is run over, as this root binds it.
+///
+/// The three halves travel together because they are one decision: which resolver answers, how far
+/// the policy lets a hop reach, and what the operator added to or carved out of the metadata
+/// denylist. Passing them singly is how a caller ends up guarding with one deployment's policy and
+/// another deployment's denylist.
+#[derive(Clone, Copy)]
+pub struct NetSeam<'r> {
+    /// The one resolution the guard makes goes through here.
+    pub resolver: &'r dyn Resolver,
+    /// How far this plane's hops may reach.
+    pub policy: GuardPolicy,
+    /// The deployment's additions to and carve-outs from the metadata denylist.
+    pub denylist: &'r Denylist,
+}
+
+impl<'r> Catalogue<'r> {
     /// The facts for one unit, whose plan reaches one schema under one operation.
     #[must_use]
-    pub fn new(plane: McpPlane, schema: RecordSchemaId, op: &'static str) -> Self {
+    pub fn new(
+        plane: McpPlane,
+        schema: RecordSchemaId,
+        op: &'static str,
+        net: NetSeam<'r>,
+    ) -> Self {
         let lanes = plane.servers().iter().map(|s| s.lane).collect();
         Catalogue {
             plane,
             schema,
             op,
             lanes,
+            net,
         }
     }
 
     /// The facts for a unit that reaches no record at all — a hop straight to a server.
     #[must_use]
-    pub fn upstream_only(plane: McpPlane) -> Self {
-        Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN)
+    pub fn upstream_only(plane: McpPlane, net: NetSeam<'r>) -> Self {
+        Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN, net)
+    }
+
+    /// Where one lane sits in the registered-server table, which is the position the breaker keys
+    /// its cells by.
+    fn lane_index(&self, lane: &LaneId) -> Option<usize> {
+        self.plane.servers().iter().position(|s| s.lane == *lane)
     }
 
     /// The registered server one destination names, where it names one.
@@ -286,7 +463,24 @@ impl Catalogue {
     }
 }
 
-impl KindFacts for Catalogue {
+impl KindFacts for Catalogue<'_> {
+    fn net_guard_passes(&self, dest: &DestinationFacts) -> bool {
+        match busbar_unit_trust::net::check_destination_facts(
+            dest,
+            &[],
+            self.net.resolver,
+            self.net.policy,
+            self.net.denylist,
+        ) {
+            // Only an upstream is dialled at an address; every other kind of this plane's
+            // destinations reaches where it is going without one, so "not an upstream" is this
+            // caller's pass rather than its refusal. A spawned stdio server has an address that is
+            // a program, and the guard answers `Ok(None)` for it for the same reason.
+            Ok(_) | Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => true,
+            Err(_) => false,
+        }
+    }
+
     fn allow_listed(&self, dest: &DestinationFacts) -> bool {
         match dest {
             // A hop is permitted when it reaches a server this deployment registered. The plane with
@@ -367,6 +561,25 @@ impl KindFacts for Catalogue {
         // And no upgrade: the streamed surface is its own claim on its own transport, reached by a
         // request rather than by an in-band handoff.
         false
+    }
+
+    fn unit_price_within_max(&self, _dest: &DestinationFacts) -> bool {
+        // A card that states no maximum unit price has said nothing for a price to be over. Reading
+        // that silence as a ceiling of zero would exclude every registered server on every
+        // deployment whose card predates the field.
+        true
+    }
+
+    fn breaker_admits(&self, dest: &DestinationFacts, at: &BreakerQuery<'_>) -> bool {
+        // The mapping is this root's — a lane name is a position in the registered-server table and
+        // nothing outside here knows the order. The QUESTION is the query's, so the answer here is
+        // the same answer the pre-walk's filter gives about the same lane at the same moment.
+        match dest.lane().and_then(|lane| self.lane_index(&lane)) {
+            Some(index) => at.admits_lane(index),
+            // A destination priced on no registered lane has no position for the breaker to hold an
+            // opinion about; the allow-list conjunct beside this one has already refused it.
+            None => true,
+        }
     }
 }
 
@@ -452,8 +665,8 @@ pub fn verify(
     trust: &Trust,
     candidate: &[DestinationFacts],
     pool: &str,
-    pools: &dyn PoolView,
-    facts: &dyn KindFacts,
+    views: Views<'_>,
+    now: u64,
     trust_token: &TrustToken,
     token: &UnitToken<Verify>,
 ) -> Decision<Verify> {
@@ -463,9 +676,35 @@ pub fn verify(
         origin: OriginKind::Client,
         candidates: candidate,
         pool,
+        // The unit's pinned arrival epoch, carried in rather than read here: the readiness peek this
+        // step takes has to be the same moment the walk's own filter takes.
+        now,
         unpriced_message: UNPRICED_MESSAGE,
     };
-    trust.verify(&request, pools, facts, trust_token, token)
+    trust.verify(
+        &request,
+        views.pools,
+        views.facts,
+        views.breaker,
+        trust_token,
+        token,
+    )
+}
+
+/// The three tables the trust unit reads, as this root binds them.
+///
+/// They travel together because they are read together and about the same request: the pools this
+/// caller's key may use, the per-kind facts, and the breaker whose answer must match the walk's.
+/// Handing them singly is how a caller ends up asking one deployment's breaker about another
+/// deployment's pool.
+#[derive(Clone, Copy)]
+pub struct Views<'v> {
+    /// What the deployment says about its pools and this caller's key.
+    pub pools: &'v dyn PoolView,
+    /// What the per-kind destination rules consult.
+    pub facts: &'v dyn KindFacts,
+    /// The breaker the dialled kinds' rules are judged against.
+    pub breaker: &'v dyn BreakerView,
 }
 
 /// The origin a frame an upstream pushed opens its own unit under.
@@ -1288,6 +1527,34 @@ pub fn class_prices(rates: &BTreeMap<String, u64>) -> ClassPrices {
 mod tests {
     use super::*;
 
+    /// A resolver that answers every name with one public address.
+    ///
+    /// These tests are about which question the catalogue asks, not about what a live resolver would
+    /// say today; a fixed answer is what keeps them from depending on somebody's DNS.
+    struct FixedResolver;
+
+    impl Resolver for FixedResolver {
+        fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+            Ok(vec!["93.184.216.34".parse().expect("a fixture address")])
+        }
+    }
+
+    /// The guard seam these tests bind: the fixed resolver, a policy that admits the loopback
+    /// registrations the fixtures use, and an empty denylist.
+    fn seam() -> NetSeam<'static> {
+        static RESOLVER: FixedResolver = FixedResolver;
+        static DENYLIST: std::sync::LazyLock<Denylist> =
+            std::sync::LazyLock::new(Denylist::default);
+        NetSeam {
+            resolver: &RESOLVER,
+            policy: GuardPolicy {
+                allow_private: true,
+                ..GuardPolicy::default()
+            },
+            denylist: &DENYLIST,
+        }
+    }
+
     /// A store that keeps nothing.
     ///
     /// Every record operation the published protocol declares carries a default that accepts and
@@ -1340,6 +1607,297 @@ mod tests {
         ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
             Ok(Vec::new())
         }
+    }
+
+    /// The connection's own facts reach the loop, and a claim that names a transport this stack is
+    /// not carrying does not.
+    ///
+    /// Arrival is the kernel's gate and no plane's decision, so what a plane's binding owes here is
+    /// not a second gate: it is the honest handover of what the transport recorded. The two ways
+    /// that handover can be dishonest are both driven. A claim naming a transport this plane never
+    /// claimed would put a unit of this plane on a layer no claim of its selects, and a claim whose
+    /// transport is not the layer the stack actually ended on would carry forward a record
+    /// describing a connection other than the one that arrived — the scheme narrowing, the audience
+    /// and every location the later steps resolve are all read off exactly these bytes.
+    #[test]
+    fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
+        use busbar_caps::KernelSeal;
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let over_tls = |chain: Vec<&'static str>| ArrivalRecord {
+            source: "198.51.100.7:52344".to_string(),
+            port: 8443,
+            alpn: Some("h2".to_string()),
+            sni: Some("mcp.example".to_string()),
+            peer_cert: None,
+            transport_chain: chain,
+        };
+
+        // The document surface: composed tcp → tls → http, matched by the claim that names http.
+        let record = over_tls(vec!["tcp", "tls", "http"]);
+        let decision = arrival(
+            &Arrived {
+                record: &record,
+                claim_transport: claims::TRANSPORT_HTTP,
+            },
+            &UnitToken::mint(&seal),
+        );
+        let carried = decision
+            .into_result(&seal)
+            .expect("the claim names the layer the stack ended on");
+        // Carried forward unchanged: the arrival step of a plane binding adds nothing to what the
+        // transport wrote, and a record that gained or lost a field here would be the root
+        // describing a connection rather than reporting one.
+        assert_eq!(carried, record);
+
+        // The streamed surface is one layer further up, and the locally launched one is a stack of
+        // one. Both are claims this plane makes, and both are the top of their own chain.
+        for (chain, transport) in [
+            (vec!["tcp", "tls", "http", "sse"], claims::TRANSPORT_SSE),
+            (vec!["stdio"], claims::TRANSPORT_STDIO),
+        ] {
+            let record = over_tls(chain);
+            assert!(
+                arrival(
+                    &Arrived {
+                        record: &record,
+                        claim_transport: transport,
+                    },
+                    &UnitToken::mint(&seal),
+                )
+                .into_result(&seal)
+                .is_ok(),
+                "{transport} is claimed and is the top of its own chain"
+            );
+        }
+
+        // A transport no claim of this plane names. The registry may well carry it — the node
+        // composes seven — but a unit of THIS plane arriving on it was matched by nothing, and a
+        // binding that shrugged and carried the record forward would have this plane answering
+        // bytes it never claimed.
+        let ws = over_tls(vec!["tcp", "tls", "http", "ws"]);
+        let refusal = arrival(
+            &Arrived {
+                record: &ws,
+                claim_transport: "ws",
+            },
+            &UnitToken::mint(&seal),
+        )
+        .into_result(&seal)
+        .expect_err("this plane claims no socket surface");
+        assert_eq!(refusal.reason(), ReasonCode::HandoffMismatch);
+        assert_eq!(refusal.step(), Some(busbar_caps::StepName::Arrival));
+
+        // Claimed, but not the layer this connection ended on: an sse stack matched as a document
+        // request. Nothing is wrong with the bytes and nothing is wrong with the claim — the two
+        // simply do not describe the same connection.
+        let sse = over_tls(vec!["tcp", "tls", "http", "sse"]);
+        let refusal = arrival(
+            &Arrived {
+                record: &sse,
+                claim_transport: claims::TRANSPORT_HTTP,
+            },
+            &UnitToken::mint(&seal),
+        )
+        .into_result(&seal)
+        .expect_err("http is below the layer this stack ended on, not the layer itself");
+        assert_eq!(refusal.reason(), ReasonCode::HandoffMismatch);
+    }
+
+    // ── the decode step's own scaffolding ──────────────────────────────────────────────────────
+    //
+    // Driving the decode step means driving the plane's own ingress decoder, and that takes the
+    // four borrowed views and the one resource a plugin call is given. They are built here rather
+    // than mocked away, because a decode cell that did not hand the plane a real arena would not be
+    // driving the step that can run out of one.
+
+    /// A leaking arena. Test-only, run a bounded number of times per process: the trait's
+    /// allocators hand back borrowed slices, so an honest double either leaks or is unsafe, and
+    /// this crate's tests do not reach for unsafe.
+    struct CellArena;
+
+    impl busbar_contract::bounded::Arena for CellArena {
+        fn alloc_bytes<'a>(
+            &'a self,
+            src: &[u8],
+        ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
+        {
+            let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
+            Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
+        }
+
+        fn alloc_str<'a>(
+            &'a self,
+            src: &str,
+        ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
+            Ok(Box::leak(src.to_string().into_boxed_str()))
+        }
+
+        fn alloc_spans<'a>(
+            &'a self,
+            src: &[(&'a str, busbar_contract::bounded::Span)],
+        ) -> Result<
+            &'a [(&'a str, busbar_contract::bounded::Span)],
+            busbar_contract::bounded::ArenaBudget,
+        > {
+            Ok(Box::leak(src.to_vec().into_boxed_slice()))
+        }
+
+        fn remaining(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    struct CellConfig;
+
+    impl busbar_contract::unit::ConfigView for CellConfig {
+        fn get_str(&self, _key: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _key: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    /// The document surface, composed the way the node composes it.
+    struct CellTransport;
+
+    impl busbar_contract::unit::TransportView for CellTransport {
+        fn key(&self) -> &'static str {
+            claims::TRANSPORT_HTTP
+        }
+        fn chain(&self) -> &[&'static str] {
+            &["tcp", "tls", "http"]
+        }
+        fn fact(&self, _key: &str) -> Option<&str> {
+            None
+        }
+    }
+
+    /// One inbound frame carrying `body`.
+    fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
+        vec![busbar_contract::wire::Frame {
+            direction: busbar_contract::wire::Direction::Inbound,
+            stream: busbar_contract::ids::StreamId(0),
+            bytes: busbar_contract::bounded::SlabBytes::new(std::sync::Arc::from(body.as_bytes())),
+            meta: busbar_contract::wire::FrameMeta::default(),
+        }]
+    }
+
+    /// A JSON-RPC envelope resolves to the operation the plane's own method table names; a body
+    /// that is not this protocol's shape is refused at the step that read it; and the caller's
+    /// metadata block is read one level down and no further.
+    ///
+    /// The metadata walk is the part that cannot be done by pointer at all, and that is why it is
+    /// driven here rather than assumed. This protocol's metadata keys carry `/` in them, and a
+    /// pointer reads a `/` as a level, so `/params/_meta/io.modelcontextprotocol/protocolVersion`
+    /// names a nesting that does not exist. The block is located by pointer and its members are
+    /// read by name out of it — one level down, never deeper — which is what makes the protocol
+    /// version and the progress token reachable as the facts the later steps read.
+    #[test]
+    fn an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused() {
+        use busbar_caps::KernelSeal;
+        use busbar_contract::bounded::{FactValue, Labels};
+        use busbar_contract::unit::{Clock, Ctx};
+        use busbar_contract::wire::FrameCursor;
+        use busbar_plane_mcp::facts as f;
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let arena = CellArena;
+        let config = CellConfig;
+        let transport = CellTransport;
+        let labels = Labels::new();
+        let clock = Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        };
+        let plane = McpPlane::EMPTY;
+
+        // A well-formed call, carrying the caller's own metadata block. Both members the loop reads
+        // are keyed with a separator in the name, which is the whole reason the walk exists.
+        let body = r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"grep","_meta":{"io.modelcontextprotocol/protocolVersion":"2025-06-18","progressToken":"p-42"}}}"#;
+        let frames = one_frame(body);
+        let mut cursor = FrameCursor::new(&frames);
+        let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        let read = read_ingress(&plane, &mut cursor, &ctx);
+        let Ok(Read::Unit(decoded)) = &read else {
+            panic!("a well-formed call is a unit: {read:?}");
+        };
+        let facts = decoded.facts;
+        assert_eq!(decoded.op, ops::OP_TOOL_CALL);
+        // A call is answered once and does not hold the direction open.
+        assert!(!decoded.streaming);
+        // The depth-1 walk: located by pointer, members read by name out of the block.
+        assert_eq!(
+            facts.get(f::FACT_PROTOCOL_VERSION),
+            Some(FactValue::Str("2025-06-18"))
+        );
+        assert_eq!(
+            facts.get(f::FACT_PROGRESS_TOKEN),
+            Some(FactValue::Str("p-42"))
+        );
+        // And the subject the method's own row points at, which is what approve names a resource
+        // from — proof the same read served the whole pointer table and not just the envelope.
+        assert_eq!(facts.get(f::FACT_SUBJECT), Some(FactValue::Str("grep")));
+        assert_eq!(
+            decode(&read, &UnitToken::mint(&seal))
+                .into_result(&seal)
+                .expect("a resolved operation proceeds"),
+            ops::OP_TOOL_CALL
+        );
+
+        // Why the block is walked at all, stated against the pointer grammar itself: the BLOCK is
+        // reachable by pointer and its members are not, because their names carry the separator a
+        // pointer reads as a level. So the same two facts asked for by pointer resolve to nothing,
+        // and a binding that read them that way would report a caller who sent both as a caller who
+        // sent neither.
+        assert!(matches!(
+            busbar_contract::spans::resolve_pointer(
+                body.as_bytes(),
+                busbar_plane_mcp::jsonrpc::PTR_PARAMS_META
+            ),
+            busbar_contract::spans::Resolved::Found(_)
+        ));
+        assert!(!matches!(
+            busbar_contract::spans::resolve_pointer(
+                body.as_bytes(),
+                "/params/_meta/io.modelcontextprotocol/protocolVersion"
+            ),
+            busbar_contract::spans::Resolved::Found(_)
+        ));
+
+        // Every way the bytes can fail to be this protocol, refused at this step. A version member
+        // that is not this protocol's version, a method member that is not a string, an identifier
+        // that is neither a string nor a number, and a method the table does not name: none of them
+        // is guessed at, and none of them reaches a later step under a class nobody decoded.
+        for malformed in [
+            r#"{"jsonrpc":"1.0","id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":7}"#,
+            r#"{"jsonrpc":"2.0","id":{},"method":"tools/list"}"#,
+            r#"{"id":1,"method":"tools/list"}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"tools/obliterate"}"#,
+        ] {
+            let frames = one_frame(malformed);
+            let mut cursor = FrameCursor::new(&frames);
+            let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+            let read = read_ingress(&plane, &mut cursor, &ctx);
+            assert_eq!(read, Err(ReasonCode::DecodeFailed), "{malformed} was read");
+            let refusal = decode(&read, &UnitToken::mint(&seal))
+                .into_result(&seal)
+                .expect_err("a body this plane cannot read is refused");
+            assert_eq!(refusal.reason(), ReasonCode::DecodeFailed);
+            assert_eq!(refusal.step(), Some(busbar_caps::StepName::Decode));
+        }
+
+        // A notice nobody recognises is DROPPED, never refused: a refusal is an answer, and this
+        // protocol forbids answering a message that carries no identifier.
+        let frames = one_frame(r#"{"jsonrpc":"2.0","method":"notifications/unheard-of"}"#);
+        let mut cursor = FrameCursor::new(&frames);
+        let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        assert_eq!(read_ingress(&plane, &mut cursor, &ctx), Ok(Read::Dropped));
     }
 
     /// The plane declares one scheme with two alternatives, and the authenticate binding offers the
@@ -1450,17 +2008,28 @@ mod tests {
     /// declare fails it.
     #[test]
     fn a_record_leg_is_judged_against_the_planes_own_declaration() {
-        let declared = Catalogue::new(McpPlane::EMPTY, records::SCHEMA_CALL, records::OP_APPEND);
+        let declared = Catalogue::new(
+            McpPlane::EMPTY,
+            records::SCHEMA_CALL,
+            records::OP_APPEND,
+            seam(),
+        );
         assert!(declared.plane_record_ok());
 
         // The call log is append-and-read: an answer whose middle can be replaced is not an answer.
-        let rewritten = Catalogue::new(McpPlane::EMPTY, records::SCHEMA_CALL, records::OP_PUT);
+        let rewritten = Catalogue::new(
+            McpPlane::EMPTY,
+            records::SCHEMA_CALL,
+            records::OP_PUT,
+            seam(),
+        );
         assert!(!rewritten.plane_record_ok());
 
         let stranger = Catalogue::new(
             McpPlane::EMPTY,
             RecordSchemaId::new("ledger"),
             records::OP_GET,
+            seam(),
         );
         assert!(!stranger.plane_record_ok());
     }
@@ -1471,7 +2040,7 @@ mod tests {
     /// refusal happens at the step that owns it.
     #[test]
     fn an_unregistered_hop_is_not_allow_listed() {
-        let facts = Catalogue::upstream_only(McpPlane::EMPTY);
+        let facts = Catalogue::upstream_only(McpPlane::EMPTY, seam());
         let nowhere = DestinationFacts::Upstream {
             transport: claims::TRANSPORT_HTTP,
             address: busbar_contract::UpstreamAddress::socket(""),
@@ -1490,7 +2059,7 @@ mod tests {
             transport: claims::TRANSPORT_HTTP,
         }];
         let plane = McpPlane::new(SERVERS);
-        let facts = Catalogue::upstream_only(plane);
+        let facts = Catalogue::upstream_only(plane, seam());
         let hop = DestinationFacts::Upstream {
             transport: claims::TRANSPORT_HTTP,
             address: busbar_contract::UpstreamAddress::socket("127.0.0.1:9"),
@@ -1500,6 +2069,107 @@ mod tests {
         assert!(facts.transport_key_resolves(&hop));
         assert!(facts.lane_permitted_for_op_class("fs-lane"));
         assert!(!facts.lane_permitted_for_op_class("some-other-lane"));
+    }
+
+    /// A registered server whose name answers with the metadata address is refused by the guard the
+    /// catalogue asks, and the ordinary one is not.
+    #[test]
+    fn a_registered_hop_answering_with_the_metadata_address_does_not_pass_the_guard() {
+        struct Metadata;
+        impl Resolver for Metadata {
+            fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+                Ok(vec!["169.254.169.254".parse().expect("a fixture address")])
+            }
+        }
+        static SERVERS: &[Server] = &[Server {
+            id: "fs",
+            lane: LaneId::new("fs-lane"),
+            host: "fs.internal:443",
+            transport: claims::TRANSPORT_HTTP,
+        }];
+        let hop = DestinationFacts::Upstream {
+            transport: claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket("fs.internal:443"),
+            lane: LaneId::new("fs-lane"),
+        };
+        let plane = McpPlane::new(SERVERS);
+
+        static RESOLVER: Metadata = Metadata;
+        static DENYLIST: std::sync::LazyLock<Denylist> =
+            std::sync::LazyLock::new(Denylist::default);
+        let hostile = Catalogue::upstream_only(
+            plane,
+            NetSeam {
+                resolver: &RESOLVER,
+                policy: GuardPolicy::default(),
+                denylist: &DENYLIST,
+            },
+        );
+        assert!(hostile.allow_listed(&hop), "the deployment registered it");
+        assert!(
+            !hostile.net_guard_passes(&hop),
+            "and it answers with the address whose whole value is handing out credentials"
+        );
+
+        assert!(Catalogue::upstream_only(plane, seam()).net_guard_passes(&hop));
+    }
+
+    /// The breaker's answer at the seal is the breaker's answer about that lane's position.
+    #[test]
+    fn the_catalogue_asks_the_breaker_about_the_registered_lanes_position() {
+        struct Open(usize);
+        impl BreakerView for Open {
+            fn ready(&self, _pool: &str, lane: usize, _now: u64) -> bool {
+                lane != self.0
+            }
+            fn try_admit(
+                &self,
+                _pool: &str,
+                _lane: usize,
+                _now: u64,
+            ) -> Result<(), busbar_unit_trust::Unavailable> {
+                Ok(())
+            }
+        }
+        static SERVERS: &[Server] = &[
+            Server {
+                id: "first",
+                lane: LaneId::new("first-lane"),
+                host: "127.0.0.1:9",
+                transport: claims::TRANSPORT_HTTP,
+            },
+            Server {
+                id: "second",
+                lane: LaneId::new("second-lane"),
+                host: "127.0.0.1:10",
+                transport: claims::TRANSPORT_HTTP,
+            },
+        ];
+        let facts = Catalogue::upstream_only(McpPlane::new(SERVERS), seam());
+        let second = DestinationFacts::Upstream {
+            transport: claims::TRANSPORT_HTTP,
+            address: busbar_contract::UpstreamAddress::socket("127.0.0.1:10"),
+            lane: LaneId::new("second-lane"),
+        };
+
+        let open = Open(1);
+        let at = BreakerQuery {
+            breaker: &open,
+            pool: "second",
+            now: 7,
+        };
+        assert!(
+            !facts.breaker_admits(&second, &at),
+            "the second registration is at position one, and that is the open cell"
+        );
+
+        let elsewhere = Open(0);
+        let at = BreakerQuery {
+            breaker: &elsewhere,
+            pool: "second",
+            now: 7,
+        };
+        assert!(facts.breaker_admits(&second, &at));
     }
 
     /// An explicitly empty scope list denies every registration; an absent one denies none.

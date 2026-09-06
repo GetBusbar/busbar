@@ -5231,3 +5231,60 @@ fn test_stream_generic_error_finish_pushes_ir_error_event() {
          Error event (that would fail a lane for a safety refusal): {toxic_evs:?}"
     );
 }
+
+/// A two-citation delta driven straight at `write_response_events` must emit BOTH citations. The
+/// writer used to keep only the first, leaning on the framing seam's citation fan-out to have split
+/// the batch — but the plane codec calls this seam directly, and a caller that does loses every
+/// citation after the first with no signal.
+#[test]
+fn cohere_writer_emits_every_citation_in_a_multi_citation_delta() {
+    let cit = |url: &str| crate::ir::IrCitation {
+        kind: Some("web_search_result_location".to_string()),
+        cited_text: Some("quoted".to_string()),
+        title: Some("t".to_string()),
+        url: Some(url.to_string()),
+        document_index: None,
+        start_index: Some(0),
+        end_index: Some(6),
+        encrypted_index: None,
+        raw: None,
+    };
+    let writer = CohereWriter;
+    let frames = writer.write_response_events(&crate::ir::IrStreamEvent::BlockDelta {
+        index: 0,
+        delta: crate::ir::IrDelta::CitationsDelta(vec![
+            cit("https://example.invalid/a"),
+            cit("https://example.invalid/b"),
+        ]),
+    });
+
+    let starts: Vec<&serde_json::Value> = frames
+        .iter()
+        .filter(|(_, d)| d.get("type").and_then(|t| t.as_str()) == Some("citation-start"))
+        .map(|(_, d)| d)
+        .collect();
+    assert_eq!(
+        starts.len(),
+        2,
+        "both citations must reach the wire, got {frames:?}"
+    );
+    let urls: Vec<Option<&str>> = starts
+        .iter()
+        .map(|d| {
+            d.pointer("/delta/message/citations/sources/0/document/url")
+                .and_then(|v| v.as_str())
+        })
+        .collect();
+    assert_ne!(
+        urls[0], urls[1],
+        "the two frames must carry the two DISTINCT citations, got {frames:?}"
+    );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|(_, d)| d.get("type").and_then(|t| t.as_str()) == Some("citation-end"))
+            .count(),
+        2,
+        "each citation-start keeps its paired citation-end, got {frames:?}"
+    );
+}

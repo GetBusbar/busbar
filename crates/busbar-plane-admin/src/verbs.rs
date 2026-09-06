@@ -232,11 +232,17 @@ pub(crate) fn verb_named(verb: &str) -> Option<&'static VerbEntry> {
 
 /// Whether a concrete path segment satisfies a template segment, capturing the template's `{name}`
 /// against the concrete value when it is a variable segment.
+///
+/// An EMPTY concrete segment never satisfies a `{name}`: `/keys/` is not `/keys/{id}` with an empty
+/// id, it is a path the router this surface has always been mounted on does not carry at all.
 fn segment_matches<'p>(
     template: &'static str,
     concrete: &'p str,
 ) -> Option<Option<(&'static str, &'p str)>> {
     if let Some(name) = template.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+        if concrete.is_empty() {
+            return None;
+        }
         Some(Some((name, concrete)))
     } else if template == concrete {
         Some(None)
@@ -248,22 +254,39 @@ fn segment_matches<'p>(
 /// Match a concrete path against a `{param}`-templated path, returning the captured parameters in
 /// template order when every segment matches and the segment counts are equal (this plane's paths
 /// never use a trailing wildcard, so a length mismatch is always a non-match).
+///
+/// An empty segment is a SEGMENT, and the split keeps it. Dropping empties normalised
+/// `/api/v1/admin/keys/abc/` and `/api/v1//admin/keys/abc` onto the row for
+/// `/api/v1/admin/keys/{id}` — so a trailing slash decoded as a revoke on a surface whose own
+/// router answers neither path. What the table declares is the only thing it answers.
 fn match_path<'p>(
     template: &'static str,
     concrete: &'p str,
 ) -> Option<Vec<(&'static str, &'p str)>> {
-    let t_segs: Vec<&str> = template.split('/').filter(|s| !s.is_empty()).collect();
-    let c_segs: Vec<&str> = concrete.split('/').filter(|s| !s.is_empty()).collect();
-    if t_segs.len() != c_segs.len() {
-        return None;
-    }
     let mut params = Vec::new();
-    for (t, c) in t_segs.iter().zip(c_segs.iter()) {
-        if let Some(pair) = segment_matches(t, c)? {
-            params.push(pair);
+    let mut t_segs = template.split('/');
+    let mut c_segs = concrete.split('/');
+    loop {
+        match (t_segs.next(), c_segs.next()) {
+            (None, None) => return Some(params),
+            (Some(t), Some(c)) => {
+                if let Some(pair) = segment_matches(t, c)? {
+                    params.push(pair);
+                }
+            }
+            _ => return None,
         }
     }
-    Some(params)
+}
+
+/// The part of a request target that names an operation: everything before the first `?` or `#`.
+///
+/// A query string and a fragment are arguments TO an operation, never part of its identity, so the
+/// cut belongs at the one place both callers reach rather than at each of them. It lived at
+/// `resolve` alone for a release, which meant the plane's own decode matched a paged read's raw
+/// target against the templates and found no row at all.
+fn operation_target(target: &str) -> &str {
+    target.split(['?', '#']).next().unwrap_or(target)
 }
 
 /// Find the verb a method and concrete path decode to, and the path parameters it carries.
@@ -274,6 +297,7 @@ pub(crate) fn find_verb<'p>(
     method: &str,
     path: &'p str,
 ) -> Option<(&'static VerbEntry, Vec<(&'static str, &'p str)>)> {
+    let path = operation_target(path);
     all_verbs().iter().find_map(|entry| {
         if entry.method != method {
             return None;
@@ -318,14 +342,14 @@ impl ResolvedVerb {
 /// The same lookup [`find_verb`] runs at decode, exposed for the one caller entitled to ask it
 /// outside a decode: the composition root, which has to know which kernel verb a unit is a
 /// destination for before the unit's own decode has produced a draft. A query string is not part of
-/// the operation's identity — `GET /audit?limit=4` and `GET /audit` are one row — so it is cut
-/// before the match rather than carried into it.
+/// the operation's identity — `GET /audit?limit=4` and `GET /audit` are one row — so [`find_verb`]
+/// cuts it before the match rather than carrying it in, for this caller and for the plane's own
+/// decode alike.
 ///
 /// `None` means the table does not declare the pair, which is the plane's own answer for an
 /// unsupported operation and never an invitation to guess one.
 #[must_use]
 pub fn resolve(method: &str, path: &str) -> Option<ResolvedVerb> {
-    let path = path.split(['?', '#']).next().unwrap_or(path);
     find_verb(method, path).map(|(entry, _params)| ResolvedVerb {
         verb: entry.verb,
         method: entry.method,
@@ -358,25 +382,30 @@ pub fn table() -> Vec<ResolvedVerb> {
 /// verb absent from this table still decodes correctly (method+path -> verb+path-params always
 /// works); it simply carries no extra body-derived fact, which is a safe, visible omission rather
 /// than a silently wrong one — nothing downstream trusts a body fact that decode did not set.
+///
+/// Every field named here is a member the pinned `openapi-1.5.5.json` request schema for that
+/// operation actually declares, and the test below reads the fixture to say so. Seven rows used to
+/// name a member no schema had (`parent` on `PutGroupsName`, `url` on `PutHooksName`, `issuer`,
+/// `sink`, `module`, `filename`, and `settings` on a body that is a free-form object): a fact key
+/// that can never be populated is a promise decode cannot keep, so those rows are either corrected
+/// to the member the schema does declare or dropped where the schema declares no named member at
+/// all (`PutConfigSettings`, `PutIdentityProvidersName`, `PutExportName` all take an open object).
 pub(crate) fn documented_body_field(verb: &str) -> Option<&'static str> {
     Some(match verb {
         "post_keys" => "name",
         "patch_keys_id" => "group",
         "post_groups" => "name",
-        "put_groups_name" => "parent",
+        "put_groups_name" => "config",
         "patch_groups_name" => "parent",
         "post_config_apply" => "config",
-        "put_config_settings" => "settings",
         "post_config_rollback" => "version",
         "post_hooks" => "name",
-        "put_hooks_name" => "url",
+        "put_hooks_name" => "config",
         "patch_hooks_name_settings" => "settings",
-        "put_identity_providers_name" => "issuer",
         "patch_identity_providers_name_settings" => "settings",
-        "put_export_name" => "sink",
         "patch_export_name_settings" => "settings",
-        "put_admin_auth" => "module",
-        "post_plugins" => "filename",
+        "put_admin_auth" => "admin_auth",
+        "post_plugins" => "file",
         "post_plugins_rollback" => "file",
         _ => return None,
     })
@@ -441,11 +470,90 @@ mod tests {
         assert!(match_path("/api/v1/admin/keys/{id}", "/api/v1/admin/keys").is_none());
     }
 
+    /// An empty segment is a segment. A trailing slash, a doubled slash and a bare `{id}` position
+    /// with nothing in it are three paths the mounted router does not carry, and the table may not
+    /// normalise any of them onto a row it does — a `DELETE` that revoked on `/keys/abc/` would be
+    /// a mutation on a request the previous release answers with its router's own 404.
+    #[test]
+    fn an_empty_segment_never_normalises_onto_a_row() {
+        assert!(resolve("DELETE", "/api/v1/admin/keys/abc/").is_none());
+        assert!(resolve("DELETE", "/api/v1/admin/keys/").is_none());
+        assert!(resolve("DELETE", "/api/v1//admin/keys/abc").is_none());
+        assert!(resolve("GET", "/api/v1/admin/audit/").is_none());
+        // and the paths the table DOES declare still resolve, so the check above is a filter and
+        // not a wall.
+        assert!(resolve("DELETE", "/api/v1/admin/keys/abc").is_some());
+        assert!(resolve("GET", "/api/v1/admin/audit").is_some());
+        assert!(resolve("GET", "/api/v1/admin/audit?limit=4").is_some());
+    }
+
     #[test]
     fn find_verb_resolves_a_concrete_request() {
         let (entry, params) = find_verb("GET", "/api/v1/admin/keys/xyz").expect("matches");
         assert_eq!(entry.verb, "get_keys_id");
         assert_eq!(params, vec![("id", "xyz")]);
+    }
+
+    /// The pinned fixture, parsed once per test that reads it.
+    fn fixture() -> serde_json::Value {
+        let text = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
+        ));
+        serde_json::from_str(text).expect("fixture is valid JSON")
+    }
+
+    /// Follow a document-local `$ref` chain to the schema it names.
+    fn deref<'d>(
+        doc: &'d serde_json::Value,
+        mut node: &'d serde_json::Value,
+    ) -> &'d serde_json::Value {
+        while let Some(pointer) = node.get("$ref").and_then(serde_json::Value::as_str) {
+            node = doc
+                .pointer(pointer.trim_start_matches('#'))
+                .expect("a document-local $ref resolves");
+        }
+        node
+    }
+
+    /// Every representative body field this plane extracts is a member the pinned schema declares.
+    ///
+    /// The extraction writes a decode-time fact under the field's own name, so a field the schema
+    /// has no member for is a fact key that can never be set — a documented promise the wire cannot
+    /// keep, and one nobody would notice, because an absent fact and an unpopulated one look the
+    /// same downstream. This reads the fixture rather than a second transcription of it.
+    #[test]
+    fn every_documented_body_field_is_a_member_the_pinned_schema_declares() {
+        let doc = fixture();
+        let mut checked = 0usize;
+        for (path, item) in doc["paths"].as_object().expect("paths is an object") {
+            for (method, op) in item.as_object().expect("path item is an object") {
+                let verb = snake_case(op["operationId"].as_str().expect("an operationId"));
+                let Some(field) = documented_body_field(&verb) else {
+                    continue;
+                };
+                let body = op.get("requestBody").unwrap_or_else(|| {
+                    panic!("{verb}: a documented body field on an operation with no request body")
+                });
+                let schema = deref(&doc, body)["content"]["application/json"]["schema"].clone();
+                let properties = deref(&doc, &schema)
+                    .get("properties")
+                    .and_then(serde_json::Value::as_object)
+                    .unwrap_or_else(|| {
+                        panic!("{verb}: {} {path} takes a body with no named members, so no field of it can be documented", method.to_uppercase())
+                    });
+                assert!(
+                    properties.contains_key(field),
+                    "{verb}: the documented field `{field}` is not a member of the pinned schema (it declares {:?})",
+                    properties.keys().collect::<Vec<_>>()
+                );
+                checked += 1;
+            }
+        }
+        assert_eq!(
+            checked, 15,
+            "every documented body field belongs to a 1.5.5 operation the fixture declares"
+        );
     }
 
     /// Mechanically converts a `PascalCase` `operationId` (`GetKeysIdUsage`) to this crate's own
@@ -471,16 +579,19 @@ mod tests {
     /// resolves the right verb name and the right (`read_only`) scope. This is the boundary check
     /// that the closed table in this module (transcribed by hand from the same fixture) has not
     /// drifted from it.
+    ///
+    /// The scope comes off the fixture's own `x-busbar-required-scope` column, which is the pinned
+    /// tag's answer. It used to be RE-DERIVED here from the method plus two hand-listed path
+    /// exceptions — a rule that happens to agree with the column today and is not the column: a
+    /// seventh read-only `POST` added to the tag would have been checked against this file's
+    /// reading of 1.5.5 rather than against 1.5.5.
     #[test]
     fn every_1_5_5_fixture_operation_resolves_to_the_right_verb_and_scope() {
-        let fixture = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../testing/shadow-oracle/fixtures/openapi-1.5.5.json"
-        ));
-        let doc: serde_json::Value = serde_json::from_str(fixture).expect("fixture is valid JSON");
+        let doc = fixture();
         let paths = doc["paths"].as_object().expect("paths is an object");
 
         let mut checked = 0usize;
+        let mut read_only_rows = 0usize;
         for (path, methods) in paths {
             let methods = methods.as_object().expect("path item is an object");
             for (method, op) in methods {
@@ -489,10 +600,14 @@ mod tests {
                     .as_str()
                     .unwrap_or_else(|| panic!("{method} {path} has no operationId"));
                 let expected_verb = snake_case(operation_id);
-                let expected_read_only = method == "GET"
-                    || method == "HEAD"
-                    || path == "/api/v1/admin/config/validate"
-                    || path == "/api/v1/admin/plugins/inspect";
+                let expected_read_only = match op["x-busbar-required-scope"].as_str() {
+                    Some("read-only") => true,
+                    Some("full") => false,
+                    other => {
+                        panic!("{method} {path} declares no scope this plane knows: {other:?}")
+                    }
+                };
+                read_only_rows += usize::from(expected_read_only);
 
                 let (entry, _) = find_verb(&method, path).unwrap_or_else(|| {
                     panic!("no table row matches fixture operation {method} {path}")
@@ -503,7 +618,7 @@ mod tests {
                 );
                 assert_eq!(
                     entry.read_only, expected_read_only,
-                    "{method} {path}: table scope does not match required_scope(method, path)"
+                    "{method} {path}: table scope does not match the fixture's pinned x-busbar-required-scope"
                 );
                 checked += 1;
             }
@@ -511,6 +626,10 @@ mod tests {
         assert_eq!(
             checked, 66,
             "the pinned fixture must declare exactly 66 operations"
+        );
+        assert_eq!(
+            read_only_rows, 34,
+            "the pinned tag's own column splits the 66 as 34 read-only / 32 full"
         );
     }
 }

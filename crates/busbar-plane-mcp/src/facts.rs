@@ -59,11 +59,14 @@ pub const CONTENT_FACTS: &[&str] = &[
 /// The member every modern request of this protocol carries its own metadata under.
 pub const META_MEMBER: &str = "_meta";
 
-/// The metadata key naming the revision a caller is speaking.
-pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+/// The metadata key naming the revision a caller is speaking. The CODEC's, read by identity: the
+/// server half requires it inbound and writes it outbound, and a key this plane merely copied is a
+/// key the two spellings can drift apart on while each side stays consistent with itself.
+pub const META_PROTOCOL_VERSION: &str = busbar_mcp_codec::codec::META_PROTOCOL_VERSION;
 
-/// The metadata key naming what the caller can answer if asked.
-pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+/// The metadata key naming what the caller can answer if asked. The codec's, for the reason
+/// [`META_PROTOCOL_VERSION`] states.
+pub const META_CLIENT_CAPABILITIES: &str = busbar_mcp_codec::codec::META_CLIENT_CAPABILITIES;
 
 /// The metadata key naming a token progress should be reported under.
 pub const META_PROGRESS_TOKEN: &str = "progressToken";
@@ -262,18 +265,22 @@ mod tests {
 
     /// The metadata keys are spelled the way the codec spells them.
     ///
-    /// The codec's own constants are visible to its crate only, so this reads its source. The same
-    /// keys are pinned against the conformance battery's own table in the integration tests, which
-    /// is where a test may read a file.
+    /// A VALUE comparison. This read the server half's SOURCE once, with `include_str!` over
+    /// `../../busbar-mcp/src/…` — a coupling to a sibling crate the manifest does not name, which
+    /// left this plane unable to be built or deleted on its own. Both keys are the codec's now, so
+    /// a spelling can no longer differ between the side that requires it inbound and the side that
+    /// writes it outbound. The same keys stay pinned against the conformance battery's own table in
+    /// the integration tests.
     #[test]
     fn the_metadata_keys_are_the_codecs_own() {
-        let source = include_str!("../../busbar-mcp/src/mcp/envelope.rs");
-        for key in [
+        assert_eq!(
             super::META_PROTOCOL_VERSION,
+            busbar_mcp_codec::codec::META_PROTOCOL_VERSION
+        );
+        assert_eq!(
             super::META_CLIENT_CAPABILITIES,
-        ] {
-            assert!(source.contains(key), "the codec no longer names {key}");
-        }
+            busbar_mcp_codec::codec::META_CLIENT_CAPABILITIES
+        );
     }
 
     /// Each quoted needle is its own key, in quotes, and nothing else.

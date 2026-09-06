@@ -69,17 +69,32 @@ YAML
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 stepjson() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
 
 ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
     ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) >"$W/busbar.log" 2>&1 &
 pid=$!; track_pid $pid
 wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 500 "$W/busbar.log")"
 
-mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"teller-exit","group":"oracle"}')"
+# THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
+
+# `mint_status` below is what this binary answered rather than what the harness
+
+# assumed; a mint that stopped being a 201 is then a diff on this cell.
+
+mint_raw="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"teller-exit","group":"oracle"}')"
+
+mint_code="$(printf '%s' "$mint_raw" | tail -1)"
+
+mint="$(printf '%s' "$mint_raw" | sed '$d')"
 kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mint")"
 [ -n "$kid" ] && [ -n "$tok" ] || fail 2 "$mint"
-step mint_status "201"
+step mint_status "$mint_code"
 
 usage_of() { curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)'; }
 sleep 0.3
@@ -89,7 +104,12 @@ stream_status="$(curl -sS -m 20 -N -o "$W/stream.body" -w '%{http_code}' -X POST
   -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' \
   -d '{"model":"m-openai-chat","stream":true,"messages":[{"role":"user","content":"ping"}]}')"
 step stream_status "$stream_status"
-frame_count="$(grep -c '^data:' "$W/stream.body" 2>/dev/null || echo 0)"
+# awk, not `grep -c ... || echo 0`: grep -c on a file with no match PRINTS 0 and EXITS 1, so the
+# `|| echo 0` fires too and the count becomes the two-line string "0\n0". That is not a JSON number,
+# so the --argjson assembly below died, `result` was empty, and the cell still wrote a captured.json
+# with status 0 and an empty body — a PASS on a stream whose frames were never counted, which is
+# exactly the outcome this cell exists to detect. Same idiom verdict.sh uses for its ledger rows.
+frame_count="$(awk '/^data:/{n++} END{print n+0}' "$W/stream.body" 2>/dev/null || echo 0)"
 step sse_frame_count "$frame_count"
 
 sleep 0.5
@@ -106,7 +126,7 @@ step usage_requests_delta_after_settle_pause "$req_delta2"
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-result="$(jq -n \
+if ! result="$(jq -n \
   --argjson mint_status "$(jq -r .mint_status <<<"$eff")" \
   --argjson stream_status "$(jq -r .stream_status <<<"$eff")" \
   --argjson sse_frame_count "$(jq -r .sse_frame_count <<<"$eff")" \
@@ -114,6 +134,15 @@ result="$(jq -n \
   --argjson usage_requests_delta_after_settle_pause "$(jq -r .usage_requests_delta_after_settle_pause <<<"$eff")" \
   '{mint_status:$mint_status, stream_status:$stream_status, sse_frame_count:$sse_frame_count,
     usage_requests_delta:$usage_requests_delta,
-    usage_requests_delta_after_settle_pause:$usage_requests_delta_after_settle_pause}')"
+    usage_requests_delta_after_settle_pause:$usage_requests_delta_after_settle_pause}' 2>"$W/result.err")"; then
+  # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
+  # measured something it cannot state and the body would go out empty. An empty body with status 0
+  # compares clean against a golden that also failed this way — the vacuous green the ledger exists
+  # to refuse. Record the -1 UNSUPPORTED shape record.sh reads as a named gap instead.
+  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
+    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
+    >"$RAW/captured.json"
+  exit 0
+fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

@@ -15,7 +15,7 @@ use busbar_caps::{
     Abort, Canary, HoldCellState, OriginKind, Outcome, PostingFlags, ReasonCode, StepName, UnitKey,
 };
 use busbar_kernel::inflight::{arrival_hold, Enter, InFlight};
-use busbar_kernel::slice::{ConcurrencyGauge, LeaseSet};
+use busbar_kernel::slice::{group_lease, ConcurrencyGauge, LeaseCell, IN_FLIGHT};
 use busbar_kernel::teller::{
     exit, run_unit, run_unit_async, AccrualMeter, Ended, Evidence, Kernel, Run,
 };
@@ -38,7 +38,7 @@ const ORDER: [StepName; 10] = [
 
 fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary: &Canary) -> Ended {
     let gauge = ConcurrencyGauge::new();
-    let mut leases = LeaseSet::new();
+    let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
     run_unit(
         kernel,
@@ -47,7 +47,7 @@ fn run(units: &TestUnits, kernel: &Kernel, cell: &busbar_caps::HoldCell, canary:
         Run {
             cell,
             parent: None,
-            leases: &mut leases,
+            leases: &leases,
             gauge: &gauge,
             canary,
             meter: &meter,
@@ -227,7 +227,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
         let cell = cell(&kernel);
         let canary = Canary::new();
         let gauge = ConcurrencyGauge::new();
-        let mut leases = LeaseSet::new();
+        let leases = LeaseCell::new();
         let meter = AccrualMeter::new();
         let ended = exit(
             &kernel,
@@ -236,7 +236,7 @@ fn every_unit_end_leaves_through_the_one_exit() {
             Run {
                 cell: &cell,
                 parent: None,
-                leases: &mut leases,
+                leases: &leases,
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -261,7 +261,7 @@ fn a_unit_is_settled_exactly_once() {
     assert!(matches!(first, Ended::Settled { .. }));
 
     let gauge = ConcurrencyGauge::new();
-    let mut leases = LeaseSet::new();
+    let leases = LeaseCell::new();
     let meter = AccrualMeter::new();
     let second = exit(
         &kernel,
@@ -270,7 +270,7 @@ fn a_unit_is_settled_exactly_once() {
         Run {
             cell: &cell,
             parent: None,
-            leases: &mut leases,
+            leases: &leases,
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
@@ -316,18 +316,21 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
         door: Door::Accrual(std::sync::Arc::clone(&parent), 250),
         ..TestUnits::default()
     };
-    let child_cell = cell(&kernel);
+    // The child enters the table like every other unit, so its cell and its leases are its slot's.
+    let table = InFlight::new(4, 0);
+    let child_slot = table
+        .insert(client(1))
+        .expect("the empty table takes the child");
     let gauge = ConcurrencyGauge::new();
-    let mut leases = LeaseSet::new();
     let meter = AccrualMeter::new();
     let ended = run_unit(
         &kernel,
         &child,
         &ctx(1),
         Run {
-            cell: &child_cell,
+            cell: child_slot.cell(),
             parent: Some(&parent),
-            leases: &mut leases,
+            leases: child_slot.leases(),
             gauge: &gauge,
             canary: &canary,
             meter: &meter,
@@ -367,16 +370,15 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     // other unit, and its cell is emptied at its end. Leaving it full would leave the sweep — the
     // other holder of a key to that cell — free to settle a unit that has already finished, and its
     // spend is already inside the parent's posting.
-    assert_eq!(child_cell.state(), busbar_caps::HoldCellState::Taken);
+    assert_eq!(child_slot.cell().state(), busbar_caps::HoldCellState::Taken);
     let swept = busbar_kernel::tick::sweep_settle(
         &kernel,
-        &child_cell,
+        &child_slot,
         busbar_kernel::tick::Sweep::TaskLost {
             at: StepName::Route,
         },
         &Evidence::default(),
         &canary,
-        &mut LeaseSet::new(),
         &ConcurrencyGauge::new(),
     );
     assert!(swept.is_none(), "the child was settled a second time");
@@ -440,8 +442,8 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
     ] {
         gauge.acquire(&bucket, 4).expect("room in the gauge");
         assert_eq!(gauge.count(&bucket), 1);
-        let mut leases = LeaseSet::new();
-        leases.take(bucket);
+        let leases = LeaseCell::new();
+        assert!(leases.take(bucket));
         let units = TestUnits::passing();
         let cell = cell(&kernel);
         let canary = Canary::new();
@@ -453,7 +455,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
             Run {
                 cell: &cell,
                 parent: None,
-                leases: &mut leases,
+                leases: &leases,
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -527,8 +529,8 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
     let gauge = ConcurrencyGauge::new();
     let bucket = busbar_kernel::slice::bucket_all("team");
     gauge.acquire(&bucket, 4).expect("room in the gauge");
-    let mut leases = LeaseSet::new();
-    leases.take(bucket);
+    // The lease is recorded on the unit's SLOT, which is where both of its ends can reach it.
+    assert!(slot.leases().take(bucket));
     let canary = Canary::new();
     let meter = AccrualMeter::new();
 
@@ -541,7 +543,7 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
             Run {
                 cell: slot.cell(),
                 parent: None,
-                leases: &mut leases,
+                leases: slot.leases(),
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -577,9 +579,14 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
         "the hold came out of the cell at the one exit; the sweep has nothing left to settle"
     );
     assert_eq!(gauge.count(&bucket), 0, "the lease went back to the gauge");
-    assert!(
-        leases.is_empty(),
+    assert_eq!(
+        slot.leases().held(),
+        0,
         "the unit holds no lease it never gave back"
+    );
+    assert!(
+        !slot.leases().is_owned(),
+        "the slot is unowned: its one end has already reclaimed it"
     );
     assert_eq!(
         units.called(),
@@ -612,6 +619,353 @@ fn a_caller_that_goes_away_drops_the_route_leg_and_frees_the_unit() {
     canary
         .balanced()
         .expect("one draft, one hold, one settlement — an abandoned unit still balances");
+}
+
+/// THE DRAW. A unit the door admitted is one the node is running, and the gauge says so.
+///
+/// The exit path and the sweep have both given leases back since they were written, but nothing ever
+/// took one, so the gauge read zero on a node that was full and the sweep had nothing of a lost unit
+/// to reclaim. This is the other half of the rule: the door's yes draws the lease, on the unit's own
+/// slot, and the unit's end gives it back.
+///
+/// The reading is taken WHILE the unit is in flight, which is the only moment the difference between
+/// a drawn lease and no lease at all is visible: a gauge read after the end is zero either way.
+#[test]
+fn the_door_draws_the_in_flight_lease_and_the_end_gives_it_back() {
+    let kernel = Kernel::new();
+    let units = TestUnits::passing();
+    let dropped = AtomicBool::new(false);
+    let route = NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let table = InFlight::new(4, 0);
+    let slot = table
+        .insert(client(21))
+        .map_err(|_| ())
+        .expect("under the cap");
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let unit = ctx(21);
+
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "nothing is running before the unit starts"
+    );
+    {
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &unit,
+            Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: slot.leases(),
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(
+            gauge.count(&IN_FLIGHT),
+            1,
+            "the door said yes, so the node is running one unit and the gauge counts it"
+        );
+        assert_eq!(
+            slot.leases().held(),
+            1,
+            "and the lease is on the unit's own slot, where both of its ends can reach it"
+        );
+    }
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "the unit ended, so the slot it occupied is back"
+    );
+    assert_eq!(slot.leases().held(), 0);
+}
+
+/// ONE LEASE PER CAPPED GROUP. Two capped groups are two counts while the unit is in flight, and
+/// nothing at all once it has ended.
+///
+/// The design gives a unit a `concurrent` lease per capped-`concurrent` group in its chain, and the
+/// node-wide one it has always drawn beside them. Only the door knows which groups those are, so
+/// this is the reading of what the door SAID: two named groups, counted separately, on the same
+/// slot, given back together by the one end the unit reaches. A single node-wide count cannot tell
+/// an operator which group filled up, and a per-group count that the end does not release is a
+/// group that stops admitting for good.
+#[test]
+fn two_capped_groups_are_two_leases_while_the_unit_flies_and_none_after() {
+    let kernel = Kernel::new();
+    let units = TestUnits::in_groups(&["tenant", "team"]);
+    let dropped = AtomicBool::new(false);
+    let route = NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let table = InFlight::new(4, 0);
+    let slot = table
+        .insert(client(31))
+        .map_err(|_| ())
+        .expect("under the cap");
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let unit = ctx(31);
+    let tenant = group_lease("tenant");
+    let team = group_lease("team");
+
+    {
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &unit,
+            Run {
+                cell: slot.cell(),
+                parent: None,
+                leases: slot.leases(),
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(gauge.count(&tenant), 1, "the outer group is running one");
+        assert_eq!(gauge.count(&team), 1, "and so is the inner one");
+        assert_eq!(
+            gauge.count(&IN_FLIGHT),
+            1,
+            "the node-wide reading is unchanged: one unit is one unit"
+        );
+        assert_eq!(
+            slot.leases().held(),
+            3,
+            "all three are the slot's, so both of the unit's ends can give them back"
+        );
+    }
+    assert_eq!(gauge.count(&tenant), 0);
+    assert_eq!(gauge.count(&team), 0);
+    assert_eq!(gauge.count(&IN_FLIGHT), 0);
+    assert_eq!(slot.leases().held(), 0);
+}
+
+/// A unit that never reaches the door draws nothing, and neither does an exempt one.
+///
+/// Three units that must not raise the gauge, for three different reasons: a challenge round, which
+/// is a handshake and never reaches the door at all; a tick, which moves no money; and a unit whose
+/// every destination is a kernel verb, which is what makes the administrative surface answer while
+/// the rest of the node is capped out. A gauge these three raised would be a node that stopped
+/// admitting because of the very units that are meant to keep it reachable.
+#[test]
+fn a_challenge_a_tick_and_a_kernel_verb_unit_draw_no_lease() {
+    for (name, units, unit_ctx) in [
+        (
+            "a challenge round never reaches the door",
+            TestUnits {
+                challenge: true,
+                ..TestUnits::passing()
+            },
+            ctx(31),
+        ),
+        ("a tick moves no money", TestUnits::passing(), {
+            let mut c = ctx(32);
+            c.origin = OriginKind::Tick;
+            c
+        }),
+        (
+            "a kernel-verb unit answers at a saturated gauge",
+            TestUnits::passing(),
+            {
+                let mut c = ctx(33);
+                c.kernel_verb_only = true;
+                c
+            },
+        ),
+    ] {
+        let kernel = Kernel::new();
+        let dropped = AtomicBool::new(false);
+        let route = NeverRoutes {
+            units: &units,
+            dropped: &dropped,
+        };
+        let leases = LeaseCell::new();
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let meter = AccrualMeter::new();
+        let cell = cell(&kernel);
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &unit_ctx,
+            Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(gauge.count(&IN_FLIGHT), 0, "{name}");
+        assert_eq!(leases.held(), 0, "{name}");
+    }
+}
+
+/// A door that refuses draws nothing: there is no slot to count.
+#[test]
+fn a_unit_the_door_refused_draws_no_lease() {
+    let kernel = Kernel::new();
+    let units = TestUnits::refusing(StepName::Admit, ReasonCode::OverBudget);
+    let leases = LeaseCell::new();
+    let gauge = ConcurrencyGauge::new();
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let ended = run_unit(
+        &kernel,
+        &units,
+        &ctx(41),
+        Run {
+            cell: &cell,
+            parent: None,
+            leases: &leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    assert!(matches!(ended, Ended::Settled { .. }));
+    assert_eq!(
+        gauge.count(&IN_FLIGHT),
+        0,
+        "a refused unit never occupied a slot, so it never gave one back either"
+    );
+}
+
+/// A GROUP CAPPED AT ONE ADMITS ONE UNIT AND REFUSES THE NEXT WHILE IT FLIES.
+///
+/// The door's `concurrent` cap is a count it raises when it says yes and releases when the value
+/// that yes handed back is dropped. Dropped at the end of the door's own step, the cap compares
+/// every arrival against zero: N units in flight, N admissions, and a cap that has never refused
+/// anything in its life. This is the cell that says otherwise — and it has to be read WHILE the
+/// first unit is in flight, because that is the only moment the two behaviours differ.
+///
+/// Then the first unit ends, and the group admits again. A cap that refuses for ever is not a cap
+/// either.
+#[test]
+fn a_group_capped_at_one_refuses_the_second_unit_until_the_first_has_ended() {
+    let kernel = Kernel::new();
+    let group = common::CappedGroup::at(1);
+    let units = TestUnits::behind(&group);
+    let dropped = AtomicBool::new(false);
+    let route = NeverRoutes {
+        units: &units,
+        dropped: &dropped,
+    };
+    let table = InFlight::new(4, 0);
+    let first = table
+        .insert(client(51))
+        .map_err(|_| ())
+        .expect("under the table's cap");
+    let gauge = ConcurrencyGauge::new();
+    let canary = Canary::new();
+    let meter = AccrualMeter::new();
+    let flying = ctx(51);
+
+    {
+        let mut running = std::pin::pin!(run_unit_async(
+            &kernel,
+            &units,
+            &flying,
+            Run {
+                cell: first.cell(),
+                parent: None,
+                leases: first.leases(),
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+            &route,
+        ));
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(running.as_mut().poll(&mut cx).is_pending());
+        assert_eq!(group.live(), 1, "the group is running the unit it admitted");
+        assert!(
+            first.leases().holds_grant(),
+            "and the count that says so is the slot's, not the door step's frame"
+        );
+
+        // THE SECOND UNIT, while the first is still in the air. The refusal is the door's own, at
+        // the door's own status, on a counter the first unit is still holding.
+        let second_units = TestUnits::behind(&group);
+        let second_cell = cell(&kernel);
+        let second_leases = LeaseCell::new();
+        let ended = run_unit(
+            &kernel,
+            &second_units,
+            &ctx(52),
+            Run {
+                cell: &second_cell,
+                parent: None,
+                leases: &second_leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+        );
+        assert!(matches!(ended, Ended::Settled { .. }));
+        assert_eq!(
+            second_units.doors(),
+            (true, false),
+            "it left through the refused audit door: it never passed the door at all"
+        );
+        assert_eq!(
+            group.live(),
+            1,
+            "and a refusal counted nothing, so the group still reads the one unit it is running"
+        );
+    }
+
+    assert_eq!(
+        group.live(),
+        0,
+        "the first unit ended, so the count it held is back"
+    );
+    assert!(first.leases().holds_grant().not());
+
+    // AND THE GROUP ADMITS AGAIN.
+    let third_units = TestUnits::behind(&group);
+    let third_cell = cell(&kernel);
+    let third_leases = LeaseCell::new();
+    let ended = run_unit(
+        &kernel,
+        &third_units,
+        &ctx(53),
+        Run {
+            cell: &third_cell,
+            parent: None,
+            leases: &third_leases,
+            gauge: &gauge,
+            canary: &canary,
+            meter: &meter,
+        },
+    );
+    assert!(matches!(ended, Ended::Settled { .. }));
+    assert_eq!(
+        third_units.doors(),
+        (false, true),
+        "the room the first unit gave back is room the next unit is admitted into"
+    );
 }
 
 /// One client arrival, as the table weighs it against the cap.

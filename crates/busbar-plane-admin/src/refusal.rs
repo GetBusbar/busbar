@@ -182,11 +182,24 @@ pub(crate) fn message_for(reason: RefusalReason) -> &'static str {
 /// serializer would buy nothing here that hand-formatting does not already give byte-for-byte.
 #[must_use]
 pub(crate) fn envelope(reason: RefusalReason) -> String {
-    format!(
-        r#"{{"error":{{"code":"{}","message":"{}"}}}}"#,
-        code_for(reason),
-        message_for(reason)
-    )
+    envelope_of(code_for(reason), message_for(reason))
+}
+
+/// The 1.5.5 admin error envelope around one code and one message.
+///
+/// THE SHAPE LIVES HERE AND NOWHERE ELSE. Which code a condition renders under is a different
+/// question for a plane (which maps a `RefusalReason`) than for a composition root (which maps a
+/// `ReasonCode` and pairs it with a status), and those two tables legitimately differ because they
+/// answer different questions — but the two keys, their order, the quoting and the absence of a
+/// trailing byte are one frozen wire shape, and a second `format!` of it somewhere else is a second
+/// chance for the surface a client pinned to change in one place and not the other. So the callers
+/// bring the code and the message, and this brings the envelope.
+///
+/// Hand-formatted rather than serialized for the reason the module doc gives: two fixed keys and
+/// two closed, quote-free string values.
+#[must_use]
+pub fn envelope_of(code: &str, message: &str) -> String {
+    format!(r#"{{"error":{{"code":"{code}","message":"{message}"}}}}"#)
 }
 
 #[cfg(test)]

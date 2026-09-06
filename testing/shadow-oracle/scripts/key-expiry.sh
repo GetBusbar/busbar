@@ -71,7 +71,12 @@ YAML
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 stepjson() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
 
 # `exec` inside the backgrounded subshell so $! is busbar's OWN pid, not a wrapper subshell's — a
 # plain `env VAR=val "$BIN" &` backgrounds a subshell running that command, and killing the
@@ -104,11 +109,20 @@ stepjson spend_body "$spend_body"
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-result="$(jq -n \
+if ! result="$(jq -n \
   --argjson mint_status "$(jq -r .mint_status <<<"$eff")" \
   --argjson mint_body "$(jq -c .mint_body <<<"$eff")" \
   --argjson spend_status "$(jq -r .spend_status <<<"$eff")" \
   --argjson spend_body "$(jq -c .spend_body <<<"$eff")" \
-  '{mint_status:$mint_status, mint_body:$mint_body, spend_status:$spend_status, spend_body:$spend_body}')"
+  '{mint_status:$mint_status, mint_body:$mint_body, spend_status:$spend_status, spend_body:$spend_body}' 2>"$W/result.err")"; then
+  # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
+  # measured something it cannot state and the body would go out EMPTY — and an empty body with
+  # status 0 compares clean against a golden that failed the same way, which is the vacuous green
+  # the ledger exists to refuse. Record the -1 UNSUPPORTED shape record.sh reads as a named gap.
+  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
+    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
+    >"$RAW/captured.json"
+  exit 0
+fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

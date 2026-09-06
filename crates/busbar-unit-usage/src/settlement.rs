@@ -10,7 +10,6 @@
 use std::collections::BTreeSet;
 
 use busbar_caps::{Usage, UsageLine};
-use busbar_contract::DestinationFacts;
 
 /// How a unit ended, as far as the settlement is concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,77 +196,6 @@ pub fn settle(end: UnitEndKind, evidence: &Evidence<'_>) -> Settlement {
         lines,
         flags,
         internal_evidence,
-    }
-}
-
-/// The status a transport reports for a frame, where it reports one at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StatusClass {
-    /// The frame says the exchange succeeded.
-    Success,
-    /// The frame says it did not.
-    Failure,
-}
-
-/// What the plane concluded about the same frame.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Finish {
-    /// The plane read the exchange as complete.
-    Complete,
-    /// The plane read it as an error.
-    Error,
-}
-
-/// Everything the flat fee's decision depends on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FeeInputs {
-    /// Whether this is a client-originated unit that opens or one-shots, rather than a tick, a
-    /// handshake, a nested call, a delivery or a push from a provider.
-    pub client_open_or_oneshot: bool,
-    /// The destination the route selected, where it selected one.
-    ///
-    /// Whether it is an upstream is the CONTRACT's answer, not this crate's: the fee follows the
-    /// destination kind, and a rule that moves money has one spelling.
-    pub selected_destination: Option<DestinationFacts>,
-    /// Whether the kernel relayed the first response frame to the client. A status-and-headers
-    /// frame with an empty body counts: an empty success is still a served request.
-    pub first_response_frame_relayed: bool,
-    /// The transport's status class for the deciding frame, where the transport declares one.
-    pub status_class: Option<StatusClass>,
-    /// The plane's own reading of the same frame.
-    pub finish: Option<Finish>,
-}
-
-/// Whether this unit posts the flat fee, and whether the two sources for that answer disagreed.
-///
-/// The fee is decided at the frame that decides it and is never reversed by a later abort: a
-/// stream that dies half way through still posts the fee its successful first frame earned. The
-/// plane's own reading is a SECOND source for the same fact — if it contradicts the transport's
-/// status, the LOWER answer posts and the unit is disputed.
-pub fn fee_count(inputs: &FeeInputs) -> (u64, bool) {
-    let upstream_leg_selected = inputs
-        .selected_destination
-        .is_some_and(|d| d.is_upstream_kind());
-    if !inputs.client_open_or_oneshot
-        || !upstream_leg_selected
-        || !inputs.first_response_frame_relayed
-    {
-        return (0, false);
-    }
-
-    let by_status = inputs.status_class.map(|s| s == StatusClass::Success);
-    let by_finish = inputs.finish.map(|f| f != Finish::Error);
-
-    match (by_status, by_finish) {
-        // Both sources, and they agree.
-        (Some(a), Some(b)) if a == b => (u64::from(a), false),
-        // Both sources, and they do not: the lower answer posts, and somebody has to look.
-        (Some(_), Some(_)) => (0, true),
-        // Only one source: it decides.
-        (Some(a), None) => (u64::from(a), false),
-        (None, Some(b)) => (u64::from(b), false),
-        // Neither: the frame was relayed and nothing contradicts it.
-        (None, None) => (1, false),
     }
 }
 

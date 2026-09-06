@@ -28,6 +28,8 @@
     "usage": {},
     "readback": [
       {
+        "path": "/api/v1/admin/hooks/busbar-headroom",
+        "status": 200,
         "body": {
           "json": {
             "at": null,
@@ -48,9 +50,7 @@
             },
             "user": "no"
           }
-        },
-        "path": "/api/v1/admin/hooks/busbar-headroom",
-        "status": 200
+        }
       }
     ]
   },

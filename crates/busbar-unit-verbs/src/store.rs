@@ -13,6 +13,8 @@
 
 use busbar_caps::AdminToken;
 
+use crate::refusal::{ReasonCode, Refusal, RefusalStep};
+
 /// A store-layer error. Mapped the same fail-closed way [`crate::governance::GovernanceError`] is.
 #[derive(Debug)]
 pub enum StoreError {
@@ -20,6 +22,18 @@ pub enum StoreError {
     NotFound,
     /// The underlying store failed; details are for the integrator's own logs only.
     Failed,
+}
+
+impl StoreError {
+    /// The refusal a store failure becomes, mapped the same fail-closed way
+    /// [`crate::governance::GovernanceError::into_refusal`] maps a governance failure.
+    pub fn into_refusal(self) -> Refusal {
+        let reason = match self {
+            StoreError::NotFound => ReasonCode::NotFound,
+            StoreError::Failed => ReasonCode::StoreError,
+        };
+        Refusal::new(RefusalStep::Verify, reason)
+    }
 }
 
 /// The store seam.

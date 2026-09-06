@@ -76,6 +76,7 @@ use busbar_caps::{
 use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::unit::{FinishClass, ResourceLocator};
+use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_plane_a2a::{ops, records};
 use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
@@ -83,7 +84,8 @@ use busbar_unit_audit::{Audit as _, AuditInputs};
 use busbar_unit_auth::{Auth, AuthRequest};
 use busbar_unit_scope::{Grants, Scope};
 use busbar_unit_trust::{
-    kind_permitted, kind_rule_passes, GuardPolicy, KindFacts, OriginKind, PoolView, Resolver,
+    kind_permitted, kind_rule_passes, BreakerQuery, BreakerView, GuardPolicy, KindFacts,
+    OriginKind, PoolView, Resolver,
 };
 use busbar_unit_usage::{KernelCounts, LegDeclaration, LocatedValue, RetainedLocatorValues};
 
@@ -442,6 +444,9 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pools: &'r dyn PoolView,
     /// What the per-kind destination rules consult.
     pub kinds: &'r dyn KindFacts,
+    /// The breaker the dialled kinds' rules are judged against. The same one the walk's own pre-walk
+    /// filter reads, so a lane excluded for an open breaker is excluded once and identically.
+    pub breaker: &'r dyn BreakerView,
     /// The name resolver the network guard runs its one resolution through.
     pub resolver: &'r dyn Resolver,
     /// How far the network guard lets this plane's hops reach.
@@ -456,6 +461,20 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pinned: &'r [&'r str],
     /// The admission unit's long-lived door.
     pub door: &'r Door<S>,
+    /// The buckets this caller is judged and charged against: its own attribution bucket, then the
+    /// group its key is bound to, then that group's parent, to the root.
+    ///
+    /// BORROWED, never built here. A chain is a walk of the boot-resolved group table and its
+    /// contents are owned strings; resolving one inside the admission step would put a fresh vector
+    /// of them on the door's path for every single unit, for an answer that cannot change while the
+    /// caller and the policy epoch stay the same. So the root resolves it once, where it resolves
+    /// the caller, and every unit of that caller reads the same one.
+    ///
+    /// `None` is the fail-closed arm and NOT the uncapped one: it is a caller bound to a group this
+    /// node's configuration does not have, whose caps therefore could not be read. A caller bound
+    /// to no group at all — the ordinary posture for a deployment with no `groups:` section — has a
+    /// perfectly good chain of one uncapped attribution bucket, and gets it.
+    pub chain: Option<&'r busbar_unit_admission::BucketChain>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
     /// What the deployment's card charges for a byte of the priced document, in nano-units.
@@ -646,13 +665,21 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             return Err(Refusal::new(ReasonCode::NoDestination));
         }
 
+        // The breaker, asked at the unit's pinned arrival epoch and about the pool it named — the
+        // same question, spelled the same way, that the pre-walk filter asks.
+        let at = BreakerQuery {
+            breaker: self.bindings.breaker,
+            pool: self.bindings.pool,
+            now: self.bindings.now,
+        };
+
         let candidates = self.candidates();
         let mut lanes = Vec::new();
         for candidate in &candidates {
             if !kind_permitted(origin, candidate) {
                 continue;
             }
-            if !kind_rule_passes(candidate, self.bindings.kinds) {
+            if !kind_rule_passes(candidate, self.bindings.kinds, &at) {
                 continue;
             }
             let Some(lane) = candidate.lane() else {
@@ -853,12 +880,25 @@ fn auth_request(draft: &A2aDraft, now: u64) -> AuthRequest<'_> {
     }
 }
 
+/// What this plane's arrival step answers, for one draft.
+///
+/// The gate itself is the kernel's, over the configured budgets, and it has already run by the time
+/// a plane's units are reached — a unit the in-flight table refused never gets here at all. What is
+/// left for the plane is to carry forward what the TRANSPORT recorded, which is what the later steps
+/// read the source and the composed chain from.
+///
+/// It is a function rather than a line inside the step for the same reason `auth_request` is: the
+/// arrival CELL drives the answer the step gives rather than a hand-built copy of it. The chain is
+/// the field that makes this matter — a copy that re-derived it from the plane's own claims would
+/// agree with itself while the step quietly stopped reporting the layer the bytes actually came in
+/// on.
+fn arrival_answer(draft: &A2aDraft, token: &UnitToken<Arrival>) -> Decision<Arrival> {
+    Decision::proceed(token, draft.arrival.clone())
+}
+
 impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
-        // The gate itself is the kernel's, over the configured budgets, and it has already run by
-        // the time a plane's units are reached. What this step carries forward is what the
-        // transport recorded, which is what the later steps read the source and the chain from.
-        Decision::proceed(token, self.draft.arrival.clone())
+        arrival_answer(&self.draft, token)
     }
 
     fn decode(&self, token: &UnitToken<Decode>, _ctx: &UnitCtx) -> Decision<Decode> {
@@ -964,19 +1004,45 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         // The decision is the shipped release's, evaluated by the unit that owns it: pass one
         // checks every bucket of the pool-filtered chain and charges nothing, pass two charges. The
         // epoch is the pinned arrival epoch and never a fresh clock read, because a check and a
         // charge that read two different clocks are a check of one window and a charge in another.
-        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+        // The chain the deployment configured, not an empty one. An empty chain is a yes from every
+        // cap at once: no gauge is raised, no window bucket is read and no freeze flag is
+        // consulted, so a group's `concurrent: 1` would admit every unit that ever arrives. Read
+        // from the binding rather than resolved here, so this step allocates nothing to be judged.
+        let Some(chain) = self.bindings.chain else {
+            // Fail-closed, and rendered the way the door renders it for the same cause: a principal
+            // whose caps cannot be read is over quota, not merely rate-limited.
+            return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
+        };
         let mut unit = AdmissionUnit::new(
             self.bindings.door,
             self.bindings.pricer,
             self.bindings.pool,
             self.bindings.now,
         );
-        unit.admit(&self.estimate(), principal, &chain, admit, token)
+        let decision = unit.admit(&self.estimate(), principal, chain, admit, token);
+        // What the door counted, said out loud. The names are the interned ones the root handed the
+        // chain's groups at registration; the loop records one lease per name on this unit's slot,
+        // where its end and the node's sweep can both give them back. Empty on a refusal, and empty
+        // for a chain with no capped group — this crate does not decide either.
+        for group in unit.group_leases() {
+            leases.counted(group);
+        }
+        // AND THE COUNT ITSELF, which is the cap rather than a reading of it. The door raises a
+        // gauge per capped group when it says yes and lowers it when the grant is dropped, so a
+        // grant that dies with this call is a cap released before the unit it admitted has done
+        // anything — every unit admitted against a count of zero. Handed to the slot, it is what
+        // makes the group's `concurrent` limit refuse the next unit while this one is in the air,
+        // and the slot's release at the unit's end is what makes it admit again afterwards.
+        if let Some(grant) = unit.take_grant() {
+            leases.holding(DoorGrant::new(grant));
+        }
+        decision
     }
 
     fn route(
@@ -1026,14 +1092,20 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
         // never a unit that does not run.
         meter.offer_headroom({
-            let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
-            AdmissionUnit::new(
-                self.bindings.door,
-                self.bindings.pricer,
-                self.bindings.pool,
-                self.bindings.now,
-            )
-            .headroom_nanos(&chain)
+            // The same chain the door was judged against — the same value, not a second copy of it
+            // — so a top-up is measured against the window that admitted this unit rather than
+            // against nothing at all. A caller whose caps could not be read is a headroom of zero:
+            // a reservation that does not grow, never a unit that does not run.
+            match self.bindings.chain {
+                None => 0,
+                Some(chain) => AdmissionUnit::new(
+                    self.bindings.door,
+                    self.bindings.pricer,
+                    self.bindings.pool,
+                    self.bindings.now,
+                )
+                .headroom_nanos(chain),
+            }
         });
 
         // A plan with no leg at all is an operation this plane does not carry: a refusal at the
@@ -1180,6 +1252,8 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
                     bytes,
                     transport_units: None,
                     status: None,
+                    status_code: None,
+                    retry_after_secs: None,
                 },
             },
         )
@@ -1395,6 +1469,87 @@ mod tests {
         assert_eq!(declared_scope(ops::OP_MESSAGE_SEND), Scope::Full);
         assert_eq!(declared_scope(ops::OP_TASK_CANCEL), Scope::Full);
         assert_eq!(declared_scope(ops::OP_PUSH_EVENT), Scope::Full);
+    }
+
+    /// A unit the table has no room for is refused AT arrival, and one it admits keeps the chain the
+    /// transport recorded.
+    ///
+    /// THE arrival STEP, over the loop. §2.2 gives the step two things to decide and this drives
+    /// both, because either one alone is half the door:
+    ///
+    /// - THE GATE, which is the kernel's and which this plane is UNDER. A2A arrives on the data
+    ///   listener, so `admin_listener` is false and the exemption the admin leg gets does not reach
+    ///   it: on a table with room the unit enters and its hold lives in the cell, and on a full one
+    ///   it is refused with `InFlightCap`, stamped at `Arrival` because the origin is a client, with
+    ///   the arrival hold handed straight back rather than dropped. A refusal here is the whole
+    ///   unit: the loop runs `arrival` first and nothing after it, so decode never reads a byte and
+    ///   nothing downstream can charge for one.
+    /// - THE PLANE'S ANSWER for a unit that got through, which is the transport's own record carried
+    ///   forward whole. The composed chain is the field worth pinning: this unit came in over HTTP
+    ///   composed on TCP, both layers are named, and the step reports what arrived rather than what
+    ///   the plane would have guessed from its own claims.
+    #[test]
+    fn the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival() {
+        use busbar_caps::{KernelSeal, OriginKind, StepName, UnitKey};
+        use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter, InFlight};
+
+        let kernel = busbar_kernel::teller::Kernel::new();
+        let door = crate::root::kernel::AdmissionDoor;
+        let seal = KernelSeal::acquire_for_kernel();
+
+        // One slot, none held back: a table this plane can fill and then be measured against.
+        let table = InFlight::new(1, 0);
+        // What an a2a unit asks the table for. The data listener is the whole point — an a2a unit
+        // that claimed the admin listener's exemption would be outside the cap the deployment set.
+        let entering = |key: u64| Enter {
+            key: UnitKey::new(key),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            now: 0,
+            arrival: arrival_hold(&kernel, &door, PrincipalId::new("caller")),
+        };
+
+        // ADMITTED: there is room, the unit is in the table, and its arrival hold is in the cell.
+        let slot = table
+            .insert(entering(1))
+            .unwrap_or_else(|_| panic!("an empty table admits the first unit"));
+        assert_eq!(table.len(), 1);
+        assert_eq!(
+            slot.cell().state(),
+            busbar_caps::HoldCellState::Arrival,
+            "the unit is in the table holding its arrival hold and nothing more"
+        );
+
+        // The step that unit then reaches carries the transport's record forward, both layers named.
+        let draft = draft(ops::OP_MESSAGE_SEND);
+        let record = arrival_answer(&draft, &UnitToken::mint(&seal))
+            .into_result(&seal)
+            .expect("the plane's arrival step admits a unit the gate let through");
+        assert_eq!(record.transport_chain, vec!["tcp", "http"]);
+        assert_eq!(record.source, draft.arrival.source);
+        assert_eq!(record.port, draft.arrival.port);
+
+        // REFUSED: the same shape, one slot later. The gate answers before any plane is asked.
+        let Err(refused) = table.insert(entering(2)) else {
+            panic!("a full table has nowhere to put a second unit");
+        };
+        assert_eq!(refused.reason, ReasonCode::InFlightCap);
+        assert_eq!(refused.step, StepName::Arrival);
+        assert_eq!(refused.step, cap_refusal_step(OriginKind::Client));
+        // The hold comes back, because even a refusal is an event that has to balance — and it
+        // comes back reserving nothing, which is what makes "a unit refused at the gate has spent
+        // nothing" a fact about the ledger rather than a phrase.
+        let handed_back = refused.hold;
+        assert_eq!(
+            handed_back.reserved(),
+            0,
+            "the arrival hold reserves nothing"
+        );
+        assert_eq!(handed_back.accrued(), 0);
+        assert_eq!(table.len(), 1, "a refused unit took no slot");
     }
 
     /// A bad credential is refused before Verify is ever reached, through the node's own auth seams.
@@ -2244,5 +2399,378 @@ mod tests {
                 "the store is unavailable".to_string(),
             ))
         }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // The configured group reaches the door
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// A key that names no restriction, which is what the guards read as "ask me nothing".
+    ///
+    /// Every method answers, and none of them answers by accident: the admission step reads none of
+    /// this, and the value that proves it is a view whose answers cannot admit or refuse anything.
+    struct UnrestrictedKey;
+
+    impl PoolView for UnrestrictedKey {
+        fn key_scopes(&self) -> Option<&[String]> {
+            None
+        }
+        fn pool_allowed(&self, _pool: &str) -> bool {
+            true
+        }
+        fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
+            None
+        }
+        fn is_configured(&self, _name: &str) -> bool {
+            true
+        }
+        fn pricing_enabled(&self) -> bool {
+            false
+        }
+        fn is_unpriced(&self, _name: &str) -> bool {
+            false
+        }
+        fn has_key(&self) -> bool {
+            false
+        }
+    }
+
+    /// A breaker with every lane open, so lane health is never the reason a unit in these cells did
+    /// not reach the door.
+    struct EveryLaneOpen;
+
+    impl BreakerView for EveryLaneOpen {
+        fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
+            true
+        }
+        fn try_admit(
+            &self,
+            _pool: &str,
+            _lane: usize,
+            _now: u64,
+        ) -> Result<(), busbar_unit_trust::Unavailable> {
+            Ok(())
+        }
+    }
+
+    /// A deployment whose per-kind rules all pass, so a destination question is never the reason a
+    /// unit in these cells did not reach the door.
+    struct EveryKindPasses;
+
+    impl KindFacts for EveryKindPasses {
+        fn allow_listed(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn transport_key_resolves(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn lane_permitted_for_op_class(&self, _lane: &str) -> bool {
+            true
+        }
+        fn session_upstream_ok(&self) -> bool {
+            true
+        }
+        fn net_guard_passes(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn unit_price_within_max(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn breaker_admits(&self, _dest: &DestinationFacts, _at: &BreakerQuery<'_>) -> bool {
+            true
+        }
+        fn session_principal_matches(&self) -> bool {
+            true
+        }
+        fn client_selector_ok(&self) -> bool {
+            true
+        }
+        fn await_deadline_ok(&self) -> bool {
+            true
+        }
+        fn verb_scope_held(&self) -> bool {
+            true
+        }
+        fn nested_plane_ok(&self) -> bool {
+            true
+        }
+        fn plane_record_ok(&self) -> bool {
+            true
+        }
+        fn peer_lease_live(&self) -> bool {
+            true
+        }
+        fn upgrade_ok(&self) -> bool {
+            true
+        }
+    }
+
+    /// One group, one call at a time — the smallest cap an operator can write.
+    fn one_call_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+        let groups = std::collections::BTreeMap::from([(
+            group.to_string(),
+            busbar_substrate::config::groups::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Concurrent,
+                    amount: 1,
+                    per: None,
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                child_default: None,
+            },
+        )]);
+        // Through the interner the root uses at boot, so the name the slot records is the same
+        // static the vocabulary holds rather than one this fixture invented.
+        let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
+        let ids = vocabulary.group_ids(&crate::root::vocabulary::ConfigKeys {
+            groups: vec![group.to_string()],
+            ..crate::root::vocabulary::ConfigKeys::default()
+        });
+        crate::root::policy::group_table(&groups, &ids)
+    }
+
+    /// Everything the node's half of one A2A unit is assembled from, held together so a cell can
+    /// borrow from it for the length of the cell.
+    struct Deployment {
+        auth: Auth,
+        auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+        trust: busbar_caps::TrustToken,
+        pools: UnrestrictedKey,
+        kinds: EveryKindPasses,
+        resolver: FixedResolver,
+        denylist: busbar_unit_trust::Denylist,
+        door: Door<busbar_unit_admission::InMemoryCells>,
+        groups: busbar_unit_admission::GroupTable,
+        pricer: Pricer,
+        records: RecordLegs,
+        meter_policy: crate::root::policy::MeterPolicyHandle,
+        scope: crate::root::policy::ScopePolicy,
+        durability: Mutex<crate::root::durability::Durability>,
+        origin: busbar_caps::Origin,
+    }
+
+    fn deployment(groups: busbar_unit_admission::GroupTable) -> Deployment {
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        Deployment {
+            auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+            trust: busbar_caps::TrustToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
+            pools: UnrestrictedKey,
+            kinds: EveryKindPasses,
+            resolver: FixedResolver(vec!["203.0.113.7".parse().expect("a public address")]),
+            denylist: busbar_unit_trust::Denylist::default(),
+            door: Door::new(busbar_unit_admission::InMemoryCells::new()),
+            groups,
+            pricer: Pricer::flat(0),
+            records: RecordLegs::new(Arc::new(RecordingStore::default())),
+            meter_policy: crate::root::policy::build(
+                &crate::root::policy::MeterPolicyConfig::default(),
+            ),
+            scope: scope_policy(crate::root::policy::ScopePolicy::new()),
+            durability: Mutex::new(durability),
+            origin: busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
+        }
+    }
+
+    impl Deployment {
+        /// Resolve one caller's chain, once — the step the root takes where it resolves the caller,
+        /// and the only place a chain is built. `None` is the group this node does not have.
+        fn resolve(
+            &self,
+            who: &PrincipalId,
+            group: Option<&str>,
+        ) -> Option<busbar_unit_admission::BucketChain> {
+            self.groups.chain_for(who.as_str(), group).ok()
+        }
+
+        /// One unit of this deployment, lent a chain somebody already resolved.
+        fn calling<'r>(
+            &'r self,
+            chain: Option<&'r busbar_unit_admission::BucketChain>,
+        ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+            A2aUnits::new(
+                A2aBindings {
+                    auth: &self.auth,
+                    auth_bindings: &self.auth_bindings,
+                    trust_token: &self.trust,
+                    pools: &self.pools,
+                    kinds: &self.kinds,
+                    breaker: &EveryLaneOpen,
+                    resolver: &self.resolver,
+                    guard: GuardPolicy::default(),
+                    denylist: &self.denylist,
+                    pinned: &[],
+                    door: &self.door,
+                    chain,
+                    pricer: &self.pricer,
+                    bytes_nanos: 0,
+                    records: &self.records,
+                    meter_policy: &self.meter_policy,
+                    scope_policy: &self.scope,
+                    durability: &self.durability,
+                    pool: "agents",
+                    now: 1_700_000_000,
+                    origin: self.origin,
+                },
+                draft(ops::OP_MESSAGE_SEND),
+                Grants::of(Scope::Full),
+            )
+        }
+    }
+
+    fn a2a_ctx() -> UnitCtx {
+        UnitCtx {
+            key: busbar_caps::UnitKey::new(1),
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        }
+    }
+
+    /// Ask the door for one call, keeping what its yes counted.
+    fn ask_the_door(
+        unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+        who: &PrincipalId,
+    ) -> (
+        Result<busbar_caps::Admission, busbar_caps::Refusal>,
+        GroupLeaseSlip,
+    ) {
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let slip = GroupLeaseSlip::new();
+        let decision = Units::admit(
+            unit,
+            &busbar_caps::UnitToken::mint(&seal),
+            &busbar_caps::AdmitToken::mint(&seal),
+            &a2a_ctx(),
+            who,
+            &[],
+            &slip,
+        );
+        (decision.into_result(&seal), slip)
+    }
+
+    /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against an A2A group gets one
+    /// agent call in the air at a time: the second is refused while the first is still running, and
+    /// it is admitted once the first has ended.
+    ///
+    /// This is the whole point of the chain being the configured one. With an empty chain the door
+    /// walks no group, raises no gauge and says yes to both — which is what a node whose operator
+    /// wrote this cap down did, silently, with nothing on any surface to say the limit was inert.
+    #[test]
+    fn an_a2a_group_capped_at_one_call_refuses_the_second_and_admits_it_after_the_first_ends() {
+        const GROUP: &str = "a2a-team";
+        let deployment = deployment(one_call_at_a_time(GROUP));
+        let who = PrincipalId::new("vk_agent");
+
+        // Resolved once, where the root resolves the caller. Every unit below reads this one value.
+        let chain = deployment.resolve(&who, Some(GROUP));
+
+        let first = deployment.calling(chain.as_ref());
+        let (admitted, held) = ask_the_door(&first, &who);
+        assert!(admitted.is_ok(), "the first call of a group capped at one");
+        assert_eq!(
+            held.taken().len(),
+            1,
+            "and the yes names the one capped group it counted"
+        );
+        // The count itself, taken onto the slot as the loop takes it. Held for as long as the unit
+        // it admitted is running, which is what makes the next line a refusal rather than a second
+        // yes.
+        let running = held.grant_taken().expect("the yes is holding a count");
+
+        let second = deployment.calling(chain.as_ref());
+        let (refused, _) = ask_the_door(&second, &who);
+        assert_eq!(
+            refused.expect_err("the group is full").reason(),
+            ReasonCode::RateLimited,
+            "an in-flight gauge is a count cap, not a spend cap"
+        );
+
+        // The unit ends: the slot gives back what it held, and the group has room again.
+        drop(running);
+        let third = deployment.calling(chain.as_ref());
+        let (after, _) = ask_the_door(&third, &who);
+        assert!(
+            after.is_ok(),
+            "the cap is instantaneous — it gates what is running, never what has run"
+        );
+    }
+
+    /// A caller bound to no group at all is admitted and attributed, and takes no lease: the
+    /// ordinary posture for a deployment with no `groups:` section, which must not become a
+    /// refusal because the chain is now resolved.
+    #[test]
+    fn an_a2a_caller_bound_to_no_group_is_admitted_and_counted_against_nothing() {
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, None);
+        assert!(
+            chain.is_some(),
+            "no group binding still resolves — to one uncapped attribution bucket"
+        );
+        for _ in 0..3 {
+            let unit = deployment.calling(chain.as_ref());
+            let (decision, slip) = ask_the_door(&unit, &who);
+            assert!(decision.is_ok(), "no group binding is no cap");
+            assert!(slip.taken().is_empty(), "and nothing to name on the slot");
+        }
+    }
+
+    /// A caller bound to a group this node's configuration does not have is refused, not admitted
+    /// under caps that could not be read. Fail-closed, and rendered as over-quota, which is what the
+    /// door itself answers for the same cause.
+    #[test]
+    fn an_a2a_caller_bound_to_an_unconfigured_group_is_refused() {
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some("a-group-this-node-never-had"));
+        assert!(chain.is_none(), "the group is not in the table");
+        let unit = deployment.calling(chain.as_ref());
+        let (decision, _) = ask_the_door(&unit, &who);
+        assert_eq!(
+            decision
+                .expect_err("nothing is admitted under caps that cannot be read")
+                .reason(),
+            ReasonCode::OverBudget
+        );
+    }
+
+    /// **The chain is lent, never rebuilt.** The door is on every unit's path and a chain is a
+    /// vector of owned bucket ids; resolving one per unit would put that vector, and every string
+    /// in it, on the admitting path for an answer that cannot change while the caller and the
+    /// policy epoch stay the same.
+    ///
+    /// So the binding holds a BORROW. Two units of one caller are handed the same address, which is
+    /// the property a per-unit `chain_for` cannot have however cheap it looks — the pin is on the
+    /// reference rather than on an allocation count because this crate has no library target for a
+    /// counting-allocator test binary to reach.
+    #[test]
+    fn two_units_of_one_caller_are_handed_the_same_chain() {
+        const GROUP: &str = "a2a-team";
+        let deployment = deployment(one_call_at_a_time(GROUP));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some(GROUP)).expect("configured");
+
+        let first = deployment.calling(Some(&chain));
+        let second = deployment.calling(Some(&chain));
+        let (Some(one), Some(two)) = (first.bindings.chain, second.bindings.chain) else {
+            panic!("both units were lent a chain");
+        };
+        assert!(
+            std::ptr::eq(one, two),
+            "one resolved chain, lent twice — not two copies of one answer"
+        );
+        assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
     }
 }

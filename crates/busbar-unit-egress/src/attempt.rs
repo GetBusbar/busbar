@@ -200,6 +200,52 @@ impl Drop for BudgetGuard<'_> {
     }
 }
 
+/// The dispatch record's own exit, for the attempt that never reaches one of its own.
+///
+/// The record is durable before the dial and the design asks for its abandonment to be EXPLICIT
+/// rather than inferred from a missing settle. Every exit the attempt returns through says so
+/// itself; a future dropped part-way through the send returns through none of them, and the record
+/// it strands is what recovery later settles as a crash — a dispatch that never happened, counted
+/// against the destination as one that did. Armed the instant the record is durable, this makes
+/// the cancelled exit say exactly what the returned ones say.
+struct JournalGuard<'a> {
+    journal: &'a dyn Journal,
+    record: &'a Dispatched,
+    armed: bool,
+}
+
+impl<'a> JournalGuard<'a> {
+    /// Arm on a record that is now durable.
+    fn arm(journal: &'a dyn Journal, record: &'a Dispatched) -> Self {
+        Self {
+            journal,
+            record,
+            armed: true,
+        }
+    }
+
+    /// Say it now, at the point in the exit the attempt has always said it.
+    fn abandon(&mut self) {
+        if self.armed {
+            self.armed = false;
+            self.journal.abandoned(self.record);
+        }
+    }
+
+    /// An answer arrived: this record settles on the answer and not as an abandonment.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for JournalGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            self.journal.abandoned(self.record);
+        }
+    }
+}
+
 /// The one attempt.
 pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     let AttemptInput {
@@ -232,6 +278,10 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
         drop(permit);
         return AttemptOutcome::Bail(Shed::internal());
     }
+    // From here the record exists and something must settle it. The guard is what settles it on
+    // the one exit that runs none of this function's own code — a caller that drops this future
+    // mid-send.
+    let mut journal = JournalGuard::arm(hop.journal, &record);
 
     // 2-5. Assemble: the plane's egress encode, the egress-auth decoration, and the lane
     //      cross-check on the bytes that decoration produced. A failure at any of the three is an
@@ -239,7 +289,7 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     let wire = match assemble(&hop, unit, ctx) {
         Ok(bytes) => bytes,
         Err(shed) => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             return AttemptOutcome::Bail(shed);
         }
@@ -261,17 +311,17 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
 
     let first = match outcome {
         SendOutcome::AttemptTimeout(ms) => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             return attempt_timeout(&hop, ms, now);
         }
         SendOutcome::BudgetTimeout => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             return transport_failure(&hop, net::TIMEOUT, now);
         }
         SendOutcome::Sent(Err(e)) => {
-            hop.journal.abandoned(&record);
+            journal.abandon();
             drop(permit);
             let label = if matches!(e, busbar_contract_transport::wire::TransportError::Timeout) {
                 net::TIMEOUT
@@ -286,12 +336,20 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
     // 7. The answer. The transport's status reading on the first frame is the leg the fee decision
     //    reads and the leg the breaker is told about; the plane's own decode runs per frame from
     //    here on.
+    // The whole leg the transport read, not just the coarse class. A classifier handed the class
+    // alone folds every 4xx together, so a withdrawn credential — the one signal that should take
+    // the destination down across every pool that names it — arrives looking like a caller typo,
+    // and an upstream that named its own wait has that wait dropped on the floor before the
+    // cooldown is computed.
     let status = UpstreamStatus {
         class: first.frame.meta.status,
-        code: None,
-        retry_after: None,
+        code: first.frame.meta.status_code,
+        retry_after: first.frame.meta.retry_after_secs,
     };
     let succeeded = matches!(first.frame.meta.status, Some(StatusClass::Success) | None);
+    // An upstream answered, which is the one thing an abandonment says did not happen. From here
+    // the record settles on that answer however the rest of it goes.
+    journal.disarm();
     if !succeeded {
         return classify_failure(&hop, status, permit, now);
     }
@@ -302,8 +360,13 @@ pub async fn attempt(input: AttemptInput<'_>) -> AttemptOutcome {
 // ── assemble ────────────────────────────────────────────────────────────────────────────────────
 
 /// The wire request: the envelope the plane built with the decoration applied, then the body.
-struct Wire {
-    bytes: Vec<u8>,
+///
+/// The bytes BORROW the arena the transport rendered them into. Owning a copy of them instead would
+/// pay for the whole request a second time on the money path, and would hand `write` a buffer the
+/// arena never saw — the arena is where the hot path allocates, so these bytes go out from where
+/// they were built.
+struct Wire<'a> {
+    bytes: busbar_contract::ArenaBytes<'a>,
 }
 
 /// Build the outbound request, decorate it, and check the lane on what came out.
@@ -312,7 +375,7 @@ struct Wire {
 /// destination but never holds a credential; the egress-auth unit decorates and substitutes every
 /// secret itself; and the lane cross-check runs on the RESULT, so a decoration cannot quietly move
 /// the request onto a cheaper or a different lane.
-fn assemble(hop: &Hop<'_>, unit: &Unit<'_>, ctx: &Ctx<'_>) -> Result<Wire, Shed> {
+fn assemble<'a>(hop: &Hop<'_>, unit: &Unit<'a>, ctx: &Ctx<'a>) -> Result<Wire<'a>, Shed> {
     let encoded: EgressBody<'_> = hop
         .plane
         .encode_egress(unit, hop.dest, None, ctx)
@@ -353,9 +416,7 @@ fn assemble(hop: &Hop<'_>, unit: &Unit<'_>, ctx: &Ctx<'_>) -> Result<Wire, Shed>
     let bytes = hop
         .transport
         .encode_envelope(&fields, request.body, ctx.arena())
-        .map_err(|_| Shed::internal())?
-        .as_slice()
-        .to_vec();
+        .map_err(|_| Shed::internal())?;
 
     lane_cross_check(hop, &request)?;
     Ok(Wire { bytes })
@@ -414,7 +475,12 @@ pub(crate) fn lane_matches_seal(
 // ── send ────────────────────────────────────────────────────────────────────────────────────────
 
 /// Dial, write and wait for the first answering frame, under both deadlines.
-async fn send(hop: &Hop<'_>, wire: &Wire, deadline_ms: u64, cap_ms: Option<u64>) -> SendOutcome {
+async fn send(
+    hop: &Hop<'_>,
+    wire: &Wire<'_>,
+    deadline_ms: u64,
+    cap_ms: Option<u64>,
+) -> SendOutcome {
     let work = async {
         let conn = match race::with_deadline(
             hop.transport.dial(hop.dest, hop.keys),
@@ -426,9 +492,8 @@ async fn send(hop: &Hop<'_>, wire: &Wire, deadline_ms: u64, cap_ms: Option<u64>)
             Ok(Err(e)) => return SendOutcome::Sent(Err(e)),
             Err(race::Elapsed) => return SendOutcome::BudgetTimeout,
         };
-        let bytes = busbar_contract::ArenaBytes::new(&wire.bytes);
         if let Ok(Err(e)) = race::with_deadline(
-            hop.transport.write(&conn, hop.stream, bytes),
+            hop.transport.write(&conn, hop.stream, wire.bytes),
             hop.clock.sleep(deadline_ms),
         )
         .await

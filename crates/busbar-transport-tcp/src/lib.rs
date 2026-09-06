@@ -230,8 +230,12 @@ impl TcpTransport {
     }
 
     /// Named for what it does rather than where it was first used: every I/O path in this crate —
-    /// the dial, the frame reads, the writes and the refusal — maps its errors through it, matching
-    /// the sibling `http` and `tls` crates' function of the same shape.
+    /// the dial, the frame reads, the writes and the refusal — maps its errors through it.
+    ///
+    /// The table is `http`'s, arm for arm. `tls` carries the same arms and one more of its own:
+    /// malformed TLS bytes surface as `InvalidData`, which that transport maps to `HandshakeFailed`
+    /// because it has a handshake to fail. This one has none, so the kind falls to `Closed` with
+    /// every other unclassified error, and the difference is deliberate rather than drift.
     fn map_io_err(e: &io::Error) -> TransportError {
         match e.kind() {
             io::ErrorKind::ConnectionRefused => TransportError::Refused,
@@ -397,6 +401,8 @@ impl Transport for TcpTransport {
                             bytes: n as u64,
                             transport_units: None,
                             status: None,
+                            status_code: None,
+                            retry_after_secs: None,
                         },
                     };
                     Some((Ok((StreamId(0), frame)), Some(inner)))
@@ -493,14 +499,19 @@ impl Transport for TcpTransport {
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
-            {
+            let delivered = {
                 let mut guard = inner.write.lock().await;
-                deliver_refusal(&mut *guard, bytes.as_slice()).await?;
-            }
+                deliver_refusal(&mut *guard, bytes.as_slice()).await
+            };
             // A refusal finalises the connection, so it ends it the way `close` does: dropping the
             // registry's clone is not enough, because a frame stream that started before the
             // refusal holds its own clone and would stay parked on the socket forever. The flag is
             // what ends that stream, after which the last clone goes and the socket really closes.
+            //
+            // This runs on every path out, delivered or not. A refusal whose bytes never reached
+            // the peer is still a finalised connection — returning the write's error first would
+            // leave the entry registered and that pump parked, which is the leak this ends, on the
+            // one path where the peer is already gone.
             let removed = self
                 .conns
                 .lock()
@@ -509,7 +520,7 @@ impl Transport for TcpTransport {
             if let Some(removed) = removed {
                 removed.finalise();
             }
-            Ok(())
+            delivered
         })
     }
 }

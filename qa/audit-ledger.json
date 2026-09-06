@@ -1,0 +1,2316 @@
+{
+ "_comment": [
+  "GENERATED scope list -- `scripts/audit-ledger.py sync --write` derives it from the tree.",
+  "Audit records (round/result/report/auditor/fixed_at/tree_hash) are hand-stamped by",
+  "`record` and `fixed` and are preserved across sync.",
+  "tree_hash = sha256 over the sorted `path<TAB>blob-oid` list of the scope's tracked files at",
+  "the audited commit; when it stops matching the tree, the audit result has expired.",
+  "status is DERIVED at report time, never stored. See docs/design/AUDIT-STATUS.md."
+ ],
+ "uncovered_by_design": [
+  {
+   "glob": "crates/*/Cargo.toml",
+   "reason": "crate manifest -- governed by workspace-deps-lint, not a code audit"
+  },
+  {
+   "glob": "crates/*/Cargo.lock",
+   "reason": "resolved lockfile -- governed by the build gates, not a code audit"
+  },
+  {
+   "glob": "crates/*/fixtures/*",
+   "reason": "fixture inputs a crate's own gate reads; not shipped code"
+  },
+  {
+   "glob": "xtask/Cargo.toml",
+   "reason": "crate manifest -- governed by workspace-deps-lint, not a code audit"
+  },
+  {
+   "glob": "xtask/fixtures/*",
+   "reason": "fixture trees the workspace-deps gate builds against"
+  }
+ ],
+ "scopes": [
+  {
+   "id": "crates/api/src",
+   "kind": "production",
+   "paths": [
+    "crates/api/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/api/src/tests"
+   ]
+  },
+  {
+   "id": "crates/auth-admin-tokens/src",
+   "kind": "production",
+   "paths": [
+    "crates/auth-admin-tokens/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/auth-admin-tokens/src/tests"
+   ]
+  },
+  {
+   "id": "crates/auth-static-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/auth-static-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/auth-static-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar/src/root",
+   "kind": "production",
+   "paths": [
+    "crates/busbar/src/root"
+   ],
+   "tree_hash": "6dbfb1435ea9a62fc0da368a830679009b53c4404374f1f0b5d5051337cbaecb",
+   "audited_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d",
+   "round": 4,
+   "result": "findings",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J-series round 4 (fix commits on the tip; per-finding counts not carried in the tree)",
+   "auditor": "round-4 finder fleet",
+   "fixed_at": "7d32960f5c308c99ad8391e311e5dd0a60e3b41d"
+  },
+  {
+   "id": "crates/busbar/src/main.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar/src/main.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-a2a/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-a2a/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-a2a/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-a2a-codec/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-a2a-codec/src"
+   ],
+   "tree_hash": "1da632d7067f4a1d189a860a145356394479fa3cb0f86dad1cf8a3f325172b3d",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-a2a-codec/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-caps/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-caps/src"
+   ],
+   "tree_hash": "efbe4b1d4dbcf788dbb04282c1028a34e37c7c7903a15d0ac48c99547a33b928",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-caps/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-contract/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-contract/src"
+   ],
+   "tree_hash": "1399ebd150cd1f1813018cc72a60710bb7424d408711079becde52e827e43c3f",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-contract/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-contract-transport/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-contract-transport/src"
+   ],
+   "tree_hash": "cb61b9c060ad4ad9906a2191be7207c65716cd7f61ea4da139a636fa4b8a06ec",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-contract-transport/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-core/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-core/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-core/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-grammar/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-grammar/src"
+   ],
+   "tree_hash": "c3ab5d71b260e8ba3cc59b4090a0ce8f05fe2ba22d0359afc287e0396af988be",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-grammar/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-kernel/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-kernel/src"
+   ],
+   "tree_hash": "96563642b190bb07bf700496613a76f46b980195fa646bb4819e4286591ae688",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-kernel/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-llm/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-llm/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-llm/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-llm-codec/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-llm-codec/src"
+   ],
+   "tree_hash": "55eb84b7f88d7b3444bcbd1ee76a5571ec7645896c4d3f8417c2e12f7fda8327",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-llm-codec/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-mcp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-mcp/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-mcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-mcp-codec/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-mcp-codec/src"
+   ],
+   "tree_hash": "3227006399753afb78c1fa1074caf987af0d220e89024cd6155edc08a57dae87",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-mcp-codec/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-a2a/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a/src"
+   ],
+   "tree_hash": "6e4248149e6ae8af8c4a6a179ba702b39841ef75bbc19d5144af5bc0e0494760",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-a2a/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-admin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-admin/src"
+   ],
+   "tree_hash": "c13aa2c2aa56cb545a849661328ae2eed61304db77de3760ab1712373146a846",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-admin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-llm/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-llm/src"
+   ],
+   "tree_hash": "634319c73b7061e6440df653e8c65358bc245a59fba76b08c8f5a56a4c1acccd",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-llm/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp/src"
+   ],
+   "tree_hash": "ddc14d0648c613a231c20de3676035e052a8783650fc1e42f001c9940a62a644",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-mcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plane-voice/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-voice/src"
+   ],
+   "tree_hash": "e770cb46b434dc34c1b196a0af0f9f62c89e196fe7258283fc333e4b5ebb2dbf",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plane-voice/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-substrate/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-substrate/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-substrate/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-substrate-values/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-substrate-values/src"
+   ],
+   "tree_hash": "9715e3ddbfe163465ec6aa46e89521810ae4174fdf6b7d8a65a08f0d58a61ac5",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-substrate-values/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-timing/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-timing/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-timing/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-grpc/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-grpc/src"
+   ],
+   "tree_hash": "579deab203474686b70a6c3d9e21e395ec09606417a40d01a2877c536f57a334",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-grpc/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-http/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-http/src"
+   ],
+   "tree_hash": "4caf970b031cc3baf67ab7da53a42d45e3df6460406757b6ba1c63320e8db234",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-http/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-sse/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-sse/src"
+   ],
+   "tree_hash": "1462d66a1b2d0a49ce5a3c8fab02f05dd03f6a6531c1eae1bb447e39f2e560cb",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-sse/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-stdio/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-stdio/src"
+   ],
+   "tree_hash": "e96aece50fe48052d573e84de5e332e9fbf51e9b330cee354fffd941a8ad72ed",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-stdio/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-tcp/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-tcp/src"
+   ],
+   "tree_hash": "be0d789b31b1255e3cdc4a5b19b25e9dbc611ea3e581066b884aedbe434cfea5",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-tcp/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-tls/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-tls/src"
+   ],
+   "tree_hash": "a7fb61acd27ccf613801ac306acd4f875ae5bc2998fa462bc13c828cdcbe6d3c",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-tls/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-ws/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-ws/src"
+   ],
+   "tree_hash": "71368d6a741566357991dacc1e28a81efaeb66aa92a68fde84f78df654c1e3f8",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-ws/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-admission/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-admission/src"
+   ],
+   "tree_hash": "25b62d6ce1971c5bdb35f18ba713cd991905faedcc19954b98df2f8b47644c74",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-admission/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-audit/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-audit/src"
+   ],
+   "tree_hash": "56898114b3898bdd4a617f6c0fe4c6a97dbf7fdf52d9ac21cdb5d3c78d424daa",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-audit/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-auth/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-auth/src"
+   ],
+   "tree_hash": "d5246052c644844fcff51d38033fd0f02a856e4fa8cf8ba9b7bc9b39e6901abf",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-auth/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-breaker/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-breaker/src"
+   ],
+   "tree_hash": "8dc4d147509a13ef5d6a7508e32f84fd1eb6e978d60b8ed7ccacebcfbb70555f",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-breaker/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-cost/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-cost/src"
+   ],
+   "tree_hash": "a34511199b8fd92006b36882d871cefba80f2ad486e00f72d6ce4039017bee4d",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-cost/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-egress/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-egress/src"
+   ],
+   "tree_hash": "86a991d015258ffe1339be444aa1393157078bb63c647cb7b2735e97947cc2e3",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-egress/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-egress-auth/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-egress-auth/src"
+   ],
+   "tree_hash": "addcd8b3ab04abc5881a86237b9f2a607d7c4ae53628bd771886360074cb2f0c",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-egress-auth/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-ledger/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-ledger/src"
+   ],
+   "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-ledger/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-scope/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-scope/src"
+   ],
+   "tree_hash": "db92b3b96fee84a7073df0c4393177ec7ac4a1ee29e04e9c141bf873475076ed",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-scope/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-transport-key/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-transport-key/src"
+   ],
+   "tree_hash": "5a44a932d4b525fef9d58f2619a3b6d95595a12e358d01aa060b6ec4727b8538",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-transport-key/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-trust/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-trust/src"
+   ],
+   "tree_hash": "fbc6a4c033bc2c5d5fde6ca2cef59ea5910f9548b48ac54bd8201b3f3ce4dc94",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-trust/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-usage/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-usage/src"
+   ],
+   "tree_hash": "47d129e75c87118d11b74c9d5bf02bd366ea71fc4e54a2739e50ff025232d655",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-usage/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-verbs/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-verbs/src"
+   ],
+   "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-verbs/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-unit-wal/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-unit-wal/src"
+   ],
+   "tree_hash": "72d1220f81cba5c4dd951f45e84d5deab14866709b7b6882405cb01a859bb9d7",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-unit-wal/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-voice/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-voice/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-voice/src/tests"
+   ]
+  },
+  {
+   "id": "crates/busbar-voice-codec/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-voice-codec/src"
+   ],
+   "tree_hash": "babcacc4cdc0324943ff8814da8b78e4e23f4e81d38f2e4348252ad83fc45c22",
+   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
+   "round": 5,
+   "result": "in_progress",
+   "counts": {},
+   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "auditor": "round-5 finder fleet",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-voice-codec/src/tests"
+   ]
+  },
+  {
+   "id": "crates/export-example-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/export-example-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/export-example-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/hook-test-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/hook-test-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/hook-test-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/hooks-ranking/src",
+   "kind": "production",
+   "paths": [
+    "crates/hooks-ranking/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/hooks-ranking/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plane-abi-spike/src",
+   "kind": "production",
+   "paths": [
+    "crates/plane-abi-spike/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plane-abi-spike/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plane-abi-spike-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/plane-abi-spike-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plane-abi-spike-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plugin-loader/src",
+   "kind": "production",
+   "paths": [
+    "crates/plugin-loader/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plugin-loader/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plugin-pack/src",
+   "kind": "production",
+   "paths": [
+    "crates/plugin-pack/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plugin-pack/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plugin-sdk/src",
+   "kind": "production",
+   "paths": [
+    "crates/plugin-sdk/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plugin-sdk/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plugin-sign/src",
+   "kind": "production",
+   "paths": [
+    "crates/plugin-sign/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plugin-sign/src/tests"
+   ]
+  },
+  {
+   "id": "crates/plugin-testkit/src",
+   "kind": "production",
+   "paths": [
+    "crates/plugin-testkit/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/plugin-testkit/src/tests"
+   ]
+  },
+  {
+   "id": "crates/secret-example-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/secret-example-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/secret-example-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/secret-ref/src",
+   "kind": "production",
+   "paths": [
+    "crates/secret-ref/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/secret-ref/src/tests"
+   ]
+  },
+  {
+   "id": "crates/store-example-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/store-example-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/store-example-plugin/src/tests"
+   ]
+  },
+  {
+   "id": "crates/store-memory/src",
+   "kind": "production",
+   "paths": [
+    "crates/store-memory/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/store-memory/src/tests"
+   ]
+  },
+  {
+   "id": "xtask/src",
+   "kind": "production",
+   "paths": [
+    "xtask/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "xtask/src/tests"
+   ]
+  },
+  {
+   "id": "crates/api/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/api/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/auth-admin-tokens/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/auth-admin-tokens/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/auth-static-plugin/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/auth-static-plugin/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar/benches",
+   "kind": "test",
+   "paths": [
+    "crates/busbar/benches"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-a2a-codec/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-a2a-codec/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-contract/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-contract/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-contract-transport/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-contract-transport/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-core/benches",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-core/benches"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-grammar/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-grammar/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-kernel/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-kernel/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-llm/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-llm/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-llm-codec/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-llm-codec/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-mcp/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-mcp/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-mcp-codec/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-mcp-codec/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-a2a/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-a2a/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-llm/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-llm/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-mcp/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-mcp/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-voice/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-voice/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-voice/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-voice/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plugin/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plugin/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plugin/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plugin/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-substrate/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-substrate/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-substrate/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-substrate/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-substrate-values/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-substrate-values/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-timing/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-timing/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-timing/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-timing/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-grpc/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-grpc/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-stdio/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-stdio/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-ws/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-ws/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-admission/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-admission/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-audit/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-audit/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-auth/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-auth/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-cost/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-cost/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-cost/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-cost/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-egress/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-egress/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-egress/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-egress/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-ledger/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-ledger/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-trust/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-trust/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-trust/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-trust/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-usage/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-usage/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-verbs/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-verbs/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-unit-wal/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-unit-wal/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-voice/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-voice/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-voice-codec/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-voice-codec/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/hooks-ranking/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/hooks-ranking/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plane-abi-spike/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plane-abi-spike/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plane-abi-spike/benches",
+   "kind": "test",
+   "paths": [
+    "crates/plane-abi-spike/benches"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-loader/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-loader/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-loader/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-loader/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-pack/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-pack/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-sdk/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-sdk/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-sdk/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-sdk/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-sign/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-sign/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/plugin-testkit/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/plugin-testkit/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/secret-ref/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/secret-ref/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/store-memory/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/store-memory/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/store-memory/tests",
+   "kind": "test",
+   "paths": [
+    "crates/store-memory/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "scripts",
+   "kind": "instrument",
+   "paths": [
+    "scripts"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "qa",
+   "kind": "instrument",
+   "paths": [
+    "qa"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github/workflows",
+   "kind": "instrument",
+   "paths": [
+    ".github/workflows"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/a2a-governance",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-governance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/a2a-harness",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-harness"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/a2a-supplement",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-supplement"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/a2a-tck",
+   "kind": "instrument",
+   "paths": [
+    "testing/a2a-tck"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/fleet-fixtures",
+   "kind": "instrument",
+   "paths": [
+    "testing/fleet-fixtures"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/llm-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/llm-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/mcp-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/mcp-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/shadow-oracle",
+   "kind": "instrument",
+   "paths": [
+    "testing/shadow-oracle"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing/voice-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/voice-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "testing",
+   "kind": "instrument",
+   "paths": [
+    "testing"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "testing/a2a-governance",
+    "testing/a2a-harness",
+    "testing/a2a-supplement",
+    "testing/a2a-tck",
+    "testing/fleet-fixtures",
+    "testing/llm-conformance",
+    "testing/mcp-conformance",
+    "testing/shadow-oracle",
+    "testing/voice-conformance"
+   ]
+  }
+ ]
+}

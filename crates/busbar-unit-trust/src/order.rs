@@ -13,7 +13,7 @@
 //! and the pre and post head of the pick lands in the audit record. An ordering that could silently
 //! move a unit to a different lane without declaring it would be a hook in everything but name.
 
-use crate::lane::{BreakerView, LaneCandidate, LaneTable, Unavailable};
+use crate::lane::{survives_prewalk_filter, BreakerView, LaneCandidate, LaneTable, Unavailable};
 use crate::swrr::{select_weighted, SwrrState};
 use std::collections::HashSet;
 
@@ -273,15 +273,23 @@ fn next_position(
     // 4. Selection. Two paths and only two.
     let picked_lane = match policy_order {
         Some(order) => {
-            // The first ranked lane that is still in this hop's set, is not drained, and is ready.
+            // The first ranked lane that is still in this hop's set and survives the SAME pre-walk
+            // filter the floor applies: not drained, admissible, and ready.
             //
-            // The drain check is here as well as in the floor because the readiness peek does not
-            // look at weight: without it a ranked ordering could put a drained lane first and yield
-            // it, which is exactly the operator intent the drain expresses. A ranked ordering that
-            // qualifies nowhere falls THROUGH to the floor over the same set, so an unranked but
-            // healthy lane is lowest-priority rather than stranded.
+            // All three checks are here rather than only the readiness peek, because the peek looks
+            // at neither weight nor the lane table. Without the drain check a ranked ordering could
+            // put a drained lane first and yield it, which is exactly the operator intent the drain
+            // expresses; without the admissibility check it could yield a dead or budget-exhausted
+            // lane, which would then spend an admission the filter exists to save — and the design's
+            // rule is that only an at-capacity lane may consume one. Sharing the floor's own filter
+            // rather than restating two thirds of it is what keeps the two selection paths from
+            // disagreeing about who is offerable. A ranked ordering that qualifies nowhere falls
+            // THROUGH to the floor over the same set, so an unranked but healthy lane is
+            // lowest-priority rather than stranded.
             let preferred = order.iter().copied().find(|idx| {
-                hop.iter().any(|c| c.idx == *idx && c.weight != 0) && breaker.ready(pool, *idx, now)
+                hop.iter().any(|c| {
+                    c.idx == *idx && survives_prewalk_filter(*c, lanes, breaker, pool, now)
+                })
             });
             match preferred {
                 Some(idx) => idx,

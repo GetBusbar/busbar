@@ -134,6 +134,13 @@ fn the_rendered_envelope_is_the_one_the_serializer_produced() {
 ///
 /// Zero. The envelope is fixed, the buffer is the caller's, and the only two things that vary from
 /// frame to frame — the payload and the identifier — are appended, not built.
+///
+/// A buffer that has already carried a frame is not an assumption this number makes about a caller
+/// it cannot see: the one caller in this crate — the downlink renderer in `plane.rs` — holds its
+/// buffer on the session (`VoiceSessionState::render_buf`) and hands the same one back frame after
+/// frame. A caller that built a fresh vector per frame would pay an allocation per frame no matter
+/// what this renderer costs, which is what made the earlier form of this number true of the
+/// function and false of the path it was quoted for.
 const RENDER_ALLOCS: u64 = 0;
 
 #[test]

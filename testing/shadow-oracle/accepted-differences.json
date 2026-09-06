@@ -8,12 +8,14 @@
     "Zero UNACCEPTED divergences is the ship gate.",
     "An entry with `transform: {candidate: [[regex, replacement], ...]}` is line-precise: the candidate's stderr/body text is rewritten before the diff, so only that token is forgiven; the cell reports ACCEPTED, never PASS.",
     "  breaking     a deliberate change named in the 1.6.0 CHANGELOG (`changelog` field required) — the ONLY kind that may accept a `status` or `effects.usage` class",
-    "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket)."
+    "The differ refuses any entry that accepts `status` or `effects.usage` without kind=breaking and a `changelog` field, and any entry with neither `cells` nor `classes` (a total blanket).",
+    "  EVERY entry, improvement or breaking, owes a `changelog` line that appears verbatim in CHANGELOG.md (ARCHITECTURE.md's owner rule accepts an improvement 'named in the CHANGELOG' too), or an explicit `\"changelog\": null` with a `changelog_reason`; a breaking entry may never waive. scripts/changelog-register-check.sh is the gate."
   ],
   "accepted": [
     {
       "id": "D-1 diagnostic codes",
       "kind": "improvement",
+      "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "rationale": "1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5.",
       "transform": {
@@ -32,6 +34,7 @@
     {
       "id": "D-2 jemalloc line is info",
       "kind": "improvement",
+      "changelog": "The jemalloc background-purge line is `[info]` on macOS",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "rationale": "On macOS the jemalloc background-thread line is [info] with an explanation instead of 1.5.5's [warn]; same fallback behaviour.",
       "transform": {
@@ -46,6 +49,7 @@
     {
       "id": "O-1 new metering series",
       "kind": "improvement",
+      "changelog": "One new `/metrics` series on a 1.5.5 config:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^ops\\.scrape\\|metrics\\||^neutrality\\|metrics-series$|^crosscut\\.traps\\|request-duration-quantiles$",
       "rationale": "One additive /metrics series on a 1.5.5 config: busbar_metering_pending_coalesced_total (write-behind overflow sentinel). No 1.5.5 series changed.",
@@ -61,6 +65,7 @@
     {
       "id": "F-011 additive admin views",
       "kind": "improvement",
+      "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
       "classes": [
@@ -83,6 +88,7 @@
     {
       "id": "F-013 validation wording",
       "kind": "improvement",
+      "changelog": "Validation messages know the new keys.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09|020|043b)\\|validate$",
       "classes": [
@@ -91,8 +97,20 @@
       "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode / unknown-member sentences rephrased; protocol list reordered. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance."
     },
     {
+      "id": "F-015 an inline secret is refused without echoing it",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 parity triage",
+      "cells": "^boot\\.refusal\\|BOOT-P32\\|validate$",
+      "classes": [
+        "effects.stderr"
+      ],
+      "rationale": "BOOT-P32 writes an INLINE LITERAL where a secret reference belongs (`providers.gemini.api_key: 7`). 1.5.5 had no scalar visitor on SecretRef, so that value fell through to serde's DEFAULT invalid-type error, which prints the value it was handed: `invalid type: integer `7`, expected a secret reference map: {…}`. The one path this type exists to keep a secret off — stderr and the boot log — is exactly where the rejected secret went, and an unquoted scalar (`api_key: 483920175534`) is the spelling nobody thinks to check. 1.6.0's SecretRef refuses every inline-scalar spelling through one message that states the RULE and never echoes the value: `a secret value must be a REFERENCE, never an inline literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, or { module: <secret-module>, settings: {…} }` (crates/secret-ref/src/lib.rs, RefVisitor::inline_literal). That is the rule the config inventory already documents for every secret-bearing key, so the new sentence tells the operator what to write instead of what serde could not parse. NOT a plane-work side effect: the wording landed in c8780349 (2026-08-08), long before this branch's base, and reverting it would restore a message that prints an operator's pasted API key into the log. SCOPE: the refusal itself is unchanged — exit code 1, empty stdout, the same `config.yaml: invalid YAML: providers.gemini.api_key: … at line 42 column 14` frame around the sentence, and the same preceding BUSBAR_PROVIDERS deprecation warning byte-for-byte. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Narrowed to the ONE recorded cell that drives an inline-literal secret; if a fixture ever adds another, name it here explicitly rather than widening the regex to the boot.refusal family.",
+      "changelog": "An inline literal where a secret reference belongs is refused without echoing it."
+    },
+    {
       "id": "F-013 download error wording",
       "kind": "improvement",
+      "changelog": "a plugin download failure quotes the HTTP client's current error text",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^boot\\.(refusal|warning)\\|BOOT-(141|W24)\\|boot$",
       "classes": [
@@ -104,6 +122,7 @@
     {
       "id": "F-003 CLI text",
       "kind": "improvement",
+      "changelog": "`--help` documents `-c`/`--config` and `--providers`; `--version` prints a second line.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^(cli\\|(--help|-h|--version|-V)|documented\\|readme\\|env-launch)$",
       "classes": [
@@ -114,6 +133,7 @@
     {
       "id": "S-1 bedrock text blocks carry no contentBlockStart",
       "kind": "improvement",
+      "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$",
       "classes": [
@@ -125,6 +145,7 @@
     {
       "id": "S-2 responses stream lifecycle frames",
       "kind": "improvement",
+      "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$",
       "classes": [
@@ -136,6 +157,7 @@
     {
       "id": "PR2-D1 degraded non-2xx breaker recording",
       "kind": "improvement",
+      "changelog": "a non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the cooldown floor, and emits the upstream-failure series",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down$|^route\\.failover\\|fo\\|primary-429$",
       "classes": [
@@ -160,6 +182,7 @@
     {
       "id": "PR2-D3 degraded client-fault counter",
       "kind": "improvement",
+      "changelog": "a client-fault 4xx bumps the lane's `client_fault` counter",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-4[0-9][0-9]$",
       "classes": [
@@ -184,6 +207,7 @@
     {
       "id": "PR2-D5 degraded attempt-timeout member override",
       "kind": "improvement",
+      "changelog": "a pool member's `attempt_timeout_ms` override is honoured",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-slow$",
       "classes": [
@@ -194,6 +218,7 @@
     {
       "id": "PR2-D9 degraded transport-error telemetry",
       "kind": "improvement",
+      "changelog": "a transport error emits the same upstream-failure and failover series",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down$|^route\\.failover\\|fb\\|all-down$|^route\\.failover\\|lb\\|member-down$",
       "classes": [
@@ -204,6 +229,7 @@
     {
       "id": "S-3 bedrock metrics member",
       "kind": "improvement",
+      "changelog": "A Bedrock `Converse` response always carries `metrics`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok$",
       "classes": [
@@ -215,6 +241,7 @@
     {
       "id": "S-4 anthropic required members",
       "kind": "improvement",
+      "changelog": "An Anthropic response carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
       "classes": [
@@ -226,6 +253,7 @@
     {
       "id": "S-5 openai chat required members",
       "kind": "improvement",
+      "changelog": "A chat completion's `logprobs` object carries `refusal`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$",
       "classes": [
@@ -237,6 +265,7 @@
     {
       "id": "S-6 responses required members",
       "kind": "improvement",
+      "changelog": "A Responses object carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|gemini|openai)\\|request\\|ok$",
       "classes": [
@@ -248,6 +277,7 @@
     {
       "id": "F-011b openapi.json additive endpoints",
       "kind": "improvement",
+      "changelog": "`openapi.json` describes the MCP and A2A endpoints",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$|^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
       "classes": [
@@ -259,6 +289,7 @@
     {
       "id": "S-7 responses-door streams stream",
       "kind": "improvement",
+      "changelog": "A `stream: true` request on the Responses door is answered as a stream.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|responses\\|responses\\|request\\|ok_stream$",
       "classes": [
@@ -271,6 +302,7 @@
     {
       "id": "E7-1 non-Responses doors stream when the backend is Responses-shaped",
       "kind": "improvement",
+      "changelog": "Every door streams when the routed lane is Responses-shaped.",
       "by": "owner (Matthew Jackson), 2026-09-04 E7 conformance-rig triage",
       "cells": "^llm\\|(cohere|gemini|openai)\\|responses\\|request\\|ok_stream$",
       "classes": [
@@ -282,6 +314,7 @@
     {
       "id": "S-8 streamed usage carries the same attribution buckets as buffered",
       "kind": "improvement",
+      "changelog": "A streamed response's `usage` carries the same attribution buckets as a buffered one.",
       "by": "owner (Matthew Jackson), 2026-09-05 llm-codec audit",
       "cells": "^llm\\|[a-z_]+\\|responses\\|request\\|ok_stream$",
       "classes": [
@@ -292,6 +325,7 @@
     {
       "id": "M-1 refund reaches the cell the charge reached",
       "kind": "improvement",
+      "changelog": "A failed request's flat fee is refunded even when its window rolled under it.",
       "by": "owner (Matthew Jackson), 2026-09-05 maximum spec compliance",
       "cells": "^billing\\|key-usage\\|refund-across-window$",
       "classes": [
@@ -303,6 +337,7 @@
     {
       "id": "M-2 a mid-stream upstream failure is not billed as a completion",
       "kind": "improvement",
+      "changelog": "A stream that dies mid-flight is no longer served, and billed, as a completed one.",
       "by": "owner (Matthew Jackson), 2026-09-05 llm-codec audit",
       "cells": "^llm\\|[a-z_]+\\|(openai|cohere)\\|request\\|mid-stream-error(_stream)?$",
       "classes": [
@@ -330,7 +365,19 @@
       "classes": [
         "body"
       ],
-      "rationale": "AWS Converse reports inputTokens as the NON-cached input only and documents the full input as inputTokens + cacheReadInputTokens + cacheWriteInputTokens (its worked caching example totals 16 input + 4 output + 695 cache-write as totalTokens 715). 1.5.5's Bedrock writer derived totalTokens = inputTokens + outputTokens while emitting the two cache counts beside it as ADDITIVE siblings, so on a cache-bearing response the published parts summed PAST the published total and a consumer reading totalTokens -- the field AWS points accounting consumers at -- lost every cache token. Both write sites (the buffered Converse body and the streamed metadata frame) now publish the AWS sum. The component fields are untouched, a response with no cache activity is byte-identical to 1.5.5 (the omitted cache buckets add zero), and this is a Bedrock-INGRESS body shape only: nothing Busbar ledgers reads totalTokens, since the Bedrock reader never parses it. The oracle's mock reports no cache tokens, so no recorded cell moves today."
+      "rationale": "AWS Converse reports inputTokens as the NON-cached input only and documents the full input as inputTokens + cacheReadInputTokens + cacheWriteInputTokens (its worked caching example totals 16 input + 4 output + 695 cache-write as totalTokens 715). 1.5.5's Bedrock writer derived totalTokens = inputTokens + outputTokens while emitting the two cache counts beside it as ADDITIVE siblings, so on a cache-bearing response the published parts summed PAST the published total and a consumer reading totalTokens -- the field AWS points accounting consumers at -- lost every cache token. Both write sites (the buffered Converse body and the streamed metadata frame) now publish the AWS sum. The component fields are untouched, a response with no cache activity is byte-identical to 1.5.5 (the omitted cache buckets add zero), and this is a Bedrock-INGRESS body shape only: nothing Busbar ledgers reads totalTokens, since the Bedrock reader never parses it. The oracle's mock reports no cache tokens, so no recorded cell moves today.",
+      "changelog": "Bedrock `usage.totalTokens` counts the cache tokens AWS counts."
+    },
+    {
+      "id": "A17 Anthropic billing_error names its own error type",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-05 oracle Phase 0 group-budget-total cell",
+      "cells": "^llm\\|anthropic\\|anthropic\\|request\\|over_budget_total$",
+      "classes": [
+        "body"
+      ],
+      "rationale": "1.5.5 answers the group's own BUDGET-total exhaustion (metric: budget, not the requests-cap `over_budget` arm) with error.type \"insufficient_quota\" — OpenAI's vocabulary, outside the nine types the published Anthropic error envelope declares. 1.6.0 answers the identical 429 with error.type \"billing_error\", the Anthropic-native member for a billing/quota refusal. Status (429), message text, and every other field are byte-identical on both sides; only /error/type differs: \"insufficient_quota\" (1.5.5) -> \"billing_error\" (1.6.0).",
+      "changelog": "An Anthropic-dialect error names an Anthropic error type. Busbar's quota and context-overflow refusals reached an Anthropic client as `insufficient_quota` and `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error` and `invalid_request_error`. The status, message and every other error type are unchanged."
     }
   ]
 }

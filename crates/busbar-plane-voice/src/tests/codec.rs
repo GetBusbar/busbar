@@ -8,7 +8,7 @@
 //! `type` tokens `crates/busbar-voice/src/ir/codec/mod.rs`'s `wire` module names
 //! (`input_audio_buffer.append`, `session.created`, `response.done`).
 
-use busbar_contract::bounded::{Facts, Labels};
+use busbar_contract::bounded::{FactValue, Facts, Labels};
 use busbar_contract::ids::LaneId;
 use busbar_contract::plane::{Ingress, Plane, PlaneSessionState, Progress, SessionPlane};
 use busbar_contract::wire::FrameCursor;
@@ -300,6 +300,151 @@ fn a_tool_call_open_surfaces_as_progress_one_shot() {
     );
 }
 
+/// Two tool calls open at once are two different things to wait on.
+///
+/// A turn that asks for two tools opens two units, and each waits for its own reply. The reply leg
+/// used to name the constant zero for every one of them, so the two were indistinguishable: the
+/// first reply satisfied whichever leg was found first, and the second call waited out its whole
+/// deadline against an answer that had already been delivered elsewhere.
+///
+/// What the leg names is the declared KEY; what tells the two calls apart is the identifier the
+/// draft mints under it, in the unit's own arena, as itself. This plane states neither twice — it
+/// no longer folds the identifier into a number to get a copy of it onto the sealed leg.
+#[test]
+fn two_open_tool_calls_wait_on_two_different_correlations() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut upstream_state = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    let open_call = |call_id: &str| {
+        serde_json::to_vec(&json!({
+            "type": "response.output_item.added",
+            "item": { "type": "function_call", "call_id": call_id, "name": "lookup" },
+        }))
+        .unwrap()
+    };
+
+    let mut waits_on = |call_id: &str| {
+        let opened = open_call(call_id);
+        let frames = [frame(&opened)];
+        let mut cursor = FrameCursor::new(&frames);
+        let Progress::OneShot(draft) = plane
+            .decode_response(&mut cursor, &dest, Some(&mut upstream_state), &c)
+            .expect("tool-call open decodes")
+        else {
+            panic!("a tool-call open is its own unit");
+        };
+        let out = draft
+            .correlation_out
+            .expect("a tool call mints a correlation");
+        // The draft's own correlation carries the identifier itself, not a fold of it.
+        assert_eq!(
+            out.value,
+            busbar_contract::ids::CorrelationValue::Str(call_id)
+        );
+        let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+        match plane.verify(&unit, &c) {
+            busbar_contract::dest::DestinationFacts::Client {
+                mode:
+                    busbar_contract::dest::ClientMode::AwaitReply {
+                        correlation_key, ..
+                    },
+                ..
+            } => {
+                // The leg names the key the draft minted under. If those two ever disagreed the
+                // kernel would have a wait it could never satisfy.
+                assert_eq!(correlation_key, out.fact_key);
+                format!("{:?}", out.value)
+            }
+            other => panic!("a tool call is delivered to the client, got {other:?}"),
+        }
+    };
+
+    let first = waits_on("call_1");
+    let second = waits_on("call_2");
+    assert_ne!(
+        first, second,
+        "two open tool calls waited on the same correlation"
+    );
+    assert_eq!(
+        second,
+        waits_on("call_2"),
+        "the same call named two different correlations"
+    );
+}
+
+/// A tool reply names the call it answers, not the turn it arrived on.
+///
+/// The reply is the other half of the leg the call planned. Decoded as an ordinary frame of the
+/// open turn it named the turn's correlation, so the identifier the waiting unit was entered under
+/// never reached the frame at all — the wait and its answer went past each other on one session,
+/// and the call expired holding a reservation for an answer that had already come back.
+#[test]
+fn a_client_tool_reply_names_the_call_it_answers() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    // The turn is open first, so "it relayed onto the turn" is a live alternative rather than
+    // something the fixture ruled out.
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let opened = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the turn opens");
+    let Ingress::Open(turn) = opened else {
+        panic!("expected Ingress::Open, got {opened:?}");
+    };
+    let turn_correlation = turn.correlation_out.expect("a turn correlates");
+
+    let reply = serde_json::to_vec(&json!({
+        "type": "conversation.item.create",
+        "item": {
+            "type": "function_call_output",
+            "call_id": "call_2",
+            "output": "{\"tide\":\"out\"}",
+        },
+    }))
+    .expect("the reply fixture serializes");
+    let frames = [frame(&reply)];
+    let mut cursor = FrameCursor::new(&frames);
+    let answered = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("a tool reply decodes");
+    let Ingress::Frame { for_, facts, .. } = answered else {
+        panic!("expected Ingress::Frame, got {answered:?}");
+    };
+    let for_ = for_.expect("a reply carries the correlation it answers");
+    assert_eq!(
+        for_.fact_key,
+        crate::plane::FACT_TOOL_CORRELATION,
+        "under the key the call's own leg named"
+    );
+    assert_eq!(
+        for_.value,
+        busbar_contract::ids::CorrelationValue::Str("call_2"),
+        "and carrying the identifier itself"
+    );
+    assert_ne!(
+        for_.value, turn_correlation.value,
+        "a reply that named the turn would wake no tool call at all"
+    );
+    assert_eq!(
+        facts.get(crate::meta::FACT_CALL_ID),
+        Some(FactValue::Str("call_2"))
+    );
+}
+
 #[test]
 fn usage_closes_the_turn_and_meter_reads_every_declared_class() {
     let plane = openai_plane();
@@ -529,8 +674,15 @@ fn twilio_dtmf_decodes_and_is_discarded_as_unsupported() {
     ));
 }
 
+/// An event this carrier adds tomorrow is dropped, and the frame that is not this carrier's shape
+/// at all is still refused.
+///
+/// The carrier publishes new event names over the life of the protocol and tells its clients to
+/// ignore the ones they do not recognise; the transport under this session already discards what it
+/// cannot place. Refusing the frame ended a live call on the day a new lifecycle event shipped —
+/// for a message that carries no audio and asks for nothing.
 #[test]
-fn twilio_unknown_event_fails_closed() {
+fn twilio_unknown_event_is_dropped_and_a_non_carrier_frame_is_still_refused() {
     static UPSTREAMS: &[Upstream] = &[Upstream {
         lane: LaneId::new("realtime"),
         host: "api.openai.com",
@@ -553,9 +705,23 @@ fn twilio_unknown_event_fails_closed() {
     .unwrap();
     let frames = [frame(&unknown)];
     let mut cursor = FrameCursor::new(&frames);
-    assert!(plane
+    let ingress = plane
         .decode_ingress(&mut cursor, Some(&mut state), &c)
-        .is_err());
+        .expect("an event this reader does not model is dropped, not refused");
+    assert!(matches!(
+        ingress,
+        Ingress::Discard {
+            reason: busbar_contract::wire::DiscardCode::Unsupported
+        }
+    ));
+
+    // The line the discard does not cross: bytes that are not this carrier's JSON at all.
+    let garbage = [frame(b"not a carrier frame at all")];
+    let mut cursor = FrameCursor::new(&garbage);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor, Some(&mut state), &c),
+        Err(busbar_contract::wire::Decode::Malformed)
+    );
 }
 
 /// A turn the upstream ends with an error consumed exactly as much of the caller's time and ran
@@ -575,6 +741,11 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
     // PCM16 at 24 kHz is 48 bytes per millisecond, so a second of uplink is 48 000 bytes. Forty of
     // them is the forty seconds the caller spoke.
     let one_second = vec![0u8; 48_000];
+    let relay_unit = crate::tests::harness::unit(
+        busbar_contract::ids::OpClassId::new("duplex_turn"),
+        busbar_contract::bounded::Ir::empty(),
+        Facts::new(),
+    );
     for _ in 0..40 {
         let append = serde_json::to_vec(&json!({
             "type": "input_audio_buffer.append",
@@ -586,6 +757,16 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
         plane
             .decode_ingress(&mut cursor, Some(&mut state), &c)
             .expect("an uplink audio frame decodes");
+        // And then relays, which is where the caller's seconds are counted.
+        plane
+            .encode_ingress_frame(
+                &relay_unit,
+                &frames[0],
+                &destination("api.openai.com", LaneId::new("realtime")),
+                Some(&mut state),
+                &c,
+            )
+            .expect("an uplink audio frame relays");
     }
 
     for call_id in ["call_1", "call_2"] {
@@ -636,8 +817,237 @@ fn an_upstream_error_still_meters_the_turn_it_ended() {
             .find(|l| l.class.as_str() == class)
             .and_then(|l| l.quantity)
     };
-    assert_eq!(quantity("audio_seconds_in"), Some(40_000));
+    // Forty seconds of admitted audio, metered in the seconds the class is denominated in.
+    assert_eq!(quantity("audio_seconds_in"), Some(40));
     assert_eq!(quantity("tool_calls"), Some(2));
+}
+
+/// The caller's audio is metered on the half the answer comes back on.
+///
+/// A session holds one state per CONNECTION: the client's, and one per upstream it dials. The
+/// uplink counter used to be taken at decode, against the client's half, and read back at the
+/// response step, against the upstream's — a different value entirely, and always zero. Every
+/// second a customer spoke on a duplex turn metered at nothing.
+#[test]
+fn uplink_audio_meters_on_the_half_the_upstream_answer_arrives_on() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let dest = destination("api.openai.com", LaneId::new("realtime"));
+    let mut client = open_client_session(&plane, &c);
+    let mut upstream = SessionPlane::open_upstream(&plane, &dest, &c);
+
+    // The turn opens on a control event, so the audio that follows is a relayed frame rather than
+    // the unit's own body: the frame under test is the ordinary one, of which a call carries fifty
+    // a second.
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(draft) = plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens the turn");
+    };
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+
+    // One second of PCM16 at 24 kHz.
+    let append = serde_json::to_vec(&json!({
+        "type": "input_audio_buffer.append",
+        "audio": base64_of(&vec![0u8; 48_000]),
+    }))
+    .expect("audio fixture serializes");
+    let frames = [frame(&append)];
+    let mut cursor = FrameCursor::new(&frames);
+    plane
+        .decode_ingress(&mut cursor, Some(&mut client), &c)
+        .expect("an uplink audio frame decodes");
+    plane
+        .encode_ingress_frame(&unit, &frames[0], &dest, Some(&mut upstream), &c)
+        .expect("an uplink audio frame relays to the provider");
+
+    let done = serde_json::to_vec(&json!({
+        "type": "response.done",
+        "response": { "usage": { "input_token_details": { "audio_tokens": 1 } } }
+    }))
+    .expect("usage fixture serializes");
+    let frames = [frame(&done)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(&mut cursor, &dest, Some(&mut upstream), &c)
+        .expect("the usage report decodes")
+    else {
+        panic!("a usage report ends the turn");
+    };
+
+    let seconds = plane
+        .meter(&unit, &r, &c)
+        .lines
+        .as_slice()
+        .iter()
+        .find(|l| l.class.as_str() == "audio_seconds_in")
+        .and_then(|l| l.quantity);
+    assert_eq!(
+        seconds,
+        Some(1),
+        "the second the caller spoke was relayed to the provider and must be metered"
+    );
+}
+
+/// The duration class is denominated in seconds, and the counter behind it is in milliseconds.
+///
+/// The design names the class `audio_seconds_in`. This plane counts milliseconds, because that is
+/// what a frame's byte count divides down to. Pushed through verbatim, three seconds of admitted
+/// audio settled as three thousand seconds -- a thousandfold over-report on a duration-priced class.
+#[test]
+fn admitted_milliseconds_meter_as_seconds() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let cfg = EmptyConfig;
+    let stack = WsStack::new("/v1/realtime");
+    let labels = Labels::default();
+    let c = ctx(&arena, &cfg, &stack, &labels);
+
+    let seconds_line = |ms: i64| {
+        let mut facts = Facts::new();
+        facts
+            .set(crate::meta::FACT_AUDIO_MS_IN, FactValue::Int(ms))
+            .expect("fits");
+        let response = busbar_contract::plane::Response {
+            ir: busbar_contract::bounded::Ir::new(b"{}", &[]),
+            finish: busbar_contract::unit::FinishClass::TurnComplete,
+            facts,
+        };
+        let unit = crate::tests::harness::unit(
+            busbar_contract::ids::OpClassId::new("duplex_turn"),
+            response.ir,
+            Facts::new(),
+        );
+        plane
+            .meter(&unit, &response, &c)
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == "audio_seconds_in")
+            .and_then(|l| l.quantity)
+    };
+
+    assert_eq!(seconds_line(3_000), Some(3));
+    // A part-second rounds up rather than vanishing: audio that arrived is not audio that cost
+    // nothing, and a zero line settles exactly as an absent one.
+    assert_eq!(seconds_line(1), Some(1));
+    assert_eq!(seconds_line(1_500), Some(2));
+    assert_eq!(seconds_line(0), Some(0));
+}
+
+/// A one-shot request sees its own answer, and the unit meters what it was priced on.
+///
+/// A transcribe or speech unit is admitted with no session, because it is one request and one
+/// answer. The response step demanded a session anyway, so the answer was a decode refusal and the
+/// unit metered nothing at all: a whole operation class billed at zero.
+#[test]
+fn a_one_shot_text_to_speech_unit_meters_the_text_it_was_asked_to_speak() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/audio/speech");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    let request =
+        serde_json::to_vec(&json!({ "input": "eight chars of text here", "voice": "marin" }))
+            .expect("request fixture serializes");
+    let frames = [frame(&request)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &c)
+        .expect("a speech request is one whole unit")
+    else {
+        panic!("a one-shot request admits as one unit");
+    };
+    assert_eq!(draft.op.as_str(), "tts");
+
+    // The answer is audio, and it arrives with no session because there never was one.
+    let audio = [0u8; 64];
+    let answers = [frame(&audio)];
+    let mut answer_cursor = FrameCursor::new(&answers);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(
+            &mut answer_cursor,
+            &destination("api.openai.com", LaneId::new("realtime")),
+            None,
+            &c,
+        )
+        .expect("a one-shot answer decodes without a session")
+    else {
+        panic!("a one-shot answer ends the unit");
+    };
+
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+    let locators = plane.meter(&unit, &r, &c);
+    let quantity = |class: &str| {
+        locators
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == class)
+            .and_then(|l| l.quantity)
+    };
+    // "eight chars of text here" is 24 bytes, six tokens at the class's own declared divisor.
+    assert_eq!(quantity("text_tokens_in"), Some(6));
+}
+
+/// A one-shot transcription's answer states the text it produced, and that is what it prices at.
+#[test]
+fn a_one_shot_transcription_meters_the_text_it_returned() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/audio/transcriptions");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    let audio = [0u8; 64];
+    let frames = [frame(&audio)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &c)
+        .expect("a transcription request is one whole unit")
+    else {
+        panic!("a one-shot request admits as one unit");
+    };
+    assert_eq!(draft.op.as_str(), "transcribe");
+
+    let answer = serde_json::to_vec(&json!({ "text": "twelve bytes" })).unwrap();
+    let answers = [frame(&answer)];
+    let mut answer_cursor = FrameCursor::new(&answers);
+    let Progress::Terminal { r, .. } = plane
+        .decode_response(
+            &mut answer_cursor,
+            &destination("api.openai.com", LaneId::new("realtime")),
+            None,
+            &c,
+        )
+        .expect("a one-shot answer decodes without a session")
+    else {
+        panic!("a one-shot answer ends the unit");
+    };
+
+    let unit = crate::tests::harness::unit(draft.op, draft.body_ir, draft.facts);
+    let quantity = |class: &str| {
+        plane
+            .meter(&unit, &r, &c)
+            .lines
+            .as_slice()
+            .iter()
+            .find(|l| l.class.as_str() == class)
+            .and_then(|l| l.quantity)
+    };
+    // "twelve bytes" is twelve bytes, three tokens at the class's own declared divisor.
+    assert_eq!(quantity("text_tokens_out"), Some(3));
 }
 
 /// A tiny standard base64 encoder, independent of the one this crate's `twilio` module carries, so
@@ -672,4 +1082,195 @@ mod base64_stdlib {
         }
         out
     }
+}
+
+#[test]
+fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let invalid_utf8: &[u8] = &[0x74, 0x79, 0x70, 0x65, 0xff, 0xfe];
+    let frames = [frame(invalid_utf8)];
+    let mut cursor = FrameCursor::new(&frames);
+    let err = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect_err("a frame that cannot be read as UTF-8 is a refusal, not a partial read");
+    assert!(matches!(err, busbar_contract::wire::Decode::Malformed));
+}
+
+#[test]
+fn ws_frame_with_an_unrecognised_event_is_dropped_never_left_pending() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let unrecognised = serde_json::to_vec(&json!({
+        "type": "teleport.now",
+        "destination": "mars",
+    }))
+    .unwrap();
+    let frames = [frame(&unrecognised)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("an unrecognised event decodes to a discard, not an error");
+    assert!(matches!(
+        ingress,
+        Ingress::Discard {
+            reason: busbar_contract::wire::DiscardCode::Unsupported
+        }
+    ));
+}
+
+#[test]
+fn ws_frame_carrying_no_bytes_yet_is_genuinely_need_more() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let frames = [frame(&[])];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("an empty frame is a partial read, not a refusal");
+    assert!(matches!(ingress, Ingress::NeedMore));
+}
+
+/// A refused session is told a class, never this node's own vocabulary.
+///
+/// The reason a unit stops is a kernel enum whose names are the money, the buckets and the journal.
+/// Rendered onto the wire verbatim it made every internal ceiling a client-visible `error.code` —
+/// a name no dialect documents and no client library has a case for.
+#[test]
+fn a_refusal_renders_an_opaque_code_not_the_internal_reason() {
+    use busbar_contract::unit::{Refusal, RefusalReason, Step};
+
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+
+    const OPAQUE: &[&str] = &[
+        "invalid_request",
+        "unauthorized",
+        "forbidden",
+        "rate_limited",
+        "unavailable",
+        "internal",
+    ];
+    let reasons = [
+        RefusalReason::OverdraftCeiling,
+        RefusalReason::StaleSlice,
+        RefusalReason::DurabilityUnavailable,
+        RefusalReason::ScopeMissing,
+        RefusalReason::CredentialRejected,
+        RefusalReason::NoDestination,
+        RefusalReason::RateLimited,
+        RefusalReason::BodyTooLarge,
+        RefusalReason::PlanePanic,
+    ];
+    for reason in reasons {
+        let refusal = Refusal {
+            step: Step::Decode,
+            reason,
+            retry_after_secs: None,
+            stream: None,
+            correlates: None,
+        };
+        let bytes = plane
+            .encode_refusal(&refusal, None, None, &c)
+            .expect("a refusal renders");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(bytes.as_slice()).expect("the refusal is this dialect's JSON");
+        assert_eq!(parsed["type"], "error", "the dialect's own error event");
+        let code = parsed["error"]["code"]
+            .as_str()
+            .expect("the error names a code");
+        assert!(
+            OPAQUE.contains(&code),
+            "{reason:?} rendered {code:?}, which is outside the codes a client may be told"
+        );
+        assert!(
+            parsed["error"]["message"].is_string(),
+            "the error carries a message"
+        );
+    }
+}
+
+/// A barge-in on an OPEN turn opens the turn that takes over.
+///
+/// The scheduler reads the interrupt fact off an open and nowhere else — that is the one dispatch
+/// that reaches the compare-and-set which supersedes the unit in flight. Delivered as one more
+/// frame of the turn it interrupts, the fact named the superseded unit to nobody: the interrupted
+/// turn kept the direction's slot and kept pricing while the caller was already speaking over it.
+#[test]
+fn a_barge_in_on_an_open_turn_opens_the_turn_that_supersedes_it() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    // A turn is open and speaking.
+    let opening = client_wire(&session_update_fixture());
+    let frames = [frame(&opening)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::Open(first) = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the turn opens")
+    else {
+        panic!("the first client event opens a turn");
+    };
+
+    // The caller talks over it.
+    let truncate = serde_json::to_vec(&json!({
+        "type": "conversation.item.truncate",
+        "item_id": "item_1",
+        "content_index": 0,
+        "audio_end_ms": 640,
+    }))
+    .expect("truncate fixture serializes");
+    let frames = [frame(&truncate)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("the barge-in decodes");
+    let Ingress::Open(second) = ingress else {
+        panic!("a barge-in opens the turn that takes over, got {ingress:?}");
+    };
+    assert_eq!(
+        second
+            .facts
+            .get(<VoicePlane as busbar_contract::plane::PlaneMeta>::INTERRUPT_FACT.unwrap()),
+        Some(FactValue::Int(640)),
+        "the open carries the interrupt the scheduler supersedes on"
+    );
+    assert_ne!(
+        second
+            .correlation_out
+            .expect("the new turn correlates")
+            .value,
+        first
+            .correlation_out
+            .expect("the first turn correlates")
+            .value,
+        "a late frame of the superseded turn must not relay onto the one that replaced it"
+    );
 }

@@ -154,6 +154,12 @@ impl UpstreamAddress {
     }
 
     /// The program to spawn, for the family whose upstream is a process.
+    ///
+    /// Every arm is named, here and in the three accessors below, as `authority` and `sni` already
+    /// name theirs. A catch-all answered for arms that did not exist yet, so adding a family to
+    /// this enum compiled without a word — and the transport whose dial reads one of these would
+    /// have taken the silence for an answer. A new arm has to come back here and say what it
+    /// carries.
     #[must_use]
     pub const fn program(&self) -> Option<&'static str> {
         match self {

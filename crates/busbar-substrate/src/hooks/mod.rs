@@ -109,6 +109,35 @@ pub enum ResolvedPolicy {
     },
 }
 
+/// THE disposition rule for a hook call that FAILED — one rule, one place, for every seat that
+/// calls a hook. `on_error: reject` was the operator declaring that hook LOAD-BEARING: without its
+/// answer the unit is refused. Every other disposition (`weighted`, `first`) lets the unit proceed;
+/// the seat then applies its own degraded behavior (the read-only decide seat picks a degraded
+/// route — SWRR or the config order; the read-write transform seat simply skips that hook's
+/// rewrite). Both seats ask THIS function, so a change to the rule cannot land on one path and
+/// miss the other.
+///
+/// A hook's own `reject` REPLY is not a failure and never reaches here — that is a decision the
+/// hook made, carried with its own status and message.
+#[inline]
+#[must_use]
+pub fn failed_call_refuses(on_error: &crate::config::PolicyOnError) -> bool {
+    match on_error {
+        crate::config::PolicyOnError::Reject => true,
+        crate::config::PolicyOnError::Weighted | crate::config::PolicyOnError::First => false,
+    }
+}
+
+/// The client-facing refusal a load-bearing hook's FAILED call produces. Deliberately content-free
+/// and identical on both seats: it names the failure, never the hook, the transport, or the reason
+/// (a client learns nothing about the operator's hook topology from a hook being down). `503` +
+/// the overloaded error kind — the condition is transient by nature, so an SDK caller sees a
+/// retryable error rather than a request-shaped one.
+pub const REQUIRED_HOOK_UNAVAILABLE_STATUS: u16 = 503;
+/// The message paired with [`REQUIRED_HOOK_UNAVAILABLE_STATUS`].
+pub const REQUIRED_HOOK_UNAVAILABLE_MESSAGE: &str =
+    "A required gate could not complete. Please retry shortly.";
+
 /// One link in a gate's resolved `on_error` fallback chain: the fallback hook's transport plus
 /// the per-hook config the firing site needs (its own deadline, ITS grants — a fallback never
 /// sees a projection its own grants don't allow — and its own `on_empty`).

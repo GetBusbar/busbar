@@ -27,7 +27,6 @@ import rules  # noqa: E402
 # that the pristine copy does not have (deleted upstream, or created by a plant) is REMOVED from
 # the scratch copy on restore, so a plant can create a file and the next plant starts clean.
 TOUCHED = [
-    "crates/busbar-llm/src/engine/walk.rs",
     "crates/busbar-llm/src/engine/select.rs",
     "crates/busbar-llm/src/arrival.rs",
     "crates/busbar-llm/src/native_ingress.rs",
@@ -48,7 +47,47 @@ TOUCHED = [
     "crates/busbar-unit-breaker/src/lib.rs",
     "crates/busbar-unit-admission/src/cells.rs",
     "crates/busbar-unit-breaker/src/port.rs",
+    "crates/busbar/src/root/vocabulary.rs",
 ]
+
+
+# TOUCHED IS LOAD-BEARING AND SILENT WHEN WRONG: a file a plant edits but nobody restores stays
+# sabotaged for every plant after it, so the self-test's "exactly one FAIL row" can be produced by
+# leftovers from an earlier rule rather than by the rule under test. Nothing about a missing entry
+# is visible at the time it is written. So the list is checked against the plants THEMSELVES, by
+# reading this module's own source: every path literal a plant hands to `append` or joins onto the
+# scratch root must be restorable. This runs at import, before any rule is planted.
+def _assert_touched_covers_the_plants():
+    import ast
+
+    src = ast.parse(open(os.path.abspath(__file__), encoding="utf-8").read())
+    edited = set()
+    for node in ast.walk(src):
+        if not isinstance(node, ast.Call):
+            continue
+        fn = node.func
+        # append(scratch, "<rel>", ...)
+        if isinstance(fn, ast.Name) and fn.id == "append" and len(node.args) >= 2:
+            if isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str):
+                edited.add(node.args[1].value)
+        # os.path.join(scratch, "<rel>")
+        elif (isinstance(fn, ast.Attribute) and fn.attr == "join" and len(node.args) == 2
+              and isinstance(node.args[0], ast.Name) and node.args[0].id == "scratch"
+              and isinstance(node.args[1], ast.Constant) and isinstance(node.args[1].value, str)):
+            # A DIRECTORY joined onto the scratch root is a probe ("does this crate exist yet"),
+            # never an edit: nothing writes through a directory path, and `restore` copies files.
+            # Requiring one in TOUCHED made this guard fire on a plant that edits nothing there,
+            # which stopped the whole self-test at import -- the one thing it must never do.
+            if os.path.splitext(node.args[1].value)[1]:
+                edited.add(node.args[1].value)
+    missing = sorted(edited - set(TOUCHED))
+    if missing:
+        raise AssertionError(
+            "plant.py: these paths are edited by a plant but are not in TOUCHED, so they would "
+            f"never be restored between plants: {missing}")
+
+
+_assert_touched_covers_the_plants()
 
 
 def restore(pristine, scratch):
@@ -160,11 +199,18 @@ def plant(rule, pristine, scratch, cfg, baseline):
         append(scratch, "crates/busbar-llm/src/engine/select.rs",
                "async fn planted_pick() { let _ = pick_among(a, b, c, d, e, f, g).await; }")
     elif rule == "token-sealed:kernel-seal":
-        # A unit crate's PRODUCTION source (not its own test module) minting the kernel seal
-        # directly -- the forged-seal case the unit test modules are allowed but production never
-        # is.
-        append(scratch, "crates/busbar-unit-admission/src/cells.rs",
+        # A plane's PRODUCTION unit source (not its test module) minting the kernel seal directly --
+        # the forged-seal case the unit test modules are allowed but production never is. The site
+        # is one the seal-sites ratchet already reviews, so this plant proves the token-sealed rule
+        # alone; seal-sites has its own plant below.
+        append(scratch, "crates/busbar-llm/src/unit/route.rs",
                "pub(crate) fn planted_forge_seal() { let _ = busbar_caps::KernelSeal::acquire_for_kernel(); }")
+    elif rule == "seal-sites":
+        # The recovery token is the seal-site symbol no other rule scans for: it materialises a hold
+        # from a journal record with no admission behind it, so naming it outside the recovery path
+        # is the whole violation. A unit crate's production source is nowhere near recovery.
+        append(scratch, "crates/busbar-unit-admission/src/cells.rs",
+               "pub(crate) fn planted_recovery() { let _: Option<busbar_caps::RecoveryToken> = None; }")
     elif rule == "token-sealed:admit-token-mint":
         append(scratch, "crates/busbar-unit-admission/src/cells.rs",
                "pub(crate) fn planted_forge_admit(seal: &busbar_caps::KernelSeal) { "
@@ -276,6 +322,29 @@ def plant(rule, pristine, scratch, cfg, baseline):
         src = src.replace(needle, "", 1)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(src)
+    elif rule == "plane-no-money":
+        # A plane crate naming the card itself. `RateCard` is a money noun with no reading under
+        # which a plane needs it, and it is deliberately NOT one of the pricing entry points
+        # one-pricing-site scans for, so this plant trips exactly this row.
+        append(scratch, "crates/busbar-plane-llm/src/lib.rs",
+               "pub(crate) fn planted_card() { let _ = RateCard::absent(); }")
+    elif rule == "one-pricing-site":
+        # Pricing from a crate that is neither the cost unit, the root's wiring nor a kernel settle
+        # site. The substrate is the sharpest place for it: it is the seam every plane reaches the
+        # host through, so a price derived here is a price every plane could read.
+        append(scratch, "crates/busbar-substrate/src/lib.rs",
+               "pub fn planted_pricing(pinned: &Pinned, lane: &Lane, usage: &Usage) -> Posting { "
+               "busbar_unit_cost::price(pinned, lane, usage, 1, 0) }")
+    elif rule == "one-pricing-site:fee-fields":
+        append(scratch, "crates/busbar-substrate/src/lib.rs",
+               "pub fn planted_fee(card: &Card) -> i64 { card.per_request_fee_cents() }")
+    elif rule.startswith("legacy-reach:"):
+        # One MORE distinct symbol of the retiring crate, named from the composition root. The
+        # ratchet is calibrated to today's exact count, so a single new name breaches it -- and the
+        # file chosen carries no other rule's ceiling.
+        prefix = cfg["rules"]["legacy-reach"]["prefixes"][rule.split(":", 1)[1]]["prefix"]
+        append(scratch, "crates/busbar/src/root/vocabulary.rs",
+               f"pub(crate) fn planted_reach() {{ let _ = {prefix}planted_module::PlantedThing; }}")
     elif rule == "duplicate-dispatch":
         # Copy a brace-balanced block of the hot-path twin into the degraded twin, from a region
         # the baseline did not already report as shared, so the duplicated-line total must rise.

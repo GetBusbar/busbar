@@ -18,12 +18,6 @@ use crate::LlmPlane;
 /// family, because a cap written over the family would then be counting something else.
 const TOKEN_FAMILY: &str = "token";
 
-/// The family the count-shaped non-chat classes roll up into.
-const COUNT_FAMILY: &str = "count";
-
-/// The family the duration-shaped non-chat classes roll up into.
-const DURATION_FAMILY: &str = "duration";
-
 /// Bytes per token, as the default divisor.
 ///
 /// This exists so a class cap works with no rate card configured at all. It is deliberately the
@@ -31,13 +25,28 @@ const DURATION_FAMILY: &str = "duration";
 /// and the metering step settles against what the upstream actually reported.
 const BYTES_PER_TOKEN: u32 = 4;
 
-/// The four token classes, plus the non-chat classes the previous release billed.
+/// The four token classes: every class this plane reports, and no other.
 ///
 /// The four are the ones every dialect reports, read through the codec's own normalization rather
 /// than off a raw pointer: the dialects that report a cached count inside their prompt total have
 /// already had it subtracted by the time the value reaches here, so the four partition the input
-/// bytes without double-counting. The rest are the classes the previous release billed for the
-/// non-chat operations, declared so that none of them is refused as unpriced.
+/// bytes without double-counting.
+///
+/// THE LIST IS WHAT THE METERING STEP EMITS, exactly. A declaration is an invitation to a rate card:
+/// an operator who sees a class here prices it, and a class the card prices but the plane never
+/// reports posts no line at all — not a zero line, no line — so the invoice is silently short by
+/// whatever that class was worth and nothing anywhere says so. Four count-shaped and duration-shaped
+/// classes used to sit below the four token ones for the non-chat operations, and not one of them
+/// was ever emitted: this plane reads its quantities through the codec's own usage figures, which
+/// carry token counts and nothing else — no image count, no character count, no audio duration —
+/// and the surfaces two of them named (spoken audio, transcription) belong to the voice plane and
+/// are not on this plane's claim ladder at all. The fourth named a flat per-request charge, which
+/// the rate card already posts by itself as its own `fee` line whatever a plane declares; a second
+/// spelling of it here could only ever bill the same request twice or nothing.
+///
+/// A non-chat operation that should carry a price gets a class here when the plane can read its
+/// quantity, and the reading comes first. The op class list below is unaffected: a unit is priced by
+/// the class it is, and the token classes price the ones this plane can actually read.
 ///
 /// The aggregate token class is deliberately ABSENT. It is declared by the kernel, not by a plane,
 /// and the registry refuses it from one.
@@ -65,33 +74,6 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheWrite,
         default_divisor: BYTES_PER_TOKEN,
-    },
-    // The non-chat classes. A flat-billed operation still declares a class, because "billed at a
-    // flat rate" and "has no meter class" settle differently: the first posts one, the second is
-    // refused as unpriced.
-    MeterClassDecl {
-        key: MeterClassId::new("images"),
-        family: COUNT_FAMILY,
-        direction: ClassDirection::Response,
-        default_divisor: 1,
-    },
-    MeterClassDecl {
-        key: MeterClassId::new("characters"),
-        family: COUNT_FAMILY,
-        direction: ClassDirection::Input,
-        default_divisor: 1,
-    },
-    MeterClassDecl {
-        key: MeterClassId::new("audio_seconds"),
-        family: DURATION_FAMILY,
-        direction: ClassDirection::Input,
-        default_divisor: 1,
-    },
-    MeterClassDecl {
-        key: MeterClassId::new("flat"),
-        family: COUNT_FAMILY,
-        direction: ClassDirection::Response,
-        default_divisor: 1,
     },
 ];
 

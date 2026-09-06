@@ -73,7 +73,12 @@ YAML
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 stepjson() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
 
 # `exec` inside the backgrounded subshell so $! is busbar's OWN pid, not a wrapper subshell's — a
 # plain `env VAR=val "$BIN" &` backgrounds a subshell running that command, and killing the
@@ -83,10 +88,20 @@ fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$
 pid=$!; track_pid $pid
 wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 500 "$W/busbar.log")"
 
-mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"rotate-oracle","group":"oracle"}')"
+# THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
+
+# `mint_status` below is what this binary answered rather than what the harness
+
+# assumed; a mint that stopped being a 201 is then a diff on this cell.
+
+mint_raw="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"rotate-oracle","group":"oracle"}')"
+
+mint_code="$(printf '%s' "$mint_raw" | tail -1)"
+
+mint="$(printf '%s' "$mint_raw" | sed '$d')"
 kid="$(jq -r '.id // empty' <<<"$mint")"; old_tok="$(jq -r '.token // empty' <<<"$mint")"
 [ -n "$kid" ] && [ -n "$old_tok" ] || fail 2 "$mint"
-step mint_status "201"
+step mint_status "$mint_code"
 
 spend() {  # spend <token> -> writes $W/spend.body, prints status
   curl -sS -m 20 -o "$W/spend.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LP}/v1/chat/completions" \
@@ -122,7 +137,7 @@ step usage_requests_delta "$req_delta"
 kill $pid 2>/dev/null; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 
-result="$(jq -n \
+if ! result="$(jq -n \
   --argjson mint_status "$(jq -r .mint_status <<<"$eff")" \
   --argjson spend1_status "$(jq -r .spend1_status <<<"$eff")" \
   --argjson rotate_status "$(jq -r .rotate_status <<<"$eff")" \
@@ -132,6 +147,15 @@ result="$(jq -n \
   --argjson usage_requests_delta "$(jq -r .usage_requests_delta <<<"$eff")" \
   '{mint_status:$mint_status, spend1_status:$spend1_status, rotate_status:$rotate_status,
     spend2_old_status:$spend2_old_status, spend2_old_body:$spend2_old_body,
-    spend3_new_status:$spend3_new_status, usage_requests_delta:$usage_requests_delta}')"
+    spend3_new_status:$spend3_new_status, usage_requests_delta:$usage_requests_delta}' 2>"$W/result.err")"; then
+  # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
+  # measured something it cannot state and the body would go out EMPTY — and an empty body with
+  # status 0 compares clean against a golden that failed the same way, which is the vacuous green
+  # the ledger exists to refuse. Record the -1 UNSUPPORTED shape record.sh reads as a named gap.
+  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
+    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
+    >"$RAW/captured.json"
+  exit 0
+fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

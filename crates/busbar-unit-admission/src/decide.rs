@@ -128,6 +128,7 @@ pub enum Blocked {
 #[derive(Default)]
 pub struct AdmitGrant {
     gauges: Vec<Arc<AtomicI64>>,
+    groups: Vec<&'static str>,
 }
 
 impl AdmitGrant {
@@ -135,6 +136,19 @@ impl AdmitGrant {
     /// with a concurrent cap and two windowed caps takes one, not three.
     pub fn held(&self) -> usize {
         self.gauges.len()
+    }
+
+    /// The groups this grant counted against, named as the composition root interned them.
+    ///
+    /// The gauges above are `Arc`s: they say how many were counted and release them, and they can
+    /// say nothing about WHICH. A caller that has to record the same fact somewhere else — the
+    /// kernel's per-group reading of what the node is running — needs the names, and needs them in
+    /// a vocabulary it can hold for the life of a unit. So the names ride here beside the handles.
+    ///
+    /// Shorter than [`AdmitGrant::held`] when a counted group carried no interned name. That is a
+    /// group the root did not hand a static name to, never a group the door failed to count.
+    pub fn group_leases(&self) -> &[&'static str] {
+        &self.groups
     }
 }
 
@@ -282,6 +296,11 @@ impl<S: CellStore> Door<S> {
                 });
             }
             grant.gauges.push(gauge);
+            // Named only where the root interned one. The name is a RECORD of what was counted and
+            // takes no part in the count, so a group without one is counted exactly as before.
+            if let Some(id) = g.lease_id {
+                grant.groups.push(id);
+            }
         }
 
         // 3. WINDOWED limits. One locked view over every bucket in play, held across BOTH passes.

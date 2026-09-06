@@ -397,7 +397,7 @@ fn test_ingress_stream_content_type_by_protocol() {
 #[tokio::test]
 async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped backend response with a foreign `chatcmpl-` id + created + fingerprint.
     state.push(MockResponse::Ok {
@@ -495,9 +495,10 @@ async fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
 #[tokio::test]
 async fn test_untranslatable_2xx_does_not_charge_tokens() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
-    busbar_core::metrics::init();
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 2xx: a real `usage` block (so the tap WOULD count 7+3=10 tokens) but an EMPTY
     // `choices` array — the OpenAI reader rejects this in `read_response`, so it is untranslatable.
@@ -518,8 +519,10 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
     // the token ledger itself: a zero post-call token count proves no token billing happened (the
     // tap WOULD have ledgered 7+3=10 tokens if it wrongly ran).
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -586,7 +589,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
 
     // ...and the key's token ledger must be UNTOUCHED (the bug ledgered 10 tokens here).
     let tokens = gov
-        .usage_for(&cost, &key.id, charged_at)
+        .usage_for(cost.as_ref(), &key.id, charged_at)
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);
@@ -608,7 +611,7 @@ async fn test_untranslatable_2xx_does_not_charge_tokens() {
 async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
     crate::testkit::install_test_seams();
     use busbar_substrate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: StatusCode::OK,
@@ -708,17 +711,20 @@ async fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
 async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     // Gov + virtual key. Spend is DERIVED now, so "the tail usage was counted" is asserted on the
     // token ledger: a 1000-token post-drain ledger proves the reassembled body's `usage` ran.
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -808,7 +814,7 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     for _ in 0..200 {
         tokio::task::yield_now().await;
         tokens = gov
-            .usage_for(&cost, &key.id, charged_at)
+            .usage_for(cost.as_ref(), &key.id, charged_at)
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0);
@@ -843,24 +849,29 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
 async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
-    busbar_core::metrics::init();
-    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
+    busbar_substrate::metrics::init();
+    let _lock = busbar_substrate::config::limits::LIMITS_TEST_LOCK
+        .lock()
+        .await;
     // A cap small enough that the filler content alone blows well past it, but the RAII guard
     // restores whatever was installed before this test regardless of how it exits.
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(
         &busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
     );
     assert_eq!(super::max_translated_body_bytes(), CAP);
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -948,7 +959,7 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
     for _ in 0..200 {
         tokio::task::yield_now().await;
         tokens = gov
-            .usage_for(&cost, &key.id, charged_at)
+            .usage_for(cost.as_ref(), &key.id, charged_at)
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0);
@@ -981,22 +992,27 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
 async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
 
-    busbar_core::metrics::init();
-    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
+    busbar_substrate::metrics::init();
+    let _lock = busbar_substrate::config::limits::LIMITS_TEST_LOCK
+        .lock()
+        .await;
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(
         &busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
     );
     assert_eq!(super::max_translated_body_bytes(), CAP);
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -1085,7 +1101,7 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
     for _ in 0..200 {
         tokio::task::yield_now().await;
         tokens = gov
-            .usage_for(&cost, &key.id, charged_at)
+            .usage_for(cost.as_ref(), &key.id, charged_at)
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0);
@@ -1118,14 +1134,14 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
 /// This is a genuine two-statement TOCTOU with NO await point between the reads (`poll_next` is
 /// synchronous), so there is no way to deterministically interleave a config apply between them
 /// without instrumenting production code. This test instead applies RACE PRESSURE: a background
-/// thread hammers `busbar_core::limits::install` between a cap comfortably above `CHUNK1_LEN` and one
+/// thread hammers `busbar_substrate::config::limits::install` between a cap comfortably above `CHUNK1_LEN` and one
 /// below it, at the highest rate the toggling loop can sustain, while the foreground repeatedly
 /// drives a fresh `FirstByteBody` through the exact vulnerable decision (buffer `CHUNK1_LEN` bytes
 /// under the current cap, then poll a second chunk that re-reads the cap). Over enough attempts
 /// the race window is hit. After the fix (`cap` read once into a local) this can NEVER panic
 /// regardless of scheduling, so a passing run after the fix is not luck — it is deterministic.
 ///
-/// `#[ignore]`: `busbar_core::limits::install` (test-only escape hatch) mutates the SAME process-global
+/// `#[ignore]`: `busbar_substrate::config::limits::install` (test-only escape hatch) mutates the SAME process-global
 /// `RwLock` every other test reads through `max_translated_body_bytes()`/`translate_body_max_bytes()`
 /// with no cross-test serialization (see `limits.rs`'s own doc — this is a bare test-only setter,
 /// not scoped). Hammering it from a background thread — required to have any chance of landing the
@@ -1138,14 +1154,15 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
 fn nonstream_tap_cap_is_read_once_per_decision() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt;
     use std::panic::AssertUnwindSafe;
     use std::sync::atomic::{AtomicBool, Ordering};
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     const CHUNK1_LEN: usize = 4096;
     const ATTEMPTS: usize = 20_000;
 
@@ -1163,8 +1180,10 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     // to completion here (only 2 chunks are polled, never draining to the billing arm), so no
     // background flush task is required.
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -1195,11 +1214,15 @@ fn nonstream_tap_cap_is_read_once_per_decision() {
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let toggler = std::thread::spawn(move || {
-        let hi = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CHUNK1_LEN * 10);
-        let lo = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CHUNK1_LEN / 2);
+        let hi = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(
+            CHUNK1_LEN * 10,
+        );
+        let lo = busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(
+            CHUNK1_LEN / 2,
+        );
         while !stop2.load(Ordering::Relaxed) {
-            busbar_core::limits::install(&hi);
-            busbar_core::limits::install(&lo);
+            busbar_substrate::config::limits::install(&hi);
+            busbar_substrate::config::limits::install(&lo);
         }
     });
 
@@ -1276,7 +1299,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() 
     use super::FirstByteBody;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -1364,7 +1387,7 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
     use super::FirstByteBody;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -1443,16 +1466,19 @@ async fn test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse() {
 async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
     // Spend is DERIVED now; the no-bill intent is asserted on the token ledger directly.
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let (key, _s) = gov
         .create_key(
             NewKeySpec {
@@ -1532,7 +1558,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
     for _ in 0..150 {
         tokio::task::yield_now().await;
         tokens = gov
-            .usage_for(&cost, &key.id, charged_at)
+            .usage_for(cost.as_ref(), &key.id, charged_at)
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0);
@@ -1558,7 +1584,7 @@ async fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
 #[tokio::test]
 async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     // Upstream answers 200 so we can inspect the Authorization header it received.
     let state = Arc::new(MockServerState::new());
@@ -1652,7 +1678,7 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
 #[tokio::test]
 async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response_id() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Native AWS Converse (non-stream) 2xx: NO body-level id/created/model — only output,
     // stopReason, and usage. This is exactly the identity-empty shape the Bedrock reader returns.
@@ -1740,7 +1766,7 @@ async fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response
 #[tokio::test]
 async fn test_bedrock_ingress_success_carries_amzn_request_id() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped backend 2xx; ingress is bedrock → cross-protocol translation to Converse.
     state.push(MockResponse::Ok {
@@ -1819,7 +1845,7 @@ async fn test_bedrock_ingress_success_carries_amzn_request_id() {
 #[tokio::test]
 async fn test_anthropic_ingress_success_carries_request_id_header() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -1894,7 +1920,7 @@ async fn test_anthropic_ingress_success_carries_request_id_header() {
 #[tokio::test]
 async fn test_anthropic_ingress_streaming_carries_request_id_header() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A minimal anthropic-shaped SSE stream (the mock serves `text/event-stream`, driving the
     // streaming branch). The header attachment is independent of the event payloads.
@@ -1966,7 +1992,7 @@ data: {"type":"message_stop"}"#
 #[tokio::test]
 async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // OpenAI-shaped 400 client-fault error body from the backend.
     state.push(MockResponse::Ok {
@@ -2049,7 +2075,7 @@ async fn test_cross_protocol_client_fault_reshapes_error_envelope() {
 async fn test_forward_error_path_returns_native_envelope() {
     crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let app = TestApp::new().build();
     // No candidates → "no usable lane" 503, shaped to the ingress (OpenAI) envelope.
     let resp = forward_with_pool(
@@ -2093,7 +2119,7 @@ async fn test_forward_error_path_returns_native_envelope() {
 async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
     crate::testkit::install_test_seams();
     use busbar_substrate::store::now as store_now;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Anthropic-shaped 2xx so the degraded path serves a success (it relays the body verbatim;
     // we only care about what the backend RECEIVED, captured below).
@@ -2126,7 +2152,10 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
 
     // `n: 1` (NOT >1) on purpose: this test is about EXTRA-KEY STRIPPING on the degraded path, not
@@ -2199,7 +2228,7 @@ async fn test_forward_once_cross_protocol_strips_source_only_extra_keys() {
 async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
     crate::testkit::install_test_seams();
     use busbar_substrate::store::now as store_now;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // Anthropic backend returns a tool_use response carrying a native anthropic tool id.
     state.push(MockResponse::Ok {
@@ -2236,7 +2265,10 @@ async fn test_forward_once_cross_protocol_remaps_tool_call_id() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
 
     let req_body = serde_json::to_vec(&json!({
@@ -2299,7 +2331,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
     crate::testkit::install_test_seams();
     use busbar_substrate::store::now as store_now;
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Bedrock error carries x-amzn-requestid + x-amzn-errortype response headers.
     state.push(MockResponse::ServerErrorWithHeaders {
@@ -2329,7 +2361,10 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
             .err(5),
         )
         .pool("leastbad", &[(0, 1)])
-        .on_exhausted("leastbad", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
 
     let resp = forward_with_pool(
@@ -2386,7 +2421,7 @@ async fn test_forward_once_bedrock_error_relays_amzn_headers() {
 #[tokio::test]
 async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Anthropic 4xx carries a `request-id` response header; the same-proto relay must
     // forward it verbatim.
@@ -2464,7 +2499,7 @@ async fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_onc
 #[tokio::test]
 async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_once() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A native Anthropic 401 carries a `request-id` response header; the same-proto passthrough
     // relay must forward it verbatim.
@@ -2545,7 +2580,7 @@ async fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_on
 async fn test_forward_layer_errors_carry_no_router_prefix() {
     crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     for ingress in [
         "openai",
         "anthropic",
@@ -2591,7 +2626,7 @@ async fn test_forward_layer_errors_carry_no_router_prefix() {
 async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_eventstream() {
     crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // NON-SSE buffered OpenAI 2xx (no SSE) to a cross-protocol bedrock-ingress ConverseStream.
     state.push(MockResponse::Ok {
@@ -2683,7 +2718,7 @@ async fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_event
 #[tokio::test]
 async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_usage_injected() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events: vec![
@@ -2757,7 +2792,7 @@ async fn test_streaming_openai_egress_without_client_opt_in_still_gets_include_u
 async fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array() {
     crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -2847,7 +2882,7 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
     crate::testkit::install_test_seams();
     use busbar_substrate::store::now as store_now;
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
             status: StatusCode::OK,
@@ -2875,7 +2910,10 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
             .err(5),
         )
         .pool("leastbad-g", &[(0, 1)])
-        .on_exhausted("leastbad-g", busbar_substrate::config::pools::OnExhausted::LeastBad)
+        .on_exhausted(
+            "leastbad-g",
+            busbar_substrate::config::pools::OnExhausted::LeastBad,
+        )
         .build();
     let body = serde_json::to_vec(&json!({
         "model": "leastbad-g",
@@ -2941,14 +2979,16 @@ async fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     // Serialize against sibling tests that mutate the process-global `limits::INSTALLED`, and pin a
     // small KNOWN cap under an RAII guard so the body below is deterministically over-cap regardless
     // of a concurrent install (restored on drop). Without the lock this test READS the cap to size
     // `huge`, and a sibling install could move it mid-run.
-    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
+    let _lock = busbar_substrate::config::limits::LIMITS_TEST_LOCK
+        .lock()
+        .await;
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(
         &busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
     );
     assert_eq!(super::max_translated_body_bytes(), CAP);
@@ -3021,15 +3061,17 @@ async fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
 #[tokio::test]
 async fn test_truncated_body_does_not_refund_budget() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     // Serialize against the sibling tests that mutate the process-global `limits::INSTALLED`
     // (`InstallGuard::install` / `install`) — this test READS the translate-body cap to build an
     // over-cap body, and a sibling's install landing mid-run would move the cap out from under it.
     // Install a small KNOWN cap under an RAII guard so the body is deterministically over-cap
     // (restored on drop). See the correctly-locked sibling `..._over_cap_body_still_bills_tail_usage`.
-    let _lock = busbar_core::limits::LIMITS_TEST_LOCK.lock().await;
+    let _lock = busbar_substrate::config::limits::LIMITS_TEST_LOCK
+        .lock()
+        .await;
     const CAP: usize = 4096;
-    let _limits_guard = busbar_core::limits::InstallGuard::install(
+    let _limits_guard = busbar_substrate::config::limits::InstallGuard::install(
         &busbar_substrate::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
     );
     assert_eq!(super::max_translated_body_bytes(), CAP);
@@ -3103,7 +3145,7 @@ async fn test_truncated_body_does_not_refund_budget() {
 #[tokio::test]
 async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // A 64 KiB raw JSON-string body — far larger than the 1 KiB cap used below.
     let big = "y".repeat(64 * 1024);
@@ -3142,7 +3184,7 @@ async fn test_read_capped_enforces_cap_exactly_and_reports_truncated() {
 #[tokio::test]
 async fn test_unparseable_json_400_carries_no_serde_internals() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let app = TestApp::new()
         .lane(LaneSpec::new(
             "m",
@@ -3517,9 +3559,10 @@ async fn test_streaming_nonsse_mid_body_transport_error_records_transient() {
 async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::store::{BreakerCfg, BreakerState, TripConfig, TripMode};
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3556,8 +3599,10 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     // A usage sink over a real GovState: any accrual call with nonzero tokens leaves an
     // observable token ledger in the key's window (spend derives; tokens are the ledger).
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
@@ -3650,7 +3695,7 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
     // code's accrual of the captured 1000 tokens would show in the key's window ledger; the fix
     // skips the call entirely, so the window stays at 0 tokens.
     let ledgered = gov
-        .usage_for(&cost, &key.id, charged_at)
+        .usage_for(cost.as_ref(), &key.id, charged_at)
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);
@@ -3672,9 +3717,10 @@ async fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
 async fn test_cancel_drop_bills_partial_tokens() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::store::BreakerCfg;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3688,9 +3734,11 @@ async fn test_cancel_drop_bills_partial_tokens() {
         .build();
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
     // Spend derives; token-billing intent is asserted on the token ledger.
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
@@ -3757,7 +3805,7 @@ async fn test_cancel_drop_bills_partial_tokens() {
     let mut ledgered = 0;
     for _ in 0..200 {
         ledgered = gov
-            .usage_for(&cost, &key.id, charged_at)
+            .usage_for(cost.as_ref(), &key.id, charged_at)
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0);
@@ -3784,9 +3832,10 @@ async fn test_cancel_drop_bills_partial_tokens() {
 async fn test_cancel_drop_skips_billing_on_aborted_translate() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
     use busbar_substrate::store::BreakerCfg;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use bytes::Bytes;
     use futures::StreamExt as _;
 
@@ -3800,9 +3849,11 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         .build();
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
     // Spend derives; token-billing intent is asserted on the token ledger.
-    let cost = Arc::new(busbar_core::cost::CostModel::flat(0));
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0);
     let charged_at: u64 = 1_700_000_000;
     let (key, _secret) = gov
         .create_key(
@@ -3875,7 +3926,7 @@ async fn test_cancel_drop_skips_billing_on_aborted_translate() {
         tokio::task::yield_now().await;
     }
     let ledgered = gov
-        .usage_for(&cost, &key.id, charged_at)
+        .usage_for(cost.as_ref(), &key.id, charged_at)
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);
@@ -3971,7 +4022,7 @@ async fn test_cancel_drop_mid_stream_refunds_budget() {
 async fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array() {
     crate::testkit::install_test_seams();
     use http_body_util::BodyExt as _;
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     // NON-SSE buffered anthropic 2xx to a cross-protocol OpenAI-ingress streaming request.
     state.push(MockResponse::Ok {

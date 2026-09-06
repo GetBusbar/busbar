@@ -162,28 +162,22 @@ fn the_two_vocabularies_agree_slot_for_slot() {
 
 /// Every method the codec's own local-verb table names is one this plane carries.
 ///
-/// The table is visible to its own crate only, so this reads its source. A method the codec answers
-/// and this plane does not carry would arrive here as an unsupported operation.
+/// The table itself, iterated. This SCRAPED it out of the server half's source once — an
+/// `include_str!` over `../../busbar-a2a/src/a2a/local.rs`, then a hand-rolled scan for quoted
+/// pieces that look like a method name — which coupled this crate to a sibling its manifest does not
+/// name, so the plane could be neither built nor deleted on its own. The table is the codec's now,
+/// and the server half's `verb_of` is pinned against it in the crate that owns the match. A method
+/// the codec answers and this plane does not carry would arrive here as an unsupported operation.
 #[test]
 fn every_local_verb_of_the_codec_is_carried() {
-    let source = include_str!("../../busbar-a2a/src/a2a/local.rs");
-    let start = source
-        .find("pub(crate) fn verb_of")
-        .expect("the codec still names its verb table");
-    let body = &source[start..];
-    let end = body.find("\n}").expect("the function closes");
     let plane = A2aPlane::EMPTY;
     let mut seen = 0usize;
-    for line in body[..end].lines() {
-        for piece in line.split('"').skip(1).step_by(2) {
-            if piece.contains('/') || piece.chars().next().is_some_and(char::is_uppercase) {
-                assert!(
-                    decode(&plane, &request("1", piece)).is_ok(),
-                    "the codec answers {piece} and this plane does not carry it"
-                );
-                seen += 1;
-            }
-        }
+    for method in busbar_a2a_codec::LOCAL_VERB_METHODS {
+        assert!(
+            decode(&plane, &request("1", method)).is_ok(),
+            "the codec answers {method} and this plane does not carry it"
+        );
+        seen += 1;
     }
     assert!(
         seen >= 11,
@@ -613,4 +607,118 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
         "http",
         None,
     )
+}
+
+// ── THE SURFACES THAT CARRY NO ENVELOPE ────────────────────────────────────────────────────────
+//
+// This plane claims three kinds of surface that are not the document mount: two discovery documents
+// fetched with no body at all, the task collection read through the target rather than a method
+// name, and the callback an agent posts a bare task document back to. Decode used to demand a
+// JSON-RPC envelope of every one of them, so the plane claimed surfaces it then refused everything
+// on — a caller fetching the agent card got a decode refusal from the plane that publishes it.
+
+/// A discovery document is fetched with no body, and it is a whole unit.
+#[test]
+fn a_discovery_document_decodes_with_no_body_at_all() {
+    for target in [
+        "/.well-known/agent-card.json",
+        "/.well-known/oauth-protected-resource/a2a",
+        // A query string is an argument to the fetch, never a different operation.
+        "/.well-known/agent-card.json?v=2",
+    ] {
+        let plane = A2aPlane::EMPTY;
+        let scaffold = Scaffold::new("http").on_path(target);
+        let ctx = scaffold.ctx();
+        let frames = vec![frame(b"")];
+        let mut cursor = FrameCursor::new(&frames);
+        let ingress = plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .unwrap_or_else(|e| panic!("{target} decodes: {e:?}"));
+        let Ingress::OneShot(draft) = ingress else {
+            panic!("{target} is one whole unit, got {ingress:?}");
+        };
+        assert_eq!(draft.op, ops::OP_AGENT_CARD);
+    }
+}
+
+/// A task read through the collection binding names its task in the target.
+#[test]
+fn the_collection_binding_reads_a_task_without_a_method_name() {
+    let plane = A2aPlane::EMPTY;
+
+    let scaffold = Scaffold::new("http").on_path("/a2a/tasks/t-42");
+    let ctx = scaffold.ctx();
+    let frames = vec![frame(b"")];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("a task read decodes")
+    else {
+        panic!("a task read is one whole unit");
+    };
+    assert_eq!(draft.op, ops::OP_TASK_GET);
+    assert_eq!(
+        draft.facts.get(facts::FACT_TASK_ID),
+        Some(busbar_contract::bounded::FactValue::Str("t-42"))
+    );
+
+    let scaffold = Scaffold::new("http").on_path("/a2a/tasks");
+    let ctx = scaffold.ctx();
+    let frames = vec![frame(b"")];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("a task list decodes")
+    else {
+        panic!("a task list is one whole unit");
+    };
+    assert_eq!(draft.op, ops::OP_TASK_LIST);
+}
+
+/// The callback carries a task document, not an envelope around one.
+#[test]
+fn the_callback_surface_decodes_a_bare_task_document() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http").on_path("/a2a/push");
+    let ctx = scaffold.ctx();
+    let body = br#"{"id":"t-7","contextId":"c-1","status":{"state":"completed"}}"#;
+    let frames = vec![frame(body)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("a posted task document decodes")
+    else {
+        panic!("a posted task document is one whole unit");
+    };
+    assert_eq!(draft.op, ops::OP_PUSH_EVENT);
+    assert_eq!(
+        draft.facts.get(facts::FACT_TASK_ID),
+        Some(busbar_contract::bounded::FactValue::Str("t-7"))
+    );
+    assert_eq!(
+        draft.facts.get(facts::FACT_CONTEXT_ID),
+        Some(busbar_contract::bounded::FactValue::Str("c-1"))
+    );
+}
+
+/// The document mount still reads an envelope, and a target that names no open surface reaches it.
+#[test]
+fn the_document_mount_is_unchanged_by_the_open_surfaces() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http").on_path("/a2a");
+    let ctx = scaffold.ctx();
+    let body = br#"{"jsonrpc":"2.0","id":5,"method":"tasks/get","params":{"id":"t1"}}"#;
+    let frames = vec![frame(body)];
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("an envelope on the mount decodes")
+    else {
+        panic!("a non-streaming request is one whole unit");
+    };
+    assert_eq!(draft.op, ops::OP_TASK_GET);
+    assert_eq!(
+        draft.facts.get(facts::FACT_METHOD),
+        Some(busbar_contract::bounded::FactValue::Str("tasks/get"))
+    );
 }

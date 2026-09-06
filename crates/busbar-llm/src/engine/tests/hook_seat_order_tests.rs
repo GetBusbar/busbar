@@ -189,7 +189,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     let key_id = key.id.clone();
     let read: Arc<dyn Fn() -> Ledger + Send + Sync> = Arc::new(move || {
         let u = gov
-            .usage_for(&cost, &key_id, busbar_substrate::store::now())
+            .usage_for(cost.as_ref(), &key_id, busbar_substrate::store::now())
             .expect("usage read")
             .expect("the key exists");
         gov.flush_budgets();

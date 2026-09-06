@@ -6,9 +6,9 @@
 # anything about busbar if we also know two things about how it was made:
 #
 #   harness_rev    which revision of the FILES THAT DECIDE WHAT GETS RECORDED AND HOW IT IS
-#                  COMPARED produced it: cells.json, normalize.py, capture*.py, oracle-config.sh,
-#                  mock-upstream.py, build-request.py, record.sh, apply-mutation.py,
-#                  scripts/*.sh, scripts/*.py, fixtures/*.json.
+#                  COMPARED produced it: cells.json, every *.py beside this file, oracle-config.sh,
+#                  record.sh, everything under scripts/, fixtures/*.json, and the two digest pins
+#                  (golden-digests.tsv, plugin-digests.tsv) — names as well as bytes.
 #                  This is the SAME file list ci.yml hashes for its shadow-oracle cache key —
 #                  computed here, in one place, so record.sh, diff-cells.py and ci.yml can never
 #                  quietly drift onto different definitions of "the harness changed".
@@ -33,16 +33,30 @@ sha256_of() {  # sha256_of <file> -> hex digest
 binary_sha256() { sha256_of "$1"; }  # binary_sha256 <path-to-busbar-binary>
 
 harness_rev() {  # sha256 over the exact file set ci.yml's shadow-oracle cache key hashes
-  local d="$_hr_here"
-  # apply-mutation.py and scripts/*.py were missing from this list. apply-mutation.py is what turns
-  # a boot-mutation fixture into the config an exec cell is recorded against — change it and the
-  # boot.refusal / boot.warning cells are recorded against DIFFERENT configs, with no provenance
-  # saying so; scripts/apply-deferred-decisions.py is driven by the script cells the same way. A
-  # file that can change what a cell records must be in the revision that names how it was recorded,
-  # or a harness change gets attributed to busbar.
-  cat "$d/cells.json" "$d/normalize.py" "$d"/capture*.py "$d/oracle-config.sh" "$d/mock-upstream.py" \
-      "$d/build-request.py" "$d/record.sh" "$d/apply-mutation.py" \
-      "$d"/scripts/*.sh "$d"/scripts/*.py "$d"/fixtures/*.json 2>/dev/null | _hr_sha256_stdin
+  local d="$_hr_here" f
+  # WHOLE DIRECTORIES, NOT A HAND-KEPT LIST OF NAMES. The old globs named `normalize.py`,
+  # `capture*.py`, `build-request.py` and `scripts/*.sh` one by one, so apply-mutation.py (which
+  # rewrites the config a mutation cell is recorded against) and scripts/apply-deferred-decisions.py
+  # (which supplies the decisions a migrated corpus config is validated with) could change without
+  # moving the rev — CI would then restore a golden recorded under different config-shaping code and
+  # diff-cells' skew guard would see nothing to complain about. `*.py` and `scripts/*` close that by
+  # construction: a new helper is covered the day it lands, not the day someone remembers.
+  #
+  # The two digest pins are in the set for the same reason: a re-pinned golden binary or plugin is a
+  # different harness even though no code changed.
+  #
+  # NAMES ARE HASHED ALONGSIDE THE BYTES. Concatenated contents alone cannot see a file being added
+  # or removed (an empty new fixture, a deleted script) — and both change what gets recorded.
+  # LC_ALL=C fixes the glob order, or the same tree hashes differently under a different locale.
+  (
+    LC_ALL=C
+    for f in "$d/cells.json" "$d"/*.py "$d/oracle-config.sh" "$d/record.sh" "$d"/scripts/* \
+             "$d"/fixtures/*.json "$d/golden-digests.tsv" "$d/plugin-digests.tsv"; do
+      [ -f "$f" ] || continue
+      printf '%s\n' "${f#"$d"/}"
+      cat "$f"
+    done
+  ) | _hr_sha256_stdin
 }
 
 host_triple() {  # the running machine's target triple, as busbar release assets name it

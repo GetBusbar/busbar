@@ -2157,6 +2157,36 @@ fn event_free_probe() -> SampleEvent {
     }
 }
 
+/// `validate_plugin` must UNLOAD on a plugin worker, not on the caller's thread.
+///
+/// It `dlopen`s to run the ABI handshake and then has to unmap again. An implicit drop of the
+/// `Library` local does that `dlclose` on the CALLER's thread, which runs the image's `.fini_array`
+/// there; a `.fini_array` that touches a plugin-side `thread_local!` with a destructor arms the
+/// plugin's `pthread_key` on that thread, and when that thread retires (libtest spawns and retires
+/// one per test; Tokio does the same with blocking workers) `__nptl_deallocate_tsd` calls the
+/// destructor inside the image validation just unmapped. That is the exact crash `ffi_thread`
+/// exists to make impossible, and this admin-facing path — `GET /admin/plugins` inventory and the
+/// upload vet — is reached per scrape, not once per boot.
+///
+/// The routed-unload COUNT is the assertion because the return value cannot see any of this: a
+/// caller-thread unload validates just as successfully as a worker unload, right up until a thread
+/// exits.
+#[test]
+fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
+    let Some(path) = store_example_plugin_path() else {
+        eprintln!("skip: busbar_store_example_plugin cdylib not built");
+        return;
+    };
+    let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
+    validate_plugin(&path).expect("the in-tree example store plugin validates");
+    let after = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
+    assert!(
+        after > before,
+        "validate_plugin unloaded the library WITHOUT routing it through dlclose_on_worker, so the \
+         image's .fini_array ran on the caller's thread"
+    );
+}
+
 #[path = "abi2_store_ops_tests.rs"]
 mod abi2_store_ops_tests;
 #[path = "legacy_default_tests.rs"]

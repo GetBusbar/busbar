@@ -92,9 +92,18 @@ impl BreakerPolicy {
     }
 
     /// The ladder in force for one pool, if the configuration declared one.
+    ///
+    /// The default cell's declaration answers for the default cell and nothing else. A NAMED pool
+    /// with no entry is a pool nobody configured — which is the case this whole type is written
+    /// around — so it gets no ladder rather than the one declared for the routes that run without a
+    /// pool at all.
     #[must_use]
     pub fn for_pool(&self, pool: &str) -> Option<&BreakerCfg> {
-        self.per_pool.get(pool).or(self.fallback.as_ref())
+        if pool.is_empty() {
+            self.fallback.as_ref()
+        } else {
+            self.per_pool.get(pool)
+        }
     }
 }
 
@@ -607,6 +616,33 @@ mod tests {
         assert!(!breaker.observe("unknown-pool", dest, Outcome::HardDown, 0, &route_token()));
         assert!(
             breaker.ready("unknown-pool", dest, 0, &route_token()),
+            "nothing was recorded, so nothing tripped"
+        );
+    }
+
+    /// Declaring the default cell's ladder does not quietly enroll every pool nobody configured.
+    /// The empty pool name is the one route that declaration speaks for; a NAMED pool with no entry
+    /// is still a pool nobody configured, and still records nothing.
+    #[test]
+    fn the_default_cells_ladder_does_not_stand_in_for_a_named_pool() {
+        let breaker = BreakerAdapter::with_diagnostics(
+            silent_sink(),
+            BreakerPolicy::new().with_default_cell(a_slow_ladder()),
+        );
+        let dest = DestinationId::new(5);
+
+        assert!(
+            !breaker.observe(
+                "unconfigured-pool",
+                dest,
+                Outcome::HardDown,
+                0,
+                &route_token()
+            ),
+            "a named pool with no entry is unconfigured, whatever the default cell declared"
+        );
+        assert!(
+            breaker.ready("unconfigured-pool", dest, 0, &route_token()),
             "nothing was recorded, so nothing tripped"
         );
     }

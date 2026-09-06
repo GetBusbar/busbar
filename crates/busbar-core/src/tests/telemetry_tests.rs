@@ -521,14 +521,13 @@ fn test_off_metrics_never_materializes_the_histogram_chunk() {
         ],
     );
     assert!(slot.is_valid(), "slot table must not be full in tests");
-    let idx = slot.0 as usize;
 
-    // A brand-new thread, so its `BANK` (and every chunk in it) starts fully unmaterialized.
+    // A brand-new thread, so its bank (and every chunk in it) starts fully unmaterialized.
     let chunk_exists = std::thread::spawn(move || {
         for _ in 0..100_000 {
             slot.record_inner(0.001, false);
         }
-        BANK.with(|bank| bank.hists[idx / HIST_CHUNK].get().is_some())
+        hist_chunk_materialized(slot)
     })
     .join()
     .unwrap();

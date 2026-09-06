@@ -20,6 +20,13 @@ repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 PLUGIN="${1:?plugin name}"; SETTINGS="${2:-}"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+# ONE KNOB, shared with record.sh's own boot_busbar: this cell does a REAL double boot of a
+# published plugin, and a bound sized for an idle laptop reads a saturated host's boot latency as
+# "never came up" -- a harness timing limit recorded as a product divergence. record.sh already
+# uses 60s for a hooks-variant boot (loading published plugins beside a build eating the CPU); this
+# cell loads a published store plugin the same way, so it gets the same bound from the same env var
+# instead of a second, independently-drifting hard-code.
+BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 LP="${STORE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48831}}" AP="${STORE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48832}}" MP="${STORE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48791}}"
 W="$RAW/store-work"; mkdir -p "$W/plugins"
 tarball="$(bash "${here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
@@ -75,41 +82,82 @@ env_() { BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORA
 spawn_() { local log="$1"; shift; ( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$@" ) >>"$log" 2>&1 & echo $!; }
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
 
 env_ "$BIN" --validate >"$W/validate.log" 2>&1; step validate_exit "$?"
-step validate_tail "$(tail -c 300 "$W/validate.log" | tr '\n' ' ')"
+# STRIP THIS RUN'S DIRS BEFORE TRUNCATING, not after. The window is a fixed number of BYTES, so
+# cutting first leaves whatever fragment of an absolute path happens to fall inside it — and a
+# fragment is no longer a path record.sh's own scrub can recognise. Two --out dirs whose names differ
+# in length then yield two different 300-byte windows of the same log, which is a byte diff on this
+# cell about where the recording was written.
+step validate_tail "$(sed -e "s|${RAW}|<WORK>|g" -e "s|${BIN}|<WORK>|g" -e "s|${repo}|<WORK>|g" "$W/validate.log" | tr '\n' ' ' | tail -c 300)"
 [ "$(jq -r .validate_exit <<<"$eff")" = 0 ] || fail 1 "$(cat "$W/validate.log")"
 env_ "$BIN" --list-plugins >"$W/plugins.log" 2>&1; step list_plugins "$(grep -w "$alias_" "$W/plugins.log" | head -1 | tr '\n' ' ')"
 
 pid="$(spawn_ "$W/busbar1.log" "$BIN")"; track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 2 "$(tail -c 500 "$W/busbar1.log")"
-mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"store-oracle","group":"oracle"}')"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" \
+  || fail 2 "boot 1 (first, fresh) did not come up within ${BOOT_BOUND}s: $(tail -c 500 "$W/busbar1.log")"
+# THE CODE IS READ, NOT ASSERTED. `-w` appends the real status as a last line, so
+# `mint_status` below is what this binary answered rather than what the harness
+# assumed; a mint that stopped being a 201 is then a diff on this cell.
+mint_raw="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"store-oracle","group":"oracle"}')"
+mint_code="$(printf '%s' "$mint_raw" | tail -1)"
+mint="$(printf '%s' "$mint_raw" | sed '$d')"
 kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mint")"
 [ -n "$kid" ] && [ -n "$tok" ] || fail 3 "$mint"
-step mint_status "201"
+step mint_status "$mint_code"
 st="$(curl -sS -m 20 -o "$W/chat.body" -w '%{http_code}' -X POST "http://127.0.0.1:${LP}/v1/chat/completions" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"ping"}]}')"
 step chat_status "$st"
 sleep 0.5
 u1="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"
 step usage_before_restart "$u1"
 kill $pid; wait $pid 2>/dev/null
-i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
+# THE OLD PROCESS MUST BE PROVEN GONE ON BOTH PORTS before the restart binds them, or the second
+# boot's /healthz poll can be answered by the FIRST busbar still draining its listeners -- read as
+# "persistence survived" for a process that never restarted. `kill`+`wait` only proves the pid was
+# reaped, not that the sockets are free (same shape as probe-store.sh's post-400893bd restart spin
+# and record.sh's own stop_busbar). Spin on BOTH ports, not just the data port.
+i=0
+while [ $i -lt 100 ] && { ! assert_port_free "$LP" || ! assert_port_free "$AP"; }; do sleep 0.1; i=$((i+1)); done
+if ! assert_port_free "$LP" || ! assert_port_free "$AP"; then
+  kill -9 "$pid" 2>/dev/null || true
+  fail 4 "port ${LP}/${AP} still answers after boot 1 was killed (waited 10s): the second boot would bind a port the first process still holds, so the persistence verdict would come from the instance that never restarted: $(tail -c 500 "$W/busbar1.log")"
+fi
 
 pid="$(spawn_ "$W/busbar2.log" "$BIN")"; track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 4 "$(tail -c 500 "$W/busbar2.log")"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" \
+  || fail 4 "boot 2 (restart against the same store) did not come up within ${BOOT_BOUND}s: $(tail -c 500 "$W/busbar2.log")"
 k2="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}")"
 step key_after_restart "$k2"
 u2="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"
 step usage_after_restart "$u2"
 st2="$(curl -sS -m 20 -o /dev/null -w '%{http_code}' -X POST "http://127.0.0.1:${LP}/v1/chat/completions" -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' -d '{"model":"m-openai-chat","messages":[{"role":"user","content":"ping"}]}')"
 step chat_after_restart "$st2"
-step survived "$([ "$k2" = 200 ] && [ "$(jq -r .requests <<<"$u2")" = "$(jq -r .requests <<<"$u1")" ] && echo yes || echo no)"
+# `survived` COMPARES TWO READS, SO IT MUST FIRST PROVE THERE WERE TWO READS. `"" = ""` is true in
+# `[`, so a /usage call that came back empty on BOTH sides of the restart — an admin API that
+# answered 500, a body jq could not parse, a curl that timed out twice — read as "the usage the
+# store was supposed to keep is exactly what it was", i.e. the money class this cell exists for said
+# `yes` on the strength of having measured nothing. Both reads must be real: a 200 whose body
+# actually carries a `requests` number.
+u1_req="$(jq -r '.requests // empty' <<<"$u1" 2>/dev/null)"
+u2_req="$(jq -r '.requests // empty' <<<"$u2" 2>/dev/null)"
+[ -n "$u1_req" ] && [ -n "$u2_req" ] \
+  || fail 5 "the /usage read before ($u1) or after ($u2) the restart carried no requests count, so 'survived' would compare two absences and call them equal"
+step survived "$([ "$k2" = 200 ] && [ "$u2_req" = "$u1_req" ] && echo yes || echo no)"
 kill $pid; wait $pid 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
 # Every `store error` line across BOTH boots. A store the binary cannot actually write to still
 # serves 200s and still answers /usage from whatever it holds in memory, so the request statuses
 # alone can look healthy while nothing is being persisted — this is the count that says so. It is a
 # COUNT, not the text: the message wording is the plugin's, but "more than zero" is the finding.
-step store_errors "$(( $(grep -c 'store error' "$W/busbar1.log") + $(grep -c 'store error' "$W/busbar2.log") ))"
-jq -n --argjson eff "$eff" --arg body "$u2" '{status:0, headers:{}, body:$body, effects:($eff | . + {warnings_boot1: $w1})}' --arg w1 "$(grep -ci 'warn' "$W/busbar1.log")" >"$RAW/captured.json"
+# awk, not `grep -c`: on a log with no match grep prints 0 and EXITS 1, so any `|| echo 0` guard
+# doubles the value and a missing log leaves the arithmetic below with nothing at all. awk always
+# prints exactly one number, including for a file that does not exist.
+count_matching() { awk -v re="$1" '$0 ~ re {n++} END{print n+0}' "$2" 2>/dev/null || echo 0; }
+step store_errors "$(( $(count_matching 'store error' "$W/busbar1.log") + $(count_matching 'store error' "$W/busbar2.log") ))"
+jq -n --argjson eff "$eff" --arg body "$u2" '{status:0, headers:{}, body:$body, effects:($eff | . + {warnings_boot1: $w1})}' --arg w1 "$(count_matching '[Ww][Aa][Rr][Nn]' "$W/busbar1.log")" >"$RAW/captured.json"

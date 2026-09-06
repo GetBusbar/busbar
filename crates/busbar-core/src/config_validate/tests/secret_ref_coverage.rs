@@ -103,18 +103,18 @@ fn exclusion_rule_matches_known_directories() {
     }
 }
 
-/// The exclusion rule is narrow: it must not swallow an ordinary source directory (a plane module, a
-/// crate's `src` root, or a directory that merely CONTAINS "test"/"bin" as a substring rather than
-/// matching the whole component name) — a wide match here would hide a real declaration from the
-/// scan, which is the exact silent-hole failure mode this guard exists to close.
+/// The exclusion rule is narrow: it must not swallow an ordinary source directory (a plugin-owned
+/// module, a crate's `src` root, or a directory that merely CONTAINS "test"/"bin" as a substring
+/// rather than matching the whole component name) — a wide match here would hide a real declaration
+/// from the scan, which is the exact silent-hole failure mode this guard exists to close.
 #[test]
 fn exclusion_rule_does_not_hide_ordinary_source_dirs() {
     for kept in [
         "src",
         "config_validate",
         "oauth_as",
-        "mcp",
-        "a2a",
+        "plane_host",
+        "egress_auth",
         "binary",
         "testing",
         "contest",

@@ -274,7 +274,7 @@ fn parse_frames(body: &str) -> Vec<(String, String)> {
 /// with `shape`; assert the SSE contract and the metering.
 async fn run_case(egress: &str, shape: Upstream) {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let label = format!(
         "responses ingress -> {egress} egress ({})",
         match shape {

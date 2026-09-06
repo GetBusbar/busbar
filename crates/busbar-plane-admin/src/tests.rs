@@ -375,6 +375,48 @@ fn encode_refusal_renders_the_1_5_5_error_envelope_for_common_codes() {
 
 // ── requirement 3: purity / determinism ─────────────────────────────────────────────────────────
 
+/// A request still arriving asks for the next frame; it is not ended as a caller's mistake.
+///
+/// Two shapes reach this: a cursor with nothing left in it (every byte that has arrived is already
+/// handed over) and a frame whose envelope object has not closed. Both used to end the unit — the
+/// first as `Malformed`, the second as `UnsupportedOperation` — so a caller whose body was merely
+/// still on the wire was answered as though they had sent a bad one.
+#[test]
+fn a_request_still_arriving_asks_for_the_next_frame() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let empty: Vec<Frame> = Vec::new();
+    let mut cursor = FrameCursor::new(&empty);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor, None, &ctx),
+        Ok(Ingress::NeedMore),
+        "a cursor with no frame left has nothing yet to decode"
+    );
+
+    let whole = envelope("POST", "/api/v1/admin/keys", r#"{"name":"k1"}"#);
+    let half = &whole[..whole.len() - 4];
+    let (frames, ()) = frame_cursor_for(half);
+    let mut cursor = FrameCursor::new(&frames);
+    assert_eq!(
+        plane.decode_ingress(&mut cursor, None, &ctx),
+        Ok(Ingress::NeedMore),
+        "an envelope that has not closed is not yet an envelope"
+    );
+
+    // and the whole thing still decodes, so the check above is a filter and not a wall
+    let (frames, ()) = frame_cursor_for(&whole);
+    let mut cursor = FrameCursor::new(&frames);
+    assert!(matches!(
+        plane.decode_ingress(&mut cursor, None, &ctx),
+        Ok(Ingress::OneShot(_))
+    ));
+}
+
 /// Calling `decode_ingress` twice on the same bytes yields the same verb, the same op class and the
 /// same path-parameter facts: the plane keeps no interior state that could make the second call
 /// disagree with the first.
@@ -442,21 +484,136 @@ fn source_cites_the_design_in_words_not_in_symbols() {
             if line.contains('\u{00a7}') {
                 offenders.push(format!("{}:{}: section sign", path.display(), n + 1));
             }
-            let bytes = line.as_bytes();
-            for i in 0..bytes.len().saturating_sub(4) {
-                if bytes[i] == b'P'
-                    && bytes[i + 1] == b'B'
-                    && bytes[i + 2] == b'-'
-                    && bytes[i + 3].is_ascii_digit()
-                {
-                    offenders.push(format!("{}:{}: binding identifier", path.display(), n + 1));
-                }
+            if cites_a_binding(line) {
+                offenders.push(format!("{}:{}: binding identifier", path.display(), n + 1));
             }
         }
     });
     assert!(
         offenders.is_empty(),
         "section-sign or parity-binding literal found: {offenders:?}"
+    );
+}
+
+/// Whether a line cites a parity binding by its identifier rather than in words.
+///
+/// The window is four bytes wide, so the last position it can start at is four from the end. An
+/// exclusive bound of `len - 4` stops one position short of that, which makes the gate blind to a
+/// citation that ENDS a line — the one place a comment naturally puts one.
+fn cites_a_binding(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    (0..bytes.len().saturating_sub(3)).any(|i| {
+        bytes[i] == b'P'
+            && bytes[i + 1] == b'B'
+            && bytes[i + 2] == b'-'
+            && bytes[i + 3].is_ascii_digit()
+    })
+}
+
+/// The citations here are spelled in two pieces on purpose: a whole one would be the very literal
+/// the gate above forbids, and this file is inside the tree it walks.
+#[test]
+fn the_binding_scan_sees_a_citation_that_ends_a_line() {
+    assert!(
+        cites_a_binding(concat!("// the admin-listener exemption, P", "B-7")),
+        "a citation four bytes from the end is the shape a comment ends on"
+    );
+    assert!(cites_a_binding(concat!(
+        "P",
+        "B-60 is checked after Authenticate"
+    )));
+    assert!(!cites_a_binding("nothing here cites anything"));
+    assert!(!cites_a_binding(concat!("P", "B- with no number")));
+}
+
+// ── the response pass-through does not go through the arena ────────────────────────────────────
+
+/// An arena the size the design pins production's at, and a bump cursor that refuses past it.
+/// `TestArena` above leaks and so has room for anything, which is what a test that needs a span
+/// table wants and exactly what a test about the arena's BUDGET must not have.
+struct TinyArena {
+    used: std::sync::atomic::AtomicUsize,
+}
+
+impl TinyArena {
+    fn used(&self) -> usize {
+        self.used.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Arena for TinyArena {
+    fn alloc_bytes<'a>(&'a self, src: &[u8]) -> Result<ArenaBytes<'a>, ArenaBudget> {
+        let used = self.used() + src.len();
+        if used > busbar_contract::ARENA_BYTES {
+            return Err(ArenaBudget {
+                wanted: src.len(),
+                remaining: self.remaining(),
+            });
+        }
+        self.used.store(used, std::sync::atomic::Ordering::Relaxed);
+        Ok(ArenaBytes::new(Box::leak(src.to_vec().into_boxed_slice())))
+    }
+
+    fn alloc_str<'a>(&'a self, src: &str) -> Result<&'a str, ArenaBudget> {
+        let used = self.used() + src.len();
+        if used > busbar_contract::ARENA_BYTES {
+            return Err(ArenaBudget {
+                wanted: src.len(),
+                remaining: self.remaining(),
+            });
+        }
+        self.used.store(used, std::sync::atomic::Ordering::Relaxed);
+        Ok(Box::leak(src.to_string().into_boxed_str()))
+    }
+
+    fn alloc_spans<'a>(
+        &'a self,
+        src: &[(&'a str, Span)],
+    ) -> Result<&'a [(&'a str, Span)], ArenaBudget> {
+        Ok(Box::leak(src.to_vec().into_boxed_slice()))
+    }
+
+    fn remaining(&self) -> usize {
+        busbar_contract::ARENA_BYTES - self.used()
+    }
+}
+
+/// A response bigger than the whole arena still encodes, byte for byte.
+///
+/// The admin surface's own `openapi.json` is over 350 KB and the arena is 4 KiB, so a codec that
+/// COPIED the response into the arena refused the single largest document the surface serves — and
+/// every other answer over 4 KiB with it (a key listing, a config dump, an audit page). The body
+/// already lives for the unit, so the encode borrows it and there is no budget left to exhaust.
+#[test]
+fn a_response_larger_than_the_arena_encodes_verbatim() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TinyArena {
+        used: std::sync::atomic::AtomicUsize::new(0),
+    };
+    let clock = Clock {
+        unix_secs: 0,
+        monotonic_nanos: 0,
+    };
+    let session: Option<&dyn SessionView> = None;
+    let ctx = Ctx::new(clock, &config, session, &transport, &labels, &arena);
+
+    let big = vec![b'x'; busbar_contract::ARENA_BYTES * 4];
+    let response = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::new(&big, &[]),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: busbar_contract::bounded::Facts::new(),
+    };
+    let encoded = plane
+        .encode_response(&response, None, &ctx)
+        .expect("a body the unit already owns needs no room in the arena");
+    assert_eq!(encoded.as_slice(), big.as_slice());
+    assert_eq!(
+        arena.remaining(),
+        busbar_contract::ARENA_BYTES,
+        "the pass-through must not spend a byte of the arena"
     );
 }
 

@@ -338,7 +338,8 @@ async fn every_transport_error_is_mapped() {
 
 /// One synthetic `io::Error` per `map_io_err` arm, so swapping two arms is caught here rather than
 /// only by whichever live-dial cell happens to provoke that kind. Ported from `busbar-transport-
-/// http`'s identical table cell, minus the arm `http` alone carries.
+/// http`'s table cell, which this transport's mapping matches arm for arm; the `tls` sibling's cell
+/// carries one arm more, for the handshake this transport does not have.
 #[test]
 fn every_io_error_kind_maps_through_the_table() {
     for (kind, expected) in [
@@ -403,52 +404,90 @@ async fn backpressure_bounds_the_per_unit_frame_buffer() {
     writer.await.unwrap();
 }
 
-/// Frame-meta honesty: byte counts a transport reports must equal what actually moved. This test
-/// builds two adversarial fixtures — one that inflates its reported count, one that deflates it —
-/// and shows the honesty check the design requires ("an inflating and a deflating fixture are
-/// red") catches both, while the real `tcp` transport's frames pass it.
-fn frame_is_honest(frame: &Frame) -> bool {
-    frame.meta.bytes == frame.bytes.len() as u64
-}
+/// Frame meta is honest on frames a REAL `TcpTransport` emitted, and the check that says so is one
+/// an inflating or a deflating fixture turns red.
+///
+/// The old cell built `Frame` literals in the test body, set `meta.bytes` from the same slice it
+/// then compared against, and never constructed a transport at all: a tautology that would have
+/// shipped green over any count this transport actually reported. The metering path reads
+/// `FrameMeta.bytes` as the bytes meter class, so a dishonest one is a billing figure, not a
+/// cosmetic slip. This asserts against frames off the wire and proves the predicate discriminates
+/// by perturbing them one byte each way.
+///
+/// `meta.bytes == bytes.len()` is only ever the meter's INTERNAL consistency, though — both come
+/// off the same read. The figure the meter owes is the bytes that crossed the wire, so the total is
+/// checked against the payloads the fixture wrote, counted here rather than read back off the
+/// frames under test.
+#[tokio::test]
+async fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
+    fn honest(frame: &Frame) -> bool {
+        frame.meta.bytes == frame.bytes.len() as u64
+    }
+    fn perturbed(frame: &Frame, by: i64) -> Frame {
+        Frame {
+            meta: FrameMeta {
+                bytes: (frame.meta.bytes as i64 + by) as u64,
+                ..frame.meta
+            },
+            ..frame.clone()
+        }
+    }
 
-#[test]
-fn inflating_and_deflating_fixtures_are_red() {
-    let honest_bytes: StdArc<[u8]> = StdArc::from(&b"abcd"[..]);
-    let honest = Frame {
-        direction: Direction::Inbound,
-        stream: StreamId(0),
-        bytes: SlabBytes::new(honest_bytes.clone()),
-        meta: FrameMeta {
-            bytes: 4,
-            transport_units: None,
-            status: None,
-        },
-    };
-    assert!(frame_is_honest(&honest));
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
 
-    let inflated = Frame {
-        meta: FrameMeta {
-            bytes: 40,
-            ..honest.meta
-        },
-        ..honest.clone()
-    };
-    assert!(
-        !frame_is_honest(&inflated),
-        "an inflating fixture must fail the honesty check"
+    // Two payloads, one of them longer than a single read chunk, so the frames under test include
+    // ones the transport carved out of a partly filled buffer rather than one write's worth each.
+    let payloads: [Vec<u8>; 2] = [
+        vec![b'L'; READ_CHUNK_BYTES + 1024],
+        b"and a short one".to_vec(),
+    ];
+    let on_the_wire: u64 = payloads.iter().map(|p| p.len() as u64).sum();
+    for payload in &payloads {
+        client
+            .write(&client_conn, StreamId(0), ArenaBytes::new(payload))
+            .await
+            .unwrap();
+    }
+
+    let mut frames = server.frames(server_conn);
+    let mut metered = 0_u64;
+    let mut carried = 0_u64;
+    while metered < on_the_wire {
+        let (_s, frame) = frames.next().await.unwrap().unwrap();
+        metered += frame.meta.bytes;
+        carried += frame.bytes.len() as u64;
+        assert!(
+            honest(&frame),
+            "the transport's own frame reports the bytes it actually carries"
+        );
+        assert!(
+            !honest(&perturbed(&frame, 1)),
+            "an inflating fixture is red"
+        );
+        assert!(
+            !honest(&perturbed(&frame, -1)),
+            "a deflating fixture is red"
+        );
+    }
+
+    // Counted from the fixture, not from the frames: every byte the peer wrote is metered exactly
+    // once, so a transport that double-counted a reused buffer's tail is caught here even though
+    // each frame on its own stayed internally consistent.
+    assert_eq!(
+        metered, on_the_wire,
+        "the meter totals the bytes the peer actually wrote"
     );
-
-    let deflated = Frame {
-        meta: FrameMeta {
-            bytes: 0,
-            ..honest.meta
-        },
-        ..honest
-    };
-    assert!(
-        !frame_is_honest(&deflated),
-        "a deflating fixture must fail the honesty check"
-    );
+    assert_eq!(carried, on_the_wire, "and carries exactly those bytes");
 }
 
 /// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
@@ -493,6 +532,82 @@ async fn an_undelivered_unit0_refusal_is_an_error() {
         .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
     assert_eq!(err, TransportError::Reset);
     assert_eq!(w.written.as_slice(), b"refused");
+}
+
+/// A refusal that never reached the wire still finalises the connection.
+///
+/// The error is the caller's to see, but it is not a reason to leave the connection registered: the
+/// bytes are gone either way, and a refusal that returned early would leave the entry behind with a
+/// pump parked on the socket — the leak the delivered-refusal cell above rules out, reappearing on
+/// exactly the path where the peer is already gone. Closing runs on every path out, and the delivery
+/// result is reported after it.
+#[tokio::test]
+async fn a_refusal_that_never_reached_the_wire_still_finalises_the_connection() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key())
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+    let id = server_conn.id();
+
+    // A pump that is live before the refusal, holding its own clone of the state.
+    let mut frames = server.frames(server_conn.clone());
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"first"))
+        .await
+        .unwrap();
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"first");
+
+    // Make the write leg fail for certain: with this side's write half already shut down, the
+    // kernel refuses the refusal's bytes locally rather than putting them on the wire. This is the
+    // "the peer never sees it" case without a timing race.
+    let captured = server.inner(id).expect("the connection is registered");
+    {
+        let mut guard = captured.write.lock().await;
+        tokio::io::AsyncWriteExt::shutdown(&mut *guard).await.ok();
+    }
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let err = server
+        .unit0_refusal(server_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .expect_err("a refusal that never left this host is not a delivered refusal");
+    assert!(
+        matches!(err, TransportError::Closed | TransportError::Reset),
+        "the write failure is reported through the same table every other I/O path uses: {err:?}"
+    );
+
+    assert!(
+        server.inner(id).is_none(),
+        "an undelivered refusal still ends the connection: the registry entry must be gone"
+    );
+    assert!(
+        captured.closed.load(Ordering::Acquire),
+        "an undelivered refusal still sets the flag a live pump reads, or the pump keeps the socket"
+    );
+
+    // The pump ends, which is what the flag exists for.
+    client
+        .write(&client_conn, StreamId(0), ArenaBytes::new(b"after refusal"))
+        .await
+        .unwrap();
+    let next = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("a refused connection's frame stream must end rather than park on the socket");
+    assert!(next.is_none(), "the pump ends on a failed refusal too");
 }
 
 /// The read buffer is per-connection and reused across polls, so the byte-exactness cell has a new

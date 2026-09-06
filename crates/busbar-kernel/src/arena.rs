@@ -265,9 +265,19 @@ impl CredentialSlab {
             }),
             MaskKind::SameLengthFill | MaskKind::SignatureSpan => self.mask(cursor, span),
             MaskKind::BoundedPrefix => {
+                // Exhaustive over the location forms, with no catch-all: the bound is declared on
+                // the location, only the handshake form declares one, and a form that masks by
+                // bounded prefix without naming its bound would be masking NOTHING — the
+                // credential left in the cursor, with nothing failing to say so. Named in full,
+                // such a form stops compiling here instead.
                 let max_bytes = match location {
                     ArrivalLocation::HandshakeFrames { max_bytes, .. } => *max_bytes as usize,
-                    _ => 0,
+                    ArrivalLocation::Header(_)
+                    | ArrivalLocation::Query(_)
+                    | ArrivalLocation::PathSegment(_)
+                    | ArrivalLocation::FirstFrameJsonPointer(_)
+                    | ArrivalLocation::ClientCert
+                    | ArrivalLocation::Signed { .. } => 0,
                 };
                 let bounded = Span::new(span.start, span.end.min(span.start + max_bytes));
                 self.mask(cursor, bounded)

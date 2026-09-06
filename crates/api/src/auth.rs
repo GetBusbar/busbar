@@ -58,6 +58,33 @@ impl AuthPrincipal {
     }
 }
 
+/// The caller's bearer token, threaded into request extensions by the auth middleware so handlers
+/// can forward it upstream in passthrough mode. `None` when no usable bearer token was presented.
+///
+/// Beside [`AuthPrincipal`] because it is the same KIND of thing — a request-extension carrier the
+/// auth middleware inserts — and because it carries nothing of the engine: one `Option<String>` and
+/// a redacting `Debug`. It lives here so a plane naming it (a test assembling the extension map an
+/// ingress handler extracts from) names the neutral ABI rather than reaching into the engine.
+#[derive(Clone, Default)]
+pub struct CallerToken(pub Option<String>);
+
+// MANUAL Debug that NEVER prints the token contents. `CallerToken` wraps a caller credential and is
+// threaded into request extensions, so it can be reached by any future code that debug-formats the
+// extension map (or a struct that holds it). A derived `Debug` would print the plaintext token — a
+// latent credential leak the moment anything debug-logs it. Redact to presence only ("present" /
+// "absent"); never the length and never the value, since even the length is a (small) oracle.
+impl std::fmt::Debug for CallerToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CallerToken")
+            .field(&if self.0.is_some() {
+                "<present>"
+            } else {
+                "<absent>"
+            })
+            .finish()
+    }
+}
+
 /// The verdict of one auth module. The PAM-style trichotomy the 1.3 auth-plugin layer is built on:
 /// `Identify` = this module authenticated the caller and this is WHO —
 /// carries the [`Principal`]; `Reject` = a credential was presented but is invalid (fail-closed,

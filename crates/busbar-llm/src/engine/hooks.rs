@@ -422,11 +422,12 @@ pub(crate) async fn apply_global_rewrites(
                 return Err((status, message));
             }
             busbar_api::TransformOutcome::Abstain => {}
-            // The hook could not answer. Distinct from an abstain, and LOGGED as such — a rewrite
-            // gate that is down now leaves an operator-visible signal instead of looking exactly
-            // like a compressor with nothing to change. Resolving the hook's `on_error` chain here
-            // needs the terminal, which the rewrite chain's `(timeout, policy)` tuple does not
-            // carry; until it does, the body proceeds unmodified as it always has.
+            // The hook could not answer. Reaching this arm IS the PROCEED disposition: a failed
+            // call to a hook the operator declared load-bearing (`on_error: reject`) was turned
+            // into a `Reject` by the resolver's decorator and returned above, before any firing
+            // site saw it. What is left here is the hook whose disposition says to carry on —
+            // logged, so a rewrite gate that is down leaves an operator-visible signal instead of
+            // looking exactly like a compressor with nothing to change.
             busbar_api::TransformOutcome::Failed { message } => {
                 tracing::warn!(
                     hook = hook.name(),
@@ -449,7 +450,10 @@ pub(crate) fn unreadable_body_message() -> &'static str {
 /// Map a hook-chosen reject status to the closest dialect error KIND, so an SDK caller catches the
 /// right typed exception: a hook 429 must surface as a rate-limit error, not a permission error.
 /// Statuses without a natural kind (400, 422, 451, ...) read as invalid-request; 403 (the reject
-/// default) stays a permission error.
+/// default) stays a permission error. 503 is the ONE non-4xx status this map sees: a hook's own
+/// reject reply is clamped to 400..=499 at the wire seam, so 503 arrives only from the `on_error:
+/// reject` disposition of a FAILED call — a transient condition, which must read as retryable
+/// (the same kind the read-only seat renders for the same condition), never as a client error.
 pub(crate) fn reject_kind_for_status(status: u16) -> &'static str {
     match status {
         401 => KIND_AUTHENTICATION,
@@ -457,6 +461,7 @@ pub(crate) fn reject_kind_for_status(status: u16) -> &'static str {
         404 => KIND_NOT_FOUND,
         408 => KIND_TIMEOUT,
         429 => KIND_RATE_LIMIT,
+        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS => KIND_OVERLOADED,
         _ => KIND_INVALID_REQUEST,
     }
 }
@@ -980,19 +985,27 @@ pub(crate) fn map_decision(
 /// Coerce an `on_error` fallback into a `PolicyOutcome` when the policy errored / timed out:
 /// `weighted` ⇒ SWRR, `first` ⇒ the config member order (a deterministic degraded pick), `reject`
 /// ⇒ a 503. `first` advertises the policy name so the degraded pick is still observable.
+///
+/// The REFUSE/PROCEED half of this decision is not made here: it is asked of
+/// `busbar_substrate::hooks::failed_call_refuses`, the one rule the read-write (transform) seat's
+/// decorator also asks. Only the shape of "proceed" is seat-specific — this seat has a candidate
+/// set to fall back over, the rewrite seat has a body to leave alone.
 pub(crate) fn coerce_on_error(
     on_error: &busbar_substrate::config::PolicyOnError,
     candidates: &[busbar_api::Candidate<'_>],
     policy_name: &'static str,
 ) -> PolicyOutcome {
     use busbar_substrate::config::PolicyOnError;
+    if busbar_substrate::hooks::failed_call_refuses(on_error) {
+        return PolicyOutcome::Reject;
+    }
     match on_error {
-        PolicyOnError::Weighted => PolicyOutcome::Weighted,
-        PolicyOnError::Reject => PolicyOutcome::Reject,
         PolicyOnError::First => PolicyOutcome::Order {
             order: candidates.iter().map(|c| c.idx).collect(),
             name: policy_name,
         },
+        // `Weighted` — and `Reject`, which `failed_call_refuses` already took above.
+        PolicyOnError::Weighted | PolicyOnError::Reject => PolicyOutcome::Weighted,
     }
 }
 

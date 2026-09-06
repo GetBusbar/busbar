@@ -37,6 +37,23 @@
 //! A provider tool call takes no slot at all — it runs under the small fixed one-shot concurrency,
 //! so a burst of them cannot starve the conversation.
 //!
+//! **A tool call waits, and the wait has a table.** A provider-pushed tool call's leg is a client
+//! await-reply: the unit is not finished when the call is delivered, it is finished when the answer
+//! carrying that call's identifier comes back. Two of them open at once is the ordinary shape of a
+//! turn that asks for two tools, so which answer finishes which unit is a decision, and
+//! [`OpenToolCalls`] is where it is made. Three moments, and each of them is a real call site:
+//!
+//! - **Planned.** The wait is entered at [`Units::verify`], because that is the frame that plans the
+//!   leg and the last frame in which the identifier the plane's draft minted is readable at all.
+//! - **Answered.** A client's reply names the call it answers — the voice plane decodes it as a
+//!   frame of that call rather than of the turn it rode in on — and the pump hands the correlation
+//!   to [`OpenToolCalls::replied`], which either names the unit it wakes or refuses. There is no
+//!   third answer: a reply matched against "the only call open" is one collision away from paying a
+//!   call's hold out against another call's answer.
+//! - **Unanswered.** [`OpenToolCalls::expired`] is the node tick's sweep. It leaves an ending behind,
+//!   the unit's own [`Units::route`] reads it, and the call ends under the deadline its leg declared
+//!   rather than settling as though the answer had arrived.
+//!
 //! **The metering lease is the hold.** A live session cannot be metered after the fact: audio
 //! already streamed cannot be refunded, so a budget that is only checked afterwards is not a budget.
 //! The primitive that can enforce one is reserve-then-settle, and in this architecture that
@@ -61,10 +78,10 @@
 //! | arrival | *none* — the kernel's gate | the connection's own arrival record |
 //! | decode | the voice plane | the shape the pump already read off the frame |
 //! | authenticate | `busbar-unit-auth` | the claim's declared alternatives, the plane's narrowing, whether the credential rides the session |
-//! | verify | `busbar-unit-trust` | the plane's proposed destinations, the pool view, and the network guard over the dial target |
+//! | verify | `busbar-unit-trust` | the plane's proposed destinations, the pool view, the network guard over the dial target, and a tool call's reply leg entered as a wait |
 //! | approve | `busbar-unit-scope` | the policy view, where silence is a refusal |
 //! | admit | `busbar-unit-admission`, priced by `busbar-unit-cost` | the estimate, the bucket chain, the pinned arrival epoch |
-//! | route | the provider dial, over `busbar-unit-egress` | the dial target and the guard posture |
+//! | route | the provider dial, over `busbar-unit-egress` | the dial target and the guard posture, and what became of a tool call's wait |
 //! | meter | `busbar-unit-usage` | the turn's reported classes and the configured policy |
 //! | audit | `busbar-unit-audit` | the operation class and the finish class |
 //! | exit | `busbar-unit-ledger` under `busbar-unit-wal` | nothing: the loop settles |
@@ -100,18 +117,23 @@
 //! as often as it appears in the kernel: never. What arrives is a shape and a set of facts, and the
 //! plane is what turned bytes into either.
 
+use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 
 use busbar_caps::{
     Admission, Admit, AdmitToken, Approve, Arrival, ArrivalRecord, Audit, AuditFacts, Authenticate,
     Decision, Decode, Encode, Meter, MeterClassId, OpClassId, Outcome, PrincipalId, QuantitySource,
-    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitToken, Usage, UsageLine,
-    UsageToken, VerifiedDestination, Verify,
+    ReasonCode, Refusal, Route, RoutePlan, ScopeFacts, TrustToken, UnitKey, UnitToken, Usage,
+    UsageLine, UsageToken, VerifiedDestination, Verify,
 };
-use busbar_contract::ids::LaneId;
+use busbar_contract::dest::ClientMode;
+use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
 use busbar_contract::ClaimKey;
+use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
+use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
+use busbar_kernel::Millis;
 use busbar_plane_voice::claims::Dialect;
 use busbar_plane_voice::{meta, Upstream, VoicePlane};
 use busbar_unit_admission::{Admission as _, Door, Estimate, InMemoryCells, Pricer};
@@ -268,6 +290,17 @@ pub trait ProviderDial: Send + Sync {
 /// root's interest in it is one bit wide: whether the session is still pumping. What a frame *is* is
 /// the plane's answer and what happens to the unit table because of it is the kernel pump's; this
 /// seam is only how the root asks the I/O half to keep the two connected.
+///
+/// It is also what drives [`OpenToolCalls`]: a frame that carries a tool reply is handed to
+/// [`OpenToolCalls::replied`], and the tick that runs beside the pump is what calls
+/// [`OpenToolCalls::expired`]. Neither is a method here, because neither is a question about the
+/// pump — they are the node's own table, and a seam that owned them would be the I/O half deciding
+/// which unit an answer belongs to.
+///
+/// What the pump reaches them through is [`NodeCalls`], the one port whose direction is inverted:
+/// `busbar_voice::runtime::GovernedCalls` is declared over there and implemented here, the way that
+/// crate's tool executor already is. Two facts cross it — a reply arrived, sweep the deadlines — and
+/// the runtime learns nothing else about a call.
 pub trait SessionPump: Send + Sync {
     /// Whether the pump is running for this session.
     fn is_pumping(&self, session: u64) -> bool;
@@ -385,6 +418,267 @@ impl std::fmt::Debug for VoiceIo {
 }
 
 // ---------------------------------------------------------------------------------------------
+// The tool calls a session has open
+// ---------------------------------------------------------------------------------------------
+
+/// The leg a provider-pushed tool call plans: deliver it to the client, and wait for the answer.
+///
+/// The key and the deadline are the plane's own declarations, read from it rather than restated. A
+/// second spelling of either here would be a wait entered under one key and answered under another,
+/// with both files looking correct on their own.
+const TOOL_REPLY_LEG: ClientMode = ClientMode::AwaitReply {
+    correlation_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+    deadline_secs: busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS,
+};
+
+/// Why a client's tool reply woke nothing.
+///
+/// Refused rather than dropped, and that is the whole of this type. A reply nobody is waiting for is
+/// either a client answering a call it was never asked to make or a call this node has already
+/// ended, and both are worth being able to say — a dropped frame is indistinguishable from a frame
+/// that was never sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplyRefused {
+    /// This node holds no tool calls on that session.
+    NoSuchSession,
+    /// The session is here, but nothing open on it is waiting on the identifier the reply carried.
+    UnknownCall,
+}
+
+/// What became of one tool call, once it stopped waiting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallEnd {
+    /// The client answered it, carrying the identifier the call was entered under.
+    Answered,
+    /// Nobody answered before the deadline the leg declared.
+    Unanswered,
+}
+
+/// One call the sweep found unanswered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnansweredCall {
+    /// Which session it was open on.
+    pub session: u64,
+    /// Which unit was waiting.
+    pub unit: UnitKey,
+}
+
+/// One session's open calls, and the endings its units have not read yet.
+#[derive(Debug, Default)]
+struct SessionCalls {
+    /// The kernel's own table: which reply wakes which unit.
+    awaiting: AwaitingReplies,
+    /// How a call ended, held until the unit's exit path reads it.
+    ended: HashMap<UnitKey, CallEnd>,
+}
+
+/// Every tool call this node has open, session by session.
+///
+/// The kernel's [`AwaitingReplies`] answers "which unit does this reply wake" and is deliberately
+/// keyed by unit alone; it is one session's table, and this is what holds one per session. The
+/// division matters: two sessions may legitimately have calls open under identical identifiers —
+/// providers mint them per conversation — and a single node-wide table would have to decide which
+/// of them a reply belonged to before it had the session to decide it with.
+///
+/// The endings sit beside the waits rather than inside them because they outlive the wait by exactly
+/// one frame: the pump wakes or sweeps, and the unit's own exit path is what reads what happened to
+/// it. A call's ending is final — re-planning a leg for a unit that already ended does not reopen
+/// it, which is what keeps a resumed unit from waiting a second time on an answer that is not coming.
+#[derive(Debug, Default)]
+pub struct OpenToolCalls {
+    sessions: Mutex<BTreeMap<u64, SessionCalls>>,
+}
+
+impl OpenToolCalls {
+    /// A node holding no calls.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Enter a tool call's reply leg as waiting, in the frame that planned it.
+    ///
+    /// `correlation_out` is the unit's own draft field, borrowed for the length of this call: the
+    /// kernel's table copies the identifier into its own memory here, which is the one moment it is
+    /// guaranteed readable.
+    ///
+    /// # Errors
+    /// Returns why the leg is not a wait: it delivers, the unit minted no identifier for an answer
+    /// to carry, or the draft's key is not the one the leg named.
+    pub fn planned(
+        &self,
+        session: u64,
+        unit: UnitKey,
+        mode: ClientMode,
+        correlation_out: Option<CorrelationRef<'_>>,
+        now: Millis,
+    ) -> Result<(), NotWaiting> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let calls = sessions.entry(session).or_default();
+        if calls.ended.contains_key(&unit) {
+            // The call is over and its unit has not read the ending yet. Entering it again would be
+            // a second wait on an answer that has already come or already timed out.
+            return Ok(());
+        }
+        calls.awaiting.enter(unit, mode, correlation_out, now)
+    }
+
+    /// The unit a client's reply answers, taken out of the table.
+    ///
+    /// # Errors
+    /// The session holds no calls, or nothing open on it carries that identifier under that key.
+    pub fn replied(
+        &self,
+        session: u64,
+        correlates: CorrelationRef<'_>,
+    ) -> Result<UnitKey, ReplyRefused> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let calls = sessions
+            .get_mut(&session)
+            .ok_or(ReplyRefused::NoSuchSession)?;
+        let unit = calls.awaiting.wake(correlates).ok_or(
+            // Not "the only call open", and not silence either. A reply that matches nothing is
+            // refused as what it is, because paying it out against whichever call happens to be
+            // standing is the exact failure the whole correlation exists to prevent.
+            ReplyRefused::UnknownCall,
+        )?;
+        calls.ended.insert(unit, CallEnd::Answered);
+        Ok(unit)
+    }
+
+    /// **The sweep.** Every call whose declared deadline has passed, named so its unit can be ended.
+    ///
+    /// A wait that is never woken is a hold that is never settled, so this runs on the node's tick
+    /// rather than being something a caller is trusted to remember. What it leaves behind is the
+    /// ending the unit's exit path reads.
+    pub fn expired(&self, now: Millis) -> Vec<UnansweredCall> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let mut swept = Vec::new();
+        for (session, calls) in sessions.iter_mut() {
+            for unit in calls.awaiting.expired(now) {
+                calls.ended.insert(unit, CallEnd::Unanswered);
+                swept.push(UnansweredCall {
+                    session: *session,
+                    unit,
+                });
+            }
+        }
+        swept
+    }
+
+    /// How one call ended, taken out of the table.
+    ///
+    /// Read once, by the unit's own exit path. Taking it rather than copying it is what keeps the
+    /// table the size of the calls that are actually open: an ending nobody is going to read is a
+    /// row that never comes back out.
+    pub fn ending(&self, session: u64, unit: UnitKey) -> Option<CallEnd> {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        let calls = sessions.get_mut(&session)?;
+        calls.ended.remove(&unit)
+    }
+
+    /// Whether one unit is still waiting on its answer.
+    #[must_use]
+    pub fn waiting(&self, session: u64, unit: UnitKey) -> bool {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions
+            .get(&session)
+            .is_some_and(|calls| calls.awaiting.waiting(unit).is_some())
+    }
+
+    /// How many calls are open across every session.
+    #[must_use]
+    pub fn open(&self) -> usize {
+        let sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.values().map(|calls| calls.awaiting.len()).sum()
+    }
+
+    /// Forget a session's calls, when the session itself ends.
+    ///
+    /// A conversation that is over cannot answer anything, so its waits end with it rather than
+    /// waiting out deadlines nobody is left to satisfy.
+    pub fn closed(&self, session: u64) {
+        let mut sessions = self.sessions.lock().unwrap_or_else(|e| e.into_inner());
+        sessions.remove(&session);
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// What the I/O half is allowed to see of that table
+// ---------------------------------------------------------------------------------------------
+
+/// The node's open-call table, as the session runtime reaches it.
+///
+/// The two moments [`OpenToolCalls`] does not own a call site for are the ones that happen on a
+/// socket: a client's reply arriving, and the tick beside the pump. Both live in `busbar-voice`, and
+/// neither can be a method on one of the four seams above — a seam that answered "which unit does
+/// this reply wake" would be the I/O half deciding it.
+///
+/// So the direction inverts here, exactly once, and it inverts the way the plane's tool executor
+/// already does: `busbar-voice` declares the port, the root implements it, and what crosses is two
+/// facts and no more. The runtime never learns which unit a call belongs to, how long its deadline
+/// is, or what a refusal costs.
+///
+/// A node's own calls, held by `Arc` because a session outlives the frame that opened it and the
+/// pump holds this for as long as it is pumping.
+#[cfg(feature = "plane-voice")]
+#[derive(Clone)]
+pub struct NodeCalls {
+    node: std::sync::Arc<VoiceNode>,
+}
+
+#[cfg(feature = "plane-voice")]
+impl std::fmt::Debug for NodeCalls {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NodeCalls")
+            .field("open", &self.node.tool_calls.open())
+            .finish_non_exhaustive()
+    }
+}
+
+#[cfg(feature = "plane-voice")]
+impl NodeCalls {
+    /// Bind the port to one node's table.
+    #[must_use]
+    pub fn new(node: std::sync::Arc<VoiceNode>) -> Self {
+        NodeCalls { node }
+    }
+}
+
+#[cfg(feature = "plane-voice")]
+impl busbar_voice::runtime::GovernedCalls for NodeCalls {
+    fn replied(
+        &self,
+        session: u64,
+        call_id: &str,
+    ) -> Result<(), busbar_voice::runtime::ReplyRefusal> {
+        // The identifier as itself, under the key the leg named — the same pair the plane's draft
+        // minted the wait under. Spelling either differently here would be a wait entered under one
+        // key and answered under another, with both sides looking correct on their own.
+        let correlates = CorrelationRef {
+            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(call_id),
+        };
+        match self.node.tool_calls.replied(session, correlates) {
+            // The unit is named, and naming it is all the runtime needs: what happens to it is the
+            // kernel loop's, read off the ending on its own exit path.
+            Ok(_unit) => Ok(()),
+            Err(ReplyRefused::NoSuchSession) => {
+                Err(busbar_voice::runtime::ReplyRefusal::NoSuchSession)
+            }
+            Err(ReplyRefused::UnknownCall) => Err(busbar_voice::runtime::ReplyRefusal::UnknownCall),
+        }
+    }
+
+    fn expired(&self, now_ms: u64) -> usize {
+        // The sweep leaves the ending behind; the unit's own `route` reads it and ends the call under
+        // the deadline its leg declared. Counting is all that comes back, because a count is all the
+        // pump can honestly do anything with.
+        self.node.tool_calls.expired(now_ms).len()
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
 // The node's long-lived half
 // ---------------------------------------------------------------------------------------------
 
@@ -399,6 +693,11 @@ pub struct VoiceNode {
     /// The admission unit's long-lived door. Its ledger cells are hydrated once, at boot, and are
     /// never re-read on the request path.
     pub door: Mutex<Door<InMemoryCells>>,
+    /// The configured limit tree, resolved once at boot into the shape the door walks.
+    ///
+    /// One table for the node, because the parent indices a chain chases are positions in it: two
+    /// tables would be two readings of what a group's cap is.
+    pub groups: busbar_unit_admission::GroupTable,
     /// What the door prices an estimate against.
     pub pricer: Pricer,
     /// The authentication chain, resolved from configuration at boot.
@@ -415,6 +714,11 @@ pub struct VoiceNode {
     pub durability: Mutex<crate::root::durability::Durability>,
     /// The I/O half, behind its four seams.
     pub io: VoiceIo,
+    /// The tool calls this node's sessions have open, waiting on a client's reply.
+    ///
+    /// Node-held rather than passed in, because nothing configuration decides is in it: it is empty
+    /// at boot and its whole contents are what the sessions running on this node have opened since.
+    pub tool_calls: OpenToolCalls,
     /// The origin every unit of this plane carries into its audit record, minted once at boot.
     ///
     /// A sealed origin cannot be constructed outside the kernel, and the audit step is lent its own
@@ -452,6 +756,8 @@ impl std::fmt::Debug for VoiceNode {
 pub struct VoiceNodeParts {
     /// The plane, with its configured upstream list.
     pub plane: VoicePlane,
+    /// The configured limit tree, resolved at boot into the shape the door walks.
+    pub groups: busbar_unit_admission::GroupTable,
     /// What the door prices an estimate against.
     pub pricer: Pricer,
     /// The authentication chain, resolved at boot.
@@ -477,6 +783,7 @@ impl VoiceNode {
         VoiceNode {
             plane: parts.plane,
             door: Mutex::new(Door::new(InMemoryCells::new())),
+            groups: parts.groups,
             pricer: parts.pricer,
             auth: parts.auth,
             auth_bindings: parts.auth_bindings,
@@ -484,10 +791,29 @@ impl VoiceNode {
             meter_policy: parts.meter_policy,
             durability: Mutex::new(parts.durability),
             io: parts.io,
+            tool_calls: OpenToolCalls::new(),
             origin: parts.origin,
             mono: AtomicU64::new(0),
             exhausted: Mutex::new(std::collections::BTreeSet::new()),
         }
+    }
+
+    /// Resolve one caller's chain against the configured tree — once, at the session's open.
+    ///
+    /// The one place on this plane a chain is built. The session keeps what comes back and lends it
+    /// to every turn, so the walk of the group tree and the bucket ids it owns are paid for once per
+    /// conversation rather than once per frame.
+    ///
+    /// `None` is the caller bound to a group this node's configuration does not have: fail-closed,
+    /// and the unit lent no chain refuses. A caller bound to no group at all is `Some` — a chain of
+    /// one uncapped attribution bucket, which is what a deployment with no `groups:` section has.
+    #[must_use]
+    pub fn chain_for(
+        &self,
+        principal: &PrincipalId,
+        group: Option<&str>,
+    ) -> Option<busbar_unit_admission::BucketChain> {
+        self.groups.chain_for(principal.as_str(), group).ok()
     }
 
     /// The next reading of the node's monotonic clock.
@@ -594,7 +920,7 @@ impl TurnUsage {
                 QuantitySource::Count,
             ),
             (
-                "audio_tokens_out",
+                meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
                 self.audio_tokens_out,
                 QuantitySource::Count,
             ),
@@ -623,7 +949,10 @@ impl TurnUsage {
         if self.audio_ms_in > 0 {
             lines.push(UsageLine {
                 class: MeterClassId::new("audio_seconds_in"),
-                quantity: self.audio_ms_in,
+                // Seconds, through the plane's own boundary. The counter is milliseconds; the class
+                // the plane declares is denominated in seconds, and the figure that settles has to
+                // be in the class's unit rather than in the counter's.
+                quantity: meta::audio_seconds_in(self.audio_ms_in),
                 source: QuantitySource::Count,
                 estimated: true,
             });
@@ -688,8 +1017,36 @@ pub struct VoiceUnit<'n> {
     pub from_session: bool,
     /// The dialect the decode step named.
     pub dialect: Dialect,
+    /// The buckets this session's caller is judged and charged against: its own attribution bucket,
+    /// then the group its key is bound to, then that group's parent, to the root.
+    ///
+    /// BORROWED, and a session-long fact rather than a per-turn one. The key is presented once, at
+    /// the open, so the chain it resolves to is settled before the first turn and cannot change
+    /// under the session; resolving it per turn would put a fresh vector of owned bucket ids on the
+    /// door's path for every frame of a live conversation, which is the one place on this plane
+    /// where per-unit work is per-frame work.
+    ///
+    /// `None` is the fail-closed arm and NOT the uncapped one: it is a caller bound to a group this
+    /// node's configuration does not have, whose caps therefore could not be read. A caller bound
+    /// to no group at all has a perfectly good chain of one uncapped attribution bucket, and gets
+    /// it.
+    pub chain: Option<&'n busbar_unit_admission::BucketChain>,
     /// What the turn reported, once the upstream reported it.
     pub usage: TurnUsage,
+    /// The identifier a tool call's answer must carry, as the plane's draft minted it.
+    ///
+    /// The unit's own copy, and it is here rather than reached for because the frame that plans the
+    /// leg is the frame that has to enter the wait: by the time anything else could ask, the arena
+    /// the plane decoded the identifier into is gone.
+    pub call_id: Option<String>,
+    /// The node's monotonic reading when this unit's frame arrived, in milliseconds.
+    ///
+    /// A deadline is a difference between two of these, never a wall-clock reading: [`epoch`] is
+    /// pinned at arrival so the unit is judged and charged in one window, which is a different
+    /// question from how long a client has to answer a tool call.
+    ///
+    /// [`epoch`]: VoiceUnit::epoch
+    pub now_ms: Millis,
     /// The wall clock this unit is judged against, pinned at arrival. Never a fresh read: a
     /// straddling unit judged against one clock and charged against another is a unit whose charge
     /// landed in a window it was not checked in.
@@ -744,7 +1101,10 @@ impl<'n> VoiceUnit<'n> {
             grants: Grants::of(Scope::Full),
             from_session: shape != UnitShape::SessionOpen,
             dialect: Dialect::OpenaiRealtime,
+            chain: None,
             usage: TurnUsage::default(),
+            call_id: None,
+            now_ms: 0,
             epoch,
             accrued: AtomicU64::new(0),
             dialed: Mutex::new(None),
@@ -773,6 +1133,18 @@ impl<'n> VoiceUnit<'n> {
         self
     }
 
+    /// The chain this unit's caller charges through, as the session resolved it at the open.
+    ///
+    /// Carried in rather than resolved here, for the reason every other fact on this struct is:
+    /// which buckets a key charges is settled before the first step runs, and a step that resolved
+    /// it would be a step deciding its own input — once per frame, for an answer that is the same
+    /// every time.
+    #[must_use]
+    pub fn charging_through(mut self, chain: &'n busbar_unit_admission::BucketChain) -> Self {
+        self.chain = Some(chain);
+        self
+    }
+
     /// What the turn reported.
     #[must_use]
     pub fn reporting(mut self, usage: TurnUsage) -> Self {
@@ -789,6 +1161,32 @@ impl<'n> VoiceUnit<'n> {
     #[must_use]
     fn answered(&self) -> bool {
         self.usage.audio_tokens_out > 0 || self.usage.text_tokens_out > 0
+    }
+
+    /// The call this tool-call unit is, named by the identifier its answer must carry.
+    #[must_use]
+    pub fn calling(mut self, call_id: impl Into<String>) -> Self {
+        self.call_id = Some(call_id.into());
+        self
+    }
+
+    /// The node's monotonic reading this unit's frame arrived at.
+    #[must_use]
+    pub fn at_ms(mut self, now_ms: Millis) -> Self {
+        self.now_ms = now_ms;
+        self
+    }
+
+    /// The correlation an answer to this unit must carry, borrowed from the unit's own copy.
+    ///
+    /// Borrowed rather than owned, and borrowed for no longer than the call that enters it: the
+    /// waiting table copies the identifier into the kernel's own memory and keeps no borrow, which
+    /// is what lets a wait outlive the frame that planned it.
+    fn correlation_out(&self) -> Option<CorrelationRef<'_>> {
+        self.call_id.as_deref().map(|id| CorrelationRef {
+            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(id),
+        })
     }
 
     /// Whether the dial was attempted and what it answered.
@@ -848,7 +1246,7 @@ impl<'n> VoiceUnit<'n> {
             .max(rate.cache_write);
         Estimate {
             per_class: vec![busbar_unit_admission::ClassEstimate {
-                class: "audio_tokens_out".to_string(),
+                class: meta::CLASS_AUDIO_TOKENS_OUT.as_str().to_string(),
                 quantity: TURN_OPENING_TOKENS,
                 max_unit_price_nanos: dearest,
             }],
@@ -863,8 +1261,15 @@ impl<'n> VoiceUnit<'n> {
     /// The door's own read of what the principal's slice has left in the window. It is not a
     /// decision and cannot become one: zero means the reservation does not grow and the rest of the
     /// turn is carried as an overdraft, which is a turn that still runs.
+    ///
+    /// Read off the session's own chain — the same value the door was judged against, not a second
+    /// copy of it — so a turn grows into the window its group actually has left rather than into an
+    /// unbounded one. A caller whose caps could not be read is zero, the same fail-closed direction
+    /// the door takes.
     fn headroom_nanos(&self) -> u64 {
-        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+        let Some(chain) = self.chain else {
+            return 0;
+        };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
         busbar_unit_admission::AdmissionUnit::new(
             &door,
@@ -872,7 +1277,7 @@ impl<'n> VoiceUnit<'n> {
             self.dialect.name(),
             self.epoch,
         )
-        .headroom_nanos(&chain)
+        .headroom_nanos(chain)
     }
 
     /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
@@ -955,9 +1360,32 @@ impl Units for VoiceUnit<'_> {
         &self,
         token: &UnitToken<Verify>,
         trust: &TrustToken,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
+        // **The one frame a wait can be entered in.** A tool call's leg is a client await-reply, and
+        // the value it waits on is the identifier this unit's own draft minted, which lives no
+        // longer than the frame that decoded it. So the wait is entered HERE, where the leg is
+        // planned and the identifier is still readable, and not on some later step that would have
+        // to have kept a borrow it cannot keep.
+        if matches!(self.shape, UnitShape::ToolCall)
+            && self
+                .node
+                .tool_calls
+                .planned(
+                    self.session,
+                    ctx.key,
+                    TOOL_REPLY_LEG,
+                    self.correlation_out(),
+                    self.now_ms,
+                )
+                .is_err()
+        {
+            // A call nothing can answer. The leg names a key and the draft minted nothing under it,
+            // or minted under another — either way there is no client this reply could come back
+            // from, which is the no-destination answer and not a wait with a wildcard in it.
+            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+        }
         // The trust unit's answer is a set of SEALED destinations, and sealing takes the trust token
         // the loop lends this step beside its own — the same shape admit and meter are lent. So the
         // destination this session's dialect resolves to is sealed HERE, once, and the route step
@@ -1013,6 +1441,7 @@ impl Units for VoiceUnit<'_> {
         _ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
         // A SESSION WHOSE LEASE RAN DRY GETS NO FURTHER FRAME. The turn that emptied it was
         // delivered and settled — this is the one after it — and the refusal is raised at the door
@@ -1055,7 +1484,15 @@ impl Units for VoiceUnit<'_> {
         // reservation with no admission behind it, and a unit whose hold and whose answer could
         // disagree about whether it was let in.
         let estimate = self.estimate();
-        let chain = busbar_unit_admission::BucketChain::unchecked(Vec::new(), Vec::new());
+        // The chain the deployment configured, not an empty one. An empty chain is a yes from every
+        // cap at once: no gauge is raised, no window bucket is read and no freeze flag is
+        // consulted, so a group's `concurrent: 1` would admit every turn that ever arrives. Read
+        // from the session rather than resolved here, so this step allocates nothing to be judged.
+        let Some(chain) = self.chain else {
+            // Fail-closed, rendered the way the door renders the same cause: a principal whose caps
+            // cannot be read is over quota, not merely rate-limited.
+            return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
+        };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
         // The pinned arrival epoch, never a fresh clock read: the door's own contract.
         let mut unit = busbar_unit_admission::AdmissionUnit::new(
@@ -1064,15 +1501,40 @@ impl Units for VoiceUnit<'_> {
             self.dialect.name(),
             self.epoch,
         );
-        unit.admit(&estimate, principal, &chain, admit, token)
+        let decision = unit.admit(&estimate, principal, chain, admit, token);
+        // What the door counted, said out loud, so the loop can record one lease per capped group on
+        // this unit's slot. The names are the root's interned ones; a refusal names nothing.
+        for group in unit.group_leases() {
+            leases.counted(group);
+        }
+        // AND THE COUNT ITSELF. The names above are what the node reads; this is the door's own
+        // gauge, and the gauge is the cap. It is raised by the yes and lowered when the grant dies,
+        // so a grant that does not outlive this call caps nothing at all. On the slot it lives as
+        // long as the unit does, and the unit's end — or the sweep, if the task is lost — is what
+        // gives the group its room back.
+        if let Some(grant) = unit.take_grant() {
+            leases.holding(DoorGrant::new(grant));
+        }
+        decision
     }
 
     fn route(
         &self,
         token: &UnitToken<Route>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
+        // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
+        // the ending behind; this is where the unit reads it. A call that ran out its declared
+        // deadline ends under that deadline rather than settling as though the answer arrived, which
+        // is the difference between a hold that closes and a hold that is held open by a client that
+        // simply never replied.
+        if matches!(self.shape, UnitShape::ToolCall)
+            && self.node.tool_calls.ending(self.session, ctx.key) == Some(CallEnd::Unanswered)
+        {
+            return Decision::refuse(token, Refusal::new(ReasonCode::DeadlineExceeded));
+        }
+
         // A turn does not dial: it relays onto the upstream the session already opened. Only unit
         // zero opens the leg, which is why the dial is here and under this shape's arm alone — a
         // second dial per turn would be a second socket per sentence.
@@ -1188,7 +1650,7 @@ impl Units for VoiceUnit<'_> {
             variance: None,
             lane_mismatch: None,
             settle_record_lost: false,
-            class: Some(MeterClassId::new("audio_tokens_out")),
+            class: Some(meta::CLASS_AUDIO_TOKENS_OUT),
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
@@ -1435,7 +1897,7 @@ pub const fn handshake_scope() -> &'static str {
 mod tests {
     use super::*;
     use busbar_caps::Canary;
-    use busbar_kernel::slice::{ConcurrencyGauge, LeaseSet};
+    use busbar_kernel::slice::{ConcurrencyGauge, LeaseCell};
     use busbar_kernel::teller::{run_unit, Ended, Kernel, Run};
     use busbar_unit_auth::AuthChain;
 
@@ -1455,6 +1917,37 @@ mod tests {
             dialect: Dialect::GeminiLive,
         },
     ];
+
+    /// THE CLASS THE ROOT NAMES IS THE CLASS THE PLANE DECLARES, at every site that names it.
+    ///
+    /// The label selects the unit price, so a turn admitted against one spelling and settled under
+    /// another is money on a rate card where the two rates differ — and a wire string re-spelled in
+    /// the root is a rename in the plane that leaves the root pricing under a class nobody declares.
+    /// The plane's declaration is the one source, and every reading below comes from it.
+    #[test]
+    fn the_emitted_audio_class_is_the_one_the_plane_declares() {
+        let declared = <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+            .iter()
+            .any(|class| class.key == meta::CLASS_AUDIO_TOKENS_OUT);
+        assert!(
+            declared,
+            "the plane declares the class the root prices under"
+        );
+
+        let usage = TurnUsage {
+            audio_tokens_out: 3,
+            ..TurnUsage::default()
+        };
+        let line = usage
+            .lines()
+            .into_iter()
+            .find(|line| line.quantity == 3)
+            .expect("the emitted audio is reported");
+        assert_eq!(line.class, meta::CLASS_AUDIO_TOKENS_OUT);
+        // And the one spelling is still the released one: a shared constant makes a rename cheap,
+        // which is exactly why the wire string it carries is pinned here.
+        assert_eq!(line.class.as_str(), "audio_tokens_out");
+    }
 
     /// A dial that opens, so a cell can reach the stations past route without an I/O half.
     struct OpenDial;
@@ -1477,6 +1970,32 @@ mod tests {
     }
 
     fn node(io: VoiceIo) -> VoiceNode {
+        // A deployment that configured no group: every caller is attributed and none is capped.
+        node_governed_by(io, busbar_unit_admission::GroupTable::default())
+    }
+
+    fn node_governed_by(io: VoiceIo, groups: busbar_unit_admission::GroupTable) -> VoiceNode {
+        node_behind(
+            io,
+            groups,
+            // The chain these tests run is the empty one — the open front door — so the seams have
+            // nothing to answer and the unbound posture is the honest fixture for them.
+            Auth::new(AuthChain::new(Vec::new(), false)),
+            crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+        )
+    }
+
+    /// The same node behind a door a deployment actually shut.
+    ///
+    /// Split out of `node` rather than duplicated because the only thing an authenticate cell may
+    /// vary is the door: a fixture that also swapped the pricer, the scope table or the journal
+    /// would be asserting about a different node than every other cell in this file.
+    fn node_behind(
+        io: VoiceIo,
+        groups: busbar_unit_admission::GroupTable,
+        auth: Auth,
+        auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+    ) -> VoiceNode {
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
@@ -1485,11 +2004,10 @@ mod tests {
         .expect("a memory-buffered journal cannot fail to open");
         VoiceNode::new(VoiceNodeParts {
             plane: VoicePlane::new(UPSTREAMS),
+            groups,
             pricer: Pricer::flat(0),
-            auth: Auth::new(AuthChain::new(Vec::new(), false)),
-            // The chain these tests run is the empty one — the open front door — so the seams have
-            // nothing to answer and the unbound posture is the honest fixture for them.
-            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+            auth,
+            auth_bindings,
             scope: scope_policy(),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
@@ -1506,6 +2024,21 @@ mod tests {
             lease: Box::new(OpenLease),
             ..VoiceIo::default()
         }
+    }
+
+    /// The chain a deployment with no `groups:` section resolves for every caller: one uncapped
+    /// attribution bucket, charged on every admission and blocking nothing.
+    ///
+    /// One value for the whole test module, because it is one value for the whole node — which is
+    /// the property the unit's borrow exists to make visible.
+    fn ungoverned() -> &'static busbar_unit_admission::BucketChain {
+        static CHAIN: std::sync::OnceLock<busbar_unit_admission::BucketChain> =
+            std::sync::OnceLock::new();
+        CHAIN.get_or_init(|| {
+            busbar_unit_admission::GroupTable::default()
+                .chain_for("acct:voice", None)
+                .expect("a caller bound to no group always resolves")
+        })
     }
 
     fn ctx(key: u64) -> UnitCtx {
@@ -1527,7 +2060,7 @@ mod tests {
         ));
         let gauge = ConcurrencyGauge::new();
         let canary = Canary::new();
-        let mut leases = LeaseSet::new();
+        let leases = LeaseCell::new();
         let meter = AccrualMeter::new();
         run_unit(
             kernel,
@@ -1536,7 +2069,7 @@ mod tests {
             Run {
                 cell: &cell,
                 parent: None,
-                leases: &mut leases,
+                leases: &leases,
                 gauge: &gauge,
                 canary: &canary,
                 meter: &meter,
@@ -1556,6 +2089,145 @@ mod tests {
         let ended = run(&kernel, &unit);
         assert!(matches!(ended, Ended::Settled { .. }));
         assert_eq!(unit.dial_outcome(), Some(Ok(())));
+    }
+
+    /// A CREDENTIAL THE NODE'S OWN DOOR DOES NOT ACCEPT ENDS THE SESSION AT THE AUTHENTICATE STEP,
+    /// and the audience is the thing that decides it.
+    ///
+    /// Authenticate is a gating step, and until this cell existed nothing drove one over the loop on
+    /// this plane: the conformance rig's credential leg proves the credential the node dials OUT
+    /// under, which is the other direction entirely. A plane that ships through the composition root
+    /// with its inbound credential check driven by nobody is a door whose lock has never been turned.
+    ///
+    /// The audience is where the turn happens. Every one of this plane's credentialed claims carries
+    /// one, so a token minted for a SIBLING plane's audience is a well-formed, unexpired, correctly
+    /// signed token — and must still be refused here, at the plane boundary, rather than at whatever
+    /// it was going to reach. That is the shape a wrong-audience token has to be refused in for the
+    /// audience to be a boundary rather than a decoration.
+    ///
+    /// The accepted control runs beside it, because a door that refuses everything is not a door: the
+    /// same directory, the same chain, the plane's own audience, and the unit runs to its end.
+    #[test]
+    fn a_credential_the_door_does_not_accept_ends_the_session_at_authenticate() {
+        use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+
+        /// One issued key, accepted only under the audience this plane declares — and a record of
+        /// the audience it was asked under, so the boundary is measured and not merely stated.
+        #[derive(Default)]
+        struct OneKey {
+            asked_under: Mutex<Vec<Option<String>>>,
+        }
+
+        impl VirtualKeyDirectory for OneKey {
+            fn verify(
+                &self,
+                credential: &str,
+                _now: u64,
+                expected_aud: Option<&str>,
+            ) -> Option<KeyFacts> {
+                self.asked_under
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(expected_aud.map(str::to_string));
+                (credential == "tok"
+                    && expected_aud == Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY))
+                .then(|| KeyFacts {
+                    id: "key-voice-1".to_string(),
+                    name: "an approved key".to_string(),
+                })
+            }
+
+            fn revoked(&self, _credential: &str) -> bool {
+                false
+            }
+        }
+
+        // A chain naming the signed-key arm and no boxed module: the front door is SHUT, and the arm
+        // is the one thing that can open it — which is what makes this cell about the arm.
+        let shut = || Auth::new(AuthChain::new(Vec::new(), true));
+        assert!(!shut().chain().is_open());
+
+        // ONE directory across all three runs, so what it was asked can be read at the end.
+        let directory = std::sync::Arc::new(OneKey::default());
+        let kernel = Kernel::new();
+        let door = |credential: Option<&str>| -> Outcome {
+            let node = node_behind(
+                serviceable(),
+                busbar_unit_admission::GroupTable::default(),
+                shut(),
+                AuthBindings::new(std::sync::Arc::clone(&directory) as _),
+            );
+            let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+            let unit = match credential {
+                Some(c) => unit.with_credential(c),
+                None => unit,
+            };
+            let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+                panic!("a refused unit settles through the same exit");
+            };
+            let outcome = end.outcome();
+            if matches!(outcome, Outcome::Refused(_, _)) {
+                // Read while the node is still alive: a unit refused at the door must not have
+                // dialed, and the dial is the first thing a half-opened session would show.
+                assert_eq!(
+                    unit.dial_outcome(),
+                    None,
+                    "a session refused at authenticate never reaches the provider"
+                );
+            }
+            outcome
+        };
+
+        // A token this node's directory never issued, and no token at all — the two shapes an
+        // unauthenticated open arrives in.
+        for presented in [Some("nope"), None] {
+            let outcome = door(presented);
+            assert!(
+                matches!(
+                    outcome,
+                    Outcome::Refused(
+                        busbar_caps::StepName::Authenticate,
+                        ReasonCode::Unauthenticated
+                    )
+                ),
+                "presented {presented:?}, got {outcome:?}"
+            );
+        }
+
+        // THE CONTROL: the key the directory did issue. A door that refuses everything is not a
+        // door, and a refusal cell without one proves only that nothing gets in.
+        let outcome = door(Some("tok"));
+        assert!(
+            matches!(outcome, Outcome::Completed),
+            "the accepted credential runs the session to its end, got {outcome:?}"
+        );
+
+        // AND THE AUDIENCE IS THE PLANE'S OWN, every time it was asked. The expected audience is
+        // what makes a sibling plane's well-formed token refusable HERE rather than at whatever it
+        // was going to reach — a root that passed `None` would verify signatures and check no
+        // boundary, and every assertion above would still read the same.
+        let asked = directory
+            .asked_under
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        assert!(!asked.is_empty(), "the arm was reached at all");
+        for aud in asked.iter() {
+            assert_eq!(
+                aud.as_deref(),
+                Some(<VoicePlane as busbar_contract::plane::PlaneMeta>::KEY)
+            );
+        }
+    }
+
+    /// The alternatives the authenticate step offers the auth unit are the ones the claim declared.
+    ///
+    /// The unit refuses a narrowing OUTSIDE the declared set before it looks at a credential, so a
+    /// root that offered a smaller set than the claims declare would refuse a caller the deployment
+    /// meant to admit, and one that offered a larger set would let the plane pick a scheme no claim
+    /// ever made.
+    #[test]
+    fn the_declared_alternatives_are_the_claims_own() {
+        assert_eq!(SESSION_SCHEME_ALTERNATIVES, &["bearer", "api-key"]);
     }
 
     /// The grant a caller holds is compared against what the class requires, and a caller who holds
@@ -1685,6 +2357,7 @@ mod tests {
         let kernel = Kernel::new();
         let node = node(serviceable());
         let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
             .on_dialect(Dialect::OpenaiRealtime)
             .reporting(TurnUsage {
                 audio_tokens_in: 10,
@@ -1704,7 +2377,8 @@ mod tests {
         };
         assert_eq!(quantity("text_tokens_in"), Some(3));
         assert_eq!(quantity("text_tokens_out"), Some(4));
-        assert_eq!(quantity("audio_seconds_in"), Some(640));
+        // 640 ms of admitted audio is one second on a seconds-denominated class, not 640 of them.
+        assert_eq!(quantity("audio_seconds_in"), Some(1));
         assert_eq!(quantity("tool_calls"), Some(2));
 
         let ended = run(&kernel, &unit);
@@ -1765,7 +2439,8 @@ mod tests {
         let kernel = Kernel::new();
         let mut node = node(serviceable());
         node.scope = crate::root::policy::ScopePolicy::new();
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, requests, .. } = run(&kernel, &unit) else {
             panic!("the exit settles it");
         };
@@ -1885,11 +2560,13 @@ mod tests {
         let kernel = Kernel::new();
 
         // The turn that empties the lease runs to the end and settles.
-        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
-            audio_tokens_out: 120,
-            audio_ms_in: 900,
-            ..TurnUsage::default()
-        });
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                audio_ms_in: 900,
+                ..TurnUsage::default()
+            });
         let Ended::Settled { end, .. } = run(&kernel, &turn) else {
             panic!("the exit path settles it");
         };
@@ -1901,7 +2578,8 @@ mod tests {
         );
 
         // And the next frame on that session does not get in.
-        let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let next =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &next) else {
             panic!("the exit path settles it");
         };
@@ -1923,7 +2601,8 @@ mod tests {
         );
 
         // A session that never ran dry is not caught by the mark.
-        let other = VoiceUnit::new(&node, UnitShape::Turn, 8, 1_700_000_000);
+        let other =
+            VoiceUnit::new(&node, UnitShape::Turn, 8, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &other) else {
             panic!("the exit path settles it");
         };
@@ -1936,7 +2615,8 @@ mod tests {
             panic!("the exit path settles it");
         };
         assert_eq!(end.outcome(), Outcome::Completed);
-        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let turn =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &turn) else {
             panic!("the exit path settles it");
         };
@@ -1950,7 +2630,8 @@ mod tests {
     #[test]
     fn a_refused_units_record_carries_the_refusal_and_its_step() {
         let node = node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let refused = Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied);
         let inputs = unit.audit_inputs(&ctx(1), refused, busbar_contract::FinishClass::Error);
         assert_eq!(inputs.outcome.unit_end, refused);
@@ -1994,6 +2675,383 @@ mod tests {
     #[test]
     fn the_handshake_scope_is_the_kernel_granted_one() {
         assert_eq!(handshake_scope(), "transport:handshake");
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // The tool calls a session waits on
+    // -----------------------------------------------------------------------------------------
+
+    /// The correlation a client's reply carries, as the plane reads it off the bytes.
+    fn reply(call_id: &str) -> CorrelationRef<'_> {
+        CorrelationRef {
+            fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+            value: CorrelationValue::Str(call_id),
+        }
+    }
+
+    /// Run one tool-call unit far enough to plan its leg, which is where the wait is entered.
+    fn plan(kernel: &Kernel, node: &VoiceNode, key: u64, call_id: &str, now_ms: Millis) -> Ended {
+        plan_on(kernel, node, 7, key, call_id, now_ms)
+    }
+
+    /// [`plan`], on a named session — the shape a cell needs when the session identifier is not this
+    /// module's to choose because the served door minted it.
+    fn plan_on(
+        kernel: &Kernel,
+        node: &VoiceNode,
+        session: u64,
+        key: u64,
+        call_id: &str,
+        now_ms: Millis,
+    ) -> Ended {
+        let unit = VoiceUnit::new(node, UnitShape::ToolCall, session, 1_700_000_000)
+            .charging_through(ungoverned())
+            .calling(call_id)
+            .at_ms(now_ms);
+        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+            &kernel.admit_token(),
+            PrincipalId::new("acct:voice"),
+            0,
+        ));
+        let gauge = ConcurrencyGauge::new();
+        let canary = Canary::new();
+        let leases = busbar_kernel::slice::LeaseCell::new();
+        let meter = AccrualMeter::new();
+        run_unit(
+            kernel,
+            &unit,
+            &ctx(key),
+            Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &meter,
+            },
+        )
+    }
+
+    /// **Two calls open at once, and each reply wakes only its own.**
+    ///
+    /// A turn that asks for two tools opens two units. They are identical apart from the identifier
+    /// each minted — same key, same selector, same deadline — which is exactly the pair that a wait
+    /// on a constant, or on a fold of an identifier, is free to confuse. The replies come back in
+    /// the opposite order to the calls, so "whichever is waiting" cannot pass either.
+    #[test]
+    fn two_tool_calls_on_one_session_each_wake_only_the_call_they_answer() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let (weather, tide) = (11, 22);
+        let _ = plan(&kernel, &node, weather, "call_aaa", 0);
+        let _ = plan(&kernel, &node, tide, "call_bbb", 0);
+        assert_eq!(node.tool_calls.open(), 2, "two calls are open, not one");
+
+        // The SECOND call answers first.
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_bbb")),
+            Ok(UnitKey::new(tide)),
+            "the reply wakes the call whose identifier it carries"
+        );
+        assert!(
+            node.tool_calls.waiting(7, UnitKey::new(weather)),
+            "and leaves the other call waiting on its own identifier, untouched"
+        );
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_aaa")),
+            Ok(UnitKey::new(weather)),
+            "which is still there for its own answer"
+        );
+        assert_eq!(node.tool_calls.open(), 0, "and both calls are settled");
+        assert_eq!(
+            node.tool_calls.ending(7, UnitKey::new(weather)),
+            Some(CallEnd::Answered),
+            "each unit reads its own ending, once"
+        );
+    }
+
+    /// A reply nobody is waiting for is refused, not dropped.
+    ///
+    /// The temptation the refusal exists to remove is "there is one call open, so this must be for
+    /// it". Paying a hold out against an answer that named something else is the failure a
+    /// correlation exists to prevent, and it costs a real principal real money.
+    #[test]
+    fn a_reply_for_a_call_nobody_opened_is_refused_rather_than_dropped() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_zzz")),
+            Err(ReplyRefused::UnknownCall),
+            "an unmatched reply is not paid out against the only call standing"
+        );
+        assert_eq!(
+            node.tool_calls.replied(9, reply("call_aaa")),
+            Err(ReplyRefused::NoSuchSession),
+            "and the same identifier on another session is another conversation's business"
+        );
+        assert!(
+            node.tool_calls.waiting(7, UnitKey::new(11)),
+            "the open call is untouched by either"
+        );
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_aaa")),
+            Ok(UnitKey::new(11)),
+            "and still answers to its own identifier"
+        );
+    }
+
+    /// **An unanswered call ends at the deadline it declared.**
+    ///
+    /// The wait is entered with the plane's own thirty seconds; the sweep at thirty-one names it,
+    /// and the unit's exit path ends it under the deadline rather than settling as though the answer
+    /// had arrived. Before this was wired the wait was entered nowhere at all, so an unanswered call
+    /// was a hold nothing ever closed.
+    #[test]
+    fn an_unanswered_tool_call_ends_at_the_deadline_its_leg_declared() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+        let _ = plan(&kernel, &node, 22, "call_bbb", 20_000);
+
+        let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+        assert!(
+            node.tool_calls.expired(deadline - 1).is_empty(),
+            "a call is not swept one millisecond before its own deadline"
+        );
+        assert_eq!(
+            node.tool_calls.expired(deadline + 1),
+            vec![UnansweredCall {
+                session: 7,
+                unit: UnitKey::new(11)
+            }],
+            "the first call's deadline is up; the one opened twenty seconds later is not"
+        );
+        assert_eq!(
+            node.tool_calls.open(),
+            1,
+            "the second call is still waiting"
+        );
+
+        // The exit: the unit is resumed and reads what became of its wait.
+        let Ended::Settled { end, .. } = plan(&kernel, &node, 11, "call_aaa", deadline + 1) else {
+            panic!("the exit path settles an unanswered call like anything else");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
+    }
+
+    /// A call that minted no identifier is not entered as a wildcard.
+    ///
+    /// A wait with no identity matches the first reply that arrives, whoever it was for. Refusing
+    /// the unit says so where it happens rather than at the first reply that goes to the wrong call.
+    #[test]
+    fn a_tool_call_that_minted_no_identifier_is_refused_rather_than_entered() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000)
+            .charging_through(ungoverned());
+        let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+            panic!("the exit settles it");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Refused(_, ReasonCode::NoDestination)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
+        assert_eq!(node.tool_calls.open(), 0, "and nothing is waiting");
+    }
+
+    /// **The port the served path reaches the table through.**
+    ///
+    /// Every assertion above drives [`OpenToolCalls`] directly, which is the right way to judge the
+    /// table but says nothing about whether anything on a socket can get to it. This judges the seam
+    /// the session runtime holds: the same three answers — woken, refused, swept — asked in the
+    /// spelling `busbar-voice` asks them in. Before this port existed the runtime had no way to ask.
+    #[cfg(feature = "plane-voice")]
+    #[test]
+    fn the_runtimes_port_reaches_the_nodes_own_table() {
+        use busbar_voice::runtime::{GovernedCalls, ReplyRefusal};
+
+        let kernel = Kernel::new();
+        let node = std::sync::Arc::new(node(serviceable()));
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+        let _ = plan(&kernel, &node, 22, "call_bbb", 0);
+        let port = NodeCalls::new(std::sync::Arc::clone(&node));
+
+        assert_eq!(
+            port.replied(9, "call_aaa"),
+            Err(ReplyRefusal::NoSuchSession),
+            "a reply on a session this node holds nothing for wakes nothing"
+        );
+        assert_eq!(
+            port.replied(7, "call_zzz"),
+            Err(ReplyRefusal::UnknownCall),
+            "and one naming a call nobody is waiting on is refused, not matched to whichever is open"
+        );
+        assert_eq!(
+            port.replied(7, "call_bbb"),
+            Ok(()),
+            "the answer wakes its own"
+        );
+        assert!(
+            !node.tool_calls.waiting(7, UnitKey::new(22)),
+            "which is the wait leaving the table"
+        );
+        assert!(
+            node.tool_calls.waiting(7, UnitKey::new(11)),
+            "and the call it did not answer is still waiting"
+        );
+
+        // The tick's sweep, through the same port, at the deadline the plane's own leg declared.
+        let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+        assert_eq!(port.expired(deadline - 1), 0, "not one millisecond early");
+        assert_eq!(
+            port.expired(deadline + 1),
+            1,
+            "the unanswered call is swept"
+        );
+
+        // And what the sweep left behind is what ends the unit — under its own deadline, not as a
+        // settlement that pretends the answer arrived.
+        let Ended::Settled { end, .. } = plan(&kernel, &node, 11, "call_aaa", deadline + 1) else {
+            panic!("the exit path settles an unanswered call like anything else");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
+    }
+
+    /// **THE ROOT IDENTITY: on the served composition there is no ungoverned session left to reach.**
+    ///
+    /// Two things are judged here and they are the two halves of one claim.
+    ///
+    /// The first is that the root composes at all. `mount_root_voice` seals the registry and then
+    /// writes this node's open-call table onto the served door; after it has run, the door's own
+    /// per-session binding answers with a table rather than with nothing, and it answers with a
+    /// fresh identifier each time — which is what a session is told apart by on a node where two
+    /// conversations may carry identical call identifiers. Before this the port and its implementor
+    /// both existed and no served session had ever been handed one.
+    ///
+    /// The second is what that binding is worth: a call nobody answers, ended THROUGH the served
+    /// path. The tick is the session pump's own `sweep_expired`, the table is this node's, and the
+    /// wall is the plane's declared `TOOL_REPLY_DEADLINE_SECS` read rather than restated — not one
+    /// millisecond early, and the unit that was waiting exits `Failed(Route, DeadlineExceeded)`
+    /// rather than settling as though the answer had arrived.
+    #[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+    #[test]
+    fn the_served_composition_has_no_ungoverned_session_left_in_it() {
+        use busbar_voice::runtime::{Carrier, MeteringPort, SessionCore};
+
+        // (1) THE ROOT'S OWN COMPOSITION. First writer wins on the plane's side, so this cell is the
+        // one place in the crate that writes it, and it writes it the way `main()` does.
+        crate::compose_voice_governed_calls();
+        let bound = busbar_voice::mount::served_governed_session()
+            .expect("after the root has mounted, every session the door opens is bound to a table");
+        let next = busbar_voice::mount::served_governed_session()
+            .expect("and so is the next one, on its own identifier");
+        assert_ne!(
+            bound.session, next.session,
+            "two conversations are told apart before either has a call open"
+        );
+        assert_eq!(
+            bound.calls.replied(bound.session, "call_aaa"),
+            Err(busbar_voice::runtime::ReplyRefusal::NoSuchSession),
+            "the table the door was handed is a real one, holding nothing at boot"
+        );
+
+        // (2) WHAT THE BINDING IS WORTH, through a real session pump. The node here is the cell's
+        // own, reached through the same port the door was handed, because the node `main()` composed
+        // is not a handle this cell holds.
+        let kernel = Kernel::new();
+        let node = std::sync::Arc::new(node(serviceable()));
+        let session = 4_242;
+        let _ = plan_on(&kernel, &node, session, 11, "call_aaa", 0);
+        assert!(
+            node.tool_calls.waiting(session, UnitKey::new(11)),
+            "the leg was planned, so the wait is entered"
+        );
+
+        let lease = busbar_voice::runtime::LocalMeteringPort
+            .reserve(1_000, 0, None)
+            .expect("an uncapped lease always opens");
+        let core = SessionCore::new(
+            busbar_voice::ir::codec::OpenAiRealtimeCodec,
+            lease,
+            None,
+            std::sync::Arc::new(busbar_voice::runtime::EchoToolExecutor),
+            Carrier::sideband(),
+            None,
+        )
+        .with_governed(busbar_voice::runtime::GovernedSession {
+            session,
+            calls: std::sync::Arc::new(NodeCalls::new(std::sync::Arc::clone(&node))),
+        });
+        assert_eq!(
+            core.governed_session(),
+            Some(session),
+            "the pump knows itself by the identifier the door minted"
+        );
+
+        let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+        assert_eq!(
+            core.sweep_expired(deadline - 1),
+            0,
+            "the session's own tick ends nothing one millisecond before the declared deadline"
+        );
+        assert_eq!(
+            core.sweep_expired(deadline),
+            1,
+            "and ends the unanswered call at it"
+        );
+
+        let Ended::Settled { end, .. } = plan_on(
+            &kernel,
+            &node,
+            session,
+            11,
+            "call_aaa",
+            Millis::from(deadline as u32),
+        ) else {
+            panic!("the exit path settles an unanswered call like anything else");
+        };
+        assert!(
+            matches!(
+                end.outcome(),
+                Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded)
+            ),
+            "got {:?}",
+            end.outcome()
+        );
+    }
+
+    /// A conversation that is over cannot answer anything.
+    #[test]
+    fn a_closed_session_stops_waiting_on_the_calls_it_had_open() {
+        let kernel = Kernel::new();
+        let node = node(serviceable());
+        let _ = plan(&kernel, &node, 11, "call_aaa", 0);
+        node.tool_calls.closed(7);
+        assert_eq!(node.tool_calls.open(), 0);
+        assert_eq!(
+            node.tool_calls.replied(7, reply("call_aaa")),
+            Err(ReplyRefused::NoSuchSession)
+        );
     }
 
     // -----------------------------------------------------------------------------------------
@@ -2114,14 +3172,16 @@ mod tests {
     #[test]
     fn an_answered_turn_is_one_that_emitted_something() {
         let node = priced_node(serviceable());
-        let silent =
-            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+        let silent = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
                 audio_tokens_in: 90,
                 ..TurnUsage::default()
             });
         assert!(!silent.answered());
-        let spoken =
-            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+        let spoken = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
                 audio_tokens_out: 3,
                 ..TurnUsage::default()
             });
@@ -2134,7 +3194,8 @@ mod tests {
     #[test]
     fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
         let node = priced_node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         // 5 micro-units per output token is 5_000 nano-units, and it is the dearest of the four.
         let estimate = unit.estimate();
         assert_eq!(estimate.per_class.len(), 1);
@@ -2154,6 +3215,7 @@ mod tests {
                 &ctx(1),
                 &PrincipalId::new("acct:voice"),
                 &[],
+                &GroupLeaseSlip::new(),
             )
             .into_result(&seal)
             .expect("the empty chain admits");
@@ -2173,17 +3235,100 @@ mod tests {
         }
     }
 
+    /// THE DOOR'S COUNT LEAVES THE DOOR'S STEP, or this plane's `concurrent` caps are decoration.
+    ///
+    /// A yes raises a gauge per capped group in the chain and the value it hands back is what holds
+    /// them up. Dropped where the decision was taken, the gauges are back to where they started
+    /// before the admitted unit has run a single step, and the next arrival is judged against a
+    /// count of nothing however many units are in flight. So the step has to hand the count over,
+    /// and the slip is where. The kernel does the rest: it belongs to the unit's slot from here,
+    /// and it goes back at whichever of the unit's two ends arrives first.
+    ///
+    /// The chain this deployment hands the door declares no capped group, so the count here is of
+    /// none — which is exactly why the assertion is about the HANDOVER and not about a number. A
+    /// step that keeps the grant caps nothing on any chain; a step that hands it over caps every
+    /// group the chain names.
+    #[test]
+    fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
+        let node = priced_node(serviceable());
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admit = busbar_caps::AdmitToken::<Admit>::mint(&seal);
+        let token: UnitToken<Admit> = UnitToken::mint(&seal);
+        let leases = GroupLeaseSlip::new();
+
+        let admission = unit
+            .admit(
+                &token,
+                &admit,
+                &ctx(1),
+                &PrincipalId::new("acct:voice"),
+                &[],
+                &leases,
+            )
+            .into_result(&seal)
+            .expect("the chain admits");
+        assert!(
+            leases.grant_taken().is_some(),
+            "the door's own count came out of the step, where the loop can put it on the slot"
+        );
+        if let busbar_caps::Admission::Own(hold) = admission {
+            let _ = busbar_caps::Posted::settle(
+                hold,
+                0,
+                &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
+                    .expect("empty"),
+                &busbar_caps::LedgerToken::mint(&seal),
+            );
+        }
+    }
+
+    /// A refusal hands over nothing, because a refusal counted nothing.
+    ///
+    /// The other half of the rule, and the one that keeps the handover from becoming a leak: the
+    /// grant only exists on a yes, so a slip that carried one out of a refusal would be a count on
+    /// a group for a unit that never ran. The handshake is this plane's admission that never
+    /// reaches the chain at all.
+    #[test]
+    fn an_admission_that_never_reaches_the_chain_hands_over_no_count() {
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admit = busbar_caps::AdmitToken::<Admit>::mint(&seal);
+        let token: UnitToken<Admit> = UnitToken::mint(&seal);
+        let leases = GroupLeaseSlip::new();
+
+        let _ = unit
+            .admit(
+                &token,
+                &admit,
+                &ctx(1),
+                &PrincipalId::new("acct:voice"),
+                &[],
+                &leases,
+            )
+            .into_result(&seal)
+            .expect("a handshake is admitted holding nothing");
+        assert!(
+            leases.grant_taken().is_none(),
+            "the handshake never asked the door, so there is no count to hold"
+        );
+    }
+
     /// **The lifecycle, end to end.** The door opens the reservation, the meter accrues against it,
     /// the exit path settles it, and the posting moves this plane's balance and lands on the
     /// journal. Before the exit arm was bound, the last two of those four happened nowhere.
     #[test]
     fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
         let node = priced_node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
-            audio_tokens_out: 120,
-            audio_ms_in: 900,
-            ..TurnUsage::default()
-        });
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                audio_ms_in: 900,
+                ..TurnUsage::default()
+            });
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let kernel = Kernel::new();
         let Ended::Settled { end, .. } = run(&kernel, &unit) else {
@@ -2241,12 +3386,14 @@ mod tests {
     fn a_turn_past_its_estimate_grows_the_reservation_out_of_the_offered_headroom() {
         let node = priced_node(serviceable());
         let reserved = TURN_OPENING_TOKENS * 5_000;
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
-            audio_tokens_out: 3,
-            // Far past what the door sized for, and the chain this node runs caps nothing.
-            audio_ms_in: reserved + 12_345,
-            ..TurnUsage::default()
-        });
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 3,
+                // Far past what the door sized for, and the chain this node runs caps nothing.
+                audio_ms_in: reserved + 12_345,
+                ..TurnUsage::default()
+            });
         assert_eq!(
             unit.headroom_nanos(),
             u64::MAX,
@@ -2310,7 +3457,8 @@ mod tests {
             .flags()
             .contains(busbar_caps::PostingFlags::OVERDRAFT));
 
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let settled = unit
             .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
             .expect("the journal takes both records");
@@ -2339,5 +3487,486 @@ mod tests {
             .expect("reads back")
             .expect("verifies");
         assert_eq!(replayed.len(), 2, "the posting, then the carry");
+    }
+
+    // ── the decode step's own scaffolding ──────────────────────────────────────────────────────
+    //
+    // The production half of this file names no wire shape and no dialect, and it stays that way.
+    // But the decode step's whole content is the plane's reading of a frame, so a cell that drove
+    // it from a shape this module chose would be asserting its own answer. These build the four
+    // borrowed views and the one resource a plugin call is given, so the plane's own decoder can be
+    // handed a real frame.
+
+    /// A leaking arena. Test-only, run a bounded number of times per process: the trait's
+    /// allocators hand back borrowed slices, so an honest double either leaks or is unsafe.
+    struct CellArena;
+
+    impl busbar_contract::bounded::Arena for CellArena {
+        fn alloc_bytes<'a>(
+            &'a self,
+            src: &[u8],
+        ) -> Result<busbar_contract::bounded::ArenaBytes<'a>, busbar_contract::bounded::ArenaBudget>
+        {
+            let leaked: &'static [u8] = Box::leak(src.to_vec().into_boxed_slice());
+            Ok(busbar_contract::bounded::ArenaBytes::new(leaked))
+        }
+
+        fn alloc_str<'a>(
+            &'a self,
+            src: &str,
+        ) -> Result<&'a str, busbar_contract::bounded::ArenaBudget> {
+            Ok(Box::leak(src.to_string().into_boxed_str()))
+        }
+
+        fn alloc_spans<'a>(
+            &'a self,
+            src: &[(&'a str, busbar_contract::bounded::Span)],
+        ) -> Result<
+            &'a [(&'a str, busbar_contract::bounded::Span)],
+            busbar_contract::bounded::ArenaBudget,
+        > {
+            Ok(Box::leak(src.to_vec().into_boxed_slice()))
+        }
+
+        fn remaining(&self) -> usize {
+            usize::MAX
+        }
+    }
+
+    struct CellConfig;
+
+    impl busbar_contract::unit::ConfigView for CellConfig {
+        fn get_str(&self, _key: &str) -> Option<&str> {
+            None
+        }
+        fn get_int(&self, _key: &str) -> Option<i64> {
+            None
+        }
+        fn get_bool(&self, _key: &str) -> Option<bool> {
+            None
+        }
+    }
+
+    /// The socket surface, composed the way a voice session arrives on it.
+    struct CellTransport;
+
+    impl busbar_contract::unit::TransportView for CellTransport {
+        fn key(&self) -> &'static str {
+            "ws"
+        }
+        fn chain(&self) -> &[&'static str] {
+            &["tcp", "tls", "http", "ws"]
+        }
+        fn fact(&self, _key: &str) -> Option<&str> {
+            None
+        }
+    }
+
+    /// One inbound frame carrying `body`.
+    fn one_frame(body: &str) -> Vec<busbar_contract::wire::Frame> {
+        vec![busbar_contract::wire::Frame {
+            direction: busbar_contract::wire::Direction::Inbound,
+            stream: busbar_contract::ids::StreamId(0),
+            bytes: busbar_contract::bounded::SlabBytes::new(std::sync::Arc::from(body.as_bytes())),
+            meta: busbar_contract::wire::FrameMeta::default(),
+        }]
+    }
+
+    /// A client event on an open session resolves to a turn or to a frame of the turn already open,
+    /// and a carrier frame this session's dialect cannot read resolves to neither.
+    ///
+    /// The decode step of this plane carries a shape the pump already read, so the question the step
+    /// answers is not "what are these bytes" — it is whether the class the loop goes on to price and
+    /// audit under is the class the plane's own reader produced. Three answers are driven.
+    ///
+    /// A first client event OPENS a turn: any client event does, not audio specifically, because a
+    /// session's first frame is routinely `session.update` and there is no reason to hold a session
+    /// without a unit to carry its facts and size its hold. A second event on the same session does
+    /// NOT open a second one — it relays onto the turn's own correlation, which is what "one open
+    /// unit per direction" means, and a tool result is exactly that kind of frame. And a frame the
+    /// session's dialect cannot read is refused at the step that read it, rather than opening a unit
+    /// under a class nobody decoded.
+    #[test]
+    fn a_client_event_opens_a_turn_and_a_later_one_relays_onto_it() {
+        use busbar_caps::KernelSeal;
+        use busbar_contract::bounded::Labels;
+        use busbar_contract::plane::{Ingress, Plane, PlaneSessionState};
+        use busbar_contract::unit::{Clock, Ctx};
+        use busbar_contract::wire::FrameCursor;
+        use busbar_plane_voice::session::VoiceSessionState;
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let arena = CellArena;
+        let config = CellConfig;
+        let transport = CellTransport;
+        let labels = Labels::new();
+        let clock = Clock {
+            unix_secs: 1_700_000_000,
+            monotonic_nanos: 0,
+        };
+        let plane = VoicePlane::new(UPSTREAMS);
+        let mut state =
+            PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::OpenaiRealtime));
+
+        // The first client event of the session. `session.update` is what a real client sends
+        // first, and it opens the turn.
+        let frames = one_frame(r#"{"type":"session.update","session":{}}"#);
+        let mut cursor = FrameCursor::new(&frames);
+        let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        let ingress = plane
+            .decode_ingress(&mut cursor, Some(&mut state), &pctx)
+            .expect("a client event this dialect names is readable");
+        let Ingress::Open(draft) = ingress else {
+            panic!("the first client event opens a turn, got {ingress:?}");
+        };
+        let opened = draft.op;
+        let correlation = draft
+            .correlation_out
+            .expect("an opened turn mints the correlation its frames relay under");
+
+        // The class the plane produced is the class the step carries. Not "a" turn class — THE one,
+        // read off the plane's answer rather than restated, so a shape that drifted from the plane's
+        // own vocabulary goes red here instead of pricing under a name nothing declares.
+        let node = node(serviceable());
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
+        assert_eq!(
+            unit.decode(&UnitToken::mint(&seal), &ctx(1))
+                .into_result(&seal)
+                .expect("a turn proceeds"),
+            opened
+        );
+        // And it is a class this plane DECLARES. A step carrying a class outside the declared set
+        // would be a unit the audit record and the rate card have no row for.
+        for shape in [UnitShape::SessionOpen, UnitShape::Turn, UnitShape::ToolCall] {
+            assert!(
+                <VoicePlane as busbar_contract::plane::PlaneMeta>::OP_CLASSES
+                    .contains(&shape.op_class()),
+                "{shape:?} carries a class this plane never declared"
+            );
+        }
+
+        // A tool result on the same session. It is a client event that relays rather than opening
+        // a second unit, and it names the CALL it answers, not the turn it rode in on: two calls
+        // open on one session at one moment are told apart by that identifier alone.
+        let frames = one_frame(
+            r#"{"type":"conversation.item.create","item":{"type":"function_call_output","call_id":"c-1","output":"42"}}"#,
+        );
+        let mut cursor = FrameCursor::new(&frames);
+        let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        let ingress = plane
+            .decode_ingress(&mut cursor, Some(&mut state), &pctx)
+            .expect("a tool result is a client event this dialect names");
+        let Ingress::Frame { for_, .. } = ingress else {
+            panic!("a later client event relays, got {ingress:?}");
+        };
+        assert_eq!(
+            for_,
+            Some(CorrelationRef {
+                fact_key: busbar_plane_voice::plane::FACT_TOOL_CORRELATION,
+                value: CorrelationValue::Str("c-1"),
+            })
+        );
+        let _ = correlation;
+
+        // A session bound to the telephony carrier, handed bytes that are not that carrier's shape.
+        // The refusal is raised at the step that read them, and no unit exists to have been given a
+        // class.
+        let mut telephony =
+            PlaneSessionState::new(VoiceSessionState::for_dialect(Dialect::TwilioMediaStreams));
+        let frames = one_frame("not a carrier frame at all");
+        let mut cursor = FrameCursor::new(&frames);
+        let pctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+        assert_eq!(
+            plane.decode_ingress(&mut cursor, Some(&mut telephony), &pctx),
+            Err(busbar_contract::wire::Decode::Malformed)
+        );
+    }
+    /// A credential is resolved through the node's own signed-key seam, and the audience is this
+    /// plane's own name.
+    ///
+    /// Three answers on one session, because the third is the one an open front door hides. A good
+    /// credential resolves to the key's identity. A credential the directory does not hold resolves
+    /// to nothing and the unit is refused before it can reach a destination. And a credential that
+    /// IS valid — genuinely minted, genuinely unexpired — but was minted for another plane's
+    /// audience is refused HERE, at this plane's ingress, rather than at the upstream it was going
+    /// to reach: an audience that is declared and never checked is not an audience.
+    #[test]
+    fn a_credential_is_resolved_against_this_planes_own_audience() {
+        use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+        use busbar_caps::{Authenticated, KernelSeal};
+
+        /// One key, minted for one audience.
+        struct Directory;
+
+        impl VirtualKeyDirectory for Directory {
+            fn verify(
+                &self,
+                credential: &str,
+                _now: u64,
+                expected_aud: Option<&str>,
+            ) -> Option<KeyFacts> {
+                // The audience is the plane boundary and the verifier is where it is enforced. Both
+                // credentials below are real keys; only one of them was minted for this plane.
+                let minted_for = match credential {
+                    "voice-tok" => "voice",
+                    "mcp-tok" => "mcp",
+                    _ => return None,
+                };
+                (expected_aud == Some(minted_for)).then(|| KeyFacts {
+                    id: "key-voice-1".to_string(),
+                    name: "an approved key".to_string(),
+                })
+            }
+
+            fn revoked(&self, _credential: &str) -> bool {
+                false
+            }
+        }
+
+        // A closed chain naming the signed-key arm and no boxed module, so the arm is the only
+        // thing that can open the door and this cell is about that arm.
+        let durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        let node = VoiceNode::new(VoiceNodeParts {
+            plane: VoicePlane::new(UPSTREAMS),
+            groups: crate::root::policy::group_table(
+                &std::collections::BTreeMap::new(),
+                &std::collections::BTreeMap::new(),
+            ),
+            pricer: Pricer::flat(0),
+            auth: Auth::new(AuthChain::new(Vec::new(), true)),
+            auth_bindings: AuthBindings::new(std::sync::Arc::new(Directory)),
+            scope: scope_policy(),
+            meter_policy: crate::root::policy::build(
+                &crate::root::policy::MeterPolicyConfig::default(),
+            ),
+            durability,
+            io: serviceable(),
+            origin: Kernel::new().origin(busbar_caps::OriginKind::Client),
+        });
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let answer = |credential: Option<&str>| {
+            let mut unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+            if let Some(credential) = credential {
+                unit = unit.with_credential(credential);
+            }
+            unit.authenticate(&UnitToken::mint(&seal), &ctx(1))
+                .into_result(&seal)
+        };
+
+        // Minted for this plane: admitted, carrying the key's own id, which is what the audit row
+        // and the settlement are attributed to.
+        match answer(Some("voice-tok")) {
+            Ok(Authenticated::Principal(who)) => assert_eq!(who.as_str(), "key-voice-1"),
+            other => panic!("a key minted for this plane opens the session: {other:?}"),
+        }
+
+        // A credential the directory does not hold, and no credential at all. The chain is closed,
+        // so neither is the anonymous principal — both are refusals, and both are raised before the
+        // unit reaches a destination.
+        for absent in [Some("forged"), None] {
+            let refusal = answer(absent)
+                .err()
+                .unwrap_or_else(|| panic!("{absent:?} must not open a session"));
+            assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
+            assert_eq!(refusal.step(), Some(busbar_caps::StepName::Authenticate));
+        }
+
+        // The one that matters: a real key, for the wrong plane. Refused here rather than carried
+        // to an upstream that would have honoured it.
+        let refusal =
+            answer(Some("mcp-tok")).expect_err("another plane's audience does not open this one");
+        assert_eq!(refusal.reason(), ReasonCode::Unauthenticated);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // The configured group reaches the door
+    // ─────────────────────────────────────────────────────────────────────
+
+    /// One group, one turn at a time — the smallest cap an operator can write.
+    fn one_turn_at_a_time(group: &str) -> busbar_unit_admission::GroupTable {
+        let groups = std::collections::BTreeMap::from([(
+            group.to_string(),
+            busbar_substrate::config::groups::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Concurrent,
+                    amount: 1,
+                    per: None,
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                child_default: None,
+            },
+        )]);
+        // Through the interner the root uses at boot, so the name the slot records is the same
+        // static the vocabulary holds rather than one this fixture invented.
+        let mut vocabulary = crate::root::vocabulary::Vocabulary::new();
+        let ids = vocabulary.group_ids(&crate::root::vocabulary::ConfigKeys {
+            groups: vec![group.to_string()],
+            ..crate::root::vocabulary::ConfigKeys::default()
+        });
+        crate::root::policy::group_table(&groups, &ids)
+    }
+
+    /// Ask the door for one turn, keeping what its yes counted.
+    fn ask_the_door(
+        kernel: &Kernel,
+        unit: &VoiceUnit<'_>,
+        who: &PrincipalId,
+    ) -> (Result<Admission, busbar_caps::Refusal>, GroupLeaseSlip) {
+        let slip = GroupLeaseSlip::new();
+        let decision = Units::admit(
+            unit,
+            &busbar_caps::UnitToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
+            &kernel.admit_token(),
+            &ctx(1),
+            who,
+            &[],
+            &slip,
+        );
+        (
+            decision.into_result(&busbar_caps::KernelSeal::acquire_for_kernel()),
+            slip,
+        )
+    }
+
+    /// **The cap is a cap.** A deployment that wrote `concurrent: 1` against a voice group gets one
+    /// turn in the air at a time: the second is refused while the first is still running, and it is
+    /// admitted once the first has ended.
+    ///
+    /// This is the whole point of the chain being the configured one. With an empty chain the door
+    /// walks no group, raises no gauge and says yes to both — which is what a node whose operator
+    /// wrote this cap down did, silently, with nothing on any surface to say the limit was inert.
+    #[test]
+    fn a_voice_group_capped_at_one_turn_refuses_the_second_and_admits_it_after_the_first_ends() {
+        const GROUP: &str = "voice-team";
+        let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
+        let kernel = Kernel::new();
+        let who = PrincipalId::new("acct:voice");
+        // Resolved once, at the open. Every turn below is lent this one value.
+        let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
+        let turn =
+            || VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+
+        let first = turn();
+        let (admitted, held) = ask_the_door(&kernel, &first, &who);
+        assert!(admitted.is_ok(), "the first turn of a group capped at one");
+        assert_eq!(
+            held.taken().len(),
+            1,
+            "and the yes names the one capped group it counted"
+        );
+        // The count itself, taken onto the slot as the loop takes it. Held for as long as the unit
+        // it admitted is running, which is what makes the next line a refusal rather than a second
+        // yes.
+        let running = held.grant_taken().expect("the yes is holding a count");
+
+        let second = turn();
+        let (refused, _) = ask_the_door(&kernel, &second, &who);
+        let refusal = refused.expect_err("the group is full");
+        assert_eq!(
+            refusal.reason(),
+            ReasonCode::RateLimited,
+            "an in-flight gauge is a count cap, not a spend cap"
+        );
+
+        // The unit ends: the slot gives back what it held, and the group has room again.
+        drop(running);
+        let third = turn();
+        let (after, _) = ask_the_door(&kernel, &third, &who);
+        assert!(
+            after.is_ok(),
+            "the cap is instantaneous — it gates what is running, never what has run"
+        );
+    }
+
+    /// A caller bound to a group this node's configuration does not have is refused, not admitted
+    /// under caps that could not be read. Fail-closed, and rendered as over-quota, which is what the
+    /// door itself answers for the same cause.
+    #[test]
+    fn a_voice_caller_bound_to_an_unconfigured_group_is_refused() {
+        let node = node_governed_by(serviceable(), one_turn_at_a_time("voice-team"));
+        let kernel = Kernel::new();
+        let who = PrincipalId::new("acct:voice");
+        assert!(
+            node.chain_for(&who, Some("a-group-this-node-never-had"))
+                .is_none(),
+            "the group is not in the table, so the session has no chain to lend"
+        );
+        // And a turn lent none refuses, rather than running under caps nothing could read.
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let (decision, _) = ask_the_door(&kernel, &unit, &who);
+        assert_eq!(
+            decision
+                .expect_err("nothing is admitted under caps that cannot be read")
+                .reason(),
+            ReasonCode::OverBudget
+        );
+    }
+
+    /// The handshake stays exempt. A group capped out still opens its sessions, because unit zero
+    /// takes no lease of either kind — the posture that keeps an operator's own surface answering
+    /// while everything else is at its cap.
+    #[test]
+    fn a_capped_group_still_opens_a_session() {
+        const GROUP: &str = "voice-team";
+        let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
+        let kernel = Kernel::new();
+        let who = PrincipalId::new("acct:voice");
+        let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
+        let turn =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+        let (_, held) = ask_the_door(&kernel, &turn, &who);
+        let _running = held.grant_taken().expect("the turn is counted");
+
+        let open = VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 1_700_000_000)
+            .charging_through(&chain);
+        let (decision, _) = ask_the_door(&kernel, &open, &who);
+        assert!(
+            decision.is_ok(),
+            "unit zero's admission is the zero-priced one and draws no lease"
+        );
+    }
+
+    /// **The chain is lent, never rebuilt.** A live session's turns are frames of a conversation and
+    /// the door is on every one of them; a chain is a vector of owned bucket ids, so resolving one
+    /// per turn would put that vector on the admitting path per frame for an answer settled at the
+    /// open and unable to change under the session.
+    ///
+    /// So the unit holds a BORROW of what the session resolved. Two turns are handed the same
+    /// address — the property a per-turn `chain_for` cannot have however cheap it looks. The pin is
+    /// on the reference rather than on an allocation count because this crate has no library target
+    /// for a counting-allocator test binary to reach.
+    #[test]
+    fn two_turns_of_one_session_are_handed_the_same_chain() {
+        const GROUP: &str = "voice-team";
+        let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
+        let who = PrincipalId::new("acct:voice");
+        let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
+
+        let first =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+        let second =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+        let (Some(one), Some(two)) = (first.chain, second.chain) else {
+            panic!("both turns were lent the session's chain");
+        };
+        assert!(
+            std::ptr::eq(one, two),
+            "one resolved chain, lent twice — not two copies of one answer"
+        );
+        assert!(
+            std::ptr::eq(one, &chain),
+            "and it is the session's own value"
+        );
     }
 }

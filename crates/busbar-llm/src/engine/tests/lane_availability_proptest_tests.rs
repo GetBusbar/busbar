@@ -258,7 +258,7 @@ enum Disposition {
 /// invariant. Panics on violation (proptest treats the panic as a failing case and shrinks). Returns
 /// the [`Disposition`] branch taken so a targeted test can assert the harness reached it.
 async fn run_world(world: World) -> Disposition {
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     // One mock provider that answers every request with a default 200 (an empty queue pops nothing and
     // falls back to the default OK), so any number of healthy lanes / retries are served.
@@ -600,7 +600,7 @@ async fn run_world_reaches_fallback_spill_assertion_on_targeted_shape() {
 #[tokio::test]
 async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     let sem = Arc::new(tokio::sync::Semaphore::new(1));
     let _held = sem.clone().try_acquire_owned().unwrap(); // primary permanently at capacity
@@ -663,7 +663,7 @@ async fn bug1_witness_fallback_spills_served_by_fallback_not_primary() {
 #[tokio::test]
 async fn budget_contract_holds_under_full_saturation_for_every_policy() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     for policy in [
         OnExhausted::Status503,

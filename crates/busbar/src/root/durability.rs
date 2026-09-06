@@ -95,7 +95,7 @@ use std::path::{Path, PathBuf};
 use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
 use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_unit_ledger::checkpoint::Checkpoint;
-use busbar_unit_ledger::legacy::LegacyRows;
+use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_unit_ledger::settle::{Ledger, Settlement};
 use busbar_unit_ledger::totals::{TotalsKey, WindowStart};
@@ -305,28 +305,32 @@ impl Durability {
             wall: stamp.wall,
             mono: stamp.mono,
         };
-        self.journal_posting(&posting, at.durability, at.step)?;
         // The overdraft's own record. Reserved and settled are zero on it deliberately: the
         // settlement above already carries both, and repeating them here would double every figure
         // a replay adds up. What this record holds that nothing else does is the carry, on the
         // chain, in order, beside the posting it came out of.
-        let overdraft = match settlement.overdraft.as_ref() {
-            None => None,
-            Some(note) => {
-                let record = Posting {
-                    key: note.key.clone(),
-                    window: note.window,
-                    reserved: 0,
-                    settled: 0,
-                    overdraft: note.amount,
-                    rate_card_version: stamp.rate_card_version,
-                    wall: stamp.wall,
-                    mono: stamp.mono,
-                };
-                self.journal_posting(&record, at.durability, at.step)?;
-                Some(record)
-            }
-        };
+        let overdraft = settlement.overdraft.as_ref().map(|note| Posting {
+            key: note.key.clone(),
+            window: note.window,
+            reserved: 0,
+            settled: 0,
+            overdraft: note.amount,
+            rate_card_version: stamp.rate_card_version,
+            wall: stamp.wall,
+            mono: stamp.mono,
+        });
+        // ONE BATCH, both records. A batch is the unit of durability — one store round trip
+        // memory-buffered, one fsync on disk — and the settlement and its carry are two entries of
+        // one act rather than two acts. Appending them separately paid twice for it on every
+        // overdrafting settlement, and left a window in which the chain held a settlement whose
+        // carry was not on it yet.
+        let entries: Vec<Entry> = std::iter::once(&posting)
+            .chain(overdraft.as_ref())
+            .map(|record| {
+                Entry::new(RecordClass::Transaction, record.body()).at(record.wall, record.mono)
+            })
+            .collect();
+        self.journal.append(at.durability, at.step, &entries)?;
         Ok(Settled {
             settlement,
             posting,
@@ -588,6 +592,48 @@ pub fn build(
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
     build_for_node(cfg, 0, shipper, legacy_rows)
+}
+
+/// THE NODE'S ONE BOOK, and the read half of the dual write that goes with it.
+///
+/// Two halves of one value, handed out together for the same reason the ledger's own constructor
+/// takes them together: whatever a settlement dual-writes onto is what the reconciliation view has
+/// to read back. A caller that built the two separately would have a node whose ledger posts onto
+/// one set of rows while its views read another, and the identity over that pair reports every row
+/// as out.
+pub struct NodeBook {
+    /// The journal, the ledger and the two audit chains, behind the one lock every settlement and
+    /// every view takes.
+    pub durability: std::sync::Arc<std::sync::Mutex<Durability>>,
+    /// The previous release's rows, as the dual write fills them. The write half is inside the
+    /// ledger; this is the same value, kept so a view has somewhere to read them from.
+    pub rows: std::sync::Arc<RecordingRows>,
+}
+
+/// Open the one book a process settles onto.
+///
+/// ONE of these per process, built at boot and shared by every plane's exit arm and by the
+/// administrative views. A second would be a second set of books: money posted through one would be
+/// invisible to the other, and the views — which are what an operator reads to decide whether the
+/// dual write is keeping up — would answer over a book nothing settles into. That is not a
+/// hypothetical shape; it is what a node has when each mount builds its own.
+///
+/// Memory-buffered, with no data directory read and no shipper of its own, which is the previous
+/// release's shape: nothing is probed, nothing is opened, and no file appears beside a configuration
+/// that asked for none.
+#[must_use]
+pub fn node_book() -> NodeBook {
+    let rows = std::sync::Arc::new(RecordingRows::new());
+    let durability = build(
+        &DurabilityConfig { data_dir: None },
+        Box::new(busbar_unit_wal::NullShipper::new()),
+        Box::new(RecordingRows::clone(&rows)),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    NodeBook {
+        durability: std::sync::Arc::new(std::sync::Mutex::new(durability)),
+        rows,
+    }
 }
 
 /// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this
@@ -1413,6 +1459,108 @@ mod tests {
             vec![1, 2],
             "the carry comes after the posting it is of"
         );
+        verify_journal(&replayed).expect("the chain verifies");
+    }
+
+    /// A shipper that takes every batch and remembers how many records each one carried.
+    ///
+    /// The batch is the unit of durability: memory-buffered it is what the store is offered, on
+    /// disk it is what one fsync covers. So a count of batches is a count of round trips, which is
+    /// what the test below is about.
+    #[derive(Clone, Default)]
+    struct CountingShipper(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
+
+    impl busbar_unit_wal::Shipper for CountingShipper {
+        fn ship(
+            &mut self,
+            records: &[busbar_unit_wal::Record],
+        ) -> Result<(), busbar_unit_wal::ShipError> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(records.len());
+            Ok(())
+        }
+    }
+
+    /// ONE SETTLEMENT IS ONE BATCH, carry and all.
+    ///
+    /// The posting and the overdraft record are two entries of one settlement, written on the
+    /// settle path every priced unit takes. Appending them separately is two batches for one act:
+    /// two store round trips memory-buffered, two fsyncs on disk, and a window in between where the
+    /// chain holds a settlement whose carry is not there yet. They go in one call, which is also
+    /// what makes the pair atomic against a crash rather than merely adjacent.
+    #[test]
+    fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
+        use busbar_caps::{
+            step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+            QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let batches = CountingShipper::default();
+        let mut durability = build(
+            &DurabilityConfig { data_dir: None },
+            Box::new(batches.clone()),
+            rows(),
+        )
+        .expect("memory-buffered cannot fail");
+
+        let key = totals_key("vk_batch");
+        durability.ledger.record_hold_opened(&key, 86_400, 1_000);
+        let mut hold = Hold::open(
+            &AdmitToken::<Admit>::mint(&seal),
+            PrincipalId::new("vk_batch"),
+            1_000,
+        );
+        assert_eq!(hold.spend(4_000, 0).overdraft, 3_000);
+        let usage = Usage::report(
+            &UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("nano_units"),
+                quantity: 4_000,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+
+        let durability_token = token();
+        let settled = durability
+            .settle(
+                &settling(&key, &durability_token),
+                hold,
+                4_000,
+                &usage,
+                &LedgerToken::mint(&seal),
+            )
+            .expect("the counting shipper takes it");
+        assert!(settled.overdraft.is_some(), "the fixture overdrafts");
+
+        let offered = batches
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            offered,
+            vec![2],
+            "one settlement is one batch of two records, not two batches of one"
+        );
+
+        // And the chain says exactly what it said when the two records were appended separately.
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("the journal reads back")
+            .expect("and verifies");
+        assert_eq!(replayed.len(), 2);
+        assert_eq!(replayed[0].body, settled.posting.body());
+        assert_eq!(
+            replayed[1].body,
+            settled.overdraft.as_ref().expect("the carry").body()
+        );
+        let seqs: Vec<u64> = replayed.iter().map(|r| r.node_seq).collect();
+        assert_eq!(seqs, vec![1, 2], "the carry still comes after its posting");
         verify_journal(&replayed).expect("the chain verifies");
     }
 

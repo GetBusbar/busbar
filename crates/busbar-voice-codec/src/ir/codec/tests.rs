@@ -683,6 +683,46 @@ fn the_call_id_table_is_capped_and_evicts_the_oldest() {
     assert_eq!(st.ref_for_call_id(&newest), handle);
 }
 
+/// THE HELD TOOL-ARGUMENT TABLE HAS THE SAME CEILING.
+///
+/// Only a call that CLOSES gives its accumulation back, and an upstream that streams argument
+/// fragments is under no obligation to ever close one. Bounding the SIZE of each accumulation is no
+/// bound on how many there are: a peer that opens calls and abandons them held one buffer per call
+/// for the life of the session, each up to the per-call ceiling. Past the ceiling the oldest
+/// accumulation goes, exactly as the oldest call id does.
+#[test]
+fn the_held_tool_argument_table_is_capped_and_evicts_the_oldest() {
+    let mut st = DecodeState::default();
+    // Every call opens, streams a fragment, and is never closed — the shape that grew the table.
+    for i in 0..=MAX_TRACKED_CALL_IDS {
+        let call = st.ref_for_call_id(&format!("call-{i}"));
+        st.push_call_args(call, br#"{"a":"#);
+    }
+    assert_eq!(
+        st.call_args.len(),
+        MAX_TRACKED_CALL_IDS,
+        "the held-arguments table stays at its ceiling however many calls are abandoned open"
+    );
+    assert!(
+        st.take_call_args(CallRef(0)).is_none(),
+        "the OLDEST accumulation is the one given up"
+    );
+    // A call that closed frees its place rather than spending one: the accumulation still held for
+    // the newest call must survive a further ceiling's worth of closes.
+    let newest = st.ref_for_call_id(&format!("call-{MAX_TRACKED_CALL_IDS}"));
+    for i in 0..MAX_TRACKED_CALL_IDS {
+        let call = st.ref_for_call_id(&format!("closed-{i}"));
+        st.push_call_args(call, br#"{"b":1}"#);
+        assert!(st.take_call_args(call).is_some());
+    }
+    st.push_call_args(newest, br#"1}"#);
+    assert_eq!(
+        st.take_call_args(newest),
+        Some(serde_json::json!({"a": 1})),
+        "a live accumulation is not evicted by calls that already closed"
+    );
+}
+
 // ── tools: correlation across the call loop ──────────────────────────────────────────────────────
 
 #[test]

@@ -704,6 +704,11 @@ pub(crate) const GENERIC_REJECTED_DETAIL: &str = "The request could not be proce
 /// Client-visible fallback `detail` strings each repeated across several ingress-error sites —
 /// hoisted so the copy cannot drift between them. Same vendor-neutral rules as
 /// `GENERIC_REJECTED_DETAIL`: generic service phrasing, no proxy/translation vocabulary.
+///
+/// "Cannot drift" is a claim about the RENDERING sites, and it only holds while every one of them
+/// reads from here. The exception is deliberate and is the golden tests: a test that compares the
+/// rendered bytes against this const would agree with any edit to it, so the assertions that pin the
+/// 1.5.5 wire copy spell the sentence out and are the thing that makes an edit here visible.
 pub(crate) const DETAIL_INTERNAL_ERROR: &str =
     "We received an unexpected internal error. Please try again.";
 pub(crate) const DETAIL_MODEL_UNSUPPORTED_OPERATION: &str =

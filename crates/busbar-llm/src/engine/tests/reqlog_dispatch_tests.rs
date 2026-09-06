@@ -29,11 +29,12 @@
 //! second chain of its own.
 
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-use busbar_core::governance::{GovState, MemoryStore};
 use busbar_core::proxy::reqlog::{
     RequestRecord, OUTCOME_DISPATCHED, OUTCOME_REFUSED, PRINCIPAL_UNGOVERNED, REASON_NOT_GRANTED,
     REQUESTS,
 };
+use busbar_store_memory::MemoryStore;
+use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -65,7 +66,7 @@ async fn a_governed_deployment(
     String,
 ) {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let state = Arc::new(MockServerState::new());
     for _ in 0..answers {
         state.push(MockResponse::Ok {
@@ -81,7 +82,9 @@ async fn a_governed_deployment(
         &[9u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(GovState::new_with_signer(store, None, Some(signer)).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, Some(signer))
+        .unwrap();
     let (key, secret) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -100,7 +103,7 @@ async fn a_governed_deployment(
 
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
             LaneSpec::new(
@@ -210,7 +213,7 @@ async fn every_model_request_lands_on_the_presenting_keys_hash_chain_dispatch_an
 /// go unrecorded.
 #[tokio::test]
 async fn a_request_with_no_resolved_key_is_chained_under_the_sentinel_rather_than_dropped() {
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let before = REQUESTS.records_for(PRINCIPAL_UNGOVERNED).len();
 
     // No `governance(..)`: nothing resolves a key, and the request is refused for want of a route.

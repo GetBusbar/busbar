@@ -43,16 +43,13 @@ impl Kind {
         K::KIND
     }
 
-    /// Whether the kind is one of the pure kinds the source denylist is scoped to.
-    ///
-    /// The core-to-plugin section scopes the denylist to planes, hooks, pure static auth schemes
-    /// and egress-auth schemes. The input/output kinds — store, secret, export and the
-    /// network-backed auth plugins — own their input and output by definition and are bounded by
-    /// their signature, a deadline and an access journal entry instead.
-    #[must_use]
-    pub const fn is_pure_kind(self) -> bool {
-        matches!(self, Self::Plane | Self::Hook | Self::EgressAuth)
-    }
+    // The PURE kinds — plane, hook, and the pure static and egress-auth schemes — are the ones the
+    // core-to-plugin section scopes its source denylist to; the input/output kinds (store, secret,
+    // export, and the network-backed auth plugins) own their input and output by definition and are
+    // bounded by their signature, a deadline and an access journal entry instead. That partition was
+    // also spelled here as a predicate no caller in the workspace ever asked, and the rule it stated
+    // is enforced by `source-denylist:*` in the construction gate, over the crates rather than over
+    // this enum. One statement of it, in the place that acts on it.
 }
 
 impl fmt::Display for Kind {

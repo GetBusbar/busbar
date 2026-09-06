@@ -66,6 +66,7 @@ mod rehearsal {
     };
     use busbar_core::proxy::reqlog::REQUESTS;
     use busbar_substrate::plane_host::EngineTablesView;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use crate::unit::{admit, approve, arrival, audit, authenticate, decode, meter, route, verify};
@@ -243,7 +244,7 @@ mod rehearsal {
     /// One deployment: a governed key, a one-lane pool, and a scripted upstream. Each LEG builds its
     /// own, so the two legs' counters are compared rather than summed.
     struct Rig {
-        app: Arc<busbar_core::state::App>,
+        app: Arc<crate::test_support::BuiltApp>,
         key: Arc<busbar_api::VirtualKey>,
         server: MockServer,
         charged_at: u64,
@@ -264,7 +265,7 @@ mod rehearsal {
 
     async fn rig(fixture: Fixture) -> Rig {
         crate::testkit::install_test_seams();
-        busbar_core::metrics::init();
+        busbar_substrate::metrics::init();
 
         let state = Arc::new(MockServerState::new());
         // Enough for every failover hop the walk may take; a delivered fixture consumes one.
@@ -294,7 +295,7 @@ mod rehearsal {
             );
         }
 
-        let store = Arc::new(busbar_core::governance::MemoryStore::new());
+        let store = Arc::new(busbar_store_memory::MemoryStore::new());
         if let Some(requests) = fixture.seeded_group_requests() {
             use busbar_api::Store as _;
             store
@@ -309,10 +310,9 @@ mod rehearsal {
                 )
                 .expect("seed the durable bucket");
         }
-        let gov = Arc::new(
-            busbar_core::governance::GovState::new_with_signer(store, None, None)
-                .expect("governance"),
-        );
+        let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+            .governance(store, None, None)
+            .expect("governance");
         let (key, _) = gov
             .create_key(
                 busbar_substrate::governance::NewKeySpec {
@@ -328,21 +328,23 @@ mod rehearsal {
                 1_700_000_000,
             )
             .expect("create key");
-        let cost = busbar_core::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
+        let cost =
+            crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, FEE_CENTS, &groups);
         // Enforcement is in-memory and authoritative, so the seeded durable spend has to be hydrated
         // into the cells exactly as boot hydrates it; without this the door would not see it.
-        gov.hydrate_budgets(&cost, 0).expect("hydrate");
+        gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
 
         let mut builder = TestApp::new()
             .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
             .pool(POOL, &[(0, 1)])
-            .governance(gov)
-            .cost(cost);
+            .governance_kit(gov)
+            .cost_kit(cost);
         if fixture == Fixture::UpstreamFailure {
             // RELAY, not retry-until-exhausted: `least_bad` is the disposition that hands the client
             // the upstream's own answer when every lane is unhealthy, which is what makes this fixture
             // a FAILED TRANSFER (the destination answered, badly) rather than a pool-empty 503.
-            builder = builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
+            builder =
+                builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
         }
         let app = builder.build();
 
@@ -913,7 +915,6 @@ mod rehearsal {
                 usage_sink: admitted.sink,
                 model_not_found_message: None,
                 // The rehearsal's one interner — the composition root's, standing in.
-                lanes: &LANES,
             },
         )
         .await;
@@ -1145,7 +1146,6 @@ mod rehearsal {
                     resolved_gov_key: None,
                     usage_sink: None,
                     model_not_found_message: None,
-                    lanes: &LANES,
                 },
             )
             .await;
@@ -1695,7 +1695,6 @@ mod rehearsal {
                 usage_sink: None,
                 model_not_found_message: None,
                 // The rehearsal's one interner — the composition root's, standing in.
-                lanes: &LANES,
             },
         )
         .await;
@@ -1764,7 +1763,6 @@ mod rehearsal {
                 usage_sink: None,
                 model_not_found_message: None,
                 // The rehearsal's one interner — the composition root's, standing in.
-                lanes: &LANES,
             },
         )
         .await;

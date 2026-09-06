@@ -10,3 +10,4 @@ mod kill_at_every_offset;
 mod no_disk;
 mod poison;
 mod record_layout;
+mod restart_after_a_roll;

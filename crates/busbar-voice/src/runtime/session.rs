@@ -21,6 +21,7 @@ use crate::ir::control::IrDuplexControl;
 use crate::ir::event::{IrClientEvent, IrServerEvent};
 use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::runtime::carrier::Carrier;
+use crate::runtime::governed::GovernedSession;
 use crate::runtime::metering::{MeteringLease, TurnMeter};
 use crate::runtime::tools::ToolExecutor;
 use bytes::Bytes;
@@ -40,6 +41,13 @@ pub struct Outbound {
     pub downlink: Vec<WireEvent>,
     /// The metering lease reported exhausted / refused this frame — the carrier must hard-close.
     pub close: bool,
+    /// This frame carried a tool reply the node's table refused — nothing on this session was waiting
+    /// on the identifier it named.
+    ///
+    /// A bit rather than silence, and the distinction is the point: a refused reply put nothing on
+    /// the upstream wire, and a caller that could not tell that apart from a frame that was never
+    /// sent would have no way to report a client answering calls it was never asked to make.
+    pub refused_reply: bool,
 }
 
 impl Outbound {
@@ -95,6 +103,10 @@ pub struct SessionCore<C> {
     /// the host prices each turn against that model's rate-card lane.
     model: String,
     carrier: Carrier,
+    /// The node's open-call table, when a composition root bound one. `None` is an ungoverned
+    /// deployment: every call is served in-process and a client-authored result is carried upstream
+    /// verbatim, which is exactly what this runtime did before the governed wait existed.
+    governed: Option<GovernedSession>,
 }
 
 impl<C> SessionCore<C>
@@ -126,6 +138,40 @@ where
             tools,
             model,
             carrier,
+            governed: None,
+        }
+    }
+
+    /// Bind this session to the node's open-call table.
+    ///
+    /// A builder step rather than a constructor argument because the table is not something every
+    /// deployment has: the runtime and topology tests, the conformance rig's ungoverned legs and a
+    /// `--validate` build all assemble a core with no root behind it, and each of them would
+    /// otherwise have to name a table it has no use for.
+    #[must_use]
+    pub fn with_governed(mut self, governed: GovernedSession) -> Self {
+        self.governed = Some(governed);
+        self
+    }
+
+    /// Which session the node's table knows this pump as, when a composition root bound one.
+    ///
+    /// `None` is the ungoverned deployment, and telling the two apart from outside is what lets a
+    /// composition prove that the sessions it serves are the governed kind rather than asserting it.
+    #[must_use]
+    pub fn governed_session(&self) -> Option<u64> {
+        self.governed.as_ref().map(|g| g.session)
+    }
+
+    /// **The tick's sweep.** End every governed call whose deadline has passed, and say how many.
+    ///
+    /// Driven from the node's tick beside the pump, because a wait that is never woken is a hold that
+    /// is never settled and there is nothing on the frame path that will notice. An ungoverned
+    /// session has no table and sweeps nothing.
+    pub fn sweep_expired(&self, now_ms: u64) -> usize {
+        match &self.governed {
+            Some(g) => g.calls.expired(now_ms),
+            None => 0,
         }
     }
 
@@ -238,12 +284,22 @@ where
                                 e.closed = true;
                                 if !e.executed {
                                     e.executed = true;
-                                    to_exec.push((
-                                        call_ref,
-                                        e.call_id.clone(),
-                                        e.name.clone(),
-                                        e.args.clone(),
-                                    ));
+                                    // THE FORK. A tool this node serves is executed in-process below
+                                    // and the client never authors its result — the moat, unchanged.
+                                    // A tool it does not serve has only one possible answerer, so
+                                    // nothing is executed here: the call's reply leg is the wait the
+                                    // root entered when it planned the leg, and the answer comes back
+                                    // up the client's own uplink.
+                                    let client_serves =
+                                        self.governed.is_some() && !self.tools.serves(&e.name);
+                                    if !client_serves {
+                                        to_exec.push((
+                                            call_ref,
+                                            e.call_id.clone(),
+                                            e.name.clone(),
+                                            e.args.clone(),
+                                        ));
+                                    }
                                 }
                             }
                             // A server-side result echoed back to us is not something we act on.
@@ -322,6 +378,49 @@ where
                         &mut g.decode,
                     ));
                 }
+                // A CLIENT-AUTHORED TOOL REPLY. This is the answer a governed wait was entered for,
+                // and it is the one client frame that is not simply carried: it names a call, and
+                // which unit that call belongs to is the node's decision, not this pump's. So the
+                // correlation goes to the node's table first and the wire second — a reply the table
+                // refuses reaches the model on no wire at all, because paying it out against
+                // whichever call happens to be standing is the exact failure the correlation exists
+                // to prevent.
+                IrClientEvent::Tool(IrDuplexTool::CallResult {
+                    call_ref,
+                    call_id,
+                    name,
+                    output,
+                }) if self.governed.is_some() => {
+                    let governed = self
+                        .governed
+                        .as_ref()
+                        .expect("the arm's own guard read it as bound");
+                    match governed.calls.replied(governed.session, &call_id) {
+                        Ok(()) => {
+                            // The wait was woken. The reply goes on to the model, and the model is
+                            // asked to continue — the same two frames the in-process path authors,
+                            // because a turn that stopped for a tool resumes the same way whoever
+                            // answered it.
+                            g.calls.remove(&call_ref);
+                            out.push_up(self.codec.write_up(
+                                IrClientEvent::Tool(IrDuplexTool::CallResult {
+                                    call_ref,
+                                    call_id,
+                                    name,
+                                    output,
+                                }),
+                                &mut g.decode,
+                            ));
+                            out.push_up(self.codec.write_up(
+                                IrClientEvent::Control(IrDuplexControl::ResponseCreate {
+                                    response: None,
+                                }),
+                                &mut g.decode,
+                            ));
+                        }
+                        Err(_) => out.refused_reply = true,
+                    }
+                }
                 // Everything else forwards verbatim (audio uplink, commits, item ops, tool results the
                 // plane itself authored are not re-authored here).
                 ev => {
@@ -331,6 +430,60 @@ where
         }
         out
     }
+}
+
+/// How often the tick beside a session's pump sweeps its governed calls.
+///
+/// One second, against a reply deadline the plane declares in tens of seconds: fine enough that a
+/// call ends within a second of the deadline it was given, coarse enough that an idle session's tick
+/// is not a cost. The deadline itself is not this crate's to name — the leg the root plans carries it,
+/// and the sweep only asks the table which of them have passed.
+const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// **THE TICK BESIDE THE PUMP.** Run one session's frame loop with its governed-call sweep beside it,
+/// and end when the pump does.
+///
+/// The wake has a frame to arrive on. The sweep does not: a client that simply never replies sends
+/// nothing, so there is no frame on which anyone would notice, and a wait nobody sweeps is a hold
+/// nobody settles. This is the only place in the session's life where time passing is itself an
+/// event.
+///
+/// It rides each session's own pump rather than a process-wide loop, which is the shape this plane
+/// already has — voice spawns no boot task, and a sweep that outlived the socket it was sweeping for
+/// would be exactly the background loop the plane's start hook says it does not have. When the pump
+/// returns, the tick is dropped with it.
+pub async fn serve_with_sweep<C, F>(core: Arc<SessionCore<C>>, pump: F)
+where
+    C: DuplexReader + DuplexWriter + Send + Sync + 'static,
+    F: std::future::Future<Output = ()>,
+{
+    let sweep = async {
+        loop {
+            tokio::time::sleep(SWEEP_EVERY).await;
+            // A closed carrier is a conversation that is over; nothing left on it can be answered and
+            // the pump is on its way out anyway.
+            if core.carrier().is_closed() {
+                return;
+            }
+            core.sweep_expired(now_ms());
+        }
+    };
+    futures::pin_mut!(pump);
+    futures::pin_mut!(sweep);
+    // The sweep never completes on its own, so this ends when — and only when — the pump does.
+    futures::future::select(pump, sweep).await;
+}
+
+/// Wall-clock milliseconds, for the sweep's "which deadlines have passed" question.
+///
+/// The reading is handed to the node's table rather than compared here: which calls are past their
+/// deadline is the table's judgement, and a clock read on this side that the table then re-derived
+/// would be two clocks deciding one deadline.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// THE UPSTREAM-FACING PLANE — bound to the socket busbar holds to the provider (OpenAI Realtime). The
@@ -369,7 +522,19 @@ where
             .on_server_frame(WireEvent(Bytes::from(frame)))
             .await;
         for up in plan.upstream {
-            out.emit(up.0.to_vec()).await;
+            // THIS leg's policy for a write that fails: DIAGNOSE AND STOP SENDING. The upstream
+            // socket is a session-long conversation, so a frame that never lands leaves the far end
+            // holding a state busbar no longer shares — and every later frame of this plan would be
+            // written into the same dead socket. Abandon the rest of the plan rather than emit
+            // frames the peer will never see; the downlink and the close below still run, so the
+            // client is still told.
+            if let Err(e) = out.emit(up.0.to_vec()).await {
+                tracing::warn!(
+                    error = %e,
+                    "voice: an upstream frame could not be written; abandoning the rest of this plan's upstream"
+                );
+                break;
+            }
         }
         for down in plan.downlink {
             self.core.carrier.send_downlink(down.0.to_vec());

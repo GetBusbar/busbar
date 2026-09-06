@@ -16,22 +16,25 @@
 use super::{translate_response_cross_protocol, BudgetSpendGuard};
 use crate::engine::AppEngineExt as _;
 use crate::engine::TapCell;
-use busbar_core::governance::{GovState, MemoryStore};
+use busbar_store_memory::MemoryStore;
 use busbar_substrate::governance::NewKeySpec;
+use busbar_substrate::testkit::engine_kit::{CostKit, EngineTestKit as _, GovKit};
 use std::sync::Arc;
 
 /// A governed fixture: an `App` whose sole lane is the OpenAI EGRESS with a limited request budget of
 /// 5, plus the governance ledger + a virtual key bound to a loose day-budget group (so
 /// `usage_for(key)` materialises the key's token bucket exactly as the usage-tap tests rely on).
 fn fixture() -> (
-    Arc<busbar_core::state::App>,
-    Arc<GovState>,
-    Arc<busbar_core::cost::CostModel>,
+    Arc<crate::test_support::BuiltApp>,
+    Arc<dyn GovKit>,
+    Arc<dyn CostKit>,
     busbar_api::VirtualKey,
 ) {
     crate::testkit::install_test_seams();
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).expect("gov"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov");
     let groups = std::collections::BTreeMap::from([(
         "g".to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -48,9 +51,7 @@ fn fixture() -> (
             ..Default::default()
         },
     )]);
-    let cost = Arc::new(busbar_core::cost::CostModel::resolve_parts(
-        None, 0, &groups,
-    ));
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -184,7 +185,7 @@ async fn drive(
     };
 
     let ledger_tokens = gov
-        .usage_for(&cost, &key.id, busbar_substrate::store::now())
+        .usage_for(&*cost, &key.id, busbar_substrate::store::now())
         .expect("usage read")
         .map(|u| u.tokens)
         .unwrap_or(0);

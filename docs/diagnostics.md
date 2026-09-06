@@ -1713,7 +1713,7 @@ The submit-time retention sweep found an ACTIVE task idle past the abandonment c
 **What to do:** Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.
 
 <a id="plane-sse-frame-not-utf8"></a>
-### BUSBAR-7100 — A relayed SSE frame was not valid UTF-8 and was dropped
+### BUSBAR-7104 — A relayed SSE frame was not valid UTF-8 and was dropped
 
 - **Severity:** actionable
 - **Since:** 1.6.0

@@ -29,6 +29,9 @@ repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
 LP="${EXPIRED_OOB_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-49201}}" AP="${EXPIRED_OOB_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-49202}}" MP="${EXPIRED_OOB_MOCK_PORT:-${SCRIPT_MOCK_PORT:-49211}}"
+# Same knob as record.sh's boot_busbar / scripts/store-persist.sh: this cell boots busbar TWICE, so
+# a bound sized for an idle laptop reads a saturated host's second boot as "never came up".
+BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 W="$RAW/expired-oob-work"; mkdir -p "$W/plugins"
 
 for p in "$LP" "$AP" "$MP"; do
@@ -89,7 +92,12 @@ YAML
 eff='{}'
 step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
 stepjson() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$eff")"; }
-fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"; exit 0; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
 
 spawn() {  # spawn <log-file>  -> prints pid (busbar's OWN pid, see note below)
   # `exec` inside the backgrounded subshell so $! is busbar's OWN pid, not a wrapper subshell's — a
@@ -112,7 +120,7 @@ spend() {  # spend <token> -> writes $W/spend.body, prints status
 
 # ── boot 1: mint (future expires_at, passes admin validation) + spend once ──────────────────────
 pid="$(spawn "$W/busbar1.log")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 1 "$(tail -c 500 "$W/busbar1.log")"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail 1 "$(tail -c 500 "$W/busbar1.log")"
 
 future="$(( $(date +%s) + 3600 ))"
 mint="$(curl -sS -m 10 -w '\n%{http_code}' -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" \
@@ -166,7 +174,7 @@ while [ "$(date +%s)" -le "$past_expires" ]; do sleep 1; done
 
 # ── boot 2: restart on the SAME db, spend again with the SAME token ────────────────────────────
 pid="$(spawn "$W/busbar2.log")"; track_pid "$pid"
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 4 "$(tail -c 500 "$W/busbar2.log")"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" || fail 4 "$(tail -c 500 "$W/busbar2.log")"
 
 spend_after="$(spend "$tok")"; step spend_after "$spend_after"
 body_after="$(jq -c . "$W/spend.body" 2>/dev/null || jq -n --arg raw "$(cat "$W/spend.body" 2>/dev/null)" '{raw:$raw}')"
@@ -179,12 +187,21 @@ stop "$pid"
 req_before="$(jq -r '.requests // 0' <<<"$usage_before")"; req_after="$(jq -r '.requests // 0' <<<"$usage_after")"
 usage_delta="$(jq -n --argjson a "$req_before" --argjson b "$req_after" '{requests: ($b - $a)}')"
 
-result="$(jq -n \
+if ! result="$(jq -n \
   --argjson mint_status "$mint_status" \
   --argjson spend_before "$(jq -r .spend_before <<<"$eff")" \
   --argjson spend_after "$(jq -r .spend_after <<<"$eff")" \
   --argjson body_after "$(jq -c .body_after <<<"$eff")" \
   --argjson usage_delta "$usage_delta" \
-  '{mint_status:$mint_status, spend_before:$spend_before, spend_after:$spend_after, body_after:$body_after, usage_delta:$usage_delta}')"
+  '{mint_status:$mint_status, spend_before:$spend_before, spend_after:$spend_after, body_after:$body_after, usage_delta:$usage_delta}' 2>"$W/result.err")"; then
+  # CHECKED. Every value above is a number this run measured; if any of them is not one, the cell
+  # measured something it cannot state and the body would go out EMPTY — and an empty body with
+  # status 0 compares clean against a golden that failed the same way, which is the vacuous green
+  # the ledger exists to refuse. Record the -1 UNSUPPORTED shape record.sh reads as a named gap.
+  jq -n --argjson eff "$eff" --arg e "$(tr '\n' ' ' <"$W/result.err" | tail -c 200)" \
+    '{status:-1, headers:{}, body:"", effects:($eff + {error: ("the cell body could not be assembled from its own measurements: " + $e)})}' \
+    >"$RAW/captured.json"
+  exit 0
+fi
 
 jq -n --argjson eff "$eff" --arg body "$result" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"

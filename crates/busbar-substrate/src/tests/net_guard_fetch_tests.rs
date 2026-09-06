@@ -369,6 +369,39 @@ fn userinfo_is_refused_rather_than_stripped() {
     ));
 }
 
+/// A refusal names the URL, and a URL's authority is where a password goes.
+///
+/// The refusal text is written into a card and a log, both read by more people than a config is and
+/// kept for longer. Repeating the credential there would make the refusal the one place the secret
+/// is written down twice — so the authority's userinfo is replaced by a marker, and the host, which
+/// is the whole diagnosis, stays.
+#[test]
+fn a_refusal_never_repeats_the_credential_in_the_authority() {
+    let refusals = [
+        split_url("https://svc:hunter2@good.example/mcp").expect_err("userinfo is refused"),
+        split_url("ftp://svc:hunter2@good.example/x").expect_err("the scheme is refused"),
+        judge_scheme("http://svc:hunter2@good.example/x", false, strict())
+            .expect_err("plaintext is refused"),
+        refuse_oversized_body("https://svc:hunter2@good.example/x", 1 << 30, strict())
+            .expect_err("the body is over the ceiling"),
+    ];
+    for refusal in refusals {
+        let text = refusal.to_string();
+        assert!(
+            !text.contains("hunter2") && !text.contains("svc"),
+            "the refusal repeated the credential: {text}"
+        );
+        assert!(
+            text.contains("good.example"),
+            "the refusal must still name the host it is about: {text}"
+        );
+    }
+
+    // A `@` in the path is not a credential and is left as the operator wrote it.
+    let path_at = split_url("ftp://good.example/mail@archive").expect_err("the scheme is refused");
+    assert!(path_at.to_string().contains("mail@archive"));
+}
+
 #[test]
 fn default_ports_are_derived_from_the_scheme_and_ipv6_comes_back_unbracketed() {
     let (https, host, port, path) = split_url("https://a.example/mcp").unwrap();

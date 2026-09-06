@@ -12,15 +12,23 @@
 #   plane-purity     scripts/plane-purity-lint.sh --check  (neutral crates 0 side channels / 0 backwards).
 #   plane-delete     scripts/plane-delete-test.sh --all     (llm/mcp/a2a/voice each deletable).
 #   byte-identity    the MONEY PATH is byte-stable: openapi_json_matches_committed_file,
-#                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-llm same-proto
-#                    byte-exact oracles. Bless/regen env vars MUST be empty first (else the check is a
-#                    no-op that regenerates the goldens instead of comparing to them).
+#                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-llm-codec
+#                    same-proto byte-exact oracles. Bless/regen env vars MUST be empty first (else the
+#                    check is a no-op that regenerates the goldens instead of comparing to them), and
+#                    every filtered step declares its test count so a filter that selects nothing is
+#                    RED rather than vacuously green (see filtered_cargo_test).
 #   config-stability scripts/config-stability-gate.sh --check (config-schema.snapshot.json byte-stable).
 #   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
 #   conformance      the conformance rigs' selftests + verdict-covers-every-leg.py + the voice legs =ready.
+#   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
+#                    scenario/script/leg/suite that owns it and the rigs behind them pass
+#                    (rigs-ledger.sh), and every root-leg cell it calls proven runs over the loop.
 #   no-deferral      scripts/no-deferral-gate.sh --strict-done (nothing deferred; voice markers CLEARED).
-#   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0): core names no
-#                    section noun as a parse target (0 — Stage A landed).
+#   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0). Its residual is
+#                    a LOCKED-legitimate floor, not zero and not a done condition, so what is asserted
+#                    is the floor itself: the run must PRODUCE a count (a gate that errored, or whose
+#                    verdict line moved, is RED) and that count must not RISE above CONFIG_NOUN_FLOOR.
+#                    A fall is green and says so — lower the floor when it lands.
 #   equality         scripts/capability-equality-summary.py reports 0 missing cells (LLM==MCP==A2A true),
 #                    AND the ledger's root column holds with all five root-* legs on and every cell it
 #                    calls `proven` over the loop actually runs and passes.
@@ -32,10 +40,12 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
-#   changelog        scripts/changelog-register-check.sh --check: every `kind: breaking` entry in
-#                    testing/shadow-oracle/accepted-differences.json has its `changelog` field's exact
-#                    line present, verbatim, in CHANGELOG.md -- a named break the owner accepted cannot
-#                    silently fall out of the release notes.
+#   changelog        scripts/changelog-register-check.sh --check: EVERY entry in
+#                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
+#                    breaking, per ARCHITECTURE.md's owner rule -- has its `changelog` field's exact
+#                    line present, verbatim, in CHANGELOG.md, or an explicit null with a written
+#                    reason. A difference the owner accepted cannot silently fall out of the release
+#                    notes, and a break may never waive its line.
 # Every sub-gate runs its own `--selftest` FIRST where it has one, then its `--check`, so a gate that
 # could not fire is refused before its verdict is trusted (the house rule).
 #
@@ -51,7 +61,11 @@
 # FLAGS:
 #   --fast   substitute `cargo build --workspace` for the heavy full-gate battery in the BUILD group
 #            (for a quick progress read); every other group still runs in full. Without it, BUILD runs
-#            the full scripts/full-gate.sh — the real DONE claim.
+#            the full scripts/full-gate.sh — the real DONE claim. A --fast run that comes out clean
+#            reports PROVISIONAL and exits 3, never the DONE banner and never exit 0: the banner and
+#            the exit code are all a wrapper, a CI step or the proof collator ever sees, so a
+#            provisional answer must not be spendable as the real one.
+#   --selftest  prove the verdict itself (the floor, the --fast demotion, red-group handling).
 #
 # bash 3.2 + POSIX, the same bare-runner posture as the sibling gates.
 set -uo pipefail
@@ -63,8 +77,8 @@ ylw()  { printf '\033[33m%s\033[0m\n' "$*"; }
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 hdr()  { printf '\n\033[1m══ %s ══\033[0m\n' "$*"; }
 
-FAST=0
-case "${1:-}" in --fast) FAST=1 ;; "" ) ;; -h|--help) sed -n '2,60p' "$0"; exit 0 ;; *) echo "usage: $0 [--fast]" >&2; exit 2 ;; esac
+FAST=0 SELFTEST=0
+case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) sed -n '2,66p' "$0"; exit 0 ;; *) echo "usage: $0 [--fast|--selftest]" >&2; exit 2 ;; esac
 
 # Results accumulators (parallel arrays — bash 3.2 has no assoc arrays).
 G_NAME=(); G_STATE=(); G_NOTE=()
@@ -87,8 +101,112 @@ step() {   # $1 = label ; rest = command
   fi
   rm -f /tmp/done-oracle-step.$$
 }
+# ── THE ONE VERDICT, as a function so --selftest can drive it ───────────────────────────────────
+# It used to be a straight-line tail nobody could exercise without running every gate in the file
+# for twenty minutes, which is why both of the defects it now refuses lived in it.
+#
+# THE FLOOR. `fail` starts at 0 and only a group can raise it, so an empty G_NAME — a refactor that
+# moves the group definitions, an early `return` in a sourced fragment — walks straight past the
+# loop and announces DONE having judged nothing. (On bash 3.2, the macOS bare runner this file
+# targets, `${!G_NAME[@]}` on an empty array under `set -u` is a hard error instead; on Linux CI's
+# bash 5 it is silently empty. The floor makes both hosts answer the same way.)
+#
+# --fast IS NOT A DONE CLAIM. It substitutes `cargo build --workspace` for the full ci battery, so
+# the run never executed `clippy -D warnings` or the test tiers the BUILD group's name promises. It
+# said so in one yellow line hundreds of lines earlier and then printed the SAME unqualified DONE
+# banner and the SAME exit 0 as a full run — and the banner and the exit code are all a wrapper
+# script, a CI step or the proof-manifest collator ever sees. A provisional answer must not be
+# spendable as the real one.
+# The floor is the number of begin_group/end_group pairs this file defines (19 today). Raise it
+# with a new group; a run that reports fewer is a run that lost groups, not a run that passed.
+DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-19}"
+final_verdict() {
+  local fail=0 green=0 total=0 i
+  if [ "${#G_NAME[@]}" -gt 0 ]; then
+    for i in $(seq 0 $(( ${#G_NAME[@]} - 1 ))); do
+      total=$((total+1))
+      if [ "${G_STATE[$i]}" = "GREEN" ]; then
+        green=$((green+1)); printf '  \033[32m● GREEN\033[0m  %s\n' "${G_NAME[$i]}"
+      else
+        fail=1; printf '  \033[31m● RED  \033[0m  %s   — %s\n' "${G_NAME[$i]}" "${G_NOTE[$i]}"
+      fi
+    done
+  fi
+  printf '\n'
+  bold "  $green / $total groups GREEN"
+  if [ "$total" -lt "$DONE_GROUP_FLOOR" ]; then
+    red "══ busbar 1.6.0 done-oracle: only ${total} group(s) reported, floor is ${DONE_GROUP_FLOOR} — groups went missing, so nothing here is a verdict. ══"
+    return 1
+  fi
+  if [ "$fail" -eq 0 ]; then
+    if [ "$FAST" -eq 1 ]; then
+      ylw "══ busbar 1.6.0: PROVISIONAL — every sub-gate that RAN is green, but --fast substituted"
+      ylw "   'cargo build --workspace' for the full ci battery, so the BUILD group proves much less"
+      ylw "   than its name. Re-run without --fast before calling 1.6.0 done. ══"
+      return 3
+    fi
+    grn "══ busbar 1.6.0 is DONE — every sub-gate is green. ══"
+    return 0
+  fi
+  red "══ busbar 1.6.0 is NOT done — $((total-green)) group(s) RED (see above). This readout is the work queue. ══"
+  return 1
+}
+
+if [ "$SELFTEST" -eq 1 ]; then
+  _st_fails=0
+  _st() {  # _st <label> <want-rc> <want-substring> <fast> <n-green> <n-red>
+    local label="$1" want="$2" needle="$3" fast="$4" ng="$5" nr="$6" out rc j
+    out="$(
+      FAST="$fast"; G_NAME=(); G_STATE=(); G_NOTE=()
+      for j in $(seq 1 "$ng"); do [ "$ng" -eq 0 ] || { G_NAME+=("g$j"); G_STATE+=("GREEN"); G_NOTE+=(""); }; done
+      for j in $(seq 1 "$nr"); do [ "$nr" -eq 0 ] || { G_NAME+=("r$j"); G_STATE+=("RED"); G_NOTE+=("because"); }; done
+      final_verdict; echo "RC=$?"
+    )"
+    rc="${out##*RC=}"
+    if [ "$rc" = "$want" ] && printf '%s' "$out" | grep -q -- "$needle"; then
+      printf 'PASS  %s\n' "$label"
+    else
+      printf 'FAIL  %s (rc=%s want=%s, looked for %s)\n' "$label" "$rc" "$want" "$needle"; _st_fails=$((_st_fails+1))
+    fi
+  }
+  # A --fast run whose groups are all green must NOT be spendable as the DONE claim.
+  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 19 0
+  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 19 0
+  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 18 1
+  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 18 1
+  # Zero groups is not DONE: nothing raised `fail`, because nothing ran.
+  _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0  0
+  _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3  0
+  echo
+  [ "$_st_fails" -eq 0 ] && { grn "verify-1.6.0-done selftest: GREEN"; exit 0; }
+  red "verify-1.6.0-done selftest: RED ($_st_fails)"; exit 1
+fi
+
 # A step that is RED simply because an artifact does not exist yet (a not-yet-built sub-gate).
 absent_step() { printf '  \033[31m[RED]\033[0m  %s — NOT PRESENT YET (%s)\n' "$1" "$2"; CUR_RED=1; [ -z "$CUR_FIRST_NOTE" ] && CUR_FIRST_NOTE="$1 (absent)"; }
+
+# NON-VACUITY FOR A FILTERED `cargo test`. A name filter selects by substring across every target
+# cargo builds, and a filter that matches NOTHING still exits 0 — "running 0 tests ... 0 passed; N
+# filtered out" — so a step whose filter has drifted (wrong -p, a renamed test, a moved module) goes
+# green while proving nothing at all. Every filtered step below therefore DECLARES how many tests it
+# expects, and this wrapper refuses the run unless exactly that many actually passed. The declared
+# number is part of the assertion: a test deleted out of the set is as red as a test that failed.
+filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
+  local want="$1"; shift
+  local out rc got
+  out="$("$@" 2>&1)"; rc=$?
+  if [ "$rc" -ne 0 ]; then printf '%s\n' "$out"; return "$rc"; fi
+  got="$(printf '%s\n' "$out" \
+    | sed -n 's/^test result: ok\. \([0-9][0-9]*\) passed.*/\1/p' \
+    | awk '{ n += $1 } END { print n+0 }')"
+  if [ "$got" != "$want" ]; then
+    printf '%s\n' "$out"
+    printf 'VACUITY: this filter was expected to run %s test(s); the run reported %s passed.\n' "$want" "$got"
+    printf 'Either the filter no longer selects the intended tests, or the expected count is stale.\n'
+    return 1
+  fi
+  printf '%s test(s) passed, exactly the expected set.\n' "$got"
+}
 
 # Assert the money-path bless/regen env vars are EMPTY — otherwise a byte-identity "check" silently
 # REGENERATES the golden instead of comparing against it (a green that proves nothing).
@@ -135,9 +253,11 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
   # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
   # error-enum-matches), so the oracle's byte-identity check is real, matching full-gate.sh.
-  step "openapi.json goldens match committed file"  cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
-  step "resolved billing+limits config byte-stable" cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
-  step "6 busbar-llm same-proto byte-exact oracles" cargo test -p busbar-llm --quiet round_trip_byte_exact
+  step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
+  step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
+  # The six `*_round_trip_byte_exact` oracles live in busbar-llm-codec
+  # (crates/busbar-llm-codec/src/tests/proto/same_proto_fidelity_tests.rs), not in busbar-llm.
+  step "6 same-proto byte-exact oracles"            filtered_cargo_test 6  cargo test -p busbar-llm-codec --quiet round_trip_byte_exact
 else
   printf '  \033[31m[RED]\033[0m  bless/regen env is NOT empty — refusing byte-identity (would regenerate goldens)\n'
   sed 's/^/          /' /tmp/done-oracle-step.$$; rm -f /tmp/done-oracle-step.$$
@@ -183,15 +303,55 @@ step "no-deferral-gate --strict-done" bash scripts/no-deferral-gate.sh --strict-
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "CONFIG-NOUN — four-noun parse residual (REPORT-ONLY; locked-legitimate floor)"
+begin_group "CONFIG-NOUN — four-noun parse residual holds at its locked-legitimate floor"
 step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh --selftest
-# REPORT-ONLY, deliberately NOT a done-blocker — same treatment as the plane-noun/plane-grep
+# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun/plane-grep
 # billing-vocab meters the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
 # core-owned (CORE_OWNED_CONCRETE_SECTIONS, never evicted), and the `tools`/`agents`/`streams`
 # DeployCfg fields are Option A's `deny_unknown_fields` floor (Option B is serde-blocked). So the
-# residual (pools 8 · tools 3 · agents 2 · streams 5 = 18) is a LEGITIMATE floor, not debt; the DoD is
-# "core's generic named-map MACHINERY names no plane noun" (Stage A, done), not "zero noun field refs".
-# Printed for visibility; a RISE above the floor is the real signal.
+# residual is a LEGITIMATE floor, not debt; the DoD is "core's generic named-map MACHINERY names no
+# plane noun" (Stage A, done), not "zero noun field refs".
+#
+# What IS asserted, therefore, is the floor: the armed gate must produce a residual (a run that could
+# not print one is an error, not a pass), and that residual must not RISE above the number declared
+# here. The gate's own exit status is 1 while the residual is above zero — by design — so it can never
+# be the verdict on its own; it is captured and reported so a crash is distinguishable from the
+# expected refusal, and a run that printed no countable verdict line is RED whatever it exited.
+#
+# THE FLOOR, as measured on this tree: pools 8 · tools 5 · streams 6 = 19 distinct core parse-target
+# lines. Lower this number the moment a section is evicted; a fall is reported as a fall and tells you
+# what to lower it to.
+CONFIG_NOUN_FLOOR=19
+config_noun_residual() {
+  local out rc line count
+  out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?
+  line="$(printf '%s\n' "$out" | grep -E "distinct core parse-target lines" | tail -1)"
+  count="$(printf '%s\n' "$line" | sed -e 's/.*distinct core parse-target lines): *//' -e 's/[^0-9].*$//')"
+  if [ -z "$count" ]; then
+    printf '%s\n' "$out"
+    printf 'the armed gate printed NO residual line (exit %s): it errored, or its verdict wording moved.\n' "$rc"
+    printf 'Nothing was compared to the floor, so this is RED rather than an unavailable count.\n'
+    return 1
+  fi
+  if [ "$rc" -gt 1 ]; then
+    printf '%s\n' "$out"
+    printf 'the armed gate exited %s (usage/error, not its residual verdict) — residual %s not trusted.\n' "$rc" "$count"
+    return 1
+  fi
+  if [ "$count" -gt "$CONFIG_NOUN_FLOOR" ]; then
+    printf '%s\n' "$out"
+    printf 'residual ROSE: %s core parse-target line(s), above the declared floor of %s (gate exit %s).\n' \
+      "$count" "$CONFIG_NOUN_FLOOR" "$rc"
+    return 1
+  fi
+  if [ "$count" -lt "$CONFIG_NOUN_FLOOR" ]; then
+    printf 'residual FELL to %s (declared floor %s, gate exit %s) — lower CONFIG_NOUN_FLOOR to %s.\n' \
+      "$count" "$CONFIG_NOUN_FLOOR" "$rc" "$count"
+    return 0
+  fi
+  printf 'residual %s, exactly the declared floor (gate exit %s).\n' "$count" "$rc"
+}
+step "four-noun residual is at or below its declared floor ($CONFIG_NOUN_FLOOR)" config_noun_residual
 printf '  \033[36m[info]\033[0m '
 GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1 | grep -E "distinct core parse-target lines" | tail -1 || echo "config-noun count unavailable"
 end_group
@@ -270,10 +430,26 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "CHANGELOG — every breaking register entry is named"
+begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothing open at HIGH/MEDIUM"
+# qa/audit-ledger.json carries one scope per production path, its tree hash at the audited commit and
+# the round that produced the result. --check is red two ways: a tracked production file that no
+# scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
+# recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
+# docs/design/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
+if [ -f scripts/audit-ledger.py ]; then
+  step "audit-ledger --selftest" python3 scripts/audit-ledger.py --selftest
+  step "audit-ledger --check"    python3 scripts/audit-ledger.py --check
+else
+  absent_step "audit ledger" "scripts/audit-ledger.py"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "CHANGELOG — every accepted register entry is named"
 # testing/shadow-oracle/accepted-differences.json's own differ refuses an entry that accepts
 # status/effects.usage without kind=breaking and a `changelog` field; this gate closes the other
-# half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared.
+# half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared --
+# and it owes that of improvements too, which the owner rule accepts "named in the CHANGELOG".
 if [ -f scripts/changelog-register-check.sh ]; then
   step "changelog-register-check --selftest" bash scripts/changelog-register-check.sh --selftest
   step "changelog-register-check --check"    bash scripts/changelog-register-check.sh --check
@@ -304,7 +480,7 @@ begin_group "KERNEL — the Teller loop battery, the capability fixtures and att
 if [ -d crates/busbar-kernel ]; then
   step "busbar-kernel battery"           cargo test -p busbar-kernel --quiet
   step "busbar-caps fixtures"            cargo test -p busbar-caps --quiet
-  step "attempt identity (busbar-llm)"   cargo test -p busbar-llm --quiet attempt_identity
+  step "attempt identity (busbar-llm)"   filtered_cargo_test 1 cargo test -p busbar-llm --quiet attempt_identity
 else
   absent_step "kernel battery" "crates/busbar-kernel"
 fi
@@ -329,6 +505,11 @@ if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
   # (a proven cell's fn exists in its own leg's file; a leg proving nothing is red); this RUNS every
   # named cell with all five legs on, so "proven" means watched rather than present on disk.
   step "every root-leg step cell RUNS and passes" python3 scripts/teller-steps-check.py --root-legs
+  # And the same treatment for the RIG column the matrix's `cell` values name. --check above proves
+  # every id still resolves to the scenario, subject script, voice leg or suite that owns it; this
+  # RUNS the rigs behind them through testing/shadow-oracle/rigs-ledger.sh. It refuses (loudly)
+  # rather than skipping when there is no release binary to arm the MCP and A2A legs with.
+  step "the rig suites the matrix cites RUN and pass" python3 scripts/teller-steps-check.py --rig-legs
   printf '  \033[36m[info]\033[0m '
   python3 scripts/teller-steps-check.py --check 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
 else
@@ -351,22 +532,36 @@ else
 fi
 end_group
 
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "STORE-QA — the durable-store QA cycle's service pins hold, and its fixtures still work"
+# docs/design/store-qa-cycle.md is the standing loop that keeps busbar's four durable stores
+# (sqlite, postgres, mysql, valkey) proven run after run. Its foundation is that the backend
+# containers are the SAME BYTES everywhere they are stood up — and they were not: four workflows
+# agreed on a digest while scripts/release-check.sh, the script the qa gate runs, used floating
+# tags. testing/fleet-fixtures/service-images.tsv is the one pinned list; the lint is what keeps
+# every workflow reading it, since Actions cannot read a file into a `services:` block.
+#
+# This group is in the DONE readout because the cycle is a loop, not a task: a pin that drifts, or a
+# fixture whose port band creeps into the shadow oracle's, breaks a store proof quietly and much
+# later. Both self-tests run FIRST — a lint whose own rules have stopped firing is worse than none.
+if [ -f scripts/service-images-check.sh ]; then
+  step "service-images-check --selftest"      bash scripts/service-images-check.sh --selftest
+  step "service-images-check (every workflow image is the pinned digest)" bash scripts/service-images-check.sh
+else
+  absent_step "service image pin gate" "scripts/service-images-check.sh"
+fi
+if [ -f testing/fleet-fixtures/store-services.sh ]; then
+  # No docker needed: the fixture self-test asserts properties of the pinned table and of the
+  # script's own rules — the local port band stays disjoint from the oracle's 487xx/488xx band, a
+  # namespace token cannot reach DDL unvalidated, a valkey namespace never lands on the index `url`
+  # hands out, `down` is safe when nothing is up.
+  step "store-services fixtures --selftest"   bash testing/fleet-fixtures/store-services.sh --selftest
+else
+  absent_step "local store fixtures" "testing/fleet-fixtures/store-services.sh"
+fi
+end_group
+
 # ── THE ONE VERDICT ─────────────────────────────────────────────────────────────────────────────
 hdr "1.6.0 DONE-ORACLE READOUT"
-fail=0; green=0; total=0
-for i in "${!G_NAME[@]}"; do
-  total=$((total+1))
-  if [ "${G_STATE[$i]}" = "GREEN" ]; then
-    green=$((green+1)); printf '  \033[32m● GREEN\033[0m  %s\n' "${G_NAME[$i]}"
-  else
-    fail=1; printf '  \033[31m● RED  \033[0m  %s   — %s\n' "${G_NAME[$i]}" "${G_NOTE[$i]}"
-  fi
-done
-printf '\n'
-bold "  $green / $total groups GREEN"
-if [ "$fail" -eq 0 ]; then
-  grn "══ busbar 1.6.0 is DONE — every sub-gate is green. ══"
-  exit 0
-fi
-red "══ busbar 1.6.0 is NOT done — $((total-green)) group(s) RED (see above). This readout is the work queue. ══"
-exit 1
+final_verdict
+exit $?

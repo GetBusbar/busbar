@@ -75,6 +75,14 @@ pub enum Framing {
 /// Byte counts are always present. The transport-unit count is present only where the transport
 /// declares that it decodes the payload, which is how a media transport reports units the byte
 /// count cannot express.
+///
+/// The status legs travel together and on the SAME frame: the coarse class, the exact numeric
+/// status the upstream put on the answer, and the wait the upstream asked for. The class alone
+/// cannot say whether a 4xx was a bad request or a withdrawn credential, and a reader that has to
+/// tell those apart — the breaker's classification does, because one is the caller's fault and the
+/// other takes every sibling lane down with it — needs the number. The wait is here for the same
+/// reason: it is a fact ABOUT THIS ANSWER, so it rides the answer's frame rather than being
+/// re-derived from a header the layer above never sees.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize)]
 pub struct FrameMeta {
     /// How many bytes this frame carried on the wire.
@@ -83,6 +91,19 @@ pub struct FrameMeta {
     pub transport_units: Option<u64>,
     /// The transport's status reading, where it carries one.
     pub status: Option<StatusClass>,
+    /// The exact numeric status the upstream reported, where the transport's wire has one.
+    ///
+    /// Present only on the frame that carries [`FrameMeta::status`], and only for a transport
+    /// whose protocol puts a number on an answer. `None` is honest: it says this transport read
+    /// no number here, never that the upstream returned zero.
+    pub status_code: Option<u16>,
+    /// The wait the upstream asked for on this answer, in WHOLE SECONDS.
+    ///
+    /// Already parsed: both RFC 9110 forms (`delay-seconds` and an HTTP-date) resolve to a count
+    /// of seconds from the instant the transport read the answer, floored at zero for a date
+    /// already in the past. Carrying the raw header instead would push a clock reading onto a
+    /// layer that no longer has the answer's arrival instant.
+    pub retry_after_secs: Option<u64>,
 }
 
 /// Why a frame was dropped without changing any state.

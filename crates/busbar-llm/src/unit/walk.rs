@@ -31,7 +31,6 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 
 use busbar_caps::{Decision, Meter, Outcome, Route, UnitToken, UsageToken};
-use busbar_contract::Registration;
 use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
@@ -59,10 +58,6 @@ pub struct WalkArrival {
     pub headers: HeaderMap,
     /// The request body, as it arrived.
     pub body: Bytes,
-    /// THE NODE'S INTERNER, held by the composition root and lent for the length of the unit. A
-    /// configured lane's name is a runtime `String` and a `LaneId` is a borrowed static one; this is
-    /// the bridge, and it is the root's because leaking is the root's decision to make.
-    pub lanes: Arc<Mutex<Registration>>,
     /// WHAT THE URL SAID, on the two surfaces whose model rides the path rather than the body.
     ///
     /// `None` is a body-model unit, which is every other surface on this plane. Where it is `Some`,
@@ -107,6 +102,43 @@ struct Carry {
     terminal: Option<Served>,
 }
 
+/// THE COMPLETION TAP, as a root may hold it.
+///
+/// Opaque on purpose: what is inside is the engine's own cell and naming it would be a root that had
+/// learned how this plane forwards. What a holder can do with it is the one thing a holder needs —
+/// hand it back to [`Walk::reported_after_terminal`] once the body it belongs to has drained.
+///
+/// Cheap to hold and safe to hold for as long as the body lives: it is a refcount on a cell that is
+/// written exactly once and never rewritten.
+#[derive(Clone, Debug)]
+pub struct Tap(crate::engine::TapCell);
+
+/// WHAT THE RESPONSE CONSUMED, read after its body drained.
+///
+/// A REPORT, not an amount, and the distinction is the whole shape of this seam. A plane says what a
+/// unit did — the quantities it consumed, by class; whether the unit is one the flat per-request fee
+/// is charged on; and the two names the row it belongs to is keyed by. What any of that is WORTH is
+/// the card's answer, and the card belongs to whoever keeps the books. So there is no money figure
+/// on this type and no rate anywhere behind it: the holder prices this report against the card the
+/// door pinned, and the fee lands as a line of that pricing rather than as a number this plane
+/// invented.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LateReport {
+    /// The tier split the tap reported, by neutral unit class — the same counts the governance
+    /// ledger accrued when the cell filled. Empty for a response that billed nothing.
+    pub usage: busbar_substrate::billing::Usage,
+    /// How many billable requests this unit is: one for a delivered client request that reached an
+    /// upstream, zero otherwise. It is the Meter step's own count, on the same base the previous
+    /// release charges the flat fee on, and it is carried rather than re-decided so the two cannot
+    /// come to different answers about the same unit.
+    pub fee_count: u32,
+    /// The SERVING lane's config name — the lane that actually answered, after any failover, which
+    /// is the key a rate card is written against and the key the legacy row carries.
+    pub lane: String,
+    /// That lane's provider, as the legacy row carries it.
+    pub provider: String,
+}
+
 /// One request, as this plane's steps carry it.
 pub struct Walk {
     host: Arc<dyn EngineHost>,
@@ -117,7 +149,6 @@ pub struct Walk {
     caller_token: Option<String>,
     headers: HeaderMap,
     body: Bytes,
-    lanes: Arc<Mutex<Registration>>,
     path: Option<crate::arrival::PathModelFacts>,
     carry: Mutex<Carry>,
 }
@@ -148,7 +179,6 @@ impl Walk {
             caller_token,
             headers,
             body,
-            lanes,
             path,
         } = arrival;
         let rt = crate::engine::native_runtime_arc(host.as_ref());
@@ -161,7 +191,6 @@ impl Walk {
             caller_token,
             headers,
             body,
-            lanes,
             path,
             carry: Mutex::new(Carry::default()),
         }
@@ -374,6 +403,75 @@ impl Walk {
             .unwrap_or(false)
     }
 
+    /// A HANDLE ON THIS RESPONSE'S COMPLETION TAP, taken before the body that fills it is handed to
+    /// the client.
+    ///
+    /// The tap is what knows what a streamed or deferred answer consumed, and it does not know it
+    /// until the BODY has drained — which is after the unit's terminal, after the exit sealed the
+    /// end, and after the response left this plane. The cell rides on the response as an extension
+    /// so that the thing draining the body can still find it; taking a handle here is the same move
+    /// the engine's own driver makes for the same reason, and it is a refcount bump on a cell that
+    /// is written exactly once.
+    ///
+    /// `None` where the response carries no tap: nothing was ever going to fill one.
+    #[must_use]
+    pub fn tap_of(response: &Response) -> Option<Tap> {
+        response
+            .extensions()
+            .get::<crate::engine::TapCell>()
+            .cloned()
+            .map(Tap)
+    }
+
+    /// WHAT THE TAP REPORTED — the reading that does not exist until the body has drained.
+    ///
+    /// The Meter step ran while this cell was empty: on this plane there is no earlier moment at
+    /// which a streamed answer's consumption is a fact. This is that moment, and what comes out of it
+    /// is a REPORT — the tier split the tap read, the billable count the Meter step decided, and the
+    /// lane that actually answered. No money. This plane does not hold a rate card and does not want
+    /// one; the holder of the books prices this against the card the door pinned, and the flat fee
+    /// joins as a line of that pricing.
+    ///
+    /// It ACCRUES NOTHING. The tap already put this response on the governance ledger when it filled
+    /// the cell, which is what the previous release bills and what `/usage` reports; calling the
+    /// accrual seam again here would bill the same tokens twice. What this produces is a reading, for
+    /// a second book to post onto.
+    ///
+    /// `None` where there is nothing to report: the cell is still empty, the Route step never ran, or
+    /// no lane answered. A response the tap marked as billing failed reports an EMPTY tier rather
+    /// than nothing at all — the unit reached a lane and consumed nothing the node will charge for,
+    /// which is a different statement from "no reading could be taken", and it still carries the fee
+    /// count the previous release charges on it.
+    #[must_use]
+    pub fn reported_after_terminal(&self, tap: &Tap) -> Option<LateReport> {
+        let report = tap.0.get()?;
+        let carry = self.lock();
+        let mut facts = carry.facts.clone()?;
+        facts.fold(report);
+        let tables = crate::engine::EngineTables::new(&self.rt);
+        let lane = facts.lane.and_then(|i| tables.lanes().get(i))?;
+        // A terminal error, an abort or a cut transfer bills ZERO tokens, so the tier is empty. The
+        // FEE is not gated on it: a stream whose end carried a terminal error was still answered 2xx
+        // at the frame that decided the fee, and the previous release keeps that request in its
+        // billable count and does not refund it. The count is the Meter step's own, on the same base
+        // the legacy accounting charges on, and it is read here rather than decided a second time.
+        let usage = if facts.billing_failed {
+            busbar_substrate::billing::Usage::default()
+        } else {
+            facts
+                .usage
+                .as_ref()
+                .map(crate::engine::usage::tier_usage)
+                .unwrap_or_default()
+        };
+        Some(LateReport {
+            usage,
+            fee_count: carry.fee_count,
+            lane: lane.model.clone(),
+            provider: lane.provider.clone(),
+        })
+    }
+
     /// Post the terminal's bytes. Private: the two doors below are the only posters.
     fn seal_terminal(&self, resp: Served) {
         self.lock().terminal = Some(resp);
@@ -506,7 +604,6 @@ impl Walk {
                 .path
                 .as_ref()
                 .and_then(|path| path.model_not_found_message.as_deref()),
-            lanes: &self.lanes,
         })
         .await;
         let routed = crate::unit::route::seal(token, parts);

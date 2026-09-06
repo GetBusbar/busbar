@@ -66,7 +66,7 @@ use busbar_caps::{
 };
 
 use crate::registry::Generation;
-use crate::slice::{ConcurrencyGauge, LeaseSet};
+use crate::slice::{takes_lease, ConcurrencyGauge, GroupLeaseSlip, LeaseCell, IN_FLIGHT};
 
 /// The kernel's own authority: the one place the tokens the units are lent are minted.
 ///
@@ -138,6 +138,58 @@ impl Kernel {
     /// mint sees this one too.
     pub fn admin_token(&self) -> AdminToken {
         AdminToken::mint(&self.seal)
+    }
+
+    /// The journal's token, as the composition root lends it to an exit arm.
+    ///
+    /// The third token minted outside the loop, and for the same reason as the other two: making a
+    /// posting durable happens AFTER the exit has sealed the end, so there is no step of the unit
+    /// whose token could stand in, and the root's exit arm has a parameter no caller in the tree can
+    /// supply without this. Without it a root that wanted to journal what the loop posted had to
+    /// reach for the seal itself, which is the one symbol that must not be spelled outside this
+    /// crate.
+    ///
+    /// Kept beside the other two and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn durability_token(&self) -> busbar_caps::DurabilityToken {
+        busbar_caps::DurabilityToken::mint(&self.seal)
+    }
+
+    /// The ledger unit's token, as the composition root lends it to a posting made after the exit.
+    ///
+    /// The fourth token minted outside the loop, and the reason is the sharpest of the four. Inside
+    /// the loop the ledger's token is minted at the terminal, which is where every posting the loop
+    /// itself makes is built — and a figure that only exists AFTER that terminal cannot be built
+    /// there. There is no step of the unit still running when it arrives, so there is no step token
+    /// that could stand in, and a root that wanted to post it had to reach for the seal itself.
+    ///
+    /// This is what a late accrual is: the money a streamed or deferred body reports once the body
+    /// has drained, posted onto the same balance and the same window the terminal settled in. The
+    /// token is minted for one such posting and dropped with it, exactly as the terminal's is.
+    ///
+    /// Kept beside the other three and named the same way, so the source scan that accounts for
+    /// every mint sees this one too.
+    pub fn ledger_token(&self) -> busbar_caps::LedgerToken {
+        busbar_caps::LedgerToken::mint(&self.seal)
+    }
+
+    /// The usage record's token, as the composition root lends it to a report assembled after the exit.
+    ///
+    /// The fifth token minted outside the loop, and it travels with the fourth. A late accrual is a
+    /// spend the node learned about after its terminal, and pricing one means holding what the unit
+    /// CONSUMED — a usage record — beside the card that says what those quantities are worth. Inside
+    /// the loop that record is built at the Meter step against the step's own token; a report that
+    /// arrives after the terminal has no step left to be built at.
+    ///
+    /// It mints nothing a step could not: a usage record is evidence and moves no balance on its own.
+    /// What the token is for is the same thing every token here is for — a record cannot be conjured
+    /// by anything the kernel did not hand one to, and without this a root assembling one had to reach
+    /// for the seal, which is the one symbol that must not be spelled outside this crate.
+    ///
+    /// Kept beside the other four and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn usage_token(&self) -> UsageToken {
+        UsageToken::mint(&self.seal)
     }
 
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
@@ -459,6 +511,19 @@ pub trait Units {
     ) -> Decision<Approve>;
 
     /// The door.
+    ///
+    /// Lent a `leases` slip as well as its two tokens. The design gives a unit one concurrency lease
+    /// per capped-`concurrent` group it charges through, and only the door knows which groups those
+    /// are: the names are config-derived and the decision is the door's alone. So the door names
+    /// them here and the loop records them on the unit's slot, where both of the unit's ends can
+    /// give them back. A door that names nothing is a unit counted only on the node-wide gauge,
+    /// which is what every unit was counted on before, and the slip is written AFTER the decision —
+    /// nothing in it can turn a yes into a no.
+    ///
+    /// The slip is also where a door hands over the count its own yes is holding, so the slot can
+    /// keep it for the life of the unit. A door whose cap is enforced elsewhere hands over nothing
+    /// and is unaffected; a door that keeps its count in the value it returns has to, or its cap is
+    /// released before the unit it admitted has run.
     fn admit(
         &self,
         token: &UnitToken<Admit>,
@@ -466,6 +531,7 @@ pub trait Units {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
+        leases: &GroupLeaseSlip,
     ) -> Decision<Admit>;
 
     /// Dial, send, relay — all under the hold, with the meter running.
@@ -568,8 +634,12 @@ pub struct Run<'r> {
     /// does need the cell, to ask at its own exit whether the parent is still open. A parent that
     /// has exited is what turns the child's posting into a late one.
     pub parent: Option<&'r HoldCell>,
-    /// The concurrency leases the unit took at the door.
-    pub leases: &'r mut LeaseSet,
+    /// The concurrency leases the unit took at the door, as the unit's SLOT owns them.
+    ///
+    /// The cell and not the set, because the exit path is only one of the unit's two ends: the
+    /// sweep is the other, and a set that lived in this task's frame went away with the task.
+    /// Whichever end runs first gives the leases back, and the second finds nothing to give.
+    pub leases: &'r LeaseCell,
     /// The node's gauge, which the leases go back to.
     pub gauge: &'r ConcurrencyGauge,
     /// The counts the node balances.
@@ -683,15 +753,30 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 )
                 .and_then(
                     |(principal, destinations): (PrincipalId, Vec<VerifiedDestination>)| {
-                        units
+                        // The slip the door names its capped groups on, for the length of the one
+                        // call. It lives here rather than on the unit's context because it is not
+                        // something the unit IS: it is what the door said, read once, on the next
+                        // line, by the draw.
+                        let groups = GroupLeaseSlip::new();
+                        let admitted = units
                             .admit(
                                 &UnitToken::<Admit>::mint(seal),
                                 &AdmitToken::<Admit>::mint(seal),
                                 ctx,
                                 &principal,
                                 &destinations,
+                                &groups,
                             )
-                            .into_result(seal)
+                            .into_result(seal);
+                        // THE LEASE, drawn on the one answer that entitles a unit to it. The door
+                        // said yes, so from here until this unit's end the node is running it, and
+                        // the lease is what says so. A refusal draws nothing — there is no slot to
+                        // count — and a unit that never reached this step, a challenge round, is
+                        // never here to draw one.
+                        if admitted.is_ok() {
+                            draw_lease(ctx, &run, &groups);
+                        }
+                        admitted
                     },
                 ),
         });
@@ -765,6 +850,58 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                 }
             }
         }
+    }
+}
+
+/// Draw the concurrency lease the door's yes entitles a unit to, on the unit's own SLOT.
+///
+/// The lease is the other half of a rule the exit path has kept on its own until now: leases go back
+/// on every end. Nothing drew one, so what went back was always nothing, and the gauge read zero
+/// while the node was full. This is the draw.
+///
+/// It is recorded on the slot's cell rather than in this frame, because the unit has two ends and
+/// only one of them is here. A task that disappears takes its frame with it; the sweep finds the
+/// slot, and the slot is where the lease it has to give back lives.
+///
+/// The exempt origins are the design's own: a handshake and a tick move no money and take no lease,
+/// so a node at a saturated gauge still finishes its handshakes and still runs the sweep that
+/// empties it, and a kernel-verb unit takes none either — which is what makes the administrative
+/// surface answer while everything else is capped out.
+///
+/// The gauge is counted BEFORE the cell is asked, and given straight back when the cell says no.
+/// A cell that refuses a lease is a unit whose other end has already run, and the count it would
+/// otherwise be left holding is one no exit and no sweep would ever release — a cap that only goes
+/// up, invisible until the node stops admitting anything.
+///
+/// ONE LEASE PER CAPPED GROUP, and the node-wide one beside them. The design's `concurrent` lease is
+/// per capped group, and the groups are the door's to name — so the slip carries what the door
+/// counted and every name in it becomes a lease of its own on the same slot, released by the same
+/// two ends in the same breath. The count here is a READING and never a gate: `record` is the entry
+/// point that cannot refuse, so a unit the door admitted is never turned away by the counting of it.
+/// A door that named nothing leaves the node-wide lease exactly as it was.
+///
+/// AND THE DOOR'S OWN COUNT COMES HERE TOO. The names above are the node's reading; the count the
+/// door took when it said yes is the `concurrent` cap itself, and it is a cap only for as long as
+/// something holds it. Held for the length of the door's call, it is released before the unit it
+/// admitted has done anything, and the N+1th unit is measured against a gauge that has already
+/// forgotten the N in flight. So the slot holds it, beside the leases, and the same two ends give
+/// it back.
+fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
+    if !takes_lease(ctx.origin, ctx.kernel_verb_only) {
+        return;
+    }
+    for bucket in std::iter::once(IN_FLIGHT).chain(groups.taken()) {
+        run.gauge.record(&bucket);
+        if !run.leases.take(bucket) {
+            run.gauge.release(&bucket);
+        }
+    }
+    // AND THE DOOR'S OWN COUNT, onto the same slot. The kernel's leases are a reading; the door's
+    // count is the cap, and a cap released the moment it is taken is a comparison against zero. It
+    // is parked here because this is the one place that has both the door's answer and the slot,
+    // and it goes back where the leases go back: at whichever of the unit's two ends arrives first.
+    if let Some(grant) = groups.grant_taken() {
+        run.leases.hold_grant(grant);
     }
 }
 

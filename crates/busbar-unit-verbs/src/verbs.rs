@@ -27,7 +27,12 @@
 //!    their doc comments for why they are not folded into the generic dispatch).
 //!
 //! Only once all of that has admitted the call does anything reach [`crate::governance::Governance`]
-//! or [`crate::store::Store`].
+//! or [`crate::store::Store`]. That holds for the three disaster-recovery verbs too: their effect
+//! lands on the store rather than on governance, but they are new verbs like any other, so they
+//! reach the store only through [`Verbs::chain_break`], [`Verbs::store_restore`] and
+//! [`Verbs::reseal_epoch_floor`], each of which runs the same admission first. The bound store is
+//! not handed out — a caller holding it could have run any of the three with none of the checks,
+//! and nothing in the type system would have asked it not to.
 
 use crate::governance::{Governance, GovernanceError, RotateOutcome};
 use crate::idempotency::{IdempotencyCache, Probe, ReplayEncoder};
@@ -35,7 +40,7 @@ use crate::mint::{plan_mint_group, GroupLookup, MintPlan};
 use crate::posture::{ApprovalState, PostureCtx};
 use crate::rate::{ConfigClassRule, MutationClass, MutationLimiter, RateCheck};
 use crate::refusal::{ReasonCode, Refusal, RefusalStep};
-use crate::store::Store;
+use crate::store::{Store, StoreError};
 use crate::verb::{KernelVerb, VerbScope, LEDGER_VERBS, LEGACY_VERBS, NEW_VERBS};
 use busbar_caps::{AdminToken, SecretOnce, UnitKey};
 
@@ -440,14 +445,110 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             .map_err(GovernanceError::into_refusal)
     }
 
-    /// Read access to the bound store seam, for the disaster-recovery verbs
-    /// (`chain_break`/`store_restore`/`reseal_epoch_floor`) that a caller runs directly rather than
-    /// through [`Verbs::execute`] — they are irreducible-set verbs whose effect is a store
-    /// operation, not a governance one, and the posture check that gates them
-    /// ([`crate::posture::check_operator_gate`]) is the caller's responsibility exactly as it is
-    /// for every other new verb.
-    pub fn store(&self) -> &S {
+    /// The bound store, for this crate's own tests to observe what did and did not reach it.
+    /// `cfg(test)` so it is not a way for a caller to route around the gates below.
+    #[cfg(test)]
+    fn store_for_test(&self) -> &S {
         &self.store
+    }
+
+    /// The gate the three disaster-recovery verbs run through before they reach the store.
+    ///
+    /// Identical to what [`Verbs::execute`] runs for any other new verb — scope, rate class, then
+    /// the operator ceremony and dual control — because these three are new verbs; the only thing
+    /// that makes them different is that their effect lands on [`Store`] rather than
+    /// [`Governance`], and where an effect lands is not a reason to be admitted differently. A
+    /// posture the caller did not resolve is REFUSED rather than unwrapped, for the same reason it
+    /// is in `execute`: a miswired caller must not turn the gate protecting a chain break into a
+    /// downed process.
+    fn admit_recovery_verb(
+        &self,
+        verb: KernelVerb,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        posture: Option<PostureCtx>,
+        approval: ApprovalState,
+    ) -> Result<(), Refusal> {
+        self.admit(verb, actor, granted, now)?;
+        let Some(ctx) = posture else {
+            return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
+        };
+        crate::posture::check_new_verb_admission(verb, ctx, approval)
+    }
+
+    /// `chain_break` — deliberately break the journal chain. Admitted through
+    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    pub fn chain_break(
+        &self,
+        admin: &AdminToken,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        posture: Option<PostureCtx>,
+        approval: ApprovalState,
+    ) -> Result<(), Refusal> {
+        self.admit_recovery_verb(
+            KernelVerb::ChainBreak,
+            actor,
+            granted,
+            now,
+            posture,
+            approval,
+        )?;
+        self.store
+            .chain_break(admin)
+            .map_err(StoreError::into_refusal)
+    }
+
+    /// `store_restore` — restore the store from a named backup. Admitted through
+    /// [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    #[allow(clippy::too_many_arguments)]
+    pub fn store_restore(
+        &self,
+        admin: &AdminToken,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        posture: Option<PostureCtx>,
+        approval: ApprovalState,
+        backup_ref: &str,
+    ) -> Result<(), Refusal> {
+        self.admit_recovery_verb(
+            KernelVerb::StoreRestore,
+            actor,
+            granted,
+            now,
+            posture,
+            approval,
+        )?;
+        self.store
+            .store_restore(admin, backup_ref)
+            .map_err(StoreError::into_refusal)
+    }
+
+    /// `reseal_epoch_floor` — reseal the epoch floor after a chain break or restore. Admitted
+    /// through [`Verbs::admit_recovery_verb`] and only then handed to the store.
+    pub fn reseal_epoch_floor(
+        &self,
+        admin: &AdminToken,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        posture: Option<PostureCtx>,
+        approval: ApprovalState,
+    ) -> Result<(), Refusal> {
+        self.admit_recovery_verb(
+            KernelVerb::ResealEpochFloor,
+            actor,
+            granted,
+            now,
+            posture,
+            approval,
+        )?;
+        self.store
+            .reseal_epoch_floor(admin)
+            .map_err(StoreError::into_refusal)
     }
 }
 

@@ -724,4 +724,3 @@ impl<'u> Unit<'u> {
         self.leg_results.push(result).map_err(|o| Box::new(o.item))
     }
 }
-

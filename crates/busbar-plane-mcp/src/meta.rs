@@ -54,6 +54,18 @@ pub const CLASS_TOOL_CALLS: MeterClassId = MeterClassId::new("tool_calls");
 /// The class key the bytes an exchange moved are counted under.
 pub const CLASS_BYTES: MeterClassId = MeterClassId::new("bytes");
 
+/// The plane a sampling request is answered by, one level down.
+///
+/// Declared here, once, and not read from configuration: a nested destination is what the VERIFY
+/// step seals and what the ROUTE step then dials, and the two must be the same destination or the
+/// unit routes somewhere it was never verified for. Naming it in one constant is what makes them
+/// the same by construction rather than by two authors agreeing.
+pub const SAMPLING_PLANE: &str = "llm";
+
+/// The operation class a sampling request is answered as on [`SAMPLING_PLANE`]. Half of the same
+/// pair, for the same reason.
+pub const SAMPLING_OP: OpClassId = OpClassId::new("chat");
+
 /// The read-only verb that lists the registered servers.
 pub const VERB_TOOLS: AdminVerbId = AdminVerbId::new("tools");
 

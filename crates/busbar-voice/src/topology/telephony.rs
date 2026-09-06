@@ -119,6 +119,10 @@ where
 /// re-run (or double-charge) it. Used for BOTH the g711 telephony leg and the Gemini Live thin-duplex
 /// leg — the wiring is identical; only the codec and the locked config differ, and both are the
 /// caller's to choose.
+///
+/// `governed` is the served door's own binding — the node's open-call table and the identifier this
+/// session is known to it by — and it is carried straight through to the post-admit open, so a
+/// dialed proxy is governed on exactly the terms the other two served legs are.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn open_admitted_telephony<C>(
     rt: &VoiceRuntime,
@@ -129,6 +133,7 @@ pub(crate) fn open_admitted_telephony<C>(
     budget: SessionBudget,
     meter: Option<crate::runtime::metering::TurnMeter>,
     now: u64,
+    governed: Option<crate::runtime::GovernedSession>,
 ) -> Result<TelephonyProxy<C>, StartError>
 where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
@@ -146,6 +151,7 @@ where
         budget,
         meter,
         now,
+        governed,
     )?;
 
     let (upstream_tx, upstream_rx) = unbounded::<Vec<u8>>();

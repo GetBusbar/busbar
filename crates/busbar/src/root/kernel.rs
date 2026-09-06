@@ -61,6 +61,7 @@ use busbar_caps::{
     Verify,
 };
 use busbar_kernel::inflight::ArrivalDoor;
+use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_unit_admission::{Door, InMemoryCells};
 use busbar_unit_auth::{Auth, AuthChain};
@@ -103,6 +104,54 @@ pub struct AdmissionDoor;
 impl ArrivalDoor for AdmissionDoor {
     fn arrival_hold(&self, principal: PrincipalId, token: &AdmitToken<Admit>) -> Hold {
         busbar_unit_admission::arrival_hold(principal, token)
+    }
+}
+
+/// The store a node has before one is configured.
+///
+/// Every method answers that there is nothing there, which is what an unconfigured store IS. It is
+/// not the production default — that is the loader's ABI-2 adapter over the configured store, and
+/// the in-tree memory store when a config names none — it is what the composition holds until the
+/// configured one is built.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct RefusingStore;
+
+impl busbar_unit_verbs::store::Store for RefusingStore {
+    fn chain_break(
+        &self,
+        _admin: &busbar_caps::AdminToken,
+    ) -> Result<(), busbar_unit_verbs::StoreError> {
+        Err(busbar_unit_verbs::StoreError::Failed)
+    }
+
+    fn store_restore(
+        &self,
+        _admin: &busbar_caps::AdminToken,
+        _backup_ref: &str,
+    ) -> Result<(), busbar_unit_verbs::StoreError> {
+        Err(busbar_unit_verbs::StoreError::Failed)
+    }
+
+    fn reseal_epoch_floor(
+        &self,
+        _admin: &busbar_caps::AdminToken,
+    ) -> Result<(), busbar_unit_verbs::StoreError> {
+        Err(busbar_unit_verbs::StoreError::Failed)
+    }
+
+    fn replay_new_verb(
+        &self,
+        _key: &(String, String),
+    ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+        Ok(None)
+    }
+
+    fn commit_new_verb_replay(
+        &self,
+        _key: &(String, String),
+        _response: &[u8],
+    ) -> Result<(), busbar_unit_verbs::StoreError> {
+        Ok(())
     }
 }
 
@@ -167,6 +216,7 @@ pub struct ProductionUnits {
     /// One plane's bindings rather than five, because one plane has been switched. The other four
     /// arrive as their own fields as their own steps land, and until then their step methods say so
     /// rather than answering for a plane that is still served elsewhere.
+    #[cfg(feature = "root-admin")]
     pub admin: crate::root::units_admin::AdminBinding,
     /// The store, behind the published ABI. The verbs unit's disaster-recovery subset and its
     /// sealed idempotency cache both reach it, and both reach the same one.
@@ -200,7 +250,38 @@ impl ProductionUnits {
         breaker_policy: crate::root::adapters::BreakerPolicy,
         meter_policy: crate::root::policy::MeterPolicyHandle,
         scope_policy: crate::root::policy::ScopePolicy,
-        admin: crate::root::units_admin::AdminBinding,
+        #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
+        store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+    ) -> Self {
+        ProductionUnits::new_sharing(
+            kernel,
+            auth_chain,
+            Arc::new(Mutex::new(durability)),
+            breaker_policy,
+            meter_policy,
+            scope_policy,
+            #[cfg(feature = "root-admin")]
+            admin,
+            store,
+        )
+    }
+
+    /// The same assembly over a book somebody else owns.
+    ///
+    /// [`ProductionUnits::new`] takes the durability by value, which says the node it builds is the
+    /// only thing that settles onto it — true of a node with one plane on the loop and false the
+    /// moment a second plane's exit arm needs the same book. This takes the handle instead, so the
+    /// caller keeps one and every arm that settles is settling onto the book these units read.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new_sharing(
+        kernel: &busbar_kernel::teller::Kernel,
+        auth_chain: AuthChain,
+        durability: Arc<Mutex<crate::root::durability::Durability>>,
+        breaker_policy: crate::root::adapters::BreakerPolicy,
+        meter_policy: crate::root::policy::MeterPolicyHandle,
+        scope_policy: crate::root::policy::ScopePolicy,
+        #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     ) -> Self {
         ProductionUnits {
@@ -223,9 +304,10 @@ impl ProductionUnits {
             auth_bindings: auth_bindings::AuthBindings::without_directory(),
             trust: Trust,
             arrival_door: AdmissionDoor,
-            durability: Arc::new(Mutex::new(durability)),
+            durability,
             meter_policy,
             scope_policy,
+            #[cfg(feature = "root-admin")]
             admin,
             store,
             // Minted once, at boot, from the node's one authority. The verbs unit is lent it for the
@@ -272,32 +354,49 @@ impl ProductionUnits {
         write: Box<dyn busbar_unit_ledger::legacy::LegacyRows>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
     ) -> Self {
-        let kernel = new_kernel();
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
+        ProductionUnits::admin_only_sharing(dispatch, Arc::new(Mutex::new(durability)), read)
+    }
 
-        let mut units = ProductionUnits::new(
+    /// The same composition again, over a book the caller already opened.
+    ///
+    /// The one constructor a boot that serves more than the administrative listener can use. The
+    /// other two open a book of their own, which is right for a node whose only settlements are the
+    /// admin plane's; it is wrong the moment a second plane's exit arm settles, because that arm
+    /// would be moving figures on a book these views cannot see. An operator reading the totals
+    /// would get an empty table off a node that had been posting all day — and an empty table
+    /// reconciles, so the emptiness would not even read as a fault.
+    ///
+    /// So the book arrives as an argument. The caller holds the same handle it passes here, and what
+    /// every plane settles onto is what these views read.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn admin_only_sharing(
+        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        durability: Arc<Mutex<crate::root::durability::Durability>>,
+        read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+    ) -> Self {
+        let kernel = new_kernel();
+        let mut units = ProductionUnits::new_sharing(
             &kernel,
             AuthChain::new(Vec::new(), false),
-            durability,
+            Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
             crate::root::units_admin::AdminBinding::new(dispatch),
-            Arc::new(crate::root::units_admin::RefusingStore),
+            Arc::new(RefusingStore),
         );
         // The views are bound after the units are assembled rather than through the constructor,
         // because what they read is the durability the constructor took ownership of — the handle
         // does not exist until it has. Binding it here is what makes the served figures this node's
         // rather than an empty table that looks like a balanced one.
-        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(
-            Arc::clone(&units.durability),
-            read,
-        ));
+        units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(durability, read));
         units
     }
 
@@ -335,13 +434,20 @@ impl ProductionUnits {
     /// Membership of the table, not a guess from the context: the surface that opened the unit is
     /// what put it there, so a unit that is in the table is one this root composed and a unit that
     /// is not is one it did not.
+    #[cfg(feature = "root-admin")]
     fn is_admin(&self, ctx: &UnitCtx) -> bool {
         self.admin.units.holds(ctx.key)
     }
 }
 
+// With no leg compiled, this root drives no plane at all: every step below refuses without reading
+// the facts it was handed, so every step's arguments go unused. That is exactly the composition the
+// ordering intends — the root is BUILT before any plane is SWITCHED onto it — and the allow says so
+// for that one build rather than silencing an unread argument in a build that does drive a plane.
+#[cfg_attr(not(feature = "root-admin"), allow(unused_variables))]
 impl Units for ProductionUnits {
     fn arrival(&self, token: &UnitToken<Arrival>, ctx: &UnitCtx) -> Decision<Arrival> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::arrival(&self.admin, token, ctx);
         }
@@ -349,6 +455,7 @@ impl Units for ProductionUnits {
     }
 
     fn decode(&self, token: &UnitToken<Decode>, ctx: &UnitCtx) -> Decision<Decode> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::decode(&self.admin, token, ctx);
         }
@@ -360,6 +467,7 @@ impl Units for ProductionUnits {
         token: &UnitToken<Authenticate>,
         ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::authenticate(
                 &self.auth,
@@ -382,6 +490,7 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> Decision<Verify> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::verify(&self.admin, token, ctx, principal);
         }
@@ -395,6 +504,7 @@ impl Units for ProductionUnits {
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
     ) -> Decision<Approve> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::approve(
                 &self.admin,
@@ -415,7 +525,11 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         principal: &PrincipalId,
         destinations: &[VerifiedDestination],
+        // The administrative surface charges through no configured group — a kernel verb is exempt
+        // from the gauge entirely — so this door names none.
+        _leases: &GroupLeaseSlip,
     ) -> Decision<Admit> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::admit(
                 &self.admin,
@@ -435,6 +549,7 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::route(
                 &self.admin,
@@ -455,6 +570,7 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         provisional: &Outcome,
     ) -> Decision<Meter> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::meter(token, usage, ctx, provisional);
         }
@@ -462,6 +578,7 @@ impl Units for ProductionUnits {
     }
 
     fn audit(&self, token: &UnitToken<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> Decision<Audit> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
             return crate::root::units_admin::audit(
@@ -481,6 +598,7 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         refusal: &Refusal,
     ) -> Decision<Audit> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             let durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
             return crate::root::units_admin::audit_refused(
@@ -509,6 +627,7 @@ impl Units for ProductionUnits {
         ctx: &UnitCtx,
         outcome: &Outcome,
     ) -> Decision<Encode> {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::encode(&self.admin, token, ctx, outcome);
         }
@@ -516,6 +635,7 @@ impl Units for ProductionUnits {
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        #[cfg(feature = "root-admin")]
         if self.is_admin(ctx) {
             return crate::root::units_admin::evidence(ctx);
         }
@@ -655,14 +775,16 @@ mod tests {
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
+            #[cfg(feature = "root-admin")]
             crate::root::units_admin::AdminBinding::new(std::sync::Arc::new(
                 crate::root::units_admin::RefusingDispatch,
             )),
-            std::sync::Arc::new(crate::root::units_admin::RefusingStore),
+            std::sync::Arc::new(RefusingStore),
         );
 
         // Nothing is in flight before anything arrives, which is the machine-checkable half of
         // "an entry that outlived its unit would be a leak per request".
+        #[cfg(feature = "root-admin")]
         assert!(units.admin.units.is_empty());
 
         // The journal opened nothing, the ledger is dual-writing, and the scope policy permits
@@ -715,10 +837,11 @@ mod tests {
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
+            #[cfg(feature = "root-admin")]
             crate::root::units_admin::AdminBinding::new(Arc::new(
                 crate::root::units_admin::RefusingDispatch,
             )),
-            Arc::new(crate::root::units_admin::RefusingStore),
+            Arc::new(RefusingStore),
         );
 
         // The same assembly the constructor performs, over a sink this test can read back. The

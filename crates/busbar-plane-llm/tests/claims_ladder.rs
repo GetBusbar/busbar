@@ -104,7 +104,9 @@ fn each_rung_routes_its_own_dialect() {
         ("/v1/embeddings", &[], "openai"),
         ("/v1/moderations", &[], "openai"),
         ("/v1/images/generations", &[], "openai"),
-        ("/v1/audio/speech", &[], "openai"),
+        // Not `/v1/audio/speech` and not `/v1/audio/transcriptions`: those two are the voice
+        // plane's one-shot operations, and this plane's audio claim is the path it leaves behind.
+        ("/v1/audio/translations", &[], "openai"),
     ];
     assert_eq!(
         cases.len(),

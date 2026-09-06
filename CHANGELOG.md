@@ -58,6 +58,16 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   credential-mode and unknown-pool-member sentences are rephrased; the protocol list is reordered;
   a plugin download failure quotes the HTTP client's current error text. Same refusal, same exit
   code in every case.
+- **An inline literal where a secret reference belongs is refused without echoing it.** Every
+  secret-bearing key takes a reference — `{ env: VAR }`, `{ file: /path }`, or a secret module —
+  and pasting the value inline is the mistake that grammar exists to prevent. 1.5.5 rejected it
+  with serde's default `invalid type: string "sk-…"` / `invalid type: integer 483920175534`, which
+  prints the pasted secret straight into stderr and the boot log; an unquoted one
+  (`api_key: 483920175534`) is the spelling nobody thinks to check. Busbar now answers every
+  inline spelling with one message that names the rule and never echoes the value: *a secret value
+  must be a REFERENCE, never an inline literal (the value is not echoed): use `{ env: <VAR> }`,
+  `{ file: <path> }`, or `{ module: <secret-module>, settings: {…} }`*. Same refusal, same exit
+  code, same config path, line and column.
 - **One new `/metrics` series on a 1.5.5 config:** `busbar_metering_pending_coalesced_total`, the
   write-behind overflow sentinel (see BUSBAR-8019 in the diagnostics reference). No 1.5.5 series
   changed shape.
@@ -95,7 +105,7 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   image — so busbar now emits no frame for one, and suppresses its matching `content_block_stop`
   with it rather than orphaning a close a client never saw opened. Every other dialect already did.
   See [Spec fidelity](#spec-fidelity).
-- **An Anthropic-dialect error names an Anthropic error type.** Busbar's quota and
+- An Anthropic-dialect error names an Anthropic error type. Busbar's quota and
   context-overflow refusals reached an Anthropic client as `insufficient_quota` and
   `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error
   envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error`
@@ -106,6 +116,39 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the `response.function_call_arguments.delta` events that follow — as real OpenAI does. 1.5.5
   omitted it, so the opening item failed the item schema and an SDK seeding its accumulator from it
   concatenated onto `undefined`. See [Spec fidelity](#spec-fidelity).
+- **A Bedrock `Converse` response always carries `metrics`.** The published Converse output shape
+  requires the member; 1.5.5's same-dialect passthrough dropped it when the upstream's own response
+  did not carry one. 1.6.0 always emits it, with the normalized `latencyMs` for the call.
+  See [Spec fidelity](#spec-fidelity).
+- **An Anthropic response carries the members its published schema requires.** `stop_details`,
+  `container`, `citations`, the cache and service-tier usage members, `output_tokens_details` and
+  `server_tool_use` are all marked required by Anthropic's published Message and stream-event
+  schemas; 1.5.5 omitted them, so a strict validator and the official SDK's model rejected an
+  otherwise good response. 1.6.0 emits the carried value where the backend sent one and the spec's
+  own null/zero default where it did not. See [Spec fidelity](#spec-fidelity).
+- **A Responses object carries the members its published schema requires.** `created_at`, `error`,
+  `incomplete_details`, `instructions`, `tools`, `tool_choice`, `parallel_tool_calls`, `metadata`,
+  `temperature`, `top_p`, a content part's `logprobs` and the usage detail objects are required by
+  the published Response object and were omitted in 1.5.5; they are now emitted with the carried
+  value or the spec's default. See [Spec fidelity](#spec-fidelity).
+- **A `stream: true` request on the Responses door is answered as a stream.** It is served as
+  `text/event-stream` carrying the `ResponseStreamEvent` sequence; 1.5.5 answered the same-dialect
+  case with a buffered `application/json` body, so a client that asked for a stream got one
+  response at the end instead. The response is metered identically. Because SSE is chunked, that
+  answer no longer carries the synthesized `content-length` the buffered body had.
+  See [Spec fidelity](#spec-fidelity).
+- **Every door streams when the routed lane is Responses-shaped.** A `stream: true` request whose
+  lane speaks the Responses API is now served as `text/event-stream` in the frames of the door that
+  received it — Cohere v2 SSE, Gemini's SSE framing, OpenAI `chat.completion.chunk` SSE — where
+  1.5.5 answered it with a buffered `application/json` body whichever door it arrived at. Metered
+  identically.
+- **A streamed response's `usage` carries the same attribution buckets as a buffered one.** A
+  stream's usage object now reports every per-dialect attribution sub-bucket the provider sent —
+  reasoning tokens, Anthropic's two cache-creation TTL tiers and its web-search/service-tier pair,
+  OpenAI's four audio and predicted-output slices, Gemini's tool-use prompt slice, Cohere's
+  separately-metered `billed_units` trio — which 1.6.0 had recovered on the buffered path only, so
+  the two answers to one request now agree. These are additive members 1.5.5 emitted on neither
+  path, and the totals are untouched: billable tokens ignore the attribution breakdown entirely.
 - **A degraded hop is accounted like a primary hop.** On a fallback, least-bad or queue hop: a
   non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the
   cooldown floor, and emits the upstream-failure series; a client-fault 4xx bumps the lane's

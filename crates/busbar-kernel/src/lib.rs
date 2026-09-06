@@ -19,6 +19,8 @@
 //!   direction, a bounded number of one-shots, the emission clock.
 //! - [`inflight`] — the node-global sharded table of live units (hold cell, accrual count,
 //!   cancellation, step state) and the session table beside it.
+//! - [`reply`] — which answer wakes which unit waiting on a reply leg, matched on the whole
+//!   correlation the leg's key names and the unit's draft minted.
 //! - [`recovery`] — bringing a hold back from a journal record after a crash and settling it.
 //! - [`mod@slice`] — the node's slices of a bucket window, the concurrency leases, and the epoch fence.
 //! - [`registry`] — the plugin registry, its generations, and whether two claims can both match.
@@ -74,6 +76,7 @@ pub mod inflight;
 pub mod pump;
 pub mod recovery;
 pub mod registry;
+pub mod reply;
 pub mod slice;
 pub mod teller;
 pub mod tick;

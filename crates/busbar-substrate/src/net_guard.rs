@@ -382,7 +382,9 @@ pub enum GuardRefusal {
     /// `http` where the policy admits no plaintext.
     Plaintext { url: String, scheme: String },
     /// The URL had no host component, or an unusable authority (userinfo, an unclosed IPv6
-    /// bracket, an unparseable port).
+    /// bracket, an unparseable port). Carried with any authority credential replaced by a marker,
+    /// since a refusal naming a rejected userinfo would otherwise be the one place a password is
+    /// written down twice.
     NoHost(String),
     /// The host is an alternate IPv4 encoding (`0x7f000001`, `2130706433`, `127.1`) that the OS
     /// resolver expands but a canonical IP-literal check misses.
@@ -409,6 +411,7 @@ pub enum GuardRefusal {
     #[cfg_attr(not(feature = "relay"), allow(dead_code))]
     TooManyRedirects { limit: u8, at: String },
     /// The body exceeded [`GuardPolicy::max_body_bytes`].
+    // The URL, with any authority credential replaced by a marker.
     BodyTooLarge { url: String, bytes: usize },
 }
 
@@ -562,7 +565,7 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), GuardRefusal>
         (false, r)
     } else {
         return Err(GuardRefusal::Scheme {
-            url: url.to_string(),
+            url: redact_userinfo(url),
             scheme: scheme_of(url),
         });
     };
@@ -574,17 +577,17 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), GuardRefusal>
     // `good.example` to a parser and as `evil.test` to a human skimming a config diff, and a value
     // whose two readings differ has no place on a fetch path.
     if authority.contains('@') || authority.is_empty() {
-        return Err(GuardRefusal::NoHost(url.to_string()));
+        return Err(GuardRefusal::NoHost(redact_userinfo(url)));
     }
     let (host, port) = if let Some(inner) = authority.strip_prefix('[') {
         // Bracketed IPv6 literal.
         let (h, tail) = inner
             .split_once(']')
-            .ok_or_else(|| GuardRefusal::NoHost(url.to_string()))?;
+            .ok_or_else(|| GuardRefusal::NoHost(redact_userinfo(url)))?;
         let port = match tail.strip_prefix(':') {
             Some(p) => p
                 .parse::<u16>()
-                .map_err(|_| GuardRefusal::NoHost(url.to_string()))?,
+                .map_err(|_| GuardRefusal::NoHost(redact_userinfo(url)))?,
             None => default_port(https),
         };
         (h.to_string(), port)
@@ -593,15 +596,38 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), GuardRefusal>
             Some((h, p)) => (
                 h.to_string(),
                 p.parse::<u16>()
-                    .map_err(|_| GuardRefusal::NoHost(url.to_string()))?,
+                    .map_err(|_| GuardRefusal::NoHost(redact_userinfo(url)))?,
             ),
             None => (authority.to_string(), default_port(https)),
         }
     };
     if host.is_empty() {
-        return Err(GuardRefusal::NoHost(url.to_string()));
+        return Err(GuardRefusal::NoHost(redact_userinfo(url)));
     }
     Ok((https, host, port, path.to_string()))
+}
+
+/// The URL as a refusal may repeat it: everything an authority put before its last `@` replaced by a
+/// fixed marker.
+///
+/// A refusal names the URL that caused it because an operator cannot fix what they cannot see. But a
+/// URL's authority is also where a password goes — `https://svc:hunter2@upstream.example/` — and a
+/// refusal is written into a card and a log, which are read by more people than the config is and
+/// kept for longer. The host stays, because the host is the diagnosis; the credential goes, because
+/// it never was.
+///
+/// Only the authority is touched. A `@` later in the path is part of what the operator wrote and
+/// says nothing about a secret.
+fn redact_userinfo(url: &str) -> String {
+    let (prefix, rest) = match url.split_once("://") {
+        Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
+        None => ("", url),
+    };
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => format!("{prefix}<redacted>@{}", &rest[at + 1..]),
+        None => url.to_string(),
+    }
 }
 
 /// The scheme a string CLAIMS, for a refusal message. Nothing is decided from it — the decision is
@@ -627,7 +653,7 @@ pub fn default_port(https: bool) -> u16 {
 pub fn judge_scheme(url: &str, https: bool, policy: GuardPolicy) -> Result<(), GuardRefusal> {
     if !https && !policy.plaintext_admissible() {
         return Err(GuardRefusal::Plaintext {
-            url: url.to_string(),
+            url: redact_userinfo(url),
             scheme: "http".to_string(),
         });
     }
@@ -822,7 +848,7 @@ pub fn refuse_oversized_body(
 ) -> Result<(), GuardRefusal> {
     if bytes > policy.max_body_bytes {
         return Err(GuardRefusal::BodyTooLarge {
-            url: url.to_string(),
+            url: redact_userinfo(url),
             bytes,
         });
     }

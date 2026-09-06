@@ -4,16 +4,20 @@
 #
 # changelog-register-check.sh -- THE CHANGELOG REGISTER GATE.
 #
-# Answers one narrow question: does every `kind: breaking` entry in
-# testing/shadow-oracle/accepted-differences.json have its `changelog` field's exact line present,
-# verbatim, in CHANGELOG.md? testing/shadow-oracle's own differ already refuses a register entry
-# that accepts `status`/`effects.usage` without kind=breaking and a `changelog` field; this gate
-# closes the other half of that contract -- that the named line was actually WRITTEN, not just
-# declared -- so the CHANGELOG cannot drift silently out of sync with what the owner accepted.
+# Answers one narrow question: does EVERY entry in testing/shadow-oracle/accepted-differences.json
+# have its `changelog` field's exact line present, verbatim, in CHANGELOG.md? Not only the breaks:
+# ARCHITECTURE.md's owner rule accepts a registered `improvement` "(owner sign-off, named in the
+# CHANGELOG)" on the same terms. An entry that genuinely owes no line says so in the open, with an
+# explicit `"changelog": null` and a `changelog_reason`; a `breaking` entry may never waive.
+# testing/shadow-oracle's own differ already refuses a register entry that accepts
+# `status`/`effects.usage` without kind=breaking and a `changelog` field; this gate closes the other
+# half of that contract -- that the named line was actually WRITTEN, not just declared -- so the
+# CHANGELOG cannot drift silently out of sync with what the owner accepted.
 #
 #   --check      run the check against the real register + CHANGELOG.md; red on any missing line
-#   --selftest   the gate proves itself first: a present line -> PASS; an absent line -> FAIL; a
-#                missing `changelog` field -> FAIL; zero breaking entries -> PASS/vacuous-ok
+#   --selftest   the gate proves itself first: a present line (improvement or breaking) -> PASS; an
+#                absent line -> FAIL; a missing `changelog` key -> FAIL; a null with a reason ->
+#                WAIVED; a null without one, or on a break -> FAIL; zero entries -> vacuous-ok
 #
 # bash 3.2 + python3 (stdlib), the same bare-runner posture as the sibling gates
 # (scripts/design-bindings.sh).

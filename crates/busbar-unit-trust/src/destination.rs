@@ -9,6 +9,8 @@
 //! against a session's accrual. Stating it as a table rather than as scattered checks means a new
 //! origin has exactly one place to be considered.
 
+use crate::lane::BreakerQuery;
+
 /// Where a unit came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum OriginKind {
@@ -107,10 +109,22 @@ pub fn kind_permitted(origin: OriginKind, kind: &DestinationFacts) -> bool {
 ///
 /// A trait rather than a struct of data because the answers live in tables this unit must not own:
 /// the allow-list, the transport-key registry, the session's pairing, the nesting depth, the
-/// declared schemas, the lease table and the upgrade set.
+/// declared schemas, the lease table, the upgrade set and the name resolver the network guard runs
+/// its one resolution through.
 pub trait KindFacts {
     /// Whether this destination is on the deployment's allow-list.
     fn allow_listed(&self, dest: &DestinationFacts) -> bool;
+    /// Whether the network guard admits the address this destination would be dialled at: the
+    /// metadata denylist over the configured base and over the paths joined to it, one resolution,
+    /// every answered address judged, and the pin.
+    ///
+    /// It is asked HERE, inside the rule the seal is produced by, rather than beside it. The guard
+    /// living in [`crate::net`] as a free-standing library was a guard every carrier had to remember
+    /// to call, and a carrier that forgot dialled an address nobody had looked at. A destination
+    /// with no address to judge — a spawned program, a kind that is not dialled — answers yes:
+    /// there is nothing to have judged, and refusing it would put a check where there is nothing to
+    /// check.
+    fn net_guard_passes(&self, dest: &DestinationFacts) -> bool;
     /// Whether the transport key for this destination resolves.
     fn transport_key_resolves(&self, dest: &DestinationFacts) -> bool;
     /// Whether the lane is permitted for the draft's operation class. The located name may be a
@@ -139,6 +153,22 @@ pub trait KindFacts {
     /// Whether the upgrade target is one the current top transport declares, with at most one
     /// upgrade in flight on this connection.
     fn upgrade_ok(&self) -> bool;
+    /// Whether the card's unit price for this destination is within the maximum the card states.
+    ///
+    /// A card that states no maximum answers yes — a rate card with no max-price field has not said
+    /// anything for this to be over, and reading its silence as a ceiling would exclude every lane
+    /// on every deployment that has not moved its card.
+    fn unit_price_within_max(&self, dest: &DestinationFacts) -> bool;
+    /// Whether the breaker admits this destination's lane, asked through the one query the pre-walk
+    /// asks through.
+    ///
+    /// The implementer's job is the MAPPING — which position in the lane table this destination's
+    /// lane is — and nothing else; the question itself is
+    /// [`BreakerQuery::admits_lane`](crate::lane::BreakerQuery::admits_lane), so the answer here and
+    /// the answer the walk's own filter gives cannot be two different answers. A destination whose
+    /// lane is not in the table has no position for the breaker to hold an opinion about and is
+    /// already excluded by the allow-list conjunct beside this one.
+    fn breaker_admits(&self, dest: &DestinationFacts, at: &BreakerQuery<'_>) -> bool;
 }
 
 /// Judge one destination against its kind's rule.
@@ -147,12 +177,23 @@ pub trait KindFacts {
 /// pointing at: the administrative verb's scope check ALWAYS runs, and a read-only verb is pinned at
 /// zero price and is never refused for a budget or a breaker — an operator locked out of the
 /// read-only surface because a budget ran dry cannot diagnose why the budget ran dry.
-pub fn kind_rule_passes(dest: &DestinationFacts, facts: &dyn KindFacts) -> bool {
+///
+/// The upstream arm is the whole of its rule and not three of six conjuncts: the price ceiling and
+/// the breaker belong to the sealed answer, because a lane the walk will not take is not a lane
+/// this step may say the unit may go to.
+pub fn kind_rule_passes(
+    dest: &DestinationFacts,
+    facts: &dyn KindFacts,
+    at: &BreakerQuery<'_>,
+) -> bool {
     match dest {
         DestinationFacts::Upstream { lane, .. } => {
             facts.allow_listed(dest)
+                && facts.net_guard_passes(dest)
                 && facts.transport_key_resolves(dest)
                 && facts.lane_permitted_for_op_class(lane.as_str())
+                && facts.unit_price_within_max(dest)
+                && facts.breaker_admits(dest, at)
         }
         DestinationFacts::SessionUpstream { .. } => {
             facts.session_upstream_ok() && facts.session_principal_matches()
@@ -161,7 +202,10 @@ pub fn kind_rule_passes(dest: &DestinationFacts, facts: &dyn KindFacts) -> bool 
         DestinationFacts::KernelVerb { .. } => facts.verb_scope_held(),
         DestinationFacts::NestedPlane { .. } => facts.nested_plane_ok(),
         DestinationFacts::PlaneRecord { .. } => facts.plane_record_ok(),
-        DestinationFacts::Peer { .. } => facts.peer_lease_live(),
+        // A peer is another node, reached over the same network an upstream is, so the address it
+        // resolves to is judged for the same reason. The lease is asked first because a node with
+        // no live lease is not a node to look up an address for.
+        DestinationFacts::Peer { .. } => facts.peer_lease_live() && facts.net_guard_passes(dest),
         DestinationFacts::Upgrade { .. } => facts.upgrade_ok(),
         // A session accrual is the passage of time on a lane already paired at session open; there
         // is nothing further to verify about it.

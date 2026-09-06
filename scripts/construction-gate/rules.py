@@ -498,20 +498,43 @@ def rule_neutral_no_dialect(tree, cfg, hits_path):
                     -1, c["max_hits"], c["why"], [])]
     per_file = {}
     samples = []
+    scanned = {}
     with open(hits_path, encoding="utf-8", errors="replace") as fh:
         for ln in fh:
             parts = ln.rstrip("\n").split("\t")
+            # The `#SCAN` provenance line plane-purity-lint.sh prefixes the artefact with: how many
+            # files it examined, across how many roots. This row counts HITS, and a hit count of zero
+            # means "clean" only if the scan actually opened files -- a scan of nothing reports zero
+            # just as convincingly. The denominator is read here so the two can be told apart.
+            if parts and parts[0] == "#SCAN":
+                for kv in parts[1:]:
+                    k, _, v = kv.partition("=")
+                    if v.isdigit():
+                        scanned[k] = int(v)
+                continue
             if len(parts) < 3 or parts[0] not in cats:
                 continue
             f = parts[1].split(":")[0]
             per_file[f] = per_file.get(f, 0) + 1
             if len(samples) < 5:
                 samples.append(f"{parts[0]} {parts[1]}: {parts[2][:80]}")
+    # A zero-file scan is RED for the same reason a missing hits file is: the delegated scan did not
+    # actually happen, so its silence proves nothing. Reported before the ceiling comparison, because
+    # `0 <= max_hits` is true and would otherwise pass this row on an empty scan.
+    blind = [k for k in ("neutral_files", "plane_files") if scanned.get(k, -1) == 0]
+    if blind:
+        return [row("neutral-no-dialect", False,
+                    "neutral crates name no dialect or plane (delegated to plane-purity-lint.sh)",
+                    "plane-purity-lint.sh scanned zero files ("
+                    + ", ".join(f"{k}={scanned[k]}" for k in sorted(scanned))
+                    + "); zero hits over zero files is not a clean tree",
+                    -1, c["max_hits"], c["why"], blind)]
     current = sum(per_file.values())
     top = sorted(per_file.items(), key=lambda kv: -kv[1])[:5]
     offenders = [f"{n} in {f}" for f, n in top] + samples
-    detail = (f"{current} {'/'.join(sorted(cats))} hit(s) in the neutral crates per plane-purity-lint.sh "
-              f"(ceiling {c['max_hits']})" + (": " + "; ".join(offenders[:3]) if offenders else ""))
+    over = (f" over {scanned['neutral_files']} neutral file(s)" if "neutral_files" in scanned else "")
+    detail = (f"{current} {'/'.join(sorted(cats))} hit(s) in the neutral crates per plane-purity-lint.sh"
+              f"{over} (ceiling {c['max_hits']})" + (": " + "; ".join(offenders[:3]) if offenders else ""))
     return [row("neutral-no-dialect", current <= c["max_hits"],
                 "neutral crates name no dialect or plane (delegated to plane-purity-lint.sh)",
                 detail, current, c["max_hits"], c["why"], offenders)]
@@ -1481,6 +1504,31 @@ def rule_hold_escapes(tree, cfg):
     path one file, and a path ending in `/` one directory.
     """
     c = cfg["rules"]["hold-escapes"]
+    return _symbol_table_scan(
+        tree, c, "hold-escapes",
+        "no production source deliberately forgets, leaks or unwind-smuggles a hold",
+        "deliberate hold escape(s)")
+
+
+def rule_seal_sites(tree, cfg):
+    """The symbols that decide who may build a capability at all, scanned for the same way.
+
+    busbar-caps names three of them in the same honesty table as the hold escapes -- the seal every
+    token constructor needs, the recovery token that materialises a hold with no admission behind
+    it, and the take that empties a hold cell -- and the table said CI scanned for them while
+    nothing did. This is that scan, sharing the escape scan's implementation exactly: the same
+    literal-substring reading, the same `confined_to` scoping and the same reviewed-site ratchet,
+    so the two rules cannot drift into meaning different things by the same words.
+    """
+    c = cfg["rules"]["seal-sites"]
+    return _symbol_table_scan(
+        tree, c, "seal-sites",
+        "no production source outside its one reviewed home names a capability-minting symbol",
+        "capability-minting symbol(s) out of place")
+
+
+def _symbol_table_scan(tree, c, rid, title, noun):
+    """One literal-substring scan over a `[rules.*.symbols]` table, shared by the two rules above."""
     files = [rel for d in _dirs_for_globs(tree.root, c["scan_globs"])
              for rel in tree.files if rel.startswith(os.path.relpath(d, tree.root) + os.sep)]
     known = list(c.get("known_sites", []))
@@ -1528,10 +1576,9 @@ def rule_hold_escapes(tree, cfg):
         parts.append("; ".join(offenders))
     if tracked:
         parts.append("reviewed escapes (qa/construction.toml known_sites): " + "; ".join(tracked))
-    detail = (f"{current} deliberate hold escape(s) in production source (ceiling {c['max_sites']}): "
+    detail = (f"{current} {noun} in production source (ceiling {c['max_sites']}): "
               + ("; ".join(parts) if parts else "none"))
-    return [row("hold-escapes", current <= c["max_sites"],
-                "no production source deliberately forgets, leaks or unwind-smuggles a hold",
+    return [row(rid, current <= c["max_sites"], title,
                 detail, current, c["max_sites"], c["why"], offenders)]
 
 
@@ -1682,6 +1729,223 @@ def rule_unit_no_finding_ids(tree, cfg):
                 detail, current, c["max_hits"], c["why"], offenders)]
 
 
+# ── 28. plane-no-money ───────────────────────────────────────────────────────────────────────────
+
+
+def _identifier_at(code, pos):
+    """The whole identifier containing `pos`, so a match on a fragment is judged as the word a
+    reader sees: `priced` inside `unpriced_message` is that field's name, not a price."""
+    for m in re.finditer(r"[A-Za-z_][A-Za-z0-9_]*", code):
+        if m.start() <= pos < m.end():
+            return m.group(0)
+    return None
+
+
+def rule_plane_no_money(tree, cfg):
+    """A plane's own sources name no money symbol.
+
+    Two scans over the same scoped files: the symbol scan (each configured symbol as a whole word,
+    judged against the identifier it lands in, so the allowed vocabulary can excuse a word rather
+    than a substring), and the module-path scan (the cost unit and the core/substrate cost host
+    modules named directly). Plus each scoped crate's `[dependencies]`, because naming the cost
+    crate in a manifest is the same reach spelled where no source scan would see it."""
+    c = cfg["rules"]["plane-no-money"]
+    files = _scoped_files(tree, c["scope_globs"])
+    allowed = set(c["allowed_vocabulary"])
+    per_file = {k.replace("/", os.sep): set(v) for k, v in c.get("allowlist", {}).items()}
+    sym_rx = re.compile("|".join(
+        (re.escape(s) if s.startswith("_") else _word(s)) for s in c["symbols"]))
+    path_rx = re.compile("|".join(re.escape(p) for p in c["forbidden_module_paths"]))
+    offenders = []
+    for rel in files:
+        here = per_file.get(rel, set())
+        for l in tree.files[rel]:
+            if l.intest:
+                continue
+            for m in sym_rx.finditer(l.code):
+                word = _identifier_at(l.code, m.start()) or m.group(0)
+                if word in allowed or word in here or m.group(0) in here:
+                    continue
+                offenders.append(f"`{word}` at {rel}:{l.no}")
+                break
+            pm = path_rx.search(l.code)
+            if pm:
+                offenders.append(f"`{pm.group(0)}` at {rel}:{l.no}")
+    forbidden_deps = set(c["forbidden_deps"])
+    for crate in sorted({tree.crate_of(rel) for rel in files}):
+        for dep in _read_cargo_deps(os.path.join(tree.root, "crates", crate, "Cargo.toml")):
+            if dep in forbidden_deps:
+                offenders.append(f"{crate}/Cargo.toml depends on `{dep}`")
+    current = len(offenders)
+    empty = [g for g in c["scope_globs"] if not _scoped_files(tree, [g])]
+    if not files:
+        detail = VACUOUS + "no plane crate, plane codec or plane unit module is present in this tree"
+    else:
+        detail = (f"{current} money symbol(s) in the plane crates, plane codecs and plane unit "
+                  f"modules (ceiling {c['max_hits']}): "
+                  + ("; ".join(offenders[:8]) if offenders else "none")
+                  + (f"; scope glob(s) matching no file yet (not a finding): {', '.join(empty)}"
+                     if empty else ""))
+    return [row("plane-no-money", current <= c["max_hits"],
+                "a plane names usage classes and quantities, never a price",
+                detail, current, c["max_hits"], c["why"], offenders)]
+
+
+# ── 29. one-pricing-site ─────────────────────────────────────────────────────────────────────────
+
+
+def rule_one_pricing_site(tree, cfg):
+    """The cost unit's pricing entry points are called from the root's wiring and the kernel's
+    settle sites, and nowhere else; and nothing outside the cost unit and the retiring core reads a
+    per-request fee off a config or a card."""
+    c = cfg["rules"]["one-pricing-site"]
+    homes = [(k, v["path"].replace("/", os.sep).rstrip(os.sep)) for k, v in c["allowed"].items()]
+
+    def home_of(rel):
+        for key, p in homes:
+            if rel == p or rel.startswith(p + os.sep):
+                return key
+        return None
+
+    sites = []
+    for verb in c["entry_verbs"]:
+        sites += [(f"`{verb}(`", rel, l) for rel, l in _call_sites(tree, verb)]
+    path_rx = re.compile("|".join(c["entry_path_patterns"]))
+    for rel, l in tree.grep(path_rx.pattern):
+        m = path_rx.search(l.code)
+        sites.append((f"`{m.group(0)}`", rel, l))
+    extra, inside = [], []
+    for what, rel, l in sites:
+        key = home_of(rel)
+        (inside if key else extra).append(
+            f"{what} at {rel}:{l.no}" + (f" ({key})" if key else ""))
+    current = len(extra)
+    detail = (f"{current} pricing-entry call site(s) outside the reviewed homes "
+              f"{sorted(k for k, _ in homes)} (ceiling {c['max_extra_sites']}): "
+              + ("; ".join(extra) if extra else "none")
+              + "; reviewed sites seen: " + ("; ".join(inside) if inside else
+                                             "NONE — no production code prices at all today"))
+    rows = [row("one-pricing-site", current <= c["max_extra_sites"],
+                "only the root's meter/admission wiring and the kernel's settle sites price a unit",
+                detail, current, c["max_extra_sites"], c["why"], extra)]
+
+    fee_crates = set(c["fee_reader_crates"])
+    fee_rx = re.compile("|".join(_word(f) for f in c["fee_fields"]))
+    readers = [f"{rel}:{l.no}" for rel, l in tree.grep(fee_rx.pattern)
+               if tree.crate_of(rel) not in fee_crates]
+    detail = (f"{len(readers)} production read(s) of {c['fee_fields']} outside "
+              f"{sorted(fee_crates)} (ceiling {c['max_fee_readers']}): "
+              + ("; ".join(readers) if readers else "none"))
+    rows.append(row("one-pricing-site:fee-fields", len(readers) <= c["max_fee_readers"],
+                    "the per-request fee is read only where the card lives",
+                    detail, len(readers), c["max_fee_readers"], c["why"], readers))
+    return rows
+
+
+# ── 30. legacy-reach ─────────────────────────────────────────────────────────────────────────────
+
+_USE_PATH_RX = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)*")
+
+
+def _split_top(text, sep=","):
+    out, depth, cur = [], 0, []
+    for ch in text:
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+        if ch == sep and depth == 0:
+            out.append("".join(cur))
+            cur = []
+            continue
+        cur.append(ch)
+    out.append("".join(cur))
+    return out
+
+
+def _expand_item(item, base, out):
+    """One entry of a `use` group, which may itself be a path or another group."""
+    item = item.split(" as ")[0].strip()
+    if not item or item in ("self", "*"):
+        return
+    if "{" in item:
+        head, _, rest = item.partition("::{")
+        inner = rest.rstrip().rstrip("}")
+        for sub in _split_top(inner):
+            _expand_item(sub, base + head + "::", out)
+        return
+    out.add(base + item)
+
+
+def _named_symbols(tree, files, prefix, exclude):
+    """Every distinct symbol named through `prefix` in production code, with where each is named.
+
+    A grouped `use a::{b, c::{d, e}}` is expanded, because a symbol imported in a brace group is
+    named exactly as much as one spelled in full — a scan that missed them would report a reach
+    shrinking whenever an import was merged."""
+    seen = {}
+    for rel in files:
+        for l in tree.files[rel]:
+            if l.intest:
+                continue
+            pos = 0
+            while True:
+                i = l.code.find(prefix, pos)
+                if i < 0:
+                    break
+                j = i + len(prefix)
+                pos = j
+                found = set()
+                if j < len(l.code) and l.code[j] == "{":
+                    depth, k = 0, j
+                    while k < len(l.code):
+                        if l.code[k] == "{":
+                            depth += 1
+                        elif l.code[k] == "}":
+                            depth -= 1
+                            if depth == 0:
+                                break
+                        k += 1
+                    for entry in _split_top(l.code[j + 1:k]):
+                        _expand_item(entry, prefix, found)
+                    pos = k + 1
+                else:
+                    m = _USE_PATH_RX.match(l.code, j)
+                    if m:
+                        found.add(prefix + m.group(0))
+                        pos = m.end()
+                for s in found:
+                    if any(s.startswith(e) for e in exclude):
+                        continue
+                    seen.setdefault(s, []).append(f"{rel}:{l.no}")
+    return seen
+
+
+def rule_legacy_reach(tree, cfg):
+    """How many distinct symbols of the retiring crates the composition root still names.
+
+    A ratchet, one row per crate prefix: the number may only go DOWN. Every red row lists the
+    symbols, so the deletion work has a worklist rather than a number."""
+    c = cfg["rules"]["legacy-reach"]
+    files = _scoped_files(tree, c["scope_globs"])
+    rows = []
+    for key, spec in c["prefixes"].items():
+        seen = _named_symbols(tree, files, spec["prefix"], spec.get("exclude", []))
+        current = len(seen)
+        offenders = [f"{s} ({len(seen[s])} site(s), first {seen[s][0]})" for s in sorted(seen)]
+        if not files:
+            detail = VACUOUS + "no composition-root source is present in this tree"
+        else:
+            detail = (f"the root names {current} distinct `{spec['prefix']}` symbol(s) "
+                      f"(ratchet {spec['ceiling']}, may only go down): "
+                      + (", ".join(sorted(seen)[:6]) + (" …" if current > 6 else "")
+                         if seen else "none"))
+        rows.append(row(f"legacy-reach:{key}", current <= spec["ceiling"],
+                        f"the root's reach into `{spec['prefix']}` only shrinks",
+                        detail, current, spec["ceiling"], c["why"], offenders))
+    return rows
+
+
 def evaluate(tree, cfg, hits_path):
     rows = []
     rows += rule_one_attempt_seam(tree, cfg)
@@ -1705,12 +1969,16 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_sealed_unit_traits(tree, cfg)
     rows += rule_hold_discipline(tree, cfg)
     rows += rule_hold_escapes(tree, cfg)
+    rows += rule_seal_sites(tree, cfg)
     rows += rule_kernel_seal_impls(tree, cfg)
     rows += rule_forbid_unsafe(tree, cfg)
     rows += rule_secret_carrier_debug(tree, cfg)
     rows += rule_no_escaped_newline_doc_comment(tree, cfg)
     rows += rule_unit_no_wall_clock(tree, cfg)
     rows += rule_unit_no_finding_ids(tree, cfg)
+    rows += rule_plane_no_money(tree, cfg)
+    rows += rule_one_pricing_site(tree, cfg)
+    rows += rule_legacy_reach(tree, cfg)
     return rows
 
 
@@ -1819,6 +2087,13 @@ def calibrate(rows, cfg, path):
         rules["loc-ceilings"]["kernel_files"][key]["ceiling"] = by_id[f"loc-ceilings:kernel:{key}"]["current"]
     rules["sealed-unit-traits"]["max_unsealed"] = by_id["sealed-unit-traits"]["current"]
     rules["hold-escapes"]["max_sites"] = by_id["hold-escapes"]["current"]
+    rules["seal-sites"]["max_sites"] = by_id["seal-sites"]["current"]
+    rules["unit-no-finding-ids"]["max_hits"] = by_id["unit-no-finding-ids"]["current"]
+    rules["plane-no-money"]["max_hits"] = by_id["plane-no-money"]["current"]
+    rules["one-pricing-site"]["max_extra_sites"] = by_id["one-pricing-site"]["current"]
+    rules["one-pricing-site"]["max_fee_readers"] = by_id["one-pricing-site:fee-fields"]["current"]
+    for key in rules["legacy-reach"]["prefixes"]:
+        rules["legacy-reach"]["prefixes"][key]["ceiling"] = by_id[f"legacy-reach:{key}"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(
@@ -1851,7 +2126,7 @@ def main():
         write_rows(rows, a.rows)
     if a.expected:
         with open(a.expected, "w", encoding="utf-8") as fh:
-            fh.write(" ".join(r["id"] for r in rows) + "\n")
+            fh.write("\n".join(r["id"] for r in rows) + "\n")
     if a.report:
         write_report(rows, cfg, a.report, a.root)
     if a.summary:

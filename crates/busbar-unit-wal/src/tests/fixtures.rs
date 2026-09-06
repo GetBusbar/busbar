@@ -146,6 +146,10 @@ impl SegmentFactory for FaultyFactory {
         }))
     }
 
+    fn highest_index(&self) -> io::Result<Option<u64>> {
+        self.inner.highest_index()
+    }
+
     fn is_durable(&self) -> bool {
         true
     }
@@ -192,9 +196,29 @@ pub struct TempDir {
 }
 
 impl TempDir {
-    /// Make one.
+    /// Make one, under the system temp directory.
     pub fn new(tag: &str) -> Self {
-        let path = std::env::temp_dir().join(format!(
+        TempDir::under(std::env::temp_dir(), tag)
+    }
+
+    /// Make one inside the workspace's own build directory rather than the system temp directory.
+    ///
+    /// For a test that fills a segment: the system temp directory is a tmpfs on some machines and a
+    /// small partition on others, and a test that writes several segments' worth of frames there is
+    /// a test that fails for a reason that has nothing to do with the log. The build directory is on
+    /// the same volume as the checkout, is already the place the toolchain writes megabytes, and is
+    /// already ignored by git.
+    pub fn in_build_dir(tag: &str) -> Self {
+        let build = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("target")
+            .join("busbar-unit-wal-tmp");
+        TempDir::under(build, tag)
+    }
+
+    fn under(parent: std::path::PathBuf, tag: &str) -> Self {
+        let path = parent.join(format!(
             "busbar-unit-wal-{tag}-{}-{}",
             std::process::id(),
             std::time::SystemTime::now()

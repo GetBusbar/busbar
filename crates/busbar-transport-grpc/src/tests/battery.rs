@@ -833,6 +833,8 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
                     bytes: 1,
                     transport_units: None,
                     status: None,
+                    status_code: None,
+                    retry_after_secs: None,
                 },
             },
         ))
@@ -848,6 +850,113 @@ async fn the_inbound_channel_backpressures_a_peer_that_outruns_frames() {
     assert!(
         flooded.is_err(),
         "an undrained inbound channel must backpressure once the per-unit frame buffer is full"
+    );
+}
+
+/// An arrival names the port it arrived on.
+///
+/// `Port` is one of the selector forms this transport declares it can claim by, and a claim reads
+/// the arrival record. The record said `0` for every connection on every listener, so the one form
+/// that tells two bound ports apart could not tell them apart at all: every arrival on this
+/// transport looked like every other, whatever it had been accepted on.
+#[tokio::test]
+async fn an_arrival_names_the_port_it_arrived_on() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let bound: u16 = addr
+        .rsplit(':')
+        .next()
+        .and_then(|p| p.parse().ok())
+        .expect("the listener is bound to a port");
+    assert_ne!(bound, 0, "the listener really is bound");
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let _client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    assert_eq!(
+        server_t.arrival(&server_conn).port,
+        bound,
+        "an arrival that names no port cannot be claimed by the Port selector form this transport declares"
+    );
+}
+
+/// A forwarder parked on a full inbound buffer ends when the connection does.
+///
+/// Backpressure is a wait, and a wait needs a way out. The wait was on a send with no cancellation
+/// leg, and the task doing it holds its own clone of the connection state — which is what keeps the
+/// receiving half alive — so nothing could ever end it: not the connection's own completion, not
+/// `close`, not a reader that gave up and walked away. One task and one buffer's worth of frames
+/// per abandoned call, held for the life of the process.
+#[tokio::test]
+async fn a_forwarder_parked_on_a_full_inbound_buffer_ends_when_the_connection_does() {
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    let one = || {
+        Ok((
+            StreamId(1),
+            busbar_contract::wire::Frame {
+                direction: busbar_contract_transport::wire::Direction::Inbound,
+                stream: StreamId(1),
+                bytes: busbar_contract::SlabBytes::new(std::sync::Arc::from(&b"x"[..])),
+                meta: busbar_contract_transport::wire::FrameMeta {
+                    bytes: 1,
+                    transport_units: None,
+                    status: None,
+                    status_code: None,
+                    retry_after_secs: None,
+                },
+            },
+        ))
+    };
+
+    // A forwarder with nothing draining it: it fills the per-unit buffer and parks on the send.
+    let forwarder = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            for _ in 0..crate::conn::INBOUND_FRAME_BUFFER * 4 {
+                if state.send_inbound(one()).await.is_err() {
+                    return;
+                }
+            }
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        !forwarder.is_finished(),
+        "the buffer must be full and the forwarder parked on it, or this test proves nothing"
+    );
+
+    // The connection ends. Nothing will ever read what is queued, so the forwarder has nothing left
+    // to wait for.
+    state.end_inbound();
+    let ended = tokio::time::timeout(Duration::from_secs(5), forwarder).await;
+    assert!(
+        ended.is_ok(),
+        "a forwarder parked on the inbound buffer outlived the connection it was forwarding for"
+    );
+
+    // And with it gone, the last inbound sender is gone: a reader draining what is queued reaches
+    // end-of-stream rather than waiting on a connection that has ended.
+    let drained = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut guard = state.inbound_rx.lock().await;
+        let rx = guard
+            .as_mut()
+            .expect("the receiving half is this connection's");
+        while rx.recv().await.is_some() {}
+    })
+    .await;
+    assert!(
+        drained.is_ok(),
+        "the queued frames of an ended connection never reached end-of-stream"
     );
 }
 
@@ -1219,6 +1328,73 @@ async fn a_refusal_that_reaches_no_call_is_an_error() {
     assert_eq!(err, TransportError::Closed);
 }
 
+/// A connection-wide refusal on a DIALLED connection reaches the peer before the connection goes.
+///
+/// A refusal naming no call is about the connection, so it is written and then the connection is
+/// closed — and closing a dialled one now takes the stream out from under the HTTP/2 client. The
+/// bytes have to be on the wire first: a refusal the caller was told was delivered, cut off inside
+/// this process before it left, is exactly the "refusal imagined" the neighbouring cell is about.
+#[tokio::test]
+async fn a_connection_wide_refusal_is_delivered_before_a_dialled_connection_is_cut() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    let (_served, frame) = tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+    assert_eq!(frame.bytes.as_slice(), b"ping");
+
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Arrival,
+        reason: busbar_contract::unit::RefusalReason::CursorBudget,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    client_t
+        .unit0_refusal(client_conn, None, &refusal, ArenaBytes::new(b"refused"))
+        .await
+        .unwrap();
+
+    // The peer reads the refusal itself, not just the death of the connection that carried it.
+    let refused = tokio::time::timeout(Duration::from_secs(10), async {
+        while let Some(item) = server_frames.next().await {
+            if let Ok((_s, frame)) = item {
+                if frame.bytes.as_slice() == b"refused" {
+                    return true;
+                }
+            }
+        }
+        false
+    })
+    .await
+    .expect("the peer's reader ends either way");
+    assert!(
+        refused,
+        "the refusal was reported delivered but the connection was cut before it left this process"
+    );
+}
+
 /// A finished call takes its OWN entry out of the outbound map, not whatever the id holds now.
 ///
 /// Cleanup runs when a call ends — from the dial side's forwarding task, from the served call's
@@ -1253,4 +1429,59 @@ fn a_finished_call_cannot_end_the_one_that_reused_its_id() {
     // And the live one still ends when IT ends.
     assert!(state.end_call(7, second).is_some());
     assert!(state.call(7).is_none());
+}
+
+/// Closing a DIALLED connection lets its socket go.
+///
+/// The stop seam was armed only on the accept side, so `close` on a dialled connection fired
+/// nothing, and the task driving its HTTP/2 half could only finish once every request sender had
+/// dropped — while the connection state holding those senders was itself kept alive by that same
+/// task. The wait was circular: the socket, and the tasks on either end of it, outlived every
+/// caller that could have reached them. The peer sees it first — a connection whose dialler has
+/// closed must reach end-of-stream, not stay open on a descriptor nothing owns.
+#[tokio::test]
+async fn closing_a_dialled_connection_releases_its_socket() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    // The connection is really up: one call opens and arrives.
+    client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"ping"))
+        .await
+        .unwrap();
+    let mut server_frames = server_t.frames(server_conn.clone());
+    tokio::time::timeout(Duration::from_secs(5), server_frames.next())
+        .await
+        .expect("the call arrives")
+        .unwrap()
+        .unwrap();
+
+    // The dialling side is done with it.
+    client_t.close(
+        client_conn,
+        busbar_contract_transport::wire::CloseReason::Normal,
+    );
+
+    // The socket goes with it, which is what the accepting side sees: its own reader ends.
+    let ended = tokio::time::timeout(Duration::from_secs(10), async {
+        while server_frames.next().await.is_some() {}
+    })
+    .await;
+    assert!(
+        ended.is_ok(),
+        "a closed dialled connection kept its socket open: the peer never saw end-of-stream"
+    );
 }

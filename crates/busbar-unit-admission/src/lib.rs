@@ -190,6 +190,21 @@ impl<'r, S: CellStore> AdmissionUnit<'r, S> {
         self.grant.take()
     }
 
+    /// The concurrent-capped groups the door counted this unit against, named as the composition
+    /// root interned them at registration.
+    ///
+    /// A read-back seam, the same shape as [`AdmissionUnit::blocked`]: the crate has no way to
+    /// record anything and no business recording it, so what the decision counted is exposed for
+    /// the caller to write down. The caller in mind is the kernel, which keeps its own reading of
+    /// what the node is running on the unit's slot — where the sweep can reach it, which is the one
+    /// thing the grant's own RAII release cannot do for a task that has gone away.
+    ///
+    /// Empty on a refusal, because a refused unit counted nothing.
+    #[must_use]
+    pub fn group_leases(&self) -> &[&'static str] {
+        self.grant.as_ref().map_or(&[], AdmitGrant::group_leases)
+    }
+
     /// The blocking bucket, when the door refused. Carries the group, the metric, the window and
     /// the pool scope, which is everything the refusal has to print and more than the closed
     /// reason code can hold.

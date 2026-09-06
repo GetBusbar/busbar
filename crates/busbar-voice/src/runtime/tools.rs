@@ -16,6 +16,21 @@ use async_trait::async_trait;
 /// concurrent per-frame handlers.
 #[async_trait]
 pub trait ToolExecutor: Send + Sync {
+    /// Whether THIS NODE is the one that answers `name`.
+    ///
+    /// The two halves of the tool loop divide here. `true` — the default, and every executor's
+    /// answer until one says otherwise — is the moat above: the runtime accumulates the arguments and
+    /// calls [`Self::execute`], and the client never authors the result. `false` says the answer can
+    /// only come from the client, which makes the call's reply leg a governed WAIT held by the node's
+    /// own table ([`crate::runtime::GovernedCalls`]) rather than an execution held here.
+    ///
+    /// Defaulted to `true` deliberately: an executor that has not thought about the question serves
+    /// what it is asked, which is the safe end. The unsafe end would be a node that quietly stopped
+    /// running its own tools and waited on a client that was never going to answer.
+    fn serves(&self, _name: &str) -> bool {
+        true
+    }
+
     /// Run the tool named `name` with the accumulated `arguments` (opaque JSON bytes) and return the
     /// opaque result payload. An executor that does not recognize `name` returns an error-shaped
     /// payload rather than panicking — the session survives one bad tool call.

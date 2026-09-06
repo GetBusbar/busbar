@@ -221,54 +221,6 @@ impl AdminDispatch for RefusingDispatch {
     }
 }
 
-/// The store a node has before one is configured.
-///
-/// Every method answers that there is nothing there, which is what an unconfigured store IS. It is
-/// not the production default — that is the loader's ABI-2 adapter over the configured store, and
-/// the in-tree memory store when a config names none — it is what the composition holds until the
-/// configured one is built.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct RefusingStore;
-
-impl busbar_unit_verbs::store::Store for RefusingStore {
-    fn chain_break(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
-    }
-
-    fn store_restore(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-        _backup_ref: &str,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
-    }
-
-    fn reseal_epoch_floor(
-        &self,
-        _admin: &busbar_caps::AdminToken,
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Failed)
-    }
-
-    fn replay_new_verb(
-        &self,
-        _key: &(String, String),
-    ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
-        Ok(None)
-    }
-
-    fn commit_new_verb_replay(
-        &self,
-        _key: &(String, String),
-        _response: &[u8],
-    ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Ok(())
-    }
-}
-
 // ── the ledger's read-only views ────────────────────────────────────────────────────────────────
 
 /// The figures the five ledger views read.
@@ -459,8 +411,13 @@ impl NodeLedger {
         // Nano-units accumulate per row and the projection to micro-units happens ONCE over the sum,
         // which is the ledger side's rule and has to be this side's too — projecting each posting
         // first would floor every sub-micro posting to nothing and report a busy row as short.
+        //
+        // Folded rather than copied: the answer is one entry per row the node has settled into,
+        // which is a handful whatever the traffic since boot has been, and the postings themselves
+        // are read where they already live. A view that took a copy of the whole history first paid
+        // for every posting ever made, under the lock every settlement waits on.
         let mut nanos: std::collections::BTreeMap<RowKey, u128> = std::collections::BTreeMap::new();
-        for posting in self.legacy.postings() {
+        self.legacy.fold_postings(&mut |posting| {
             let row = RowKey::new(
                 posting.bucket.as_str(),
                 posting.window_start,
@@ -469,7 +426,7 @@ impl NodeLedger {
             );
             let entry = nanos.entry(row).or_default();
             *entry = entry.saturating_add(u128::from(posting.settled));
-        }
+        });
         nanos
             .into_iter()
             .map(|(row, nanos)| {
@@ -529,12 +486,34 @@ impl LedgerView for NodeLedger {
 /// as a list of what it already took.
 pub trait LegacyRowsRead: Send + Sync {
     /// Every posting the dual write put onto the previous release's rows, in the order it made them.
+    ///
+    /// A COPY of the whole history, which is what makes it the wrong thing for a view to ask for:
+    /// the aggregate a view renders is a handful of rows whatever the node has settled, and the
+    /// copy is the only part of the work that grows with the traffic since boot. Kept for a caller
+    /// that genuinely wants the postings themselves; every view goes through [`fold_postings`].
+    ///
+    /// [`fold_postings`]: Self::fold_postings
     fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting>;
+
+    /// Show each posting to a fold, in the order the dual write made them, without copying any.
+    ///
+    /// The form a view reads through. What a view builds is a per-row sum, so it needs to SEE each
+    /// posting once and to keep none of them — and the default below is the honest fallback for a
+    /// binding that can only hand over a copy, not the shape the production one takes.
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+        for posting in self.postings() {
+            take(&posting);
+        }
+    }
 }
 
 impl LegacyRowsRead for busbar_unit_ledger::legacy::RecordingRows {
     fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
         self.written()
+    }
+
+    fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+        self.fold_written(take);
     }
 }
 
@@ -1789,6 +1768,8 @@ pub(crate) fn encode(
                 bytes: bytes.len() as u64,
                 transport_units: None,
                 status: None,
+                status_code: None,
+                retry_after_secs: None,
             },
         },
     )
@@ -1993,6 +1974,13 @@ impl AdminNode {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         self.units.admin.units.open(key, request);
+        // From here the unit occupies two tables, and every way out of this function gives both
+        // back — including the way a panicking step takes.
+        let occupied = Occupied {
+            inflight: &self.inflight,
+            units: &self.units.admin.units,
+            key,
+        };
 
         let arrival = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
@@ -2026,7 +2014,6 @@ impl AdminNode {
                     // saturated cap.
                     kernel_verb_only: true,
                 };
-                let mut leases = busbar_kernel::slice::LeaseSet::new();
                 let meter = busbar_kernel::teller::AccrualMeter::new();
                 let ended = busbar_kernel::teller::run_unit(
                     &self.kernel,
@@ -2035,15 +2022,15 @@ impl AdminNode {
                     busbar_kernel::teller::Run {
                         cell: slot.cell(),
                         parent: None,
-                        leases: &mut leases,
+                        leases: slot.leases(),
                         gauge: &self.gauge,
                         canary: &self.canary,
                         meter: &meter,
                     },
                 );
-                self.inflight.remove(key);
                 // The loop ran; the answer is whatever Route put there. A unit refused before Route
-                // has none, and the refusal it ended on is what the surface renders.
+                // has none, and the refusal it ended on is what the surface renders. Read BEFORE
+                // the guard below hands the entry back, because the entry is where the answer is.
                 self.units
                     .admin
                     .units
@@ -2052,10 +2039,37 @@ impl AdminNode {
             }
         };
 
-        // Close last, whatever happened. An entry that outlived its unit is the leak per request
-        // this root may not have.
-        let _ = self.units.admin.units.close(key);
+        // The guard closes last, whatever happened — including a step that panicked, which the two
+        // statements this replaces walked straight past. An entry or a slot that outlived its unit
+        // is the leak per request this root may not have.
+        drop(occupied);
         answer
+    }
+}
+
+/// THE TWO TABLES A UNIT OCCUPIES, for the length of one unit.
+///
+/// The in-flight table bounds how many units this node has open and the units table holds the
+/// request its steps read, so both have to come back on every way out of one unit — the answer, and
+/// the one this guard exists for: a step that panics, which takes the rest of the function with it.
+/// A removal and a close written as the last statements of that function come back on the first of
+/// those and not on the second, and what they leave behind is per request and resident for the life
+/// of the node.
+///
+/// Dropped explicitly at the end of the answering path rather than at the closing brace, because
+/// the answer is read OUT of the entry this guard gives back.
+#[cfg(feature = "root-admin")]
+struct Occupied<'n> {
+    inflight: &'n busbar_kernel::inflight::InFlight,
+    units: &'n AdminUnits,
+    key: UnitKey,
+}
+
+#[cfg(feature = "root-admin")]
+impl Drop for Occupied<'_> {
+    fn drop(&mut self) {
+        self.inflight.remove(self.key);
+        let _ = self.units.close(self.key);
     }
 }
 
@@ -2107,23 +2121,25 @@ fn answer_for(outcome: Outcome) -> AdminAnswer {
 ///
 /// The single construction site, so a status and its code cannot be paired differently in two
 /// places — which is the shape the previous release's own admin error rendering has.
+///
+/// The ENVELOPE is the plane's, not this file's. Which code a condition renders under is this
+/// file's question (it maps a `ReasonCode` and pairs it with a status); the two keys, their order
+/// and their quoting are the frozen wire shape, and the plane is where that shape is written down.
+/// A second `format!` of it here was a second chance for a surface a client pinned to change in one
+/// place and not the other.
 #[cfg(feature = "root-admin")]
 fn error_answer(status: u16, code: &str) -> AdminAnswer {
     AdminAnswer {
         status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: format!(r#"{{"error":{{"code":"{code}","message":"{code}"}}}}"#).into_bytes(),
+        body: busbar_plane_admin::refusal::envelope_of(code, code).into_bytes(),
     }
 }
 
 /// What a node that cannot take the unit at all answers with.
 #[cfg(feature = "root-admin")]
 fn unavailable_answer() -> AdminAnswer {
-    AdminAnswer {
-        status: 503,
-        headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: br#"{"error":{"code":"unavailable","message":"unavailable"}}"#.to_vec(),
-    }
+    error_answer(503, "unavailable")
 }
 
 /// The dispatch that hands an operation to the surface that already answers it.
@@ -2682,7 +2698,7 @@ mod tests {
             let token: UnitToken<Route> = UnitToken::mint(&seal);
             let outcome = route(
                 &binding,
-                Arc::new(RefusingStore),
+                Arc::new(crate::root::kernel::RefusingStore),
                 &admin,
                 &token,
                 &ctx,
@@ -3161,6 +3177,92 @@ mod tests {
         (binding, ctx, seal)
     }
 
+    /// The administrative listener answers on a table with no room in it at all, and the data
+    /// listener does not.
+    ///
+    /// THE arrival STEP, over the loop. §2.2 gives this plane's Arrival one decision of its own and
+    /// this is it: units on the administrative listener are EXEMPT from `in_flight_cap`, for the
+    /// reason the exemption exists — the surface an operator reaches to find out why the node is
+    /// shedding has to answer while it is shedding. This node's table makes that the only thing
+    /// keeping it alive: its cap is ZERO, so every unit under the cap is refused and every unit that
+    /// answers did so because the exemption carried it.
+    ///
+    /// Three answers, over one table at one moment:
+    ///
+    /// - a unit that did NOT arrive on the administrative listener is refused, `InFlightCap`,
+    ///   stamped at `Arrival` because the origin is a client, with its arrival hold handed back
+    ///   reserving nothing — the shedding the operator came to ask about;
+    /// - a real admin request, through the whole loop on that same table, comes back with the
+    ///   operation's own 200 rather than the node's `unavailable`. Not a smaller claim than the
+    ///   refusal above: it is the exemption, on the path the listener actually takes;
+    /// - the step itself proceeds, and the record it carries names the administrative transport. The
+    ///   admin plane synthesizes its arrival rather than copying a data-listener one, and the chain
+    ///   is where that shows.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
+        use busbar_caps::{OriginKind, StepName};
+        use busbar_kernel::inflight::{arrival_hold, cap_refusal_step, Enter};
+
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        assert_eq!(
+            node.inflight.cap(),
+            0,
+            "the exemption is the only reason anything answers on this table"
+        );
+
+        // REFUSED: the same table, asked for a unit that is under the cap.
+        let entering = Enter {
+            key: UnitKey::new(9_000),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            now: 0,
+            arrival: arrival_hold(
+                &node.kernel,
+                &node.units.arrival_door,
+                PrincipalId::new("caller"),
+            ),
+        };
+        let Err(refused) = node.inflight.insert(entering) else {
+            panic!("a table with no room admits nothing that is under the cap");
+        };
+        assert_eq!(refused.reason, ReasonCode::InFlightCap);
+        assert_eq!(refused.step, StepName::Arrival);
+        assert_eq!(refused.step, cap_refusal_step(OriginKind::Client));
+        let handed_back = refused.hold;
+        assert_eq!(
+            handed_back.reserved(),
+            0,
+            "a unit refused at the gate has spent nothing"
+        );
+
+        // ADMITTED: an ordinary administrative request, through the whole loop, on that table.
+        let answer = node.answer(a_request());
+        assert_eq!(
+            answer.status, 200,
+            "the admin listener answers while shedding"
+        );
+        assert_ne!(answer, unavailable_answer());
+        assert_ne!(
+            answer,
+            answer_for(Outcome::Refused(StepName::Arrival, ReasonCode::InFlightCap)),
+            "the answer is the request's own, not the gate's refusal"
+        );
+        assert_eq!(node.inflight.len(), 0, "the unit gave its slot back");
+
+        // The step's own answer, for the unit that got through.
+        let (binding, ctx, seal) = a_bound_unit(a_request());
+        assert!(ctx.admin_listener, "the fixture is on the admin listener");
+        let record = arrival(&binding, &UnitToken::mint(&seal), &ctx)
+            .into_result(&seal)
+            .expect("an admin unit is never refused at the gate");
+        assert_eq!(record.transport_chain, vec![ADMIN_TRANSPORT]);
+    }
+
     /// Where an admin unit may go, and what that costs it.
     ///
     /// THE verify STEP, over the loop. The gating contract is that a destination the caller cannot
@@ -3545,6 +3647,148 @@ mod tests {
 
         let document = body("/api/v1/admin/ledger/openapi.json");
         assert_eq!(document["info"]["version"], "1.6.0");
+    }
+
+    /// The previous release's rows, as a binding that counts what the views ask of it.
+    ///
+    /// Both readings are recorded: how many times the whole history was asked for as a copy, and
+    /// how many postings a fold was shown. The pair is what tells a copy apart from a walk.
+    #[cfg(feature = "root-admin")]
+    #[derive(Default)]
+    struct CountingRows {
+        written: Arc<Mutex<Vec<busbar_unit_ledger::legacy::LegacyPosting>>>,
+        copies: Arc<std::sync::atomic::AtomicUsize>,
+        folded: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    #[cfg(feature = "root-admin")]
+    impl busbar_unit_ledger::legacy::LegacyRows for CountingRows {
+        fn write(
+            &mut self,
+            posting: &busbar_unit_ledger::legacy::LegacyPosting,
+        ) -> Result<(), busbar_unit_ledger::legacy::LegacyWriteError> {
+            self.written
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .push(posting.clone());
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "root-admin")]
+    impl LegacyRowsRead for CountingRows {
+        fn postings(&self) -> Vec<busbar_unit_ledger::legacy::LegacyPosting> {
+            self.copies
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.written
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        }
+
+        fn fold_postings(&self, take: &mut dyn FnMut(&busbar_unit_ledger::legacy::LegacyPosting)) {
+            for posting in self
+                .written
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+            {
+                self.folded
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                take(posting);
+            }
+        }
+    }
+
+    /// THE VIEW WALKS THE HISTORY; IT DOES NOT COPY IT.
+    ///
+    /// The reconciliation views read the previous release's rows under the SAME lock every
+    /// settlement takes, and what they render is one line per row — a handful, whatever the node has
+    /// settled since boot. Asking for a copy of the whole posting history to produce it makes the
+    /// cost of an operator's read grow with the traffic that came before it, and makes every
+    /// settlement wait for the copy. Counted rather than timed: the copy is a call that either
+    /// happened or did not.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_ledger_view_reads_the_history_without_copying_it() {
+        let rows = CountingRows::default();
+        let written = Arc::clone(&rows.written);
+        let copies = Arc::clone(&rows.copies);
+        let folded = Arc::clone(&rows.folded);
+        let read: Arc<dyn LegacyRowsRead> = Arc::new(CountingRows {
+            written: Arc::clone(&written),
+            copies: Arc::clone(&copies),
+            folded: Arc::clone(&folded),
+        });
+
+        let units = crate::root::kernel::ProductionUnits::admin_only_over(
+            Arc::new(AnsweringDispatch),
+            Box::new(rows),
+            read,
+        );
+        for _ in 0..8 {
+            settle_on(&units, "vk_view", 1_000);
+        }
+        assert_eq!(
+            written.lock().unwrap_or_else(|p| p.into_inner()).len(),
+            8,
+            "the fixture recorded every settlement"
+        );
+
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+        let answer = node.answer(a_ledger_request("/api/v1/admin/ledger/reconciliation"));
+        assert_eq!(answer.status, 200);
+
+        assert_eq!(
+            copies.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "the view took a copy of the whole history to render a handful of rows"
+        );
+        assert_eq!(
+            folded.load(std::sync::atomic::Ordering::Relaxed),
+            8,
+            "and it saw each posting exactly once"
+        );
+    }
+
+    /// A dispatch that panics where an operation's body would run.
+    #[cfg(feature = "root-admin")]
+    struct PanickingDispatch;
+
+    #[cfg(feature = "root-admin")]
+    impl AdminDispatch for PanickingDispatch {
+        fn execute(&self, _verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+            panic!("the operation's body panicked");
+        }
+    }
+
+    /// A STEP THAT PANICS STILL GIVES THE TABLES BACK.
+    ///
+    /// Both tables are per-node and live for the life of the process: the in-flight slot bounds how
+    /// many units the node has open, and the units table holds the request the steps read. A removal
+    /// written as the next statement after the loop comes back on the answering path and on no
+    /// other, so a panic in one operation's body would leave one slot and one whole request body
+    /// resident for as long as the node runs — a leak per panicking request, and the operator
+    /// reaching for the admin surface to find out why is the one making them.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_panicking_step_leaves_both_tables_empty() {
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(PanickingDispatch));
+        let node = AdminNode::new(crate::root::kernel::new_kernel(), units);
+
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let ended =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.answer(a_request())));
+        std::panic::set_hook(previous);
+        assert!(ended.is_err(), "the fixture's dispatch panics");
+
+        assert_eq!(node.inflight.len(), 0, "the in-flight slot came back");
+        assert_eq!(
+            node.units.admin.units.len(),
+            0,
+            "the units table gave up the request"
+        );
     }
 
     /// A node whose ledger has nothing in it says so, rather than reporting a balance it never read.
@@ -4105,7 +4349,7 @@ mod tests {
                     *verb,
                     a_ledger_request("/api/v1/admin/ledger/totals"),
                 ),
-                RefusingStore,
+                crate::root::kernel::RefusingStore,
                 ArrivalNonce(1),
                 PackedReplay,
                 CONFIG_CLASS_RULES,
@@ -4146,7 +4390,7 @@ mod tests {
                 KernelVerb::Adjust,
                 a_ledger_request("/api/v1/admin/adjust"),
             ),
-            RefusingStore,
+            crate::root::kernel::RefusingStore,
             ArrivalNonce(1),
             PackedReplay,
             CONFIG_CLASS_RULES,
@@ -4224,7 +4468,7 @@ mod tests {
             );
         }
         // And from the other side: the served 1.5.5 document has no ledger path at all, which is
-        // what PB-75 means by leaving its bytes alone.
+        // what leaving the released document's bytes alone means.
         assert!(
             !pinned_paths
                 .keys()

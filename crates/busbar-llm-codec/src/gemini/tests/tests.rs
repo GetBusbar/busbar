@@ -1231,6 +1231,48 @@ fn test_extract_error_bad_api_key_permission_denied_is_auth() {
     assert!(matches!(sig.class, StatusClass::Auth));
 }
 
+/// PRECISION GUARD: the bad-key reason is read from the ErrorInfo field it is documented to live
+/// in, never from the body at large.
+///
+/// Gemini→Gemini is a byte-verbatim relay, so a client's own request text reaches Google unchanged,
+/// and Google's proto-JSON transcoder ECHOES an offending field name back in its `INVALID_ARGUMENT`
+/// message. A caller who names a field `api_key_invalid` therefore plants the token in the error
+/// body of a request that has nothing to do with the credential. Scanning the whole body for it
+/// re-shaped that 400 into a 401, which classifies Auth → HardDown → every pool cell for the
+/// destination parked — so one caller could bench a healthy shared credential for every other tenant
+/// on demand, repeatably. The reason is an ErrorInfo field and must be read as one.
+#[test]
+fn test_extract_error_echoed_api_key_invalid_token_does_not_park_the_lane() {
+    let reader = GeminiReader;
+    // A field-validation 400 whose message quotes the caller's own offending field name.
+    let body = br#"{"error":{"code":400,"message":"Invalid JSON payload received. Unknown name \"api_key_invalid\" at 'contents[0]': Cannot find field.","status":"INVALID_ARGUMENT"}}"#;
+    let raw = reader.extract_error(StatusCode::BAD_REQUEST, body);
+    assert_eq!(
+        raw.http_status, 400,
+        "an echoed token is the caller's own text, not the credential's verdict: the real status \
+         must survive"
+    );
+    assert_ne!(
+        raw.provider_code.as_deref(),
+        Some("auth"),
+        "a field-validation 400 must not synthesize the auth provider_code"
+    );
+    let empty_map = std::collections::HashMap::new();
+    let sig = busbar_substrate_values::breaker::normalize_raw_error(&raw, &empty_map);
+    assert!(
+        !matches!(sig.class, StatusClass::Auth),
+        "a lane-healthy client error must not classify as Auth, got {:?}",
+        sig.class
+    );
+    assert!(
+        !matches!(
+            busbar_substrate_values::breaker::classify(&sig),
+            busbar_substrate_values::breaker::Disposition::HardDown
+        ),
+        "no caller-supplied string may park a destination for every tenant sharing it"
+    );
+}
+
 /// PRECISION GUARD: a GENERIC `INVALID_ARGUMENT` 400 (a real field-validation error, no api-key
 /// signal) must NOT be misclassified as auth — it stays a lane-healthy ClientFault that records
 /// nothing and relays verbatim. Without a precise heuristic the override would bench healthy lanes

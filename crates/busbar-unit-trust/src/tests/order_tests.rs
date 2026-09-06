@@ -314,6 +314,49 @@ fn ordered_walk_skips_an_unhealthy_preferred_lane() {
     assert!(!lanes.admissions.borrow().contains(&2));
 }
 
+/// The ranked path applies the SAME pre-walk filter the floor does, over all three of its clauses.
+///
+/// The case above covers a tripped preferred lane, and `ordered_walk_never_yields_a_drained_lane`
+/// covers a drained one, but neither says anything about the lane TABLE — and a ranked ordering that
+/// checked only weight and readiness would yield a dead or budget-exhausted lane and spend an
+/// admission on it. The rule the crate states is that only an at-capacity lane may consume one, so
+/// the ranked-first lane here must be filtered before selection exactly as the floor filters it,
+/// which the previous case can never show because it ranks nothing.
+#[test]
+fn the_ranked_walk_applies_the_same_pre_walk_filter_as_the_floor() {
+    for (label, lanes) in [
+        (
+            "dead",
+            Lanes::with(|l| {
+                l.dead.insert(0);
+            }),
+        ),
+        (
+            "budget exhausted",
+            Lanes::with(|l| {
+                l.exhausted.insert(0);
+            }),
+        ),
+    ] {
+        // Lane 0 is ranked FIRST and is the one the lane table excludes; lane 1 is healthy.
+        let c = cands(&[(0, 1), (1, 1)]);
+        let (outcome, _) = pick_with(&lanes, &c, Some(&[0, 1]), None, &no_exclusions());
+        assert_eq!(
+            outcome,
+            PickOutcome::Admitted(Pick {
+                lane: 1,
+                position: 1
+            }),
+            "{label}: the ranked walk falls past it to the healthy lane"
+        );
+        assert!(
+            !lanes.admissions.borrow().contains(&0),
+            "{label}: a ranked lane the table excludes must be filtered BEFORE selection, never \
+             selected and then offered to the admission"
+        );
+    }
+}
+
 #[test]
 fn ordered_walk_never_yields_a_drained_lane() {
     // The readiness peek does not look at weight, so without the drain check here a ranked ordering

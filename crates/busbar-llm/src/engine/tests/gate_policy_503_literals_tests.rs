@@ -48,11 +48,12 @@ impl RoutingPolicy for FaultyHook {
     }
 }
 
-/// Fail-closed on both axes: an error terminates in `reject`, an empty restriction rejects.
-fn resolved(fault: Fault) -> ResolvedPolicy {
+/// Fail-closed on the restriction axis; `on_error` is the caller's, because the whole point of the
+/// disposition is that it is the OPERATOR's to choose.
+fn resolved(fault: Fault, on_error: busbar_substrate::config::PolicyOnError) -> ResolvedPolicy {
     ResolvedPolicy::Policy {
         policy: Arc::new(FaultyHook(fault)),
-        on_error: busbar_substrate::config::PolicyOnError::Reject,
+        on_error,
         on_error_chain: Vec::new(),
         timeout: std::time::Duration::from_millis(50),
         send_prompt: false,
@@ -86,6 +87,15 @@ enum Seat {
 /// Fire one request at a two-lane pool with the faulty hook in the given seat; return
 /// (status, error kind, error message) from the OpenAI-shaped envelope.
 async fn fire(seat: Seat, fault: Fault) -> (u16, String, String) {
+    fire_with(seat, fault, busbar_substrate::config::PolicyOnError::Reject).await
+}
+
+/// [`fire`], with the hook's `on_error` disposition chosen by the caller.
+async fn fire_with(
+    seat: Seat,
+    fault: Fault,
+    on_error: busbar_substrate::config::PolicyOnError,
+) -> (u16, String, String) {
     crate::testkit::install_test_seams();
     let mut builder = TestApp::new()
         .lane(LaneSpec::new(
@@ -103,8 +113,8 @@ async fn fire(seat: Seat, fault: Fault) -> (u16, String, String) {
         .pool_member_meta("p", 1, None, None, &["us"]);
     let mut global_gate = None;
     match seat {
-        Seat::DecisionGate => global_gate = Some(resolved(fault)),
-        Seat::BasePolicy => builder = builder.pool_policy_resolved("p", resolved(fault)),
+        Seat::DecisionGate => global_gate = Some(resolved(fault, on_error)),
+        Seat::BasePolicy => builder = builder.pool_policy_resolved("p", resolved(fault, on_error)),
     }
     let mut app = builder.build();
     if let Some(g) = global_gate {
@@ -176,6 +186,39 @@ async fn base_policy_restriction_leaving_no_lane_has_its_own_503_body() {
     let (status, kind, message) = fire(Seat::BasePolicy, Fault::RestrictToNothing).await;
     assert_eq!((status, kind), (503, overloaded_kind_on_openai().await));
     assert_eq!(message, POLICY_RESTRICT_EMPTY);
+}
+
+/// THE OTHER HALF of the read-only seat's matrix: the SAME failed call, under a hook the operator
+/// did NOT declare load-bearing, does not refuse anything — it degrades to a route. The disposition
+/// is the operator's, not the seam's.
+#[tokio::test]
+async fn decision_gate_that_cannot_complete_only_refuses_when_declared_load_bearing() {
+    let (_status, _kind, message) = fire_with(
+        Seat::DecisionGate,
+        Fault::Error,
+        busbar_substrate::config::PolicyOnError::Weighted,
+    )
+    .await;
+    assert_ne!(
+        message, GATE_COULD_NOT_COMPLETE,
+        "`on_error: weighted` proceeds past a gate that could not answer; the refusal body belongs \
+         to `on_error: reject` alone"
+    );
+}
+
+/// The refusal a failed load-bearing hook produces is ONE constant, and this file's literal is it.
+/// The read-write (transform) seat renders the same constant for the same condition, so the two
+/// seats cannot drift into two different client-visible refusals.
+#[test]
+fn the_refusal_literal_is_the_shared_constant() {
+    assert_eq!(
+        GATE_COULD_NOT_COMPLETE,
+        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_MESSAGE
+    );
+    assert_eq!(
+        503,
+        busbar_substrate::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS
+    );
 }
 
 /// The four literals are pairwise distinct, so a client can tell which hook refused it.

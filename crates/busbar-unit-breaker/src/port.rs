@@ -102,7 +102,7 @@ pub fn outcome_and_label(
 /// [`crate::BreakerUnit::classify`] is implemented over: no lock, no destination, no clock — a
 /// caller with its own error-map storage can call this directly.
 ///
-/// `diagnostics` is the sink an unrecognized `error_map` value is reported to (CG-43): this
+/// `diagnostics` is the sink an unrecognized `error_map` value is reported to: this
 /// function no longer hardcodes [`classify::NoopDiagnostics`] internally, so a real sink bound by
 /// the composition root actually reaches the classifier. Pass `&classify::NoopDiagnostics` for
 /// today's silently-ignored behavior.

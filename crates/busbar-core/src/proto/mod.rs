@@ -54,12 +54,11 @@ pub use busbar_substrate::proto::{
 // `busbar_core::proto::warn_untranslatable_response_metadata` path so core's call sites are unchanged.
 pub use busbar_substrate::proto::warn_untranslatable_response_metadata;
 
-/// Conservative fallback for the `max_tokens` injected at a translation boundary when the source
-/// protocol omitted it (legal for OpenAI) but the target REQUIRES it (Anthropic, Bedrock — see
-/// `ProtocolWriter::requires_max_tokens`). Used only when the lane has no configured
-/// `default_max_tokens`. 4096 is a safe output ceiling across current chat models — large enough
-/// not to truncate typical completions, small enough not to be refused.
-pub const DEFAULT_MAX_TOKENS: u32 = 4096;
+// RELOCATED DOWN to `busbar_substrate::config::limits`, beside the `limits.default_max_tokens` key
+// that overrides it (and now literally the same const as that key's own default, so the two cannot
+// drift). Re-exported here at its historical `busbar_core::proto::DEFAULT_MAX_TOKENS` path so this
+// crate's call sites are unchanged.
+pub use busbar_substrate::config::limits::DEFAULT_MAX_TOKENS;
 
 /// Mixed-case base62 alphabet (digits + lowercase + uppercase, no `-`/`_`) and the rejection-sampling
 /// threshold used when synthesizing opaque ids for protocols whose native ids are flat random tokens

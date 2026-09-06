@@ -22,6 +22,9 @@ use busbar_transport_sse::SseTransport;
 use busbar_transport_stdio::StdioTransport;
 use busbar_transport_tcp::TcpTransport;
 use busbar_transport_tls::TlsTransport;
+// The WS transport is the voice plane's edge and is compiled only with it, so this witness names
+// it only in a build that carries it.
+#[cfg(feature = "plane-voice")]
 use busbar_transport_ws::WsTransport;
 
 fn assert_root(t: &dyn Transport) {
@@ -53,6 +56,7 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
     let tls = Arc::new(TlsTransport::new());
     let http = Arc::new(HttpTransport::new(ClientSettings::default()));
     let sse = SseTransport::new(Arc::clone(&http));
+    #[cfg(feature = "plane-voice")]
     let ws = WsTransport::over(Arc::clone(&http) as Arc<dyn Transport>);
     let grpc = GrpcTransport::over(Arc::clone(&http) as Arc<dyn Transport>);
     let stdio = StdioTransport::new();
@@ -66,11 +70,13 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
     // The three that are only ever built composed: the parent they were actually given, and that
     // parent must be one of the layers `COMPOSES_OVER` names.
     assert_composed(&sse, <SseTransport as TransportMeta>::COMPOSES_OVER);
+    #[cfg(feature = "plane-voice")]
     assert_composed(&ws, <WsTransport as TransportMeta>::COMPOSES_OVER);
     assert_composed(&grpc, <GrpcTransport as TransportMeta>::COMPOSES_OVER);
 
     // Named exactly, matching the design's own table (`tcp → tls → http → {sse, ws, grpc}`).
     assert_eq!(sse.composed_over(), Some("http"));
+    #[cfg(feature = "plane-voice")]
     assert_eq!(ws.composed_over(), Some("http"));
     assert_eq!(grpc.composed_over(), Some("http"));
 }

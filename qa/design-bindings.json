@@ -14,9 +14,9 @@
   "mapped": 103,
   "unmapped": 0,
   "checks_by_kind": {
-   "gate": 9,
+   "gate": 13,
    "lint": 5,
-   "oracle-cell": 45,
+   "oracle-cell": 58,
    "oracle-family": 5,
    "test": 441
   }
@@ -64,6 +64,13 @@
      "proves": "every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or is a NAMED gap in qa/inventory-gaps.json; a row with neither turns the check red",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `legacy-reach`: the composition root's count of distinct symbols named through the retiring engine crates is a ratchet that may only go down, and every red row lists them -- so the behaviour behind each inventory row moves into a unit as core empties rather than being re-implemented beside it"
     }
    ]
   },
@@ -189,21 +196,21 @@
      "kind": "oracle-cell",
      "ref": "crosscut.traps|exhausted-retry-after-floor",
      "status": "mapped",
-     "why": "every member of pool oracle-fo is driven down (mock `down` verb, same technique as route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of blanked to <RETRY>, so the report can show its actual value and a regression that floors it below 2 seconds (the breaker's own base_cooldown_secs is 15s, jittered) is a visible diff, not hidden inside the usual retry-after normalization (PB-4)",
+     "why": "every member of pool oracle-fo is driven down (mock `down` verb, same technique as route.failover|fo|all-down): the on_exhausted 503's Retry-After is pinned instead of blanked to <RETRY>, so the report can show its actual value and a regression that floors it below 2 seconds (the breaker's own base_cooldown_secs is 15s, jittered) is a visible diff, not hidden inside the usual retry-after normalization",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "route.failover|fo|all-down",
      "status": "mapped",
-     "why": "every member fails -> on_exhausted default 503 + Retry-After (PB-4)",
+     "why": "every member fails -> on_exhausted default 503 + Retry-After",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "route.failover|lb|member-down",
      "status": "mapped",
-     "why": "least_bad: one breaker-bypassing attempt against the tripped member (PB-4)",
+     "why": "least_bad: one breaker-bypassing attempt against the tripped member",
      "source": "cells.json why"
     },
     {
@@ -310,7 +317,7 @@
      "kind": "oracle-cell",
      "ref": "route.failover|fo|all-up",
      "status": "mapped",
-     "why": "SWRR over two members, 3:1 (PB-5/57)",
+     "why": "SWRR over two members, 3:1",
      "source": "cells.json why"
     },
     {
@@ -441,7 +448,7 @@
      "kind": "oracle-cell",
      "ref": "route.failover|fo|primary-down",
      "status": "mapped",
-     "why": "first attempt 503 -> breaker trips (consecutive 1) -> failover to anthropic; 200 (PB-8/10)",
+     "why": "first attempt 503 -> breaker trips (consecutive 1) -> failover to anthropic; 200",
      "source": "cells.json why"
     },
     {
@@ -539,6 +546,13 @@
    "inventory": "proxy-hooks (`:377-407`)",
    "status": "mapped",
    "checks": [
+    {
+     "kind": "oracle-cell",
+     "ref": "route.failover|fo|primary-down",
+     "status": "mapped",
+     "why": "first attempt 503 -> breaker trips (consecutive 1) -> failover to anthropic; 200",
+     "source": "cells.json why"
+    },
     {
      "kind": "test",
      "ref": "test_disposition_hard_down_billing_code",
@@ -720,7 +734,7 @@
      "kind": "oracle-cell",
      "ref": "ops.scrape|metrics|no-ledger-series",
      "status": "mapped",
-     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty",
      "source": "cells.json why"
     },
     {
@@ -760,7 +774,7 @@
      "kind": "oracle-cell",
      "ref": "ops.scrape|metrics|no-ledger-series",
      "status": "mapped",
-     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty",
      "source": "cells.json why"
     },
     {
@@ -783,7 +797,7 @@
      "kind": "oracle-cell",
      "ref": "billing|key-usage|after-upstream-down",
      "status": "mapped",
-     "why": "a 503: requests +1, billable refunded, spend 0 (PB-16/26/27)",
+     "why": "a 503: requests +1, billable refunded, spend 0",
      "source": "cells.json why"
     },
     {
@@ -820,7 +834,7 @@
      "kind": "oracle-cell",
      "ref": "ops.scrape|metrics|no-ledger-series",
      "status": "mapped",
-     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty",
      "source": "cells.json why"
     },
     {
@@ -940,14 +954,14 @@
      "kind": "oracle-cell",
      "ref": "admin.ops|PostKeysIdRotate|idempotent-replay",
      "status": "mapped",
-     "why": "same Idempotency-Key twice: the replay returns the first response (PB-21)",
+     "why": "same Idempotency-Key twice: the replay returns the first response",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "admin.ops|PostKeys|idempotent-replay",
      "status": "mapped",
-     "why": "same Idempotency-Key twice: the replay returns the first response (PB-21)",
+     "why": "same Idempotency-Key twice: the replay returns the first response",
      "source": "cells.json why"
     },
     {
@@ -1056,6 +1070,13 @@
      "proves": "the FREEZE arm",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `one-pricing-site`: the cost unit's pricing entry points and the seam verb that turns usage into an amount are called only from the composition root's meter/admission wiring and the kernel's three settle sites, each enumerated with its reason in qa/construction.toml -- so the fee lookahead and the charge have exactly one derivation"
     }
    ]
   },
@@ -1070,7 +1091,7 @@
      "kind": "oracle-cell",
      "ref": "cli|--safe-mode|first-arg",
      "status": "mapped",
-     "why": "1.5.5: unrecognized as a FIRST argument; exit 2 (PB-23)",
+     "why": "1.5.5: unrecognized as a FIRST argument; exit 2",
      "source": "cells.json why"
     }
    ]
@@ -1135,6 +1156,13 @@
    "inventory": "governance steps 2–4, (`ingress/mod.rs:39-90, 362-394, 491-518`; `dispatch.rs:199-235`)",
    "status": "mapped",
    "checks": [
+    {
+     "kind": "oracle-cell",
+     "ref": "billing|key-usage|after-upstream-down",
+     "status": "mapped",
+     "why": "a 503: requests +1, billable refunded, spend 0",
+     "source": "cells.json why"
+    },
     {
      "kind": "test",
      "ref": "test_unpriced_passthrough_model_rejected_when_rate_card_present",
@@ -1202,9 +1230,16 @@
    "checks": [
     {
      "kind": "oracle-cell",
+     "ref": "billing|key-usage|after-upstream-down",
+     "status": "mapped",
+     "why": "a 503: requests +1, billable refunded, spend 0",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
      "ref": "route.failover|fo|primary-cut-stream",
      "status": "mapped",
-     "why": "transport cut after the first SSE frame: stream_failed, tokens 0, lane unit not refunded (PB-27)",
+     "why": "transport cut after the first SSE frame: stream_failed, tokens 0, lane unit not refunded",
      "source": "cells.json why"
     },
     {
@@ -1343,21 +1378,21 @@
      "kind": "oracle-cell",
      "ref": "http.crosscut|api-prefix|data",
      "status": "mapped",
-     "why": "frozen admin envelope on the data listener (PB-30)",
+     "why": "frozen admin envelope on the data listener",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "http.crosscut|unknown-path|anthropic-beta",
      "status": "mapped",
-     "why": "anthropic-beta is rung 2 too (PB-30)",
+     "why": "anthropic-beta is rung 2 too",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "http.crosscut|unknown-path|bare",
      "status": "mapped",
-     "why": "catch-all: path-inferred 404 (PB-30)",
+     "why": "catch-all: path-inferred 404",
      "source": "cells.json why"
     },
     {
@@ -1503,7 +1538,7 @@
      "kind": "oracle-cell",
      "ref": "http.crosscut|auth-token|GET-none",
      "status": "mapped",
-     "why": "browser exchange bypass (PB-33)",
+     "why": "browser exchange bypass",
      "source": "cells.json why"
     },
     {
@@ -1647,7 +1682,7 @@
      "kind": "oracle-cell",
      "ref": "http.crosscut|bearer-and-x-api-key",
      "status": "mapped",
-     "why": "carrier precedence: Bearer wins (PB-35)",
+     "why": "carrier precedence: Bearer wins",
      "source": "cells.json why"
     },
     {
@@ -1759,6 +1794,34 @@
    "inventory": "plugins-stores",
    "status": "mapped",
    "checks": [
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-mysql",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-postgres",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-sqlite",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-valkey",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
     {
      "kind": "test",
      "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
@@ -1930,7 +1993,7 @@
      "kind": "oracle-cell",
      "ref": "ops.scrape|metrics|no-ledger-series",
      "status": "mapped",
-     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty (PB-13, PB-15, PB-17, PB-41)",
+     "why": "no busbar_ledger_/journal_/hold_/wal_ series on a 1.5.5 config: the scrape keeps only those lines, so the golden is empty",
      "source": "cells.json why"
     },
     {
@@ -1968,28 +2031,28 @@
      "kind": "oracle-cell",
      "ref": "hooks|metrics-hooks",
      "status": "mapped",
-     "why": "the hook's own scrape exposition (PB-43)",
+     "why": "the hook's own scrape exposition",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "ops.scrape|metricshooks|key",
      "status": "mapped",
-     "why": "core axum route; charset=utf-8 (PB-43)",
+     "why": "core axum route; charset=utf-8",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "ops.scrape|metrics|key",
      "status": "mapped",
-     "why": "RouteAuth::Key; text/plain; version=0.0.4 (PB-43/70)",
+     "why": "RouteAuth::Key; text/plain; version=0.0.4",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "ops.scrape|stats|key",
      "status": "mapped",
-     "why": "20 per-lane fields, 'unbounded', variant names (PB-43)",
+     "why": "20 per-lane fields, 'unbounded', variant names",
      "source": "cells.json why"
     },
     {
@@ -2193,7 +2256,7 @@
      "kind": "oracle-cell",
      "ref": "route.failover|fb|member-down",
      "status": "mapped",
-     "why": "cohere down -> on_exhausted fallback_pool oracle-fo -> served by the hop; scoped draws on the ATTEMPTED pool (PB-47)",
+     "why": "cohere down -> on_exhausted fallback_pool oracle-fo -> served by the hop; scoped draws on the ATTEMPTED pool",
      "source": "cells.json why"
     },
     {
@@ -2357,7 +2420,7 @@
      "kind": "oracle-cell",
      "ref": "cli|env|RUST_LOG-crate-filter",
      "status": "mapped",
-     "why": "bare tracing::Level only — a crate filter silently falls back (PB-51)",
+     "why": "bare tracing::Level only — a crate filter silently falls back",
      "source": "cells.json why"
     },
     {
@@ -2527,6 +2590,13 @@
    "status": "mapped",
    "checks": [
     {
+     "kind": "oracle-cell",
+     "ref": "route.failover|fo|all-up",
+     "status": "mapped",
+     "why": "SWRR over two members, 3:1",
+     "source": "cells.json why"
+    },
+    {
      "kind": "test",
      "ref": "test_zero_weight_member_is_never_selected",
      "proves": "weight-0 lanes are filtered before selection",
@@ -2629,21 +2699,21 @@
      "kind": "oracle-cell",
      "ref": "http.crosscut|413|api-prefix",
      "status": "mapped",
-     "why": "admin envelope discards status/kind (PB-60)",
+     "why": "admin envelope discards status/kind",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "http.crosscut|413|openai",
      "status": "mapped",
-     "why": "oversize after auth, dialect-shaped (PB-60)",
+     "why": "oversize after auth, dialect-shaped",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "http.crosscut|413|openai-unauth",
      "status": "mapped",
-     "why": "unauthenticated oversize: 401 first (PB-60)",
+     "why": "unauthenticated oversize: 401 first",
      "source": "cells.json why"
     },
     {
@@ -3130,6 +3200,13 @@
    "status": "mapped",
    "checks": [
     {
+     "kind": "oracle-cell",
+     "ref": "ops.scrape|metrics|key",
+     "status": "mapped",
+     "why": "RouteAuth::Key; text/plain; version=0.0.4",
+     "source": "cells.json why"
+    },
+    {
      "kind": "test",
      "ref": "a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in",
      "status": "mapped",
@@ -3310,21 +3387,21 @@
      "kind": "oracle-cell",
      "ref": "http.crosscut|admin-outside-prefix|admin",
      "status": "mapped",
-     "why": "outer admin router: empty-bodied 404 (PB-76)",
+     "why": "outer admin router: empty-bodied 404",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "http.crosscut|admin-unknown|admin",
      "status": "mapped",
-     "why": "nested not_found envelope (PB-76)",
+     "why": "nested not_found envelope",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "ops.scrape|metrics|admin-listener",
      "status": "mapped",
-     "why": "admin router has no /metrics (PB-76)",
+     "why": "admin router has no /metrics",
      "source": "cells.json why"
     },
     {
@@ -3464,7 +3541,7 @@
      "kind": "oracle-cell",
      "ref": "route.failover|fo|primary-429",
      "status": "mapped",
-     "why": "upstream 429 with Retry-After 7: disposition + honor_retry_after floor (PB-80)",
+     "why": "upstream 429 with Retry-After 7: disposition + honor_retry_after floor",
      "source": "cells.json why"
     },
     {
@@ -3659,7 +3736,7 @@
      "kind": "oracle-cell",
      "ref": "route.failover|fb|member-401",
      "status": "mapped",
-     "why": "cohere answers 401: an auth hard-down on the member; what the caller sees and what the breaker records (PB-83)",
+     "why": "cohere answers 401: an auth hard-down on the member; what the caller sees and what the breaker records",
      "source": "cells.json why"
     },
     {
@@ -3779,6 +3856,13 @@
      "ref": "scripts/kernel-token-wire-purity-lint.sh",
      "status": "mapped",
      "source": "hand"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `plane-no-money`: the plane crates, the plane codecs and the plane unit modules name no money symbol (no rate card, pricer, fee, price or cost handle that carries an amount, and no dependency on the cost crate) -- so a usage class can only reach the ledger as the plane's own normalized quantity, never as a figure the plane priced itself"
     }
    ]
   },
@@ -3904,7 +3988,7 @@
      "kind": "oracle-cell",
      "ref": "route.failover|fo|primary-cut-body",
      "status": "mapped",
-     "why": "transport cut mid-body on a buffered response: 502, fee refunded (PB-91)",
+     "why": "transport cut mid-body on a buffered response: 502, fee refunded",
      "source": "cells.json why"
     },
     {
@@ -3920,6 +4004,13 @@
      "proves": "the fee follows the client-facing status",
      "source": "curated",
      "status": "mapped"
+    },
+    {
+     "kind": "gate",
+     "ref": "scripts/construction-gate.sh",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "construction-gate `one-pricing-site:fee-fields`: no production code outside the crate that owns the card (and the retiring 1.5.5 core) reads a per-request fee off a config or a card, so the fee basis is decided in one place"
     }
    ]
   },
@@ -3945,6 +4036,34 @@
    "inventory": "plugins-stores; governance",
    "status": "mapped",
    "checks": [
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-mysql",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-postgres",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-sqlite",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
+    {
+     "kind": "oracle-cell",
+     "ref": "plugins.store-persist|store-valkey",
+     "status": "mapped",
+     "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
+     "source": "cells.json why"
+    },
     {
      "kind": "test",
      "ref": "unsupported_alone_opens_the_inert_default_on_every_defaulting_verb",
@@ -4298,21 +4417,21 @@
      "kind": "oracle-cell",
      "ref": "http.crosscut|OPTIONS|chat",
      "status": "mapped",
-     "why": "no CORS layer ever; OPTIONS => None (PB-100)",
+     "why": "no CORS layer ever; OPTIONS => None",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "http.crosscut|auth-token|POST-empty",
      "status": "mapped",
-     "why": "flat {\"error\":…} envelope (PB-100)",
+     "why": "flat {\"error\":…} envelope",
      "source": "cells.json why"
     },
     {
      "kind": "oracle-cell",
      "ref": "ops.scrape|v1models|openai-fp",
      "status": "mapped",
-     "why": "openai envelope by fingerprint (no x-api-key rung, PB-100)",
+     "why": "openai envelope by fingerprint (no x-api-key rung)",
      "source": "cells.json why"
     },
     {

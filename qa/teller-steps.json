@@ -22,10 +22,10 @@
     "  none   -- with `note`: what the leg does instead, and why no cell drives this step yet. R-16:",
     "            name a gap, never paper it.",
     "The root column's gaps are PRINTED and named on every run but do not fail --check by themselves.",
-    "root-admin, root-mcp and root-a2a are now IN the binary's default feature set, so for those three",
-    "the loop IS the shipped path and --root-legs-gating (below) holds them to the same red rule the",
-    "rig column has: a gating step with no cell over the loop fails. root-llm and root-voice are still",
-    "default-off and being switched over plane by plane, so their root gaps remain the switch-over",
+    "root-admin, root-mcp, root-a2a and root-voice are now IN the binary's default feature set, so for",
+    "those four the loop IS the shipped path and --root-legs-gating (below) holds them to the same red",
+    "rule the rig column has: a gating step with no cell over the loop fails. root-llm is still",
+    "default-off and being switched over plane by plane, so its root gaps remain the switch-over",
     "queue and are printed rather than failed. What IS red on this column whatever the leg ships as: a",
     "`proven` root cell whose named test does not exist, and a leg with no proven cell at all.",
     "The two columns are independent verdicts about the same step and either may be \"none\" alone:",
@@ -109,13 +109,14 @@
         }
       },
       "decode": {
-        "cell": "llm|openai-chat|openai-chat|request|malformed",
+        "cell": "llm|openai|openai|request|malformed",
         "status": "mapped",
         "note": "representative of the llm.wire malformed outcome, enumerated per dialect",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-llm",
-          "note": "on this plane the loop's parse refusal lands at arrival; no root-llm fixture isolates a decode-step refusal of its own"
+          "test": "crates/busbar/src/root/units_llm.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it",
+          "note": "each of the six body-model dialects driven through run_unit in four shapes and compared with the shipped entry point: a named model reaches the door, a body with no model is the ladder's own 400, a malformed body is step 0's parse refusal, and a verb the dialect declares nothing for is the endpoint's own 404"
         }
       },
       "authenticate": {
@@ -123,9 +124,10 @@
         "status": "new",
         "note": "shadow-oracle family teller; recorded PASS on the 1.5.5 golden",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-llm",
-          "note": "the six fixtures present a well-formed key or none at all, so no run drives a bad credential through the loop's authenticate step"
+          "test": "crates/busbar/src/root/units_llm.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
+          "note": "three credentials through the deployment's own door (EngineHost::identity_admit -- the configured chain plus the one verdict resolution the HTTP middleware runs): the live bearer is admitted and the hold the loop opens names the key it resolved, while a bearer this deployment never minted and one whose exp has passed are both refused before the plane, and the shape the middleware leaves when it binds no key settles on the anonymous actor rather than on the key that was turned away"
         }
       },
       "verify": {
@@ -140,13 +142,14 @@
         }
       },
       "approve": {
-        "cell": "llm|openai-chat|openai-chat|request|out_of_scope",
+        "cell": "llm|openai|openai|request|out_of_scope",
         "status": "mapped",
         "note": "existing OUTCOMES cross, enumerated per dialect",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-llm",
-          "note": "the op class on this plane is the dialect's own resolved operation and no fixture is refused at approve; the credential-scope question this plane answers is the pool ACL the verify cell drives"
+          "test": "crates/busbar/src/root/units_llm.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing",
+          "note": "the 1.6.0-native Before(Approve) seat driven both ways through run_unit: the mount's own seat list is asserted empty (the migrated hooks fire after the door and a veto moved in front of a charge would change what is billed), a seat that does not veto is consulted and the unit still answers what the shipped entry point answers, and a seat that vetoes stops the unit at approve -- nothing charged, no metering row, the upstream never dialled, one link on the chain and the plane's own permission refusal in the caller's dialect"
         }
       },
       "admit": {
@@ -211,9 +214,10 @@
         "status": "mapped",
         "note": "shared kernel gate; plane-agnostic",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-mcp",
-          "note": "arrival is the shared kernel gate ahead of any plane's units; the root-mcp cells begin at a decoded draft and none of them drives it"
+          "test": "crates/busbar/src/root/units_mcp.rs::the_arrival_facts_are_the_stack_the_claim_was_matched_on",
+          "note": "the gate stays the kernel's, but the handover is this plane's and it is driven: the three claimed surfaces (http, sse over it, stdio) carry the transport's record forward unchanged, a claim naming a transport no claim of this plane makes is refused HandoffMismatch, and so is a claim whose transport is below rather than at the top of the composed chain -- an sse stack matched as a document request. Every later step resolves against these bytes, so a record handed on under the wrong claim authenticates one surface and answers another"
         }
       },
       "decode": {
@@ -221,9 +225,10 @@
         "status": "mapped",
         "note": "testing/mcp-conformance/src/suites/server-adversarial.mjs; battery-subject role=server, not yet folded into rigs-ledger.sh's mcp.rig|* rows (those read only --official-subject's checks.json)",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-mcp",
-          "note": "no root-mcp cell puts a malformed envelope through the decode step; every cell on this leg starts from a draft the plane already decoded"
+          "test": "crates/busbar/src/root/units_mcp.rs::an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused",
+          "note": "a real frame through the plane's own ingress decoder, over a real arena: a tools/call envelope resolves to the method table's own operation class and the step proceeds carrying it; five malformed shapes (wrong version, non-string method, an identifier that is neither string nor number, no version member, a method the table never named) each refuse at the decode step with decode_failed; an unrecognised notice is DROPPED rather than refused, because a refusal is an answer and this protocol forbids answering a message with no identifier. The metadata block is read as the depth-1 walk it is -- the block resolves by pointer and its separator-carrying member names do not, which is why the block is located by pointer and its members read by name out of it"
         }
       },
       "authenticate": {
@@ -321,9 +326,10 @@
         "status": "mapped",
         "note": "shared kernel gate; plane-agnostic",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-a2a",
-          "note": "arrival is the shared kernel gate ahead of any plane's units; the root-a2a cells begin at a decoded draft and none of them drives it"
+          "test": "crates/busbar/src/root/units_a2a.rs::the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival",
+          "note": "both halves of what Arrival decides for a data-listener leg: the gate refuses an a2a unit at the in-flight cap with the arrival hold handed back, and the step carries the transport's own composed chain forward rather than re-deriving one"
         }
       },
       "decode": {
@@ -443,9 +449,10 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-voice",
-          "note": "a session's wire dialect is settled at the door rather than decoded per unit, so no root-voice cell drives a decode-step refusal"
+          "test": "crates/busbar/src/root/units_voice.rs::a_client_event_opens_a_turn_and_a_later_one_relays_onto_it",
+          "note": "the dialect is settled at the door, but the per-frame read is not: a first client event on a realtime session opens a turn and mints the correlation, and the class the step carries is read off the plane's own answer rather than restated, so a shape that drifted from the plane's vocabulary goes red rather than pricing under a name nothing declares (every shape's class is asserted to be one the plane DECLARES). A tool result on the same session relays onto that turn's correlation instead of opening a second unit, which is what one-open-unit-per-direction means. A telephony-carried session handed bytes that are not that carrier's shape is refused Malformed at the step that read them, so no unit exists to have been given a class"
         }
       },
       "authenticate": {
@@ -453,9 +460,10 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/provider-credential.sh; K1 -- credential threaded from the composition root before a session opens",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-voice",
-          "note": "the handshake runs before anybody is authenticated -- that is what it is for -- and no root-voice cell refuses a credential at the authenticate step; the rig's provider-credential leg is the evidence"
+          "test": "crates/busbar/src/root/units_voice.rs::a_credential_is_resolved_against_this_planes_own_audience",
+          "note": "the session-opening unit's credential, through a closed chain whose only arm is the node's own signed-key directory, so the arm is the one thing that can open the door. Three answers: a key minted for this plane admits and carries the key's own id (which is what the audit row and the settlement attribute to); a credential the directory does not hold, and no credential at all, are both refused unauthenticated at the authenticate step before the unit reaches a destination; and a REAL, unexpired key minted for another plane's audience is refused here at this plane's ingress rather than carried to an upstream that would have honoured it -- an audience declared and never checked is not an audience. The rig's provider-credential leg stays the outside evidence"
         }
       },
       "verify": {
@@ -542,9 +550,10 @@
         "status": "mapped",
         "note": "shared kernel gate; plane-agnostic",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-admin",
-          "note": "arrival is the shared kernel gate ahead of any plane's units; the root-admin cells begin at a decoded admin request and none of them drives it"
+          "test": "crates/busbar/src/root/units_admin.rs::the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at",
+          "note": "the exemption is what Arrival decides for this leg: on a table with no room at all the admin unit still enters and its step proceeds under the admin transport, while the same table refuses a data-listener unit at Arrival with InFlightCap"
         }
       },
       "decode": {

@@ -43,6 +43,50 @@ fn bucket_of_is_log2() {
     assert_eq!(bucket_of(1024), 11);
 }
 
+/// A single bucket must keep counting past the 32-bit ceiling, in both `record` and `merge`.
+///
+/// The buckets were `u32` while `count` was `u64`, so the bucket overflowed first: a method logging
+/// ~1M samples/s into one latency band tips it in about 70 minutes. This crate is debug-only, and in
+/// debug that is an arithmetic PANIC inside `record` — the timing probe killing the request it was
+/// timing. In release it wraps, and then `percentile`'s cumulative sum can never reach a `target`
+/// computed from the exact `count`, so the loop falls through and reports `max_ns` for p50 and p99
+/// alike. The assertion below is on the bucket VALUE rather than on the absence of a panic, so it
+/// fails in release (where the wrap is silent) as well as in debug.
+#[test]
+fn a_bucket_keeps_counting_past_the_32_bit_ceiling() {
+    let ceiling = u64::from(u32::MAX);
+    let idx = bucket_of(500);
+
+    let saturated = || {
+        let mut s = MethodStat {
+            count: ceiling,
+            ..Default::default()
+        };
+        s.buckets[idx] = ceiling;
+        s
+    };
+
+    let mut a = saturated();
+    a.record(500);
+    assert_eq!(
+        a.buckets[idx],
+        ceiling + 1,
+        "the bucket wrapped instead of counting past 2^32"
+    );
+
+    a.merge(&saturated());
+    assert_eq!(
+        a.buckets[idx],
+        2 * ceiling + 1,
+        "merging two saturated per-thread histograms wrapped the fold"
+    );
+
+    // The consequence the width exists to prevent: percentiles still resolve to a real bucket
+    // instead of falling through the loop and collapsing onto `max_ns`.
+    a.max_ns = 9_999_999;
+    assert_eq!(a.percentile(0.50), bucket_floor(idx));
+}
+
 #[test]
 fn merge_sums_counts_and_extents() {
     let mut a = MethodStat::default();

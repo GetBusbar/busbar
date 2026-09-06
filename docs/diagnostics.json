@@ -1848,8 +1848,8 @@
     "retired": false
   },
   {
-    "code": "BUSBAR-7100",
-    "number": 7100,
+    "code": "BUSBAR-7104",
+    "number": 7104,
     "class": "plane",
     "slug": "plane-sse-frame-not-utf8",
     "title": "A relayed SSE frame was not valid UTF-8 and was dropped",

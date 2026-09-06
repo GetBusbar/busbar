@@ -51,28 +51,21 @@ pub const PTR_ERROR: &str = "/error";
 /// The member carrying an error's code.
 pub const PTR_ERROR_CODE: &str = "/error/code";
 
-/// The typed marker the codec stamps on an error's detail entry.
-pub const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
+/// The typed marker the codec stamps on an error's detail entry. Read by identity from the codec,
+/// which is where the one spelling lives.
+pub const ERROR_INFO_TYPE: &str = busbar_a2a_codec::ERROR_INFO_TYPE;
 
-/// The domain the codec stamps on an error's detail entry.
-pub const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
+/// The domain the codec stamps on an error's detail entry. The codec's, likewise.
+pub const ERROR_INFO_DOMAIN: &str = busbar_a2a_codec::ERROR_INFO_DOMAIN;
 
 /// The error codes this protocol defines, with the word each one is reported under.
 ///
-/// Copied from the codec's own table, which is visible to its own crate only. The test below reads
-/// that table's source and asserts every code and every word here appears in it, so the copy cannot
-/// drift without a red.
-pub const ERRORS: &[(i64, &str)] = &[
-    (-32001, "TASK_NOT_FOUND"),
-    (-32002, "TASK_NOT_CANCELABLE"),
-    (-32003, "PUSH_NOTIFICATION_NOT_SUPPORTED"),
-    (-32004, "UNSUPPORTED_OPERATION"),
-    (-32005, "CONTENT_TYPE_NOT_SUPPORTED"),
-    (-32006, "INVALID_AGENT_RESPONSE"),
-    (-32007, "EXTENDED_AGENT_CARD_NOT_CONFIGURED"),
-    (-32008, "EXTENSION_SUPPORT_REQUIRED"),
-    (-32009, "VERSION_NOT_SUPPORTED"),
-];
+/// THE CODEC'S TABLE, read by identity rather than copied. It was a copy checked by searching the
+/// server half's source text for each code and each word — which needed this crate to read a
+/// sibling its manifest does not name, and which could only ever say the number 32001 occurs
+/// somewhere in that file. There is one table now, and `busbar-a2a`'s own `A2aError` is pinned
+/// against it row for row in the crate that owns the enum.
+pub const ERRORS: &[(i64, &str)] = busbar_a2a_codec::ERRORS;
 
 /// The request was not well formed.
 pub const CODE_INVALID_REQUEST: i64 = -32600;
@@ -433,25 +426,27 @@ mod tests {
         );
     }
 
-    /// Every code and word here appears in the codec's own table.
+    /// Every code and word here is the codec's own, and so is the detail entry they are carried in.
     ///
-    /// The table is visible to its own crate only, so this reads its source. A copy that is checked
-    /// is not a second opinion; a copy that is not checked is.
+    /// A copy that is checked is not a second opinion; a copy that is not checked is. There is no
+    /// copy left to check: [`ERRORS`] IS the codec's table, and what remains for this to say is
+    /// that the whole band this plane may write is A2A-specific — a standard JSON-RPC code with a
+    /// reason word attached would be a word the specification does not define, put on the wire.
     #[test]
     fn the_error_table_is_the_codecs_own() {
-        let source = include_str!("../../busbar-a2a/src/a2a/rpcerror.rs");
+        assert_eq!(ERRORS.as_ptr(), busbar_a2a_codec::ERRORS.as_ptr());
+        assert!(!ERRORS.is_empty());
         for (code, reason) in ERRORS {
             assert!(
-                source.contains(&format!("{code}")),
-                "the codec no longer names the code {code}"
-            );
-            assert!(
-                source.contains(reason),
-                "the codec no longer names the word {reason}"
+                (-32099..=-32001).contains(code),
+                "{code} is outside the A2A-specific band and carries the reason {reason}"
             );
         }
-        assert!(source.contains("type.googleapis.com/google.rpc.ErrorInfo"));
-        assert!(source.contains("a2a-protocol.org"));
+        assert_eq!(
+            super::ERROR_INFO_TYPE,
+            busbar_a2a_codec::ERROR_INFO_TYPE,
+            "the detail entry is tagged with the codec's own type URL"
+        );
     }
 
     /// The reader is deterministic over the same bytes.

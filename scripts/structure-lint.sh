@@ -1010,6 +1010,21 @@ pub fn outbound() -> String {
 }
 RS
 
+  # ── PLANE-ROOT ADDRESSING. `plane_roots_resolve` (scripts/plane-roots.sh) is what turned the
+  #    codec split's same-named `a2a` sibling from a hard PLANE-ROOT-AMBIGUOUS refusal into a clean
+  #    resolve, and it is driven here over throwaway trees for the same reason every case above is:
+  #    the interesting half is a REFUSAL (two declaring homes, or none), and a refusal nothing
+  #    exercises is a refusal nobody knows still fires.
+  hdr "self-test: plane-root addressing (found by OWNERSHIP, not by name — and ambiguity refused)"
+  # plane-roots.sh is already sourced at the top of this file (it resolves $MCP/$A2A before this
+  # function is ever reached), so `plane_roots_selftest` is already in scope.
+  plane_roots_selftest
+  selftest_ran=$((selftest_ran + PLANE_ROOTS_SELFTEST_RAN))
+  selftest_pass=$((selftest_pass + PLANE_ROOTS_SELFTEST_RAN - PLANE_ROOTS_SELFTEST_FAIL))
+  if [ "$PLANE_ROOTS_SELFTEST_FAIL" -ne 0 ]; then
+    selftest_fail=1
+  fi
+
   # A self-test that asserted nothing would report exactly what a passing one reports. So the count
   # of cases actually EXECUTED is itself an assertion: zero cases is RED, not "ok, nothing to do".
   if [ "$selftest_ran" -eq 0 ]; then
@@ -1178,7 +1193,25 @@ CHOKE_POINTS=(
   #         dance built for small state/config artifacts — no correctness gained, real memory/IO
   #         cost paid on every rotation. See `export::file::rotate` for the rename-failure posture
   #         (never truncate un-archived data) that keeps this exemption honest.
-  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs,'"$CORE"'/export/file.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,'"$CORE"'/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+  #
+  #         LEDGERED EXEMPTION on the `sync_[ad]` and `fs::create_dir_all\(` rules for
+  #         `crates/busbar-unit-wal/src/backend.rs`. The WAL is not a CONSUMER of the durable-write
+  #         choke point, it is a SIBLING durability primitive, and the two own different hazards.
+  #         `durable::write` owns "publish a freshly computed, whole artifact so no reader ever sees
+  #         a torn write" — temp file, fsync, rename, cleanup. A write-ahead log does the opposite by
+  #         definition: it APPENDS at an offset into a segment that stays put and fsyncs that segment
+  #         IN PLACE, and its entire poison rule hangs on observing THAT sync's error honestly.
+  #         Re-emitting an operator-sized segment through a rename dance on every group commit would
+  #         destroy both the latency and the semantics the log exists for. The crate's own manifest
+  #         pins why it cannot simply call the owner: `busbar-caps` and `sha2`, "nothing else" — the
+  #         log deliberately depends on no engine crate, so `crates/api` is not reachable from it,
+  #         and making it reachable is a larger architectural change than the hazard is worth.
+  #         The exemption is kept honest the way the rotation one is: the directory creation here now
+  #         performs the parent fsync ITSELF (`backend::sync_holding_dir`), so the one facet that
+  #         rule protects — a new directory entry that does not survive a power loss — is COVERED,
+  #         not waived. A log that reported a durable write and then lost it with its own holding
+  #         directory would have broken the only promise this crate makes.
+  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs,'"$CORE"'/export/file.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs,crates/busbar-unit-wal/src/backend.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,'"$CORE"'/test_support/mod.rs,crates/busbar-unit-wal/src/backend.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
 
   # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
   #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.
@@ -1196,7 +1229,17 @@ CHOKE_POINTS=(
   # ── C ── admin config mutation: one transaction. A raw lock re-opens lock-then-arbitrary-code; a
   #         swap outside the section IS the lost update the lock exists to prevent. state.rs DEFINES
   #         swap/commit_and_swap, so it is allowed alongside txn.rs.
-  'C-config-mutation|MUTATION-BYPASS|'"$CORE"'/admin/v1/json/txn.rs (config_transaction)|'"$CORE"'/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap|route through json::txn::config_transaction|CONFIG_MUTATION_LOCK>>names the config mutation lock>>'"$CORE"'/admin/v1/json/txn.rs;commit_and_swap\(>>direct commit_and_swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs;\.swap\(>>direct swap on an AppHandle outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs>>Ordering::;AppHandle::swap\(>>direct AppHandle::swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs|a fresh post-lock snapshot + one persist-then-swap is the only way concurrent mutations cannot lose an update'
+  #
+  #         LEDGERED EXEMPTION on the `AppHandle::swap\(` rule for `$CORE/test_support/engine_kit.rs`,
+  #         on exactly the argument that already admits `state.rs`. The hit is not a mutation SITE: it
+  #         is the one line of `impl EngineHandle for AppHandle` that FORWARDS the trait method to the
+  #         inherent `AppHandle::swap` state.rs defines, so a plane's test-kit can drive the engine
+  #         handle through the neutral seam without naming `busbar_core::state`. A delegate that adds
+  #         no logic cannot lose an update that the definition it calls does not already lose;
+  #         inlining `state.rs`'s body here to dodge the pattern is what would actually create a
+  #         second implementation of the swap. The row is spelled at FILE granularity so a real
+  #         mutation added anywhere else under `test_support/` still trips.
+  'C-config-mutation|MUTATION-BYPASS|'"$CORE"'/admin/v1/json/txn.rs (config_transaction)|'"$CORE"'/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap|route through json::txn::config_transaction|CONFIG_MUTATION_LOCK>>names the config mutation lock>>'"$CORE"'/admin/v1/json/txn.rs;commit_and_swap\(>>direct commit_and_swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs;\.swap\(>>direct swap on an AppHandle outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs>>Ordering::;AppHandle::swap\(>>direct AppHandle::swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs,'"$CORE"'/test_support/engine_kit.rs|a fresh post-lock snapshot + one persist-then-swap is the only way concurrent mutations cannot lose an update'
 
   # ── D ── OpenAPI error taxonomy: one declaration the generator PROJECTS. Enforced differently —
   #         there is no pattern to ban, because the hazard is an endpoint emitting an ErrKind the
@@ -1778,15 +1821,17 @@ AXIS_BRANCH=(
 # matches is a HARD ERROR (a ledger nobody prunes becomes a permanent exemption), and ADDING a row
 # for NEW code is evading the check rather than passing it. Shrinking is the only permitted edit.
 # Row format:  <axis> | <file> | <why this one branch is allowed to exist, and when it goes>
-# EMPTY, and it got here the way the rules say a row leaves: the branch went. The one row this
-# ledger ever carried was `mcp/config.rs`'s `Some(Transport::Stdio)` — the pre-axis branch guarding a
-# crash-loop supervisor with no dispatch arm to reach it. `Transport::Stdio` is now a real arm of the
-# axis, `mcp/config.rs` asks the transport ONE question through a method on the type
-# (`Transport::spawns_child`) instead of comparing it, and the supervisor has a production caller. A
-# row is added here only by a change that cannot avoid a branch, and SHRINKING is still the only
-# permitted edit.
-AXIS_EXCEPTIONS="
-"
+#
+# EMPTY, and that is the point: the ledger only shrinks. It briefly carried one row — a NOUN
+# COLLISION rather than a branch on the axis, of the exact shape this invariant's own `scope` field
+# documentation already names ("plugin-loader compares a plugin-ABI `transport` VERSION number, an
+# unrelated noun that a type-blind grep cannot tell apart from the axis"). `units_mcp.rs` compared a
+# `&str` claim key (`busbar_plane_mcp::claims::TRANSPORT_STDIO = "stdio"`) against another `&str`,
+# never the axis's `Transport` type. The honest fix that row named as its own exit condition has now
+# been taken instead of the exemption: the plane asks its own named question, `claims::is_stdio`, so
+# the only line in the tree comparing against that constant is the one inside the plane that owns
+# it, and the collision has no site left to occur at.
+AXIS_EXCEPTIONS=""
 
 hdr "axis purity (nothing branches on an axis outside that axis's own arms)"
 ax=0

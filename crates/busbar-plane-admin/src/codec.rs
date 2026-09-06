@@ -29,8 +29,12 @@ struct Decoded<'u> {
     params: Vec<(&'static str, &'u str)>,
 }
 
-/// Identify which of the table's verbs a decoded body names, by re-scanning its `method`/`path`
-/// fields. See the module doc comment for why this is a fresh scan rather than a cached fact.
+/// Identify which of the table's verbs a body names, from its `method`/`path` members.
+///
+/// Called ONCE, at `decode_ingress`, which writes the verb it resolved into the draft's fact map;
+/// every later step reads it back off `Unit::draft_facts()` rather than scanning again. See the
+/// module doc comment: decode is the step entitled to read the bytes, and a second reading of one
+/// closed grammar is a second reading that can drift.
 fn identify<'u>(bytes: &'u [u8]) -> Option<Decoded<'u>> {
     // The envelope's two members are the request line's two structural values, so they are named
     // with the kernel's own reserved keys rather than with this crate's guess at their spelling.
@@ -103,8 +107,19 @@ impl Plane for AdminPlane {
         _st: Option<&mut PlaneSessionState>,
         ctx: &Ctx<'u>,
     ) -> Result<Ingress<'u>, Decode> {
-        let frame = frames.next_frame().ok_or(Decode::Malformed)?;
+        // NOT YET AN ENVELOPE IS NOT THE SAME AS A BAD ONE. A cursor with nothing left in it has
+        // handed over every byte that has arrived so far, and a frame whose envelope object has not
+        // closed is a body still being written; both are `NeedMore` — "hand me the next frame" —
+        // which is the answer the loop knows how to act on. Reported as `Malformed` and
+        // `UnsupportedOperation`, a request that had merely not finished arriving was ended as a
+        // caller's error, and an operator saw a bad-request answer for a verb they spelled right.
+        let Some(frame) = frames.next_frame() else {
+            return Ok(Ingress::NeedMore);
+        };
         let bytes = frame.bytes.as_slice();
+        if !envelope_is_complete(bytes) {
+            return Ok(Ingress::NeedMore);
+        }
         let decoded = identify(bytes).ok_or(Decode::UnsupportedOperation)?;
 
         let mut facts = Facts::new();
@@ -210,19 +225,27 @@ impl Plane for AdminPlane {
         // crate is out of scope here), the safe default is the ordinary passthrough path below,
         // never the substitution — a byte-identical pass-through is always a safe default; a wrong
         // substitution is not.
+        //
+        // THE PASS-THROUGH DOES NOT GO THROUGH THE ARENA. The arena is 4 KiB per unit and the
+        // response body already lives for the unit — it is the executing verb's own bytes, not
+        // something this plane produced — so borrowing it is both cheaper and the only thing that
+        // WORKS: copying meant every admin response larger than the arena was refused for arena
+        // budget, and `openapi.json` alone is over 350 KB. A borrow has no budget to exhaust.
         let is_openapi_json =
             matches!(r.facts.get(FACT_VERB), Some(FactValue::Str(v)) if v == VERB_OPENAPI_JSON);
         if is_openapi_json {
+            // The one exception is the one case that genuinely produces NEW bytes, so it is the one
+            // case that has to find somewhere to put them. Where the rendered document does not fit
+            // the arena, the safe default the paragraph above states applies — the verbatim
+            // borrow — rather than an arena refusal: a document whose `info.version` still reads
+            // the executing verb's own value is a document; no document at all is not.
             if let Some(rendered) = substitute_info_version(body, env!("CARGO_PKG_VERSION")) {
-                return ctx
-                    .arena()
-                    .alloc_bytes(&rendered)
-                    .map_err(|_| Encode::ArenaExhausted);
+                if let Ok(bytes) = ctx.arena().alloc_bytes(&rendered) {
+                    return Ok(bytes);
+                }
             }
         }
-        ctx.arena()
-            .alloc_bytes(body)
-            .map_err(|_| Encode::ArenaExhausted)
+        Ok(ArenaBytes::new(body))
     }
 
     fn encode_refusal<'u>(
@@ -344,6 +367,54 @@ impl Plane for AdminPlane {
     }
 }
 
+/// Whether the frame carries a WHOLE envelope object: an opening `{` whose matching `}` has
+/// arrived.
+///
+/// A structural scan, string- and escape-aware, so a brace inside a body value (`{"name":"a}b"}`)
+/// neither closes the envelope early nor holds it open. It answers one question only — has the
+/// object closed — and never what the object contains; deciding whether a CLOSED envelope names a
+/// verb is `identify`'s, and the two answers are different answers (`NeedMore` versus an
+/// unsupported operation), which is the whole reason this is a separate step.
+///
+/// Anything that is not an object at all (empty bytes, a bare array, leading junk) is not an
+/// envelope that could still complete, so it is COMPLETE as far as this question goes and
+/// `identify` refuses it — a plane that answered `NeedMore` to bytes no further frame can rescue
+/// would ask a transport for frames forever.
+fn envelope_is_complete(bytes: &[u8]) -> bool {
+    let first = bytes.iter().position(|b| !b.is_ascii_whitespace());
+    let Some(start) = first else { return true };
+    if bytes[start] != b'{' {
+        return true;
+    }
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for &b in &bytes[start..] {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if b == b'\\' {
+                escaped = true;
+            } else if b == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match b {
+            b'"' => in_string = true,
+            b'{' | b'[' => depth += 1,
+            b'}' | b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return true;
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 /// Replace the `info.version` field of an `openapi.json`-shaped body with `version`.
 ///
 /// A pure, small string-replace over the parsed structure's byte spans — never a full
@@ -400,5 +471,65 @@ mod tests {
         let decoded = identify(body).expect("decodes");
         assert_eq!(decoded.entry.verb, "post_keys");
         assert!(decoded.params.is_empty());
+    }
+
+    /// A query string names no operation, so it resolves the same row with it as without.
+    ///
+    /// The envelope carries the request TARGET, and a target is a path plus whatever the caller
+    /// appended to it. `verbs::resolve` — the lookup the composition root runs — has always cut at
+    /// `?`/`#` before matching; this step used to hand the raw target straight to the table and so
+    /// answered "no such operation" for every paged read a caller actually writes.
+    #[test]
+    fn a_query_string_resolves_the_same_verb_as_a_bare_path() {
+        let bare = br#"{"method":"GET","path":"/api/v1/admin/audit","body":{}}"#;
+        let paged = br#"{"method":"GET","path":"/api/v1/admin/audit?limit=4","body":{}}"#;
+        let fragment = br#"{"method":"GET","path":"/api/v1/admin/audit#top","body":{}}"#;
+        let verb = identify(bare).expect("decodes").entry.verb;
+        assert_eq!(identify(paged).expect("decodes").entry.verb, verb);
+        assert_eq!(identify(fragment).expect("decodes").entry.verb, verb);
+    }
+
+    /// A body still arriving is not a body that was refused.
+    #[test]
+    fn a_half_arrived_envelope_is_not_yet_an_envelope() {
+        let whole = br#"{"method":"POST","path":"/api/v1/admin/keys","body":{"name":"k1"}}"#;
+        assert!(envelope_is_complete(whole));
+        for cut in 1..whole.len() {
+            assert!(
+                !envelope_is_complete(&whole[..cut]),
+                "cut at {cut} closed an envelope that has not closed"
+            );
+        }
+    }
+
+    /// A brace inside a string value neither closes the envelope early nor holds it open.
+    #[test]
+    fn a_brace_inside_a_string_is_not_structure() {
+        assert!(envelope_is_complete(
+            br#"{"method":"POST","path":"/api/v1/admin/keys","body":{"name":"a}b{c"}}"#
+        ));
+        assert!(!envelope_is_complete(
+            br#"{"method":"POST","path":"/api/v1/admin/keys","body":{"name":"a}b"#
+        ));
+        // an escaped quote does not end the string, so the brace after it is still text
+        assert!(envelope_is_complete(br#"{"a":"x\"}y"}"#));
+    }
+
+    /// Bytes no further frame can rescue are not `NeedMore`: they are for `identify` to refuse.
+    #[test]
+    fn bytes_that_are_not_an_object_at_all_are_complete() {
+        assert!(envelope_is_complete(b""));
+        assert!(envelope_is_complete(b"   "));
+        assert!(envelope_is_complete(b"[1,2,3]"));
+        assert!(envelope_is_complete(b"not json"));
+    }
+
+    /// The cut runs before the path parameters are captured, so a trailing query never lands in one.
+    #[test]
+    fn a_query_string_is_not_captured_into_a_path_parameter() {
+        let body = br#"{"method":"GET","path":"/api/v1/admin/keys/xyz?verbose=1","body":{}}"#;
+        let decoded = identify(body).expect("decodes");
+        assert_eq!(decoded.entry.verb, "get_keys_id");
+        assert_eq!(decoded.params, vec![("id", "xyz")]);
     }
 }

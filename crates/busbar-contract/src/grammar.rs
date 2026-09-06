@@ -150,6 +150,20 @@ pub enum MaskKind {
     BoundedPrefix,
 }
 
+impl MaskKind {
+    /// Every kind, in one place: the closed set the arrival gate switches on.
+    ///
+    /// The list is what makes the set closed to a reader as well as to the compiler. A consumer
+    /// matches these arms with no catch-all, so a kind added here has to be answered everywhere
+    /// before anything compiles.
+    pub const ALL: [MaskKind; 4] = [
+        MaskKind::SameLengthFill,
+        MaskKind::Nothing,
+        MaskKind::SignatureSpan,
+        MaskKind::BoundedPrefix,
+    ];
+}
+
 /// Which bytes a signature covers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
 pub enum SignedOver {
@@ -507,7 +521,13 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Whether a pattern matches a concrete path.
-fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
+///
+/// PUBLIC because a plane evaluating its own claims against a live request must answer the pattern
+/// form the SAME way the boot's overlap check answered it. A plane that reimplemented this would be
+/// a second opinion about which claim a request matches, and the one request the two disagree on is
+/// the one the boot proved could not exist.
+#[must_use]
+pub fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
     let mut segs = segments(path);
     for seg in pattern {
         match seg {

@@ -61,7 +61,7 @@ pub enum Disposition {
     ContextLength,
 }
 
-/// Every declared status class paired with its disposition, as data — the table PB-10 names.
+/// Every declared status class paired with its disposition, as data.
 /// `classify` is still an exhaustive match (so the compiler catches a class the table forgot), but
 /// this array is what the port test below checks the match against, and what a future caller can
 /// render/audit without re-deriving it from the match arms.
@@ -116,8 +116,9 @@ impl Diagnostics for NoopDiagnostics {
 /// A [`Diagnostics`] adapter that forwards each distinct unrecognized value to an inner sink AT
 /// MOST ONCE per process lifetime, deduplicating repeat calls for the same value itself so the
 /// inner sink (e.g. a real `tracing::warn!`-backed one the composition root binds) never has to.
-/// This is PB-98's "warned once and ignored": the classification RESULT is unaffected either way
-/// (the mapping is still silently ignored) — only how many times the side-channel warning fires.
+/// An unrecognized value is warned about once and then ignored: the classification RESULT is
+/// unaffected either way (the mapping is still silently ignored) — only how many times the
+/// side-channel warning fires.
 pub struct WarnOnceDiagnostics<S: Diagnostics> {
     seen: std::sync::Mutex<std::collections::HashSet<String>>,
     inner: S,

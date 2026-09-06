@@ -57,6 +57,15 @@ pub trait SegmentFactory: Send {
     /// Open, or create, the backing for segment `index`.
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>>;
 
+    /// The highest index this factory already has a backing for, or `None` when it has none.
+    ///
+    /// This is what a restart asks first, and it has no default on purpose. A log that resumed at
+    /// index zero after the writes had rolled past it would seed itself from the tail of a segment
+    /// that is no longer the end of the log, and everything it appended afterwards would carry
+    /// numbers a writer had already used. A factory that cannot answer this question honestly
+    /// cannot be recovered from, so it has to say so in code rather than inherit a wrong answer.
+    fn highest_index(&self) -> io::Result<Option<u64>>;
+
     /// Whether this factory can put anything on a disk. A memory factory says no, and the log
     /// reports it so an operator can see which mode a node is in without inspecting a directory.
     fn is_durable(&self) -> bool;
@@ -140,42 +149,104 @@ impl SegmentBackend for MemorySegment {
     }
 }
 
+/// What a factory remembers about the segments it has handed out.
+///
+/// The slots are WEAK on purpose. A memory-backed log rolls to a fresh segment when the current one
+/// fills or is poisoned, and it drops the one it left behind — so a factory that held a strong
+/// reference to every index it had ever opened would be the one thing keeping a rolled-past
+/// segment's ceiling alive, forever, on precisely the deployment that has no disk to spill it to.
+/// Holding the slots weakly means the factory can still hand the SAME bytes back to a caller that
+/// asks for a segment that is still open, and stops being a reason for a closed one to stay resident.
+#[derive(Debug, Default)]
+struct Segments {
+    /// The segments somebody is still holding, by index. Keyed rather than indexed, and swept of
+    /// dead entries as it goes, so that the table itself does not become the small version of the
+    /// same leak on a node that has rolled through segments for a year.
+    slots: std::collections::HashMap<u64, std::sync::Weak<std::sync::Mutex<Vec<u8>>>>,
+    /// Strong references, kept only by a retaining factory.
+    retained: Vec<SharedBytes>,
+    /// Whether this factory keeps every segment alive itself.
+    retain: bool,
+}
+
 /// Hands out memory segments. The default, and the only backing a node without a data directory
 /// ever sees.
 #[derive(Debug, Default, Clone)]
 pub struct MemoryFactory {
-    segments: std::sync::Arc<std::sync::Mutex<Vec<SharedBytes>>>,
+    segments: std::sync::Arc<std::sync::Mutex<Segments>>,
 }
 
 impl MemoryFactory {
-    /// A factory with no segments yet.
+    /// A factory with no segments yet, keeping nothing the log has finished with.
     pub fn new() -> Self {
         MemoryFactory::default()
     }
 
-    /// The shared bytes of segment `index`, creating the slot if it does not exist yet. A test uses
-    /// this to reach in and damage a tail.
-    pub fn segment_bytes(&self, index: u64) -> SharedBytes {
-        let index = usize::try_from(index).unwrap_or(usize::MAX);
-        let mut held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
-        while held.len() <= index {
-            held.push(SharedBytes::default());
-        }
-        std::sync::Arc::clone(&held[index])
+    /// A factory that keeps every segment's bytes alive for as long as it itself lives.
+    ///
+    /// For a caller that has to look at a segment after the log holding it is gone — reading back
+    /// what a log wrote once it has been dropped, or posing a torn tail on a segment before opening
+    /// a second log over the same bytes, which is what a restart looks like from inside a test. A
+    /// running node never wants this, which is why it is a separate constructor rather than the
+    /// behaviour of the one [`Wal`](crate::wal::Wal) builds for itself.
+    pub fn retaining() -> Self {
+        let factory = MemoryFactory::default();
+        factory
+            .segments
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain = true;
+        factory
     }
 
-    /// How many segments have been opened.
+    /// The shared bytes of segment `index`, creating the slot if it does not exist yet — or if the
+    /// only references to it are gone, which on a factory that does not retain is what a segment the
+    /// log has rolled past looks like. A test uses this to reach in and damage a tail.
+    pub fn segment_bytes(&self, index: u64) -> SharedBytes {
+        let mut held = self.segments.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(bytes) = held.slots.get(&index).and_then(std::sync::Weak::upgrade) {
+            return bytes;
+        }
+        held.slots.retain(|_, slot| slot.strong_count() > 0);
+        let bytes = SharedBytes::default();
+        held.slots.insert(index, std::sync::Arc::downgrade(&bytes));
+        if held.retain {
+            held.retained.push(std::sync::Arc::clone(&bytes));
+        }
+        bytes
+    }
+
+    /// How many segments' bytes are still resident. On a log that is writing, that is the segment it
+    /// is writing to — the ones it has rolled past have been released.
     pub fn segment_count(&self) -> usize {
         self.segments
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .len()
+            .slots
+            .values()
+            .filter(|slot| slot.strong_count() > 0)
+            .count()
     }
 }
 
 impl SegmentFactory for MemoryFactory {
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>> {
         Ok(Box::new(MemorySegment::over(self.segment_bytes(index))))
+    }
+
+    /// The highest index whose bytes are still resident. A slot whose only references are gone is
+    /// not an answer: those bytes no longer exist, so nothing could be recovered from that index
+    /// even if the table still remembered the number.
+    fn highest_index(&self) -> io::Result<Option<u64>> {
+        Ok(self
+            .segments
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .slots
+            .iter()
+            .filter(|(_, slot)| slot.strong_count() > 0)
+            .map(|(index, _)| *index)
+            .max())
     }
 
     fn is_durable(&self) -> bool {
@@ -247,6 +318,26 @@ impl SegmentBackend for FileSegment {
     }
 }
 
+/// Fsync the directory HOLDING `path`, which is what makes `path`'s own directory entry durable.
+///
+/// Best effort by construction: a filesystem that refuses to open a directory as a file (or refuses
+/// to fsync one) cannot be made to promise more than it does, and failing construction of the log
+/// over it would trade a weaker durability story for no log at all. The promise this crate makes —
+/// a sync that RETURNS SUCCESS was really durable — is carried by [`SegmentBackend::sync`], which
+/// does report its failure.
+fn sync_holding_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
 /// Hands out file segments named `<index>.wal` inside one directory.
 #[derive(Debug)]
 pub struct DirectoryFactory {
@@ -257,9 +348,20 @@ impl DirectoryFactory {
     /// A factory over `dir`. The directory is created if it is absent — but note that CONSTRUCTING
     /// this type is already the decision to write to a disk. A node with no data directory never
     /// builds one, which is why it leaves no files behind.
+    ///
+    /// The creation is made DURABLE here rather than left to `create_dir_all`'s default, which
+    /// leaves the new directory ENTRY unfsynced: a power loss right after the first group commit
+    /// could then take the whole directory with it, segments included, even though every segment's
+    /// own `sync` returned success. A log that reports a durable write and then loses it to its own
+    /// holding directory has broken the one promise this crate exists to keep, so the parent gets
+    /// the fsync that makes the entry survive.
     pub fn new(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
+        let fresh = !dir.exists();
         std::fs::create_dir_all(&dir)?;
+        if fresh {
+            sync_holding_dir(&dir);
+        }
         Ok(DirectoryFactory { dir })
     }
 
@@ -267,11 +369,39 @@ impl DirectoryFactory {
     pub fn segment_path(&self, index: u64) -> PathBuf {
         self.dir.join(format!("{index:016}.wal"))
     }
+
+    /// The index a file name in the directory stands for, or `None` if this crate did not name it.
+    ///
+    /// Strict about the shape it accepts — the fixed width and the extension both — because the
+    /// answer decides where a restart resumes, and a stray file somebody dropped in the data
+    /// directory must not be able to move the log's idea of where its writes ended.
+    fn index_of(name: &str) -> Option<u64> {
+        let digits = name.strip_suffix(".wal")?;
+        if digits.len() != 16 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        digits.parse().ok()
+    }
 }
 
 impl SegmentFactory for DirectoryFactory {
     fn open(&mut self, index: u64) -> io::Result<Box<dyn SegmentBackend>> {
         Ok(Box::new(FileSegment::open(&self.segment_path(index))?))
+    }
+
+    /// The highest-numbered `<index>.wal` in the directory. A listing, not a side file: the
+    /// directory entries ARE the record of which segments exist, and a mark kept anywhere else
+    /// could disagree with them after a crash between writing the mark and rolling the segment.
+    fn highest_index(&self) -> io::Result<Option<u64>> {
+        let mut highest: Option<u64> = None;
+        for entry in std::fs::read_dir(&self.dir)? {
+            let name = entry?.file_name();
+            let Some(index) = name.to_str().and_then(DirectoryFactory::index_of) else {
+                continue;
+            };
+            highest = Some(highest.map_or(index, |h: u64| h.max(index)));
+        }
+        Ok(highest)
     }
 
     fn is_durable(&self) -> bool {

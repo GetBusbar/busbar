@@ -35,10 +35,38 @@ const COUNT_FAMILY: &str = "count";
 /// against what [`busbar_voice_codec::ir::IrDuplexUsage`] actually reports.
 const BYTES_PER_TOKEN: u32 = 4;
 
-/// Milliseconds per unit for the duration class's default divisor: one, because this plane's own
-/// bookkeeping already reports the class in its own unit (milliseconds admitted), not in bytes a
-/// divisor would have to convert.
-const MS_PER_UNIT: u32 = 1;
+/// Seconds per unit for the duration class's default divisor: one, because the class is reported in
+/// its own unit (see [`audio_seconds_in`]), not in bytes a divisor would have to convert.
+const SECONDS_PER_UNIT: u32 = 1;
+
+/// The `text_tokens` figure a span of text estimates to, through the class's own declared divisor.
+///
+/// A one-shot text-to-speech request is priced on the text it asks to be spoken, and no upstream
+/// reports a token count for it before the audio comes back. So the figure is an estimate, and it
+/// is the class's OWN default divisor that produces it rather than a second constant invented at
+/// the call site: what the class says a token costs in bytes is what a token costs here.
+#[must_use]
+pub const fn text_tokens_of(byte_len: usize) -> u64 {
+    (byte_len as u64).div_ceil(BYTES_PER_TOKEN as u64)
+}
+
+/// Milliseconds in the second the `audio_seconds_in` class is denominated in.
+const MS_PER_SECOND: u64 = 1_000;
+
+/// The seconds figure the `audio_seconds_in` class carries, from the milliseconds this plane counts.
+///
+/// The class the design names is a duration in SECONDS. This plane's own bookkeeping is in
+/// milliseconds, because a frame's byte count under the declared format assumption is what produces
+/// it, and that division has a resolution finer than a second. Every reader of the counter that
+/// writes a meter line goes through here, so the two units meet at one boundary rather than at each
+/// of them — reported verbatim, a turn of audio settled at a thousand times its duration.
+///
+/// A part-second rounds UP. Audio that arrived is not audio that cost nothing, and a line reporting
+/// zero seconds for it settles exactly as an absent line would.
+#[must_use]
+pub const fn audio_seconds_in(ms: u64) -> u64 {
+    ms.div_ceil(MS_PER_SECOND)
+}
 
 /// One tool call per unit, for the same reason.
 const CALLS_PER_UNIT: u32 = 1;
@@ -61,7 +89,7 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("audio_tokens_out"),
+        key: CLASS_AUDIO_TOKENS_OUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
@@ -88,7 +116,7 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         key: MeterClassId::new("audio_seconds_in"),
         family: DURATION_FAMILY,
         direction: ClassDirection::Input,
-        default_divisor: MS_PER_UNIT,
+        default_divisor: SECONDS_PER_UNIT,
     },
     MeterClassDecl {
         key: MeterClassId::new("tool_calls"),
@@ -97,6 +125,16 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         default_divisor: CALLS_PER_UNIT,
     },
 ];
+
+/// The class key the audio a turn EMITTED is counted under.
+///
+/// Exported because the class label is what selects a unit price, and the composition root names
+/// this one three times: the estimate a turn is admitted against, the class its evidence reports,
+/// and the class the settled line prices under. Three spellings of one wire string is three chances
+/// for a turn to be admitted against one class and priced under another, which a rate card with two
+/// different rates settles as money. The declaration above is the one spelling; this is how the
+/// root reads it.
+pub const CLASS_AUDIO_TOKENS_OUT: MeterClassId = MeterClassId::new("audio_tokens_out");
 
 /// The name a session's opening unit is audited and priced under.
 ///

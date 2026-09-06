@@ -8,6 +8,7 @@ per plane' (docs/design/1.6.0-TRACKER.md), matrix at qa/teller-steps.json.
     python3 scripts/teller-steps-check.py --check     # same as above (the flag CI wires in)
     python3 scripts/teller-steps-check.py --root-legs # RUN every root-leg proof cell the matrix names
     python3 scripts/teller-steps-check.py --root-legs-gating  # the SHIPPED legs owe every gating step
+    python3 scripts/teller-steps-check.py --rig-legs  # RUN the rig suites the `cell` column names
     python3 scripts/teller-steps-check.py --selftest  # prove a broken matrix is refused
 
 RED RULE. For every plane and every GATING step (qa/teller-steps.json's steps.<step>.gating ==
@@ -36,6 +37,21 @@ manifest rather than listed here, so a flip cannot turn the bar off by forgettin
 list. `--check` is deliberately unchanged: it is the shipped-PATH ledger and its semantics are what
 CI has been reading, so the new bar is its own flag and its own exit code.
 
+THE RIG COLUMN RESOLVES. A `cell` value is not just a string: it names a scenario some rig actually
+owns, and every id in the matrix is RESOLVED to that owner on --check —
+  * an oracle cell id           -> testing/shadow-oracle/cells.json
+  * `mcp.rig|h2-<step>`         -> scripts/mcp-subject/h2-<step>.sh   (the file rigs-ledger.sh runs)
+  * `a2a.battery|h2-<step>`     -> scripts/a2a-subject/h2-<step>.sh   (likewise)
+  * `voice.rig|<leg>`           -> testing/voice-conformance/legs/<leg>.sh
+  * `mcp.battery|<id>`          -> the suite source under testing/mcp-conformance/src/suites/
+  * `a2a.supplement|<id>`       -> the requirement's source under testing/a2a-supplement/a2asup/
+  * any other rig row id        -> testing/shadow-oracle/rigs-baseline.json's recorded row set
+An id that resolves to nothing is RED: a scenario renamed or deleted out of its rig leaves the
+matrix asserting coverage that no longer exists, which is the same drift the root column's
+"named loop cell vanished" rule stops on the other side. `--rig-legs` goes the executing way, as
+`--root-legs` does for the root column: it runs testing/shadow-oracle/rigs-ledger.sh against the
+release binary, so the rig verdicts the matrix cites are watched rather than merely resolvable.
+
 This mirrors scripts/capability-equality-summary.py's own doctrine exactly: a printer that RE-CHECKS
 what it prints (parseable, every declared plane x step cell present, no unknown status), so a
 missing/malformed ledger is a refusal (exit 1), never a lying green.
@@ -50,8 +66,23 @@ LEDGER = ROOT / "qa" / "teller-steps.json"
 STATUSES = {"mapped", "new", "none"}
 ROOT_STATES = {"proven", "none"}
 ROOT_DIR = "crates/busbar/src/root/"
-# A root "none" shorter than this is a label; R-16 wants a sentence a reviewer could disagree with.
+# A root "none" shorter than this is a label; the rule wants a sentence a reviewer could disagree with.
 MIN_ROOT_NOTE = 60
+
+# ── the rig column's owners ──────────────────────────────────────────────────────────────────────
+ORACLE_CELLS = ROOT / "testing/shadow-oracle/cells.json"
+RIGS_LEDGER = ROOT / "testing/shadow-oracle/rigs-ledger.sh"
+RIGS_BASELINE = ROOT / "testing/shadow-oracle/rigs-baseline.json"
+RELEASE_BIN = ROOT / "target/release/busbar"
+# rigs-ledger.sh mints `<ns>|h2-<step>` by running every h2-*.sh in the plane's subject directory.
+H2_SUBJECT_DIR = {"mcp.rig": "scripts/mcp-subject", "a2a.battery": "scripts/a2a-subject"}
+VOICE_LEGS_DIR = "testing/voice-conformance/legs"
+# Namespaces whose ids are declared in a rig's own source rather than in a ledger file: the id is
+# the literal a reviewer would grep for, so that is exactly how it is resolved.
+SUITE_SOURCE_DIR = {
+    "mcp.battery": "testing/mcp-conformance/src/suites",
+    "a2a.supplement": "testing/a2a-supplement/a2asup",
+}
 
 
 def runner():
@@ -64,6 +95,87 @@ def runner():
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _oracle_cell_ids():
+    """Every id testing/shadow-oracle/cells.json declares. Read once per process."""
+    if not hasattr(_oracle_cell_ids, "_cache"):
+        try:
+            doc = json.loads(ORACLE_CELLS.read_text())
+            _oracle_cell_ids._cache = {c.get("id") for c in doc.get("cells", [])}
+        except (OSError, json.JSONDecodeError):
+            _oracle_cell_ids._cache = set()
+    return _oracle_cell_ids._cache
+
+
+def _rig_baseline_ids():
+    """Every rig row id recorded at the last sign-off (testing/shadow-oracle/rigs-baseline.json)."""
+    if not hasattr(_rig_baseline_ids, "_cache"):
+        try:
+            doc = json.loads(RIGS_BASELINE.read_text())
+            _rig_baseline_ids._cache = set((doc or {}).get("rows") or {})
+        except (OSError, json.JSONDecodeError):
+            _rig_baseline_ids._cache = set()
+    return _rig_baseline_ids._cache
+
+
+def _declared_in_source(directory: str, ident: str):
+    """The file under `directory` that declares `ident` verbatim, or None. The rig suites keep their
+    scenario/requirement ids as literals in their own source, so the literal IS the binding."""
+    base = ROOT / directory
+    if not base.is_dir():
+        return None
+    for path in sorted(base.rglob("*")):
+        if not path.is_file():
+            continue
+        try:
+            if ident in path.read_text(errors="ignore"):
+                return str(path.relative_to(ROOT))
+        except OSError:
+            continue
+    return None
+
+
+def resolve_cell(cell_id: str):
+    """The owner of a rig cell id, or None if nothing in the tree owns it any more. `None` is the
+    drift this exists to catch: a matrix cell whose scenario was renamed or deleted is a claim of
+    coverage with no coverage behind it."""
+    if cell_id in _oracle_cell_ids():
+        return "testing/shadow-oracle/cells.json"
+    namespace, _, rest = cell_id.partition("|")
+    if not rest:
+        return None
+    if namespace in H2_SUBJECT_DIR and rest.startswith("h2-"):
+        rel = f"{H2_SUBJECT_DIR[namespace]}/{rest}.sh"
+        return rel if (ROOT / rel).is_file() else None
+    if namespace == "voice.rig":
+        rel = f"{VOICE_LEGS_DIR}/{rest}.sh"
+        if (ROOT / rel).is_file():
+            return rel
+    if namespace in SUITE_SOURCE_DIR:
+        found = _declared_in_source(SUITE_SOURCE_DIR[namespace], rest)
+        if found:
+            return found
+    if cell_id in _rig_baseline_ids():
+        return "testing/shadow-oracle/rigs-baseline.json"
+    return None
+
+
+def check_rig_column(matrix):
+    """Every non-gap `cell` id resolves to the rig, suite file or oracle cell that owns it."""
+    for plane in sorted(matrix):
+        for step, cell in matrix[plane].items():
+            cell_id = cell["cell"]
+            if cell_id == "none":
+                continue
+            if resolve_cell(cell_id) is None:
+                raise ValueError(
+                    f"qa/teller-steps.json: matrix.{plane}.{step} names rig cell {cell_id!r}, which "
+                    f"NOTHING in the tree owns -- no oracle cell of that id, no h2 subject script, "
+                    f"no voice leg, no suite source declaring it and no row in rigs-baseline.json. "
+                    f"The scenario was renamed or deleted; a claim that outlives its evidence is the "
+                    f"drift this check exists to stop"
+                )
 
 
 def load():
@@ -94,6 +206,7 @@ def load():
             if (cell["cell"] == "none") != (cell["status"] == "none"):
                 raise ValueError(f"qa/teller-steps.json: matrix.{plane}.{step} cell/status disagree "
                                   f"on whether this is a gap (cell={cell['cell']!r} status={cell['status']!r})")
+    check_rig_column(matrix)
     check_root_column(doc, steps, matrix)
     return doc, steps, matrix
 
@@ -321,6 +434,42 @@ def run_root_legs():
     return runner().run_named_root_cells(root_cells(matrix), "ROOT-STEPS")
 
 
+def run_rig_legs():
+    """EXECUTE the rig suites the `cell` column cites, through the one script that owns them
+    (testing/shadow-oracle/rigs-ledger.sh). --check proves the ids still resolve; this proves the
+    rigs behind them still pass. A missing release binary is reported LOUDLY and is non-zero: a
+    silent skip here would be a green that ran nothing, which is the exact failure the rest of this
+    file exists to refuse."""
+    import os
+    import subprocess
+
+    os.chdir(ROOT)
+    if not RIGS_LEDGER.is_file():
+        print(
+            f"RIG-LEGS: SKIPPED -- {RIGS_LEDGER.relative_to(ROOT)} is not present. Nothing ran, so "
+            f"nothing is proven; this is a refusal, not a pass.",
+            file=sys.stderr,
+        )
+        return 1
+    if not RELEASE_BIN.is_file():
+        print(
+            f"RIG-LEGS: SKIPPED -- no release binary at {RELEASE_BIN.relative_to(ROOT)}. The MCP and "
+            f"A2A legs are armed from it (MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN), so "
+            f"without it the rigs cannot run at all. Build it first: cargo build --release -p busbar. "
+            f"Nothing ran, so nothing is proven; this is a refusal, not a pass.",
+            file=sys.stderr,
+        )
+        return 1
+    cmd = ["bash", str(RIGS_LEDGER), "--bin", str(RELEASE_BIN), "--check"]
+    print("RIG-LEGS: " + " ".join(cmd))
+    rc = subprocess.call(cmd)
+    if rc != 0:
+        print(f"RIG-LEGS: rigs-ledger.sh exited {rc} -- the rig verdicts the matrix cites are RED.")
+    else:
+        print("RIG-LEGS: rigs-ledger.sh is green against the release binary.")
+    return rc
+
+
 def selftest() -> int:
     import tempfile
 
@@ -343,11 +492,15 @@ def selftest() -> int:
         finally:
             LEDGER = saved
 
+    # A REAL rig cell id, because the rig column resolves what it is handed: a planted id would test
+    # the fixture rather than the reach into the rigs.
+    real_cell = "teller|admit-refusal"
+
     expect_raises({"steps": {}, "matrix": {"llm": {}}}, "empty steps")
     expect_raises({"steps": {"a": {"gating": True}}, "matrix": {}}, "empty matrix")
     expect_raises({"steps": {"a": {"gating": True}}, "matrix": {"llm": {}}}, "a plane missing a declared step")
     expect_raises(
-        {"steps": {"a": {"gating": True}}, "matrix": {"llm": {"a": {"cell": "x", "status": "bogus"}}}},
+        {"steps": {"a": {"gating": True}}, "matrix": {"llm": {"a": {"cell": real_cell, "status": "bogus"}}}},
         "an unknown status",
     )
     expect_raises(
@@ -383,7 +536,7 @@ def selftest() -> int:
             "matrix": {
                 "llm": {
                     "gate": {
-                        "cell": "x",
+                        "cell": real_cell,
                         "status": "mapped",
                         "root": {
                             "state": "proven",
@@ -414,6 +567,36 @@ def selftest() -> int:
             LEDGER = saved
 
     expect_ok(root_doc(), "a well-formed root column")
+
+    # THE RIG COLUMN RESOLVES. Every owner kind is exercised against the real tree — a green case
+    # per kind first, so the red case below is about the ID and not about a resolver that never
+    # resolves anything.
+    for owner_kind, sample in (
+        ("an oracle cell id", "teller|meter-row"),
+        ("an mcp h2 subject script", "mcp.rig|h2-admit-refusal"),
+        ("an a2a h2 subject script", "a2a.battery|h2-route-failover"),
+        ("a voice conformance leg", "voice.rig|session-scope"),
+        ("an mcp battery scenario", "mcp.battery|ADV.MALFORMED-JSON"),
+        ("an a2a supplement requirement", "a2a.supplement|AUTH-SCOPE-001"),
+        ("a recorded rig baseline row", "a2a.tck|" + next(
+            (r.split("|", 1)[1] for r in sorted(_rig_baseline_ids()) if r.startswith("a2a.tck|")),
+            "",
+        )),
+    ):
+        owner = resolve_cell(sample)
+        if owner:
+            print(f"  ok: {owner_kind} resolves ({sample} -> {owner})")
+        else:
+            print(f"  MISS: {owner_kind} did not resolve ({sample})")
+            failures += 1
+
+    d = root_doc()
+    d["matrix"]["llm"]["gate"]["cell"] = "teller|a-scenario-that-was-renamed-away"
+    expect_raises(d, "a rig cell id nothing in the tree owns any more")
+
+    d = root_doc()
+    d["matrix"]["llm"]["gate"]["cell"] = "mcp.rig|h2-a-step-with-no-script"
+    expect_raises(d, "an h2 rig cell whose subject script vanished")
 
     d = root_doc()
     d["matrix"]["llm"]["gate"].pop("root")
@@ -507,6 +690,8 @@ def main() -> int:
             print()
             rc = run_root_legs_gating() or rc
         return rc
+    if "--rig-legs" in sys.argv:
+        return run_rig_legs()
     try:
         doc, steps, matrix = load()
     except (ValueError, OSError, json.JSONDecodeError) as e:

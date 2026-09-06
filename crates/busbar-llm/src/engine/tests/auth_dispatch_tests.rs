@@ -106,17 +106,21 @@ async fn dp_serve<A: busbar_substrate::testkit::BuiltAppSeam>(
 }
 
 /// A governance engine (admin token set) with ONE enabled, pool-`pa` virtual key. Returns (gov, secret).
-fn dp_gov_with_key() -> (std::sync::Arc<busbar_core::governance::GovState>, String) {
-    use busbar_core::governance::{GovState, MemoryStore};
+fn dp_gov_with_key() -> (
+    std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::GovKit>,
+    String,
+) {
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = std::sync::Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_k, secret) = gov
         .mint_signed(
             NewKeySpec {
@@ -161,7 +165,7 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let token = "grp:carrier";
 
@@ -303,11 +307,12 @@ async fn test_chain_accepts_all_carriers_and_native_401() {
 async fn test_disabled_virtual_key_is_rejected_401() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     // Mock upstream that returns a valid Anthropic-shaped body, so an ADMITTED request reaches
     // 200 rather than failing for an unrelated reason.
@@ -331,9 +336,9 @@ async fn test_disabled_virtual_key_is_rejected_401() {
     // real deploy keys can only be minted through the admin API, which requires this token — so a
     // store holding minted keys implies an admin token is set. Without it the engine is INERT and
     // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let mk_spec = |name: &str| busbar_substrate::governance::NewKeySpec {
         name: name.to_string(),
         allowed_pools: Some(vec!["pa".to_string()]),
@@ -363,7 +368,7 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -433,11 +438,12 @@ async fn test_disabled_virtual_key_is_rejected_401() {
 async fn test_governance_accepts_vendor_carriers_and_native_401() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     // Two admitted requests (x-goog-api-key, x-api-key) reach the upstream; queue two bodies.
@@ -466,9 +472,9 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
     // real deploy keys can only be minted through the admin API, which requires this token — so a
     // store holding minted keys implies an admin token is set. Without it the engine is INERT and
     // the static auth chain applies (see `test_governance_inert_without_admin_token_*`).
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -495,7 +501,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -575,11 +581,12 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
 async fn test_governance_revoked_signed_token_key_rejected() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     let server = MockServer::new(state).await;
@@ -589,9 +596,9 @@ async fn test_governance_revoked_signed_token_key_rejected() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -618,7 +625,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov.clone())
+        .governance_kit(gov.clone())
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -677,11 +684,12 @@ async fn test_governance_revoked_signed_token_key_rejected() {
 async fn test_governance_inert_without_admin_token_static_token_admitted() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -702,7 +710,9 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
     let auth_cfg = chain_cfg(&["test-groups-module"]);
     // The default-deploy governance engine: RAM store, NO admin token, NO minted keys → INERT.
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .unwrap();
     assert!(
         gov.admin_token_hash().is_none(),
         "precondition: engine must be inert (no admin token)"
@@ -719,7 +729,7 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
         )
         .pool("pa", &[(0, 1)])
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .governance(gov)
+        .governance_kit(gov)
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -773,11 +783,12 @@ async fn test_governance_inert_without_admin_token_static_token_admitted() {
 async fn test_governance_inert_without_admin_token_open_relay_admits() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -795,7 +806,9 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
     let server = MockServer::new(state).await;
 
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, None).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .unwrap();
 
     let app = TestApp::new()
         .lane(
@@ -809,7 +822,7 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
         .pool("pa", &[(0, 1)])
         // Empty chain = open relay (the old `mode: none`).
         .upstream_creds(busbar_api::UpstreamCreds::Own)
-        .governance(gov)
+        .governance_kit(gov)
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -841,11 +854,12 @@ async fn test_governance_inert_without_admin_token_open_relay_admits() {
 async fn test_governance_active_with_admin_token_enforces_minted_key() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
@@ -868,9 +882,9 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
     // Admin token set → governance is ACTIVE (this is the real minted-keys deploy).
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     assert!(
         gov.admin_token_hash().is_some(),
         "precondition: engine active"
@@ -901,7 +915,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -964,11 +978,12 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_api::{Store, VirtualKey};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
     for _ in 0..2 {
@@ -1009,7 +1024,9 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
         })
         .unwrap();
     // NO admin token → INERT: the persisted key's controls are bypassed.
-    let gov = Arc::new(GovState::new(store, None).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .unwrap();
     assert!(
         gov.admin_token_hash().is_none(),
         "precondition: engine must be inert (no admin token)"
@@ -1031,7 +1048,7 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
         )
         .pool("pa", &[(0, 1)])
         .auth(Arc::new(AuthMiddleware::new_builtin(&auth_cfg)))
-        .governance(gov)
+        .governance_kit(gov)
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -1094,11 +1111,12 @@ async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins()
 async fn test_active_governance_persisted_key_is_enforced() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use serde_json::json;
     use std::sync::Arc;
 
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
 
     // No upstream body queued — enforcement must reject before any upstream call.
     let state = Arc::new(MockServerState::new());
@@ -1110,9 +1128,9 @@ async fn test_active_governance_persisted_key_is_enforced() {
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
     // Admin token SET → ACTIVE: the key resolves and its pool-ACL is enforced.
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     assert!(
         gov.admin_token_hash().is_some(),
         "precondition: engine active"
@@ -1143,7 +1161,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .build();
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -1183,7 +1201,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
 async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     // Default auth = empty chain (open front door). Admin token present (governance active).
@@ -1193,7 +1211,7 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (addr, handle) = dp_serve(app).await;
     let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
@@ -1219,7 +1237,7 @@ async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
 async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     let app = TestApp::new()
@@ -1228,7 +1246,7 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (addr, handle) = dp_serve(app).await;
     let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
@@ -1255,7 +1273,7 @@ async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
 async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let key_id = gov.all_keys().unwrap()[0].id.clone();
@@ -1265,7 +1283,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
                 .api_key("up"),
         )
         .pool("pa", &[(0, 1)])
-        .governance(gov.clone())
+        .governance_kit(gov.clone())
         .build();
     let (addr, handle) = dp_serve(app).await;
     let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
@@ -1282,9 +1300,10 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
         "open chain admits regardless of the presented vkey"
     );
     // PURE ANONYMOUS: the voluntarily-presented key was ignored → its ledger recorded no spend.
-    let cost = busbar_core::cost::CostModel::flat(1);
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(1);
     let spend = gov
-        .usage_for(&cost, &key_id, busbar_substrate::store::now())
+        .usage_for(cost.as_ref(), &key_id, busbar_substrate::store::now())
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -1301,7 +1320,7 @@ async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
 async fn test_1_5_2_keys_chain_valid_vkey_admits() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, secret) = dp_gov_with_key();
     let app = TestApp::new()
@@ -1311,7 +1330,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (addr, handle) = dp_serve(app).await;
     let body = serde_json::json!({"model": "pa", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8}).to_string();
@@ -1337,7 +1356,7 @@ async fn test_1_5_2_keys_chain_valid_vkey_admits() {
 async fn test_1_5_2_role_bound_principal_synthesized() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockServer, TestApp};
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(dp_ok_state()).await;
     let (gov, _secret) = dp_gov_with_key();
     let rb = bindings_for(
@@ -1354,7 +1373,7 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
         .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
             &chain_cfg(&["test-groups-module"]),
         )))
-        .governance(gov)
+        .governance_kit(gov)
         .role_bindings(rb)
         .build();
     let (addr, handle) = dp_serve(app).await;
@@ -1386,9 +1405,10 @@ async fn test_1_5_2_role_bound_principal_synthesized() {
 async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     crate::testkit::install_test_seams();
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
-    busbar_core::metrics::init();
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+    busbar_substrate::metrics::init();
     let state = std::sync::Arc::new(MockServerState::new());
     state.push(MockResponse::Ok {
         status: axum::http::StatusCode::OK,
@@ -1401,7 +1421,9 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
     let server = MockServer::new(state).await;
 
     let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let (_key, _bearer, akid, secret) = gov
         .create_key_with_aws(
             NewKeySpec {
@@ -1422,7 +1444,7 @@ async fn test_1_5_2_sigv4_ingress_under_keys_chain_admitted() {
         )
         .pool("foo", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (addr, handle) = dp_serve(app).await;
 

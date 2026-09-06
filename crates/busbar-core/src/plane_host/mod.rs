@@ -1475,9 +1475,9 @@ pub fn transform_over_over(
                 };
             }
             busbar_api::TransformOutcome::Abstain => {}
-            // The hook could not answer — distinct from an abstain, and logged as such. See the
-            // matching arm on the LLM rewrite pass for why the `on_error` terminal is not resolved
-            // here yet: the rewrite chain's `(timeout, policy)` tuple does not carry it.
+            // The hook could not answer, and its disposition says to carry on — a load-bearing
+            // hook's failed call arrived as `Reject` above, applied by the resolver's decorator
+            // before it reached this (or any other) firing site. Logged, never silent.
             busbar_api::TransformOutcome::Failed { message } => {
                 tracing::warn!(
                     hook = hook.name(),

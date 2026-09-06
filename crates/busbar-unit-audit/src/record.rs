@@ -195,6 +195,13 @@ pub struct AuditRecord {
     pub controls: Controls,
     /// The digest of the correlation label, never the label itself.
     pub correlation_hash: Option<String>,
+    /// WHERE this record sits in the chain, counting from one.
+    ///
+    /// The link alone says a record's neighbour is the one it names; it cannot say that the record
+    /// at the END was the last one sealed, because a run whose tail was cut still links perfectly.
+    /// The position is what makes a truncation visible: it is digested, so it cannot be renumbered,
+    /// and it is contiguous, so a hole has nowhere to hide.
+    pub seq: u64,
     /// The preceding record's digest.
     pub prev_hash: String,
     /// This record's own digest.
@@ -225,12 +232,37 @@ pub struct AuditInputs {
     pub correlation_label: Option<String>,
 }
 
+mod sealed {
+    pub trait Sealed {}
+}
+
 /// The audit unit: it seals records, and it is the only thing that can.
 ///
 /// The token is the point. A plane can say what it saw and a hook can say what it did, but turning
 /// either into a record that goes on the chain takes the audit step's own token, which the loop
 /// hands out for the length of one call. So a record on the chain is a record the audit unit made.
-pub trait Audit {
+///
+/// SEALED on a private supertrait, the same shape the breaker unit's kernel-facing trait has. The
+/// token proves the loop is at the audit step; the seal is what says the thing answering that step
+/// is the audit unit. Without it a plugin crate could implement this trait, be handed the token the
+/// loop lends, and put a record on the chain that the audit unit never made — and a record nobody
+/// can attribute to the audit unit is not evidence. [`AuditChain`] is the only implementor there
+/// can be. Nothing outside this crate can name the supertrait, so nothing outside it can implement
+/// this one:
+///
+/// ```compile_fail
+/// struct Impostor;
+/// impl busbar_unit_audit::Audit for Impostor {
+///     fn seal(
+///         &mut self,
+///         _inputs: busbar_unit_audit::AuditInputs,
+///         _token: &busbar_caps::UnitToken<busbar_caps::Audit>,
+///     ) -> busbar_unit_audit::AuditRecord {
+///         unimplemented!()
+///     }
+/// }
+/// ```
+pub trait Audit: sealed::Sealed {
     /// Seal one record onto the chain.
     fn seal(
         &mut self,
@@ -245,11 +277,21 @@ pub trait Audit {
 /// different rates, and pouring one into the other would make a busy hour of request-rate records
 /// evict the operator-rate ones — silently, because a pruned ring looks exactly like one that was
 /// never written to.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AuditChain {
     tail_hash: String,
     next_seq: u64,
     sealed: u64,
+}
+
+/// HAND-WRITTEN for the reason the previous release's chain writes its own: a DERIVED default gives
+/// a next position of zero, which is not a position a chain has, and the position is now DIGESTED
+/// into every record — so a silently zero-based chain would seal records that a verifier walking
+/// from the genesis rejects. It delegates to the one real constructor so the two cannot drift.
+impl Default for AuditChain {
+    fn default() -> Self {
+        AuditChain::new()
+    }
 }
 
 impl AuditChain {
@@ -294,6 +336,7 @@ impl AuditChain {
         // is only safe while no field can contain the separator. Length prefixes make the boundary
         // unforgeable whatever the fields hold.
         d.text(&record.prev_hash);
+        d.num(record.seq);
         d.text(subject_tag(&record.subject));
         d.text(&subject_value(&record.subject));
         d.num(record.what.unit_key.get());
@@ -351,14 +394,46 @@ impl AuditChain {
         d.finish()
     }
 
-    /// Whether a run of records links and digests correctly, oldest first.
-    pub fn verify(records: &[AuditRecord]) -> Result<(), AuditBreak> {
-        let mut expected_prev = records
-            .first()
-            .map(|r| r.prev_hash.clone())
-            .unwrap_or_default();
+    /// VERIFY A WHOLE CHAIN: `records` is oldest-first and starts at the chain's genesis, so the
+    /// first position must be one and the first previous hash must be empty.
+    ///
+    /// That is what catches a HEAD truncation. A run whose oldest records were dropped links
+    /// perfectly to itself — every remaining record still names the one before it — and the only
+    /// thing that says records are missing is that the run does not begin where the chain does.
+    ///
+    /// An EMPTY run verifies, deliberately and for the same reason the previous release's chain
+    /// says so: "this chain has no records" and "every record was deleted" are indistinguishable
+    /// from the records alone, and claiming otherwise would claim a guarantee this cannot provide.
+    pub fn verify_chain(records: &[AuditRecord]) -> Result<(), AuditBreak> {
+        Self::walk(records, Anchor::Genesis)
+    }
+
+    /// VERIFY A WINDOW of a chain: the same walk, but the first record's position and link are
+    /// taken as given rather than required to be the genesis.
+    ///
+    /// This is for a run read out of a bounded store, where the oldest retained record's
+    /// predecessor was legitimately pruned. Everything after that first record is checked exactly
+    /// as [`Self::verify_chain`] checks it — contiguous positions, matching links, matching
+    /// digests — so a cut anywhere INSIDE the window is still caught. It is a separate entry point
+    /// rather than a lenient default: a caller holding a whole chain that called this would be
+    /// silently excusing a missing head.
+    pub fn verify_window(records: &[AuditRecord]) -> Result<(), AuditBreak> {
+        Self::walk(records, Anchor::Window)
+    }
+
+    fn walk(records: &[AuditRecord], anchor: Anchor) -> Result<(), AuditBreak> {
+        let Some(first) = records.first() else {
+            return Ok(());
+        };
+        let (mut expected_prev, mut expected_seq) = match anchor {
+            Anchor::Genesis => (String::new(), 1u64),
+            Anchor::Window => (first.prev_hash.clone(), first.seq),
+        };
         for (i, record) in records.iter().enumerate() {
-            if record.prev_hash != expected_prev {
+            // The link and the position are one judgement: either says a record was inserted,
+            // removed or reordered, and the position is the half that a cut at either END cannot
+            // satisfy by re-linking what is left.
+            if record.prev_hash != expected_prev || record.seq != expected_seq {
                 return Err(AuditBreak {
                     at_index: i + 1,
                     kind: AuditBreakKind::LinkMismatch,
@@ -371,10 +446,42 @@ impl AuditChain {
                 });
             }
             expected_prev = record.hash.clone();
+            expected_seq = expected_seq.saturating_add(1);
+        }
+        Ok(())
+    }
+
+    /// Whether a run of records ENDING AT THIS CHAIN'S HEAD is whole: the walk from the genesis,
+    /// plus the check the walk cannot make on its own — that the last record in the run is the last
+    /// record the chain sealed. A tail truncation is invisible to any verifier reading only the
+    /// records, because the survivors link and number correctly among themselves; it takes the
+    /// chain's own head to notice.
+    pub fn verify_to_head(&self, records: &[AuditRecord]) -> Result<(), AuditBreak> {
+        Self::verify_chain(records)?;
+        let (tail_hash, tail_seq) = records
+            .last()
+            .map(|r| (r.hash.as_str(), r.seq))
+            .unwrap_or(("", 0));
+        if tail_hash != self.tail_hash || tail_seq.saturating_add(1) != self.next_seq {
+            return Err(AuditBreak {
+                at_index: records.len(),
+                kind: AuditBreakKind::LinkMismatch,
+            });
         }
         Ok(())
     }
 }
+
+/// Where a walk over a run of records starts from.
+enum Anchor {
+    /// The chain's beginning: position one and an empty previous hash are required.
+    Genesis,
+    /// A window into a longer chain: the first record's position and link are taken as given, and
+    /// only its own digest is checked.
+    Window,
+}
+
+impl sealed::Sealed for AuditChain {}
 
 impl Audit for AuditChain {
     fn seal(
@@ -397,6 +504,7 @@ impl Audit for AuditChain {
                 .correlation_label
                 .as_deref()
                 .map(|label| crate::legacy::sha256_hex(label.as_bytes())),
+            seq: self.next_seq,
             prev_hash: self.tail_hash.clone(),
             hash: String::new(),
         };
@@ -568,7 +676,8 @@ pub(crate) fn quantity_source_tag(source: &QuantitySource) -> String {
     }
 }
 
-fn subject_tag(subject: &Subject) -> &'static str {
+/// The frozen text for whose figure or content an entry concerns.
+pub(crate) fn subject_tag(subject: &Subject) -> &'static str {
     match subject {
         Subject::PrincipalId(_) => "principal",
         Subject::Arrival => "arrival",
@@ -582,7 +691,7 @@ fn subject_tag(subject: &Subject) -> &'static str {
 /// Two fields — a tag and a value — rather than one, so that a principal whose pseudonym happened to
 /// read as "node" could not be confused with a node. The node's number is IN the value, because
 /// leaving it out would let two nodes' records digest identically.
-fn subject_value(subject: &Subject) -> String {
+pub(crate) fn subject_value(subject: &Subject) -> String {
     match subject {
         Subject::PrincipalId(p) => p.clone(),
         Subject::Arrival | Subject::Aggregate => String::new(),

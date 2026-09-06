@@ -23,7 +23,7 @@ fn health_active() -> HealthCfg {
 
 /// Stand up a mock upstream that returns `resp`, build a one-lane App (anthropic, in pool `p`)
 /// pointed at it, run a single probe, and hand back the App so the test can inspect the breaker.
-async fn probe_once(resp: MockResponse) -> (Arc<busbar_core::state::App>, MockServer) {
+async fn probe_once(resp: MockResponse) -> (Arc<crate::test_support::BuiltApp>, MockServer) {
     let state = Arc::new(MockServerState::new());
     state.push(resp);
     let server = MockServer::new(state).await;
@@ -582,7 +582,7 @@ async fn a_swap_does_not_push_the_probe_deadline_out() {
 #[tokio::test]
 async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     crate::testkit::install_test_seams();
-    busbar_core::metrics::init();
+    busbar_substrate::metrics::init();
     let server = MockServer::new(Arc::new(MockServerState::new())).await;
     // The smallest config with ONE active-health lane pointed at the mock: the sole provider gets the
     // mock's base URL and an active health block at `interval`, and one model routes to it.

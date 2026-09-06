@@ -19,6 +19,12 @@
 //! exercise indirectly, tested here directly and synchronously — the same assertions
 //! (`with_single_cert`/`with_client_cert_verifier` succeed on a valid pair, ALPN is pinned to
 //! `http/1.1`), reached without a socket.
+//!
+//! One thing the wire tests proved cannot be left out with them, though: whether a config built for
+//! mTLS actually REFUSES an anonymous client. That is decided inside rustls during the handshake and
+//! is invisible to any assertion about the config itself, so it is checked here by driving a real
+//! `ClientConnection` against a real `ServerConnection` over a pair of in-memory buffers — the whole
+//! of the handshake, none of the socket, and no async runtime.
 
 use super::*;
 
@@ -106,9 +112,15 @@ fn resolves_and_builds_server_only_config_for_valid_pair() {
     );
 }
 
-/// With a client CA configured, resolution journals a third `Access` entry and the resulting
-/// config installs a client-cert verifier — the construction
-/// `mtls_valid_client_cert_gets_200`/`mtls_missing_client_cert_gets_...` drive end to end.
+/// With a client CA configured, resolution journals a third `Access` entry and the config builds —
+/// the construction `mtls_valid_client_cert_gets_200`/`mtls_missing_client_cert_gets_...` drive end
+/// to end.
+///
+/// This asserts the RESOLUTION half only: three access entries for three secrets read, in order.
+/// What the verifier those bytes built then does to a client is
+/// [`only_the_mtls_config_refuses_a_client_that_offers_no_certificate`]'s, because nothing readable
+/// off a `ServerConfig` distinguishes a listener that demands a client certificate from one that
+/// does not.
 #[test]
 fn resolves_and_builds_mtls_config_when_client_ca_present() {
     install_crypto_provider();
@@ -139,6 +151,123 @@ fn resolves_and_builds_mtls_config_when_client_ca_present() {
             ("ca".to_string(), AccessPurpose::ClientCa),
         ]
     );
+}
+
+/// Drive a real rustls handshake against `config` with a client that offers NO certificate, over a
+/// pair of in-memory buffers rather than a socket, and hand back what the server made of it.
+///
+/// The two connections are pumped by hand because that is the whole of what a listener's accept loop
+/// contributes here — bytes from one side to the other — and the difference under test is decided
+/// inside rustls before a single byte of application data exists. `server_ca_pem` is what the client
+/// trusts the server's certificate under, so a failure that comes back is about the CLIENT's
+/// certificate and not about the server's.
+fn handshake_offering_no_client_certificate(
+    config: ServerConfig,
+    server_ca_pem: &str,
+) -> Result<(), rustls::Error> {
+    let mut roots = RootCertStore::empty();
+    for ca in CertificateDer::pem_slice_iter(server_ca_pem.as_bytes()) {
+        roots.add(ca.unwrap()).unwrap();
+    }
+    let client_config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let mut client =
+        rustls::ClientConnection::new(Arc::new(client_config), "localhost".try_into().unwrap())
+            .unwrap();
+    let mut server = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+
+    for _ in 0..16 {
+        let mut to_server = Vec::new();
+        while client.wants_write() {
+            client.write_tls(&mut to_server).unwrap();
+        }
+        let mut from_client = to_server.as_slice();
+        while !from_client.is_empty() {
+            server.read_tls(&mut from_client).unwrap();
+            server.process_new_packets()?;
+        }
+
+        let mut to_client = Vec::new();
+        while server.wants_write() {
+            server.write_tls(&mut to_client).unwrap();
+        }
+        let mut from_server = to_client.as_slice();
+        while !from_server.is_empty() {
+            client.read_tls(&mut from_server).unwrap();
+            client.process_new_packets()?;
+        }
+
+        if !client.is_handshaking() && !server.is_handshaking() {
+            return Ok(());
+        }
+    }
+    panic!("the handshake neither completed nor failed");
+}
+
+/// The client-cert verifier is the DIFFERENCE a client CA makes, and the only way to see it is to
+/// make a client try: the same certificate and key, offered to a client that presents nothing,
+/// complete the handshake without a client CA configured and are refused with one.
+///
+/// Asserting the resolved material and the journal entries — which is all the test beside this one
+/// does — asserts the setup this test supplied to itself. Replacing the verifier arm in
+/// `build_server_config` with `with_no_client_auth()` leaves every one of those assertions true and
+/// turns a listener an operator configured for mTLS into one that takes anonymous clients.
+#[test]
+fn only_the_mtls_config_refuses_a_client_that_offers_no_certificate() {
+    install_crypto_provider();
+    let (server_ca_pem, server_cert_pem, server_key_pem) =
+        gen_ca_and_leaf(vec!["localhost".into()]);
+    let (client_ca_pem, _client_leaf_pem, _client_key_pem) =
+        gen_ca_and_leaf(vec!["busbar-client".into()]);
+    let source = MapSource(
+        [
+            ("cert", server_cert_pem.into_bytes()),
+            ("key", server_key_pem.into_bytes()),
+            ("ca", client_ca_pem.into_bytes()),
+        ]
+        .into_iter()
+        .collect(),
+    );
+    let journal = RecordingJournal::default();
+
+    let server_only =
+        build_server_config(&resolve_tls_material(&source, &journal, "cert", "key", None).unwrap())
+            .unwrap();
+    handshake_offering_no_client_certificate(server_only, &server_ca_pem)
+        .expect("server-only TLS asks a client for nothing and completes");
+
+    let mtls = build_server_config(
+        &resolve_tls_material(&source, &journal, "cert", "key", Some("ca")).unwrap(),
+    )
+    .unwrap();
+    let err = handshake_offering_no_client_certificate(mtls, &server_ca_pem)
+        .expect_err("mTLS means the client MUST present a certificate");
+    assert!(
+        matches!(err, rustls::Error::NoCertificatesPresented),
+        "the handshake failed for the wrong reason: {err:?}"
+    );
+}
+
+/// A client CA that resolves to bytes with no certificate in it — an operator who pointed the
+/// setting at the wrong file — is refused, not quietly turned into an empty root store.
+///
+/// An empty store would build a verifier that no client certificate can ever chain to, so the
+/// listener would come up and then refuse every client, which reads as a client problem for as long
+/// as it takes somebody to look at the CA bundle.
+#[test]
+fn a_client_ca_with_no_certificates_in_it_is_refused() {
+    install_crypto_provider();
+    let (cert_pem, key_pem) = gen_self_signed();
+    let material = TlsMaterial {
+        cert_pem: cert_pem.into_bytes(),
+        key_pem: key_pem.clone().into_bytes(),
+        // A PEM, and a real one — just not one with a certificate anywhere in it.
+        client_ca_pem: Some(key_pem.into_bytes()),
+    };
+    let err = build_server_config(&material).unwrap_err();
+    assert!(err.contains("client_ca"), "{err}");
+    assert!(err.contains("no CA certificates"), "{err}");
 }
 
 /// `provision_server`'s advertised protocol list is the composition root's, not a literal buried

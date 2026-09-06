@@ -16,6 +16,25 @@ pub(crate) struct Lane {
     pub(crate) model: String,
     pub(crate) provider: String,
     pub(crate) base_url: String,
+    /// THE DIAL TARGET THIS LANE NAMES, as the node's interned `&'static str` — `base_url` seated
+    /// through `busbar_contract::Registration` ONCE, here, when the generation's lane table is
+    /// built. A planned leg names its upstream as a borrowed static string, and a configured
+    /// `base_url` is a runtime `String`, so something has to bridge them; doing it while the plan is
+    /// being built means one process-wide vocabulary acquisition per candidate per request to
+    /// re-derive a value that is constant for the life of the generation. Seated here it is a field
+    /// read. Filled before the runtime is returned, so it is filled before the generation swap can
+    /// publish the table — there is no window in which a lane row is reachable without it.
+    ///
+    /// Carried under the same flag as the step that reads it. The interner is the contract crate's,
+    /// the contract crate is the teller waist's, and a build with the waist down has no planning
+    /// path to seat a name for — so the row grows two words exactly where the two words are read.
+    #[cfg(feature = "teller-waist")]
+    pub(crate) authority: &'static str,
+    /// THE LANE NAME THIS LANE ROUTES UNDER, as the node's interned `&'static str` — `model` seated
+    /// through the same registration, at the same moment, for the same reason. This is the string a
+    /// `busbar_caps::LaneId` is built over on the planning path.
+    #[cfg(feature = "teller-waist")]
+    pub(crate) lane_id: &'static str,
     /// The SigV4 signed-`host` header value, derived ONCE at boot from `base_url` (scheme + userinfo
     /// stripped, authority only — see `proxy::host_from_base`). Precomputed so the request path borrows
     /// it into `SigningContext` instead of re-running the parse + `String` allocation on every

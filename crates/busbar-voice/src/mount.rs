@@ -34,7 +34,7 @@ use crate::ir::codec::{DuplexReader, DuplexWriter, OpenAiRealtimeCodec};
 use crate::ir::config::SessionConfig;
 use crate::runtime::carrier::Carrier;
 use crate::runtime::scope::SessionHandle;
-use crate::runtime::session::{UplinkForwarder, VoiceSession};
+use crate::runtime::session::{serve_with_sweep, UplinkForwarder, VoiceSession};
 use crate::runtime::{EchoToolExecutor, LocalMeteringPort, VoiceRuntime};
 use crate::topology::minter_https::HttpsTokenMinter;
 use crate::topology::telephony::{begin_telephony, g711_config, open_admitted_telephony};
@@ -247,6 +247,63 @@ pub fn composed_gemini_provider_base_url() -> Option<&'static str> {
     COMPOSED_PROVIDER_GEMINI.get().map(|p| p.base_url.as_str())
 }
 
+// ── THE NODE'S OPEN-CALL TABLE, AS A SERVED SESSION REACHES IT ───────────────────────────────────
+//
+// The runtime declares the port (`crate::runtime::GovernedCalls`) and a composition root implements
+// it over its own node. Between the two there was nothing: the port existed, an implementor existed,
+// and no served session was ever handed one — so the whole tool-moat wait was reachable from a test
+// and from nowhere on a socket. This is the missing half, and it is composed exactly the way this
+// plane's provider credentials are: set-once, process-wide, written by the root after its own
+// configuration resolves and read by every session opened thereafter.
+
+/// THE COMPOSED OPEN-CALL TABLE — the node's own, as the served path is allowed to see it.
+///
+/// SET-ONCE, first writer wins, exactly like [`COMPOSED_PROVIDER`]: a second compose is a no-op
+/// rather than a silent swap of the table one half of this node's live sessions are already keyed
+/// into. `None` is a deployment with no composition root behind it (the plane mounted without the
+/// root's own switch), and that deployment keeps the pre-1.6.0 behaviour exactly.
+static COMPOSED_GOVERNED_CALLS: std::sync::OnceLock<Arc<dyn crate::runtime::GovernedCalls>> =
+    std::sync::OnceLock::new();
+
+/// The identifier the next served session is known to the node's table by.
+///
+/// Minted here rather than derived from anything on the wire. The root keys its open calls by this
+/// number and two conversations may legitimately carry identical call identifiers — a provider mints
+/// them per conversation — so the one thing this number must be is unique per session on this node,
+/// which a counter is and a hash of a client-supplied `call_id` is not.
+static NEXT_SERVED_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// COMPOSE the node's open-call table — the composition root's one write of the governed-call port.
+///
+/// Returns `false` when a table was already composed (the first write stands). Nothing here learns
+/// what is behind the port: the root holds the node, the units and the deadlines, and what crosses is
+/// the two questions [`crate::runtime::GovernedCalls`] declares.
+pub fn install_governed_calls(calls: Arc<dyn crate::runtime::GovernedCalls>) -> bool {
+    COMPOSED_GOVERNED_CALLS.set(calls).is_ok()
+}
+
+/// Whether a composition root has bound its open-call table — i.e. whether the sessions this door
+/// serves are the governed kind.
+#[must_use]
+pub fn governed_calls_composed() -> bool {
+    COMPOSED_GOVERNED_CALLS.get().is_some()
+}
+
+/// THE BINDING ONE SERVED SESSION OPENS UNDER: a fresh identifier for this node's table, and the
+/// table itself.
+///
+/// Every served session-open on this door calls this and hands what it returns to the open, which is
+/// what makes "served" and "governed" the same set on a composed node. `None` on a node with no
+/// table composed — an ungoverned deployment serves exactly what it served before.
+#[must_use]
+pub fn served_governed_session() -> Option<crate::runtime::GovernedSession> {
+    let calls = COMPOSED_GOVERNED_CALLS.get()?;
+    Some(crate::runtime::GovernedSession {
+        session: NEXT_SERVED_SESSION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        calls: Arc::clone(calls),
+    })
+}
+
 /// Gemini Live's native provider auth HEADER NAME — `x-goog-api-key`, never `Authorization`. Named
 /// once, publicly, so a conformance probe and the live dial (once header-carrying WS dial lands; see
 /// [`provider_ws_url`]'s doc for today's honest limit) name the SAME literal.
@@ -397,7 +454,10 @@ pub fn voice_hydrate(ctx: &dyn PlaneBootCtx) -> Result<(), String> {
 /// session is admitted and served per WS-accept ARRIVAL (through `run_gauntlet_session`, one governed
 /// pass per connection), each running its own supervised pump that parks on the carrier's hard-close —
 /// there is no process-wide sweep loop to spawn here (unlike the A2A start, which resolves outbound
-/// client identities once). The live accept listener + provider dial are composed by the composition
+/// client identities once). The one thing that DOES run on a timer, the governed tool-call sweep
+/// ([`crate::runtime::serve_with_sweep`]), rides each session's own pump and ends with it, which is
+/// what keeps that true: a sweep outliving the socket it sweeps for would be exactly the background
+/// loop this hook says the plane does not have. The live accept listener + provider dial are composed by the composition
 /// root behind the plane's ports (the credential-gated tail). So this confirms readiness and returns
 /// `Ok`, participating in the boot fold so the plane is an explicit member of it rather than silent.
 ///
@@ -1060,7 +1120,7 @@ async fn serve(
         .iter()
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| format!("voice-{}", unix_secs()));
+        .unwrap_or_else(|| format!("voice-{}", unix_secs(&*ctx.host)));
     // The resolved presenting virtual key (the middleware-resolved, audience-checked key), or `None`
     // ungoverned. The hook gate reads its `(id, name)`; the Meter step lands usage on its ledger.
     let vkey = ctx.gov.as_ref().and_then(|g| g.key()).cloned();
@@ -1074,19 +1134,21 @@ async fn serve(
         vkey,
         body: ctx.body.clone(),
         headers: ctx.headers.clone(),
-        now: unix_secs(),
+        now: unix_secs(&*ctx.host),
     })
     .await
 }
 
-/// Wall-clock unix seconds for the session's `charged_at` / genesis stamp. The gauntlet clock the
-/// production pump reads off the host is threaded once the composition root wires it; the structural
-/// mount stamps the process clock.
-fn unix_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+/// Wall-clock unix seconds for the session's `charged_at` / genesis stamp, READ OFF THE HOST'S CLOCK
+/// PORT (C10, state/store port): `ClockHost::clock_now_secs`, which every route already holds through
+/// its `Arc<dyn EngineHost>`. This is what the old doc comment promised ("the gauntlet clock the
+/// production pump reads off the host is threaded once the composition root wires it") and the
+/// structural `SystemTime::now()` stood in for; the port's wired slot is that same `SystemTime` epoch
+/// clock (`store::now_ms()` scaled to nanos and divided back to seconds), so the value — and with it
+/// the session's `charged_at` money stamp — is byte-identical. Generic over the port rather than
+/// taking `&dyn ClockHost`, so no trait-object upcast is needed at the call sites.
+fn unix_secs<H: busbar_substrate::plane_host::ClockHost + ?Sized>(clock: &H) -> u64 {
+    clock.clock_now_secs()
 }
 
 async fn mint_route(ctx: busbar_substrate::plane_routes::PlaneReqCtx) -> axum::response::Response {
@@ -1144,6 +1206,14 @@ fn provider_ws_url(base_url: &str, dialect: &str, api_key: &str) -> String {
 /// lease-close guard closes the reserve on drop) rather than serving a client socket with nowhere to
 /// relay to. With NO provider composed, both legs fall back to serving the client socket only (the
 /// documented "governed but not yet dialing" posture) exactly as before.
+///
+/// EVERY SERVED SESSION IS A GOVERNED SESSION: all three legs below — the dialed proxy, the
+/// uplink-only fallback and the WebRTC sideband — take their binding from
+/// [`served_governed_session`], which mints this session's identifier and hands it the node's own
+/// open-call table. That is the join the tool moat was missing: the composition root entered a wait
+/// where it planned a call's leg, and until this binding existed there was nothing on a socket that
+/// could wake it or sweep it. A deployment with no root composed reads `None` here and keeps exactly
+/// the behaviour it had.
 pub(crate) async fn ws_accept<C>(
     arrival: WsArrival,
     ingress: Ingress,
@@ -1198,8 +1268,8 @@ where
         .iter()
         .find(|(k, _)| k == "call_id")
         .map(|(_, v)| v.clone())
-        .unwrap_or_else(|| format!("voice-{}", unix_secs()));
-    let now = unix_secs();
+        .unwrap_or_else(|| format!("voice-{}", unix_secs(&*host)));
+    let now = unix_secs(&*host);
     // The locked session posture: g711 for telephony, the plane-default otherwise (including Gemini —
     // the Gemini leg carries no media-format lock of its own). The destination the gauntlet judges is
     // this config's model, exactly as `begin_session` derives it.
@@ -1277,6 +1347,7 @@ where
                         budget,
                         meter,
                         now,
+                        served_governed_session(),
                     ) {
                         Ok(proxy) => {
                             let pool = stream_breaker_key(dialect);
@@ -1291,7 +1362,12 @@ where
                             .await
                             {
                                 Ok((provider_in, provider_out)) => {
-                                    proxy.run(provider_in, provider_out, stream, sink).await;
+                                    let core = Arc::clone(proxy.core());
+                                    serve_with_sweep(
+                                        core,
+                                        proxy.run(provider_in, provider_out, stream, sink),
+                                    )
+                                    .await;
                                 }
                                 Err(e) => {
                                     // The dial failed: nothing to relay client frames to. Drop the
@@ -1325,12 +1401,16 @@ where
                             budget,
                             meter,
                             now,
+                            served_governed_session(),
                         ) {
                             let (upstream_tx, _) = futures::channel::mpsc::unbounded::<Vec<u8>>();
-                            serve_messages(
-                                stream,
-                                sink,
-                                Arc::new(UplinkForwarder::new(core, upstream_tx)),
+                            serve_with_sweep(
+                                Arc::clone(&core),
+                                serve_messages(
+                                    stream,
+                                    sink,
+                                    Arc::new(UplinkForwarder::new(core, upstream_tx)),
+                                ),
                             )
                             .await;
                         }
@@ -1349,8 +1429,13 @@ where
                         budget,
                         meter,
                         now,
+                        served_governed_session(),
                     ) {
-                        serve_messages(stream, sink, Arc::new(VoiceSession::new(core))).await;
+                        serve_with_sweep(
+                            Arc::clone(&core),
+                            serve_messages(stream, sink, Arc::new(VoiceSession::new(core))),
+                        )
+                        .await;
                     }
                 }
                 Ingress::Mint | Ingress::Sdp => {
@@ -1412,6 +1497,13 @@ mod audit_chain_tests;
 #[cfg(all(test, feature = "runtime"))]
 #[path = "tests/governance_budget_tests.rs"]
 mod governance_budget_tests;
+
+// THE BINDING CELLS: a served session and a governed session are the same session. They pin the
+// deadline against the plane crate's own declaration, so they gate on `test-support` (which is what
+// carries that crate edge) as well as on the runtime the served open needs.
+#[cfg(all(test, feature = "runtime", feature = "test-support"))]
+#[path = "tests/governed_binding_tests.rs"]
+mod governed_binding_tests;
 
 // BEHAVIORAL billing proof: drive a voice turn's usage through the SHIPPED Meter seam over a REAL
 // governed `App` host and read the spend back off the one ledger (`GovState::usage_for`) — the

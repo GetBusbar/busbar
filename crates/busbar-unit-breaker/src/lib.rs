@@ -76,7 +76,7 @@ pub const DEFAULT_MAX_HONORED_RETRY_AFTER_SECS: u64 = 86_400;
 /// 1.5.5's substrate), which also carries `AtCapacity`/`Shedding`/`Dead`: those are concurrency and
 /// operator-declaration facts the egress/admission units own, not this one.
 ///
-/// Per PB-3, a member in any non-`Ready` state is EXCLUDED from the walk, never "ordered last and
+/// A member in any non-`Ready` state is EXCLUDED from the walk, never "ordered last and
 /// attempted" — the egress unit's selection filter is expected to drop anything this reports as
 /// not `Ready` before ranking, exactly as 1.5.5's `try_admit`/`lane_admissible` did.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,7 +140,7 @@ mod sealed {
 
 /// The breaker unit's sealed trait shape (`docs/design/ARCHITECTURE.md` §3.1: `Breaker::observe/
 /// state`). Sealed on a private supertrait so no plugin crate can implement it — only
-/// [`BreakerUnit`] does. Per CG-29 and the design's other seven token-taking unit traits, every call also
+/// [`BreakerUnit`] does. Like the design's other seven token-taking unit traits, every call also
 /// takes a `&UnitToken<Route>` (`busbar-caps`'s capability token): the proof that the loop is at
 /// the route step for this unit right now. The token is minted fresh per step call and taken by
 /// reference, never stored, so this trait cannot be driven outside the step it was lent for.
@@ -173,21 +173,27 @@ pub trait Breaker: sealed::Sealed {
     ) -> LaneState;
 }
 
-/// One `(pool, destination)` cell key. The default cell (direct/ad-hoc routes) uses pool `""`,
-/// exactly as 1.5.5's `LaneState`-embedded default cell did.
-type CellKey = (String, DestinationId);
+/// Every `(pool, destination)` cell, nested pool-first. The default cell (direct/ad-hoc routes)
+/// lives under pool `""`, exactly as 1.5.5's `LaneState`-embedded default cell did.
+///
+/// Nested rather than keyed on a `(String, DestinationId)` tuple because a tuple key can only be
+/// looked up by a whole tuple, which means minting an owned `String` from the caller's `&str` on
+/// EVERY lookup — an allocation per admission and per observation, on the hot path, thrown away
+/// again immediately. Nested, both halves are borrowed: the pool as `&str`, the destination as the
+/// small `Copy` locator it is. Only creating a cell spells the pool name into a `String`.
+type CellMap = HashMap<String, HashMap<DestinationId, Arc<BreakerCell>>>;
 
 /// The breaker unit: every `(pool, destination)` breaker cell plus every destination's lifetime
 /// budget, behind one lock each. Cells are created lazily on first touch (a cell not yet created
 /// inherits Closed-and-unspent, matching 1.5.5's lazy per-pool cell creation).
 ///
-/// Generic over its [`JournalSink`] (`J`) and its `error_map` [`Diagnostics`] sink (`D`, CG-43):
+/// Generic over its [`JournalSink`] (`J`) and its `error_map` [`Diagnostics`] sink (`D`):
 /// both default to a noop so `BreakerUnit::new()` keeps 1.5.5's silent behavior, and a caller wires
 /// a real sink through [`Self::with_journal_and_diagnostics`] (or the single-axis
 /// [`Self::with_journal`] / [`Self::with_diagnostics`] shortcuts) without this unit taking a
 /// logging dependency of its own.
 pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::NoopDiagnostics> {
-    cells: RwLock<HashMap<CellKey, Arc<BreakerCell>>>,
+    cells: RwLock<CellMap>,
     /// Which pools exist for a given destination, so a hard-down fan-out can reach every one of
     /// them without scanning the whole cell map. Populated the first time a pool cell for that
     /// destination is touched.
@@ -196,11 +202,18 @@ pub struct BreakerUnit<J: JournalSink = NoopJournal, D: Diagnostics = classify::
     /// Each destination's declared operator `error_map` override (see [`Self::set_error_map`]).
     /// Undeclared is an EMPTY map — HTTP-status classification alone still applies, matching
     /// 1.5.5's "empty error_map is valid".
-    error_maps: RwLock<HashMap<DestinationId, HashMap<String, String>>>,
+    ///
+    /// Behind an `Arc` so a classification takes a REFERENCE-COUNT bump out from under the lock
+    /// rather than a deep copy of every entry: the map is written once per config apply and read
+    /// once per upstream answer, and copying its keys and values on each of those reads meant an
+    /// allocation per entry on the response path. The `Arc` also keeps the lock held only for the
+    /// lookup, so a classifier's own diagnostics sink cannot run while this unit's `error_maps`
+    /// lock is held.
+    error_maps: RwLock<HashMap<DestinationId, Arc<HashMap<String, String>>>>,
     hard_down_cooldown_secs: u64,
     max_honored_retry_after_secs: u64,
     journal: J,
-    /// The sink an unrecognized `error_map` value (CG-43) is reported to. `classify::classify`
+    /// The sink an unrecognized `error_map` value is reported to. `classify::classify`
     /// itself never sees this — it is [`Self::classify`]'s own read of the declared `error_map`
     /// that can produce the diagnostic, via [`port::classify_upstream`].
     diagnostics: D,
@@ -230,7 +243,7 @@ impl<J: JournalSink> BreakerUnit<J, classify::NoopDiagnostics> {
 
 impl<D: Diagnostics> BreakerUnit<NoopJournal, D> {
     /// A breaker unit with the ADR-0002 defaults, no journal, reporting an unrecognized
-    /// `error_map` value (CG-43) to `diagnostics`.
+    /// `error_map` value to `diagnostics`.
     pub fn with_diagnostics(diagnostics: D) -> Self {
         Self::with_journal_and_diagnostics(NoopJournal, diagnostics)
     }
@@ -238,7 +251,7 @@ impl<D: Diagnostics> BreakerUnit<NoopJournal, D> {
 
 impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
     /// A breaker unit with the ADR-0002 defaults, journaling probe lifecycle events to `journal`
-    /// and reporting an unrecognized `error_map` value (CG-43) to `diagnostics`.
+    /// and reporting an unrecognized `error_map` value to `diagnostics`.
     pub fn with_journal_and_diagnostics(journal: J, diagnostics: D) -> Self {
         Self {
             cells: RwLock::new(HashMap::new()),
@@ -328,14 +341,14 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         self.error_maps
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(destination, error_map);
+            .insert(destination, Arc::new(error_map));
     }
 
     /// Turn one upstream answer into a [`port::Classified`] disposition/outcome/label, reading
     /// `destination`'s declared `error_map` (empty when none was ever declared). The stateful
     /// method [`port::classify_upstream`] is implemented over — this is the one the egress unit's
     /// `Breaker::classify` port is bound to. An `error_map` value that does not name a recognized
-    /// [`classify::StatusClass`] is reported to this unit's own [`Diagnostics`] sink (CG-43),
+    /// [`classify::StatusClass`] is reported to this unit's own [`Diagnostics`] sink,
     /// wired in at construction (see [`Self::with_diagnostics`]).
     #[must_use]
     pub fn classify(
@@ -343,23 +356,30 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         destination: DestinationId,
         status: port::UpstreamStatus,
     ) -> port::Classified {
+        // The shared map comes out from under the lock as a reference count, never a copy, and the
+        // lock is released before the pure classification runs. A destination that declared no
+        // map classifies against a borrowed empty one, which allocates nothing at all.
         let error_map = self
             .error_maps
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&destination)
-            .cloned()
-            .unwrap_or_default();
-        port::classify_upstream(&error_map, status, &self.diagnostics)
+            .map(Arc::clone);
+        match error_map {
+            Some(map) => port::classify_upstream(&map, status, &self.diagnostics),
+            None => port::classify_upstream(&HashMap::new(), status, &self.diagnostics),
+        }
     }
 
     fn cell(&self, pool: &str, destination: DestinationId) -> Arc<BreakerCell> {
-        let key = (pool.to_string(), destination);
+        // The hit path — every admission and every observation of an already-touched member —
+        // borrows the whole key from the caller's own arguments and allocates nothing.
         if let Some(c) = self
             .cells
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .get(&key)
+            .get(pool)
+            .and_then(|by_destination| by_destination.get(&destination))
         {
             return c.clone();
         }
@@ -381,7 +401,9 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
             }
         }
         cells
-            .entry(key)
+            .entry(pool.to_string())
+            .or_default()
+            .entry(destination)
             .or_insert_with(|| Arc::new(BreakerCell::new()))
             .clone()
     }
@@ -395,10 +417,11 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         self.cells
             .read()
             .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&(pool.to_string(), destination))
+            .get(pool)
+            .is_some_and(|by_destination| by_destination.contains_key(&destination))
     }
 
-    /// Trip EVERY existing pool cell for `destination` hard-down at once (PB-83: the default `""`
+    /// Trip EVERY existing pool cell for `destination` hard-down at once (the default `""`
     /// cell and every named pool's cell), each with the SAME sticky cooldown — a hard-down fault
     /// (bad key, billing exhausted) is a property of the shared destination, not of the one pool
     /// the failing attempt happened to run through. Returns `true` IFF the default cell's trip was
@@ -478,7 +501,7 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         });
     }
 
-    /// The at-capacity terminal's `Retry-After`, per PB-4: the SOONEST genuine (`> 0`) cooldown
+    /// The at-capacity terminal's `Retry-After`: the SOONEST genuine (`> 0`) cooldown
     /// among the given members' states, else [`AT_CAPACITY_RETRY_AFTER_SECS`], always floored at 1.
     /// A member reporting `Suppressed { until }` with `until <= now` (an expired cooldown — the
     /// member is actually probe-winnable) contributes no genuine cooldown, matching 1.5.5's
