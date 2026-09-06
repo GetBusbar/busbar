@@ -181,6 +181,29 @@ fn packed_hook_needs_prompt_rw_is_signed() {
         busbar_plugin_sign::evaluate(&up.lib_bytes, &up.manifest, &policy).unwrap(),
         busbar_plugin_sign::Verdict::Trusted { .. }
     ));
+
+    // The line above is only half the claim, and on its own it is the half that proves nothing: it
+    // says an UNTAMPERED artifact verifies. What `needs` being signed actually buys is the other
+    // half — that changing the declared intent after signing does NOT verify. Without this, a
+    // signature that covered every field EXCEPT `needs` would pass this test unchanged, while a
+    // plugin shipped declaring nothing loaded with read-write access to every prompt.
+    let mut raised = up.manifest.clone();
+    assert_eq!(raised.needs.prompt, NeedLevel::Rw);
+    raised.needs.user = NeedLevel::Rw;
+    let verdict = busbar_plugin_sign::evaluate(&up.lib_bytes, &raised, &policy);
+    assert!(
+        verdict.is_err(),
+        "raising `needs` after signing must break verification; got {verdict:?}"
+    );
+
+    // And lowering it breaks it too: what the signature covers is the declaration itself, not an
+    // upper bound on it, so neither direction is a free edit.
+    let mut lowered = up.manifest.clone();
+    lowered.needs.prompt = NeedLevel::No;
+    assert!(
+        busbar_plugin_sign::evaluate(&up.lib_bytes, &lowered, &policy).is_err(),
+        "lowering `needs` after signing must break verification too"
+    );
 }
 
 #[test]

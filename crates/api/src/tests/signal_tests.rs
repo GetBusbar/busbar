@@ -8,6 +8,13 @@ use super::*;
 /// `Signal::ALL` must list every variant exactly once, and `Signal::name`'s hand-written match
 /// must agree with the `#[serde(rename_all = "snake_case")]` derive — the exhaustiveness guard
 /// for this append-only catalog (mirrors the codebase's `KNOWN_PROTOCOLS` pattern).
+///
+/// The variant list below is built from an EXHAUSTIVE MATCH, not from `ALL`, and that is the whole
+/// of what makes this an exhaustiveness guard. Iterating `ALL` to check `ALL` cannot see the one
+/// failure the test exists for: a variant added to the enum and forgotten in `ALL` is simply absent
+/// from the loop, and every assertion passes over the nine that were remembered. The match is what
+/// the compiler can hold, so a new variant fails to build until it is named here — and the
+/// assertion below then fails until it is named in `ALL` too.
 #[test]
 fn all_lists_every_variant_and_name_matches_serde() {
     // THE EXHAUSTIVENESS HALF, and it has to be a `match` rather than a walk of `ALL`. Every other
