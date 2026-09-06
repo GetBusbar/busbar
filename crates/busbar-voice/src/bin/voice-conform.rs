@@ -928,10 +928,30 @@ fn asym_drop(id: &str, n1: &[Norm], n2: &[Norm]) -> (&'static str, String) {
         ),
         "openai_event_id" | "openai_noise_reduction" => {
             // Both live inside a session.update; the codec never lifts them into IR — so they are
-            // absent from the SOURCE IR already. Prove the bridged config carries no such concept.
+            // absent from the SOURCE IR already, and what the row asserts is that the bridged
+            // config carries no such concept either.
+            //
+            // THIS WAS `drop_if(true, …)`. The comment above already said "prove the bridged config
+            // carries no such concept" and the code proved nothing: a literal that cannot be false,
+            // printing PASS in every run since the row was written. A codec change that started
+            // lifting `event_id` — or a bridge that began copying the raw session object across —
+            // would have kept printing the same green line, which is the one outcome an asymmetry
+            // row exists to make impossible.
+            //
+            // TWO HALVES, and both are needed. The config must actually have CROSSED (an empty
+            // bridge drops every field and is not evidence of anything — the same vacuity the MCP
+            // seam suite's `requireUpstreamWasReached` refuses), and the field must not be anywhere
+            // in what crossed.
+            let needle = if id == "openai_event_id" {
+                "event_id"
+            } else {
+                "noise_reduction"
+            };
+            let bridged = format!("{n2:?}");
             drop_if(
-                true,
-                "field never enters the IR (dropped at decode); bridged config omits it",
+                has(n2, &|n| matches!(n, Norm::Config(_))) && !bridged.contains(needle),
+                "field never enters the IR (dropped at decode); the config bridges and the bridged \
+                 config omits it",
             )
         }
         "openai_semantic_vad" | "openai_g711" => {
@@ -2457,6 +2477,29 @@ mod selftest {
         let err = deferral_is_real("openai", "openai/gone.json", false)
             .expect_err("a deferral to a fixture that is not on disk must not pass");
         assert!(err.contains("not on disk"), "unexpected reason: {err}");
+    }
+
+    /// RED. `openai_event_id` / `openai_noise_reduction` were `drop_if(true, …)`: a literal that
+    /// cannot be false, dressed as an assertion. The row's whole content is "the bridged config
+    /// carries no such concept", and nothing looked at the bridged config, so a bridge that started
+    /// carrying the field across would have kept printing PASS.
+    #[test]
+    fn a_bridged_field_that_should_have_been_dropped_is_caught() {
+        let carried = vec![
+            Norm::Config("instr|voice|0|None".to_string()),
+            Norm::Item(serde_json::json!({ "event_id": "evt_leaked" })),
+        ];
+        assert_eq!(asym_drop("openai_event_id", &[], &carried).0, "FAIL");
+        let dropped = vec![Norm::Config("instr|voice|0|None".to_string())];
+        assert_eq!(asym_drop("openai_event_id", &[], &dropped).0, "PASS");
+    }
+
+    /// AND THE OTHER DIRECTION FOR THE SAME PAIR: an EMPTY bridge must not satisfy "the field was
+    /// dropped". Nothing bridged at all drops every field, which is exactly the vacuity the MCP
+    /// seam suite refuses — the config has to have crossed for its contents to be evidence.
+    #[test]
+    fn an_empty_bridge_does_not_count_as_dropping_the_field() {
+        assert_eq!(asym_drop("openai_noise_reduction", &[], &[]).0, "FAIL");
     }
 
     /// An id the map grew and the harness never learned is a FAIL, not a silent pass. Already true;
