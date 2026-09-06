@@ -138,12 +138,30 @@ on:
 env:
   DOCKERHUB_IMAGE: getbusbar/busbar
   GHCR_IMAGE: ghcr.io/getbusbar/busbar
-  # Pinned ref for the external first-party headroom-hook plugin repo (GetBusbar/headroom-hook),
-  # bundled pre-installed into the image below. `dev` (not `main`) carries the sibling-relative-path
-  # dependency fix this build needs — main stays release-only, ongoing work lands on dev, same split
-  # as busbar's own main/dev. Same pin as .github/workflows/release.yml's HEADROOM_HOOK_REF — keep
-  # the two in sync when re-pinning.
-  HEADROOM_HOOK_REF: dev
+  # PINNED ref for the external first-party headroom-hook plugin repo (GetBusbar/headroom-hook),
+  # whose cdylib this workflow BUILDS, SIGNS with cosign, and bundles pre-installed into the shipped
+  # image below.
+  #
+  # THIS MUST BE A COMMIT SHA, NEVER A BRANCH NAME. It was `dev` — a moving branch — which meant the
+  # bytes we signed and shipped inside a released image were "whatever was on headroom-hook's dev at
+  # build time". Two builds of the SAME busbar release could ship different plugin code, the
+  # signature would attest to both, and nothing in the release record said which. A signature over an
+  # unpinned input signs the pipeline, not the artifact.
+  #
+  # The sha below is what `dev` pointed at when it was pinned (headroom-hook v2.0.21,
+  # "chore(deps): headroom-core -> v0.36.5", 2026-08-26). `dev` (not `main`) is still the right
+  # LINEAGE — it carries the sibling-relative-path dependency fix this build needs, and main stays
+  # release-only — so re-pin by moving this sha forward along dev, never by naming the branch:
+  #     gh api repos/GetBusbar/headroom-hook/commits/dev -q .sha
+  # scripts/release-order-lint.py refuses any value here that is not a 40-hex sha, so an unpinned
+  # ref cannot ship.
+  #
+  # (The old comment claimed this was "the same pin as .github/workflows/release.yml's
+  # HEADROOM_HOOK_REF". release.yml has no such variable and has not had one since the
+  # stage/promote split moved every build out of it — release.yml promotes, it never builds. This
+  # workflow's `build-binaries` job is the only place the hook is checked out, so this is the only
+  # pin, and there is nothing to keep in sync with.)
+  HEADROOM_HOOK_REF: 9cba7bdb50682d51929355a2d0b469979f40c2ae # headroom-hook dev @ v2.0.21
 
 permissions:
   contents: read
@@ -490,9 +508,9 @@ jobs:
           if-no-files-found: error
 
       # ── headroom-hook: build + sign for this same musl target, so the image below can ship it
-      # pre-installed (see the Dockerfile). Same first-party source repo and checkout as
-      # .github/workflows/release.yml's hook-plugins job — see the comments there for the full
-      # rationale (pin choice). headroom-hook's Cargo.toml declares its busbar-plugin-sdk (and
+      # pre-installed (see the Dockerfile). The source repo and the pin rationale are the
+      # `HEADROOM_HOOK_REF` comment in this file's `env:` block — that is the only pin; release.yml
+      # builds nothing and has no hook-plugins job. headroom-hook's Cargo.toml declares its busbar-plugin-sdk (and
       # dev-dependency) local path deps as sibling-relative, same convention webrequest-hook
       # already uses, so no CI-side patching is needed — the container mounts below (`/src/headroom-hook`
       # + `/src/busbarAI`) give it that sibling layout regardless of the HOST-side checkout nesting.
