@@ -139,3 +139,33 @@ fn asking_the_arena_for_more_than_it_has_is_an_answer_not_a_panic() {
     assert_eq!(refused.remaining, 0);
     assert_eq!(refused.reason(), busbar_caps::ReasonCode::ArenaBudget);
 }
+
+/// A span the arena hands out holds nothing of the frame before it.
+///
+/// `take` promised zeroed space and `reset` moved the cursor without clearing a byte, so a unit
+/// that took a span and then wrote LESS into it than it asked for could read the tail of the
+/// previous frame straight back out — one connection's bytes surfacing inside another's buffer.
+/// The promise is now kept where it is made.
+#[test]
+fn a_short_write_after_a_reset_shows_nothing_of_the_last_frame() {
+    let mut arena = Arena::new();
+    let secret = b"authorization: Bearer swordfish";
+    let first = arena.push(secret).expect("the arena has room");
+    assert_eq!(arena.read(first), secret);
+
+    // The frame ends and the next one begins.
+    arena.reset();
+    let span = arena.take(secret.len()).expect("the arena has room");
+    assert!(
+        arena.read(span).iter().all(|byte| *byte == 0),
+        "the span still held the last frame"
+    );
+
+    // And a unit that writes less than it asked for exposes no tail.
+    arena.write(span, b"ok").expect("within the span");
+    assert_eq!(&arena.read(span)[..2], b"ok");
+    assert!(
+        arena.read(span)[2..].iter().all(|byte| *byte == 0),
+        "the tail of the span leaked the last frame"
+    );
+}

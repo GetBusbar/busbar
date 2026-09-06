@@ -112,14 +112,22 @@ impl Arena {
         self.resets
     }
 
-    /// Give the arena back to itself. Nothing is zeroed and nothing is freed; the cursor moves to
-    /// the start, so the next frame writes over the last one.
+    /// Give the arena back to itself. Nothing is freed; the cursor moves to the start, and the
+    /// bytes the next frame is handed are cleared as it takes them.
     pub fn reset(&mut self) {
         self.used = 0;
         self.resets = self.resets.saturating_add(1);
     }
 
-    /// Take `len` bytes of uninitialised-but-zeroed space, and say where they are.
+    /// Take `len` bytes of zeroed space, and say where they are.
+    ///
+    /// The zeroing happens HERE, where the promise is made, and not at the reset that hands the
+    /// buffer back. `reset` only moves the cursor, so a span taken over ground a previous frame
+    /// used still held that frame's bytes; a unit that then wrote less into the span than it asked
+    /// for could read the remainder straight back out, which is one connection's bytes surfacing
+    /// inside another's buffer. Clearing on the way out costs one pass over the span a unit was
+    /// about to write anyway, and it is the only point both the reset path and a fresh arena go
+    /// through.
     pub fn take(&mut self, len: usize) -> Result<Span, ArenaFull> {
         if len > self.remaining() {
             return Err(ArenaFull {
@@ -128,6 +136,7 @@ impl Arena {
             });
         }
         let span = Span::new(self.used, self.used + len);
+        self.buf[span.start..span.end].fill(0);
         self.used += len;
         Ok(span)
     }
