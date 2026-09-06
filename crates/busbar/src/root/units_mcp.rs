@@ -1607,6 +1607,22 @@ mod tests {
         ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
             Ok(Vec::new())
         }
+
+        /// The one record verb whose default is NOT accept-and-keep-nothing, so this double has to
+        /// answer it itself. A redemption's `true` is not a receipt for a write, it is the assertion
+        /// that this redemption is the FIRST one, and a store keeping nothing cannot say that — the
+        /// contract therefore refuses rather than answering yes. These tests are about which call the
+        /// root makes for which leg, so the double answers the way a real ledger seeing a fresh token
+        /// would, and the refusal path has its own batteries in core.
+        fn redeem_plane_token(
+            &self,
+            _kind: &str,
+            _token: &str,
+            _expires_at: u64,
+            _now: u64,
+        ) -> busbar_api::StoreResult<bool> {
+            Ok(true)
+        }
     }
 
     /// The connection's own facts reach the loop, and a claim that names a transport this stack is

@@ -1381,8 +1381,22 @@ pub trait Store: Send + Sync + 'static {
 
     /// TEST-AND-SET one single-use token of `kind`, valid until `expires_at`; `true` means THIS call
     /// was the first redemption — the neutral `redeem_ask_state` (kind `ask`). `now` lets a backend
-    /// drop lapsed rows in the same call. DEFAULTED to `Ok(true)` ("this store keeps no ledger"),
-    /// matching [`Store::redeem_ask_state`].
+    /// drop lapsed rows in the same call.
+    ///
+    /// DEFAULTED TO A LOUD ERROR, and it is the ONE plane verb that does not default to
+    /// accept-and-keep-nothing like its seven siblings. Those are writes and reads, where "accepted,
+    /// kept nothing" is honest because the engine learns what a backend kept by reading it back. This
+    /// one is an ADMISSION VERDICT: `true` is not a receipt, it is the ASSERTION that this redemption
+    /// is the FIRST — the whole of what makes a single-use approval single-use. A backend that keeps
+    /// no ledger cannot know that, and a default that said it anyway made every such deployment
+    /// silently replayable across a restart and across a second node, with nothing logged anywhere.
+    ///
+    /// So it fails loud instead, for exactly the reason [`Store::add_denylist`] and
+    /// [`Store::revoke_credential`] give for their own defaults: a silent success here leaves a
+    /// credential the operator believes is spent still spendable. The consumer already treats a
+    /// ledger that cannot answer as a refusal — a ledger that cannot say whether something was
+    /// redeemed must not be read as saying it was not — so this reaches an existing, diagnosed
+    /// fail-closed path rather than a new one.
     fn redeem_plane_token(
         &self,
         _kind: &str,
@@ -1390,7 +1404,11 @@ pub trait Store: Send + Sync + 'static {
         _expires_at: u64,
         _now: u64,
     ) -> StoreResult<bool> {
-        Ok(true)
+        Err(StoreError(
+            "this Store keeps no single-use-token ledger, so it cannot say whether this redemption \
+             is the first one; refusing rather than answering yes"
+                .to_string(),
+        ))
     }
 }
 

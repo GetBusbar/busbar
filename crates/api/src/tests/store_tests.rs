@@ -947,3 +947,57 @@ fn malformed_scope_field_fails_the_read_rather_than_widening_to_wildcard() {
          {parsed:?}"
     );
 }
+
+/// THE ONE PLANE VERB THAT IS NOT A "KEEP NOTHING" WRITE, and therefore must not default like one.
+///
+/// The other seven neutral verbs are writes and reads: defaulting them to "accepted, kept nothing"
+/// is honest, because the engine learns what a backend kept by reading it back (the test above).
+/// `redeem_plane_token` is neither — it is an ADMISSION VERDICT, and `true` is the assertion "this
+/// redemption is the FIRST one". A backend that keeps no ledger cannot know that, so answering it is
+/// the same silent fail-open [`Store::add_denylist`] and [`Store::revoke_credential`] both default to
+/// a loud error to avoid: an operator believes a single-use approval is single-use, and across a
+/// restart or a second node it is replayable without limit, with nothing said anywhere.
+///
+/// The consumer already has the fail-closed path — the approval gate treats a ledger that cannot
+/// answer as a refusal, with a diagnostic — and this default is what kept it from ever firing.
+#[test]
+fn redeem_plane_token_default_refuses_rather_than_claiming_a_first_redemption() {
+    struct NoLedgerBackend;
+    impl Store for NoLedgerBackend {
+        fn put_key(&self, _: &VirtualKey) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_key(&self, _: &str) -> StoreResult<Option<VirtualKey>> {
+            Ok(None)
+        }
+        fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
+            Ok(Vec::new())
+        }
+        fn delete_key(&self, _: &str) -> StoreResult<()> {
+            Ok(())
+        }
+        fn get_usage(&self, _: &str, _: u64) -> StoreResult<UsageLedger> {
+            Ok(UsageLedger::default())
+        }
+        fn put_usage(&self, _: &str, _: u64, _: &UsageLedger) -> StoreResult<()> {
+            Ok(())
+        }
+        fn add_metering(&self, _: &MeteringDelta) -> StoreResult<()> {
+            Ok(())
+        }
+        fn list_metering(&self, _: u64) -> StoreResult<Vec<MeteringRow>> {
+            Ok(Vec::new())
+        }
+    }
+
+    let s = NoLedgerBackend;
+    let first = s.redeem_plane_token("ask", "nonce-a", 1_000, 10);
+    assert!(
+        first.is_err(),
+        "a store with no ledger must not answer a single-use redemption at all, and above all must \
+         not answer it `true`: got {first:?}"
+    );
+    // And it must stay refused however many times it is asked — a replayed redemption must never
+    // find a call that says yes.
+    assert!(s.redeem_plane_token("ask", "nonce-a", 1_000, 11).is_err());
+}
