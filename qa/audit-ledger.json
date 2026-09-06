@@ -513,15 +513,14 @@
    ],
    "tree_hash": "d3d217f048326eeafb049f4b0d23a1341bee1b3d26a18de7be1b8cfd985194a4",
    "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "round": 8,
    "result": "findings",
    "counts": {
     "MEDIUM": 1,
-    "LOW": 6,
-    "NIT": 1
+    "LOW": 5
    },
-   "report": "pass 1 of the remainder (store, net_guard, tls, trust, testkit, metrics, telemetry, hooks, proxy, topology): nat64-embedded v4 bypassed the imds refusal (fixed 1c267b91); host_matches_any block side, alternate-encoding trailing dot, metrics spawn panic, telemetry bank growth reported; 36 production files read fully",
-   "auditor": "opus-pass1",
+   "report": "pass 2 of ingress/egress/egress_auth/teller/config (35 files read fully): inbound ws acceptor had no message or frame ceiling (fixed 16a81c3d); outbound ws mirror, limits install ordering, retry header restore reported; test files unread",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-substrate/src/tests"
