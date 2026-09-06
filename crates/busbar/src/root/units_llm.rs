@@ -505,7 +505,12 @@ impl Units for LlmUnit<'_> {
             self.walk
                 .candidate_lane_names(&model)
                 .iter()
-                .map(|name| VerifiedDestination::seal(trust, reg.lane(name)))
+                // A lane the frozen vocabulary does not hold is not a candidate this node can
+                // route to, so it is left out rather than sealed under a name it cannot name.
+                .filter_map(|name| {
+                    reg.lane(name)
+                        .map(|lane| VerifiedDestination::seal(trust, lane))
+                })
                 .collect()
         };
         // The empty set is the honest answer for a name that resolves to no lane: the unit proceeds,
@@ -2003,6 +2008,8 @@ mod tests {
             .expect("the node's interner is never poisoned")
             .lane(LANE);
         assert_eq!(first, again);
+        let first = first.expect("an unfrozen image interns a configured lane");
+        let again = again.expect("a repeated lane is the same lane");
         assert!(std::ptr::eq(first.as_str(), again.as_str()));
     }
 }
