@@ -780,6 +780,33 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
             return Err(format!("{what}: {e}"));
         }
     }
+    // VALUE checks, not merely RESOLVABILITY. Two of boot's refusals are pure functions of the
+    // resolved BYTES — the blank-admin-token guard and the signing-key format — and `--validate`
+    // could not see either, because resolving the reference is where it stopped. `BUSBAR_ADMIN_TOKEN=""`
+    // is SET, so the loop above is satisfied; boot then `die`s. Same for a signing key of the wrong
+    // length. `--validate` promises a clean run means a clean boot, so run the SAME guards here:
+    // `resolve_admin_token` and `resolve_signing_key` are boot's own, called with a builtins-only
+    // resolver, so the operator reads the identical sentence from CI as from the failed start.
+    //
+    // Restricted to `env`/`file` refs for the same reason the loop above is: a plugin-backed
+    // reference cannot be resolved without a loaded registry, and boot/pre-flight own that half.
+    let is_builtin = |r: &config::SecretRef| {
+        r.module == config::secret::SECRET_MODULE_ENV
+            || r.module == config::secret::SECRET_MODULE_FILE
+    };
+    let auth = cfg.auth.as_ref();
+    if auth
+        .and_then(|a| a.admin_token_ref())
+        .is_some_and(is_builtin)
+    {
+        resolve_admin_token(auth, &builtins)?;
+    }
+    if auth
+        .and_then(|a| a.signing_key.as_ref())
+        .is_some_and(|r| is_builtin(r))
+    {
+        resolve_signing_key(auth, &builtins)?;
+    }
     Ok(())
 }
 
