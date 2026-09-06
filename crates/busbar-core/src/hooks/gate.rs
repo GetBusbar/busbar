@@ -58,7 +58,7 @@
 #![allow(dead_code)]
 
 use crate::hooks::{Candidate, ResolvedPolicy, RoutingContext, RoutingDecision, RoutingRequest};
-use crate::ir::facts::{ContentItem, IrFacts, Slot};
+use crate::ir::facts::{ContentItem, IrFacts, ScreenedContent, Slot};
 use std::borrow::Cow;
 
 /// The answer a firing site acts on. Deliberately NOT the model plane's `PolicyOutcome`: that type
@@ -181,28 +181,24 @@ impl IncrementalScan<'_> {
 
     /// The pieces to actually screen for `hook`: everything not yet cleared for it, plus every opaque
     /// piece (always re-surfaced). Order is preserved.
-    fn unscreened<'i>(&self, hook: &str, items: &[ContentItem<'i>]) -> Vec<ContentItem<'i>> {
+    fn unscreened<'i>(&self, hook: &str, items: &ScreenedContent<'i>) -> ScreenedContent<'i> {
         let sets = self.sets();
         let guard = sets.lock().unwrap_or_else(|e| e.into_inner());
         let cleared = guard.get(hook);
-        items
-            .iter()
-            .filter(|&item| {
-                matches!(item, ContentItem::Opaque { .. })
-                    || cleared.is_none_or(|set| !set.contains(&item.screening_digest()))
-            })
-            .cloned()
-            .collect()
+        items.select(|item, text| {
+            matches!(item, ContentItem::Opaque { .. })
+                || cleared.is_none_or(|set| !set.contains(&item.digest_of(text)))
+        })
     }
 
     /// Record the (non-opaque) pieces just screened clean for `hook`, so the next turn skips them.
-    fn mark_cleared(&self, hook: &str, screened: &[ContentItem<'_>]) {
+    fn mark_cleared(&self, hook: &str, screened: &ScreenedContent<'_>) {
         let sets = self.sets();
         let mut guard = sets.lock().unwrap_or_else(|e| e.into_inner());
         let set = guard.entry(hook.to_string()).or_default();
-        for item in screened {
+        for (item, text) in screened.iter() {
             if !matches!(item, ContentItem::Opaque { .. }) {
-                set.insert(item.screening_digest());
+                set.insert(item.digest_of(text));
             }
         }
     }
@@ -225,6 +221,11 @@ pub(crate) async fn decide(
     // over the IR and cannot differ between gates, and re-walking per gate would be the same answer
     // computed N times.
     let items = subject.facts.content();
+    // …and each item's screenable text is RENDERED once, here, for the whole pass. A `Data` item
+    // serializes its payload on every `screenable_text()`, and every gate asks for it several times
+    // over (the size sum, the cleared-set digest, the prompt projection), so rendering per reader
+    // grew the cost with the number of attached gates for an answer that cannot change between them.
+    let all = ScreenedContent::over(&items);
     for (
         _,
         ResolvedPolicy::Policy {
@@ -239,15 +240,15 @@ pub(crate) async fn decide(
     {
         // Incremental scan (G5 tenant): screen only the pieces this session hasn't cleared for THIS
         // hook. `None` → the full item set, byte-identical to pre-incremental behaviour.
-        let screened: Option<Vec<ContentItem>> = subject
+        let screened: Option<ScreenedContent> = subject
             .incremental
             .as_ref()
-            .map(|inc| inc.unscreened(policy.name(), &items));
+            .map(|inc| inc.unscreened(policy.name(), &all));
         if screened.as_ref().is_some_and(|s| s.is_empty()) {
             // Nothing new to screen for this hook this turn — it proceeds without a sidecar call.
             continue;
         }
-        let content: &[ContentItem] = screened.as_deref().unwrap_or(&items);
+        let content: &ScreenedContent = screened.as_ref().unwrap_or(&all);
         let req = project(subject, content, *send_prompt, *send_user);
         let ctx = RoutingContext {
             pool: subject.container,
@@ -352,7 +353,7 @@ fn fail_closed(on_error: &crate::config::PolicyOnError, hook: &'static str) -> O
 /// is also what keeps the cost of a shape-only gate a shape-only cost.
 fn project<'a>(
     subject: &'a GateSubject<'_>,
-    items: &'a [ContentItem<'a>],
+    items: &'a ScreenedContent<'a>,
     send_prompt: bool,
     send_user: bool,
 ) -> RoutingRequest<'a> {
@@ -371,19 +372,15 @@ fn project<'a>(
         has_tools: shape.has_tools,
         total_chars: shape.text_chars,
         // The system slot's chars, summed over the SAME items the projection shows.
-        system_chars: items
-            .iter()
-            .filter(|i| i.slot() == Slot::System)
-            .map(|i| i.screenable_text().chars().count())
-            .sum(),
+        system_chars: items.counts().1,
         max_tokens: shape.max_tokens,
         stream: subject.facts.wants_stream(),
         prompt: send_prompt.then(|| crate::hooks::PromptProjection {
             system: join_system(items),
             messages: items
                 .iter()
-                .filter(|i| i.slot() != Slot::System)
-                .map(|i| (Cow::Borrowed(i.author()), i.screenable_text()))
+                .filter(|(i, _)| i.slot() != Slot::System)
+                .map(|(i, t)| (Cow::Borrowed(i.author()), Cow::Owned(t.to_string())))
                 .collect(),
         }),
         identity: send_user.then(|| crate::hooks::CallerIdentity {
@@ -402,20 +399,20 @@ fn project<'a>(
 
 /// The system slot, flattened — `None` when the request has none, which is what the wire contract
 /// says absence means (a granted hook keys the grant off `messages`, never off `system`).
-fn join_system<'a>(items: &'a [ContentItem<'a>]) -> Option<Cow<'a, str>> {
+fn join_system<'a>(items: &'a ScreenedContent<'a>) -> Option<Cow<'a, str>> {
     let mut parts = items
         .iter()
-        .filter(|i| i.slot() == Slot::System)
-        .map(ContentItem::screenable_text)
+        .filter(|(i, _)| i.slot() == Slot::System)
+        .map(|(_, t)| t)
         .peekable();
     let first = parts.next()?;
     if parts.peek().is_none() {
-        return (!first.is_empty()).then_some(first);
+        return (!first.is_empty()).then_some(Cow::Owned(first.to_string()));
     }
-    let mut out = first.into_owned();
+    let mut out = first.to_string();
     for p in parts {
         out.push('\n');
-        out.push_str(&p);
+        out.push_str(p);
     }
     (!out.is_empty()).then_some(Cow::Owned(out))
 }

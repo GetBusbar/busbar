@@ -171,10 +171,18 @@ impl ContentItem<'_> {
     /// `size_signal_and_projection_agree_on_reasoning`) exist because a size signal and a content
     /// projection were computed by two functions that could drift. Here [`Shape::text_chars`] is a
     /// sum over this method, so they cannot: there is nothing left for them to disagree about.
+    /// **COST.** The `Data` arm SERIALIZES: every call re-renders the payload. A screening pass that
+    /// asks the same item for its text more than once (the size sum, the prompt projection, the
+    /// per-hook cleared-set digest, once per attached gate) pays that render each time. Callers that
+    /// screen therefore build a [`ScreenedContent`] once and read the text off it — see there.
     pub fn screenable_text(&self) -> Cow<'_, str> {
         match self {
             ContentItem::Text { text, .. } => Cow::Borrowed(text.as_ref()),
-            ContentItem::Data { value, .. } => Cow::Owned(value.to_string()),
+            ContentItem::Data { value, .. } => {
+                #[cfg(test)]
+                DATA_RENDERS.with(|c| c.set(c.get() + 1));
+                Cow::Owned(value.to_string())
+            }
             ContentItem::Opaque { marker, .. } => Cow::Borrowed(marker),
         }
     }
@@ -193,6 +201,14 @@ impl ContentItem<'_> {
     /// never cache an opaque piece as "cleared" (it is a presence signal, not screenable content); the
     /// digest is defined here for uniformity, and the caller enforces the never-cache-opaque rule.
     pub fn screening_digest(&self) -> String {
+        self.digest_of(&self.screenable_text())
+    }
+
+    /// [`Self::screening_digest`] over an ALREADY-RENDERED text — the body of the digest, so a
+    /// caller holding the rendered text (a [`ScreenedContent`]) hashes it without asking the item to
+    /// render it a second time. Byte-identical to `screening_digest` for the item's own text; pass
+    /// anything else and the identity you get back is not this item's.
+    pub fn digest_of(&self, text: &str) -> String {
         fn framed(buf: &mut Vec<u8>, bytes: &[u8]) {
             buf.extend_from_slice(&(bytes.len() as u64).to_be_bytes());
             buf.extend_from_slice(bytes);
@@ -212,7 +228,6 @@ impl ContentItem<'_> {
             ContentItem::Data { .. } => 1,
             ContentItem::Opaque { .. } => 2,
         };
-        let text = self.screenable_text();
         let author = self.author();
         // Exact: four length prefixes plus one byte, eight bytes, and the two variable fields.
         let mut buf = Vec::with_capacity(5 * 8 + 1 + 1 + 8 + author.len() + text.len());
@@ -222,6 +237,100 @@ impl ContentItem<'_> {
         framed(&mut buf, author.as_bytes());
         framed(&mut buf, text.as_bytes());
         busbar_api::sha256_hex(&buf)
+    }
+}
+
+// Test-only tally of how many times a `ContentItem::Data` payload was actually SERIALIZED, so a
+// test can pin that a screening pass renders each payload once rather than once per reader.
+// Thread-local, so parallel tests do not contaminate each other's count.
+#[cfg(test)]
+thread_local! {
+    static DATA_RENDERS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Zero the render tally and return what it held (test-only).
+#[cfg(test)]
+pub(crate) fn take_data_renders() -> usize {
+    DATA_RENDERS.with(|c| c.replace(0))
+}
+
+/// A content projection with EVERY item's screenable text rendered ONCE, up front.
+///
+/// [`ContentItem::screenable_text`] is not free: the `Data` arm serializes its payload on every
+/// call. A screening pass asks for that text repeatedly — the system-slot size sum, the prompt
+/// projection, and the cleared-set digest, each of them again for every attached gate — so a request
+/// carrying one tool-call payload re-rendered it a number of times that grew with the number of
+/// hooks, for an answer that cannot change between them.
+///
+/// This holds the rendered text alongside the item and hands both out together, so the render count
+/// is the ITEM count and nothing downstream can reintroduce the growth. Filtering ([`Self::select`])
+/// carries the rendered text across with the item rather than dropping back to the items and
+/// re-rendering, which is the whole point: the incremental scan filters, then projects.
+pub struct ScreenedContent<'a> {
+    entries: Vec<(&'a ContentItem<'a>, Cow<'a, str>)>,
+}
+
+impl<'a> ScreenedContent<'a> {
+    /// Render every item's screenable text once.
+    pub fn over(items: &'a [ContentItem<'a>]) -> Self {
+        Self {
+            entries: items
+                .iter()
+                .map(|item| (item, item.screenable_text()))
+                .collect(),
+        }
+    }
+
+    /// The items and their rendered text, in order.
+    pub fn iter(&self) -> impl Iterator<Item = (&'a ContentItem<'a>, &str)> + '_ {
+        self.entries.iter().map(|(item, text)| (*item, &**text))
+    }
+
+    /// How many items this projection carries.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Is this projection empty?
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The subset `keep` accepts, carrying each kept item's ALREADY-RENDERED text across.
+    pub fn select(&self, keep: impl Fn(&ContentItem<'a>, &str) -> bool) -> Self {
+        Self {
+            entries: self
+                .entries
+                .iter()
+                .filter(|(item, text)| keep(item, text))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// The `text_chars` / `system_chars` size signals, summed over exactly these items — the same
+    /// sum [`Shape::counts_over`] performs, off the rendered text rather than a fresh render.
+    pub fn counts(&self) -> (usize, usize) {
+        let mut text_chars = 0usize;
+        let mut system_chars = 0usize;
+        for (item, text) in self.iter() {
+            let n = text.chars().count();
+            text_chars += n;
+            if matches!(item.slot(), Slot::System) {
+                system_chars += n;
+            }
+        }
+        (text_chars, system_chars)
+    }
+
+    /// The [`ContentItem::screening_digest`] of the item at `i`, off the rendered text.
+    pub fn digest(&self, i: usize) -> Option<String> {
+        self.entries.get(i).map(|(item, text)| item.digest_of(text))
+    }
+
+    /// Every item's [`ContentItem::screening_digest`], in order.
+    pub fn digests(&self) -> impl Iterator<Item = String> + '_ {
+        self.entries.iter().map(|(item, text)| item.digest_of(text))
     }
 }
 
@@ -373,3 +482,7 @@ impl IrFacts for NeutralFacts {
         Vec::new()
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/screening_tests.rs"]
+mod screening_tests;
