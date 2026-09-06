@@ -51,6 +51,17 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 command -v python3 >/dev/null 2>&1 || { red "construction-gate: python3 is required"; exit 2; }
 [ -f "$TOML" ] || { red "construction-gate: ceilings file not found: $TOML"; exit 2; }
 
+# ── the delegated scan ───────────────────────────────────────────────────────────────────────────
+# plane-purity-lint.sh owns the dialect/plane-noun policy. --baseline always exits 0 and leaves its
+# per-hit rows where PLANE_PURITY_HITS_OUT points. Its own function because --calibrate needs it
+# exactly as much as --check does, and each needs it exactly once.
+purity_scan() {
+  mkdir -p "$OUT"
+  rm -f "$OUT/purity-hits.tsv"
+  PLANE_PURITY_HITS_OUT="$OUT/purity-hits.tsv" \
+    bash "$ROOT/scripts/plane-purity-lint.sh" --baseline >"$OUT/purity-lint.log" 2>&1 || true
+}
+
 # ── measure: the purity lint first (the delegated scanner), then every rule into the ledger ──────
 # Populates $OUT with rows.tsv, expected-ids, report.md, summary.txt, rows.json and the ledger.
 # Returns the verdict's exit code. $1 = "quiet" suppresses per-row echo.
@@ -62,11 +73,7 @@ measure() {
   # shellcheck source=testing/fleet-fixtures/lib.sh
   . "$ROOT/testing/fleet-fixtures/lib.sh"
 
-  # The delegated scan: plane-purity-lint.sh owns the dialect/plane-noun policy. --baseline always
-  # exits 0 and leaves its per-hit rows where PLANE_PURITY_HITS_OUT points.
-  rm -f "$OUT/purity-hits.tsv"
-  PLANE_PURITY_HITS_OUT="$OUT/purity-hits.tsv" \
-    bash "$ROOT/scripts/plane-purity-lint.sh" --baseline >"$OUT/purity-lint.log" 2>&1 || true
+  purity_scan
 
   if ! python3 "$HELPERS/rules.py" --root "$ROOT" --toml "$TOML" \
         --purity-hits "$OUT/purity-hits.tsv" --rows "$OUT/rows.tsv" \
@@ -280,7 +287,12 @@ case "${1:-}" in
     ;;
   --calibrate)
     [ -n "${2:-}" ] || { echo "usage: $0 --calibrate <out.toml>" >&2; exit 2; }
-    measure quiet >/dev/null
+    # ONE scan of the tree, not two. This used to run the whole measure — purity lint, rules.py,
+    # the loc-surface ceilings, the ledger and the verdict — and then throw all of it away and scan
+    # the tree a second time for the ceilings. rules.py already computes the rows and calibrates
+    # from them in a single pass, so the only thing measure was contributing was the purity hits
+    # file; that is all that runs first now. The written toml is unchanged.
+    purity_scan
     python3 "$HELPERS/rules.py" --root "$ROOT" --toml "$TOML" --purity-hits "$OUT/purity-hits.tsv" --calibrate "$2"
     note "calibrated ceilings written to $2 (every ceiling = today's measurement)"
     exit 0
