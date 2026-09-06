@@ -72,6 +72,76 @@ fn a_failed_tool_is_a_result_not_a_protocol_error() {
     assert_eq!(r.content[0]["text"], "no such file");
 }
 
+/// AN ANSWER THAT IS NOT AN ANSWER YET MUST NOT BE SERVED AS ONE. A result that carries no content
+/// and declares itself unfinished is not an empty successful tool call: served as one it tells a
+/// caller their tool ran and returned nothing, and the token that would let the exchange be resumed
+/// is thrown away in the same breath.
+#[test]
+fn an_unfinished_result_is_never_served_as_an_empty_success() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {
+            "resultType": "input_required",
+            "inputRequests": { "confirm": { "type": "boolean" } },
+            "requestState": "opaque-resume-token"
+        }
+    }))
+    .expect("fixture");
+    assert!(
+        super::invoke::read_invoke_response(&wire).is_err(),
+        "an unfinished result with nothing in it is not a successful empty tool call"
+    );
+}
+
+/// The members that say an exchange is unfinished are CARRIED, under the source protocol's own
+/// namespace, so nothing downstream has to re-parse the wire to learn how to resume.
+#[test]
+fn an_unfinished_results_own_members_survive_the_read() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1,
+        "result": {
+            "content": [{ "type": "text", "text": "which file?" }],
+            "resultType": "input_required",
+            "inputRequests": { "confirm": { "type": "boolean" } },
+            "requestState": "opaque-resume-token"
+        }
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("content makes it a readable result");
+    let carried = r.extra.get("mcp").expect("kept under the source protocol");
+    assert_eq!(carried["resultType"], "input_required");
+    assert_eq!(carried["requestState"], "opaque-resume-token");
+    assert_eq!(carried["inputRequests"]["confirm"]["type"], "boolean");
+}
+
+/// A FINISHED result naming itself as one is an ordinary result: it reads, and saying so on the
+/// wire does not turn an empty answer into a refusal.
+#[test]
+fn a_complete_result_reads_even_when_it_carries_nothing() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "result": { "resultType": "complete", "content": [] }
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("a finished result reads");
+    assert!(!r.is_error);
+    assert_eq!(r.content, serde_json::json!([]));
+    assert_eq!(r.extra["mcp"]["resultType"], "complete");
+}
+
+/// A result with no `resultType` at all is every result busbar has ever read, and it stays exactly
+/// what it was — including the empty one.
+#[test]
+fn a_result_that_names_no_result_type_is_unchanged() {
+    let wire = serde_json::to_vec(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "result": {}
+    }))
+    .expect("fixture");
+    let r = super::invoke::read_invoke_response(&wire).expect("reads");
+    assert_eq!(r.content, serde_json::json!([]));
+    assert!(!r.is_error);
+    assert!(r.extra.is_empty());
+}
+
 #[test]
 fn the_request_round_trips_through_the_codec() {
     let wire = call_wire(serde_json::json!({
