@@ -58,6 +58,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
 ORACLE = os.path.join(REPO, "testing", "shadow-oracle")
 
+sys.path.insert(0, HERE)
+import named_gaps  # noqa: E402  (the named-gap register; see named_gaps.py)
+
 # Which published document each ingress dialect is judged by. `openai` and `responses` are two
 # doors in one OpenAPI file.
 DIALECT_SPEC = {"openai": "openai", "responses": "openai", "anthropic": "anthropic",
@@ -111,6 +114,12 @@ class Ledger:
         elif status == "FAIL":
             print(f"FAIL  {rid:<52} {title}\n      {detail}")
             print(f"::error title=llm-spec {rid}::{title} — {detail}")
+        elif status == "GAP":
+            # ITS OWN COLUMN. A gap is not a pass and it is not a skip: the row WAS judged, against
+            # the pinned document, and it failed on exactly the violation an owner-registered entry
+            # names (named-gaps.json). It is loud, it is counted, and it is never green.
+            print(f"GAP   {rid:<52} {title}\n      {detail}")
+            print(f"::warning title=llm-spec {rid} NAMED CONFORMANCE GAP::{title} — {detail}")
         else:
             print(f"SKIP  {rid:<52} {title}\n      {detail}")
             print(f"::warning title=llm-spec {rid} DID NOT VERIFY::{title} — {detail}")
@@ -907,6 +916,8 @@ def main():
     ap.add_argument("--digests", default=os.path.join(HERE, "spec-digests.tsv"))
     ap.add_argument("--spec-cache", default=os.environ.get("BUSBAR_LLM_SPEC_CACHE") or os.path.expanduser("~/.cache/busbar-llm-specs"))
     ap.add_argument("--ledger", default=None, help="ledger path (default <out>/ledger.tsv, or $LEDGER)")
+    ap.add_argument("--named-gaps", default=named_gaps.DEFAULT_GAPS,
+                    help="the named-conformance-gap register (default named-gaps.json)")
     ap.add_argument("--owed", action="store_true", help="print the owed ids and exit")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
@@ -929,10 +940,14 @@ def main():
     if not files:
         # nothing to judge: write NO rows so the verdict reads this as the vacuous run it is
         sys.stderr.write(f"validate: no llm cells under {rec.cells_dir}; ZERO ROWS IS RED\n")
-        write_reports(args.out, rec, [], {}, cells_seen=0)
+        write_reports(args.out, rec, [], {}, cells_seen=0, gaps=None)
         return 1
 
-    judge = Judge(read_digests(args.digests), args.spec_cache, os.path.join(HERE, "schemas"))
+    pins = read_digests(args.digests)
+    judge = Judge(pins, args.spec_cache, os.path.join(HERE, "schemas"))
+    # The owner-registered named conformance gaps. Loaded here so a malformed register stops the run
+    # outright; a STALE one does not (it forgives nothing and reports itself RED through the ledger).
+    gaps = named_gaps.load(args.named_gaps, pins=pins).scope(cells)
     build = load_build_request()
 
     violations = []  # (id, direction, dialect, Violation)
@@ -941,7 +956,7 @@ def main():
     for c in cells:
         cid, safe = c["id"], c["id"].replace("|", "__")
         dialect, outcome = c["ingress_dialect"], c["outcome"]
-        pd = per_dialect.setdefault(dialect, dict(cells=0, request=dict(PASS=0, FAIL=0, SKIP=0), response=dict(PASS=0, FAIL=0, SKIP=0)))
+        pd = per_dialect.setdefault(dialect, dict(cells=0, request=dict(PASS=0, FAIL=0, SKIP=0, GAP=0), response=dict(PASS=0, FAIL=0, SKIP=0, GAP=0)))
         rec_status = rec.ledger.get(cid)
         cell = rec.cell(safe) if safe in known else None
         if cell is None:
@@ -963,7 +978,11 @@ def main():
                 src = "build-request.py"
             viols, schema_name = judge.judge_request(dialect, outcome, body)
             rid = f"{cid}#request"
-            if viols:
+            gap = gaps.match(cid, "request", dialect, row_schema_path(dialect, "request", outcome), viols)
+            if gap:
+                ledger.record(rid, "GAP", f"{dialect} request vs {schema_name} ({src})", gap.detail())
+                pd["request"]["GAP"] += 1
+            elif viols:
                 ledger.record(rid, "FAIL", f"{dialect} request vs {schema_name} ({src})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
                 pd["request"]["FAIL"] += 1
                 violations += [(cid, "request", dialect, v) for v in viols]
@@ -981,9 +1000,13 @@ def main():
             pd["response"]["SKIP"] += 1
             continue
         viols, desc, skip = judge.judge_response(dialect, outcome, status, headers, body)
+        gap = None if skip else gaps.match(cid, "response", dialect, row_schema_path(dialect, "response", outcome, status, headers), viols)
         if skip:
             ledger.record(rid, "SKIP", f"{dialect} response {desc}", f"named gap — {skip}")
             pd["response"]["SKIP"] += 1
+        elif gap:
+            ledger.record(rid, "GAP", f"{dialect} response {desc} ({bsrc})", gap.detail())
+            pd["response"]["GAP"] += 1
         elif viols:
             ledger.record(rid, "FAIL", f"{dialect} response {desc} ({bsrc})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
             pd["response"]["FAIL"] += 1
@@ -992,11 +1015,33 @@ def main():
             ledger.record(rid, "PASS", f"{dialect} response {desc} ({bsrc})", "")
             pd["response"]["PASS"] += 1
 
-    write_reports(args.out, rec, violations, per_dialect, cells_seen=len(files))
+    # THE REGISTER ANSWERS FOR ITSELF. One row per registered gap — fired at least once is a PASS,
+    # never fired or gone stale is a FAIL — so an entry that stopped being true is caught by the same
+    # verdict as everything else instead of quietly forgiving nothing.
+    for rid, st, title, detail in gaps.ledger_rows():
+        ledger.record(rid, st, title, detail)
+
+    write_reports(args.out, rec, violations, per_dialect, cells_seen=len(files), gaps=gaps)
     return 0
 
 
-def write_reports(out_dir, rec, violations, per_dialect, cells_seen):
+def row_schema_path(dialect, direction, outcome, status=None, headers=None):
+    """The spec address this row is judged against — the address a named-gap entry must name, so a
+    gap for one schema can never forgive another. Mirrors judge_request/judge_response's own choice.
+    Error rows address as `error:<status>`: which shape the spec declares for a status is resolved
+    inside the judge, and the status is the thing an entry can name."""
+    cfg = DIALECTS[dialect]
+    if direction == "request":
+        return cfg.get("request_stream") if (outcome == "ok_stream" and cfg.get("request_stream")) else cfg["request"]
+    ct = ((headers or {}).get("content-type") or "").split(";")[0].strip().lower()
+    if ct == STREAM_CT[cfg["stream_kind"]]:
+        return cfg["stream"]
+    if 200 <= (status or 0) < 300:
+        return cfg["response"]
+    return f"error:{status}"
+
+
+def write_reports(out_dir, rec, violations, per_dialect, cells_seen, gaps=None):
     distinct = {}
     for cid, direction, dialect, v in violations:
         key = (dialect, direction, generalize(v.pointer), v.rule)
@@ -1013,15 +1058,26 @@ def write_reports(out_dir, rec, violations, per_dialect, cells_seen):
         "per_dialect": per_dialect,
         "distinct_violations": top,
         "violations": [dict(cell=cid, direction=d, dialect=dl, **v.as_dict()) for cid, d, dl, v in violations],
+        "named_gaps": [dict(id=e.id, provider=e.raw["provider"], spec=e.raw["spec"],
+                            spec_digest=e.raw["spec_digest"], review_at=e.raw["review_at"],
+                            schema_path=e.schema_path, frame=e.raw["frame"], docs=e.raw["docs"],
+                            by=e.raw["by"], reason=e.raw["reason"], stale=e.stale,
+                            in_scope=e.in_scope, rows=sorted(e.fired))
+                       for e in (gaps.entries if gaps else [])],
     }
     with open(os.path.join(out_dir, "report.json"), "w") as f:
         json.dump(report, f, indent=1, sort_keys=True)
     lines = [f"# LLM spec conformance — {rec.meta.get('version') or rec.root}", "",
              f"recording: `{rec.root}`  ", f"llm cells in recording: {cells_seen}", "",
-             "| dialect | cells | request PASS/FAIL/SKIP | response PASS/FAIL/SKIP |", "|---|---|---|---|"]
+             "| dialect | cells | request PASS/FAIL/SKIP/GAP | response PASS/FAIL/SKIP/GAP |", "|---|---|---|---|"]
     for d in sorted(per_dialect):
         p = per_dialect[d]
-        lines.append(f"| {d} | {p['cells']} | {p['request']['PASS']}/{p['request']['FAIL']}/{p['request']['SKIP']} | {p['response']['PASS']}/{p['response']['FAIL']}/{p['response']['SKIP']} |")
+        lines.append(f"| {d} | {p['cells']} | {p['request']['PASS']}/{p['request']['FAIL']}/{p['request']['SKIP']}/{p['request']['GAP']} | {p['response']['PASS']}/{p['response']['FAIL']}/{p['response']['SKIP']}/{p['response']['GAP']} |")
+    if gaps and gaps.scoped:
+        lines += ["", f"## Named conformance gaps ({len(gaps.scoped)} in scope for this cell universe)", ""]
+        for e in gaps.scoped:
+            state = "**STALE — re-confirm against the newly pinned document**" if e.stale else f"fired on {len(e.fired)} row(s)"
+            lines.append(f"- **{e.id}** ({e.raw['provider']} `{e.schema_path}`, spec `{e.raw['spec_digest'][:12]}`) — {state}; {e.raw['frame']} — [documented]({e.raw['docs']})")
     lines += ["", f"## Distinct violations ({len(top)})", ""]
     if not top:
         lines.append("none")

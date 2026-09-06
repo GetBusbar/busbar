@@ -1,0 +1,45 @@
+{
+  "_comment": [
+    "NAMED CONFORMANCE GAPS of the LLM plane: places where busbar emits what the PROVIDER'S OWN",
+    "DOCUMENTATION describes but the provider's PUBLISHED machine-readable spec does not admit. The",
+    "owner has looked at each one and decided the product is right and the published document is",
+    "incomplete. Same shape of decision as testing/shadow-oracle/accepted-differences.json, and the",
+    "same rules:",
+    "  * A gapped row is NEVER a silent pass. It is written to the ledger with the row class `gap`,",
+    "    printed in its own column, kept out of the owed set, and counted in the verdict's gap count.",
+    "  * A gap is PINNED TO A SPEC DIGEST. `spec_digest` is the digest of the published document the",
+    "    gap was confirmed against; `review_at` restates it as the point of re-confirmation. When",
+    "    spec-digests.tsv moves, the gap goes STALE: it stops forgiving anything and the rig is RED",
+    "    until a human re-reads the new document and re-confirms (or deletes) the entry.",
+    "  * AN UNUSED GAP IS A LIE. Every entry owes a `named-gap|<id>` ledger row; an entry that fired",
+    "    zero times is RED, exactly like a probe that did not run.",
+    "  * Nothing here touches the validator's schema logic. The checker still fails the row; this",
+    "    register only decides what the failure is CALLED, and only for the exact violation named.",
+    "Fields: `cells` are regexes over the shadow-oracle cell id, `schema_path` is the spec address",
+    "the row was judged against (a gap for one schema never forgives another), and `violation` is the",
+    "exact pointer/rule/detail the checker produces — every violation on the row must match, or the",
+    "row stays FAIL."
+  ],
+  "gaps": [
+    {
+      "id": "G-1 anthropic ping",
+      "provider": "anthropic",
+      "spec": "anthropic",
+      "spec_digest": "d1d189d791d1b551b33edebe9a60d63836d167070863ef366969e0df1e9c4f55",
+      "review_at": "spec-digest:d1d189d791d1b551b33edebe9a60d63836d167070863ef366969e0df1e9c4f55",
+      "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
+      "dialect": "anthropic",
+      "direction": "response",
+      "cells": ["^llm\\|anthropic\\|(bedrock|cohere|openai|responses)\\|request\\|ok_stream$"],
+      "schema_path": "#/components/schemas/MessageStreamEvent",
+      "frame": "event: ping / data: {\"type\":\"ping\"}",
+      "violation": {
+        "pointer": "^sse\\[[0-9]+\\]:/$",
+        "rule": "discriminator",
+        "detail_contains": "'type': 'ping' is not one of"
+      },
+      "reason": "Anthropic DOCUMENTS `ping` as an event a message stream may carry at any point ('Event types ... ping'), and real native Anthropic streams emit it; the published OpenAPI document's MessageStreamEvent union simply does not list the member. busbar injects one `event: ping` after the translated `message_start` of an ingress-Anthropic cross-protocol stream so a translated stream looks like the native one it claims to be. A client that cannot take `ping` is not an Anthropic client, so the product keeps the frame and the PUBLISHED SPEC is the thing with the gap. Delete this entry the day the union gains the member.",
+      "docs": "https://docs.anthropic.com/en/docs/build-with-claude/streaming#event-types"
+    }
+  ]
+}
