@@ -228,6 +228,28 @@ impl busbar_contract::TransportConfigView for HttpCfg {
     }
 }
 
+/// The upgrade is the session's Unit 0, and until it completes the connection is an accepted socket
+/// answering to nobody. A peer that opens one and then says nothing would hold that socket, and the
+/// task upgrading it, for the lifetime of the process — the cheapest slot-exhaustion there is. The
+/// handshake carries its own budget, and a peer that misses it gets a deadline error rather than a
+/// permanent lease.
+#[tokio::test(start_paused = true)]
+async fn an_upgrade_the_peer_never_answers_expires_on_the_handshake_budget() {
+    let t = WsTransport::new();
+    // The far half is held open and never written to: the accept side can only wait.
+    let (end_a, _end_b) = tokio::io::duplex(64 * 1024);
+    let started = tokio::time::Instant::now();
+    let err = t
+        .handshake_over(end_a, true, "silent-peer")
+        .await
+        .expect_err("an unanswered upgrade must not wait forever");
+    assert_eq!(err, TransportError::Timeout);
+    assert!(
+        started.elapsed() >= crate::transport::HANDSHAKE_BUDGET,
+        "the budget is what ended it"
+    );
+}
+
 #[tokio::test]
 async fn half_close_is_the_ws_closing_handshake() {
     let t = WsTransport::new();

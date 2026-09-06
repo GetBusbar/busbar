@@ -36,6 +36,17 @@ use crate::conn::{ConnState, LowerIo, Sock, WsConnHandle};
 /// dropped the only handle that could cancel it.
 pub(crate) const CLOSE_BUDGET: std::time::Duration = std::time::Duration::from_millis(250);
 
+/// How long the WebSocket opening handshake may take before this transport gives the socket up.
+///
+/// The handshake IS this connection's Unit 0 (`Unit0Trigger::Upgrade`), and until it completes the
+/// socket answers to nobody: no unit owns it, no admission decision has been made about it, and
+/// nothing else in the stack is watching it. An unbounded handshake therefore lets a peer that
+/// connects and then says nothing hold a slot — and the task upgrading it — for the lifetime of the
+/// process, which is the cheapest exhaustion there is. One round trip over a stream the layer below
+/// has already established is the whole of the work, so the budget is generous rather than tight
+/// and still bounds it.
+pub(crate) const HANDSHAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// The `'static` view of a dial address, allocated at most once per distinct string.
 ///
 /// The sealed destination's address shape is already `'static`, but a `ws://` dial target is a URL:
@@ -210,15 +221,25 @@ impl WsTransport {
         peer: &str,
         chain: Vec<&'static str>,
     ) -> Result<Conn, TransportError> {
-        let sock: Sock = if is_server {
-            tokio_tungstenite::accept_async(stream)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?
-        } else {
-            let (sock, _resp) = tokio_tungstenite::client_async(url, stream)
-                .await
-                .map_err(|_| TransportError::HandshakeFailed)?;
-            sock
+        // Both roles are bounded by the same budget: a peer that never answers is the same
+        // unbounded wait whichever side opened the stream.
+        let upgraded = tokio::time::timeout(HANDSHAKE_BUDGET, async {
+            let sock: Sock = if is_server {
+                tokio_tungstenite::accept_async(stream)
+                    .await
+                    .map_err(|_| TransportError::HandshakeFailed)?
+            } else {
+                let (sock, _resp) = tokio_tungstenite::client_async(url, stream)
+                    .await
+                    .map_err(|_| TransportError::HandshakeFailed)?;
+                sock
+            };
+            Ok::<Sock, TransportError>(sock)
+        })
+        .await;
+        let sock = match upgraded {
+            Ok(result) => result?,
+            Err(_) => return Err(TransportError::Timeout),
         };
         Ok(self.hold(sock, peer, chain))
     }
