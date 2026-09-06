@@ -385,13 +385,18 @@ tier   = "fast"
 # THE CONSTRUCTION GATE (scripts/construction-gate.sh) — how the tree is BUILT measured against
 # docs/design/ARCHITECTURE.md with the ceilings in qa/construction.toml (one attempt seam, request-path
 # function size, ports-only plane→kernel reaches, no uninstalled seam, neutral-no-dialect, single
-# terminal). RUNS REPORT-ONLY here (`--summary`: prints STATUS rule current/ceiling per row plus the
-# verdict line, exits 0), the same posture as plane-grep/secret-hygiene above, because `--check` is RED
-# by design on HEAD (three rows over their ceilings) while the construction work it measures is in
-# flight; ci.yml runs the real `--check` in its own job with continue-on-error for the same reason.
-# Arming is a one-token change (`--summary` -> `--check`) once every row is within its ceiling — no code
-# edit. The --selftest (each rule proves it sees its own planted violation; zero rows is red) runs FIRST.
-run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --summary"
+# terminal). RUNS `--check-pinned` here, NOT report-only. `--summary` exits 0 whatever it measured, so
+# this segment was green while EIGHT rows were over their ceilings and said nothing about which; the
+# waiver beside it claimed "three rows", a figure that had been wrong for some time, and three of the
+# eight are MONEY invariants (plane-no-money, one-pricing-site, one-pricing-site:fee-fields) rather
+# than the LoC ratchets the waiver's wording implied. `--check-pinned` measures every row and then
+# requires the failing set to EQUAL qa/construction.toml's [gate].expected_red, which names those
+# eight one by one: a newly red row reds this segment, and so does a row that got FIXED, because the
+# pin then names a row that passes. The waiver cannot go stale, because the waiver is the list.
+# Arming fully is still a one-token change (`--check-pinned` -> `--check`) once expected_red is empty
+# — no code edit. The --selftest (each rule proves it sees its own planted violation; zero rows is
+# red) runs FIRST. ci.yml runs the strict `--check` in its own job with continue-on-error.
+run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --check-pinned"
 
 [[segment]]
 id     = "documented-claims"

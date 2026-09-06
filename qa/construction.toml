@@ -21,6 +21,36 @@ plane_crates = ["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"]
 # A bare `tests.rs` (Rust's `#[cfg(test)] mod tests;` file convention) is test code too.
 test_path_fragments = ["/tests/", "_tests.rs", "_test.rs", "/tests.rs"]
 
+# THE PINNED RED SET — the rows that are over their ceilings on HEAD today, named one by one.
+#
+# `--check` is red while the construction work these rows measure is in flight, so the qa segment
+# and the local full gate ran `--summary` instead, which prints the verdict and exits 0. That made
+# the umbrella GREEN with no statement at all about WHICH rows were red or HOW MANY, and the prose
+# waiver next to it said "three rows over their ceilings" long after the count had reached nine —
+# and the set is not a list of LoC ratchets, it is three MONEY invariants (a plane naming a price,
+# and two on the single pricing site) sitting beside them.
+#
+# `--check-pinned` is the middle posture that ends that: it measures everything, then requires the
+# failing set to EQUAL this list. A row that goes red joins nothing silently — it is not on the
+# list, so the gate is red. A row that gets FIXED is also red, until its name is deleted from here.
+# That is the expiry the prose waiver could not have: the waiver cannot outlive the facts, because
+# the waiver IS the facts.
+#
+# Each entry is a row id from the ledger. Shrinking this list is the work; nothing may be added to
+# it without the same argument that would be needed to raise the underlying ceiling.
+expected_red = [
+  # Money invariants. These are NOT ratchets and are not "in flight" in the way the others are.
+  "plane-no-money",
+  "one-pricing-site",
+  "one-pricing-site:fee-fields",
+  # Construction-shape rows the plane-extraction work is actively moving.
+  "request-path-fn-size",
+  "ports-only-tests:busbar-llm",
+  "terminal-doors-in-audit-step",
+  "one-pick-site",
+  "legacy-reach:busbar_substrate",
+]
+
 # Directory globs (relative to the repo root) that name each PLUGIN KIND from ARCHITECTURE.md section 1.4.
 # Shared by manifest-allowlist, source-denylist and forbid-unsafe so the kind boundaries are drawn
 # once. A glob matching no directory today is fine (the kind has no crate yet) — every rule below

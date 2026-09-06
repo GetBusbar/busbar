@@ -372,6 +372,48 @@ case "${1:-}" in
     tail -1 "$OUT/verdict.txt"
     exit 0
     ;;
+  --check-pinned)
+    # REPORT-ONLY's replacement. `--summary` exits 0 whatever it measured, so an umbrella running it
+    # was green while nine rows were red and said nothing about which. `--check` is red on HEAD by
+    # design. This is the posture between them: measure everything, then require the failing set to
+    # be EXACTLY [gate].expected_red. A newly red row is red here (it is not on the list); a row that
+    # was fixed is ALSO red (it is on a list it no longer belongs to), so the pin cannot go stale
+    # the way the prose waiver it replaces did — the only way to green is to edit the pin to match
+    # what the tree now measures, which is a review.
+    measure quiet >/dev/null
+    hdr "construction gate — pinned red set ($TOML)"
+    cat "$OUT/summary.txt"
+    python3 - "$TOML" "$OUT/ledger.tsv" <<'PYEOF'
+import sys, tomllib
+toml_path, ledger_path = sys.argv[1], sys.argv[2]
+with open(toml_path, "rb") as fh:
+    pinned = set(tomllib.load(fh)["gate"].get("expected_red", []))
+actual = set()
+with open(ledger_path, encoding="utf-8") as fh:
+    for line in fh:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) >= 2 and parts[1] == "FAIL":
+            actual.add(parts[0])
+if not actual and not pinned:
+    print("CONSTRUCTION: GREEN (no red rows, and none pinned).")
+    sys.exit(0)
+unpinned = sorted(actual - pinned)
+fixed = sorted(pinned - actual)
+for rid in unpinned:
+    print(f"  NEW RED   {rid}: red, and not in qa/construction.toml [gate].expected_red")
+for rid in fixed:
+    print(f"  NOW GREEN {rid}: pinned as red but passing — delete it from [gate].expected_red")
+if unpinned or fixed:
+    print(f"CONSTRUCTION: RED — the failing set ({len(actual)} row(s)) is not the pinned set "
+          f"({len(pinned)} row(s)).")
+    sys.exit(1)
+print(f"CONSTRUCTION: RED AS PINNED — exactly the {len(actual)} named row(s), no more, no fewer:")
+for rid in sorted(actual):
+    print(f"  {rid}")
+sys.exit(0)
+PYEOF
+    exit $?
+    ;;
   --calibrate)
     [ -n "${2:-}" ] || { echo "usage: $0 --calibrate <out.toml>" >&2; exit 2; }
     # ONE scan of the tree, not two. This used to run the whole measure — purity lint, rules.py,

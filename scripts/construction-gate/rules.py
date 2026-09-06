@@ -2227,6 +2227,9 @@ def calibrate(rows, cfg, path):
     for rid in ("hold-escapes", "seal-sites"):
         dead = set(by_id[f"{rid}:stale-waiver"]["offenders"])
         rules[rid]["known_sites"] = [e for e in rules[rid]["known_sites"] if e not in dead]
+    # A calibrated copy has no red rows by construction, so it pins none. Carrying HEAD's pinned red
+    # set into it would make `--check-pinned` on the baseline report eight rows as "now green".
+    cfg["gate"]["expected_red"] = []
     rules["unit-no-finding-ids"]["max_hits"] = by_id["unit-no-finding-ids"]["current"]
     rules["plane-no-money"]["max_hits"] = by_id["plane-no-money"]["current"]
     rules["one-pricing-site"]["max_extra_sites"] = by_id["one-pricing-site"]["current"]
