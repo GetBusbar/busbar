@@ -171,13 +171,15 @@
    "paths": [
     "crates/busbar-caps/src"
    ],
-   "tree_hash": "efbe4b1d4dbcf788dbb04282c1028a34e37c7c7903a15d0ac48c99547a33b928",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 2
+   },
+   "report": "pass 2 fresh eyes: mixed usage report lost the estimated mark on settle (fixed 17534dae); seal-sites literal blind to a two-line take (fixed 4b0dbfb2); all src read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-caps/src/tests"
@@ -190,12 +192,14 @@
     "crates/busbar-contract/src"
    ],
    "tree_hash": "1399ebd150cd1f1813018cc72a60710bb7424d408711079becde52e827e43c3f",
-   "audited_at": "3081f7fed15e8483f38cb8c2a039751f5af03fe4",
-   "round": 5,
-   "result": "in_progress",
-   "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
-   "auditor": "round-5 finder fleet",
+   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
+   "round": 6,
+   "result": "findings",
+   "counts": {
+    "NIT": 2
+   },
+   "report": "pass 2 fresh eyes: two test-name nits; all src read fully",
+   "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract/src/tests"
