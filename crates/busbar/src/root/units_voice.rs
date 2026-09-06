@@ -43,8 +43,11 @@
 //! turn that asks for two tools, so which answer finishes which unit is a decision, and
 //! [`OpenToolCalls`] is where it is made. Three moments, and each of them is a real call site:
 //!
-//! - **Planned.** The wait is entered at [`Units::verify`], because that is the frame that plans the
-//!   leg and the last frame in which the identifier the plane's draft minted is readable at all.
+//! - **Planned.** The wait is entered at [`Units::route`] — the step that HANDS THE CALL OVER, not
+//!   the earlier one that merely plans its leg. A wait is a claim that some client was asked a
+//!   question, and only this step has made that true: a unit turned away at approve or at the door
+//!   was never delivered, so a wait entered before them waits on an answer nobody owes and nothing
+//!   takes back out.
 //! - **Answered.** A client's reply names the call it answers — the voice plane decodes it as a
 //!   frame of that call rather than of the turn it rode in on — and the pump hands the correlation
 //!   to [`OpenToolCalls::replied`], which either names the unit it wakes or refuses. There is no
@@ -78,10 +81,10 @@
 //! | arrival | *none* — the kernel's gate | the connection's own arrival record |
 //! | decode | the voice plane | the shape the pump already read off the frame |
 //! | authenticate | `busbar-unit-auth` | the claim's declared alternatives, the plane's narrowing, whether the credential rides the session |
-//! | verify | `busbar-unit-trust` | the plane's proposed destinations, the pool view, the network guard over the dial target, and a tool call's reply leg entered as a wait |
+//! | verify | `busbar-unit-trust` | the plane's proposed destinations, the pool view, and the network guard over the dial target |
 //! | approve | `busbar-unit-scope` | the policy view, where silence is a refusal |
 //! | admit | `busbar-unit-admission`, priced by `busbar-unit-cost` | the estimate, the bucket chain, the pinned arrival epoch |
-//! | route | the provider dial, over `busbar-unit-egress` | the dial target and the guard posture, and what became of a tool call's wait |
+//! | route | the provider dial, over `busbar-unit-egress` | the dial target and the guard posture, and a tool call's wait: entered here when the call is handed over, read here when it comes back |
 //! | meter | `busbar-unit-usage` | the turn's reported classes and the configured policy |
 //! | audit | `busbar-unit-audit` | the operation class and the finish class |
 //! | exit | `busbar-unit-ledger` under `busbar-unit-wal` | nothing: the loop settles |
@@ -1407,32 +1410,20 @@ impl Units for VoiceUnit<'_> {
         &self,
         token: &UnitToken<Verify>,
         trust: &TrustToken,
-        ctx: &UnitCtx,
+        _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> Decision<Verify> {
-        // **The one frame a wait can be entered in.** A tool call's leg is a client await-reply, and
-        // the value it waits on is the identifier this unit's own draft minted, which lives no
-        // longer than the frame that decoded it. So the wait is entered HERE, where the leg is
-        // planned and the identifier is still readable, and not on some later step that would have
-        // to have kept a borrow it cannot keep.
-        if matches!(self.shape, UnitShape::ToolCall)
-            && self
-                .node
-                .tool_calls
-                .planned(
-                    self.session,
-                    ctx.key,
-                    TOOL_REPLY_LEG,
-                    self.correlation_out(),
-                    self.now_ms,
-                )
-                .is_err()
-        {
-            // A call nothing can answer. The leg names a key and the draft minted nothing under it,
-            // or minted under another — either way there is no client this reply could come back
-            // from, which is the no-destination answer and not a wait with a wildcard in it.
-            return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
-        }
+        // **THE WAIT IS NOT ENTERED HERE**, and it used to be. This step plans the leg, but a leg
+        // that is planned is not a leg that is delivered: three more steps can turn this unit away,
+        // and a wait entered before them is a wait for an answer no client was ever asked for. It
+        // is not even harmless — nothing takes such a wait back out, so the node's tick sweeps it at
+        // its deadline into an ending, and the ending belongs to a unit that ended long ago and
+        // will never read it. One denied scope leaves a row in the table for the life of the
+        // process. The wait goes in at Route, where the call is actually handed over.
+        //
+        // The identifier is no obstacle to that: it is read through `correlation_out`, off this
+        // unit's own draft, which every step of this unit can reach.
+        //
         // The trust unit's answer is a set of SEALED destinations, and sealing takes the trust token
         // the loop lends this step beside its own — the same shape admit and meter are lent. So the
         // destination this session's dialect resolves to is sealed HERE, once, and the route step
@@ -1579,15 +1570,44 @@ impl Units for VoiceUnit<'_> {
         ctx: &UnitCtx,
         meter: &AccrualMeter,
     ) -> Decision<Route> {
-        // **The exit for a call nobody answered.** The sweep took the wait out of the table and left
-        // the ending behind; this is where the unit reads it. A call that ran out its declared
-        // deadline ends under that deadline rather than settling as though the answer arrived, which
-        // is the difference between a hold that closes and a hold that is held open by a client that
-        // simply never replied.
-        if matches!(self.shape, UnitShape::ToolCall)
-            && self.node.tool_calls.ending(self.session, ctx.key) == Some(CallEnd::Unanswered)
-        {
-            return Decision::refuse(token, Refusal::new(ReasonCode::DeadlineExceeded));
+        // **A TOOL CALL'S WAIT, BOTH ENDS OF IT, IN THE ONE STEP THAT HANDS THE CALL OVER.**
+        //
+        // The ending is read first. A frame that carries one is the call coming BACK — the sweep or
+        // a client's reply left it there — and reading it is what tells this unit which half of the
+        // call it is. A call that ran out its declared deadline ends under that deadline rather than
+        // settling as though the answer arrived, which is the difference between a hold that closes
+        // and a hold held open by a client that simply never replied.
+        //
+        // No ending means this is the frame that DELIVERS the call, and the wait goes in here. Not
+        // at Verify, where it used to: three steps can still refuse a unit after Verify, and a wait
+        // entered for a call the client never received is one nothing takes back out.
+        if matches!(self.shape, UnitShape::ToolCall) {
+            match self.node.tool_calls.ending(self.session, ctx.key) {
+                Some(CallEnd::Unanswered) => {
+                    return Decision::refuse(token, Refusal::new(ReasonCode::DeadlineExceeded));
+                }
+                Some(CallEnd::Answered) => {}
+                None => {
+                    if self
+                        .node
+                        .tool_calls
+                        .planned(
+                            self.session,
+                            ctx.key,
+                            TOOL_REPLY_LEG,
+                            self.correlation_out(),
+                            self.now_ms,
+                        )
+                        .is_err()
+                    {
+                        // A call nothing can answer. The leg names a key and the draft minted
+                        // nothing under it, or minted under another — either way there is no client
+                        // this reply could come back from, which is the no-destination answer and
+                        // not a wait with a wildcard in it.
+                        return Decision::refuse(token, Refusal::new(ReasonCode::NoDestination));
+                    }
+                }
+            }
         }
 
         // A turn does not dial: it relays onto the upstream the session already opened. Only unit
@@ -2921,6 +2941,11 @@ mod tests {
     ///
     /// A wait with no identity matches the first reply that arrives, whoever it was for. Refusing
     /// the unit says so where it happens rather than at the first reply that goes to the wrong call.
+    ///
+    /// The ending is a failure rather than a door refusal because the answer is given at Route —
+    /// the step that hands the call over, and the only step at which a wait is a fact about a call
+    /// somebody was actually asked to answer. Past the door the unit ran, so its ending says it ran
+    /// and did not get there; nothing is charged either way.
     #[test]
     fn a_tool_call_that_minted_no_identifier_is_refused_rather_than_entered() {
         let kernel = Kernel::new();
@@ -2933,7 +2958,7 @@ mod tests {
         assert!(
             matches!(
                 end.outcome(),
-                Outcome::Refused(_, ReasonCode::NoDestination)
+                Outcome::Failed(busbar_caps::StepName::Route, ReasonCode::NoDestination)
             ),
             "got {:?}",
             end.outcome()
@@ -3186,6 +3211,45 @@ mod tests {
             Some(CallEnd::Answered),
             "and the unit's exit path reads the ending the reply left"
         );
+    }
+
+    /// **A call the client never received leaves nothing behind.**
+    ///
+    /// The wait used to go in at Verify, which is three steps before anything hands the call over.
+    /// A unit refused after that — a scope the deployment did not grant, a door that said no —
+    /// therefore left a wait in the table that no client had been asked to answer and that the unit
+    /// itself was already past taking back out. The node's tick then swept it at its deadline into
+    /// an ending, and the ending sat in the table for the life of the process because the only
+    /// reader of an ending is a unit that is long gone. One denied scope, one row, forever.
+    #[test]
+    fn a_tool_call_refused_before_it_is_delivered_leaves_no_wait_and_no_ending() {
+        let kernel = Kernel::new();
+        // A caller holding less than the class requires: the tool call is refused at Approve, which
+        // is after the step the wait used to be entered in and before the one that delivers it.
+        let node = node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .calling("call_aaa")
+            .holding(Grants::of(Scope::ReadOnly));
+        let Ended::Settled { end, .. } = run(&kernel, &unit) else {
+            panic!("the exit settles it");
+        };
+        assert!(
+            matches!(end.outcome(), Outcome::Refused(_, ReasonCode::ScopeDenied)),
+            "got {:?}",
+            end.outcome()
+        );
+        assert_eq!(
+            node.tool_calls.open(),
+            0,
+            "nothing is waiting on an answer for a call no client was handed"
+        );
+        // And the sweep has nothing to turn into an ending, which is the row that used to leak: an
+        // ending is read exactly once, by the unit whose exit path it belongs to, and this unit's
+        // exit path has already run.
+        let deadline = u64::from(busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000;
+        assert!(node.tool_calls.expired(deadline + 1).is_empty());
+        assert_eq!(node.tool_calls.ending(7, UnitKey::new(1)), None);
     }
 
     /// **A session that never opened owes its reservation back.**
