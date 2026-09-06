@@ -15,7 +15,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::{Transport, TransportMeta};
+use busbar_contract::{check_composition, Registered, Transport, TransportMeta};
 use busbar_transport_grpc::GrpcTransport;
 use busbar_transport_http::{ClientSettings, HttpTransport};
 use busbar_transport_sse::SseTransport;
@@ -79,4 +79,53 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
     #[cfg(feature = "plane-voice")]
     assert_eq!(ws.composed_over(), Some("http"));
     assert_eq!(grpc.composed_over(), Some("http"));
+}
+
+/// A row for the boot check, read off the live transport rather than typed out beside it.
+fn row<T: TransportMeta>(t: &dyn Transport) -> Registered {
+    Registered {
+        key: T::KEY,
+        composes_over: T::COMPOSES_OVER,
+        composed_over: t.composed_over(),
+    }
+}
+
+/// THE REAL STACK BOOTS.
+///
+/// This used to live in the contract crate as a hand-typed table of the seven transports' declared
+/// layers, and a hand-typed table is a table that drifts: it had `ws` composing over `http, tcp`
+/// long after the transport itself declared `http, tcp, tls`, and had `grpc` built over `tcp` when
+/// the composition root builds it over `http`. Both wrong, both green, because nothing tied either
+/// column to the thing it described.
+///
+/// It lives here instead, where the transport crates are reachable, and every column is READ:
+/// `KEY` and `COMPOSES_OVER` off the type, `composed_over` off an instance built the way the
+/// composition root builds it. There is nothing left to retype, so there is nothing left to drift —
+/// a transport that changes what it declares changes this table in the same edit, and a transport
+/// composed over a layer it does not declare is the boot refusal the node would give.
+#[test]
+fn the_real_stack_boots_as_the_transports_themselves_declare_it() {
+    let tcp = Arc::new(TcpTransport::new());
+    let tls = Arc::new(TlsTransport::new());
+    let http = Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(Arc::clone(&http));
+    #[cfg(feature = "plane-voice")]
+    let ws = WsTransport::over(Arc::clone(&http) as Arc<dyn Transport>);
+    let grpc = GrpcTransport::over(Arc::clone(&http) as Arc<dyn Transport>);
+    let stdio = StdioTransport::new();
+
+    let mut registry = vec![
+        row::<TcpTransport>(tcp.as_ref()),
+        row::<TlsTransport>(tls.as_ref()),
+        row::<HttpTransport>(http.as_ref()),
+        row::<SseTransport>(&sse),
+    ];
+    // WS is the voice plane's edge and is compiled with it: a row for a transport this build does
+    // not carry would be a composition the node never made.
+    #[cfg(feature = "plane-voice")]
+    registry.push(row::<WsTransport>(&ws));
+    registry.push(row::<GrpcTransport>(&grpc));
+    registry.push(row::<StdioTransport>(&stdio));
+
+    assert_eq!(check_composition(&registry), Ok(()));
 }
