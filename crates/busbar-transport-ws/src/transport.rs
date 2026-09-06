@@ -171,6 +171,19 @@ impl WsTransport {
         }
     }
 
+    /// The same composition, with the message ceiling named at construction.
+    ///
+    /// [`Transport::listen`] is the seam a served instance learns the ceiling through, and it is
+    /// the right one: a listener is handed the deployment's configuration and reads it there. A
+    /// DIAL-ONLY instance never reaches that seam — nothing binds it, so nothing hands it a view —
+    /// and the composition root that built it is the only thing that holds the number. So the cap
+    /// arrives twice by two different routes for two different lifecycles, and both end at the same
+    /// field: this constructor seeds it, and a later `listen` on the same instance overrides it.
+    #[must_use]
+    pub fn over_with_max_message_bytes(lower: Arc<dyn Transport>, max: usize) -> Self {
+        Self::over(lower)
+    }
+
     fn lower(&self) -> Result<&Arc<dyn Transport>, TransportError> {
         // A ws transport with nothing under it has no socket to reach for, and inventing one is the
         // exact thing this composition exists to stop.
