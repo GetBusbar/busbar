@@ -148,9 +148,33 @@ pub fn has_transfer_encoding(headers: &[(String, String)]) -> bool {
 }
 
 /// The declared body length, where the message declares one.
-#[must_use]
-pub fn content_length(headers: &[(String, String)]) -> Option<usize> {
-    header(headers, "content-length").and_then(|v| v.trim().parse().ok())
+///
+/// `Ok(None)` when no `Content-Length` header is present. `Err(())` when one is present and is not
+/// exactly `1*DIGIT` fitting a `usize` — a leading sign, a non-decimal digit, an overflowing value,
+/// or a second `Content-Length` disagreeing with the first. RFC 9112 6.3: an unparsable
+/// `Content-Length` with no `Transfer-Encoding` is unrecoverable framing, never a body-less
+/// message. RFC 9110 8.6 allows treating identical duplicate values as one, which this does.
+///
+/// # Errors
+///
+/// Returns `Err(())` when the header is present but does not name a single valid body length.
+pub fn content_length(headers: &[(String, String)]) -> Result<Option<usize>, ()> {
+    let mut values = headers
+        .iter()
+        .filter(|(k, _)| k.eq_ignore_ascii_case("content-length"))
+        .map(|(_, v)| v.trim());
+    let Some(first) = values.next() else {
+        return Ok(None);
+    };
+    for other in values {
+        if other != first {
+            return Err(());
+        }
+    }
+    if first.is_empty() || !first.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(());
+    }
+    first.parse::<usize>().map(Some).map_err(|_| ())
 }
 
 /// A chunked-transfer-encoding reader, fed whatever bytes have arrived so far.
@@ -339,7 +363,7 @@ mod tests {
             ("CONTENT-length".to_string(), " 12 ".to_string()),
             ("Transfer-Encoding".to_string(), "gzip, Chunked".to_string()),
         ];
-        assert_eq!(content_length(&headers), Some(12));
+        assert_eq!(content_length(&headers), Ok(Some(12)));
         assert!(is_chunked(&headers));
         assert!(!is_chunked(&[(
             "Transfer-Encoding".to_string(),

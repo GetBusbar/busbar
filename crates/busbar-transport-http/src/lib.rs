@@ -778,7 +778,9 @@ fn complete_message(
         let (chunks, trailers) = decoder.take();
         (chunks.concat(), trailers)
     } else {
-        let declared = raw::content_length(&head.headers).unwrap_or(0);
+        let declared = raw::content_length(&head.headers)
+            .map_err(|()| TransportError::Framing)?
+            .unwrap_or(0);
         if declared > max_body_bytes {
             return Err(TransportError::Framing);
         }
@@ -875,7 +877,7 @@ async fn read_ingress_message(
             // would be answering a question the sender did not ask.
             return Err(TransportError::Framing);
         }
-        if raw::content_length(&headers).is_some() {
+        if raw::header(&headers, "content-length").is_some() {
             // Two headers describing two framings of the same bytes. The coding wins the reading,
             // but this reader hands the VERBATIM header prefix up as the HEAD frame, so forwarding
             // it would hand the next reader a length the bytes do not have — the smuggling shape
@@ -911,7 +913,9 @@ async fn read_ingress_message(
         }
         decoder.take()
     } else {
-        let declared = raw::content_length(&headers).unwrap_or(0);
+        let declared = raw::content_length(&headers)
+            .map_err(|()| TransportError::Framing)?
+            .unwrap_or(0);
         if declared > max_body_bytes {
             // Refused on the declaration, before a byte of the body behind it is read: reading a
             // megabyte only to discard it is the resource cost the cap exists to avoid.

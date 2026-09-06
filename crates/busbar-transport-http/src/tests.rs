@@ -412,6 +412,85 @@ async fn a_message_with_both_a_transfer_encoding_and_a_content_length_is_refused
     writer.abort();
 }
 
+/// RFC 9112 6.3: an unparsable `Content-Length` with no `Transfer-Encoding` is unrecoverable
+/// framing, not a body-less message. A value that overflows `usize` must refuse, not silently
+/// serve the request as empty.
+#[tokio::test]
+async fn an_overflowing_content_length_is_a_framing_error() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client,
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 99999999999999999999\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields the framing error, not a body-less message");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a Content-Length that cannot fit a usize is unrecoverable framing, not zero"
+    );
+    writer.abort();
+}
+
+/// A leading sign on `Content-Length` is not `1*DIGIT`: RFC 9112 6.3 says the field carries a
+/// non-negative integer with no sign, so `+5` must refuse rather than be parsed as five.
+#[tokio::test]
+async fn a_content_length_with_a_leading_sign_is_a_framing_error() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        tokio::io::AsyncWriteExt::write_all(
+            &mut client,
+            b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: +5\r\n\r\nhello",
+        )
+        .await
+        .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("the stream yields the framing error, not a 5-byte body");
+    assert_eq!(
+        first.unwrap_err(),
+        TransportError::Framing,
+        "a signed Content-Length is not 1*DIGIT and must not be parsed as five"
+    );
+    writer.abort();
+}
+
 /// A `write` dropped mid-exchange ends the connection observably instead of hanging `frames`.
 ///
 /// The battery's cancel-mid-frame cell, on the egress side. The exchange runs inside `write`, and a
