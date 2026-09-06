@@ -877,6 +877,67 @@ fn response_done_usage_extracts_split_token_classes() {
 }
 
 #[test]
+fn a_turn_that_reports_only_totals_is_still_metered() {
+    // The per-modality breakdown is a DETAIL of the totals, and an upstream that reports the totals
+    // without it has still told busbar what the turn cost. Reading only the details meters that turn
+    // at ZERO — a free session on a plane where audio tokens are the dominant charge — and the number
+    // that reaches the pricer is the one that becomes money, so a total with no breakdown lands on the
+    // lane the breakdown would have summed to rather than being discarded.
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "type": "response.done",
+        "response": { "usage": {
+            "total_tokens": 150,
+            "input_tokens": 100,
+            "output_tokens": 50
+        }}
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage")
+    };
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(100),
+        "the reported input total bills, breakdown or no breakdown"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        Some(50)
+    );
+}
+
+#[test]
+fn a_partial_breakdown_is_not_topped_up_from_the_totals() {
+    // The other direction of the same rule, and the one that must not over-bill: once a breakdown is
+    // PRESENT it is the answer, even where it does not sum to the stated total. Reconciling the two
+    // means guessing which of the provider's own numbers is the true one, and guessing high charges a
+    // caller for tokens no detail claims they used.
+    let codec = OpenAiRealtimeCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "type": "response.done",
+        "response": { "usage": {
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "input_token_details": { "audio_tokens": 80, "text_tokens": 15, "cached_tokens": 5 },
+            "output_token_details": { "audio_tokens": 40, "text_tokens": 10 }
+        }}
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage")
+    };
+    assert_eq!(
+        u.text_in, 15,
+        "the detail stands; the total does not top it up"
+    );
+    assert_eq!(u.text_out, 10);
+}
+
+#[test]
 fn cached_input_tokens_are_not_billed_twice() {
     // OpenAI Realtime reports `input_token_details.cached_tokens` as a SUBSET of the input classes it
     // sits beside (`audio_tokens` + `text_tokens`), exactly as Chat Completions reports

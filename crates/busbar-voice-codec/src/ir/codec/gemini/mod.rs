@@ -330,14 +330,27 @@ fn modality_tokens(details: Option<&Value>, modality: &str) -> u64 {
 
 /// Extract the split token classes from a Gemini `usageMetadata` object (`plane4-duplex-session.md` — audio vs text are
 /// SEPARATE classes; extraction-only, never client-translated).
+/// `promptTokensDetails` breaks `promptTokenCount` out by modality; it is a detail OF that count, not
+/// the count itself. So an ABSENT breakdown falls back to the direction's own count and a PRESENT one
+/// is never topped up from it — the same rule the sibling dialect's
+/// [`super::extract_usage`] states in full, applied here so a turn prices the same whichever wire
+/// carried it. A `usageMetadata` that states the counts and omits the breakdown otherwise meters at
+/// zero, which is a free turn on the plane where audio tokens are the dominant charge.
 fn usage_from_metadata(u: &Value) -> IrDuplexUsage {
-    let pd = u.get("promptTokensDetails");
-    let rd = u.get("responseTokensDetails");
+    let pd = u.get("promptTokensDetails").filter(|v| v.is_array());
+    let rd = u.get("responseTokensDetails").filter(|v| v.is_array());
+    let count = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or_default();
     IrDuplexUsage {
         audio_in: modality_tokens(pd, "AUDIO"),
-        text_in: modality_tokens(pd, "TEXT"),
+        text_in: match pd {
+            Some(_) => modality_tokens(pd, "TEXT"),
+            None => count("promptTokenCount"),
+        },
         audio_out: modality_tokens(rd, "AUDIO"),
-        text_out: modality_tokens(rd, "TEXT"),
+        text_out: match rd {
+            Some(_) => modality_tokens(rd, "TEXT"),
+            None => count("responseTokenCount"),
+        },
         cached: u
             .get("cachedContentTokenCount")
             .and_then(Value::as_u64)

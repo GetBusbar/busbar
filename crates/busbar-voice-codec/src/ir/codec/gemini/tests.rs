@@ -996,6 +996,65 @@ fn usage_metadata_extracts_split_token_classes() {
 }
 
 #[test]
+fn a_gemini_turn_that_reports_only_totals_is_still_metered() {
+    // `promptTokensDetails` breaks `promptTokenCount` out by modality; it is a detail OF that count,
+    // not the count itself. A `usageMetadata` that states the counts and omits the breakdown has still
+    // said what the turn cost, and reading only the breakdown meters it at zero. Same rule as the
+    // sibling dialect, so a turn prices the same whichever wire carried it.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "usageMetadata": {
+            "promptTokenCount": 95,
+            "responseTokenCount": 50,
+            "totalTokenCount": 145
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage");
+    };
+    let billed = u.to_billing_usage();
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_INPUT).copied(),
+        Some(95),
+        "the reported prompt total bills, breakdown or no breakdown"
+    );
+    assert_eq!(
+        billed.usage_units.get(busbar_api::UNIT_OUTPUT).copied(),
+        Some(50)
+    );
+}
+
+#[test]
+fn a_partial_gemini_breakdown_is_not_topped_up_from_the_totals() {
+    // Present breakdown wins, even where it does not sum to the stated count: reconciling the two
+    // means picking which of the provider's own numbers is true, and picking high bills a caller for
+    // tokens no modality claims.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let src = json!({
+        "usageMetadata": {
+            "promptTokenCount": 500,
+            "responseTokenCount": 50,
+            "promptTokensDetails": [ { "modality": "AUDIO", "tokenCount": 80 } ],
+            "responseTokensDetails": [ { "modality": "AUDIO", "tokenCount": 40 } ]
+        }
+    });
+    let ir = codec.read_down(wire(&src.to_string()), &mut st);
+    let IrServerEvent::Usage(u) = &ir[0] else {
+        panic!("expected Usage");
+    };
+    assert_eq!(u.audio_in, 80);
+    assert_eq!(
+        u.text_in, 0,
+        "the detail stands; the count does not top it up"
+    );
+    assert_eq!(u.audio_out, 40);
+    assert_eq!(u.text_out, 0);
+}
+
+#[test]
 fn cached_content_tokens_are_not_billed_twice() {
     // Gemini reports `cachedContentTokenCount` as a SUBSET of `promptTokenCount` (cached content IS
     // part of the prompt), and `promptTokensDetails` is that same prompt broken out by modality. So

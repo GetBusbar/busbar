@@ -752,19 +752,40 @@ impl DuplexReader for OpenAiRealtimeCodec {
 
 /// Extract the split token classes from a `response.done.usage` object (`plane4-duplex-session.md` — audio vs text are
 /// SEPARATE classes; extraction-only, never client-translated).
+/// A BREAKDOWN THAT IS NOT THERE IS NOT A TURN THAT COST NOTHING. The details object breaks the
+/// stated `input_tokens` / `output_tokens` out by modality; it is a detail OF those figures, not the
+/// figures themselves. An upstream that reports the totals and omits the breakdown has still said
+/// what the turn cost, and reading only the breakdown meters that turn at ZERO — a free session on a
+/// plane where audio tokens are the dominant charge, and this is the number that becomes money.
+///
+/// So an ABSENT breakdown falls back to the direction's own total, which lands on the same billing
+/// lane the breakdown would have summed to ([`IrDuplexUsage::to_billing_usage`] folds audio and text
+/// onto one lane per direction, so the modality it is attributed to changes no price).
+///
+/// A PRESENT breakdown is never topped up from the total, even where the two do not agree. Reconciling
+/// them means deciding which of the provider's own numbers is the true one, and deciding in favour of
+/// the larger charges a caller for tokens no detail claims they used — the one direction a meter must
+/// not move on its own.
 fn extract_usage(u: &Value) -> IrDuplexUsage {
-    let ind = u.get("input_token_details");
-    let outd = u.get("output_token_details");
+    let ind = u.get("input_token_details").filter(|v| v.is_object());
+    let outd = u.get("output_token_details").filter(|v| v.is_object());
     let field = |o: Option<&Value>, k: &str| {
         o.and_then(|x| x.get(k))
             .and_then(Value::as_u64)
             .unwrap_or_default()
     };
+    let total = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or_default();
     IrDuplexUsage {
         audio_in: field(ind, "audio_tokens"),
         audio_out: field(outd, "audio_tokens"),
-        text_in: field(ind, "text_tokens"),
-        text_out: field(outd, "text_tokens"),
+        text_in: match ind {
+            Some(_) => field(ind, "text_tokens"),
+            None => total("input_tokens"),
+        },
+        text_out: match outd {
+            Some(_) => field(outd, "text_tokens"),
+            None => total("output_tokens"),
+        },
         cached: field(ind, "cached_tokens"),
     }
 }
