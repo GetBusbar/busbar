@@ -766,34 +766,45 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
 #[test]
 fn every_bodyless_route_the_codec_mounts_decodes() {
     let plane = A2aPlane::EMPTY;
-    for (verb, target, expected) in [
-        ("GET", "/a2a/tasks", ops::OP_TASK_LIST),
-        ("GET", "/a2a/tasks/t-1", ops::OP_TASK_GET),
-        ("GET", "/a2a/extendedAgentCard", ops::OP_AGENT_CARD),
+    for (verb, target, expected, sent) in [
+        ("GET", "/a2a/tasks", ops::OP_TASK_LIST, &b""[..]),
+        ("GET", "/a2a/tasks/t-1", ops::OP_TASK_GET, &b""[..]),
+        (
+            "GET",
+            "/a2a/extendedAgentCard",
+            ops::OP_AGENT_CARD,
+            &b""[..],
+        ),
         (
             "GET",
             "/a2a/tasks/t-1/pushNotificationConfigs",
             ops::OP_PUSH_CONFIG_LIST,
+            &b""[..],
         ),
         (
             "POST",
             "/a2a/tasks/t-1/pushNotificationConfigs",
             ops::OP_PUSH_CONFIG_CREATE,
+            // The create is the one of the seven that carries a document: it is the configuration
+            // being created.
+            &br#"{"id":"c-9","url":"https://caller.invalid/hook"}"#[..],
         ),
         (
             "GET",
             "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
             ops::OP_PUSH_CONFIG_GET,
+            &b""[..],
         ),
         (
             "DELETE",
             "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
             ops::OP_PUSH_CONFIG_DELETE,
+            &b""[..],
         ),
     ] {
         let scaffold = Scaffold::new("http").on_path(target).with_method(verb);
         let ctx = scaffold.ctx();
-        let frames = vec![frame(b"")];
+        let frames = vec![frame(sent)];
         let mut cursor = FrameCursor::new(&frames);
         let ingress = plane
             .decode_ingress(&mut cursor, None, &ctx)
@@ -802,6 +813,39 @@ fn every_bodyless_route_the_codec_mounts_decodes() {
             panic!("{verb} {target} is one whole unit, got {ingress:?}");
         };
         assert_eq!(draft.op, expected, "{verb} {target} named the wrong class");
+        assert_eq!(
+            draft.body_ir.body(),
+            sent,
+            "{verb} {target} decoded over bytes that are not the ones that arrived"
+        );
+    }
+}
+
+/// A surface that CARRIES a document is not complete before that document has arrived.
+///
+/// The surfaces below the task collection were made to decode instead of waiting forever, which is
+/// right for the six that carry nothing — a fetch with no body is complete the moment it is
+/// recognised. The create is not one of them: the configuration it registers is its body, and
+/// decoding an empty frame as a finished create opened a unit whose plan writes a push configuration
+/// and pins a callback address out of a document that had not arrived. So the empty frame is answered
+/// "nothing has arrived yet" for this one surface, exactly as the callback already answers it.
+#[test]
+fn a_surface_that_carries_a_document_waits_for_it() {
+    let plane = A2aPlane::EMPTY;
+    for target in [
+        "/a2a/tasks/t-1/pushNotificationConfigs",
+        // The callback, which has always waited: asserted beside the create so the two answer alike.
+        "/a2a/push",
+    ] {
+        let scaffold = Scaffold::new("http").on_path(target).with_method("POST");
+        let ctx = scaffold.ctx();
+        let frames = vec![frame(b"")];
+        let mut cursor = FrameCursor::new(&frames);
+        assert_eq!(
+            plane.decode_ingress(&mut cursor, None, &ctx),
+            Ok(Ingress::NeedMore),
+            "{target} decoded a document that had not arrived"
+        );
     }
 }
 

@@ -450,14 +450,24 @@ fn surface_of(target: &str, verb: Option<&str>) -> Option<OpenSurface> {
     }
 }
 
+/// Whether a targeted surface's operation carries a document of its own.
+///
+/// Not carrying an ENVELOPE is not the same as not carrying a BODY, and the create is where the two
+/// part company: the configuration it registers IS its body. Everything else reached by target here
+/// is a read or a removal, named entirely by the target, and complete the moment it is recognised.
+fn carries_a_document(op: busbar_contract::ids::OpClassId) -> bool {
+    op == ops::OP_PUSH_CONFIG_CREATE
+}
+
 /// Decode one request on a surface that carries no request envelope.
 ///
-/// Each of the three is a different shape and each is answered as itself. A discovery document is
-/// fetched with no body at all, so there is nothing to read and the unit is complete the moment it
-/// is recognised. A task read through the collection binding names its task in the target rather
-/// than in a document. The callback carries a task document of its own — not an envelope around
-/// one — and it is the provider-initiated class, which is what the plane says a frame arriving
-/// on a connection this node dialled MEANS.
+/// Each shape is answered as itself. A discovery document is fetched with no body at all, so there
+/// is nothing to read and the unit is complete the moment it is recognised. A surface named by the
+/// TARGET names its task there rather than in a document — except the create, whose document is the
+/// configuration it registers, and which therefore waits for that document like the callback does.
+/// The callback carries a task document of its own — not an envelope around one — and it is the
+/// provider-initiated class, which is what the plane says a frame arriving on a connection this node
+/// dialled MEANS.
 fn decode_open_surface<'u>(
     surface: OpenSurface,
     frames: &mut FrameCursor<'u>,
@@ -476,6 +486,12 @@ fn decode_open_surface<'u>(
         // second price for it.
         OpenSurface::Discovery => ops::OP_AGENT_CARD,
         OpenSurface::Targeted(op) => {
+            // A surface whose document has not arrived is not a finished unit. Answering it as one
+            // opened a create whose plan writes a push configuration and pins a callback address,
+            // out of a body that was not there.
+            if carries_a_document(op) && body.is_empty() {
+                return Ok(Ingress::NeedMore);
+            }
             if let Some(id) = task_id_of(target) {
                 let id = ctx.arena().alloc_str(id).map_err(|_| Decode::Oversize)?;
                 let _ = facts.set(f::FACT_TASK_ID, FactValue::Str(id));
