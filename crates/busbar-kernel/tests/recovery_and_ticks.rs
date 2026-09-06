@@ -237,6 +237,7 @@ fn a_sweep_racing_a_running_unit_reclaims_nothing_of_it() {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now: 0,
         })
         .map_err(|_| ())
         .expect("under the cap");
@@ -372,8 +373,21 @@ fn a_slow_unit_is_not_a_lost_one() {
 #[test]
 fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
     let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
     let canary = Canary::new();
-    let cell = HoldCell::new(arrival_hold(&kernel, &TestDoor, principal()));
+    let slot = table
+        .insert(Enter {
+            key: UnitKey::new(13),
+            origin: OriginKind::Client,
+            session: None,
+            admin_listener: false,
+            provider_of_open_session: false,
+            zero_hold_tick: false,
+            arrival: arrival_hold(&kernel, &TestDoor, principal()),
+            now: 0,
+        })
+        .map_err(|_| ())
+        .expect("under the cap");
     let evidence = Evidence {
         accrued_floor: 1_750,
         ..Evidence::default()
@@ -382,22 +396,16 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
     let gauge = ConcurrencyGauge::new();
     let bucket = bucket_all("team");
     gauge.acquire(&bucket, 4).expect("room in the gauge");
-    let mut leases = LeaseSet::new();
-    leases.take(bucket);
+    assert!(
+        slot.leases().take(bucket),
+        "the door records it on the slot"
+    );
 
     let verdict = Sweep::Stalled {
         at: StepName::Route,
     };
-    let end = sweep_settle(
-        &kernel,
-        &cell,
-        verdict,
-        &evidence,
-        &canary,
-        &mut leases,
-        &gauge,
-    )
-    .expect("a stall is an end, and an end settles");
+    let end = sweep_settle(&kernel, &slot, verdict, &evidence, &canary, &gauge)
+        .expect("a stall is an end, and an end settles");
     assert_eq!(
         end.outcome(),
         busbar_caps::Outcome::Failed(StepName::Route, ReasonCode::Stalled)
@@ -412,20 +420,11 @@ fn a_stalled_unit_posts_its_floor_and_gives_its_lease_back() {
         .map(|p| p.flags().contains(PostingFlags::ESTIMATED))
         .unwrap_or(false));
     assert_eq!(gauge.count(&bucket), 0, "the stalled unit kept its lease");
-    assert!(leases.is_empty());
+    assert!(!slot.leases().is_owned(), "the slot is unowned now");
     assert_eq!(canary.counts().settlements, 1);
 
-    // And the second key to the cell finds it empty.
-    assert!(sweep_settle(
-        &kernel,
-        &cell,
-        verdict,
-        &evidence,
-        &canary,
-        &mut leases,
-        &gauge
-    )
-    .is_none());
+    // And the second key to the slot finds it empty.
+    assert!(sweep_settle(&kernel, &slot, verdict, &evidence, &canary, &gauge).is_none());
     assert_eq!(canary.counts().settlements, 1);
 }
 
