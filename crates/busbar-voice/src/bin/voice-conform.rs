@@ -190,9 +190,12 @@ fn reencode_up<C: DuplexReader + DuplexWriter>(
 ) -> Vec<IrClientEvent> {
     let mut st = DecodeState::default();
     let mut ir2 = Vec::new();
+    // ONE session state for the whole re-encode: the writers accumulate a streamed tool call's
+    // arguments on it, exactly as a live session's would.
+    let mut wst = DecodeState::default();
     for e in ir1 {
         // A concept the dialect has no verb for frames NOTHING; it re-decodes to nothing too.
-        if let Some(w) = codec.write_up(e.clone()) {
+        if let Some(w) = codec.write_up(e.clone(), &mut wst) {
             ir2.extend(codec.read_up(w, &mut st));
         }
     }
@@ -205,9 +208,13 @@ fn reencode_down<C: DuplexReader + DuplexWriter>(
 ) -> Vec<IrServerEvent> {
     let mut st = DecodeState::default();
     let mut ir2 = Vec::new();
+    let mut wst = DecodeState::default();
     for e in ir1 {
-        let w = codec.write_down(e.clone());
-        ir2.extend(codec.read_down(w, &mut st));
+        // A downlink event that is not a frame on its own (a held tool-argument fragment) writes
+        // nothing; the call it belongs to frames whole at its close.
+        if let Some(w) = codec.write_down(e.clone(), &mut wst) {
+            ir2.extend(codec.read_down(w, &mut st));
+        }
     }
     ir2
 }
@@ -377,6 +384,8 @@ fn replay_decode<C: DuplexReader + DuplexWriter>(
     lines: &[Value],
 ) -> (Vec<&'static str>, usize, usize) {
     let mut st = DecodeState::default();
+    // The write seam's own session state (a streamed tool call accumulates on it).
+    let mut wst = DecodeState::default();
     let mut tags: Vec<&'static str> = Vec::new();
     let mut decoded = 0usize;
     let mut reencoded = 0usize;
@@ -393,7 +402,7 @@ fn replay_decode<C: DuplexReader + DuplexWriter>(
                     decoded += 1;
                     // A dropped concept frames nothing at all — that is not a re-encode.
                     if codec
-                        .write_up(ir.clone())
+                        .write_up(ir.clone(), &mut wst)
                         .is_some_and(|w| !val_of(&w).is_null())
                     {
                         reencoded += 1;
@@ -405,8 +414,10 @@ fn replay_decode<C: DuplexReader + DuplexWriter>(
                 let irs = codec.read_down(wire_of(ev), &mut st);
                 for ir in &irs {
                     decoded += 1;
-                    let w = codec.write_down(ir.clone());
-                    if !val_of(&w).is_null() {
+                    if codec
+                        .write_down(ir.clone(), &mut wst)
+                        .is_some_and(|w| !val_of(&w).is_null())
+                    {
                         reencoded += 1;
                     }
                 }
@@ -550,11 +561,12 @@ where
         Decoded::Up(ir) => {
             let n1 = norm_up(&ir);
             let mut st = DecodeState::default();
+            let mut wst = DecodeState::default();
             let mut n2 = Vec::new();
             for e in ir {
                 // The destination dialect may have no verb for the concept: it frames nothing, and
                 // nothing is what the bridged side then carries (the map's documented drop).
-                if let Some(w) = to.write_up(client_from_norm_passthrough(e)) {
+                if let Some(w) = to.write_up(client_from_norm_passthrough(e), &mut wst) {
                     n2.extend(norm_up(&to.read_up(w, &mut st)));
                 }
             }
@@ -563,10 +575,14 @@ where
         Decoded::Down(ir) => {
             let n1 = norm_down(&ir);
             let mut st = DecodeState::default();
+            let mut wst = DecodeState::default();
             let mut n2 = Vec::new();
             for e in ir {
-                let w = to.write_down(e);
-                n2.extend(norm_down(&to.read_down(w, &mut st)));
+                // An event that is not a frame on its own (a held tool-argument fragment) bridges
+                // nothing by itself; its call arrives whole at the close.
+                if let Some(w) = to.write_down(e, &mut wst) {
+                    n2.extend(norm_down(&to.read_down(w, &mut st)));
+                }
             }
             (n1, n2)
         }
@@ -578,6 +594,45 @@ where
 // is just an identity used to keep the generic bridge readable.
 fn client_from_norm_passthrough(e: IrClientEvent) -> IrClientEvent {
     e
+}
+
+/// Bridge a concept's fixtures AS ONE EXCHANGE — one source session, one destination session — for the
+/// concepts whose map transform is stated across EVENTS rather than within one. A streamed tool call is
+/// the case in point: the map says the bridge toward Gemini must ACCUMULATE the argument deltas and
+/// parse them into the atomic `args` object, so a lone `…arguments.delta` frame legitimately bridges to
+/// nothing on its own — the call frames at its `…arguments.done`. Judging that fragment alone would
+/// demand the very mistranslation the map forbids (a call dispatched with arguments nobody sent).
+fn bridge_exchange<A, B>(from: &A, to: &B, vals: &[Value]) -> (Vec<Norm>, Vec<Norm>)
+where
+    A: DuplexReader,
+    B: DuplexReader + DuplexWriter,
+{
+    let (mut rst, mut wst, mut bst) = (
+        DecodeState::default(),
+        DecodeState::default(),
+        DecodeState::default(),
+    );
+    let (mut n1, mut n2) = (Vec::new(), Vec::new());
+    for v in vals {
+        let up = from.read_up(wire_of(v), &mut rst);
+        if !up.is_empty() {
+            n1.extend(norm_up(&up));
+            for e in up {
+                if let Some(w) = to.write_up(e, &mut wst) {
+                    n2.extend(norm_up(&to.read_up(w, &mut bst)));
+                }
+            }
+            continue;
+        }
+        let down = from.read_down(wire_of(v), &mut rst);
+        n1.extend(norm_down(&down));
+        for e in down {
+            if let Some(w) = to.write_down(e, &mut wst) {
+                n2.extend(norm_down(&to.read_down(w, &mut bst)));
+            }
+        }
+    }
+    (n1, n2)
 }
 
 fn cross<A, B>(
@@ -605,22 +660,42 @@ where
             .as_array()
             .cloned()
             .unwrap_or_default();
+        // Every FROM-side fixture this concept names, in the map's order.
+        let present: Vec<(String, Value)> = fixtures
+            .iter()
+            .filter_map(|fx| {
+                let name = fx.as_str().unwrap_or("");
+                if name.is_empty() || name.ends_with(".jsonl") {
+                    return None;
+                }
+                let path = dir_for(from_d).join(name);
+                if !path.exists() {
+                    return None;
+                }
+                Some((
+                    name.to_string(),
+                    serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap(),
+                ))
+            })
+            .collect();
         // pick the first FROM-side fixture that actually decodes
         let mut chosen: Option<(String, Vec<Norm>, Vec<Norm>)> = None;
-        for fx in &fixtures {
-            let name = fx.as_str().unwrap_or("");
-            if name.is_empty() || name.ends_with(".jsonl") {
-                continue;
-            }
-            let path = dir_for(from_d).join(name);
-            if !path.exists() {
-                continue;
-            }
-            let v: Value = serde_json::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
-            let (n1, n2) = bridge(from, to, &v);
+        for (name, v) in &present {
+            let (n1, n2) = bridge(from, to, v);
             if !n1.is_empty() {
-                chosen = Some((name.to_string(), n1, n2));
+                chosen = Some((name.clone(), n1, n2));
                 break;
+            }
+        }
+        // A concept whose transform is stated ACROSS events (the streamed⟷atomic tool call) can bridge
+        // one of its frames to nothing on its own; judge those fixtures as the single exchange the map
+        // describes before calling anything lost.
+        if let Some((_, _, n2)) = &chosen {
+            if n2.is_empty() && present.len() > 1 {
+                let vals: Vec<Value> = present.iter().map(|(_, v)| v.clone()).collect();
+                let (m1, m2) = bridge_exchange(from, to, &vals);
+                let names: Vec<&str> = present.iter().map(|(n, _)| n.as_str()).collect();
+                chosen = Some((names.join("+"), m1, m2));
             }
         }
         match chosen {

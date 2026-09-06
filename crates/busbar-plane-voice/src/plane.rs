@@ -81,7 +81,7 @@ use busbar_voice_codec::ir::event::{IrClientEvent, IrServerEvent};
 use busbar_voice_codec::ir::media::{AudioFormat, IrAudioFrame, UpDown};
 use busbar_voice_codec::ir::tool::IrDuplexTool;
 use busbar_voice_codec::ir::{
-    DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireEvent,
+    DecodeState, DuplexReader, DuplexWriter, GeminiLiveCodec, OpenAiRealtimeCodec, WireEvent,
 };
 
 use crate::claims::{self, Dialect};
@@ -227,7 +227,7 @@ impl Plane for VoicePlane {
         let writer = writer_for(upstream_dialect);
         // The upstream dialect may have NO verb for this concept (the cross-dialect drop rows): then
         // nothing is relayed — the same answer a lifecycle frame handled fully at decode gives.
-        let Some(out) = writer.write_up(client_event) else {
+        let Some(out) = writer.write_up(client_event, &mut state.codec) else {
             return Ok(None);
         };
         ctx.arena()
@@ -295,7 +295,13 @@ impl Plane for VoicePlane {
         // would need the immutable half of the state to still carry the negotiated dialect, which it
         // does today (`VoiceSessionState::dialect`) but this method has no path to it before Unit 0
         // completes. Flagged rather than guessed past.
-        let bytes = OpenAiRealtimeCodec.write_down(event).0;
+        // The write seam threads the session's decode state (it holds what framing cannot answer
+        // per-event); a refusal reaches none of the session's state here, and needs none — it is one
+        // self-contained frame with nothing accumulated behind it, so it is framed against a fresh one.
+        let bytes = OpenAiRealtimeCodec
+            .write_down(event, &mut DecodeState::default())
+            .ok_or(Encode::Unrepresentable)?
+            .0;
         ctx.arena()
             .alloc_bytes(&bytes)
             .map_err(|_| Encode::ArenaExhausted)
@@ -814,7 +820,11 @@ fn progress_from_server_event<'u>(
                     let sid = state.twilio_stream_sid.clone().unwrap_or_default();
                     twilio::encode_media(&sid, &mulaw)
                 }
-                _ => writer.write_down(IrServerEvent::AudioFrame(f)).0.to_vec(),
+                _ => writer
+                    .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
+                    .ok_or(Decode::Malformed)?
+                    .0
+                    .to_vec(),
             };
             let bytes = ctx
                 .arena()

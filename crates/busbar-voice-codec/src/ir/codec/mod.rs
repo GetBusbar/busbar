@@ -17,8 +17,11 @@
 //!
 //! STATE THREADING: unlike the LLM reader (whose request path is stateless whole-JSON), BOTH
 //! directions here thread [`DecodeState`] — uplink needs the monotonic frame `seq` and `CallRef`
-//! minting just as downlink does. The writers stay STATELESS: each tool IR variant carries its raw
-//! `call_id`, so re-framing a `function_call_output` never consults the session map.
+//! minting just as downlink does. The WRITERS thread the same state, for the one thing framing cannot
+//! answer from a single event: a dialect that delivers a tool call ATOMICALLY has nothing to frame
+//! from a streamed argument FRAGMENT, so the fragments accumulate on the session and the call is
+//! framed whole at its close. Everything else a writer needs is still carried in the IR (each tool
+//! variant carries its raw `call_id`, so re-framing a `function_call_output` invents nothing).
 
 use crate::ir::config::SessionConfig;
 use crate::ir::control::IrDuplexControl;
@@ -90,6 +93,14 @@ pub const MAX_TRACKED_CALL_IDS: usize = 1024;
 /// operator is looking at.
 pub const MAX_TRACKED_DROPPED_FIELDS: usize = 64;
 
+/// THE CEILING ON ONE CALL'S ACCUMULATED ARGUMENT TEXT. A dialect that delivers a tool call ATOMICALLY
+/// cannot frame it until the streamed arguments are whole, so the fragments are held — and a peer that
+/// streams fragments forever must not be able to hold memory forever. Past the ceiling the buffer is
+/// ABANDONED and the call frames nothing, which is the same answer arguments that never parse get: an
+/// argument list nobody can read is not an argument list, and dispatching the call without it is the
+/// one outcome a tool call cannot afford. 256 KiB is far past any real argument object.
+pub const MAX_TOOL_ARG_BYTES: usize = 256 * 1024;
+
 #[derive(Debug)]
 pub struct DecodeState {
     up_seq: u64,
@@ -107,6 +118,11 @@ pub struct DecodeState {
     /// logging surface, so the plane's "warn" is realized as a recorded, readable drop rather than a
     /// silent one.
     dropped_fields: VecDeque<String>,
+    /// STREAMED TOOL-ARGUMENT FRAGMENTS held per call, for the WRITE seam. A dialect that delivers a
+    /// tool call atomically has nothing to frame until the arguments are whole; the shared IR streams
+    /// them, so the writer accumulates here and frames the call ONCE at its close. `None` for the
+    /// entry means the accumulation was abandoned (over the ceiling) — the call frames nothing.
+    call_args: HashMap<CallRef, Option<String>>,
     /// Downlink audio bytes played out for the CURRENT item — reset when the item ends (its audio is
     /// done, a new audio-bearing item begins) and on a barge-in flush.
     played_bytes: u64,
@@ -124,6 +140,7 @@ impl Default for DecodeState {
             call_id_order: VecDeque::new(),
             call_names: HashMap::new(),
             dropped_fields: VecDeque::new(),
+            call_args: HashMap::new(),
             played_bytes: 0,
             output_fmt: AudioFormat::Pcm16,
         }
@@ -182,6 +199,53 @@ impl DecodeState {
     #[must_use]
     pub fn call_name(&self, call_id: &str) -> &str {
         self.call_names.get(call_id).map_or("", String::as_str)
+    }
+
+    /// ACCUMULATE one streamed argument fragment for a call, on the WRITE seam. The shared IR streams
+    /// a tool call's arguments (the OpenAI dialect's own shape); a dialect that delivers the call
+    /// ATOMICALLY has nothing to frame from a fragment, so the pieces are held here until the call
+    /// closes. Past [`MAX_TOOL_ARG_BYTES`] the accumulation is abandoned and stays abandoned.
+    ///
+    /// A fragment that is ITSELF a whole JSON OBJECT is not a fragment of anything: it is the dialect
+    /// handing the arguments over complete (an atomic call's `args`, or the complete `arguments` a
+    /// streamed call states when it closes), so it REPLACES what was held rather than being appended
+    /// to it. Appending would splice the same arguments onto their own prefix and leave nothing
+    /// readable — the call would be lost precisely when the dialect had just said it plainly.
+    pub fn push_call_args(&mut self, call: CallRef, fragment: &[u8]) {
+        let whole = serde_json::from_slice::<Value>(fragment)
+            .ok()
+            .filter(Value::is_object);
+        let held = self
+            .call_args
+            .entry(call)
+            .or_insert_with(|| Some(String::new()));
+        if let Some(v) = whole {
+            *held = Some(v.to_string());
+            return;
+        }
+        let Some(buf) = held else {
+            return; // already abandoned — a later fragment cannot make the whole readable.
+        };
+        if buf.len().saturating_add(fragment.len()) > MAX_TOOL_ARG_BYTES {
+            *held = None;
+            return;
+        }
+        buf.push_str(&String::from_utf8_lossy(fragment));
+    }
+
+    /// TAKE a call's accumulated arguments, parsed as ONE whole JSON value, and forget them.
+    ///
+    /// `None` when nothing was accumulated, when the accumulation was abandoned, or when the whole
+    /// does not parse — each of which means the same thing to a caller framing an atomic tool call:
+    /// there are no arguments to state. A caller must NOT substitute an empty or null argument list
+    /// for this answer; a call dispatched without the arguments the model asked for is a different
+    /// call.
+    pub fn take_call_args(&mut self, call: CallRef) -> Option<Value> {
+        let buf = self.call_args.remove(&call)??;
+        if buf.is_empty() {
+            return None;
+        }
+        serde_json::from_str::<Value>(&buf).ok()
     }
 
     /// RECORD a wire field the decode could not model and dropped — the plane's "warn" made readable.
@@ -333,7 +397,12 @@ pub trait DuplexReader {
 }
 
 /// IR → WIRE. Re-frames the plane's neutral IR back onto a dialect's wire, in both directions.
-/// Stateless — every field needed to frame is carried in the IR (tool `call_id`, audio `media`).
+///
+/// The writers thread the SAME per-session [`DecodeState`] the readers do, for the one thing framing
+/// cannot answer per-event: a dialect that delivers a tool call ATOMICALLY cannot frame a streamed
+/// argument FRAGMENT, and the negotiated audio format is a session fact, not a frame field. Everything
+/// else needed to frame is still carried in the IR (tool `call_id`, audio `media`), so the writers
+/// remain re-entrant and shareable — the state is the session's, not the codec's.
 pub trait DuplexWriter {
     /// Re-frame a client→server event onto the UPSTREAM dialect's wire, or `None` when the dialect has
     /// NO VERB for the concept.
@@ -343,10 +412,14 @@ pub trait DuplexWriter {
     /// stand-in frame carrying none of the semantics is indistinguishable, upstream, from the concept
     /// having survived. `None` IS the warn — this crate links no logging surface, so the caller that
     /// sees the drop is the one positioned to report it.
-    fn write_up(&self, ev: IrClientEvent) -> Option<WireEvent>;
+    fn write_up(&self, ev: IrClientEvent, st: &mut DecodeState) -> Option<WireEvent>;
 
-    /// Re-frame a server→client event onto the CLIENT dialect's wire.
-    fn write_down(&self, ev: IrServerEvent) -> WireEvent;
+    /// Re-frame a server→client event onto the CLIENT dialect's wire, or `None` when this event is not
+    /// a frame on its own — a streamed tool-argument fragment held for the atomic call it belongs to,
+    /// or a call whose arguments never became readable. The downlink answers `None` for the same
+    /// reason the uplink does: a frame that carries none of the concept reads, downstream, as the
+    /// concept having survived.
+    fn write_down(&self, ev: IrServerEvent, st: &mut DecodeState) -> Option<WireEvent>;
 }
 
 /// THE OpenAI Realtime GA DIALECT CODEC — the plane's sole dialect today (`codec: None`, one wire
@@ -517,10 +590,24 @@ impl DuplexReader for OpenAiRealtimeCodec {
             wire::FN_ARGS_DONE => {
                 let call_id = str_at(&v, "call_id");
                 let call_ref = st.ref_for_call_id(call_id);
-                vec![IrServerEvent::Tool(IrDuplexTool::CallClose {
+                let mut out = Vec::new();
+                // THE COMPLETE ARGUMENTS THE CLOSE STATES. This dialect repeats the whole argument
+                // string on the done event; a dialect that delivers the call atomically needs exactly
+                // that, and a peer whose deltas were never seen (a session joined mid-call) has
+                // nothing else. Dropping it dispatched the call with no arguments at all.
+                let arguments = str_at(&v, "arguments");
+                if !arguments.is_empty() {
+                    out.push(IrServerEvent::Tool(IrDuplexTool::CallArgs {
+                        call_ref,
+                        call_id: call_id.to_string(),
+                        json_delta: Bytes::from(arguments.to_owned().into_bytes()),
+                    }));
+                }
+                out.push(IrServerEvent::Tool(IrDuplexTool::CallClose {
                     call_ref,
                     call_id: call_id.to_string(),
-                })]
+                }));
+                out
             }
             wire::RESPONSE_DONE => {
                 let usage = v
@@ -566,8 +653,9 @@ fn extract_usage(u: &Value) -> IrDuplexUsage {
 
 impl DuplexWriter for OpenAiRealtimeCodec {
     /// The OpenAI Realtime dialect is the one every shared-IR concept was named from, so it frames
-    /// EVERY client event — this writer never drops.
-    fn write_up(&self, ev: IrClientEvent) -> Option<WireEvent> {
+    /// EVERY client event — this writer never drops. It is also the dialect the shared IR's STREAMED
+    /// tool call was named from, so it never accumulates: each fragment is already a frame here.
+    fn write_up(&self, ev: IrClientEvent, _st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
             IrClientEvent::AudioFrame(f) => json!({
                 "type": wire::INPUT_AUDIO_APPEND,
@@ -642,7 +730,9 @@ impl DuplexWriter for OpenAiRealtimeCodec {
         Some(wire_of(&v))
     }
 
-    fn write_down(&self, ev: IrServerEvent) -> WireEvent {
+    /// Every server event is a frame in this dialect — the streamed shapes ARE its own — so this
+    /// writer never answers `None`.
+    fn write_down(&self, ev: IrServerEvent, _st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
             IrServerEvent::SessionCreated { session } => json!({
                 "type": wire::SESSION_CREATED,
@@ -714,7 +804,7 @@ impl DuplexWriter for OpenAiRealtimeCodec {
                 "error": { "code": code, "message": message },
             }),
         };
-        wire_of(&v)
+        Some(wire_of(&v))
     }
 }
 

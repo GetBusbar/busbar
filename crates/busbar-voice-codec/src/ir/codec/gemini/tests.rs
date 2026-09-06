@@ -30,7 +30,18 @@ fn b64(bytes: &[u8]) -> String {
 /// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer drops the
 /// concepts Gemini has no word for; every use of this helper is a concept it does frame.
 fn up<W: DuplexWriter>(codec: &W, ev: IrClientEvent) -> WireEvent {
-    codec.write_up(ev).expect("the dialect frames this concept")
+    codec
+        .write_up(ev, &mut DecodeState::default())
+        .expect("the dialect frames this concept")
+}
+
+/// Frame one server→client event, insisting this event IS a frame. The downlink writer answers
+/// nothing for a streamed tool-argument fragment (it is held for the atomic call); every use of this
+/// helper is an event that frames on its own.
+fn down<W: DuplexWriter>(codec: &W, ev: IrServerEvent) -> WireEvent {
+    codec
+        .write_down(ev, &mut DecodeState::default())
+        .expect("the dialect frames this event")
 }
 
 /// Decode one client wire event, re-encode it, and assert the JSON is BYTE-stable (one IR event).
@@ -50,7 +61,7 @@ fn roundtrip_down(src: &Value) -> Vec<IrServerEvent> {
     let mut st = DecodeState::default();
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
-    let back = codec.write_down(ir[0].clone());
+    let back = down(&codec, ir[0].clone());
     assert_eq!(as_value(&back), *src, "down round-trip not stable");
     ir
 }
@@ -527,13 +538,21 @@ fn the_uplink_verbs_gemini_has_no_word_for_frame_nothing() {
         IrDuplexControl::ResponseCreate { response: None },
     ] {
         assert!(
-            codec.write_up(IrClientEvent::Control(ev.clone())).is_none(),
+            codec
+                .write_up(
+                    IrClientEvent::Control(ev.clone()),
+                    &mut DecodeState::default()
+                )
+                .is_none(),
             "{ev:?} has no Gemini verb and must frame nothing"
         );
     }
     // The concepts Gemini DOES have still frame.
     assert!(codec
-        .write_up(IrClientEvent::Control(IrDuplexControl::InputAudioCommit))
+        .write_up(
+            IrClientEvent::Control(IrDuplexControl::InputAudioCommit),
+            &mut DecodeState::default()
+        )
         .is_some());
 }
 
@@ -766,11 +785,14 @@ fn a_gemini_tool_response_keeps_its_name_across_the_round_trip() {
 #[test]
 fn tool_call_open_writer_shape() {
     let codec = GeminiLiveCodec;
-    let w = codec.write_down(IrServerEvent::Tool(IrDuplexTool::CallOpen {
-        call_ref: CallRef(0),
-        call_id: "fc_9".into(),
-        name: "lookup".into(),
-    }));
+    let w = down(
+        &codec,
+        IrServerEvent::Tool(IrDuplexTool::CallOpen {
+            call_ref: CallRef(0),
+            call_id: "fc_9".into(),
+            name: "lookup".into(),
+        }),
+    );
     let v = as_value(&w);
     assert_eq!(v["toolCall"]["functionCalls"][0]["id"], "fc_9");
     assert_eq!(v["toolCall"]["functionCalls"][0]["name"], "lookup");
@@ -833,7 +855,7 @@ fn usage_metadata_extracts_split_token_classes() {
     assert_eq!(u.text_out, 10);
     assert_eq!(u.cached, 5);
     // Re-encode is byte-stable against the canonical Gemini shape.
-    let back = as_value(&codec.write_down(ir[0].clone()));
+    let back = as_value(&down(&codec, ir[0].clone()));
     assert_eq!(back, src);
 }
 
@@ -934,4 +956,74 @@ fn transcription_and_unknown_frames_yield_empty_vec() {
     assert!(codec
         .read_up(wire(&json!({ "neverHeardOfIt": {} }).to_string()), &mut st)
         .is_empty());
+}
+
+#[test]
+fn a_streamed_argument_fragment_never_dispatches_a_call_without_its_arguments() {
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("fc_frag");
+    let frag = |s: &str| {
+        IrServerEvent::Tool(IrDuplexTool::CallArgs {
+            call_ref: call,
+            call_id: "fc_frag".into(),
+            json_delta: Bytes::from(s.as_bytes().to_vec()),
+        })
+    };
+    let mut frames = Vec::new();
+    for piece in [r#"{"loc"#, r#"ation":"SF"}"#] {
+        // A FRAGMENT IS NOT A FRAME: parsed alone it is not JSON, and framing it dispatched the tool
+        // with `args: null` — arguments the model never asked for.
+        assert!(
+            codec.write_down(frag(piece), &mut st).is_none(),
+            "an argument fragment frames nothing on its own"
+        );
+    }
+    frames.push(as_value(
+        &codec
+            .write_down(
+                IrServerEvent::Tool(IrDuplexTool::CallClose {
+                    call_ref: call,
+                    call_id: "fc_frag".into(),
+                }),
+                &mut st,
+            )
+            .expect("the closed call frames once, whole"),
+    ));
+    assert_eq!(frames.len(), 1, "exactly one toolCall for the whole call");
+    let fc = &frames[0]["toolCall"]["functionCalls"][0];
+    assert_eq!(fc["id"], "fc_frag");
+    assert_eq!(fc["args"], json!({ "location": "SF" }));
+    assert!(!fc["args"].is_null(), "never a null argument list");
+}
+
+#[test]
+fn a_tool_call_whose_arguments_never_parse_frames_nothing() {
+    // The other half of the same rule: when the accumulated whole is still not readable JSON, the
+    // call is not dispatched at all — an unreadable argument list is not an empty one.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let call = st.ref_for_call_id("fc_torn");
+    assert!(codec
+        .write_down(
+            IrServerEvent::Tool(IrDuplexTool::CallArgs {
+                call_ref: call,
+                call_id: "fc_torn".into(),
+                json_delta: Bytes::from_static(br#"{"location":"S"#),
+            }),
+            &mut st
+        )
+        .is_none());
+    assert!(
+        codec
+            .write_down(
+                IrServerEvent::Tool(IrDuplexTool::CallClose {
+                    call_ref: call,
+                    call_id: "fc_torn".into(),
+                }),
+                &mut st
+            )
+            .is_none(),
+        "a call whose arguments never became whole frames nothing"
+    );
 }

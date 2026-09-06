@@ -43,7 +43,7 @@ use crate::ir::config::{MaxOutputTokens, SessionConfig};
 use crate::ir::control::{IrDuplexControl, IrVad};
 use crate::ir::event::{IrClientEvent, IrServerEvent};
 use crate::ir::media::{AudioFormat, IrAudioFrame, UpDown};
-use crate::ir::tool::IrDuplexTool;
+use crate::ir::tool::{CallRef, IrDuplexTool};
 use crate::ir::usage::IrDuplexUsage;
 use bytes::Bytes;
 use serde_json::{json, Value};
@@ -531,6 +531,26 @@ fn tool_call_frame(fc: Value) -> Value {
     json!({ wire::TOOL_CALL: { "functionCalls": [fc] } })
 }
 
+/// FRAME THE ATOMIC CALL AT ITS CLOSE — the writer half of the streamed⟷atomic asymmetry.
+///
+/// The shared IR streams a tool call's arguments (the OpenAI dialect's shape); Gemini delivers the
+/// call WHOLE. So an argument FRAGMENT is not a frame: it is accumulated on the session
+/// ([`DecodeState::push_call_args`]), and the call is framed ONCE here, when the IR closes it, with
+/// the arguments parsed as one whole. Framing each fragment instead parsed `{"loc` alone, got nothing,
+/// and dispatched the call with `args: null` — a tool invoked with arguments the model never asked
+/// for. When the accumulation does not parse, this frames NOTHING for the same reason.
+fn atomic_tool_call(call_ref: CallRef, call_id: &str, st: &mut DecodeState) -> Option<Value> {
+    let args = st.take_call_args(call_ref)?;
+    let mut fc = serde_json::Map::new();
+    fc.insert("id".into(), json!(call_id));
+    let name = st.call_name(call_id);
+    if !name.is_empty() {
+        fc.insert("name".into(), json!(name));
+    }
+    fc.insert("args".into(), args);
+    Some(tool_call_frame(Value::Object(fc)))
+}
+
 /// Frame one Gemini `toolResponse` around a single tool result. Gemini REQUIRES `name` on a
 /// `functionResponse`; it is emitted whenever the plane knows it (remembered from the originating
 /// call) and omitted when it does not — an invented name would answer for a tool nobody called.
@@ -550,7 +570,7 @@ fn tool_response_frame(call_id: &str, name: &str, output: &Bytes) -> Value {
 impl DuplexWriter for GeminiLiveCodec {
     /// Gemini has no uplink verb for several OpenAI-shaped controls, so this writer genuinely DROPS
     /// them (`None`) rather than framing a stand-in.
-    fn write_up(&self, ev: IrClientEvent) -> Option<WireEvent> {
+    fn write_up(&self, ev: IrClientEvent, st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
             IrClientEvent::AudioFrame(f) => json!({
                 wire::REALTIME_INPUT: {
@@ -591,43 +611,58 @@ impl DuplexWriter for GeminiLiveCodec {
                     ..
                 } => tool_response_frame(&call_id, &name, &output),
                 // The other tool variants are server→client; a client-side writer never authors them,
-                // but frame them symmetrically rather than panic.
-                IrDuplexTool::CallOpen { call_id, name, .. } => {
+                // but frame them symmetrically (through the same accumulate-then-frame-at-close seam)
+                // rather than panic.
+                IrDuplexTool::CallOpen {
+                    call_ref,
+                    call_id,
+                    name,
+                } => {
+                    st.remember_call_name(&call_id, &name);
+                    let _ = call_ref;
                     tool_call_frame(json!({ "id": call_id, "name": name }))
                 }
                 IrDuplexTool::CallArgs {
-                    call_id,
+                    call_ref,
                     json_delta,
                     ..
-                } => tool_call_frame(json!({
-                    "id": call_id,
-                    "args": serde_json::from_slice::<Value>(&json_delta).unwrap_or(Value::Null),
-                })),
-                IrDuplexTool::CallClose { call_id, .. } => {
-                    tool_call_frame(json!({ "id": call_id }))
+                } => {
+                    st.push_call_args(call_ref, &json_delta);
+                    return None;
+                }
+                IrDuplexTool::CallClose { call_ref, call_id } => {
+                    atomic_tool_call(call_ref, &call_id, st)?
                 }
             },
         };
         Some(wire_of(&v))
     }
 
-    fn write_down(&self, ev: IrServerEvent) -> WireEvent {
+    fn write_down(&self, ev: IrServerEvent, st: &mut DecodeState) -> Option<WireEvent> {
         let v = match ev {
             IrServerEvent::SessionCreated { session } => json!({ wire::SETUP_COMPLETE: session }),
             IrServerEvent::Tool(t) => match t {
-                IrDuplexTool::CallOpen { call_id, name, .. } => {
+                IrDuplexTool::CallOpen {
+                    call_ref,
+                    call_id,
+                    name,
+                } => {
+                    // The announcement names the tool; the ARGUMENTS follow as fragments and the call
+                    // is framed whole at its close, so the name is remembered for that frame.
+                    st.remember_call_name(&call_id, &name);
+                    let _ = call_ref;
                     tool_call_frame(json!({ "id": call_id, "name": name }))
                 }
                 IrDuplexTool::CallArgs {
-                    call_id,
+                    call_ref,
                     json_delta,
                     ..
-                } => tool_call_frame(json!({
-                    "id": call_id,
-                    "args": serde_json::from_slice::<Value>(&json_delta).unwrap_or(Value::Null),
-                })),
-                IrDuplexTool::CallClose { call_id, .. } => {
-                    tool_call_frame(json!({ "id": call_id }))
+                } => {
+                    st.push_call_args(call_ref, &json_delta);
+                    return None;
+                }
+                IrDuplexTool::CallClose { call_ref, call_id } => {
+                    atomic_tool_call(call_ref, &call_id, st)?
                 }
                 IrDuplexTool::CallResult {
                     call_id,
@@ -660,7 +695,7 @@ impl DuplexWriter for GeminiLiveCodec {
                 wire::SERVER_CONTENT: { "error": { "code": code, "message": message } }
             }),
         };
-        wire_of(&v)
+        Some(wire_of(&v))
     }
 }
 

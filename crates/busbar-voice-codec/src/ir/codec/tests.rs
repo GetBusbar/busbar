@@ -28,7 +28,17 @@ fn b64(bytes: &[u8]) -> String {
 /// Frame one client→server event, insisting the dialect HAS a verb for it. The uplink writer may drop
 /// a concept a dialect has no word for; the OpenAI dialect names them all, so this never trips here.
 fn up<W: DuplexWriter>(codec: &W, ev: IrClientEvent) -> WireEvent {
-    codec.write_up(ev).expect("the dialect frames this concept")
+    codec
+        .write_up(ev, &mut DecodeState::default())
+        .expect("the dialect frames this concept")
+}
+
+/// Frame one server→client event, insisting this event IS a frame. Every OpenAI server event is one —
+/// the streamed shapes are this dialect's own — so this never trips here either.
+fn down<W: DuplexWriter>(codec: &W, ev: IrServerEvent) -> WireEvent {
+    codec
+        .write_down(ev, &mut DecodeState::default())
+        .expect("the dialect frames this event")
 }
 
 /// Decode one client wire event, re-encode it, and assert the JSON is stable.
@@ -48,7 +58,7 @@ fn roundtrip_down(src: &Value) -> Vec<IrServerEvent> {
     let mut st = DecodeState::default();
     let ir = codec.read_down(wire(&src.to_string()), &mut st);
     assert_eq!(ir.len(), 1, "expected exactly one IR event from {src}");
-    let back = codec.write_down(ir[0].clone());
+    let back = down(&codec, ir[0].clone());
     assert_eq!(as_value(&back), *src, "down round-trip not stable");
     ir
 }
@@ -655,7 +665,18 @@ fn tool_call_loop_correlates_by_call_id() {
         ),
         &mut st,
     );
-    let IrServerEvent::Tool(IrDuplexTool::CallClose { call_ref, .. }) = &done[0] else {
+    // The done event STATES the complete arguments, so it yields those arguments and then the close.
+    let IrServerEvent::Tool(IrDuplexTool::CallArgs {
+        call_ref,
+        json_delta,
+        ..
+    }) = &done[0]
+    else {
+        panic!("expected the complete arguments the close states");
+    };
+    assert_eq!(*call_ref, ref_open);
+    assert_eq!(&json_delta[..], br#"{"city":"SF"}"#);
+    let IrServerEvent::Tool(IrDuplexTool::CallClose { call_ref, .. }) = &done[1] else {
         panic!("expected CallClose");
     };
     assert_eq!(*call_ref, ref_open);
@@ -869,7 +890,7 @@ fn usage_extraction_survives_reencode() {
         text_out: 2,
         cached: 0,
     };
-    let w = codec.write_down(IrServerEvent::Usage(u));
+    let w = down(&codec, IrServerEvent::Usage(u));
     let mut st = DecodeState::default();
     let ir = codec.read_down(w, &mut st);
     assert_eq!(ir[0], IrServerEvent::Usage(u));
