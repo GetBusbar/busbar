@@ -69,6 +69,12 @@ crates/*/proptest-regressions/
 /.mcp-conformance/
 /.sdk-under-test/
 
+# Durable-store QA cycle scratch: the ledgers and planted fixtures written by
+# scripts/service-images-check.sh and testing/fleet-fixtures/store-services.sh (both under
+# .qa-work/). Same reasoning as the two directories below — a committed ledger is a verdict a later
+# run could be read as having produced, and CI asserts the working tree is CLEAN after the suite.
+/.qa-work/
+
 # A2A conformance scratch: the booted subject's config, its signing key and each run's captured
 # suite output. Same reasoning as the MCP directory above — every file in here is an output of
 # `scripts/a2a-subject/boot.sh` and a committed one is a report a later run could be read as having

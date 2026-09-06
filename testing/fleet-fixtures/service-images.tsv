@@ -1,0 +1,44 @@
+# testing/fleet-fixtures/service-images.tsv — THE pinned service-image list for the durable-store QA
+# cycle (docs/design/store-qa-cycle.md §2.1).
+#
+# WHY THIS FILE EXISTS. The provisioning of the four backend services the store plugins need was
+# written FIVE times — .github/workflows/ci.yml's `check` and `coverage` jobs, release-stage.yml's
+# `gate` job, plugin-ci.yml's `build-test-signoff` job, and scripts/release-check.sh. The four
+# workflows agreed on a digest; release-check.sh — the script the QA GATE runs — used FLOATING tags
+# (`postgres:16`, `mysql:8`, `valkey/valkey:8`, `hashicorp/vault`), so the qa gate was not pinned to
+# the bytes CI was pinned to. Five sources of truth agree until the day one of them is edited.
+#
+# So: ONE pinned file, everything reads it — the same shape testing/shadow-oracle/golden-digests.tsv
+# and plugin-digests.tsv already use for release artifacts and plugin tarballs, for the same reason.
+# GitHub Actions cannot read a file into a `services:` block, so the workflows keep literal `image:`
+# lines and scripts/service-images-check.sh asserts every one of them matches a row here. A digest
+# bump then lands in one commit and the lint proves the fan-out was complete.
+#
+# RE-PINNING. `docker buildx imagetools inspect <tag>` (ci.yml, release-stage.yml both do this
+# already). The natural home for the periodic bump is .github/workflows/monthly-refresh.yml.
+#
+# COLUMNS (tab-separated; `#` comments and blank lines ignored)
+#   service      the name plugins.yaml uses in its `service:` field, and the name
+#                testing/fleet-fixtures/store-services.sh takes as its argument
+#   image        the image REFERENCE as it appears in a workflow's `image:` line, without the digest
+#   digest       sha256:… — the pin. A workflow `image:` line must read exactly `<image>@<digest>`
+#   ready_probe  the command run INSIDE the container to prove readiness, or `-` when the service
+#                has no local runner here. Readiness is PROVEN, never slept on
+#                (docs/design/store-qa-cycle.md §6.2: polling decides whether the test can BEGIN,
+#                never whether it passed)
+#   port         the port the service listens on inside the container
+#   local_port   the host port store-services.sh publishes it on, DELIBERATELY OFFSET from the
+#                default so a developer's own postgres on 5432 is never touched, and equally
+#                deliberately nowhere near the shadow oracle's own 487xx/488xx band. `-` = no local
+#                runner. These are exactly the offsets scripts/release-check.sh already uses.
+#   ready_secs   the cap on the readiness poll, in seconds. mysql's is 120 and not 60 because
+#                MySQL 8's FIRST boot initialises the datadir and restarts once; measured in
+#                release-check.sh. Exceeding a cap is a RED naming the service, never a retry.
+#
+# service	image	digest	ready_probe	port	local_port	ready_secs
+postgres	postgres:16	sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b	pg_isready -U busbar	5432	15432	60
+mysql	mysql:8	sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb	mysqladmin ping -h localhost -ubusbar -pbusbar	3306	13306	120
+valkey	valkey/valkey:8	sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6	valkey-cli ping	6379	16379	60
+vault	hashicorp/vault	sha256:5be49781ecf78bfe775c5309c6a4d9f4e9e040b6c885c99eb2b12fb69855e1a2	-	8200	18200	60
+wiremock	wiremock/wiremock:3.9.2	sha256:d13997cd7b52583528a766019cfe7d4e91c4d224a67bdaa6f60efbb532f32176	-	8080	-	60
+openldap	osixia/openldap:1.5.0	sha256:18742e9c449c9c1afe129d3f2f3ee15fb34cc43e5f940a20f3399728f41d7c28	-	389	-	60
