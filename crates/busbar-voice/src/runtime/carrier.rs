@@ -91,10 +91,20 @@ impl Carrier {
 
     /// Resolve when the carrier hard-closes — the await a session supervisor parks on to abort the
     /// serve loop and drop the upstream socket. Returns immediately if already closed.
+    ///
+    /// REGISTER WITH THE GATE BEFORE READING THE LATCH. The wake is `notify_waiters`, which wakes the
+    /// waiters that are registered at the instant it runs and stores no permit for one that arrives
+    /// after — so a close landing between a "not closed yet" read and the registration that followed
+    /// it would wake nobody, and the supervisor would park for the life of the socket on a carrier
+    /// that had already hard-closed. Enabling first and re-reading the latch second leaves no such
+    /// window: a close either finds this waiter registered, or has already set the latch this reads.
     pub async fn closed(&self) {
+        let notified = self.inner.gate.notified();
+        futures::pin_mut!(notified);
+        notified.as_mut().enable();
         if self.is_closed() {
             return;
         }
-        self.inner.gate.notified().await;
+        notified.await;
     }
 }

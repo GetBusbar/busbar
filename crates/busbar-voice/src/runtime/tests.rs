@@ -801,3 +801,33 @@ async fn the_sweep_rides_the_pump_and_ends_with_it() {
         "a sweep that outlived its session would be the background loop this plane does not have"
     );
 }
+
+/// A HARD CLOSE THAT LANDS WHILE THE SUPERVISOR IS ARRIVING AT THE GATE STILL WAKES IT.
+///
+/// The topology's teardown `select!` parks one arm on `Carrier::closed()`, and that await is the only
+/// thing that turns a dry budget into a torn-down session. The gate's wake reaches the waiters that
+/// are registered when it fires and stores nothing for one that registers a moment later — so a close
+/// racing the supervisor's arrival is the one ordering in which the marquee guarantee can be dropped
+/// on the floor, and the session runs on to socket EOF instead.
+///
+/// Driven as a race rather than a sequence, because the window is between two instructions and no
+/// sequential ordering can enter it: each round starts a fresh carrier, hands it to a thread that
+/// closes it immediately, and demands the await finish. A run that parks forever is the defect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_close_racing_the_supervisors_arrival_still_wakes_it() {
+    for round in 0..2_000 {
+        let carrier = Carrier::sideband();
+        let closer = carrier.clone();
+        std::thread::spawn(move || {
+            closer.hard_close();
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), carrier.closed())
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "round {round}: the carrier hard-closed and the supervisor never woke — a \
+                     session whose budget is dry that nothing tears down"
+                )
+            });
+    }
+}
