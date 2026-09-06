@@ -34,7 +34,11 @@ impl OperationHandler for InvokeOperation {
         body: &[u8],
         _content_type: &str,
     ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(InvokeReqHandle(read_invoke_request(body)?)) as Box<dyn IrHandle>)
+        Ok(
+            Box::new(InvokeReqHandle(std::sync::Arc::new(read_invoke_request(
+                body,
+            )?))) as Box<dyn IrHandle>,
+        )
     }
 
     fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {

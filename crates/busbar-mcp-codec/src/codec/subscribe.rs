@@ -93,7 +93,9 @@ impl OperationHandler for SubscribeOperation {
         body: &[u8],
         _content_type: &str,
     ) -> Result<Box<dyn IrHandle>, IngressReject> {
-        Ok(Box::new(SubscribeReqHandle(read_subscribe_request(body)?)) as Box<dyn IrHandle>)
+        Ok(Box::new(SubscribeReqHandle(std::sync::Arc::new(
+            read_subscribe_request(body)?,
+        ))) as Box<dyn IrHandle>)
     }
 
     fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
