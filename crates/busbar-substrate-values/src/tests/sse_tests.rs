@@ -143,9 +143,10 @@ fn test_terminator_split_across_chunks_still_frames() {
 /// rescan-from-zero AND a full-tail memmove, once per frame). One chunk of many trivial ("\n\n")
 /// events must cost work proportional to the chunk's BYTES, not to bytes × frames.
 ///
-/// The bound is generous (16 bytes of drained work per byte fed) because the point is the SHAPE: a
-/// per-frame front-drain walks ~N²/2 bytes for N frames, which is orders of magnitude past this
-/// bound at the size used here.
+/// The tally is taken AT the drain (`SseReader::drain_front`), so a second drain inside the same
+/// `feed` counts a second time and the assertion below is exact rather than a budget: one feed
+/// drains the buffer once, and that one drain walks exactly the bytes fed. A per-frame front-drain
+/// would walk ~N²/2 bytes for N frames.
 #[test]
 fn test_feed_drain_work_is_linear_in_bytes_fed() {
     const N: usize = 4096;
@@ -159,10 +160,10 @@ fn test_feed_drain_work_is_linear_in_bytes_fed() {
 
     assert_eq!(out.len(), N, "every \"\\n\\n\" pair is its own frame");
     assert_eq!(r.pending(), 0, "the whole chunk was framed");
-    assert!(
-        drained <= 16 * total,
-        "feeding {total} bytes as {N} frames in one chunk drained {drained} bytes — the buffer is \
-         drained once per frame instead of once per feed() call (quadratic)"
+    assert_eq!(
+        drained, total,
+        "feeding {total} bytes as {N} frames in one chunk drained {drained} bytes — one feed() must \
+         drain the buffer exactly once, not once per frame (quadratic)"
     );
 }
 

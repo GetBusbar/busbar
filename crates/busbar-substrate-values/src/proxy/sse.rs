@@ -70,10 +70,20 @@ impl SseReader {
             scan_from = end;
         }
         self.scanned = self.buf.len() - consumed;
+        self.drain_front(consumed);
+        out
+    }
+
+    /// Drop the consumed prefix — THE ONE front-drain in this reader.
+    ///
+    /// The drained-work tally lives HERE, on the drain, rather than at the end of `feed`: a tally
+    /// taken once per `feed` call measures the same number however many drains happened inside it,
+    /// so the very regression the linearity test exists to catch (draining once per FRAME) would
+    /// have left the count unchanged. Counted at the drain, a second drain counts a second time.
+    fn drain_front(&mut self, upto: usize) {
         #[cfg(test)]
         DRAINED_BYTES.with(|c| c.set(c.get() + self.buf.len()));
-        self.buf.drain(..consumed);
-        out
+        self.buf.drain(..upto);
     }
 
     /// How many bytes are held waiting for a terminator. The ceiling check reads this: a backend
