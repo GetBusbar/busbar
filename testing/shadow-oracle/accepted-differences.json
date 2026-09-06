@@ -320,7 +320,7 @@
         "body"
       ],
       "rationale": "Cohere reports usage TWICE -- a raw `usage.tokens` bucket and a separately-metered `usage.billed_units` bucket -- and billed_units is the count Cohere itself invoices the operator on. 1.5.5 read only `tokens` (its cohere reader parsed usage.tokens on both the stream and the non-stream path; billed_units was never read) and billed those. 1.6.0 lets billed_input_tokens/billed_output_tokens win over the raw totals inside IrUsage::to_token_usage, the one projection the ledger reads. This entry covers the BUFFERED arm finally reaching that same projection: chat_usage (the projection behind ChatRespHandle::billing()) had been rebuilding TokenUsage from the RAW IrUsage totals, so a single completion was billed the billed counts when streamed and the raw counts when buffered -- two different invoices for one completion, decided only by the caller's stream flag. Both arms now answer identically. No other dialect populates the billed fields, so every other backend's ledgered counts stay byte-identical to 1.5.5. The oracle's own mock sends billed_units EQUAL to tokens, so no recorded cell moves today; the entry is registered ahead of any fixture that makes them differ, which is exactly what S-8's caveat requires.",
-      "changelog": "1.6.0 Improvements: a Cohere backend's usage.billed_units is what the key is billed, on both the buffered and the streamed path"
+      "changelog": "1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both the buffered and the streamed path"
     },
     {
       "id": "F-014 Bedrock totalTokens counts the cache tokens AWS counts",
