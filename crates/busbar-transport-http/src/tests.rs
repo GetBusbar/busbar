@@ -1381,6 +1381,204 @@ fn an_egress_failure_reports_the_fact_it_carries_not_a_refusal_for_everything() 
     );
 }
 
+/// A writer that accepts every byte and then fails to flush: the exact shape a Unit 0 refusal must
+/// not be able to report as delivered. `write_all` succeeds, so only the flush leg can catch it.
+struct FlushFailsWriter {
+    written: Vec<u8>,
+}
+
+impl tokio::io::AsyncWrite for FlushFailsWriter {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, io::Error>> {
+        self.written.extend_from_slice(buf);
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        std::task::Poll::Ready(Err(io::Error::new(
+            io::ErrorKind::ConnectionReset,
+            "the peer went away before the refusal reached it",
+        )))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), io::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// The refusal is the client-visible answer to an authentication failure, so "delivered" has to
+/// mean the bytes left. `write_all` only proves they reached the writer's own buffer; the flush is
+/// the evidence, and swallowing its failure reports a refusal nobody ever received. The sibling
+/// `tcp` and `tls` crates already answer this way.
+#[tokio::test]
+async fn an_undelivered_unit0_refusal_is_an_error() {
+    let mut w = FlushFailsWriter {
+        written: Vec::new(),
+    };
+    let err = deliver_refusal(&mut w, b"refused")
+        .await
+        .expect_err("a refusal whose flush failed was never delivered and must not report Ok");
+    assert_eq!(err, TransportError::Reset);
+    assert_eq!(w.written.as_slice(), b"refused");
+}
+
+/// A peer that stops in the middle of a header block sent a message that never arrived. Reading
+/// that as end-of-stream discards bytes already read and calls a truncated request no request at
+/// all — the same guess the body branches already refuse to make.
+#[tokio::test]
+async fn a_header_block_cut_short_at_eof_is_a_framing_error() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        // Half a header block, then a close.
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"POST / HTTP/1.1\r\nHost: x")
+            .await
+            .unwrap();
+        drop(client);
+    });
+    let conn = accept_fut.await.unwrap();
+    let mut frames = transport.frames(conn);
+    let first = tokio::time::timeout(std::time::Duration::from_secs(5), frames.next())
+        .await
+        .expect("the reader answers rather than hanging")
+        .expect("a truncated header block is reported, not silently dropped");
+    assert_eq!(first.unwrap_err(), TransportError::Framing);
+}
+
+/// A response header value the wire allows is not required to be UTF-8. Rendering an un-decodable
+/// one as the empty string hands the layer above a head that says the header was present and empty
+/// — a claim about the upstream's answer that the upstream did not make. What arrived goes up.
+#[tokio::test]
+async fn a_non_ascii_response_header_value_reaches_the_head_frame_as_its_own_bytes() {
+    let uri = fixed_response_server(
+        b"HTTP/1.1 200 OK\r\nx-note: caf\xc3\xa9\xff\r\nContent-Length: 0\r\n\r\n",
+    )
+    .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    let joined = head.bytes.as_slice();
+    let needle = b"x-note: caf\xc3\xa9\xff";
+    assert!(
+        joined.windows(needle.len()).any(|w| w == needle),
+        "the head must carry the value the upstream sent, not an empty stand-in"
+    );
+}
+
+/// The read buffer is per-connection and reused across reads, so a short read following a long one
+/// must not carry the tail of its predecessor, and the buffer must be the same allocation each time
+/// rather than a fresh `READ_CHUNK_BYTES` one per read syscall — of which this reader does several
+/// per message: the header, each body chunk, the trailers.
+#[tokio::test]
+async fn one_read_buffer_per_connection_rather_than_one_per_read() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let writer = tokio::spawn(async move {
+        let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+        let body = vec![b'L'; 4096];
+        let mut req = format!(
+            "POST / HTTP/1.1\r\nHost: x\r\ncontent-length: {}\r\n\r\n",
+            4101
+        )
+        .into_bytes();
+        tokio::io::AsyncWriteExt::write_all(&mut client, &req)
+            .await
+            .unwrap();
+        // A second read: the header is already consumed, so this one fills the buffer again.
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        req = body;
+        tokio::io::AsyncWriteExt::write_all(&mut client, &req)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"short")
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+    });
+    let conn = accept_fut.await.unwrap();
+    let id = conn.id();
+    let before = transport.scratch_addr(id).await.unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert!(head.bytes.as_slice().starts_with(b"POST / HTTP/1.1"));
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        body.bytes.as_slice().len(),
+        4101,
+        "the declared body, whole and with no residue from the header read before it"
+    );
+    assert!(body.bytes.as_slice().ends_with(b"short"));
+    assert_eq!(
+        transport.scratch_addr(id).await.unwrap(),
+        before,
+        "one buffer per connection, not one per read"
+    );
+    writer.abort();
+}
+
+/// Every request line names its version. Without the check any two words followed by a space parse
+/// as a request, so a blob that is not HTTP at all is read as one and its first two words become a
+/// method and a path this transport goes on to act on.
+#[test]
+fn a_start_line_with_no_http_version_is_not_a_message() {
+    assert!(
+        raw::parse_message(b"GET /\r\nHost: x\r\n\r\n").is_none(),
+        "a request line with no version token is not a request line"
+    );
+    assert!(
+        raw::parse_message(b"NOT A REQUEST\r\nHost: x\r\n\r\n").is_none(),
+        "an arbitrary first line is not a request line"
+    );
+    assert!(
+        raw::parse_message(b"GET / HTTP/2\r\nHost: x\r\n\r\n").is_none(),
+        "a version this reader does not frame is refused, not read with 1.x's rules"
+    );
+    assert!(
+        raw::parse_message(b"HTTP/2 200 OK\r\n\r\n").is_none(),
+        "and the same on the status side"
+    );
+    assert!(raw::parse_message(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n").is_some());
+    assert!(raw::parse_message(b"GET / HTTP/1.0\r\nHost: x\r\n\r\n").is_some());
+    assert!(raw::parse_message(b"HTTP/1.1 200 OK\r\n\r\n").is_some());
+}
+
 #[test]
 fn frame_meta_honesty_catches_inflating_and_deflating_fixtures() {
     fn honest(frame: &Frame) -> bool {

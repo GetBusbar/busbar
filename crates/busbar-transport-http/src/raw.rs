@@ -86,18 +86,37 @@ fn parse_start_line(line: &str) -> Option<RawStartLine> {
     let b = parts.next()?;
     let c = parts.next().unwrap_or("");
     if let Some(version) = a.strip_prefix("HTTP/") {
-        let _ = version;
+        if !is_http1(version) {
+            return None;
+        }
         let code: u16 = b.parse().ok()?;
         return Some(RawStartLine::Status {
             code,
             reason: c.to_string(),
         });
     }
-    // Otherwise: `METHOD path HTTP/version`.
+    // Otherwise: `METHOD path HTTP/version`. The version token is REQUIRED. Without the check a
+    // two-word first line — anything at all, followed by a space — parses as a request, so a blob
+    // that is not HTTP is read as one and its first two words become a method and a path this
+    // transport then acts on. The wire says every request line names its version; a line that does
+    // not is not a request line.
+    let version = c.strip_prefix("HTTP/")?;
+    if !is_http1(version) {
+        return None;
+    }
     Some(RawStartLine::Request {
         method: a.to_string(),
         path: b.to_string(),
     })
+}
+
+/// Whether a version token names the HTTP/1.x this reader frames.
+///
+/// The framing rules below — `Content-Length`, chunked transfer coding, a CRLF-terminated header
+/// block — are 1.x's. A `2` or a `3` names a wire made of frames this reader has never seen, and
+/// reading one with 1.x's rules would produce a message nobody sent.
+fn is_http1(version: &str) -> bool {
+    matches!(version, "1.0" | "1.1")
 }
 
 /// Find a header's value, case-insensitively, as the wire allows any casing.
