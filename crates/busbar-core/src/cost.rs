@@ -659,6 +659,29 @@ impl CostModel {
         &self.groups
     }
 
+    /// Every configured group bucket as the durable store addresses it at `now`: the bucket id it
+    /// is written under, paired with the epoch start of the window it is in.
+    ///
+    /// `pub` because the opening-balance seal needs exactly this pair and cannot discover it: a
+    /// token ledger is addressed by bucket AND window and neither half is enumerable across the
+    /// store seam, so the caller has to name them. The derivation is the SAME `budget_window` the
+    /// hot path and the boot hydration use, which is the point of answering it here rather than
+    /// letting a second reader work the window word out for itself — a bucket opened at a window
+    /// the enforcement path does not use is an opening figure nothing will ever be measured
+    /// against.
+    pub fn group_bucket_windows(&self, now: u64) -> Vec<(String, u64)> {
+        self.groups
+            .iter()
+            .flat_map(|g| g.buckets.iter())
+            .map(|b| {
+                (
+                    b.bucket_id.clone(),
+                    crate::governance::budget_window(b.window, now),
+                )
+            })
+            .collect()
+    }
+
     pub(crate) fn group_named(&self, name: &str) -> Option<&GroupRuntime> {
         self.group_idx.get(name).map(|&i| &self.groups[i])
     }
