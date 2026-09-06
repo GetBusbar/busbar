@@ -19,13 +19,23 @@
 #     the node's table FIRST and reaches the model only because the wait was woken;
 #   * the refusal — a reply naming a call nobody is waiting on is refused by identifier and carried on
 #     no wire at all, rather than paid out against whichever call happens to be standing;
-#   * the sweep — the tick beside the pump ends a call nobody answered, so its unit exits under the
-#     deadline its leg declared rather than settling as though the answer had arrived.
+#   * the sweep — the tick beside the pump ends a call nobody answered AT THE DEADLINE THE PLANE
+#     DECLARES, so its unit exits under that deadline rather than settling as though the answer had
+#     arrived.
+#
+# The deadline is `busbar_plane_voice::plane::TOOL_REPLY_DEADLINE_SECS`, read from the plane crate the
+# composition root builds its own reply leg out of — one declaration and two readers, so a change to
+# the figure moves this leg with it. Both edges are judged: nothing is ended one millisecond before
+# that wall, and the unanswered call IS ended at it. What the ending then does to a unit — the exit
+# under `Failed(Route, DeadlineExceeded)` — is the composition root's own identity cell, which drives
+# this same wall through this same tick over the node's real table.
 #
 # WAS RED: the runtime executed every tool call in-process and carried a client-authored result
 # upstream verbatim, so on the served path the wait was entered and then nothing ever woke it and
 # nothing ever swept it. A client that never replied held the call's hold open forever, and a forged
-# reply rode upstream under whatever call was open.
+# reply rode upstream under whatever call was open. Then the wake and the sweep landed and the
+# DEADLINE still did not: the tick ended whatever it found, at whatever wall it was handed, so a
+# call could be settled before the client it was delivered to had run out of time to answer it.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"
