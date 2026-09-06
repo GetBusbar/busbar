@@ -36,6 +36,8 @@ WORK="$(mktemp -d "${RUNNER_TEMP:-/tmp}/probe-secret-XXXXXX")"
 MARKER="fleet-fixture-secret-${ALIAS}-$$-${RANDOM}"
 UPSTREAM_KEY="resolved-upstream-key-${RANDOM}"     # the value the vault plugin must resolve+use
 VAULT_TOKEN="fixture-vault-token-${RANDOM}"
+VAULT_PATH="secret/data/busbar"                   # the ONE path the fixture answers on
+VAULT_FIELD="api_key"                             # the ONE field in the envelope that is the secret
 for p in "$LISTEN_PORT" "$MOCK_PORT" "$VAULT_PORT"; do
   assert_port_free "$p" || fail_here "port ${p} already in use before the probe starts" "refusing a possibly-false PASS."
 done
@@ -44,9 +46,28 @@ done
 python3 mock-upstream.py "$MOCK_PORT" "$MARKER" "$UPSTREAM_KEY" >/dev/null 2>&1 &
 track_pid $!
 # The fixture Vault holding that key.
-python3 vault-fixture.py "$VAULT_PORT" "$VAULT_TOKEN" api_key "$UPSTREAM_KEY" >/dev/null 2>&1 &
+python3 vault-fixture.py "$VAULT_PORT" "$VAULT_TOKEN" "$VAULT_FIELD" "$UPSTREAM_KEY" "$VAULT_PATH" >/dev/null 2>&1 &
 track_pid $!
-wait_for_http "http://127.0.0.1:${VAULT_PORT}/v1/secret/data/busbar" 5 || true  # 403 without token, still up
+wait_for_http "http://127.0.0.1:${VAULT_PORT}/v1/${VAULT_PATH}" 5 || true  # 403 without token, still up
+
+# ── THE FIXTURE IS PROVEN SHARP BEFORE THE PLUGIN IS JUDGED BY IT. ───────────────────────────────
+# Everything below rests on the backend refusing anyone who does not ask correctly, so a blunt
+# backend does not fail the plugin — it silently passes it, which is the worse outcome and the one
+# this probe exists to refuse. The fixture once read no path at all: every URL returned the secret,
+# so the `path` setting in the reference below was decorative and a plugin that ignored it resolved
+# the value anyway. Three direct calls, no busbar involved, settle that here:
+vault_get() {  # vault_get <token> <path> -> the response body
+  curl -sS -m 10 -H "X-Vault-Token: ${1}" "http://127.0.0.1:${VAULT_PORT}/v1/${2}" 2>/dev/null || true
+}
+blunt=""
+printf '%s' "$(vault_get "$VAULT_TOKEN" "$VAULT_PATH")" | grep -q "$UPSTREAM_KEY" \
+  || blunt="${blunt}the configured path does not serve the secret; "
+printf '%s' "$(vault_get "$VAULT_TOKEN" "secret/data/not-the-configured-path")" | grep -q "$UPSTREAM_KEY" \
+  && blunt="${blunt}a WRONG PATH serves the secret, so the reference's \`path\` setting is unverified; "
+printf '%s' "$(vault_get "wrong-${VAULT_TOKEN}" "$VAULT_PATH")" | grep -q "$UPSTREAM_KEY" \
+  && blunt="${blunt}a WRONG TOKEN serves the secret, so a plugin that sends none would pass; "
+[ -z "$blunt" ] || fail_here "the fixture Vault cannot refuse, so this probe cannot prove the plugin resolved anything" \
+  "${blunt}a fixture that hands the secret to any caller lets a plugin that ignores the reference's settings pass byte-for-byte."
 
 # providers.yaml is the catalog (protocol + base_url + egress auth), matching the proven store
 # probe's split. bearer egress so the Authorization header carries exactly the resolved value the
@@ -74,7 +95,7 @@ secrets:
     settings: { addr: "http://127.0.0.1:${VAULT_PORT}", token: { env: VAULT_TOKEN } }
 providers:
   mock:
-    api_key: { module: ${SECRET_MODULE}, settings: { path: "secret/data/busbar", field: "api_key" } }
+    api_key: { module: ${SECRET_MODULE}, settings: { path: "${VAULT_PATH}", field: "${VAULT_FIELD}" } }
 models:
   test-model:
     provider: mock

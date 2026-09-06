@@ -34,6 +34,7 @@ export GATE_NAME="fleet fixture selftest"
 . ./lib.sh
 
 IDP_PORT="${SELFTEST_IDP_PORT:-50843}"
+VAULT_PORT="${SELFTEST_VAULT_PORT:-50844}"
 
 OWED=""
 owe() { OWED="${OWED} $1"; }
@@ -113,6 +114,66 @@ idp_case() {
   fi
 }
 
+# ── vault-fixture.py: the secret is served ONLY on the configured path, and only as the ───────────
+#    configured FIELD.
+# The fixture never read self.path, so every URL returned the secret and the `path` setting in
+# probe-secret.sh's reference was decorative: a plugin that ignored it, or hardcoded its own, still
+# resolved the value. The envelope also held exactly one key, which made "read the field the config
+# names" indistinguishable from "return whichever value is in there".
+vault_case() {
+  local tok="fixture-selftest-vault-token" val="THE-SECRET-VALUE-selftest" field="api_key"
+  local path="secret/data/busbar"
+
+  owe "fixture|vault-path-and-field"
+  if ! assert_port_free "$VAULT_PORT"; then
+    record "fixture|vault-path-and-field" FAIL "port ${VAULT_PORT} is already in use" \
+      "refusing to bind a port something else holds"
+    return
+  fi
+  python3 vault-fixture.py "$VAULT_PORT" "$tok" "$field" "$val" "$path" >/dev/null 2>&1 &
+  track_pid $!
+  wait_for_http "http://127.0.0.1:${VAULT_PORT}/v1/${path}" 10 >/dev/null 2>&1 || true
+  local i=0
+  while [ "$i" -lt 50 ] && assert_port_free "$VAULT_PORT"; do sleep 0.1; i=$((i + 1)); done
+
+  get() { curl -sS -m 10 -H "X-Vault-Token: ${1}" "http://127.0.0.1:${VAULT_PORT}/v1/${2}" 2>/dev/null || true; }
+  has_secret() { printf '%s' "$1" | grep -q "$val"; }
+
+  local bad="" body
+  body="$(get "$tok" "$path")"
+  has_secret "$body" || bad="${bad}the CONFIGURED path does not serve the secret; "
+  # the field is the configured one, and it is neither the first nor the last key in the envelope —
+  # so a plugin taking "the one value in there" cannot be accidentally right
+  printf '%s' "$body" | jq -e --arg f "$field" --arg v "$val" '.data.data[$f] == $v' >/dev/null 2>&1 \
+    || bad="${bad}the secret is not under the configured field name; "
+  printf '%s' "$body" | jq -e --arg f "$field" '(.data.data | keys_unsorted) as $k | ($k | length) >= 3 and $k[0] != $f and ($k | last) != $f' >/dev/null 2>&1 \
+    || bad="${bad}the envelope has no decoy before AND after the field, so a first-value or last-value shortcut is indistinguishable from reading the field; "
+  # every decoy value must be WRONG, or the decoys forgive the shortcut they exist to catch
+  printf '%s' "$body" | jq -e --arg f "$field" --arg v "$val" '[.data.data | to_entries[] | select(.key != $f) | .value] | all(. != $v)' >/dev/null 2>&1 \
+    || bad="${bad}a decoy field carries the real secret; "
+  # THE PATH
+  has_secret "$(get "$tok" "secret/data/some-other-path")" \
+    && bad="${bad}a WRONG PATH serves the secret, so the reference's \`path\` setting is unverified; "
+  has_secret "$(get "$tok" "${path}-suffixed")" \
+    && bad="${bad}a path that merely has the configured path as a PREFIX serves the secret; "
+  has_secret "$(get "$tok" "")" \
+    && bad="${bad}the ROOT path serves the secret; "
+  # THE TOKEN — the one refusal the fixture already had; asserted here so it cannot quietly go away
+  has_secret "$(get "wrong-${tok}" "$path")" \
+    && bad="${bad}a WRONG TOKEN serves the secret; "
+
+  if [ -z "$bad" ]; then
+    record "fixture|vault-path-and-field" PASS \
+      "the fixture Vault serves the secret only on the configured path, only under the configured field, only to the token" \
+      "wrong path / prefixed path / root / wrong token all refused; decoy fields flank the real one"
+  else
+    record "fixture|vault-path-and-field" FAIL \
+      "the fixture Vault hands the secret to a caller that did not ask correctly, so probe-secret.sh proves nothing about the reference's settings" \
+      "${bad}a plugin that ignored \`path\` or \`field\` would resolve the value anyway and pass."
+  fi
+}
+
 idp_case
+vault_case
 
 GATE_NAME="fleet fixture selftest" EXPECTED_IDS="$OWED" LEDGER="$LEDGER" bash "${here}/verdict.sh"
