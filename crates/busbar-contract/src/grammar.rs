@@ -507,7 +507,13 @@ fn segments(path: &str) -> impl Iterator<Item = &str> {
 }
 
 /// Whether a pattern matches a concrete path.
-fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
+///
+/// PUBLIC because a plane evaluating its own claims against a live request must answer the pattern
+/// form the SAME way the boot's overlap check answered it. A plane that reimplemented this would be
+/// a second opinion about which claim a request matches, and the one request the two disagree on is
+/// the one the boot proved could not exist.
+#[must_use]
+pub fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
     let mut segs = segments(path);
     for seg in pattern {
         match seg {

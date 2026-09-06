@@ -176,43 +176,36 @@ pub fn dialect_for<'h>(
 
 /// Whether one selector matches a request's path and headers.
 ///
-/// Only the forms this plane's claims actually use are answered; any other form is not a match,
-/// because a plane that guessed at a form it never declared would be answering a question it was
-/// never asked.
-fn matches_selector<'h>(
+/// PUBLIC so the crate's own conformance tests can walk every form; this crate compiles no
+/// conditionally-compiled item, so a test of a private helper has nowhere to live.
+///
+/// EVERY form is answered explicitly. A wildcard arm here would silently answer "no match" for a
+/// form added to the vocabulary later, which is the one way a claim this plane declares could stop
+/// being evaluated without anything failing to compile.
+///
+/// The forms this plane cannot answer are the ones about the CONNECTION rather than the request --
+/// the handshake name, the client certificate, the stream, the protocol, the local port. Nothing
+/// here is given any of them, so `false` is the honest answer and not a default: a plane that
+/// guessed at a fact it was never handed would be routing on something it made up.
+#[must_use]
+pub fn matches_selector<'h>(
     s: &Selector,
     path: &str,
     header: &dyn Fn(&str) -> Option<&'h str>,
 ) -> bool {
     match s {
+        Selector::ExactPath(p) => path == *p,
+        Selector::PrefixOneLevel(prefix) => busbar_contract::grammar::one_level_under(prefix, path),
+        Selector::PathPattern(pattern) => busbar_contract::grammar::pattern_matches(pattern, path),
+        Selector::PathSuffix(suffix) => path.ends_with(suffix),
+        Selector::PathContains(needle) => path.contains(needle),
+        Selector::HeaderExact(name, value) => header(name) == Some(*value),
         Selector::HeaderPresent(name) => header(name).is_some(),
         Selector::HeaderPrefix(name, prefix) => header(name).is_some_and(|v| v.starts_with(prefix)),
-        Selector::PathContains(needle) => path.contains(needle),
-        Selector::PathSuffix(suffix) => path.ends_with(suffix),
-        Selector::PathPattern(pattern) => pattern_matches(pattern, path),
-        _ => false,
+        Selector::Sni(_)
+        | Selector::ClientCertSubject(_)
+        | Selector::StreamName(_)
+        | Selector::Alpn(_)
+        | Selector::Port(_) => false,
     }
-}
-
-/// Whether a segment pattern matches a concrete path.
-///
-/// The same rule the contract's own overlap check uses, one direction only: a variable takes one
-/// segment and a tail takes whatever remains, including nothing.
-fn pattern_matches(pattern: &[PathSeg], path: &str) -> bool {
-    let mut segments = path.split('/').filter(|s| !s.is_empty());
-    for seg in pattern {
-        match seg {
-            PathSeg::Tail => return true,
-            PathSeg::Lit(lit) => match segments.next() {
-                Some(s) if s == *lit => {}
-                _ => return false,
-            },
-            PathSeg::Var => {
-                if segments.next().is_none() {
-                    return false;
-                }
-            }
-        }
-    }
-    segments.next().is_none()
 }
