@@ -354,6 +354,104 @@ fn status_class(status: u16) -> StatusClass {
     }
 }
 
+/// Read the upstream's `Retry-After` off a response head and resolve it to whole seconds.
+///
+/// The header is optional, appears at most once in any answer that means it, and a value this
+/// parser cannot read is treated as absent — a wait nobody can compute is not a wait, and guessing
+/// one would park a lane on a header nobody wrote.
+fn retry_after_secs(headers: &http::HeaderMap, now_secs: u64) -> Option<u64> {
+    let raw = headers.get(http::header::RETRY_AFTER)?.to_str().ok()?;
+    parse_retry_after(raw, now_secs)
+}
+
+/// Parse an RFC 9110 `Retry-After` header VALUE against `now` (a Unix timestamp in seconds). Both
+/// normative forms are accepted: `delay-seconds` (an integer, which ignores `now`) and an
+/// HTTP-date, converted to the seconds remaining until that instant and floored at 0 when it is
+/// already in the past.
+///
+/// The arithmetic is the one the breaker's own classifier does, and it is duplicated here rather
+/// than shared: this crate sits on the transport axis and may not name a unit crate, and the unit
+/// crate's dependency policy names `busbar-caps` as the only workspace crate it may see. The forms
+/// accepted and the flooring rule are pinned by the tests below against the same values.
+fn parse_retry_after(value: &str, now: u64) -> Option<u64> {
+    let s = value.trim();
+    if let Ok(n) = s.parse::<u64>() {
+        return Some(n);
+    }
+    parse_imf_fixdate_retry_after(s, now)
+}
+
+/// Parse the value as an IMF-fixdate (`Sun, 06 Nov 1994 08:49:37 GMT`, the sole HTTP-date form RFC
+/// 9110 recommends generating) and return the whole seconds remaining until it, floored at 0 for a
+/// date already in the past.
+fn parse_imf_fixdate_retry_after(s: &str, now: u64) -> Option<u64> {
+    // "Www, dd Mon yyyy HH:MM:SS GMT" — fixed-width, so a byte-length check plus field slicing is
+    // enough; no general calendar library is warranted for one wire format.
+    if s.len() != 29 || !s.ends_with(" GMT") {
+        return None;
+    }
+    if s.as_bytes().get(3) != Some(&b',') || s.as_bytes().get(4) != Some(&b' ') {
+        return None;
+    }
+    let day: u64 = s.get(5..7)?.parse().ok()?;
+    let month = month_from_abbrev(s.get(8..11)?)?;
+    let year: u64 = s.get(12..16)?.parse().ok()?;
+    let hour: u64 = s.get(17..19)?.parse().ok()?;
+    let minute: u64 = s.get(20..22)?.parse().ok()?;
+    let second: u64 = s.get(23..25)?.parse().ok()?;
+    let epoch_secs = civil_to_epoch_secs(year, month, day, hour, minute, second)?;
+    Some(epoch_secs.saturating_sub(now))
+}
+
+fn month_from_abbrev(m: &str) -> Option<u64> {
+    Some(match m {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    })
+}
+
+/// Days-from-civil (Howard Hinnant's public-domain algorithm), giving a UTC Unix timestamp for a
+/// UTC calendar date and time with no external date/time dependency.
+fn civil_to_epoch_secs(
+    year: u64,
+    month: u64,
+    day: u64,
+    hour: u64,
+    minute: u64,
+    second: u64,
+) -> Option<u64> {
+    let y = year as i64 - i64::from(month <= 2);
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = (month as i64 + 9) % 12; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + day as i64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days_since_epoch = era * 146_097 + doe - 719_468;
+    let days_since_epoch = u64::try_from(days_since_epoch).ok()?;
+    Some(days_since_epoch * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+/// The wall clock, read once at the instant the answer arrived, as a Unix timestamp in seconds.
+/// A `Retry-After` in HTTP-date form is a question about how far away an instant is, and this is
+/// the reading that makes the answer the frame carries the one measured AT the answer.
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 impl Plugin for HttpTransport {
     fn key(&self) -> &'static str {
         Self::KEY
@@ -628,6 +726,10 @@ impl Transport for HttpTransport {
                         .map_err(|_| TransportError::Framing)?;
                     let resp = client.request(req).await.map_err(|e| map_egress_err(&e))?;
                     let status = resp.status().as_u16();
+                    // Read against the instant the answer arrived: an HTTP-date `Retry-After`
+                    // means "until then", and only this layer still holds both the header and the
+                    // now that makes it a duration.
+                    let retry_after = retry_after_secs(resp.headers(), now_unix_secs());
                     // Built as BYTES, not as a string: a header value the wire allows is not
                     // required to be UTF-8, and rendering an un-decodable one as the empty string
                     // hands the layer above a head that says the header was present and empty.
@@ -672,6 +774,14 @@ impl Transport for HttpTransport {
                             bytes: head_len,
                             transport_units: None,
                             status: Some(status_class(status)),
+                            // The exact number and the wait the upstream asked for, read off the
+                            // SAME head the class is read off. The class alone cannot tell a
+                            // withdrawn credential (401/403, which takes every sibling lane down
+                            // with it) from a malformed request (any other 4xx, which is the
+                            // caller's own fault), and the wait is the upstream's own floor on
+                            // when it is worth asking again.
+                            status_code: Some(status),
+                            retry_after_secs: retry_after,
                         },
                     };
                     if tx.send(Ok((StreamId(0), head_frame))).is_err() {
@@ -934,6 +1044,8 @@ async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max
                 // response frame (`StatusAt::FirstFrame`), never repeated, so a composed layer
                 // (`sse`) can tell a head frame from a body frame by this field alone.
                 status: None,
+                status_code: None,
+                retry_after_secs: None,
             },
         };
         if tx.send(Ok((StreamId(0), body_frame))).is_err() {
@@ -1277,6 +1389,8 @@ fn body_frame(bytes: Vec<u8>) -> (StreamId, Frame) {
                 bytes: len,
                 transport_units: None,
                 status: None,
+                status_code: None,
+                retry_after_secs: None,
             },
         },
     )

@@ -191,6 +191,120 @@ async fn egress_maps_4xx_and_5xx_status_classes() {
     }
 }
 
+/// The number, not just the class. A 401, a 403 and a 404 all read `ClientError`, and only one of
+/// the three is a malformed request — the layer that has to tell them apart reads this field.
+#[tokio::test]
+async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {
+    for status in [401_u16, 403, 404, 429, 503] {
+        let resp: &'static [u8] = Box::leak(
+            format!("HTTP/1.1 {status} X\r\nContent-Length: 0\r\n\r\n")
+                .into_bytes()
+                .into_boxed_slice(),
+        );
+        let uri = fixed_response_server(resp).await;
+        let transport = HttpTransport::new(ClientSettings::default());
+        let conn = transport
+            .dial(&upstream_dest(&uri), &fixture_key())
+            .await
+            .unwrap();
+        transport
+            .write(
+                &conn,
+                StreamId(0),
+                ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+            )
+            .await
+            .unwrap();
+        let mut frames = transport.frames(conn);
+        let (_s, head) = frames.next().await.unwrap().unwrap();
+        assert_eq!(head.meta.status_code, Some(status));
+    }
+}
+
+/// The wait the upstream asked for rides the same frame as the status it asked it on, already in
+/// whole seconds — and an answer that asked for nothing carries nothing.
+#[tokio::test]
+async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
+    let uri =
+        fixed_response_server(b"HTTP/1.1 429 X\r\nRetry-After: 7\r\nContent-Length: 0\r\n\r\n")
+            .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert_eq!(head.meta.status_code, Some(429));
+    assert_eq!(head.meta.retry_after_secs, Some(7));
+}
+
+#[tokio::test]
+async fn egress_reports_no_retry_after_when_the_upstream_asked_for_none() {
+    let uri = fixed_response_server(b"HTTP/1.1 503 X\r\nContent-Length: 0\r\n\r\n").await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert_eq!(head.meta.status_code, Some(503));
+    assert_eq!(head.meta.retry_after_secs, None);
+}
+
+/// Both RFC 9110 forms, and nothing else. A value nobody can read is a value nobody asked for.
+#[test]
+fn retry_after_parses_both_normative_forms() {
+    // delay-seconds, which ignores `now` entirely.
+    assert_eq!(super::parse_retry_after("7", 1_000), Some(7));
+    assert_eq!(super::parse_retry_after("  120 ", 9_999), Some(120));
+    assert_eq!(super::parse_retry_after("0", 0), Some(0));
+
+    // IMF-fixdate. 06 Nov 1994 08:49:37 GMT is 784_111_777 in Unix seconds.
+    assert_eq!(
+        super::parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", 784_111_777 - 30),
+        Some(30)
+    );
+    // Already past: floored at zero rather than wrapping into a lifetime of suppression.
+    assert_eq!(
+        super::parse_retry_after("Sun, 06 Nov 1994 08:49:37 GMT", 784_111_777 + 90),
+        Some(0)
+    );
+
+    // Neither form.
+    assert_eq!(super::parse_retry_after("", 0), None);
+    assert_eq!(super::parse_retry_after("soon", 0), None);
+    assert_eq!(super::parse_retry_after("-5", 0), None);
+    assert_eq!(super::parse_retry_after("7.5", 0), None);
+    // An obsolete HTTP-date form: parsed by nobody here, so it is absent rather than guessed.
+    assert_eq!(
+        super::parse_retry_after("Sunday, 06-Nov-94 08:49:37 GMT", 0),
+        None
+    );
+    // Right length, wrong month.
+    assert_eq!(
+        super::parse_retry_after("Sun, 06 Xxx 1994 08:49:37 GMT", 0),
+        None
+    );
+}
+
 #[tokio::test]
 async fn ingress_reads_a_head_and_body_frame_from_a_real_client() {
     let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));

@@ -164,6 +164,15 @@ impl Transport for SseTransport {
         // frame.
         type FrameStream =
             Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>>;
+        /// The status leg `http` read off the response head, kept whole. Splitting the class from
+        /// the number and the requested wait would let one of the three ride out on an SSE frame
+        /// without the others — they describe one answer, so they move as one.
+        #[derive(Clone, Copy, Default)]
+        struct StatusLeg {
+            class: Option<busbar_contract_transport::wire::StatusClass>,
+            code: Option<u16>,
+            retry_after_secs: Option<u64>,
+        }
         struct State {
             inner: FrameStream,
             buf: Vec<u8>,
@@ -173,11 +182,8 @@ impl Transport for SseTransport {
             /// arriving chunk, which for one large trickled frame is the difference between a pass
             /// over the frame and a pass per chunk.
             scanned: usize,
-            pending: VecDeque<(
-                Vec<u8>,
-                Option<busbar_contract_transport::wire::StatusClass>,
-            )>,
-            status: Option<busbar_contract_transport::wire::StatusClass>,
+            pending: VecDeque<(Vec<u8>, StatusLeg)>,
+            status: StatusLeg,
             status_attached: bool,
             done: bool,
         }
@@ -186,7 +192,7 @@ impl Transport for SseTransport {
             buf: Vec::new(),
             scanned: 0,
             pending: VecDeque::new(),
-            status: None,
+            status: StatusLeg::default(),
             status_attached: false,
             done: false,
         };
@@ -202,7 +208,9 @@ impl Transport for SseTransport {
                         meta: FrameMeta {
                             bytes: len,
                             transport_units: None,
-                            status,
+                            status: status.class,
+                            status_code: status.code,
+                            retry_after_secs: status.retry_after_secs,
                         },
                     };
                     return Some((Ok((StreamId(0), frame)), st));
@@ -214,8 +222,14 @@ impl Transport for SseTransport {
                     Some(Ok((_s, http_frame))) => {
                         if let Some(status) = http_frame.meta.status {
                             // `http`'s HEAD frame: remember its status leg, do not emit it as an
-                            // SSE frame of our own — it carries no SSE payload.
-                            st.status = Some(status);
+                            // SSE frame of our own — it carries no SSE payload. The whole leg is
+                            // remembered, not just the class: the number and the requested wait
+                            // are facts about the same answer and travel with it.
+                            st.status = StatusLeg {
+                                class: Some(status),
+                                code: http_frame.meta.status_code,
+                                retry_after_secs: http_frame.meta.retry_after_secs,
+                            };
                             continue;
                         }
                         st.buf.extend_from_slice(http_frame.bytes.as_slice());
@@ -226,7 +240,7 @@ impl Transport for SseTransport {
                             // one only to drop it.
                             if proto::frame_carries_data(&raw) {
                                 let status = if st.status_attached {
-                                    None
+                                    StatusLeg::default()
                                 } else {
                                     st.status_attached = true;
                                     st.status
@@ -273,7 +287,7 @@ impl Transport for SseTransport {
                         // one final frame wearing that leg. When there is no body to carry it, no
                         // frame is defensible and the framing error is what is left.
                         let failing = matches!(
-                            st.status,
+                            st.status.class,
                             Some(busbar_contract_transport::wire::StatusClass::ClientError)
                                 | Some(busbar_contract_transport::wire::StatusClass::ServerError)
                                 | Some(busbar_contract_transport::wire::StatusClass::Other)
