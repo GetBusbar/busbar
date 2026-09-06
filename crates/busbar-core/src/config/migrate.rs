@@ -1249,11 +1249,46 @@ fn migrate_auth(
                 );
             }
             other => {
-                auth.insert("chain".into(), Value::Sequence(vec!["keys".into()]));
-                changes.push(format!(
-                    "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; mint \
-                     signed keys)"
-                ));
+                // MERGE, never REPLACE. `auth.mode:` and `auth.chain:` are BOTH shapes
+                // `detect_legacy_markers` names as 1.x, so a config carrying both is inside this
+                // migrator's declared input domain — and an unconditional
+                // `insert("chain", ["keys"])` DELETED every module the operator had listed there
+                // (`chain: [ad, tokens]` came out as `[keys]`, the `ad` identity provider gone with
+                // no `changes` and no `todos` entry). That is the silent-loss class `Taken`
+                // documents: an absent chain module is a legal shape, so `--validate` passed too,
+                // and the migrated deployment simply stopped authenticating against that IdP.
+                //
+                // `mode:` only ever asserted "this deployment authenticates callers", whose 1.5.0
+                // spelling is the `keys` verifier — so APPEND `keys` when the chain does not
+                // already name it and leave every other entry exactly where it was. An
+                // absent/empty chain still lands `[keys]`, which is the whole 1.4.x-only case.
+                let existing: Vec<Value> = auth
+                    .get(Value::from("chain"))
+                    .and_then(|v| v.as_sequence())
+                    .cloned()
+                    .unwrap_or_default();
+                let has_keys = existing
+                    .iter()
+                    .any(|e| entry_module_name(e).as_deref() == Some("keys"));
+                if existing.is_empty() {
+                    auth.insert("chain".into(), Value::Sequence(vec!["keys".into()]));
+                    changes.push(format!(
+                        "auth.mode: {other} -> auth.chain: [keys] (static tokens are removed; mint \
+                         signed keys)"
+                    ));
+                } else {
+                    let mut merged = existing;
+                    if !has_keys {
+                        merged.push("keys".into());
+                    }
+                    auth.insert("chain".into(), Value::Sequence(merged));
+                    changes.push(format!(
+                        "auth.mode: {other} -> the `keys` verifier ADDED to the existing \
+                         auth.chain (static tokens are removed; mint signed keys). The modules you \
+                         already listed on the chain were KEPT — `mode:` never named them, so \
+                         replacing the chain with [keys] would have dropped them"
+                    ));
+                }
                 todos.push(
                     "auth.chain: the static-token allowlist is GONE in 1.5.0; every caller needs \
                      a minted signed key (POST /api/v1/admin/keys) - 1.x bearer tokens stop \
