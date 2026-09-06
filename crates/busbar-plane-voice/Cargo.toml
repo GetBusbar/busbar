@@ -1,7 +1,8 @@
 # busbar-plane-voice — THE VOICE PLANE, as a CODEC and nothing else.
 #
 # WHAT THIS CRATE IS. One implementation of the plugin contract's plane kind (and its session
-# extension) for busbar's duplex/live-voice surface (§6 of ARCHITECTURE.md): the openai-realtime,
+# extension) for busbar's duplex/live-voice surface (the protocol-inventory row ARCHITECTURE.md keys
+# `voice`): the openai-realtime,
 # gemini-live, twilio-media-streams and one-shot transcribe/tts dialects, with a turn as the unit,
 # a provider tool call as `Progress::OneShot`, an interrupt fact and a pacing fact. It calls
 # `busbar-voice`'s own dialect codecs to read and write bytes; it invents no wire shape of its own.
