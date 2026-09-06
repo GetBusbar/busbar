@@ -161,7 +161,7 @@ import json,sys
 p=sys.argv[1]; d=json.load(open(p)); d["body"]["text"]=d["body"]["text"].replace("hi", "hi TOKEN123"); json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)
 EOF
 cat >"$W/xform-accept.json" <<'JSON'
-{"accepted":[{"id":"T-1 test token","kind":"improvement","by":"selftest","cells":"^self\\|b\\|stream$","rationale":"selftest transform proof","transform":{"candidate":[[" TOKEN123",""]]}}]}
+{"accepted":[{"id":"T-1 test token","kind":"improvement","by":"selftest","cells":"^self\\|b\\|stream$","expected_cells":1,"rationale":"selftest transform proof","transform":{"candidate":[[" TOKEN123",""]]}}]}
 JSON
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/xform" --out "$W/out-i" --cells "$CELLS" \
   --allow-harness-skew --no-check-golden --accepted "$W/xform-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-i.log" 2>&1
@@ -631,6 +631,70 @@ bash "${here}/replay.sh" --golden "$W/prov-esc" --candidate "$W/same" --out "$W/
 rc=$?
 [ "$rc" = 0 ] && say PASS "--no-check-golden still skips the provenance check, explicitly" \
   || say FAIL "--no-check-golden did not skip the provenance check (rc=$rc, see $W/out-prov-esc.log)"
+
+# (bb) A TRANSFORM MUST HAVE A SCOPE, AND FIRING IS NOT ACCEPTING. `cells` defaulted to "." for every
+# entry, and the two shipped transforms (D-1, D-2) carried none — so their rewrites ran over all 2299
+# cells. That was called harmless because a transform is line-precise, but the match is not the
+# acceptance: once ANY of a cell's text was rewritten, the branch below handed the cell's WHOLE raw
+# class list to the accepted column without ever testing it against the entry's `allowed` set. A cell
+# where D-1's `[error] BUSBAR-NNNN: ` rewrite fired and whose STATUS had also moved reported
+# `PASS ACCEPTED improvement (D-1 …): status` — a money class, forgiven by an `improvement`.
+cp -R "$FIX" "$W/tscope"
+python3 - "$W/tscope/cells/self__b__stream.json" <<'EOF'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+d["body"]["text"]=d["body"]["text"].replace("hi", "hi TOKEN123")
+json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)
+EOF
+# T-2 fires (its rewrite erases the body divergence) but claims only `headers`. `body` is outside
+# its allowed set, so the cell stays RED — the rewrite is not a licence over the cell.
+cat >"$W/tscope-accept.json" <<'JSON'
+{"accepted":[{"id":"T-2 fires and overreaches","kind":"improvement","by":"selftest","cells":"^self\\|b\\|stream$","expected_cells":1,"classes":["headers"],"rationale":"fires on the body, but only claims headers","transform":{"candidate":[[" TOKEN123",""]]}}]}
+JSON
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/tscope" --out "$W/out-bb" --cells "$CELLS" \
+  --allow-harness-skew --no-check-golden --accepted "$W/tscope-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-bb.log" 2>&1
+rc=$?
+row="$(awk -F'\t' '$1=="self|b|stream"{print; exit}' "$W/out-bb/ledger.tsv")"
+[ "$rc" != 0 ] && [ "$(cut -f2 <<<"$row")" = FAIL ] \
+  && say PASS "a fired transform does not forgive a class outside its 'allowed' set" \
+  || say FAIL "a transform that merely FIRED carried a class it does not claim into the accepted column (rc=$rc row=$row)"
+
+# …and a transform that DOES claim the class it erased still accepts, or the guard above would just
+# be a blanket refusal of every transform.
+cat >"$W/tscope-ok.json" <<'JSON'
+{"accepted":[{"id":"T-2b claims what it erases","kind":"improvement","by":"selftest","cells":"^self\\|b\\|stream$","expected_cells":1,"classes":["body"],"rationale":"claims the class its rewrite erases","transform":{"candidate":[[" TOKEN123",""]]}}]}
+JSON
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/tscope" --out "$W/out-bb1b" --cells "$CELLS" \
+  --allow-harness-skew --no-check-golden --accepted "$W/tscope-ok.json" --baseline "$W/no-baseline.txt" >"$W/out-bb1b.log" 2>&1
+rc=$?
+row="$(awk -F'\t' '$1=="self|b|stream"{print; exit}' "$W/out-bb1b/ledger.tsv")"
+[ "$rc" = 0 ] && [[ "$(cut -f3 <<<"$row")" == ACCEPTED* ]] \
+  && say PASS "a transform that claims the class it erases still reports ACCEPTED" \
+  || say FAIL "a correctly-scoped transform was refused (rc=$rc row=$row)"
+
+# …and a transform with no `cells` at all is refused: an unscoped rewrite is the whole corpus.
+cat >"$W/tnoscope.json" <<'JSON'
+{"accepted":[{"id":"T-3 unscoped","kind":"improvement","by":"selftest","rationale":"no cells","transform":{"candidate":[[" TOKEN123",""]]}}]}
+JSON
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/tscope" --out "$W/out-bb2" --cells "$CELLS" \
+  --allow-harness-skew --no-check-golden --accepted "$W/tnoscope.json" --baseline "$W/no-baseline.txt" >"$W/out-bb2.log" 2>&1
+rc=$?
+grep -q "declares no \`cells\`" "$W/out-bb2.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "a transform entry with no 'cells' -> loader refuses (an unscoped rewrite is the whole corpus)" \
+  || say FAIL "an unscoped transform was accepted (rc=$rc msg_ok=$msg_ok, see $W/out-bb2.log)"
+
+# …and a transform's `cells` is held to its declared width, exactly like every other entry's.
+cat >"$W/twide.json" <<'JSON'
+{"accepted":[{"id":"T-4 widened","kind":"improvement","by":"selftest","cells":"^self\\|","expected_cells":1,"rationale":"declares one, takes three","transform":{"candidate":[[" TOKEN123",""]]}}]}
+JSON
+bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/tscope" --out "$W/out-bb3" --cells "$CELLS" \
+  --allow-harness-skew --no-check-golden --accepted "$W/twide.json" --baseline "$W/no-baseline.txt" >"$W/out-bb3.log" 2>&1
+rc=$?
+grep -q "expected_cells=1" "$W/out-bb3.log" && msg_ok=1 || msg_ok=0
+[ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+  && say PASS "a transform entry is held to its expected_cells too" \
+  || say FAIL "a widened transform was accepted (rc=$rc msg_ok=$msg_ok, see $W/out-bb3.log)"
 
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
