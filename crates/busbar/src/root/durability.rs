@@ -305,28 +305,32 @@ impl Durability {
             wall: stamp.wall,
             mono: stamp.mono,
         };
-        self.journal_posting(&posting, at.durability, at.step)?;
         // The overdraft's own record. Reserved and settled are zero on it deliberately: the
         // settlement above already carries both, and repeating them here would double every figure
         // a replay adds up. What this record holds that nothing else does is the carry, on the
         // chain, in order, beside the posting it came out of.
-        let overdraft = match settlement.overdraft.as_ref() {
-            None => None,
-            Some(note) => {
-                let record = Posting {
-                    key: note.key.clone(),
-                    window: note.window,
-                    reserved: 0,
-                    settled: 0,
-                    overdraft: note.amount,
-                    rate_card_version: stamp.rate_card_version,
-                    wall: stamp.wall,
-                    mono: stamp.mono,
-                };
-                self.journal_posting(&record, at.durability, at.step)?;
-                Some(record)
-            }
-        };
+        let overdraft = settlement.overdraft.as_ref().map(|note| Posting {
+            key: note.key.clone(),
+            window: note.window,
+            reserved: 0,
+            settled: 0,
+            overdraft: note.amount,
+            rate_card_version: stamp.rate_card_version,
+            wall: stamp.wall,
+            mono: stamp.mono,
+        });
+        // ONE BATCH, both records. A batch is the unit of durability — one store round trip
+        // memory-buffered, one fsync on disk — and the settlement and its carry are two entries of
+        // one act rather than two acts. Appending them separately paid twice for it on every
+        // overdrafting settlement, and left a window in which the chain held a settlement whose
+        // carry was not on it yet.
+        let entries: Vec<Entry> = std::iter::once(&posting)
+            .chain(overdraft.as_ref())
+            .map(|record| {
+                Entry::new(RecordClass::Transaction, record.body()).at(record.wall, record.mono)
+            })
+            .collect();
+        self.journal.append(at.durability, at.step, &entries)?;
         Ok(Settled {
             settlement,
             posting,
@@ -1413,6 +1417,107 @@ mod tests {
             vec![1, 2],
             "the carry comes after the posting it is of"
         );
+        verify_journal(&replayed).expect("the chain verifies");
+    }
+
+    /// A shipper that takes every batch and remembers how many records each one carried.
+    ///
+    /// The batch is the unit of durability: memory-buffered it is what the store is offered, on
+    /// disk it is what one fsync covers. So a count of batches is a count of round trips, which is
+    /// what the test below is about.
+    #[derive(Clone, Default)]
+    struct CountingShipper(std::sync::Arc<std::sync::Mutex<Vec<usize>>>);
+
+    impl busbar_unit_wal::Shipper for CountingShipper {
+        fn ship(
+            &mut self,
+            records: &[busbar_unit_wal::Record],
+        ) -> Result<(), busbar_unit_wal::ShipError> {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(records.len());
+            Ok(())
+        }
+    }
+
+    /// ONE SETTLEMENT IS ONE BATCH, carry and all.
+    ///
+    /// The posting and the overdraft record are two entries of one settlement, written on the
+    /// settle path every priced unit takes. Appending them separately is two batches for one act:
+    /// two store round trips memory-buffered, two fsyncs on disk, and a window in between where the
+    /// chain holds a settlement whose carry is not there yet. They go in one call, which is also
+    /// what makes the pair atomic against a crash rather than merely adjacent.
+    #[test]
+    fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
+        use busbar_caps::{
+            step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, PrincipalId,
+            QuantitySource, Usage, UsageLine, UsageToken,
+        };
+        let seal = KernelSeal::acquire_for_kernel();
+        let batches = CountingShipper::default();
+        let mut durability = build(
+            &DurabilityConfig { data_dir: None },
+            Box::new(batches.clone()),
+            rows(),
+        )
+        .expect("memory-buffered cannot fail");
+
+        let key = totals_key("vk_batch");
+        durability.ledger.record_hold_opened(&key, 86_400, 1_000);
+        let mut hold = Hold::open(
+            &AdmitToken::<Admit>::mint(&seal),
+            PrincipalId::new("vk_batch"),
+            1_000,
+        );
+        assert_eq!(hold.spend(4_000, 0).overdraft, 3_000);
+        let usage = Usage::report(
+            &UsageToken::mint(&seal),
+            vec![UsageLine {
+                class: MeterClassId::new("nano_units"),
+                quantity: 4_000,
+                source: QuantitySource::Count,
+                estimated: false,
+            }],
+        )
+        .expect("one line");
+
+        let durability_token = token();
+        let settled = durability
+            .settle(
+                &settling(&key, &durability_token),
+                hold,
+                &usage,
+                &LedgerToken::mint(&seal),
+            )
+            .expect("the counting shipper takes it");
+        assert!(settled.overdraft.is_some(), "the fixture overdrafts");
+
+        let offered = batches
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(
+            offered,
+            vec![2],
+            "one settlement is one batch of two records, not two batches of one"
+        );
+
+        // And the chain says exactly what it said when the two records were appended separately.
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("the journal reads back")
+            .expect("and verifies");
+        assert_eq!(replayed.len(), 2);
+        assert_eq!(replayed[0].body, settled.posting.body());
+        assert_eq!(
+            replayed[1].body,
+            settled.overdraft.as_ref().expect("the carry").body()
+        );
+        let seqs: Vec<u64> = replayed.iter().map(|r| r.node_seq).collect();
+        assert_eq!(seqs, vec![1, 2], "the carry still comes after its posting");
         verify_journal(&replayed).expect("the chain verifies");
     }
 
