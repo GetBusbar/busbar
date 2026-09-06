@@ -19,8 +19,10 @@
 //! plugin handle and no more, so a "write, restart, read it back" test needs a backend that puts
 //! bytes somewhere a second `busbar_open` can find them.
 //!
-//! No config (or unparseable config) still means `MemoryStore`, so the CI install-and-serve fixture
-//! and every existing over-the-ABI test are untouched.
+//! NO config still means `MemoryStore`, so the CI install-and-serve fixture and every existing
+//! over-the-ABI test are untouched. A config that is PRESENT but unreadable is a load error: the
+//! whole point of the durable mode is that the rows are on disk, and a plugin that quietly opens a
+//! RAM store because it could not parse the line naming the file has taken that away silently.
 
 use busbar_api::{
     MeteringDelta, MeteringRow, PlaneDisposition, PlaneRecord, PlaneSelector, Store, StoreError,
@@ -30,24 +32,27 @@ use busbar_store_memory::MemoryStore;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// The plugin's optional config. Every field optional; an absent/unparseable body means
-/// "`MemoryStore`, no config", which is this fixture's original and default posture.
+/// The plugin's optional config. Every field optional; an ABSENT body means "`MemoryStore`, no
+/// config", which is this fixture's original and default posture. A present body must parse.
 #[derive(serde::Deserialize)]
 struct Cfg {
     /// Where [`FileStore`] keeps its JSON. Presence of this key is what selects the durable mode.
     durable_path: Option<String>,
 }
 
-/// Construct the module. With no `durable_path` no config is read at all (the wrapped `MemoryStore`
-/// takes none); malformed JSON in `cfg` is accepted and ignored rather than a load error, since
-/// there is nothing in this plugin's config shape that could be malformed — this mirrors
-/// `busbar-auth-static-plugin`'s posture for a config-less module, not
-/// `busbar-secret-example-plugin`'s (which has a real config to validate).
+/// Construct the module. An EMPTY config means "no config at all", which is this fixture's original
+/// posture: a wrapped `MemoryStore` that takes none. Anything else must PARSE — a config the
+/// operator wrote and this plugin could not read is a load error, not a silent demotion to RAM. That
+/// downgrade is the dangerous shape: a stray trailing comma in `{"durable_path": "/var/lib/…"}`
+/// turned a durable store into an ephemeral one, the plugin loaded clean, and the rows only stopped
+/// existing at the next restart.
 fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
-    match serde_json::from_str::<Cfg>(cfg)
-        .ok()
-        .and_then(|c| c.durable_path)
-    {
+    if cfg.trim().is_empty() {
+        return Ok(Box::new(MemoryStore::new()));
+    }
+    let parsed: Cfg = serde_json::from_str(cfg)
+        .map_err(|e| format!("invalid store-example plugin config: {e}"))?;
+    match parsed.durable_path {
         Some(path) => Ok(Box::new(FileStore::open(PathBuf::from(path))?)),
         None => Ok(Box::new(MemoryStore::new())),
     }
@@ -349,10 +354,21 @@ impl FileStore {
         // still for a long time, and dropping it loses the work. Terminality is read from the typed
         // `disposition` SIDECAR column — never decoded out of the opaque body.
         self.mutate(|d| {
-            let before_len = d.tasks.len();
-            d.tasks
-                .retain(|t| !(t.ts < before && t.disposition == PlaneDisposition::Terminal));
-            (before_len - d.tasks.len()) as u64
+            let purged: std::collections::HashSet<String> = d
+                .tasks
+                .iter()
+                .filter(|t| t.ts < before && t.disposition == PlaneDisposition::Terminal)
+                .map(|t| t.id.clone())
+                .collect();
+            d.tasks.retain(|t| !purged.contains(&t.id));
+            // CASCADE: a task's event chain has no retention path of ITS own — nothing else ever
+            // removes a `task_event` row — so purging the task and keeping its events grows the file
+            // forever with chains whose parent no longer exists, and those events outlive the exact
+            // retention decision that was just made about them. Only the chains under a task that
+            // actually went are dropped: an event whose task is still retained (or was never
+            // written) is untouched, so this can never be a second, wider retention rule in disguise.
+            d.task_event_bodies.retain(|e| !purged.contains(&e.task_id));
+            purged.len() as u64
         })
     }
     // ── the durable ones: the A2A task-event chain, stored OPAQUELY (mirrors the MCP call log) ────
