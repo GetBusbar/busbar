@@ -15,7 +15,9 @@
 //!   BEFORE the slot is tested, so a barge-in reaches the compare-and-set instead of bouncing off
 //!   the slot it is trying to take over.
 //! - **One-shots do not take the slot.** They run under a small fixed concurrency, so a burst of
-//!   them cannot starve the open conversation or the node.
+//!   them cannot starve the open conversation or the node. Past that count they are REFUSED, not
+//!   held: a one-shot is a whole unit in one frame and the pump keeps no queue, so anything other
+//!   than an answer is that unit disappearing.
 //! - **A body arrives before its unit opens.** Where a declared pointer sits at the end of a body,
 //!   the body is spooled — against its own budget, in real bytes — and the unit opens when the
 //!   deepest pointer has resolved. No pointer is ever read off a truncated document.
@@ -194,11 +196,21 @@ impl Scheduler {
             Shape::NeedMore => Dispatch::Wait,
             Shape::Discard => Dispatch::Drop,
             Shape::Handshake => Dispatch::OpenHandshake,
+            // A one-shot is a WHOLE unit in one frame, so the answer at a spent permit count is a
+            // refusal and not a wait. `Wait` means "not a whole anything yet, keep reading", which
+            // is the true answer for a partial frame and a silent loss for this one: the pump holds
+            // no queue, the frame is not offered again, and a unit that was going to be rendered,
+            // counted and ended is none of those things. Refused, it renders and the session stays
+            // open — the same shape the open slot's own refusal above has, and the same reason the
+            // in-flight cap sheds under.
             Shape::OneShot => {
                 if self.start_one_shot() {
                     Dispatch::OpenOneShot
                 } else {
-                    Dispatch::Wait
+                    Dispatch::Refuse {
+                        step: StepName::Decode,
+                        reason: ReasonCode::InFlightCap,
+                    }
                 }
             }
             Shape::Open { interrupt } => {
