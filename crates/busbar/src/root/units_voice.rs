@@ -907,70 +907,102 @@ pub struct TurnUsage {
     pub tool_calls: u64,
 }
 
+/// The declared class this key names, as the PLANE spells it, or `None` if the plane no longer
+/// declares one under that name.
+///
+/// Every class id this file puts on a line, on an estimate or on the exit evidence comes back
+/// through here, so the spelling that reaches the rate card is the declaration's own and never a
+/// second copy of it kept in the root. That is the whole point: a rate card selects a unit price by
+/// class label, so a class the plane renamed and the root did not would be priced at nothing, in
+/// silence, on every turn.
+///
+/// The lookup is by key rather than by position because a declaration is a set and not an order: a
+/// class inserted in the middle of the list must not shift what the one after it is priced as. A key
+/// the plane stopped declaring resolves to `None` here, which is what makes the rename show up as an
+/// absent line and a red assertion in `every_declared_class_carries_a_figure` rather than as a
+/// mispriced turn.
+fn declared_class(key: &str) -> Option<MeterClassId> {
+    <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+        .iter()
+        .find(|decl| decl.key.as_str() == key)
+        .map(|decl| decl.key)
+}
+
 impl TurnUsage {
+    /// The figure this report carries for one class the plane declared, with the evidence it is.
+    ///
+    /// Written as a function OVER THE DECLARATION rather than as a list of names this file keeps:
+    /// the caller walks the plane's own class list and asks this what each entry is worth, so a
+    /// class the plane declares and this file does not recognise produces no line and is caught by
+    /// the assertion below, and a class this file recognises is emitted under the declaration's key.
+    fn figure(
+        &self,
+        decl: &busbar_contract::ids::MeterClassDecl,
+    ) -> Option<(u64, QuantitySource, bool)> {
+        // The four token figures and the cache figure are the upstream's own: reported, not derived,
+        // so nothing here is marked as an estimate.
+        let reported = |quantity| Some((quantity, QuantitySource::Count, false));
+        match decl.key.as_str() {
+            "audio_tokens_in" => reported(self.audio_tokens_in),
+            "audio_tokens_out" => reported(self.audio_tokens_out),
+            "text_tokens_in" => reported(self.text_tokens_in),
+            "text_tokens_out" => reported(self.text_tokens_out),
+            "cached_tokens" => reported(self.cached_tokens),
+            // The duration this plane counted itself rather than read off the upstream, in SECONDS,
+            // through the plane's own boundary. The counter is milliseconds; the class the plane
+            // declares is denominated in seconds, and a figure that settled in the counter's unit
+            // would settle a turn of audio at a thousand times its duration. Marked an estimate
+            // because that is what it is — a duration derived from a byte count under an assumed
+            // format — and a billing dispute turns on the difference between that and a figure the
+            // destination confirmed.
+            "audio_seconds_in" => Some((
+                meta::audio_seconds_in(self.audio_ms_in),
+                QuantitySource::Count,
+                true,
+            )),
+            // A cardinality the plane surfaced as a declared content fact, named as the fact it was
+            // read from rather than as a bare count: the variance rule needs to know which
+            // declaration a figure came from to find its kernel-derived companion.
+            "tool_calls" => Some((
+                self.tool_calls,
+                QuantitySource::PlaneCount {
+                    content_fact_key: meta::FACT_TOOL_CALLS.to_string(),
+                },
+                false,
+            )),
+            _ => None,
+        }
+    }
+
     /// The report as usage lines, one per class the plane declares that carried a figure.
     ///
     /// A class with nothing to report produces no line rather than a zero: a line that says zero and
     /// a line that is absent settle the same, but only one of them claims the upstream said so.
     fn lines(&self) -> Vec<UsageLine> {
-        let reported: [(&str, u64, QuantitySource); 5] = [
-            (
-                "audio_tokens_in",
-                self.audio_tokens_in,
-                QuantitySource::Count,
-            ),
-            (
-                meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
-                self.audio_tokens_out,
-                QuantitySource::Count,
-            ),
-            ("text_tokens_in", self.text_tokens_in, QuantitySource::Count),
-            (
-                "text_tokens_out",
-                self.text_tokens_out,
-                QuantitySource::Count,
-            ),
-            ("cached_tokens", self.cached_tokens, QuantitySource::Count),
-        ];
-        let mut lines: Vec<UsageLine> = reported
+        <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
             .iter()
-            .filter(|(_, quantity, _)| *quantity > 0)
-            .map(|(class, quantity, source)| UsageLine {
-                class: MeterClassId::new(class),
-                quantity: *quantity,
-                source: source.clone(),
-                estimated: false,
+            .filter_map(|decl| {
+                let (quantity, source, estimated) = self.figure(decl)?;
+                (quantity > 0).then_some(UsageLine {
+                    class: decl.key,
+                    quantity,
+                    source,
+                    estimated,
+                })
             })
-            .collect();
-        // The two the plane counted itself rather than read off the upstream. They are marked as
-        // estimates because that is what they are: a duration derived from a byte count under an
-        // assumed format, and a count this node kept. A figure the destination confirmed and one the
-        // node derived are not the same evidence, and a billing dispute turns on the difference.
-        if self.audio_ms_in > 0 {
-            lines.push(UsageLine {
-                class: MeterClassId::new("audio_seconds_in"),
-                // Seconds, through the plane's own boundary. The counter is milliseconds; the class
-                // the plane declares is denominated in seconds, and the figure that settles has to
-                // be in the class's unit rather than in the counter's.
-                quantity: meta::audio_seconds_in(self.audio_ms_in),
-                source: QuantitySource::Count,
-                estimated: true,
-            });
-        }
-        if self.tool_calls > 0 {
-            lines.push(UsageLine {
-                class: MeterClassId::new("tool_calls"),
-                quantity: self.tool_calls,
-                // A cardinality the plane surfaced as a declared content fact, named as the fact it
-                // was read from rather than as a bare count: the variance rule needs to know which
-                // declaration a figure came from to find its kernel-derived companion.
-                source: QuantitySource::PlaneCount {
-                    content_fact_key: meta::FACT_TOOL_CALLS.to_string(),
-                },
-                estimated: false,
-            });
-        }
-        lines
+            .collect()
+    }
+
+    /// Everything this turn metered, over every class the plane declares.
+    ///
+    /// One figure, read by the metering step to settle the session's lease and by the exit evidence
+    /// as what the turn located. They are the same number BECAUSE they are one reading: a lease
+    /// drawn down at the whole report and a posting settled at one class of it would charge the
+    /// session for audio and bill the caller for none of the text that went with it.
+    fn total(&self) -> u64 {
+        self.lines()
+            .iter()
+            .fold(0u64, |sum, line| sum.saturating_add(line.quantity))
     }
 }
 
@@ -1573,7 +1605,7 @@ impl Units for VoiceUnit<'_> {
         // The turn's exact figure settles against the session's reservation. An exhausted lease is
         // reported and acted on — the session hard-closes — rather than swallowed: audio already
         // streamed cannot be refunded, so the only enforcement point is the next frame.
-        let total: u64 = lines.iter().map(|line| line.quantity).sum();
+        let total = self.usage.total();
         if !self.shape.is_handshake() && !self.node.io.lease.settle(self.session, total) {
             // Not a refusal of this unit. This unit's value was delivered and is metered; what the
             // exhausted lease decides is whether there is a next one — and it decides no. The
@@ -1947,6 +1979,47 @@ mod tests {
         // And the one spelling is still the released one: a shared constant makes a rename cheap,
         // which is exactly why the wire string it carries is pinned here.
         assert_eq!(line.class.as_str(), "audio_tokens_out");
+    }
+
+    /// EVERY class the plane declares is a class the root knows what to put in, and the root emits
+    /// none the plane does not declare.
+    ///
+    /// This is the assertion that turns a rename from a silent mispricing into a red build. The root
+    /// no longer keeps its own list of class names — it walks the plane's declaration and asks what
+    /// each entry is worth — so a class the plane renames stops being recognised, produces no line,
+    /// and is caught here. Without this, that class would simply stop being reported, and a class
+    /// that is not reported settles at nothing on every turn of every session.
+    #[test]
+    fn every_declared_class_carries_a_figure() {
+        // A turn that carried something under all seven, so the only reason a class can be missing
+        // from the report below is that the root did not recognise it.
+        let usage = TurnUsage {
+            audio_tokens_in: 11,
+            audio_tokens_out: 12,
+            text_tokens_in: 13,
+            text_tokens_out: 14,
+            cached_tokens: 15,
+            audio_ms_in: 16_000,
+            tool_calls: 17,
+        };
+        let lines = usage.lines();
+        let declared = <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES;
+        assert_eq!(
+            lines.len(),
+            declared.len(),
+            "one line per declared class, and no line the plane did not declare"
+        );
+        for decl in declared {
+            assert!(
+                lines.iter().any(|line| line.class == decl.key),
+                "the root has a figure for every class the plane declares"
+            );
+        }
+        // And the sum the lease and the exit evidence both read is the sum of exactly those lines.
+        assert_eq!(
+            usage.total(),
+            lines.iter().map(|line| line.quantity).sum::<u64>()
+        );
     }
 
     /// A dial that opens, so a cell can reach the stations past route without an I/O half.
