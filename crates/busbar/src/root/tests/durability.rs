@@ -918,3 +918,45 @@ fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
     );
     assert_eq!(through_hold.journal.head(), through_posting.journal.head());
 }
+
+/// THE NODE'S ONE BOOK on a deployment that configured no data directory, which is every
+/// previous-release configuration: the posting is memory-buffered and SHIPPED, and what it is
+/// shipped through is the shipper the caller handed in — the configured store's — rather than a
+/// null one that acknowledges into nothing. Without that, the default build settles every
+/// posting into a journal that writes nowhere and ships nowhere, and the emptiness reconciles.
+///
+/// The other half of the same assertion is the absence: no file appears beside the
+/// configuration, and none appears in the directory the process was started in.
+#[test]
+fn a_posting_on_a_default_config_reaches_the_stores_shipper() {
+    let beside_config = ScratchDir::new("node-book-beside-config");
+    let cwd = WorkingDir::watch();
+    let shipper = busbar_unit_wal::BufferShipper::new();
+
+    let book = node_book(&DurabilityConfig::default(), Box::new(shipper.clone()))
+        .expect("a memory-buffered journal cannot fail to open");
+    book.durability
+        .lock()
+        .expect("the node's one book")
+        .journal_posting(&posting(), &token(), StepName::Meter)
+        .expect("the posting ships");
+
+    let shipped = decode_run(&shipper.records()).expect("the store took journal records");
+    verify_journal(&shipped).expect("what the store holds is a chain that verifies");
+    assert_eq!(
+        shipped.len(),
+        1,
+        "a posting on the node's one book reached the configured store's shipper"
+    );
+    assert_eq!(
+        beside_config.entries(),
+        Vec::<String>::new(),
+        "a book opened on a configuration with no data directory wrote a file beside it"
+    );
+    assert_eq!(
+        cwd.appeared(),
+        Vec::<String>::new(),
+        "a book opened on a configuration with no data directory wrote a file into the \
+         directory the process was started in"
+    );
+}
