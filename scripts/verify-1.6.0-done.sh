@@ -430,6 +430,21 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
+begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothing open at HIGH/MEDIUM"
+# qa/audit-ledger.json carries one scope per production path, its tree hash at the audited commit and
+# the round that produced the result. --check is red two ways: a tracked production file that no
+# scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
+# recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
+# docs/design/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
+if [ -f scripts/audit-ledger.py ]; then
+  step "audit-ledger --selftest" python3 scripts/audit-ledger.py --selftest
+  step "audit-ledger --check"    python3 scripts/audit-ledger.py --check
+else
+  absent_step "audit ledger" "scripts/audit-ledger.py"
+fi
+end_group
+
+# ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "CHANGELOG — every accepted register entry is named"
 # testing/shadow-oracle/accepted-differences.json's own differ refuses an entry that accepts
 # status/effects.usage without kind=breaking and a `changelog` field; this gate closes the other
