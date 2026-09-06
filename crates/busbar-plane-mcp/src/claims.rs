@@ -116,48 +116,38 @@ mod tests {
     };
     use busbar_contract::grammar::Selector;
 
-    /// The default mount is the codec's own, and the discovery path is composed from it the same
-    /// way the codec composes it.
+    /// The default mount is the codec's own, and the discovery path is composed from it by the
+    /// codec's own composer.
     ///
-    /// Both are read out of the codec's source, because both are visible to its own crate only. If
-    /// the codec ever changes either, this goes red rather than the plane quietly claiming a path
-    /// nothing is served at.
+    /// Both are read as VALUES. This asked the same two questions of the server half's SOURCE once,
+    /// with `include_str!` over `../../busbar-mcp/src/…`, which coupled this crate to a sibling its
+    /// manifest does not name — so the plane could be neither built nor deleted on its own, and the
+    /// strong-form deletion gate could not see it. The mount and the composer are the codec's now,
+    /// and both halves call the one composer, so a served route and this claim cannot be two
+    /// different strings.
     #[test]
     fn the_default_mount_is_the_codecs_own() {
-        let codec = include_str!("../../busbar-mcp-codec/src/codec/mod.rs");
-        assert!(
-            codec.contains(&format!(r#"PATH_MCP: &str = "{DEFAULT_MOUNT}""#)),
-            "the codec no longer names {DEFAULT_MOUNT} as its path"
-        );
-        let plane = include_str!("../../busbar-mcp/src/mcp/mod.rs");
-        assert!(
-            plane.contains(
-                r#"PROTECTED_RESOURCE_WELL_KNOWN: &str = "/.well-known/oauth-protected-resource""#
-            ),
-            "the codec no longer names the discovery prefix"
-        );
-        assert!(
-            plane.contains(r#"format!("{PROTECTED_RESOURCE_WELL_KNOWN}{mount_path}")"#),
-            "the codec no longer composes the discovery path from the mount"
-        );
+        assert_eq!(DEFAULT_MOUNT, busbar_mcp_codec::codec::PATH_MCP);
         assert_eq!(
             DEFAULT_METADATA,
-            format!("/.well-known/oauth-protected-resource{DEFAULT_MOUNT}")
+            busbar_mcp_codec::codec::protected_resource_metadata_path(DEFAULT_MOUNT)
         );
     }
 
-    /// The mount is configured, and this is the assertion that says the finding is still live.
+    /// The discovery path is a FUNCTION OF THE MOUNT, and this is the assertion that says the note
+    /// in the module header is still live.
     ///
-    /// If the codec ever stops deriving its mount from configuration — if the path becomes a
-    /// constant — this goes red, and the note in the module header stops being true and should be
-    /// deleted. A finding that quietly outlives its cause is worse than no note at all.
+    /// The protected-resource metadata rule inserts the well-known segment between the origin and
+    /// the resource's own path,
+    /// so an operator who moves the mount moves the discovery document with it. If that composition
+    /// ever collapses into a constant — if the answer stops depending on its argument — this goes
+    /// red, and the note stops being true and should be deleted. A note that quietly outlives its
+    /// cause is worse than no note at all.
     #[test]
     fn the_mount_is_still_configured() {
-        let plane = include_str!("../../busbar-mcp/src/mcp/mod.rs");
-        assert!(
-            plane.contains("let mount_path = normalise_path(path);"),
-            "the mount is no longer derived from the configured address"
-        );
+        let moved = busbar_mcp_codec::codec::protected_resource_metadata_path("/elsewhere");
+        assert_ne!(moved, DEFAULT_METADATA);
+        assert!(moved.ends_with("/elsewhere"));
     }
 
     /// This plane's registry key is the codec's own.

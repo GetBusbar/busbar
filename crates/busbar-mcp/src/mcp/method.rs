@@ -63,30 +63,14 @@ use super::sanitize;
 /// arm, which stays the correct answer for anything still unimplemented.
 ///
 /// Exposed as a slice so `server/discover` advertises exactly what dispatch accepts: two lists that
-/// can disagree is a client told it may call something it may not.
-pub(crate) const IMPLEMENTED_METHODS: &[&str] = &[
-    "server/discover",
-    "tools/list",
-    "tools/call",
-    "prompts/list",
-    "prompts/get",
-    "resources/list",
-    "resources/templates/list",
-    "resources/read",
-    "completion/complete",
-    // SEP-2663. The three v2 tasks methods, and ONLY the three: `tasks/result` and `tasks/list`
-    // were REMOVED by the extension's v2 wire — the result is inlined on `tasks/get` and there is
-    // no list — so their absence here is what makes them answer `-32601`, which is the conformant
-    // answer and not a gap. See `super::tasks`.
-    "tasks/get",
-    "tasks/update",
-    "tasks/cancel",
-    // SEP-2575's replacement for the GET stream. It is a METHOD in this revision, so it belongs in
-    // this list rather than in the route table — which is the whole difference the revision made,
-    // and the reason `super::envelope::legacy_verb` can go on answering `405` without that being a
-    // statement that busbar cannot notify a client. See `super::subscribe`.
-    super::subscribe::METHOD_SUBSCRIPTIONS_LISTEN,
-];
+/// can disagree is a client told it may call something it may not. The LIST lives in
+/// `busbar-mcp-codec` and this is a re-export, because a THIRD reader — `busbar-plane-mcp`, which
+/// carries a row per method and may not name this crate — has to be able to see it; a method this
+/// server dispatches and the plane does not carry arrives as an unsupported operation. Nothing
+/// about the list changed crossing the seam, including that `subscriptions/listen` is on it (SEP-2575
+/// made it a METHOD rather than a route, which is why `super::envelope::legacy_verb` can go on
+/// answering `405` without that being a statement that busbar cannot notify a client).
+pub(crate) use busbar_mcp_codec::codec::IMPLEMENTED_METHODS;
 
 /// `resultType` on every result this server returns: `complete`, never `input_required`.
 ///
@@ -2476,21 +2460,21 @@ fn refuse_catalogue(
 /// a refusal by policy is: the request was well formed, the method exists, and the server declined.
 /// `-32602` would say the arguments were wrong and `-32601` would say the method was missing, and
 /// both would send an operator debugging the wrong thing.
-pub(super) const CODE_REFUSED: i64 = -32000;
+pub(super) const CODE_REFUSED: i64 = busbar_mcp_codec::codec::CODE_REFUSED;
 
 /// `MissingRequiredClientCapability` — the MCP-band sibling of `-32020` (header mismatch) and
 /// `-32022` (unsupported protocol version). Emitted on ONE arm only; see the comment at its single
 /// call site in `refuse_ask` for why this is one arm rather than a class.
-const CODE_MISSING_CLIENT_CAPABILITY: i64 = -32021;
+const CODE_MISSING_CLIENT_CAPABILITY: i64 = busbar_mcp_codec::codec::CODE_MISSING_CLIENT_CAPABILITY;
 /// JSON-RPC standard: the params were structurally wrong.
-const CODE_INVALID_PARAMS: i64 = -32602;
+const CODE_INVALID_PARAMS: i64 = busbar_mcp_codec::codec::CODE_INVALID_PARAMS;
 
 /// THE TRIPPED-UPSTREAM ERROR — the owner-agreed rendering for a tripped MCP upstream. In the
 /// implementation-defined `-32000..-32099` band beside busbar's other extensions, because every
 /// reserved code is wrong for a specific reason: `-32603` says busbar broke (it did not), `-32601`
 /// says the tool does not exist (it does), `-32602` blames the caller. The call NEVER HAPPENED, so
 /// this is a JSON-RPC error and never an `isError` tool result — see `refuse_upstream_unavailable`.
-const CODE_UPSTREAM_UNAVAILABLE: i64 = -32030;
+const CODE_UPSTREAM_UNAVAILABLE: i64 = busbar_mcp_codec::codec::CODE_UPSTREAM_UNAVAILABLE;
 
 /// The call-log reason token for a breaker refusal. `refused` is exact here: the call did not go
 /// out, which is precisely what that disposition documents.

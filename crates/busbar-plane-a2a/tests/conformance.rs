@@ -162,28 +162,22 @@ fn the_two_vocabularies_agree_slot_for_slot() {
 
 /// Every method the codec's own local-verb table names is one this plane carries.
 ///
-/// The table is visible to its own crate only, so this reads its source. A method the codec answers
-/// and this plane does not carry would arrive here as an unsupported operation.
+/// The table itself, iterated. This SCRAPED it out of the server half's source once — an
+/// `include_str!` over `../../busbar-a2a/src/a2a/local.rs`, then a hand-rolled scan for quoted
+/// pieces that look like a method name — which coupled this crate to a sibling its manifest does not
+/// name, so the plane could be neither built nor deleted on its own. The table is the codec's now,
+/// and the server half's `verb_of` is pinned against it in the crate that owns the match. A method
+/// the codec answers and this plane does not carry would arrive here as an unsupported operation.
 #[test]
 fn every_local_verb_of_the_codec_is_carried() {
-    let source = include_str!("../../busbar-a2a/src/a2a/local.rs");
-    let start = source
-        .find("pub(crate) fn verb_of")
-        .expect("the codec still names its verb table");
-    let body = &source[start..];
-    let end = body.find("\n}").expect("the function closes");
     let plane = A2aPlane::EMPTY;
     let mut seen = 0usize;
-    for line in body[..end].lines() {
-        for piece in line.split('"').skip(1).step_by(2) {
-            if piece.contains('/') || piece.chars().next().is_some_and(char::is_uppercase) {
-                assert!(
-                    decode(&plane, &request("1", piece)).is_ok(),
-                    "the codec answers {piece} and this plane does not carry it"
-                );
-                seen += 1;
-            }
-        }
+    for method in busbar_a2a_codec::LOCAL_VERB_METHODS {
+        assert!(
+            decode(&plane, &request("1", method)).is_ok(),
+            "the codec answers {method} and this plane does not carry it"
+        );
+        seen += 1;
     }
     assert!(
         seen >= 11,

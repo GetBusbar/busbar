@@ -188,3 +188,31 @@ fn push_notification_not_supported_and_extension_support_required_round_trip() {
         );
     }
 }
+
+/// THE CODEC HOLDS THE TABLE, and this is the pin.
+///
+/// `busbar-plane-a2a` publishes the set of A2A-specific codes it may write, and it may not name this
+/// crate — so the table lives in `busbar-a2a-codec` and both halves read it. This enum keeps the
+/// `code()` and `reason()` matches, because they are exhaustive over the variants and that
+/// exhaustiveness is what stops a variant being added with no code; the equality between the two is
+/// what this asserts, in BOTH directions. A row the enum grows without the codec is red here, and so
+/// is a row the codec grows without the enum.
+#[test]
+fn the_specific_error_table_is_the_codecs_own() {
+    for (code, reason) in busbar_a2a_codec::ERRORS {
+        let err = A2aError::from_code(*code).unwrap_or_else(|| {
+            panic!("the codec names {code} and this enum has no variant for it")
+        });
+        assert_eq!(err.code(), *code as i32, "{err:?} code");
+        assert_eq!(err.reason(), Some(*reason), "{err:?} reason");
+    }
+    // And nothing this enum answers to in the A2A-specific band is absent from the codec's table.
+    for code in -32099..=-32001i64 {
+        if let Some(err) = A2aError::from_code(code) {
+            assert!(
+                busbar_a2a_codec::ERRORS.iter().any(|(c, _)| *c == code),
+                "{err:?} answers to {code} and the codec's table does not name it"
+            );
+        }
+    }
+}

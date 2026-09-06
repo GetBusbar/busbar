@@ -1558,3 +1558,21 @@ async fn delete_empty_answer_shape_matches_the_dialect() {
         "v0.3 delete keeps result: null"
     );
 }
+
+/// THE CODEC HOLDS THE LIST OF LOCAL VERB NAMES, and this is the pin.
+///
+/// `busbar-plane-a2a`'s conformance rig asserts it CARRIES each of these, and it may not name this
+/// crate — so the names live in `busbar-a2a-codec` and both halves read them. The match in
+/// [`local::verb_of`] stays here, because its `_ => return None` arm is what makes a
+/// name nobody added a spelling for answer as unknown rather than being silently swallowed. What
+/// this asserts is the equality: a name the codec publishes that the match does not answer is a
+/// method the plane will carry and the server half will refuse.
+#[test]
+fn every_published_local_verb_name_is_one_the_match_answers() {
+    for method in busbar_a2a_codec::LOCAL_VERB_METHODS {
+        assert!(
+            local::verb_of(method).is_some(),
+            "the codec publishes {method} as a local verb and this match does not answer it"
+        );
+    }
+}

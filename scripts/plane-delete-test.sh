@@ -152,9 +152,18 @@ drop_member() {
 }
 
 # neutralise_bin — (c): drop the dep line; strip the `dep:busbar-<P>` token from its feature; strip any
-# `busbar-<P>?/…` optional-dep feature reference wherever it appears (e.g. openapi-schema) — those become
+# `busbar-<P>/…` feature reference wherever it appears (e.g. openapi-schema, root-llm) — those become
 # manifest-load ERRORS the moment the optional dep is gone, so they must go too; drop the plane feature
 # from `default` so a default bin build is coherent.
+#
+# BOTH SPELLINGS of that reference, and the second one is why this note exists. Cargo writes an
+# optional dependency's feature as `busbar-<P>?/<feature>` when the reference must not ENABLE the
+# dep, and as `busbar-<P>/<feature>` when it may — and the bin uses the second form for `root-llm`
+# (`busbar-llm/teller-waist`). A pattern that matched only the `?` form left that one behind, and the
+# scratch's manifest then failed to LOAD ("feature `root-llm` includes `busbar-llm/teller-waist`, but
+# `busbar-llm` is not a dependency"), which aborts before a single line is compiled — so all three
+# legs reported the llm plane as still coupled when what they had measured was the removal's own
+# manifest hygiene.
 neutralise_bin() {
   local s="$1" p="$2" f="$1/crates/busbar/Cargo.toml" t feat
   feat="$(bin_feature "$p")"
@@ -170,13 +179,13 @@ neutralise_bin() {
     BEGIN {
       deppat  = "^busbar-" p "[[:space:]]*=[[:space:]]*\\{[[:space:]]*path[[:space:]]*=[[:space:]]*\"\\.\\./busbar-" p "\""
       featpat = "^" feat "[[:space:]]*=[[:space:]]*\\["
-      optpat  = "\"busbar-" p "\\?/[^\"]*\""    # an optional-dep feature ref: "busbar-<P>?/<feature>"
+      optpat  = "\"busbar-" p "\\??/[^\"]*\""   # a dep feature ref, either spelling: "busbar-<P>[?]/<feature>"
       deptok  = "\"dep:busbar-" p "\""
       feattok = "\"" feat "\""
     }
     { line = $0 }
     line ~ deppat { next }                      # (c1) delete the optional dependency line entirely
-    { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>?/… refs (openapi-schema, …)
+    { gsub(optpat, "", line) }                  # (c2) strip busbar-<P>[?]/… refs (openapi-schema, root-llm, …)
     line ~ featpat { gsub(deptok, "", line) }   # (c3) strip dep:busbar-<P> from its own feature
     line ~ /^default[[:space:]]*=[[:space:]]*\[/ { gsub(feattok, "", line) }  # (c4) drop from default
     { print norm(line) }
@@ -406,6 +415,26 @@ strong_form() {
   else
     fail=1; red "  neutral crates DO NOT compile without busbar-$p — still coupled"
     grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+  fi
+
+  # Leg 1b — the CONTRACT PLANE crate itself, ALL TARGETS, with the plugin crate gone.
+  #
+  # Legs 1 and 2 ask only whether the NEUTRAL crates and the bin survive the removal. They never
+  # compile `busbar-plane-<P>`, so a plane crate that reaches into `../busbar-<P>/src` — an
+  # `include_str!` in a `#[cfg(test)]` module is the shape that actually occurred, and it is
+  # invisible to both the manifest and to `cargo check` without `--all-targets` — passed all the
+  # way through a green run. That is a green that says a plane is independently buildable when it
+  # is not, and the whole point of the strong form is that it cannot say that. `--all-targets` is
+  # load-bearing: a test-only include only exists under it.
+  log="$CACHE_TARGET/.plane-delete-$p-plane.log"
+  if [ -d "$s/crates/busbar-plane-$p" ]; then
+    run_check "$s" "$log" -- -p "busbar-plane-$p" --all-targets; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      grn "  busbar-plane-$p compiles (all targets) without busbar-$p"
+    else
+      fail=1; red "  busbar-plane-$p DOES NOT compile without busbar-$p — the plane reaches into the plugin"
+      grep -m4 -E "error(\[|:)|couldn't read" "$log" 2>/dev/null | sed 's/^/      /'
+    fi
   fi
 
   # Leg 2 — the composition-root BIN with the plane's feature off (neutral crates + bin).

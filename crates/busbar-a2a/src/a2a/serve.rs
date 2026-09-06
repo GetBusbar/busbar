@@ -255,7 +255,12 @@ fn served_protocol_versions() -> &'static [&'static str] {
 /// THE PATH busbar mounts a fronted agent on. One per agent, derived from the agent id, so a
 /// caller's endpoint is stable and says which agent it reaches.
 pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String, ServeError> {
-    absolute(public_url, &format!("{MOUNT_PATH}/agents/{agent_id}"))
+    absolute(
+        public_url,
+        &busbar_a2a_codec::mounted_route(
+            &busbar_a2a_codec::ROUTE_AGENT.replace("{agent_id}", agent_id),
+        ),
+    )
 }
 
 /// THE PLANE'S MOUNT and THE gRPC BINDING'S PATH PREFIX — MOVED to `busbar-a2a-codec` with the rest
@@ -267,8 +272,10 @@ pub(crate) fn agent_endpoint(public_url: &str, agent_id: &str) -> Result<String,
 pub use busbar_a2a_codec::{GRPC_MOUNT_PATH, MOUNT_PATH};
 
 /// The RFC 9728 protected-resource metadata path for this plane: the well-known prefix with the
-/// plane's mount appended, exactly as the sibling plane composes its own.
-pub(crate) const METADATA_PATH: &str = "/.well-known/oauth-protected-resource/a2a";
+/// plane's mount appended, exactly as the sibling plane composes its own. It crossed to the codec
+/// with the rest of the paths, for the reason the mount did — `busbar-plane-a2a` claims this path
+/// and may not name this crate — and this name resolves what it always did.
+pub(crate) use busbar_a2a_codec::METADATA_PATH;
 
 /// THE PLANE'S CANONICAL URI — the RFC 8707 resource indicator a token must be minted FOR to be
 /// spendable here, and the audience [`busbar_substrate::plane::PlaneAdmission`] carries.

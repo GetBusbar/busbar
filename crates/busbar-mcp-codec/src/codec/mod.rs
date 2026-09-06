@@ -77,7 +77,31 @@ impl ResourceUpdatedParam {
 /// The single mount path. MCP names the operation in the BODY (`method`), not the path — the
 /// opposite of OpenAI, and the reason [`handler::McpRequestHandler::resolve_operation`] reads the
 /// body.
-pub(crate) const PATH_MCP: &str = "/mcp";
+///
+/// `pub` for the same reason [`PROTOCOL_VERSION`] is: `busbar-plane-mcp` declares its transport
+/// claims against this path and may not name the server half, so it reads the value here. A path
+/// the plane copied instead of read is a plane claiming a route nothing is served at.
+pub const PATH_MCP: &str = "/mcp";
+
+/// THE PREFIX THE PROTECTED-RESOURCE METADATA DOCUMENT IS SERVED UNDER (RFC 9728).
+///
+/// It sits on the CODEC side because two halves read it and they must agree: the server half
+/// composes the route it mounts from it, and `busbar-plane-mcp` declares an OPEN claim on the
+/// composed path. The composition itself is [`protected_resource_metadata_path`] so that neither
+/// half can spell the join differently.
+pub const PROTECTED_RESOURCE_WELL_KNOWN: &str = "/.well-known/oauth-protected-resource";
+
+/// THE DISCOVERY PATH FOR A GIVEN MOUNT — `/.well-known/oauth-protected-resource` + the mount.
+///
+/// RFC 9728 §3.1 derives the metadata path by inserting the well-known segment between the origin
+/// and the resource's own path, so the answer is a FUNCTION OF THE MOUNT and not a constant: the
+/// mount is operator-configurable, and a hard-coded discovery path would point at the default
+/// while the resource moved. One function, read from both sides, is what keeps the served route
+/// and the plane's claim the same string.
+#[must_use]
+pub fn protected_resource_metadata_path(mount_path: &str) -> String {
+    format!("{PROTECTED_RESOURCE_WELL_KNOWN}{mount_path}")
+}
 
 /// The single MCP protocol revision busbar implements.
 ///
@@ -105,6 +129,142 @@ pub const METHOD_RESOURCES_SUBSCRIBE: &str = "resources/subscribe";
 pub const METHOD_RESOURCES_UNSUBSCRIBE: &str = "resources/unsubscribe";
 pub const METHOD_NOTIFY_TOOLS_LIST_CHANGED: &str = "notifications/tools/list_changed";
 pub const METHOD_NOTIFY_RESOURCES_UPDATED: &str = "notifications/resources/updated";
+
+/// THE `_meta` KEY CARRYING A REQUEST'S PROTOCOL VERSION.
+///
+/// Under this revision negotiation is ON DEMAND — there is no handshake — so every request states
+/// its own version, and this key is where it states it. It lives at `params._meta`, NOT at the top
+/// level of the JSON-RPC envelope.
+///
+/// It sits on the CODEC side because THREE readers must agree on the spelling and they are in
+/// different crates: the server half requires it inbound, the client half emits it outbound, and
+/// `busbar-plane-mcp` names it as a correlation fact key. The two directions were once written
+/// down twice and each copy was internally consistent with its own side, so busbar would have
+/// refused a request busbar itself sent; one definition is what makes that unrepresentable.
+pub const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+
+/// THE `_meta` KEY CARRYING THE CLIENT'S CAPABILITIES FOR ONE REQUEST — REQUIRED, and absent is a
+/// refusal rather than the empty capability set.
+///
+/// With no `initialize` there is no earlier message the capabilities could have been stated in, so
+/// a request that omits this has never stated them at all, and a server that fills the gap in has
+/// decided on the client's behalf what the client can do. Defined here for the same three-reader
+/// reason [`META_PROTOCOL_VERSION`] is.
+pub const META_CLIENT_CAPABILITIES: &str = "io.modelcontextprotocol/clientCapabilities";
+
+// ══ THE ERROR CODES, DEFINED EXACTLY ONCE ═══════════════════════════════════════════════════════
+//
+// Both halves write these: the server half emits them, and `busbar-plane-mcp` publishes the set it
+// may write as part of its own surface. The plane may not name the server half at all, so a code
+// it could only COPY is a code the two sides can come to disagree about — and a JSON-RPC code is
+// exactly the kind of value that reads plausibly while being wrong. The server half and the plane
+// both define their constants AS these, so the compiler holds the equality.
+
+/// The bytes could not be read at all. JSON-RPC standard.
+pub const CODE_PARSE_ERROR: i64 = -32700;
+/// The envelope was not a request. JSON-RPC standard.
+pub const CODE_INVALID_REQUEST: i64 = -32600;
+/// The method named is not one this node answers. JSON-RPC standard; MCP pairs it with `404`.
+pub const CODE_METHOD_NOT_FOUND: i64 = -32601;
+/// The parameters were not admissible — including a missing or incomplete `params._meta`, which is
+/// a member of `params` and so is the standard "invalid params" rather than a header defect.
+pub const CODE_INVALID_PARAMS: i64 = -32602;
+/// Something on this side failed. JSON-RPC standard.
+pub const CODE_INTERNAL: i64 = -32603;
+/// MCP `HeaderMismatchError`: an HTTP header disagreed with the body it mirrors. Always `400`.
+pub const CODE_HEADER_MISMATCH: i64 = -32020;
+/// MCP `MissingRequiredClientCapability`: the caller did not declare a capability the answer would
+/// have needed.
+pub const CODE_MISSING_CLIENT_CAPABILITY: i64 = -32021;
+/// MCP `UnsupportedProtocolVersionError`: carries `data.requested` and `data.supported`. Always
+/// `400`.
+pub const CODE_UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
+/// A policy said no. The first code in JSON-RPC's implementation-defined server-error range,
+/// because every reserved code is wrong for a specific reason.
+pub const CODE_REFUSED: i64 = -32000;
+/// The server this call would have reached could not be reached — the call NEVER HAPPENED, which
+/// is why it is an extension rather than `-32603` (busbar broke) or `-32602` (the caller erred).
+pub const CODE_UPSTREAM_UNAVAILABLE: i64 = -32030;
+
+/// EVERY CODE THIS DIALECT DEFINES. The plane asserts the set it may write is a subset of this, so
+/// a code invented on one side of the seam is a red test rather than a wire nobody recognises.
+pub const CODES: &[i64] = &[
+    CODE_PARSE_ERROR,
+    CODE_INVALID_REQUEST,
+    CODE_METHOD_NOT_FOUND,
+    CODE_INVALID_PARAMS,
+    CODE_INTERNAL,
+    CODE_HEADER_MISMATCH,
+    CODE_MISSING_CLIENT_CAPABILITY,
+    CODE_UNSUPPORTED_PROTOCOL_VERSION,
+    CODE_REFUSED,
+    CODE_UPSTREAM_UNAVAILABLE,
+];
+
+/// The codes THIS revision retired, which a conformant node must never write. A retired code is
+/// worse than an unknown one: a peer that still recognises it will act on a meaning this node did
+/// not intend.
+pub const RETIRED_CODES: &[i64] = &[-32002, -32042];
+
+/// THE METHODS THIS DIALECT DISPATCHES. A method absent from here takes the `-32601` / `404` arm.
+///
+/// On the codec side because it is the one list two crates read: the server half dispatches over it
+/// and advertises it on `server/discover`, and `busbar-plane-mcp` carries a row for each. Two lists
+/// that can disagree is a client told it may call something it may not — or a method the server
+/// answers that the plane reports as an unsupported operation.
+///
+/// `subscriptions/listen` is spelled here as a literal rather than read off the SDK's const-string
+/// type: `rmcp` hard-depends on `tokio` and a plane's entire transitive closure is scanned, so the
+/// SDK cannot cross into this crate. THE SDK IS STILL THE ACCEPTANCE TEST — `busbar-mcp`, which
+/// keeps the `rmcp` edge, asserts this entry against `SubscriptionsListenRequestMethod::VALUE`,
+/// exactly as it does for the five `METHOD_*` constants above.
+pub const IMPLEMENTED_METHODS: &[&str] = &[
+    "server/discover",
+    "tools/list",
+    METHOD_TOOLS_CALL,
+    "prompts/list",
+    "prompts/get",
+    "resources/list",
+    "resources/templates/list",
+    "resources/read",
+    "completion/complete",
+    // SEP-2663. The three v2 tasks methods, and ONLY the three: `tasks/result` and `tasks/list`
+    // were REMOVED by the extension's v2 wire — the result is inlined on `tasks/get` and there is
+    // no list — so their absence here is what makes them answer `-32601`, which is the conformant
+    // answer and not a gap.
+    "tasks/get",
+    "tasks/update",
+    "tasks/cancel",
+    // SEP-2575's replacement for the GET stream. It is a METHOD in this revision, so it belongs in
+    // this list rather than in the route table.
+    METHOD_SUBSCRIPTIONS_LISTEN,
+];
+
+/// The wire name of SEP-2575's listen method. See [`IMPLEMENTED_METHODS`] for why it is a literal
+/// here and an SDK-pinned assertion one crate over.
+pub const METHOD_SUBSCRIPTIONS_LISTEN: &str = "subscriptions/listen";
+
+/// WHICH `params` MEMBER CARRIES A REQUEST'S SUBJECT, for the methods that address one.
+///
+/// SEP-2243 and SEP-2663 require the subject to be mirrored into the `Mcp-Name` header, so this
+/// rule is read from BOTH directions — the server half validates the mirror, the client half
+/// composes it — and `busbar-plane-mcp` derives its own name pointers from it. It carried a second
+/// copy on the client side once and the two DISAGREED, which sent a `tasks/get` out with no
+/// `Mcp-Name` against a server that answers `-32020` to exactly that.
+///
+/// The methods are ENUMERATED rather than matched on a prefix, and the tasks namespace is why:
+/// `tasks/get` carries the header and `tasks/result` — a method this revision REMOVED — does not,
+/// so a `tasks/*` prefix rule would answer `-32020` (your headers are wrong) to a request whose
+/// only defect is naming a method that no longer exists, which must be `-32601`.
+#[must_use]
+pub fn name_source_of(method: &str) -> Option<&'static str> {
+    match method {
+        "tools/call" | "prompts/get" => Some("name"),
+        "resources/read" => Some("uri"),
+        "tasks/get" | "tasks/update" | "tasks/cancel" => Some("taskId"),
+        _ => None,
+    }
+}
 
 /// MCP'S DECLARATION — and the asymmetry in it is the point. MCP declares a HANDLER and NO CODEC:
 /// its IR is its own, there is no cross-dialect translation into or out of it, and it point-reads no

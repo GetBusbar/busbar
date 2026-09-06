@@ -80,7 +80,10 @@ use super::task::TaskState;
 /// A FIXED path with the task named by the TOKEN rather than by a path segment. A task id in the
 /// URL would be a second place the same fact is written — one authenticated, one not — and the
 /// unauthenticated one is the one a log, a proxy and an error page keep.
-pub(crate) const PUSH_PATH_SUFFIX: &str = "/push";
+///
+/// The CODEC's, beside the other path suffixes: `busbar-plane-a2a` claims the endpoint this composes
+/// and may not name this crate.
+pub(crate) use busbar_a2a_codec::PUSH_PATH_SUFFIX;
 
 /// The scheme busbar names in the config it registers with the backend. RFC 9110's own, because
 /// the value is `<scheme> <credentials>` and that is what the field is for.
