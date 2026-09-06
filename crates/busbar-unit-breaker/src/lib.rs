@@ -44,7 +44,7 @@ use std::sync::{Arc, RwLock};
 
 use budget::LifetimeBudget;
 use busbar_caps::{Route, UnitToken};
-use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, ProbeAdmit};
+use cell::{BreakerCell, BreakerState as CellState, BreakerVerdict, DeniedBy, ProbeAdmit};
 use cfg::BreakerCfg;
 use classify::Diagnostics;
 use journal::{JournalSink, NoopJournal, ProbeEvent};
@@ -439,7 +439,10 @@ impl<J: JournalSink, D: Diagnostics> BreakerUnit<J, D> {
         }
         let cell = self.cell(pool, destination);
         match cell.acquire(now) {
-            ProbeAdmit::Denied => Err(lane_state_from_verdict(cell.verdict(now))),
+            // The refusal's own reason, not a second look at a cell a peer may have moved: a
+            // caller is entitled to read a refusal as "this would not have admitted".
+            ProbeAdmit::Denied(DeniedBy::Cooling { until }) => Err(LaneState::Suppressed { until }),
+            ProbeAdmit::Denied(DeniedBy::ProbeInFlight) => Err(LaneState::ProbeInFlight),
             ProbeAdmit::ReadyNoProbe => Ok(Admit { probe_epoch: None }),
             ProbeAdmit::ProbeWon(epoch) => {
                 self.journal.record(ProbeEvent::Won {

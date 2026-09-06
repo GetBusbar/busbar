@@ -176,12 +176,28 @@ pub enum BreakerVerdict {
     ProbeWinnable,
 }
 
+/// Why a probe acquisition was refused, decided by the same read that refused it.
+///
+/// A refusal has to carry its own reason: a caller that went back to the cell for one would be
+/// reading a cell a peer may have moved in between, and could describe a refusal with a situation
+/// that would have admitted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeniedBy {
+    /// The cell is suppressed until the deadline — Open and still cooling, or Closed inside a
+    /// lingering cooldown.
+    Cooling {
+        /// The cooldown deadline, in Unix seconds.
+        until: u64,
+    },
+    /// The cell is HalfOpen: a peer holds the single-flight recovery probe.
+    ProbeInFlight,
+}
+
 /// The outcome of a mutating probe-acquisition attempt ([`BreakerCell::acquire`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProbeAdmit {
-    /// Refused: HalfOpen with a peer's probe in flight, a still-cooling Open cell, or a Closed cell
-    /// inside a lingering cooldown.
-    Denied,
+    /// Refused, with the situation that refused it.
+    Denied(DeniedBy),
     /// Admitted on a Closed-and-ready cell — a no-op CAS that won no probe; nothing to release.
     ReadyNoProbe,
     /// Won the single-flight recovery probe (Open→HalfOpen). Carries the owner-token epoch for a
@@ -455,45 +471,40 @@ impl BreakerCell {
 
     /// The mutating probe-acquisition step, run only on the one destination a dispatch path
     /// actually chose. Closed honors any pending cooldown; an expired-cooldown Open cell
-    /// transitions to HalfOpen and admits exactly one probe (a single CAS under the transition
-    /// lock); HalfOpen admits nobody else.
+    /// transitions to HalfOpen and admits exactly one probe; HalfOpen admits nobody else.
+    ///
+    /// Decided under the transition lock, which every transition takes: the answer and — when it is
+    /// a refusal — the situation that refused it come out of ONE view of the cell. A refusal read
+    /// off a second look would be describing a cell a peer could have closed in between, which is
+    /// how a cell that would have admitted ends up named as the reason it did not.
     pub fn acquire(&self, now: u64) -> ProbeAdmit {
+        let _tx = lock_recover(&self.transition_lock);
+        let until = self.cooldown_until.load(Ordering::Acquire);
         match self.breaker_state.load(Ordering::Acquire) {
             ST_CLOSED => {
-                if now >= self.cooldown_until.load(Ordering::Acquire) {
+                if now >= until {
                     ProbeAdmit::ReadyNoProbe
                 } else {
-                    ProbeAdmit::Denied
+                    ProbeAdmit::Denied(DeniedBy::Cooling { until })
                 }
             }
             ST_OPEN => {
-                let until = self.cooldown_until.load(Ordering::Acquire);
                 if now < until {
-                    return ProbeAdmit::Denied;
+                    return ProbeAdmit::Denied(DeniedBy::Cooling { until });
                 }
-                let _tx = lock_recover(&self.transition_lock);
-                if self.breaker_state.load(Ordering::Acquire) != ST_OPEN
-                    || now < self.cooldown_until.load(Ordering::Acquire)
-                {
-                    return ProbeAdmit::Denied;
-                }
-                if self
-                    .breaker_state
-                    .compare_exchange(ST_OPEN, ST_HALF_OPEN, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                {
-                    // Bump the owner-token epoch BEFORE publishing the in-flight flag, still under
-                    // the transition lock: no peer can win a newer probe while the cell is
-                    // HalfOpen, so this is the exact epoch a later owner-checked release matches.
-                    self.probe_epoch.fetch_add(1, Ordering::AcqRel);
-                    self.probe_in_flight.store(true, Ordering::Release);
-                    ProbeAdmit::ProbeWon(self.probe_epoch.load(Ordering::Acquire))
-                } else {
-                    ProbeAdmit::Denied
-                }
+                self.breaker_state.store(ST_HALF_OPEN, Ordering::Release);
+                // Bump the owner-token epoch BEFORE publishing the in-flight flag, still under the
+                // transition lock: no peer can win a newer probe while the cell is HalfOpen, so
+                // this is the exact epoch a later owner-checked release matches.
+                self.probe_epoch.fetch_add(1, Ordering::AcqRel);
+                self.probe_in_flight.store(true, Ordering::Release);
+                ProbeAdmit::ProbeWon(self.probe_epoch.load(Ordering::Acquire))
             }
-            ST_HALF_OPEN => ProbeAdmit::Denied,
-            _ => ProbeAdmit::Denied, // fail safe on an unreachable encoding
+            ST_HALF_OPEN => ProbeAdmit::Denied(DeniedBy::ProbeInFlight),
+            // Fails SAFE, as `verdict` does: an unrecognized encoding is never reachable under the
+            // atomic-sentinel invariant this module maintains, but a never-elapsing cooldown denies
+            // admission rather than inventing one.
+            _ => ProbeAdmit::Denied(DeniedBy::Cooling { until: u64::MAX }),
         }
     }
 
