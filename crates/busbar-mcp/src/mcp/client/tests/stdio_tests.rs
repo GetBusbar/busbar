@@ -204,6 +204,27 @@ fn only_an_explicit_reset_reopens_the_breaker() {
     );
 }
 
+/// THE HANDSHAKE ID IS UNREACHABLE FROM A DISPATCH, and this asserts the claim rather than reading
+/// the constant's comment and agreeing with it.
+///
+/// A dispatch's outbound JSON-RPC id is the ROUND NUMBER — `mcp::method`'s call seam passes
+/// `u64::from(round)` and `mcp::inputreq`'s bounded loop starts `round` at 0 — so round 0 is the id
+/// of the FIRST round of every single-round `tools/call`. A handshake id inside that range is the
+/// same id, which makes an unsolicited or stale `{"id": <that>, "result": …}` line from the child
+/// correlate as an answer to a caller's call: `jsonrpc::parse_response` correlates on the id alone,
+/// so the one-ahead wedge this transport is built to surface as `Uncorrelated` goes silent instead.
+///
+/// The invariant is stated over the whole `u32` range rather than over a couple of sampled rounds,
+/// because "no round can reach it" is the property, and a sample proves it for the samples.
+#[test]
+fn the_handshake_id_is_unreachable_from_every_dispatch_round() {
+    assert!(
+        crate::mcp::client::stdio::HANDSHAKE_REQUEST_ID > u64::from(u32::MAX),
+        "the handshake id must sit above every `u64::from(round: u32)` a dispatch can send, or a \
+         stale handshake answer correlates as a caller's result"
+    );
+}
+
 // ── THE SPAWNING TESTS BELOW NEED A POSIX SHELL, SO THEY ARE UNIX-ONLY ──────────────────────────
 //
 // The fixture is `/bin/sh -c '…'` — a one-line JSON-RPC server that keeps the test's child out of

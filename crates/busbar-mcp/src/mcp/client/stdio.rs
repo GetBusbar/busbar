@@ -317,7 +317,15 @@ const MAX_INTERLEAVED_MESSAGES: u32 = 256;
 /// to a caller's call. It does not need to be unique across children: correlation is per exchange
 /// (see `super::jsonrpc::parse_response`), and there is no table of pending ids for two children to
 /// collide in.
-const HANDSHAKE_REQUEST_ID: u64 = 0;
+///
+/// DISTINCT IS A RANGE ARGUMENT, NOT A CHOSEN NUMBER. A dispatch's outbound id is the ROUND NUMBER
+/// — `crate::mcp::method`'s call seam sends `u64::from(round)` and `crate::mcp::inputreq`'s bounded
+/// loop starts `round` at 0 — so the reachable ids are exactly `0..=u32::MAX`, and this value sits
+/// above all of them. It was 0, which is the id of the FIRST round of every single-round
+/// `tools/call`: a stale or unsolicited `{"id": 0, "result": …}` line left in the pipe by the
+/// handshake then correlated as a caller's answer, and the one-ahead wedge this transport is built
+/// to surface as `RpcOutcome::Uncorrelated` went silent instead of retiring the child.
+const HANDSHAKE_REQUEST_ID: u64 = u64::MAX;
 
 /// EVERYTHING THE INBOUND HALF NEEDS about one leg: whose child this is, what authority the operator
 /// granted it, and where an accepted refresh trigger goes.
