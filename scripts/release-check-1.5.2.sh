@@ -102,6 +102,20 @@ ok()   { echo "  [ok] $*"; }
 note() { echo "  [note] $*"; }
 integ() { echo "  [VERIFIED-AT-INTEGRATION] $*"; }
 
+# ── ${var@Q} IS BASH 4.4, AND /bin/bash ON macOS IS 3.2.57 ──────────────────────────────────────
+#
+# Five python heredocs below interpolated shell values with `${var@Q}`. On bash 3.2 -- which is what
+# `/usr/bin/env bash` finds on a stock Mac, and has been since 2007 -- that expansion is
+# `bad substitution` the moment it is evaluated, so the helper dies and `set -e` takes the gate with
+# it. Verified against /bin/bash 3.2.57: rc 1, "bad substitution".
+#
+# It was also the wrong quoting to begin with. `@Q` emits SHELL quoting and these values land in
+# PYTHON source; the two coincide for a plain path and diverge the moment one contains a backslash
+# or a `$` -- and these are mktemp paths, i.e. values the script does not choose. python's own
+# `repr`, computed by the same python3 the heredoc is written for, is both portable to 3.2 and
+# correct for the language it lands in.
+pyq() { python3 -c 'import sys; print(repr(sys.argv[1]))' "$1"; }
+
 # ── GAPS: A PHASE THAT DID NOT RUN, RECORDED WHERE THE CALLER CAN SEE IT ─────────────────────────
 #
 # THE DEFECT THIS EXISTS TO FIX. Phase B's OIDC boot + POST /auth/token round-trip and Phase C's
@@ -283,11 +297,12 @@ note "Host: $(uname -s) $(uname -m), busbar version ${VER}, libext=${LIBEXT}"
 #    cache-by-pin phase can PROVE the second boot did not re-download (the served-request counter). ─
 start_plugin_registry() {
   local root="$1" port="$2" hits="$3"
-  local script; new_tmpdir; script="$NEW_TMPDIR/registry.py"
+  local script root_py hits_py; new_tmpdir; script="$NEW_TMPDIR/registry.py"
+  root_py="$(pyq "$root")"; hits_py="$(pyq "$hits")"
   cat >"$script" <<PYEOF
 import http.server, os, sys
-ROOT = ${root@Q}
-HITS = ${hits@Q}
+ROOT = ${root_py}
+HITS = ${hits_py}
 class H(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=ROOT, **k)
@@ -330,10 +345,11 @@ PYEOF
 # ── Tiny mock Anthropic upstream (verbatim from release-check.sh's start_mock_upstream) ───────────
 start_mock_upstream() {
   local port="$1" marker="$2"
-  local script; new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
+  local script marker_py; new_tmpdir; script="$NEW_TMPDIR/mock_upstream.py"
+  marker_py="$(pyq "$marker")"
   cat >"$script" <<PYEOF
 import http.server, json
-MARKER = ${marker@Q}
+MARKER = ${marker_py}
 class Handler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -601,16 +617,17 @@ oidc_start_https_jwks() {
     -addext "subjectAltName=IP:127.0.0.1" \
     -addext "basicConstraints=critical,CA:FALSE" 2>/dev/null
   local script="${OIDC_WORK}/jwks_server.py"
+  local work_py; work_py="$(pyq "$OIDC_WORK")"
   cat >"$script" <<PYEOF
 import http.server, ssl
-BODY = open(${OIDC_WORK@Q} + "/jwks.json","rb").read()
+BODY = open(${work_py} + "/jwks.json","rb").read()
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200); self.send_header("Content-Type","application/json")
         self.send_header("Content-Length", str(len(BODY))); self.end_headers(); self.wfile.write(BODY)
     def log_message(self,*a): pass
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain(${OIDC_WORK@Q}+"/tls.crt", ${OIDC_WORK@Q}+"/tls.key")
+ctx.load_cert_chain(${work_py}+"/tls.crt", ${work_py}+"/tls.key")
 srv = http.server.ThreadingHTTPServer(("127.0.0.1", ${port}), H)
 srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
 srv.serve_forever()

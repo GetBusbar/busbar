@@ -37,18 +37,42 @@ printf 'down' > "$H2_CONTROL_FILE"
 statuses=""
 tripped_at=""
 out=""
+# A 503 IS NOT SELF-IDENTIFYING. busbar answers 503 while it is still coming up AND when a cell's
+# breaker has tripped, with the same status line; only the BODY distinguishes them, and this loop
+# read the status alone. So a boot that had not finished (h2_boot used to return as soon as any
+# HTTP code came back at all -- see h2-lib.sh) recorded `tripped_at=1`, and the scenario went on to
+# assert things about a breaker that had not tripped, on a busbar that was not serving. The
+# UNSUPPORTED_OPERATION check below already knew what a real trip looks like; it just ran too late
+# to stop the wrong attempt being recorded as the trip. Move that discrimination into the test that
+# decides, and keep any non-terminal 503 as evidence in its own right.
+notserving=""
 for i in 1 2 3 4 5 6 7 8; do
   read -r s b <<<"$(h2_call "$bound" "route-$i")"
   statuses="${statuses}${s} "
-  if [ "$s" = "503" ] && [ -z "$tripped_at" ]; then
-    tripped_at="$i"
-    out="$b"
+  if [ "$s" = "503" ]; then
+    case "$b" in
+      *UNSUPPORTED_OPERATION*)
+        if [ -z "$tripped_at" ]; then tripped_at="$i"; out="$b"; fi
+        ;;
+      *)
+        # A 503 that is not the breaker's terminal answer. Recorded, never silently taken for one.
+        notserving="${notserving}attempt-${i} "
+        ;;
+    esac
   fi
 done
+
+if [ -n "$notserving" ]; then
+  failures=$((failures+1))
+  detail="${detail}503s with no UNSUPPORTED_OPERATION body at ${notserving}- a 'not serving' 503 is byte-identical to a tripped-breaker 503 in its status line, so this scenario cannot tell them apart and must not guess; h2_boot waits for a 200 agent-card before this loop runs, so a 503 here is a real fault; "
+fi
 
 [ -n "$tripped_at" ] || { failures=$((failures+1)); detail="${detail}breaker never tripped across 8 down-agent calls (statuses: ${statuses}); "; }
 
 if [ -n "$tripped_at" ]; then
+  # Redundant with the loop above by construction (only an UNSUPPORTED_OPERATION body sets
+  # tripped_at now) and kept deliberately: if the loop's discrimination is ever loosened, this is
+  # the assertion that goes red rather than the scenario quietly widening what counts as a trip.
   case "$out" in
     *UNSUPPORTED_OPERATION*) ;;
     *) failures=$((failures+1)); detail="${detail}tripped body missing UNSUPPORTED_OPERATION: ${out}; " ;;
