@@ -344,6 +344,14 @@ fn judge(kind: Urlish, value: &str, policy: SsrfPolicy) -> Result<(), ArgWhy> {
             }
             Ok(())
         }
+        // A bare-host format whose value is a WHOLE URL is judged as the URL it is. Reading
+        // `http://169.254.169.254/…` as a host name yields the SCHEME as the host — the authority
+        // reader stops at the first `/`, so it sees `http:` and returns `http` — and `http` is not
+        // an address, not an alternate encoding and not private, so every arm below passes and the
+        // one value this walk exists to catch is waved through. The schema is the UPSTREAM's
+        // document; pinning fixes WHICH document is read, not what it says, so `{"format":
+        // "hostname"}` on a field a model then fills with a URL is a shape the upstream can author.
+        Urlish::Host if value.contains("://") => judge_absolute(value, policy),
         Urlish::Host => judge_host(value, policy),
     }
 }
