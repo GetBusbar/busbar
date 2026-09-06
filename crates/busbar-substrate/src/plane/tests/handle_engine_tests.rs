@@ -347,6 +347,7 @@ fn what_a_submit_costs_on_a_ten_thousand_handle_working_set() {
         })
         .collect();
     let store = MemStore {
+        append_fails: std::sync::atomic::AtomicBool::new(false),
         rows: Mutex::new(rows),
         events: Mutex::new(Vec::new()),
     };
