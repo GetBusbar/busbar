@@ -943,6 +943,28 @@ mod tests {
             0,
             "a unit that never reaches the walk draws no correlation id"
         );
+        // NO TERMINAL, which is the half of this test's name nothing here used to check. The step
+        // RENDERED the not-found and handed it back for the Audit step to post; a step that had
+        // posted it would have finished the unit twice over, because the Audit door posts it again.
+        //
+        // The evidence is the meter half and the tap. The miss arm hands the admission's meter half
+        // straight back — nothing was dispatched, so nothing took it — and a response that reached
+        // no leg carries no completion tap, so there is nothing on it that could have been drained,
+        // read or posted. A step that had run a terminal would have consumed one or opened the
+        // other.
+        assert!(
+            routed.meter_sink.is_none(),
+            "the meter half is handed back exactly as it came in; nothing here spent it"
+        );
+        assert!(
+            crate::unit::walk::Walk::tap_of(&routed.response).is_none(),
+            "no leg was dialled, so no completion tap exists for a terminal to have posted"
+        );
+        assert!(
+            routed.facts.lane.is_none(),
+            "no lane answered, so the Meter step has nothing to attribute and nothing to price"
+        );
+
         let resp = routed.response;
         // The facts a miss hands the Meter step: nothing was dialled, so there is no fee-bearing
         // leg and no tap of anyone's accrued anything.
