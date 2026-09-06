@@ -282,8 +282,13 @@ impl OperationHandler for OpenAiTranscription {
 /// option-a). OpenAI-as-egress rebuilds the multipart form (fixed boundary — no randomness needed);
 /// not on the harness path (openai is always ingress there), kept for cross-protocol symmetry.
 /// Byte-identical to the pre-cutover inline write.
+/// The multipart boundary the transcription egress form is framed with.
+pub fn transcription_boundary() -> &'static str {
+    "----busbaraudioMIME"
+}
+
 pub fn write_transcription_request(r: &TranscriptionReq) -> Bytes {
-    let boundary = "----busbaraudioMIME";
+    let boundary = transcription_boundary();
     let mut out: Vec<u8> = Vec::new();
     let mut push_field = |name: &str, val: &str| {
         // Strip CR/LF from the value: any field (model, language, prompt, response_format) can

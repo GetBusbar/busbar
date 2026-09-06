@@ -307,7 +307,95 @@ fn transcription_egress_field_strips_crlf_injection() {
     );
     // No injected part boundary either: the only `--boundary` delimiters are the two the writer
     // frames (model, file) plus the closing one — the flattened injection cannot add its own.
-    assert_eq!(text.matches("------busbaraudioMIME").count(), 3);
+    let delim = format!("--{}", transcription_boundary());
+    assert_eq!(text.matches(&delim).count(), 3);
+}
+
+/// The audio part carries raw client-controlled bytes. With a boundary the client can predict, a
+/// payload that embeds `\r\n--<boundary>` closes the file part early and appends parts of its own —
+/// here a second `model` field. Parsers that take the LAST occurrence then run the request against
+/// the client's model while the lane bills the model busbar chose. Fails pre-fix (the writer used a
+/// hard-coded boundary and spliced the audio bytes in unchecked): the body carried two `model` parts.
+#[test]
+fn transcription_egress_audio_cannot_smuggle_a_second_model_part() {
+    let smuggled = b"RIFF\r\n------busbaraudioMIME\r\nContent-Disposition: form-data; \
+                     name=\"model\"\r\n\r\nwhisper-large-v3\r\n";
+    let ir = crate::ir::audio::TranscriptionReq {
+        model: "whisper-1".into(),
+        audio: Some(MediaBlob {
+            payload: MediaPayload::Bytes(Bytes::from_static(smuggled)),
+            mime_type: "audio/wav".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.matches("name=\"model\"").count() <= 1,
+        "audio bytes must not be able to append a second model part: {text}"
+    );
+}
+
+/// The boundary must not be the hard-coded literal a client could copy out of the source: it is
+/// drawn from the crate's entropy seam, is a legal RFC 2046 boundary, and the Content-Type the
+/// engine sends upstream must name the SAME boundary the body actually uses (otherwise the upstream
+/// cannot parse the form at all).
+#[test]
+fn transcription_boundary_is_entropy_drawn_and_matches_the_declared_content_type() {
+    let b = transcription_boundary();
+    assert_ne!(b, "----busbaraudioMIME", "boundary must not be hard-coded");
+    assert!(b.len() >= 32 && b.len() <= 70, "boundary length: {b}");
+    assert!(
+        b.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+        "boundary charset: {b}"
+    );
+    let ct = OpenAiTranscription.egress_request_content_type();
+    assert_eq!(ct, format!("multipart/form-data; boundary={b}"));
+
+    let ir = crate::ir::audio::TranscriptionReq {
+        model: "whisper-1".into(),
+        audio: Some(MediaBlob {
+            payload: MediaPayload::Bytes(Bytes::from_static(b"x")),
+            mime_type: "audio/wav".into(),
+            pcm: None,
+        }),
+        ..Default::default()
+    };
+    let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
+    let text = String::from_utf8_lossy(&out);
+    assert!(text.starts_with(&format!("--{b}\r\n")), "body head: {text}");
+    assert!(text.ends_with(&format!("--{b}--\r\n")), "body tail: {text}");
+}
+
+/// Unpredictability alone is not the guarantee: a payload that DOES carry the live delimiter (a
+/// guess, or a broken CSPRNG) must be refused outright rather than emitted with the parts it
+/// smuggled. Both framings count — a delimiter mid-payload, and one at the very start (the `\r\n`
+/// that ends the part headers completes it).
+#[test]
+fn transcription_egress_refuses_audio_carrying_the_live_boundary() {
+    let b = transcription_boundary();
+    for payload in [
+        format!("RIFF\r\n--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nevil\r\n"),
+        format!("--{b}\r\nContent-Disposition: form-data; name=\"model\"\r\n\r\nevil\r\n"),
+    ] {
+        let ir = crate::ir::audio::TranscriptionReq {
+            model: "whisper-1".into(),
+            audio: Some(MediaBlob {
+                payload: MediaPayload::Bytes(Bytes::from(payload.clone().into_bytes())),
+                mime_type: "audio/wav".into(),
+                pcm: None,
+            }),
+            ..Default::default()
+        };
+        let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
+        assert!(
+            out.is_empty(),
+            "a part carrying the live delimiter must be refused, not emitted: {}",
+            String::from_utf8_lossy(&out)
+        );
+    }
 }
 
 #[test]
@@ -678,7 +766,7 @@ fn transcription_temperature_round_trips_openai_multipart() {
     let back = super::super::super::leaf_codec::transcription_read_request(
         "openai",
         &out,
-        "multipart/form-data; boundary=----busbaraudioMIME",
+        &format!("multipart/form-data; boundary={}", transcription_boundary()),
     )
     .expect("re-read");
     assert_eq!(back.temperature, Some(0.5));
