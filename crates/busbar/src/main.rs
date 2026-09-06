@@ -1495,6 +1495,58 @@ async fn run(data_workers: usize) {
     )
     .unwrap_or_else(|e| die(format!("the node's book did not open: {e}")));
 
+    // THE OPENING BALANCES, sealed in the one slot the migration step's own preamble names: after
+    // the durability build, because the opening is a checkpoint the ledger seals and there is no
+    // ledger until the book is open; and before anything binds an address, because the first
+    // accepted connection can settle and a settlement posted before the opening was sealed is
+    // measured from a checkpoint that did not exist when it happened. Without this call the
+    // reconciliation identity measures from zero after an upgrade — off by the whole of the previous
+    // release's history, on the deployments where that history is the entire point.
+    //
+    // A DEGRADED READ IS NOT A REFUSAL. A store that will not list its key rows costs the opening
+    // the buckets those rows would have named; it is reported and the boot continues over what the
+    // configuration named, because a configuration that worked yesterday may not fail to boot today.
+    // An `Err` is the other set — the opening could not be signed, the ledger's own records were not
+    // usable, or the figures do not fit — and a node that served through one of those would report
+    // every row as out for the life of the deployment, so it refuses instead.
+    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    if let Some(adapter) = store_adapter.as_ref() {
+        let now = busbar_core::store::now();
+        let migration = root::migration::at_boot(
+            adapter,
+            &book.durability,
+            &root::kernel::new_kernel().durability_token(),
+            &root::migration::MigrationConfig {
+                // Node zero, which is the identity `node_book` opened the journal under. Two nodes
+                // numbering from one counter would collide on the pair the log deduplicates on.
+                node: 0,
+                // The key rows' own window is the all-time one — the sentinel the previous release
+                // writes every key bucket under, and the one its boot hydration reads them back at.
+                window: 0,
+                // Named rather than discovered, because a budget group is a configuration fact and
+                // a token ledger is addressed by a pair neither half of which is enumerable.
+                group_buckets: app_handle.load().cost.group_bucket_windows(now),
+                // The metering day this boot lands in. Earlier days are the observability view of
+                // consumption already counted in the enforcement ledger above, so reading them too
+                // would open every bucket at twice what it spent.
+                metering_days: vec![busbar_core::governance::metering_bucket(now)],
+                // The opening entries carry no card version: they are balances carried forward from
+                // a release that had no card version to record, not priced lines this node made.
+                rate_card_version: 0,
+            },
+            now,
+            None,
+        )
+        .unwrap_or_else(|e| die(format!("the opening balances were not sealed: {e}")));
+        if let Some(why) = migration.key_rows_unreadable.as_deref() {
+            tracing::warn!(
+                "the opening balances were sealed over the configured buckets alone: the \
+                 previous release's key rows would not list ({why}), so the buckets they name are \
+                 missing from the opening"
+            );
+        }
+    }
+
     // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
     // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
     // arm settles nothing, which is the honest answer for a build with no root ledger in it.
