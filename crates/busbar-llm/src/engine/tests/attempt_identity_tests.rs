@@ -301,6 +301,25 @@ impl Observed {
     }
 }
 
+/// Replace the decimal number that follows every occurrence of `key` with `0`, leaving every other
+/// byte alone. For a value embedded in a body that is not parseable as one JSON document, where the
+/// structural blanker in [`normalize`] cannot reach it.
+fn blank_number_after(s: &str, key: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(at) = rest.find(key) {
+        out.push_str(&rest[..at + key.len()]);
+        out.push('0');
+        let tail = &rest[at + key.len()..];
+        let end = tail
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(tail.len());
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Blank the values that are synthesized per response (ids, clocks, measured latency) so byte
 /// comparison is about shape and content, not about a fresh UUID or a real wall-clock reading. JSON
 /// bodies are normalized structurally; SSE bodies line by line on their `data:` payloads; anything
@@ -339,6 +358,28 @@ fn normalize(s: &str) -> String {
     if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(s) {
         blank(&mut v);
         return v.to_string();
+    }
+    // AWS EVENT-STREAM BODY (Bedrock's stream). Neither branch around this one reaches it: it is not
+    // one JSON document, and its frames are binary — a length prelude, length-prefixed headers, the
+    // JSON payload, and two CRCs — rather than `data:`-prefixed SSE lines. So the `latencyMs` the
+    // doc above blanks everywhere else survived here, and the metadata frame of every Bedrock stream
+    // case carried a live wall-clock reading into a byte comparison. Two legs racing the same mock
+    // under `tokio::join!` measure 0ms and 1ms often enough that this was an intermittent red with
+    // no behavioral difference behind it.
+    //
+    // Normalize by keeping the frames' TEXT — the `:event-type`/`:content-type`/`:message-type`
+    // header names and values, and the JSON payloads — and blanking the reading. What is dropped is
+    // the binary framing: the total/headers lengths and the prelude/message CRCs. Those are pure
+    // FUNCTIONS of the header bytes and payload that remain in the comparison, so a divergence in
+    // them that is not also a divergence in what is compared is not representable — and the body
+    // reaches here already `from_utf8_lossy`'d, so those bytes were never compared faithfully in the
+    // first place.
+    if s.contains(":event-type") {
+        let text: String = s
+            .chars()
+            .filter(|c| c.is_ascii_graphic() || *c == ' ')
+            .collect();
+        return blank_number_after(&text, "\"latencyMs\":");
     }
     s.lines()
         .map(|line| match line.strip_prefix("data: ") {
@@ -597,6 +638,35 @@ const ALLOWED: &[Divergence] = &[
         when: openai_egress,
     },
 ];
+
+/// The event-stream branch of [`normalize`] does the job the doc claims: two Bedrock metadata frames
+/// that differ ONLY in the measured `latencyMs` compare equal, and two that differ in anything the
+/// frame actually says still do not. Without the second half the normalizer could pass by erasing
+/// the body, which would make the identity rig above green over nothing.
+#[test]
+fn eventstream_normalization_blanks_the_reading_and_nothing_else() {
+    let frame = |latency: u32, tokens: u32| {
+        format!(
+            "\u{0}\u{0}\u{0}\u{8c}\u{0}\u{0}\u{0}N*:event-type metadata:content-type \
+             application/json:message-type event{{\"metrics\":{{\"latencyMs\":{latency}}},\
+             \"usage\":{{\"inputTokens\":{tokens},\"outputTokens\":2,\"totalTokens\":5}}}}\u{fffd}"
+        )
+    };
+    assert_eq!(
+        normalize(&frame(0, 3)),
+        normalize(&frame(17, 3)),
+        "the measured latency is not identity-bearing and must normalize away"
+    );
+    assert_ne!(
+        normalize(&frame(0, 3)),
+        normalize(&frame(0, 4)),
+        "a real difference in what the frame reports must survive normalization"
+    );
+    assert!(
+        normalize(&frame(0, 3)).contains(":event-type metadata"),
+        "the frame's own headers stay in the comparison"
+    );
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn walk_vs_pipeline_attempt_identity() {
