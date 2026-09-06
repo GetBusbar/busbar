@@ -29,6 +29,17 @@ Divergence classes (a cell may carry several; the first names the earliest diver
   effects.metrics     metric delta differs
   effects.audit       audit delta differs
   effects.stderr      exec cells: the process's stderr (boot refusals, warnings, CLI errors)
+  effects.script      EVERY OTHER effects key. A script cell writes the evidence its cell is about
+                      straight into `effects` under a name of its own choosing — `survived`,
+                      `key_after_restart`, `validate_exit`, `hazard_lines`, `usage_before`/`usage_after`,
+                      `list_plugins` — and the classes above name only nine FIXED keys, so none of
+                      that was compared by anything. 14 golden cells carry such a key that no other
+                      class mirrors, so a build that lost the store across a restart
+                      (plugins.store-persist|store-sqlite's `survived` / `key_after_restart`), leaked a
+                      hazard line (hazard|no-data-dir's `hazard_lines`) or moved the usage view a
+                      refusal was measured against (teller|admit-refusal's `usage_before`/`usage_after`)
+                      diverged on nothing the differ computed and its row printed `PASS  identical`.
+                      Rated MONEY: only a `breaking` entry naming its changelog line may forgive it
   norm.rules          the set of normalizer rules that fired differs (a rule firing on ONE side is
                       itself a finding: something non-deterministic appeared or disappeared)
 
@@ -47,12 +58,19 @@ from collections import Counter, defaultdict
 CLASS_ORDER = ["missing.golden", "missing.candidate", "status", "headers", "body", "effects.stderr",
                "effects.usage", "effects.usage_after_restart", "effects.store_errors",
                "effects.metrics", "effects.audit", "norm.rules", "effects.egress", "effects.readback",
-               "effects.files"]
+               "effects.files", "effects.script"]
+# The effects keys that have a class of their own above. EVERY OTHER key a driver writes into
+# `effects` is compared under `effects.script` — the differ used to walk this tuple and nothing else,
+# so a script cell's own evidence (whatever key it chose) was compared by no class at all.
+# `exec_rules` is excluded because it is the normalizer's rule ledger and is compared as norm.rules.
+NAMED_EFFECT_KEYS = ("usage", "usage_after_restart", "store_errors", "metrics", "audit", "stderr",
+                     "egress", "readback", "files")
+EFFECT_KEYS_WITH_OWN_CLASS = set(NAMED_EFFECT_KEYS) | {"exec_rules"}
 # Weight per class; a cell's weight is its family's max class weight over the classes it diverged in.
 # Money and refusal semantics dominate; cosmetics count but cannot outvote them.
 CLASS_WEIGHT = {"missing.golden": 10, "missing.candidate": 10, "status": 10, "effects.usage": 10,
                 "effects.usage_after_restart": 10, "effects.store_errors": 10,
-                "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1, "effects.egress": 10, "effects.readback": 10, "effects.files": 10}
+                "body": 3, "effects.stderr": 3, "effects.audit": 3, "headers": 1, "effects.metrics": 1, "norm.rules": 1, "effects.egress": 10, "effects.readback": 10, "effects.files": 10, "effects.script": 10}
 # The classes that are MONEY: an accepted difference may only carry one of these if it is a declared
 # breaking change with a changelog line. Usage that a restart did not preserve, and a store the
 # binary could not write to, are both money — the request statuses look fine either way. This set is
@@ -63,7 +81,8 @@ CLASS_WEIGHT = {"missing.golden": 10, "missing.candidate": 10, "status": 10, "ef
 # invisible in every other class) were rated 10 but omitted here, so a plain `improvement` entry
 # could waive them.
 MONEY_CLASSES = {"status", "effects.usage", "effects.usage_after_restart", "effects.store_errors",
-                 "missing.candidate", "effects.egress", "effects.readback", "effects.files"}
+                 "missing.candidate", "effects.egress", "effects.readback", "effects.files",
+                 "effects.script"}
 assert MONEY_CLASSES <= set(CLASS_ORDER)
 assert {k for k, w in CLASS_WEIGHT.items() if w == 10} == MONEY_CLASSES | {"missing.golden"}, \
     "MONEY_CLASSES must name every class CLASS_WEIGHT rates 10 (missing.golden is a recorder bug, never acceptable at all)"
@@ -192,14 +211,26 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
     if bd is not None:
         classes.append("body"); detail["body"] = bd
     ge, ce = g.get("effects", {}), c.get("effects", {})
-    for k in ("usage", "usage_after_restart", "store_errors", "metrics", "audit", "stderr",
-              "egress", "readback", "files"):
+    for k in NAMED_EFFECT_KEYS:
         if ge.get(k) != ce.get(k):
             classes.append(f"effects.{k}")
             if k == "stderr" and isinstance(ge.get(k), str) and isinstance(ce.get(k), str):
                 detail["effects.stderr"] = {"kind": "text", **(text_diff(ge[k], ce[k]) or {})}
             else:
                 detail[f"effects.{k}"] = {"paths": json_paths_diff(ge.get(k), ce.get(k))}
+    # EVERY OTHER EFFECTS KEY, or a script cell's whole contract is compared by nobody. The loop
+    # above walks a FIXED list, and a script cell writes its evidence under a name of its own
+    # (`survived`, `key_after_restart`, `validate_exit`, `hazard_lines`, `usage_before`) — 14 golden
+    # cells carry such a key that neither `status` nor `body` mirrors, so a candidate could flip
+    # `survived` from "yes" to "no" and the row still printed `PASS  identical`. A key present on
+    # one side only counts too: an effect that stopped being reported is exactly as much a
+    # divergence as one whose value moved.
+    moved = sorted(k for k in (set(ge) | set(ce)) - EFFECT_KEYS_WITH_OWN_CLASS if ge.get(k) != ce.get(k))
+    if moved:
+        classes.append("effects.script")
+        detail["effects.script"] = {"keys": moved,
+                                    "paths": json_paths_diff({k: ge.get(k) for k in moved},
+                                                             {k: ce.get(k) for k in moved})}
     # ORDER canonicalizations fire only when the input happened to be unsorted; whether a map came
     # out sorted on one run is not a contract, so those rules never count as one-sided.
     ORDER_RULES = {"boot.pool-order", "boot.error-order", "boot.pair-order", "keys.order"}
