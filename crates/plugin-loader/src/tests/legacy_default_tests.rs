@@ -105,7 +105,7 @@ fn run<T>(
 fn open() -> Option<DynStore> {
     let store = dyn_example_store_with_fake_call();
     if store.is_none() {
-        eprintln!("skip: store example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("store example plugin");
     }
     store
 }

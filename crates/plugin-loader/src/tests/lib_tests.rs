@@ -23,24 +23,13 @@ use super::*;
 /// lightweight per-push `ci.yml` does NOT check out this sibling (it stays fast), so these tests
 /// skip there — real coverage runs on every push to `dev`/`*-dev` via `dev-gate.yml` instead.
 fn store_fixture_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = {
-        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR")); // .../busbarAI/crates/plugin-loader
-        let sibling_root = manifest_dir.join("../../../store-sqlite"); // sibling of busbarAI
-        let name = plugin_library_filename("busbar_store_sqlite_plugin");
-        let candidate = sibling_root.join("target/release").join(&name);
-        candidate.exists().then_some(candidate)
-    };
-    if candidate.is_none()
-        && std::env::var_os("CI").is_some()
-        && std::env::var_os("DEV_GATE").is_some()
-    {
-        panic!(
-            "the store-sqlite-plugin cdylib is not built from the ../store-sqlite sibling \
-                 checkout under dev-gate.yml: refusing to silently skip loader-mechanism coverage \
-                 of the kind:store dlopen seam."
-        );
-    }
-    candidate
+    crate::fixture_guard::locate(
+        "busbar_store_sqlite_plugin",
+        crate::fixture_guard::FixtureClass::Sibling {
+            repo: "store-sqlite",
+        },
+        "loader-mechanism coverage of the kind:store dlopen seam",
+    )
 }
 
 /// A fresh, unique `db_path` config for the real store-sqlite-plugin fixture, so concurrent
@@ -111,7 +100,7 @@ fn refuses_non_plugin() {
 #[test]
 fn validate_and_inventory() {
     let Some(path) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
@@ -268,7 +257,7 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
 #[test]
 fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
     let Some(real_plugin) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let dir = std::env::temp_dir().join(format!(
@@ -316,7 +305,7 @@ fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
 #[test]
 fn wire_up_raw_rejects_a_kind_mismatch_against_the_seam_and_the_manifest() {
     let Some(store_plugin) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let bytes = std::fs::read(&store_plugin).expect("read sibling store-sqlite-plugin cdylib");
@@ -417,7 +406,7 @@ fn open_err_is_readable_refuses_an_oversized_length() {
 #[test]
 fn load_store_from_bytes_loads_the_given_bytes() {
     let Some(path) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
@@ -456,7 +445,7 @@ fn load_store_from_bytes_loads_the_given_bytes() {
 #[test]
 fn on_disk_swap_after_verify_does_not_change_what_loads() {
     let Some(path) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     // "Verify" step: read the good bytes (in the engine these are hash/signature-checked here).
@@ -514,7 +503,7 @@ fn staging_dirs_for_this_process() -> std::collections::BTreeSet<std::path::Path
 #[test]
 fn from_bytes_load_leaves_no_artifact_after_drop() {
     let Some(path) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
@@ -583,7 +572,7 @@ fn from_bytes_load_leaves_no_artifact_after_drop() {
 #[test]
 fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
     let Some(path) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
@@ -701,7 +690,7 @@ fn hot_swap_old_and_new_coexist_then_old_unmaps_new_keeps_serving() {
 #[test]
 fn repeated_reloads_do_not_leak_staged_libraries() {
     let Some(path) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
@@ -748,7 +737,7 @@ fn repeated_reloads_do_not_leak_staged_libraries() {
 #[test]
 fn linux_from_bytes_load_touches_no_disk() {
     let Some(path) = store_fixture_plugin_path() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let bytes = std::fs::read(&path).expect("read sibling store-sqlite-plugin cdylib");
@@ -938,7 +927,7 @@ fn dyn_store_with_fake_call() -> Option<DynStore> {
 #[test]
 fn denylist_unsupported_status_falls_back_empty() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     FAKE_CALL_HANDLE.with(|c| {
@@ -961,7 +950,7 @@ fn denylist_unsupported_status_falls_back_empty() {
 #[test]
 fn denylist_legacy_v1_decode_failure_falls_back_empty() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     FAKE_CALL_HANDLE.with(|c| {
@@ -991,7 +980,7 @@ fn denylist_legacy_v1_decode_failure_falls_back_empty() {
 #[test]
 fn no_plugin_crash_shape_can_empty_the_denylist() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     // (status, body, what the shape IS) — every one must FAIL CLOSED.
@@ -1083,7 +1072,7 @@ fn audit_fixture() -> AuditRecord {
 #[test]
 fn denylist_backend_error_with_unknown_variant_text_propagates() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     // A crafted / coincidental backend error: STATUS_ERR, but the body contains "unknown variant".
@@ -1110,7 +1099,7 @@ fn denylist_backend_error_with_unknown_variant_text_propagates() {
 #[test]
 fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     FAKE_CALL_HANDLE.with(|c| {
@@ -1142,7 +1131,7 @@ fn audit_tail_backend_error_propagates_not_masked_by_fallback() {
 #[test]
 fn panic_in_list_denylist_fails_closed_not_empty() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     FAKE_CALL_HANDLE.with(|c| {
@@ -1165,7 +1154,7 @@ fn panic_in_list_denylist_fails_closed_not_empty() {
 #[test]
 fn denylist_status_matrix() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     FAKE_CALL_HANDLE.with(|c| c.set((STATUS_UNSUPPORTED, b"unsupported variant")));
@@ -1189,7 +1178,7 @@ fn denylist_status_matrix() {
 #[test]
 fn append_audit_status_matrix() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     let rec = AuditRecord {
@@ -1263,32 +1252,11 @@ fn transport_error_classification() {
 /// built. Same fix already applied to `store_fixture_plugin_path` above and `hook_plugin_path`
 /// in `hook.rs`.
 fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = plugin_library_filename("busbar_secret_example_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the secret example plugin cdylib is not built under CI: `cargo test --workspace` \
-                 must build busbar_secret_example_plugin (checked both the uplifted target dir and \
-                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
-                 DynSecret dlopen seam."
-        );
-    }
-    candidate
+    crate::fixture_guard::locate(
+        "busbar_secret_example_plugin",
+        crate::fixture_guard::FixtureClass::InTree,
+        "the only over-the-ABI coverage of the DynSecret dlopen seam",
+    )
 }
 
 /// End-to-end: load the REAL secret-example-plugin cdylib over the C ABI and exercise
@@ -1297,7 +1265,7 @@ fn secret_example_plugin_path() -> Option<std::path::PathBuf> {
 #[test]
 fn load_and_exercise_secret_example_plugin() {
     let Some(path) = secret_example_plugin_path() else {
-        eprintln!("skip: secret example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("secret example plugin");
         return;
     };
     let bytes = std::fs::read(&path).expect("read secret example plugin cdylib");
@@ -1338,32 +1306,11 @@ fn load_and_exercise_secret_example_plugin() {
 /// (`cargo test --workspace`) always builds it, so a missing cdylib there is a hard failure, not a
 /// silent skip — it is the only over-the-ABI coverage of the `DynExport` dlopen seam.
 fn export_example_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = plugin_library_filename("busbar_export_example_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the export example plugin cdylib is not built under CI: `cargo test --workspace` \
-                 must build busbar_export_example_plugin (checked both the uplifted target dir and \
-                 target/deps). Refusing to silently skip the only over-the-ABI coverage of the \
-                 DynExport dlopen seam."
-        );
-    }
-    candidate
+    crate::fixture_guard::locate(
+        "busbar_export_example_plugin",
+        crate::fixture_guard::FixtureClass::InTree,
+        "the only over-the-ABI coverage of the DynExport dlopen seam",
+    )
 }
 
 /// END-TO-END over the REAL export-example-plugin cdylib: load it through the loader (which queries
@@ -1374,7 +1321,7 @@ fn export_example_plugin_path() -> Option<std::path::PathBuf> {
 fn load_and_exercise_export_example_plugin() {
     use busbar_plugin::cold::export::ExportStream;
     let Some(path) = export_example_plugin_path() else {
-        eprintln!("skip: export example plugin cdylib not built (run under --workspace)");
+        crate::fixture_guard::note_skip("export example plugin");
         return;
     };
     let bytes = std::fs::read(&path).expect("read export example plugin cdylib");
@@ -1554,32 +1501,11 @@ fn n_list_call_principals(s: &dyn busbar_api::Store) -> StoreResult<Vec<String>>
 }
 
 fn store_example_plugin_path() -> Option<std::path::PathBuf> {
-    let candidate = (|| {
-        let exe = std::env::current_exe().ok()?;
-        let profile_dir = exe.parent()?.parent()?;
-        let name = plugin_library_filename("busbar_store_example_plugin");
-        let uplifted = profile_dir.join(&name);
-        let raw = profile_dir.join("deps").join(&name);
-        [uplifted, raw]
-            .into_iter()
-            .filter_map(|p| {
-                std::fs::metadata(&p)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .map(|mtime| (p, mtime))
-            })
-            .max_by_key(|(_, mtime)| *mtime)
-            .map(|(p, _)| p)
-    })();
-    if candidate.is_none() && std::env::var_os("CI").is_some() {
-        panic!(
-            "the store example plugin cdylib is not built under CI: `cargo test --workspace` must \
-             build busbar_store_example_plugin (checked both the uplifted target dir and \
-             target/deps). Refusing to silently skip the ONLY end-to-end proof that a task written \
-             through a plugin store survives a restart."
-        );
-    }
-    candidate
+    crate::fixture_guard::locate(
+        "busbar_store_example_plugin",
+        crate::fixture_guard::FixtureClass::InTree,
+        "the ONLY end-to-end proof that a task written through a plugin store survives a restart",
+    )
 }
 
 /// A `SampleTask` with every field set to something distinguishable, so a round trip that drops or
@@ -2109,7 +2035,7 @@ fn no_plugin_failure_shape_can_launder_a_dropped_task_into_success() {
 #[test]
 fn redeem_plane_token_unsupported_and_broken_shapes_fail_closed_not_fresh() {
     let Some(store) = dyn_store_with_fake_call() else {
-        eprintln!("skip: store-sqlite-plugin cdylib not built (run `cargo build --release -p busbar-store-sqlite-plugin` in a sibling ../store-sqlite checkout)");
+        crate::fixture_guard::note_skip_sibling("busbar-store-sqlite-plugin", "store-sqlite");
         return;
     };
     // The MOTIVATING row is `STATUS_UNSUPPORTED`: a store predating the verb. Before the fix its
@@ -2174,7 +2100,7 @@ fn event_free_probe() -> SampleEvent {
 #[test]
 fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
     let Some(path) = store_example_plugin_path() else {
-        eprintln!("skip: busbar_store_example_plugin cdylib not built");
+        crate::fixture_guard::note_skip("store example plugin");
         return;
     };
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
