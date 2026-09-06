@@ -491,6 +491,44 @@ fn bedrock_carry_request_document_provider_fields() {
     );
 }
 
+/// Regression: the verbatim-stash suppression must survive a wire block that models NO IR block.
+/// The reader records a `document`/`video` stash against its position in the WIRE content array,
+/// but the writer walks the IR content vector — and a `cachePoint` (like `guardContent`, and like
+/// any block the reader leaves undecoded) occupies a wire slot and yields no IR block, so from that
+/// point on the two indices differ by one. With the gate keyed on the wire index the modelled
+/// `Media` projection is no longer suppressed and the splice re-inserts the raw block as well, so
+/// the attachment goes upstream TWICE: the caller pays input tokens for the whole PDF twice, and
+/// the `cachePoint` now sits before a prefix that no longer matches, so the cache the caller paid
+/// to create misses on the next turn and is re-billed in full.
+#[test]
+fn bedrock_document_after_a_cache_point_is_emitted_once() {
+    let reader = BedrockReader;
+    let writer = BedrockWriter;
+    let body = serde_json::json!({
+        "messages": [{"role": "user", "content": [
+            {"text": "read this"},
+            {"cachePoint": {"type": "default"}},
+            {"document": {
+                "format": "pdf",
+                "name": "spec",
+                "source": {"s3Location": {"uri": "s3://b/spec.pdf"}}
+            }}
+        ]}]
+    });
+    let ir = reader.read_request(&body).expect("read");
+    let out = writer.write_request(&ir);
+    let docs = out
+        .pointer("/messages/0/content")
+        .and_then(|c| c.as_array())
+        .map(|a| a.iter().filter(|b| b.get("document").is_some()).count());
+    assert_eq!(
+        docs,
+        Some(1),
+        "the document must reach the wire exactly once even though a cachePoint precedes it; \
+         got {out}"
+    );
+}
+
 /// `bedrock/request/content[].video.source.s3Location` — a Converse `video` block with an S3 source.
 /// Rides the same positional verbatim stash as `document`, re-emitting `source.s3Location` intact.
 #[test]
