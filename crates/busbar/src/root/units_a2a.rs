@@ -1650,8 +1650,8 @@ mod tests {
     /// A unit the table has no room for is refused AT arrival, and one it admits keeps the chain the
     /// transport recorded.
     ///
-    /// THE arrival STEP, over the loop. §2.2 gives the step two things to decide and this drives
-    /// both, because either one alone is half the door:
+    /// THE arrival STEP, over the loop. The step has two things to decide and this drives both,
+    /// because either one alone is half the door:
     ///
     /// - THE GATE, which is the kernel's and which this plane is UNDER. A2A arrives on the data
     ///   listener, so `admin_listener` is false and the exemption the admin leg gets does not reach

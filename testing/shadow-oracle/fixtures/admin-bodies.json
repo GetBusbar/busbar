@@ -2115,7 +2115,7 @@
    "idempotent": false,
    "if_match": true,
    "inventory": [
-    "CFG-220"
+    "CONF-220"
    ],
    "method": "PUT",
    "mutating": true,

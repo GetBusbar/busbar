@@ -3756,8 +3756,8 @@ mod tests {
     /// The administrative listener answers on a table with no room in it at all, and the data
     /// listener does not.
     ///
-    /// THE arrival STEP, over the loop. §2.2 gives this plane's Arrival one decision of its own and
-    /// this is it: units on the administrative listener are EXEMPT from `in_flight_cap`, for the
+    /// THE arrival STEP, over the loop. This plane's Arrival has one decision of its own and this
+    /// is it: units on the administrative listener are EXEMPT from `in_flight_cap`, for the
     /// reason the exemption exists — the surface an operator reaches to find out why the node is
     /// shedding has to answer while it is shedding. This node's table makes that the only thing
     /// keeping it alive: its cap is ZERO, so every unit under the cap is refused and every unit that
