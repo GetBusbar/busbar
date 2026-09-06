@@ -2276,11 +2276,23 @@ mod tests {
     /// The figures are this plane's own: the door opens the kernel's hold at zero, because the spend
     /// is the governance ledger's and the walk's tap already moved it. So what this proves is not a
     /// price — it is that the kernel's record of a unit having run reaches a durable record.
+    ///
+    /// **What the read-back is and is not.** A row read through the same `balance()` the write went
+    /// through is a claim about the pair agreeing with each other and not about either being right,
+    /// so the key is SPELLED OUT here — bucket, dimension, scope — and the helper is checked against
+    /// it. A `balance()` that started keying by pool, or in cents, would move the write and the read
+    /// together and leave a same-helper read-back green.
+    ///
+    /// And a zero posting proves nothing about a figure reaching a cell, because every cell answers
+    /// zero. So the loop's own posting is checked for what it IS — zero, on the principal the
+    /// authenticate step settled on — and a second, NON-ZERO posting is put through the same
+    /// `settle` onto the same key, which is what makes the read-back a reading.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         let rig = rig(Fixture::BufferedOk).await;
         let node = LlmNode::new();
-        let ended = drive_to_end(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
+        let ended = end_of_one_unit(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
+        let who = rig.principal();
         rig.server.shutdown().await;
 
         let Ended::Settled { end, .. } = ended else {
@@ -2292,6 +2304,19 @@ mod tests {
             0,
             "this plane's door opens the kernel's hold at zero; the spend is the governance ledger's"
         );
+        // WHOSE POSTING IT IS. The exit arm settles onto the principal it is handed, so a posting
+        // that named somebody else would be settled under a name the loop never resolved — and a
+        // test that supplied its own name could not tell.
+        assert_eq!(
+            posted.principal(),
+            &who,
+            "the loop's posting must name the principal the authenticate step settled on"
+        );
+        assert_eq!(
+            posted.settled(),
+            0,
+            "the terminal knows no money on this plane; the figure arrives through the late arm"
+        );
 
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let mut durability = crate::root::durability::build(
@@ -2300,7 +2325,19 @@ mod tests {
             Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
         )
         .expect("a memory-buffered journal cannot fail to open");
-        let who = PrincipalId::new("acct:llm");
+        // THE KEY, SPELLED. The three parts the exit arm's cell is named by, written out here rather
+        // than fetched, and the helper checked against them.
+        let spelled = busbar_unit_ledger::totals::TotalsKey::new(
+            busbar_unit_ledger::totals::BucketId::new(who.as_str()),
+            busbar_unit_ledger::totals::CapDimension::NanoUnits,
+            busbar_unit_ledger::totals::BucketScope::All,
+        );
+        assert_eq!(
+            balance(&who),
+            spelled,
+            "the exit arm's balance is the caller's own, in nano-units, unscoped"
+        );
+
         let settled = settle(
             &mut durability,
             &who,
@@ -2311,16 +2348,42 @@ mod tests {
         .expect("the memory-buffered journal takes it");
         assert!(settled.overdraft.is_none(), "nothing to carry out");
 
+        // THE NON-ZERO POSTING, through the same arm onto the same key. Without one the read-back
+        // below is `0 == 0` and would hold over a `settle` that wrote nothing at all.
+        let ledger_token = busbar_caps::LedgerToken::mint(&seal);
+        const LATE_NANOS: u64 = 4_321;
+        let late = busbar_caps::Posted::settle_late(
+            busbar_caps::HoldAccrual::after_terminal(who.clone(), LATE_NANOS, &ledger_token),
+            &ledger_token,
+        );
+        assert_eq!(late.settled(), LATE_NANOS);
+        settle(
+            &mut durability,
+            &who,
+            EPOCH,
+            &busbar_caps::DurabilityToken::mint(&seal),
+            late,
+        )
+        .expect("the memory-buffered journal takes the late accrual too");
+
         let window =
             busbar_unit_admission::budget_window(busbar_unit_admission::window::WINDOW_DAY, EPOCH);
-        let figures = durability.ledger.book().get(&balance(&who), window);
-        assert_eq!(figures.overdraft_carried_out, 0);
+        let figures = durability.ledger.book().get(&spelled, window);
+        assert_eq!(
+            figures.settled,
+            i128::from(LATE_NANOS),
+            "the cell must carry what the two postings settled, at the key they were settled at"
+        );
         let replayed = durability
             .journal
             .replay()
             .expect("reads back")
             .expect("verifies");
-        assert_eq!(replayed.len(), 1, "one posting, one record");
+        assert_eq!(
+            replayed.len(),
+            3,
+            "the loop's posting, the late accrual, and the late accrual's own carry"
+        );
     }
 
     /// **THE LATE ACCRUAL, END TO END.** A drained answer's money reaches the root's book.
@@ -2419,17 +2482,26 @@ mod tests {
     // reads a completion cell the engine's stream wrapper has not filled yet, the report comes back
     // absent, nothing is priced and nothing is posted; the `posted > 0` above is that failure.
 
-    /// One request, driven through the real loop, answering with the END rather than the bytes.
+    /// One request, driven through the real loop, STOPPING AT THE END the loop sealed.
     ///
-    /// The same drive [`LlmNode::answer`] performs — the same table, the same slot, the same
-    /// `run_unit_async` — kept apart only because the entry point answers a client and this answers
-    /// the exit arm's proof.
+    /// Named for where it stops rather than for the drive it resembles, because it is not the whole
+    /// of [`LlmNode::answer_with`] and a helper that claimed to be would be hiding the difference.
+    /// Everything up to the end is the same: the same in-flight table, the same slot, the same
+    /// [`Occupied`] guard that hands the slot back however the unit leaves, the same card pinned at
+    /// admission, the same `run_unit_async` over the same steps. What comes after the end is not
+    /// here — the exit arm's `settle_end`, taking the terminal's bytes, and the late accrual wrapped
+    /// onto the body — because those are what this helper's callers do themselves, one at a time, so
+    /// that each is a claim rather than a step in a longer one. [`drive`] is the whole of the drive.
+    ///
+    /// The card is pinned and dropped unused for the same reason the guard is held: a drive that
+    /// skipped it would not fail if pinning at admission became pinning at drain time, which is the
+    /// one thing that makes the price a request is billed at a promise.
     ///
     /// `gov` is the caller's own resolved context rather than the rig's, because what the
     /// authenticate step ANSWERS is only visible on this side of the loop: the hold the door opens
     /// is opened for the principal that step settled on, and the posting the exit hands back names
     /// it. A drive that always used the rig's key could not tell the step's answer from the walk's.
-    async fn drive_to_end<'n>(
+    async fn end_of_one_unit<'n>(
         rig: &Rig,
         node: &'n LlmNode,
         fixture: Fixture,
@@ -2449,6 +2521,12 @@ mod tests {
         let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
         let principal = authenticate::principal_id(&arrival.gov);
         let meter = Arc::new(AccrualMeter::new());
+        // THE CARD, pinned where the entry point pins it: at admission, before the unit runs.
+        let card = crate::root::kernel::ROOT_CARD.pin();
+        assert!(
+            card.is_some(),
+            "the rig installs the deployment's card before any unit is admitted"
+        );
         let unit = LlmUnit {
             node,
             seats,
@@ -2475,6 +2553,11 @@ mod tests {
                 now: busbar_substrate::store::now_ms(),
             })
             .expect("the uncapped table takes the unit");
+        // THE SLOT, given back however this unit leaves — including the caller dropping this future.
+        let _occupied = Occupied {
+            table: &node.inflight,
+            key,
+        };
         let ctx = UnitCtx {
             key,
             origin: OriginKind::Client,
@@ -2498,7 +2581,6 @@ mod tests {
             &unit,
         )
         .await;
-        node.inflight.remove(key);
         ended
     }
 
@@ -3314,7 +3396,7 @@ mod tests {
     /// one observation that is about step 2 and about nothing else.
     async fn principal_the_loop_settled_on(rig: &Rig, gov: busbar_api::PlaneRequestCtx) -> String {
         let node = LlmNode::new();
-        let ended = drive_to_end(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
+        let ended = end_of_one_unit(rig, &node, Fixture::BufferedOk, gov, NATIVE_SEATS).await;
         let Ended::Settled { end, .. } = ended else {
             panic!("the exit path settles a delivered unit");
         };
