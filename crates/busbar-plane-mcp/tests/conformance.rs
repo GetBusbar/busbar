@@ -865,6 +865,45 @@ fn a_request_larger_than_the_arena_is_relayed() {
     );
 }
 
+/// What every operation SEALS is somewhere its own plan then goes.
+///
+/// The verify step seals one destination and the route step lists the legs the unit dials. A class
+/// that seals an upstream and then plans no leg to it has had an upstream admitted, checked against
+/// the allow-list and counted against this node's admission for a hop that never happens; a class
+/// that plans a leg it was not verified for is the other half of the same seam. Asserted over the
+/// whole declared vocabulary, so a class added later cannot quietly acquire either shape.
+#[test]
+fn every_operation_is_verified_for_a_destination_its_plan_reaches() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let seal = common::TestSeal;
+    for op in <McpPlane as PlaneMeta>::OP_CLASSES {
+        let unit = busbar_contract::unit::Unit::new(
+            &seal,
+            busbar_contract::UnitKey::new(1),
+            busbar_contract::unit::Origin::Client,
+            None,
+            None,
+            busbar_contract::wire::Direction::Inbound,
+            Some(common::principal()),
+            *op,
+            busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
+            None,
+        );
+        let verified = plane.verify(&unit, &ctx);
+        let plan = plane.route(&unit, &ctx);
+        assert!(
+            plan.legs
+                .as_slice()
+                .iter()
+                .any(|l| l.destination == verified),
+            "{op} is verified for {verified:?}, which none of its legs reach"
+        );
+    }
+}
+
 /// A sealed destination, for the calls that take one.
 fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
     let seal = common::TestSeal;
