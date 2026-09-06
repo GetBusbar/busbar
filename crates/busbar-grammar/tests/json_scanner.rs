@@ -81,6 +81,56 @@ fn a_broken_surrogate_pair_in_a_key_is_a_miss_not_an_overflow() {
 }
 
 #[test]
+fn a_key_that_cannot_be_decoded_never_matches_the_pointer_that_prefixes_it() {
+    // A key whose decoded prefix is the token and whose remainder is a broken escape is NOT the
+    // token: the escape names no character, so the key is longer than what matched. Answering
+    // otherwise lets whoever wrote the body choose which member the kernel reads, because the
+    // scan stops at the first key it calls equal.
+    assert_eq!(
+        found(
+            b"{\"model\\uD800\":\"cheap\",\"model\":\"expensive\"}",
+            "/model"
+        ),
+        br#""expensive""#
+    );
+    assert_eq!(
+        found(
+            b"{\"usage\":{\"total_tokens\\udc00\":1,\"total_tokens\":999}}",
+            "/usage/total_tokens"
+        ),
+        b"999"
+    );
+    assert_eq!(found(b"{\"\\uD800\": 1, \"\": 2}", "/"), b"2");
+    // The same on the raw-byte side: a key whose remainder is not UTF-8 at all.
+    assert_eq!(
+        found(
+            b"{\"model\xff\":\"cheap\",\"model\":\"expensive\"}",
+            "/model"
+        ),
+        br#""expensive""#
+    );
+    // And a bad escape letter, which is the plainest undecodable remainder there is.
+    assert_eq!(
+        found(
+            b"{\"model\\q\":\"cheap\",\"model\":\"expensive\"}",
+            "/model"
+        ),
+        br#""expensive""#
+    );
+}
+
+#[test]
+fn a_pointer_token_that_cannot_be_decoded_never_matches_the_key_that_prefixes_it() {
+    // The mirror of the key side: the pointer's own escape grammar has exactly `~0` and `~1`, so a
+    // token ending in a bare tilde, or in a tilde followed by anything else, names no member — not
+    // the member spelled with the part before it.
+    let body = br#"{"model": 1, "model~": 2, "modelx": 3}"#;
+    assert_eq!(resolve_pointer(body, "/model~"), Resolved::Missing);
+    assert_eq!(resolve_pointer(body, "/model~x"), Resolved::Missing);
+    assert_eq!(found(body, "/model"), b"1");
+}
+
+#[test]
 fn a_brace_inside_a_string_does_not_confuse_the_scan() {
     let body = br#"{"decoy": "}{[]\"", "lane": "gold"}"#;
     assert_eq!(found(body, "/lane"), br#""gold""#);

@@ -360,10 +360,30 @@ fn literal(b: &[u8], i: usize, word: &[u8]) -> Result<usize, ScanErr> {
     }
 }
 
+/// One step of a decode: a character, the end of the side, or bytes that spell no character.
+///
+/// The third arm is the whole point. Folding "nothing left to read" together with "what is left
+/// cannot be read" makes a key whose decoded prefix is the token compare EQUAL to it once the
+/// remainder is a broken escape, which hands whoever wrote the body the choice of which member the
+/// kernel reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Decoded {
+    Char(char),
+    End,
+    Malformed,
+}
+
 /// Compare a raw JSON key against a pointer token, decoding both sides as it goes.
 ///
 /// Neither side is unescaped into a buffer: each step decodes one character from each and compares
 /// them, so a key with an escape in it costs a few instructions and no memory.
+///
+/// An undecodable character on either side is a MISMATCH here and not a [`Resolved::Malformed`] for
+/// the document, because the two say different things. Malformed is the structural reading — a byte
+/// where no value, key, separator or bracket could go — and a broken escape inside a well-delimited
+/// string is string grammar, which this crate locates rather than validates, exactly as it locates
+/// `01.2.3e` and a raw control byte. So the object is still walked and its other members still
+/// resolve; only the key that cannot be read is not the key that was asked for.
 fn key_eq(raw: &[u8], token: &str) -> bool {
     let mut r = 0usize;
     let mut t = token.as_bytes();
@@ -371,32 +391,41 @@ fn key_eq(raw: &[u8], token: &str) -> bool {
         let left = next_json_char(raw, &mut r);
         let right = next_token_char(&mut t);
         match (left, right) {
-            (None, None) => return true,
-            (Some(a), Some(c)) if a == c => continue,
+            (Decoded::End, Decoded::End) => return true,
+            (Decoded::Char(a), Decoded::Char(c)) if a == c => continue,
             _ => return false,
         }
     }
 }
 
 /// One character of a JSON string body, escapes decoded.
-fn next_json_char(raw: &[u8], at: &mut usize) -> Option<char> {
-    let c = *raw.get(*at)?;
+fn next_json_char(raw: &[u8], at: &mut usize) -> Decoded {
+    let Some(&c) = raw.get(*at) else {
+        return Decoded::End;
+    };
     if c != b'\\' {
-        // The key is UTF-8 by definition of the format; a malformed byte compares unequal, which is
+        // The key is UTF-8 by definition of the format; a malformed byte is undecodable, which is
         // the safe answer for a lookup. Only the ONE character's own bytes are validated: reading
         // the whole remainder here would make matching a key quadratic in its length, and "never
         // looks at a byte twice" is the scanner's budget, not a figure of speech.
-        let width = utf8_width(c)?;
-        let ch = std::str::from_utf8(raw.get(*at..*at + width)?)
-            .ok()?
-            .chars()
-            .next()?;
+        let Some(width) = utf8_width(c) else {
+            return Decoded::Malformed;
+        };
+        let decoded = raw
+            .get(*at..*at + width)
+            .and_then(|bytes| std::str::from_utf8(bytes).ok())
+            .and_then(|s| s.chars().next());
+        let Some(ch) = decoded else {
+            return Decoded::Malformed;
+        };
         *at += width;
-        return Some(ch);
+        return Decoded::Char(ch);
     }
-    let esc = *raw.get(*at + 1)?;
+    let Some(&esc) = raw.get(*at + 1) else {
+        return Decoded::Malformed;
+    };
     *at += 2;
-    Some(match esc {
+    Decoded::Char(match esc {
         b'"' => '"',
         b'\\' => '\\',
         b'/' => '/',
@@ -406,28 +435,36 @@ fn next_json_char(raw: &[u8], at: &mut usize) -> Option<char> {
         b'r' => '\r',
         b't' => '\t',
         b'u' => {
-            let first = hex4(raw, *at)?;
+            let Some(first) = hex4(raw, *at) else {
+                return Decoded::Malformed;
+            };
             *at += 4;
             let code = if (0xD800..0xDC00).contains(&first) {
                 // A surrogate pair: the low half follows as a second escape.
                 if raw.get(*at) != Some(&b'\\') || raw.get(*at + 1) != Some(&b'u') {
-                    return None;
+                    return Decoded::Malformed;
                 }
-                let low = hex4(raw, *at + 2)?;
+                let Some(low) = hex4(raw, *at + 2) else {
+                    return Decoded::Malformed;
+                };
                 // The second escape has to be the low half. Anything else is not a character, the
                 // same answer every other malformed escape here gives — and taking it on trust would
                 // run the combining arithmetic below off the bottom of its range.
                 if !(0xDC00..0xE000).contains(&low) {
-                    return None;
+                    return Decoded::Malformed;
                 }
                 *at += 6;
                 0x10000 + ((first as u32 - 0xD800) << 10) + (low as u32 - 0xDC00)
             } else {
                 first as u32
             };
-            return char::from_u32(code);
+            // A lone low half lands here, and `char::from_u32` refuses it.
+            return match char::from_u32(code) {
+                Some(ch) => Decoded::Char(ch),
+                None => Decoded::Malformed,
+            };
         }
-        _ => return None,
+        _ => return Decoded::Malformed,
     })
 }
 
@@ -454,24 +491,36 @@ fn hex4(raw: &[u8], at: usize) -> Option<u16> {
 }
 
 /// One character of a pointer token, with the pointer's own two escapes decoded.
-fn next_token_char(token: &mut &[u8]) -> Option<char> {
-    let c = *token.first()?;
+fn next_token_char(token: &mut &[u8]) -> Decoded {
+    let Some(&c) = token.first() else {
+        return Decoded::End;
+    };
     if c == b'~' {
-        let next = *token.get(1)?;
+        // The pointer's escape grammar is exactly `~0` and `~1`. A bare tilde at the end of a token,
+        // or a tilde followed by anything else, spells no character — so the token is not the key
+        // spelled with the part in front of it.
+        let Some(&next) = token.get(1) else {
+            return Decoded::Malformed;
+        };
         *token = &token[2..];
         return match next {
-            b'0' => Some('~'),
-            b'1' => Some('/'),
-            _ => None,
+            b'0' => Decoded::Char('~'),
+            b'1' => Decoded::Char('/'),
+            _ => Decoded::Malformed,
         };
     }
-    let width = utf8_width(c)?;
-    let ch = std::str::from_utf8(token.get(..width)?)
-        .ok()?
-        .chars()
-        .next()?;
+    let Some(width) = utf8_width(c) else {
+        return Decoded::Malformed;
+    };
+    let decoded = token
+        .get(..width)
+        .and_then(|bytes| std::str::from_utf8(bytes).ok())
+        .and_then(|s| s.chars().next());
+    let Some(ch) = decoded else {
+        return Decoded::Malformed;
+    };
     *token = &token[width..];
-    Some(ch)
+    Decoded::Char(ch)
 }
 
 /// How far the scanner got before it ran out of bytes.
