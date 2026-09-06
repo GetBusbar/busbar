@@ -2188,13 +2188,16 @@
    "paths": [
     "scripts"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "28b07e617c36f3ef7ba87bc8539c5bc17187180e20b6f570d491539189845560",
+   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 20,
+    "MEDIUM": 12
+   },
+   "report": "pass 1 (all 121 files read): done-oracle floor slack by one group (fixed b8ff2f2f), construction selftest ALL GREEN on zero plants (fixed a65e837c), qa-segments GREEN on zero segments (fixed bd380b8c); verify-artifact image rows unexecuted, rules.py rename-to-pass and EXPECTED_IDS self-derived, release-check gate var never set, expected-ids jq failure, root guards missing, audit-ledger --check green at 0% clean, proof-manifest moved paths reported; fix agents dispatched",
+   "auditor": "opus-pass1",
    "fixed_at": null
   },
   {
