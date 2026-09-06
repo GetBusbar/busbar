@@ -166,6 +166,14 @@ pub struct TestBreaker {
     /// Every status the walk actually handed the classifier, in order — the only way a test can
     /// see WHAT crossed the seam rather than only what came back across it.
     pub classified: Mutex<Vec<UpstreamStatus>>,
+    /// Consecutive non-`Success`/`RecordNothing` outcomes needed against a cell before `observe`
+    /// reports a trip, by destination. Absent (the default) means "never trips" — the old,
+    /// hardcoded behavior — so every existing test that never calls
+    /// [`TestBreaker::set_trip_after`] is unaffected.
+    trip_after: Mutex<HashMap<DestinationId, u32>>,
+    /// The running consecutive-failure streak per cell, reset on `Success`/`RecordNothing` and
+    /// again the moment it trips.
+    fail_streak: Mutex<HashMap<DestinationId, u32>>,
 }
 
 impl TestBreaker {
@@ -185,6 +193,15 @@ impl TestBreaker {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(code, verdict);
+    }
+
+    /// Trip this cell's breaker once `n` consecutive non-`Success`/`RecordNothing` outcomes have
+    /// been observed against it. `n == 0` disables tripping (the default).
+    pub fn set_trip_after(&self, destination: DestinationId, n: u32) {
+        self.trip_after
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(destination, n);
     }
 
     fn health_of(&self, destination: DestinationId) -> Health {
@@ -405,7 +422,29 @@ impl Breaker for TestBreaker {
         _token: &busbar_caps::UnitToken<busbar_caps::Route>,
     ) -> bool {
         self.record(Recorded::Observed(pool.to_string(), destination, outcome));
-        false
+        // `RecordNothing` is the caller's own fault (or too-large-for-this-window); the
+        // destination stays healthy, so it closes the streak exactly like a `Success` does.
+        let is_failure = !matches!(outcome, Outcome::Success | Outcome::RecordNothing);
+        let mut streaks = self.fail_streak.lock().unwrap_or_else(|e| e.into_inner());
+        let streak = streaks.entry(destination).or_insert(0);
+        if !is_failure {
+            *streak = 0;
+            return false;
+        }
+        *streak += 1;
+        let threshold = self
+            .trip_after
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&destination)
+            .copied()
+            .unwrap_or(0);
+        if threshold > 0 && *streak >= threshold {
+            *streak = 0;
+            true
+        } else {
+            false
+        }
     }
 
     fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, _now: u64) {

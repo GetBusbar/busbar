@@ -61,6 +61,37 @@ fn a_member_that_cannot_be_dialled_is_failed_over_from() {
     );
 }
 
+/// A cell that racks up enough consecutive failures trips the breaker, and a trip is reported to
+/// telemetry — `hop.telemetry.breaker_trip` in `attempt.rs`, fired only when `Breaker::observe`
+/// answers `true`. `TestBreaker` used to hardcode that answer to `false` (see
+/// `TestBreaker::set_trip_after`'s doc), so no test in this crate could ever have observed a
+/// `breaker_trip` telemetry row — this is that proof.
+#[test]
+fn enough_consecutive_failures_trip_the_breaker_and_are_told_to_telemetry() {
+    let node = two_lane_pool();
+    node.transport
+        .script("a", Script::DialError(TransportError::Refused));
+    node.transport.script("b", Script::Frames(ok_frames()));
+    let mut node = node;
+    node.preference = Some(vec![DestinationId::new(0), DestinationId::new(1)]);
+    node.breaker.set_trip_after(DestinationId::new(0), 2);
+
+    // First failure: one below the threshold, no trip yet.
+    node.route("primary");
+    assert!(
+        node.telemetry.trips.lock().unwrap().is_empty(),
+        "one failure must not trip a breaker configured to trip at two"
+    );
+
+    // Second consecutive failure against the same cell: the threshold is met.
+    node.route("primary");
+    assert_eq!(
+        node.telemetry.trips.lock().unwrap().as_slice(),
+        &[("primary".to_string(), DestinationId::new(0))],
+        "the second consecutive failure must trip the cell and tell telemetry"
+    );
+}
+
 #[test]
 fn a_success_closes_the_routing_pools_cell_and_not_the_default_one() {
     let mut node = two_lane_pool();
