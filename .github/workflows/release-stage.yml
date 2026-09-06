@@ -173,8 +173,28 @@ jobs:
           fi
           echo "release=1" >> "$GITHUB_OUTPUT"
           echo "::notice::Cutting v$V from ${SHA:0:7}. Staging name: staging-${SHA:0:12}. Nothing public until verification is green."
+
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # -- A VERSION WITHOUT RELEASE NOTES DOES NOT STAGE ------------------------------------
+      #
+      # Nothing checked that CHANGELOG.md has a section for the version being tagged. The release
+      # body extraction is deliberately fail-soft (see `draft` below: it warns and falls back to
+      # GitHub's generated notes when no `## [X.Y.Z]` section exists), and ci.yml's changelog-lint
+      # only checks the SHAPE of the top entry - never that it is THIS version. So v1.6.0 could be
+      # tagged, published, fanned out to every downstream repo and pinned by users while the
+      # changelog page never mentioned it.
+      #
+      # Here rather than at the draft: `plan` is the cheapest job in the workflow and runs before
+      # anything is built, so a missing set of notes costs seconds and produces no staging tag, no
+      # draft and no image. Fail-closed and unconditional - the remedy is to write the notes and
+      # push again, which is the work the check is asking for.
+      - name: The version being tagged must have release notes (fail-closed)
+        if: ${{ steps.p.outputs.release == '1' }}
+        env:
+          V: ${{ steps.p.outputs.version }}
+        run: python3 scripts/changelog-lint.py --require-version "$V"
 
   # -- GATE ZERO: NOTHING IS RELEASED FROM A RED BRANCH -------------------------------------------
   #
