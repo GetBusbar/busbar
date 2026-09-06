@@ -626,3 +626,41 @@ fn put_credential_sweeps_stale_revoked_creds() {
         "a credential revoked within the retention window must survive"
     );
 }
+
+/// A pure READ must not queue behind another pure read. `list_keys` over a large table clones every
+/// row while holding the `keys` lock, and on the governance hot path a `get_key` arriving in that
+/// window is an admit decision waiting: if both take the WRITE side of the `RwLock`, the point read
+/// blocks for the whole listing pass, and a big enough table turns an admin listing into a latency
+/// spike on every request.
+///
+/// The listing's guard is parked here for the whole check (a stand-in for "a very large table"), so
+/// the assertion is deterministic rather than a timing race: with a shared read guard the concurrent
+/// `get_key` completes immediately; with an exclusive one it cannot complete at all until the
+/// listing lets go, and the bounded wait below fails rather than hanging the suite.
+#[test]
+fn a_parked_listing_read_does_not_block_a_concurrent_point_read() {
+    use std::sync::mpsc;
+    let store = std::sync::Arc::new(MemoryStore::new());
+    store.put_key(&key("k1")).unwrap();
+
+    // Exactly the guard `list_keys` holds while it clones the table.
+    let parked = store.keys.read().unwrap_or_else(|e| e.into_inner());
+
+    let (tx, rx) = mpsc::channel();
+    let reader = std::sync::Arc::clone(&store);
+    let handle = std::thread::spawn(move || {
+        let found = reader.get_key("k1").expect("point read").is_some();
+        let _ = tx.send(found);
+    });
+
+    let answered = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .unwrap_or(false);
+    drop(parked);
+    handle.join().expect("the point read thread");
+    assert!(
+        answered,
+        "a concurrent get_key did not complete while a listing read was in flight — the point \
+         read is serialized behind the whole listing pass"
+    );
+}

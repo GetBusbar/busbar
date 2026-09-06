@@ -33,8 +33,10 @@ fn now() -> u64 {
         .unwrap_or(0)
 }
 
-/// In-memory `Store`: keys by id, row-looked-up credentials by id (indexed by `(kind, public_id)`
-/// for lookup and by `key_id` for the per-key listing/cascade), token ledgers keyed by (bucket_id,
+/// In-memory `Store`: keys by id, row-looked-up credentials by id (`(kind, public_id)` lookup and
+/// the per-key listing/cascade are SCANS over that one map, not secondary indexes — the RAM backend
+/// holds a fixture-sized table and a second map to keep in step with every sweep, tombstone cascade
+/// and rotation is more failure surface than the scan costs), token ledgers keyed by (bucket_id,
 /// window_start), metering rows keyed by (key_id, bucket, model, provider).
 #[derive(Default)]
 pub struct MemoryStore {
@@ -80,6 +82,26 @@ impl MemoryStore {
         &self,
     ) -> std::sync::RwLockWriteGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
         self.metering.write().unwrap_or_else(|e| e.into_inner())
+    }
+    // The SHARED (read) side of the same four locks, for the methods that only ever read. A pure
+    // read taking the exclusive side serializes every concurrent reader behind it, and the reads
+    // here are the expensive ones — `list_keys`/`list_credentials`/`list_metering` clone whole
+    // tables — so a governance `get_key` on the admit path would wait out an admin listing pass.
+    // Poison-recovering for the same reason the write accessors are: the governance surface must
+    // never panic on a request.
+    fn keys_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, VirtualKey>> {
+        self.keys.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn creds_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<String, CredentialSecret>> {
+        self.creds.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn usage_read(&self) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64), UsageLedger>> {
+        self.usage.read().unwrap_or_else(|e| e.into_inner())
+    }
+    fn metering_read(
+        &self,
+    ) -> std::sync::RwLockReadGuard<'_, HashMap<(String, u64, String, String), MeteringRow>> {
+        self.metering.read().unwrap_or_else(|e| e.into_inner())
     }
     fn next_revision(&self) -> u64 {
         self.revision.fetch_add(1, Ordering::Relaxed) + 1
@@ -144,14 +166,14 @@ impl Store for MemoryStore {
     }
 
     fn get_key(&self, id: &str) -> StoreResult<Option<VirtualKey>> {
-        Ok(self.keys().get(id).cloned())
+        Ok(self.keys_read().get(id).cloned())
     }
 
     fn list_keys(&self) -> StoreResult<Vec<VirtualKey>> {
         // Deliberately UNFILTERED — see the trait doc. Tombstones are included so both the admin
         // listing caller (which filters live-only itself) and the default `list_keys_since` (which
         // needs tombstones visible) are served by this one method.
-        let mut v: Vec<VirtualKey> = self.keys().values().cloned().collect();
+        let mut v: Vec<VirtualKey> = self.keys_read().values().cloned().collect();
         v.sort_by_key(|k| k.created_at); // mirror SqliteStore's ORDER BY created_at
         Ok(v)
     }
@@ -206,7 +228,7 @@ impl Store for MemoryStore {
 
     fn list_keys_since(&self, since: u64) -> StoreResult<Vec<VirtualKey>> {
         Ok(self
-            .keys()
+            .keys_read()
             .values()
             .filter(|k| k.revision > since)
             .cloned()
@@ -215,7 +237,7 @@ impl Store for MemoryStore {
 
     fn get_usage(&self, bucket_id: &str, window_start: u64) -> StoreResult<UsageLedger> {
         Ok(self
-            .usage()
+            .usage_read()
             .get(&(bucket_id.to_string(), window_start))
             .cloned()
             .unwrap_or_default())
@@ -302,7 +324,7 @@ impl Store for MemoryStore {
 
     fn list_metering(&self, bucket: u64) -> StoreResult<Vec<MeteringRow>> {
         Ok(self
-            .metering()
+            .metering_read()
             .iter()
             .filter(|((_, b, _, _), _)| *b == bucket)
             .map(|(_, row)| row.clone())
@@ -371,7 +393,7 @@ impl Store for MemoryStore {
 
     fn list_credentials(&self, key_id: &str) -> StoreResult<Vec<CredentialMeta>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .filter(|c| c.meta.key_id == key_id)
             .map(|c| c.meta.clone())
@@ -384,7 +406,7 @@ impl Store for MemoryStore {
         public_id: &str,
     ) -> StoreResult<Option<CredentialSecret>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .find(|c| c.meta.kind == kind && c.meta.public_id == public_id)
             .cloned())
@@ -410,7 +432,7 @@ impl Store for MemoryStore {
 
     fn list_credentials_since(&self, since: u64) -> StoreResult<Vec<CredentialSecret>> {
         Ok(self
-            .creds()
+            .creds_read()
             .values()
             .filter(|c| c.meta.revision > since)
             .cloned()
