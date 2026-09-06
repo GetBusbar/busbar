@@ -560,11 +560,33 @@ fn test_validate_webhook_url_accepts_https_external_host() {
     }
 }
 
+/// Shutdown with OTLP never configured is a no-op, and it is idempotent.
+///
+/// The body used to be the bare call with no assertion at all, so it proved only that the function
+/// did not panic — any rewrite that kept it panic-free passed, including one that installed a
+/// provider or left one behind. The two properties the doc on `shutdown_tracing` actually claims
+/// are asserted now: the unconfigured precondition really holds when the call is made (otherwise
+/// this test silently exercises the CONFIGURED branch and its name is a lie), and the call leaves
+/// the provider slot untouched so a later configure is still possible.
 #[test]
 fn test_shutdown_tracing_is_noop_when_unconfigured() {
-    // OTLP never configured (TRACER_PROVIDER unset): shutdown must be a harmless, panic-free
-    // no-op. Also exercises the function so it is not dead code outside `cfg(test)`.
+    // The precondition the name rests on: nothing installed a provider ahead of us.
+    assert!(
+        TRACER_PROVIDER.get().is_none(),
+        "this test only means anything on the unconfigured path"
+    );
+
     shutdown_tracing();
+
+    // A no-op leaves the slot empty — it must not have installed or poisoned anything.
+    assert!(
+        TRACER_PROVIDER.get().is_none(),
+        "an unconfigured shutdown must not populate the tracer provider slot"
+    );
+
+    // Idempotent, as the doc claims: a second call is equally harmless.
+    shutdown_tracing();
+    assert!(TRACER_PROVIDER.get().is_none());
 }
 
 #[test]
