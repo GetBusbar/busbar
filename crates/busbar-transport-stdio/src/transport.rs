@@ -330,7 +330,10 @@ impl Transport for StdioTransport {
                 };
                 let slot = held.slot.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
-                    match read_line(&mut slot.reader, &mut slot.partial).await {
+                    let Some(read) = read_line_or_closed(&state, slot).await else {
+                        break None;
+                    };
+                    match read {
                         // A clean end on a line boundary: the session ends. What makes it clean is
                         // an EMPTY carried-over buffer, not a zero-byte read: a pump dropped
                         // mid-line leaves the bytes it consumed on the connection (see
@@ -497,9 +500,10 @@ impl Transport for StdioTransport {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
             // Removing the registry entry is what stops new lookups; it does not reach a `frames()`
-            // pump that already holds its own clone of this state. The flag is what ends that pump,
+            // pump that already holds its own clone of this state. This is what ends that pump —
+            // flag and wake together, since a pump parked on a silent peer never reaches a flag —
             // so the read side goes quiet at the same moment `write` starts answering `Closed`.
-            state.closed.store(true, Ordering::Release);
+            state.begin_close();
             tokio::spawn(async move {
                 if let Some(mut child) = state.child.lock().await.take() {
                     let _ = child.start_kill();
@@ -552,6 +556,35 @@ async fn write_refusal_line(state: &ConnState, payload: &[u8]) -> Result<(), Tra
     drop(w);
     guard.armed = false;
     Ok(())
+}
+
+/// One line, RACED against this connection's close.
+///
+/// `None` means the close won, and the caller ends its pump where it stood. The closed flag on its
+/// own is read only once a read has RETURNED, and the read a pump parks on returns when the peer
+/// sends a line — exactly what a peer that has gone quiet without hanging up never does. So the
+/// close has to be a wake as well as a flag. The wait is armed BEFORE the flag is re-read, so a
+/// close landing between the two is seen as the flag and one landing after it as the notification;
+/// neither order leaves this parked. The sibling `tcp` and `http` crates read the same way.
+///
+/// Dropping the read where it stands loses nothing: the bytes it had already consumed are in
+/// `slot.partial`, which belongs to the connection — the same property [`ReaderGuard`] relies on
+/// for a caller that cancels mid-line.
+async fn read_line_or_closed(
+    state: &ConnState,
+    slot: &mut ReaderSlot,
+) -> Option<std::io::Result<(usize, LineEnd)>> {
+    let mut wait = Box::pin(state.closing.notified());
+    wait.as_mut().enable();
+    if state.is_closed() {
+        return None;
+    }
+    let reading = std::pin::pin!(read_line(&mut slot.reader, &mut slot.partial));
+    match futures::future::select(reading, wait).await {
+        futures::future::Either::Left((line, _)) => Some(line),
+        // The close won: the read is dropped where it stood.
+        futures::future::Either::Right(((), _)) => None,
+    }
 }
 
 /// `read_until('\n', ...)` with the terminator stripped, and any trailing `\r` stripped too so a

@@ -627,28 +627,39 @@ async fn a_line_within_the_maximum_is_still_a_frame() {
     writer.await.unwrap();
 }
 
-/// A closed connection delivers nothing more. `close` removes the registry entry, but a `frames()`
-/// pump started before it holds its own clone of the connection state and would otherwise keep
-/// reading the peer's lines up as inbound frames while every `write` on the same connection is
-/// already answered `Closed` — a one-directional half-life the contract does not describe.
+/// A closed connection delivers nothing more, AND the close is what ends the pump — not the next
+/// line the peer happens to send.
+///
+/// The peer here is silent and stays open: it sends nothing after the close and never hangs up, so
+/// the read the pump is parked on has nothing that will ever return it. A closed flag the pump can
+/// only read once a read has come back is no close at all against that peer — it leaves the pump
+/// parked for the life of the process, holding the connection's reader, while every `write` on the
+/// same connection is already answering `Closed`. Feeding the peer a line to unpark it would have
+/// tested the flag and hidden exactly that.
 #[tokio::test]
 async fn a_closed_connection_delivers_no_further_frames() {
-    let t = StdioTransport::new();
+    let t = Arc::new(StdioTransport::new());
     let (end_a, end_b) = tokio::io::duplex(64 * 1024);
     let (br, bw) = split(end_b);
     let b = t.wrap_pair(br, bw, "a");
-    let (_ar, mut aw) = split(end_a);
+    // Held, not dropped: dropping it would be the peer hanging up, which ends the read on its own.
+    let _silent_peer = end_a;
 
-    // The pump exists before the close, so removing the registry entry cannot reach it.
+    // The pump exists before the close, so removing the registry entry cannot reach it — and it is
+    // already PARKED on the read before the close lands.
     let mut frames = t.frames(b.clone_for_test());
-    t.close(b, busbar_contract_transport::wire::CloseReason::Normal);
-    aw.write_all(b"after the close\n").await.unwrap();
-
+    let pump = tokio::spawn(async move { frames.next().await });
+    tokio::time::sleep(Duration::from_millis(50)).await;
     assert!(
-        tokio::time::timeout(Duration::from_secs(5), frames.next())
-            .await
-            .expect("the pump must end rather than park on the reader")
-            .is_none(),
-        "a line arriving after the close is not a frame"
+        !pump.is_finished(),
+        "the fixture is only honest if the pump is parked on the silent peer"
     );
+
+    t.close(b, busbar_contract_transport::wire::CloseReason::Normal);
+
+    let ended = tokio::time::timeout(Duration::from_secs(5), pump)
+        .await
+        .expect("a close must WAKE a read the peer will never answer, not merely flag it")
+        .unwrap();
+    assert!(ended.is_none(), "a closed connection yields no frame");
 }
