@@ -26,7 +26,7 @@
 //! different seam with a different lifetime — and every one of those accesses is itself an entry,
 //! which is what [`crate::amend`] is for.
 
-use busbar_caps::{Origin, Outcome, StepName, UnitKey};
+use busbar_caps::{Abort, Origin, Outcome, ReasonCode, StepName, UnitKey};
 
 /// Whose activity this is.
 ///
@@ -305,7 +305,7 @@ impl AuditChain {
         d.num(record.wall);
         d.num(record.mono);
         d.text(record.origin_kind);
-        d.text(&format!("{:?}", record.outcome.unit_end));
+        d.text(&outcome_tag(record.outcome.unit_end));
         d.text(
             &record
                 .outcome
@@ -313,7 +313,7 @@ impl AuditChain {
                 .map(|s| s.as_str().to_string())
                 .unwrap_or_default(),
         );
-        d.text(&format!("{:?}", record.outcome.finish));
+        d.text(finish_tag(record.outcome.finish));
         d.num(u64::from(record.outcome.hook_failed));
         d.text(&record.outcome.emission_delta.to_string());
         d.num(u64::from(record.outcome.stale_policy));
@@ -321,7 +321,7 @@ impl AuditChain {
         for line in &record.amount.lines {
             d.text(line.class.as_str());
             d.num(line.quantity);
-            d.text(&format!("{:?}", line.source));
+            d.text(&quantity_source_tag(&line.source));
             d.num(u64::from(line.estimated));
         }
         d.text(&record.amount.pre_tier.to_string());
@@ -445,6 +445,128 @@ impl std::fmt::Display for AuditBreak {
 }
 
 impl std::error::Error for AuditBreak {}
+
+// ── THE TAGS THE DIGEST FREEZES ──────────────────────────────────────────────────────────────────
+//
+// Three of the digested fields are enumerations, and their text used to be whatever the derived
+// `Debug` printed. That made every persisted chain hostage to a derive: renaming a variant, adding a
+// field to one, or a future compiler changing how it renders a struct variant would all move the
+// sealed hash, and a moved hash makes every stored record report itself as TAMPERED at the next
+// boot. None of those are changes anybody would expect to have that effect.
+//
+// So the text is written out here instead. The spellings are the ones the chain already froze —
+// they are deliberately the derive's spellings, because reproducing what is on disk is the whole
+// point — but they are now a decision in this file rather than a side effect somewhere else. A test
+// checks each one against today's `Debug` so that a rename is reported as a difference to look at
+// rather than applied silently to the hash.
+
+/// The frozen text for one step name.
+pub(crate) fn step_tag(step: StepName) -> &'static str {
+    match step {
+        StepName::Arrival => "Arrival",
+        StepName::Decode => "Decode",
+        StepName::Authenticate => "Authenticate",
+        StepName::Verify => "Verify",
+        StepName::Approve => "Approve",
+        StepName::Admit => "Admit",
+        StepName::Route => "Route",
+        StepName::Meter => "Meter",
+        StepName::Audit => "Audit",
+        StepName::Encode => "Encode",
+    }
+}
+
+/// The frozen text for one reason code: its wire name in upper camel case, which is exactly what the
+/// chain froze.
+///
+/// Derived from the wire name rather than written out as fifty match arms, because the reason list
+/// is open — it carries `#[non_exhaustive]`, so no match here could ever cover it — and because the
+/// relation "the frozen tag is the wire name in upper camel case" is a single rule a test can check
+/// against every declared reason at once. A reason added tomorrow gets the right tag by the same
+/// rule instead of falling into a catch-all arm that would digest two different reasons identically.
+pub(crate) fn reason_tag(reason: ReasonCode) -> String {
+    let mut out = String::with_capacity(reason.as_str().len());
+    let mut start_of_word = true;
+    for ch in reason.as_str().chars() {
+        if ch == '_' {
+            start_of_word = true;
+        } else if start_of_word {
+            out.extend(ch.to_uppercase());
+            start_of_word = false;
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// The frozen text for how a unit was cut short.
+pub(crate) fn abort_tag(abort: Abort) -> String {
+    match abort {
+        Abort::Client => "Client".to_string(),
+        Abort::Kernel { reason } => format!("Kernel {{ reason: {} }}", reason_tag(reason)),
+        Abort::Drain => "Drain".to_string(),
+        Abort::Superseded { by } => format!("Superseded {{ by: UnitKey({}) }}", by.get()),
+    }
+}
+
+/// The frozen text for how a unit ended.
+pub(crate) fn outcome_tag(outcome: Outcome) -> String {
+    match outcome {
+        Outcome::Completed => "Completed".to_string(),
+        Outcome::Refused(step, reason) => {
+            format!("Refused({}, {})", step_tag(step), reason_tag(reason))
+        }
+        Outcome::Failed(step, reason) => {
+            format!("Failed({}, {})", step_tag(step), reason_tag(reason))
+        }
+        Outcome::Aborted(abort) => format!("Aborted({})", abort_tag(abort)),
+        Outcome::TimedOut(step) => format!("TimedOut({})", step_tag(step)),
+    }
+}
+
+/// The frozen text for how a plane classified the finish.
+pub(crate) fn finish_tag(finish: FinishClass) -> &'static str {
+    match finish {
+        FinishClass::Complete => "Complete",
+        FinishClass::TurnComplete => "TurnComplete",
+        FinishClass::Partial => "Partial",
+        FinishClass::Error => "Error",
+    }
+}
+
+/// The frozen text for which side of the unit a locator's value belongs to.
+pub(crate) fn direction_tag(direction: busbar_contract::ClassDirection) -> &'static str {
+    match direction {
+        busbar_contract::ClassDirection::Input => "Input",
+        busbar_contract::ClassDirection::Response => "Response",
+        busbar_contract::ClassDirection::CacheRead => "CacheRead",
+        busbar_contract::ClassDirection::CacheWrite => "CacheWrite",
+        busbar_contract::ClassDirection::Kernel => "Kernel",
+    }
+}
+
+/// The frozen text for where one reported quantity came from.
+///
+/// The locator's pointer keeps the quoting the chain froze — a quoted, escaped string — which is the
+/// library's own rendering of a text value and not a derive's rendering of a type.
+pub(crate) fn quantity_source_tag(source: &QuantitySource) -> String {
+    match source {
+        QuantitySource::Locator { direction, ptr } => format!(
+            "Locator {{ direction: {}, ptr: LocatorPtr({:?}) }}",
+            direction_tag(*direction),
+            ptr.as_str()
+        ),
+        QuantitySource::KernelBytes { divisor } => format!("KernelBytes {{ divisor: {divisor} }}"),
+        QuantitySource::KernelFrames { factor } => format!("KernelFrames {{ factor: {factor} }}"),
+        QuantitySource::TransportUnits => "TransportUnits".to_string(),
+        QuantitySource::KernelElapsedMono => "KernelElapsedMono".to_string(),
+        QuantitySource::Count => "Count".to_string(),
+        QuantitySource::PlaneCount { content_fact_key } => {
+            format!("PlaneCount {{ content_fact_key: {content_fact_key:?} }}")
+        }
+    }
+}
 
 fn subject_tag(subject: &Subject) -> &'static str {
     match subject {

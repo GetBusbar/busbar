@@ -79,6 +79,27 @@ fn inputs(unit: u64) -> AuditInputs {
     }
 }
 
+/// THE SEALED DIGEST IS A FROZEN VALUE, not whatever today's encoder happens to produce.
+///
+/// Every record a deployment has already written is verified by recomputing this digest, so a
+/// change that moves it makes every persisted chain report itself TAMPERED at the next boot. The
+/// hex below was produced by an earlier build; it is a value to preserve, never one to re-capture
+/// from a failing run. The inputs deliberately use the enum arms that carry payloads, because those
+/// are the ones whose encoding is easiest to move by accident.
+#[test]
+fn the_sealed_digest_of_a_fully_populated_record_is_the_frozen_hex() {
+    let mut chain = AuditChain::new();
+    let mut with_payloads = inputs(1);
+    with_payloads.outcome.unit_end = Outcome::Refused(StepName::Admit, ReasonCode::OverBudget);
+    with_payloads.outcome.step = Some(StepName::Admit);
+    with_payloads.outcome.finish = FinishClass::Error;
+    let record = chain.seal(with_payloads, &token());
+    assert_eq!(
+        record.hash, "1218355de479c5340448935264ad0c96d78511a22f2ade945fd4aff35b3c7525",
+        "the sealed digest moved: every persisted chain would now report itself tampered"
+    );
+}
+
 #[test]
 fn a_record_links_to_the_one_before_it_and_the_run_verifies() {
     let mut chain = AuditChain::new();
@@ -240,6 +261,123 @@ fn an_empty_run_verifies_and_the_limit_is_deliberate() {
     // Nothing in the records themselves can tell "no records" from "every record deleted", so
     // claiming otherwise would be claiming a guarantee this cannot provide.
     assert!(AuditChain::verify(&[]).is_ok());
+}
+
+/// EVERY FROZEN TAG STILL SPELLS WHAT THE CHAIN FROZE.
+///
+/// The digested text for these enumerations used to be whatever the derived `Debug` printed, so a
+/// rename moved the sealed hash and every stored record would have reported itself tampered. The
+/// text is written out in the production file now; this checks each spelling against today's derive
+/// output, so a rename shows up here — as a difference somebody has to look at — instead of in the
+/// hash. If this test fails, the tag is the thing to keep and the rename is the thing to reconsider.
+#[test]
+fn the_frozen_tags_match_the_text_the_chain_was_sealed_with() {
+    use crate::record::{
+        abort_tag, direction_tag, finish_tag, outcome_tag, quantity_source_tag, reason_tag,
+        step_tag,
+    };
+    use busbar_caps::{Abort, LocatorPtr};
+
+    for step in [
+        StepName::Arrival,
+        StepName::Decode,
+        StepName::Authenticate,
+        StepName::Verify,
+        StepName::Approve,
+        StepName::Admit,
+        StepName::Route,
+        StepName::Meter,
+        StepName::Audit,
+        StepName::Encode,
+    ] {
+        assert_eq!(step_tag(step), format!("{step:?}"), "step name");
+    }
+
+    // The reason list is open, so the tag is a RULE rather than a table: the wire name in upper
+    // camel case. Checked against every reason declared today, which is what makes the rule safe to
+    // apply to one declared tomorrow.
+    for reason in ReasonCode::ALL {
+        assert_eq!(
+            reason_tag(*reason),
+            format!("{reason:?}"),
+            "reason `{}`",
+            reason.as_str()
+        );
+    }
+
+    for finish in [
+        FinishClass::Complete,
+        FinishClass::TurnComplete,
+        FinishClass::Partial,
+        FinishClass::Error,
+    ] {
+        assert_eq!(finish_tag(finish), format!("{finish:?}"), "finish class");
+    }
+
+    for abort in [
+        Abort::Client,
+        Abort::Kernel {
+            reason: ReasonCode::OverBudget,
+        },
+        Abort::Drain,
+        Abort::Superseded {
+            by: UnitKey::new(77),
+        },
+    ] {
+        assert_eq!(abort_tag(abort), format!("{abort:?}"), "abort");
+    }
+
+    for outcome in [
+        Outcome::Completed,
+        Outcome::Refused(StepName::Admit, ReasonCode::OverBudget),
+        Outcome::Failed(StepName::Route, ReasonCode::DestinationUnreachable),
+        Outcome::Aborted(Abort::Kernel {
+            reason: ReasonCode::Drain,
+        }),
+        Outcome::Aborted(Abort::Superseded {
+            by: UnitKey::new(9),
+        }),
+        Outcome::TimedOut(StepName::Meter),
+    ] {
+        assert_eq!(outcome_tag(outcome), format!("{outcome:?}"), "outcome");
+    }
+
+    for direction in [
+        busbar_contract::ClassDirection::Input,
+        busbar_contract::ClassDirection::Response,
+        busbar_contract::ClassDirection::CacheRead,
+        busbar_contract::ClassDirection::CacheWrite,
+        busbar_contract::ClassDirection::Kernel,
+    ] {
+        assert_eq!(
+            direction_tag(direction),
+            format!("{direction:?}"),
+            "class direction"
+        );
+    }
+
+    for source in [
+        QuantitySource::Locator {
+            direction: busbar_contract::ClassDirection::Response,
+            // A pointer with a quote and a backslash in it, because the frozen text quotes and
+            // escapes the pointer and an unescaped one would digest differently.
+            ptr: LocatorPtr::new("/usage/\"odd\\name\""),
+        },
+        QuantitySource::KernelBytes { divisor: 4 },
+        QuantitySource::KernelFrames { factor: 2 },
+        QuantitySource::TransportUnits,
+        QuantitySource::KernelElapsedMono,
+        QuantitySource::Count,
+        QuantitySource::PlaneCount {
+            content_fact_key: "messages".into(),
+        },
+    ] {
+        assert_eq!(
+            quantity_source_tag(&source),
+            format!("{source:?}"),
+            "quantity source"
+        );
+    }
 }
 
 /// One hand-edit to a sealed record.
