@@ -5315,3 +5315,73 @@ fn recover_truncated_usage_bills_the_billed_units_bucket() {
         "the BILLED output count must win over the raw `tokens` total"
     );
 }
+
+/// Cohere's published OpenAPI types EVERY count in `Usage` — `tokens.input_tokens`,
+/// `tokens.output_tokens`, the whole `billed_units` bucket and `cached_tokens` — as `type: number`,
+/// not `integer`. So `11.0` is a SPEC-VALID way for Cohere to report eleven tokens, and every
+/// reader that reached for `serde_json`'s `as_u64` (which answers `None` for `11.0`) fell through to
+/// its `unwrap_or(0)` and ledgered a real, billed count as ZERO — silently, with nothing about the
+/// body malformed. All three usage seams must take the double form.
+#[test]
+fn token_counts_take_the_double_form_the_spec_declares() {
+    let reader = CohereReader;
+
+    // 1. The buffered response.
+    let body = serde_json::json!({
+        "id": "c-1",
+        "finish_reason": "COMPLETE",
+        "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+        "usage": {
+            "tokens": {"input_tokens": 11.0, "output_tokens": 7.0},
+            "billed_units": {
+                "input_tokens": 9.0, "output_tokens": 3.0,
+                "search_units": 2.0, "classifications": 1.0
+            }
+        }
+    });
+    let ir = reader.read_response(&body).expect("read_response");
+    assert_eq!(
+        ir.usage.input_tokens, 11,
+        "a double-typed input count is eleven tokens, not zero"
+    );
+    assert_eq!(ir.usage.output_tokens, 7);
+    assert_eq!(ir.usage.detail.billed_input_tokens, Some(9));
+    assert_eq!(ir.usage.detail.billed_output_tokens, Some(3));
+    assert_eq!(ir.usage.detail.search_units, Some(2));
+    assert_eq!(ir.usage.detail.billed_classifications, Some(1));
+
+    // 2. The STREAM terminal (`message-end.delta.usage`).
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = reader.read_response_events(
+        "message-end",
+        &serde_json::json!({
+            "type": "message-end",
+            "delta": {
+                "finish_reason": "COMPLETE",
+                "usage": {
+                    "tokens": {"input_tokens": 11.0, "output_tokens": 7.0},
+                    "billed_units": {"input_tokens": 9.0, "output_tokens": 3.0, "search_units": 2.0}
+                }
+            }
+        }),
+        &mut state,
+    );
+    let usage = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("a MessageDelta with usage");
+    assert_eq!(usage.input_tokens, 11);
+    assert_eq!(usage.detail.billed_input_tokens, Some(9));
+    assert_eq!(usage.detail.search_units, Some(2));
+
+    // 3. The HEAD-TRUNCATED tail.
+    let tail = br#"...cut here"}]},"finish_reason":"COMPLETE","usage":{"billed_units":{"input_tokens":9.0,"output_tokens":3.0,"search_units":2.0},"tokens":{"input_tokens":11.0,"output_tokens":7.0}}}"#;
+    let recovered = reader
+        .recover_truncated_usage(tail)
+        .expect("cohere usage tail must be recoverable");
+    assert_eq!(recovered.input, 9);
+    assert_eq!(recovered.output, 3);
+}

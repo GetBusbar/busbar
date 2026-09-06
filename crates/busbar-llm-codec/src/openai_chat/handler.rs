@@ -489,13 +489,20 @@ fn parse_transcription_usage(u: &Value) -> Option<Billing> {
             .get("seconds")
             .and_then(Value::as_f64)
             .map(|seconds| Billing::Duration { seconds }),
-        _ => u.get("input_tokens").and_then(Value::as_u64).map(|input| {
-            Billing::Tokens(busbar_substrate_values::billing::TokenUsage {
-                input,
-                output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
-                ..Default::default()
-            })
-        }),
+        // Token counts read through the double-tolerant reader — see `usage_tail::token_count`.
+        _ => u
+            .get("input_tokens")
+            .and_then(super::super::usage_tail::token_count)
+            .map(|input| {
+                Billing::Tokens(busbar_substrate_values::billing::TokenUsage {
+                    input,
+                    output: u
+                        .get("output_tokens")
+                        .and_then(super::super::usage_tail::token_count)
+                        .unwrap_or(0),
+                    ..Default::default()
+                })
+            }),
     }
 }
 
@@ -1271,7 +1278,10 @@ pub fn read_embeddings_response(
     let usage = v
         .get("usage")
         .map(|u| busbar_substrate_values::billing::TokenUsage {
-            input: u.get("prompt_tokens").and_then(Value::as_u64).unwrap_or(0),
+            input: u
+                .get("prompt_tokens")
+                .and_then(super::super::usage_tail::token_count)
+                .unwrap_or(0),
             ..Default::default()
         });
     Ok(EmbeddingsResp {
@@ -1400,8 +1410,14 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::ir::image::ImageResp, C
     let usage = v
         .get("usage")
         .map(|u| busbar_substrate_values::billing::TokenUsage {
-            input: u.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
-            output: u.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+            input: u
+                .get("input_tokens")
+                .and_then(super::super::usage_tail::token_count)
+                .unwrap_or(0),
+            output: u
+                .get("output_tokens")
+                .and_then(super::super::usage_tail::token_count)
+                .unwrap_or(0),
             ..Default::default()
         });
     // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
