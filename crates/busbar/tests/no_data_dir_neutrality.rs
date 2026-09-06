@@ -17,6 +17,7 @@
 // regression. Full-feature builds run it.
 #![cfg(feature = "proto-llm")]
 
+use std::collections::BTreeSet;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -129,6 +130,17 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
     let log_path = dir.join("out.log");
     let log = std::fs::File::create(&log_path).unwrap();
     let log_err = log.try_clone().unwrap();
+
+    // The BEFORE picture, taken with every file the TEST creates already on disk — the configs, the
+    // signing key and the log the child will write into. Everything that appears between here and
+    // the AFTER picture below was put there by the node.
+    let before = snapshot(&dir);
+    assert!(
+        before.len() >= 3,
+        "the fixture directory snapshotted to {} paths. A snapshot that sees nothing compares \
+         nothing, and this assertion would then pass on a node that wrote a whole ledger tree.",
+        before.len()
+    );
     let mut child = Command::new(env!("CARGO_BIN_EXE_busbar"))
         // The directory the assertion below reads is only the directory a stray file lands in if
         // it is also the directory the node was started in: a journal opened at a RELATIVE path
@@ -259,22 +271,76 @@ fn no_ledger_series_and_no_keyset_lines_without_data_dir() {
          without data_dir; found:\n{}",
         leaked_lines.join("\n")
     );
-    // The fixture directory holds exactly what the test wrote plus the log and the 1.5.5 overlay
-    // file; a data-dir tree (keyset, wal, journal) must not have been created beside the config.
-    let mut names: Vec<String> = std::fs::read_dir(&dir)
-        .unwrap()
-        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
-        .collect();
-    names.retain(|n| {
-        let lower = n.to_ascii_lowercase();
-        lower.contains("keyset") || lower.contains("wal") || lower.contains("journal")
-    });
+    // THE DIRECTORY IS THE SAME DIRECTORY.
+    //
+    // This used to be a three-word denylist — `keyset`, `wal`, `journal` — over the fixture dir's
+    // TOP LEVEL. Two things are wrong with that, and both are the same thing: it asks whether a
+    // file matching three names appeared, when the question is whether ANY file appeared. A node
+    // that persisted to `state/`, `db/`, `.busbar/`, `ledger.sqlite` or a bare `0000000001.log`
+    // left the denylist untouched, and a subdirectory left it untouched by construction because
+    // the scan did not descend. So the test now compares the WHOLE TREE, before and after: a
+    // config without a data dir persists NOTHING, which means the set of paths under the fixture
+    // is identical on both sides.
+    //
+    // `config.yaml` is the one exception, and it is not really one: the node rewrites it in place
+    // when it normalises the 1.5.5 overlay, so its CONTENT changes while its path does not. Paths
+    // are what is compared, so it needs no carve-out — it is named here so a reader knows the
+    // comparison was made with that behaviour in view rather than in ignorance of it.
+    let after = snapshot(&dir);
+    let appeared: Vec<&String> = after.difference(&before).collect();
+    let vanished: Vec<&String> = before.difference(&after).collect();
     assert!(
-        names.is_empty(),
-        "no keyset / WAL / journal file may be created beside a config without data_dir: {names:?}"
+        appeared.is_empty(),
+        "a config WITHOUT a data dir persisted something. These paths did not exist before boot \
+         and exist after boot + one request + one scrape + a clean shutdown:\n{}\n\
+         Durability is a data-dir property; without one the node holds its books in memory and \
+         leaves the filesystem exactly as it found it.",
+        appeared
+            .iter()
+            .map(|p| format!("  + {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        vanished.is_empty(),
+        "the node REMOVED files from the config's own directory:\n{}",
+        vanished
+            .iter()
+            .map(|p| format!("  - {p}"))
+            .collect::<Vec<_>>()
+            .join("\n")
     );
 
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// EVERY PATH UNDER `dir`, RECURSIVELY, relative to `dir` and with a trailing `/` on directories.
+///
+/// Recursion is the point. A node that persists does not necessarily persist beside the config: it
+/// makes a directory and persists inside it, and a scan that reads only the top level sees one new
+/// name it does not recognise, or — if the name is not on a denylist — nothing at all.
+fn snapshot(dir: &Path) -> BTreeSet<String> {
+    fn walk(base: &Path, at: &Path, out: &mut BTreeSet<String>) {
+        let Ok(entries) = std::fs::read_dir(at) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let rel = path
+                .strip_prefix(base)
+                .unwrap_or(&path)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let is_dir = path.is_dir();
+            out.insert(if is_dir { format!("{rel}/") } else { rel });
+            if is_dir {
+                walk(base, &path, out);
+            }
+        }
+    }
+    let mut out = BTreeSet::new();
+    walk(dir, dir, &mut out);
+    out
 }
 
 /// One HTTP request against the booted process: (status, body text).
