@@ -25,20 +25,16 @@ fn terminator_len(buf: &[u8], i: usize) -> Option<usize> {
     }
 }
 
-/// Find the first SSE frame terminator (a blank line) in `buf`, returning `(offset, terminator_len)`
-/// where `offset` is the byte index of the first terminator byte and the length spans BOTH line
-/// terminators that make the blank line. All three of the spec's terminators are recognised, in
-/// every pairing: `\n\n` and `\r\n\r\n` are the two the providers emit, and `\r\r`, `\n\r`,
-/// `\r\n\r` and `\r\r\n` are the rest of the grammar. Returns `None` if no complete blank line is
-/// present yet.
-#[must_use]
-pub fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
-    find_frame_terminator_from(buf, 0).0
-}
-
-/// [`find_frame_terminator`], resuming at `start`, alongside how many bytes of `buf` this call
-/// examined — the pair a caller uses to pin the scan's own complexity class without a
-/// process-global counter racing every other test in the binary.
+/// Find the first SSE frame terminator (a blank line) in `buf` at or after `start`, returning
+/// `(offset, terminator_len)` where `offset` is the byte index of the first terminator byte and the
+/// length spans BOTH line terminators that make the blank line, alongside how many bytes of `buf`
+/// this call examined — the pair a caller uses to pin the scan's own complexity class without a
+/// process-global counter racing every other test in the binary. `None` when no complete blank line
+/// is present yet.
+///
+/// All three of the spec's terminators are recognised, in every pairing: `\n\n` and `\r\n\r\n` are
+/// the two the providers emit, and `\r\r`, `\n\r`, `\r\n\r` and `\r\r\n` are the rest of the
+/// grammar.
 ///
 /// A re-segmenting reader appends to its buffer and asks again; without a resume point it re-proves
 /// the prefix it already proved, once per arriving chunk, which is quadratic in the frame size. The
@@ -129,6 +125,13 @@ pub fn parse_sse_frame(frame: &[u8]) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A whole-buffer scan, which is the resuming scan started at zero. The cells below are about
+    /// WHERE a frame boundary is rather than about resuming, so they ask for it in that shape and
+    /// the resume point stays the streaming caller's concern.
+    fn find_frame_terminator(buf: &[u8]) -> Option<(usize, usize)> {
+        find_frame_terminator_from(buf, 0).0
+    }
 
     #[test]
     fn finds_lf_lf_and_crlf_crlf_terminators() {
