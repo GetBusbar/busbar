@@ -140,7 +140,7 @@ fn test_projectors() -> Arc<HookProjectors> {
     })
 }
 
-fn load(cfg: &str) -> Arc<dyn RoutingPolicy> {
+pub(crate) fn load(cfg: &str) -> Arc<dyn RoutingPolicy> {
     let path = hook_plugin_path().expect("hook cdylib built under --workspace");
     let bytes = std::fs::read(&path).expect("read hook cdylib");
     load_hook_from_bytes(
@@ -154,7 +154,7 @@ fn load(cfg: &str) -> Arc<dyn RoutingPolicy> {
     .expect("load hook plugin over the ABI")
 }
 
-fn req_with_prompt(text: &str) -> RoutingRequest<'static> {
+pub(crate) fn req_with_prompt(text: &str) -> RoutingRequest<'static> {
     RoutingRequest {
         request_id: 1,
         pool: "p",

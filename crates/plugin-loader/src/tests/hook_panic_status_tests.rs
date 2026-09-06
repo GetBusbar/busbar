@@ -21,11 +21,11 @@ fn panicking_plugin_returns_status_panic_with_a_body() {
     };
     let bytes = std::fs::read(&path).expect("read hook cdylib");
     let (lib, staged) =
-        crate::stage::load_library_from_bytes(&bytes, "panic-status").expect("stage cdylib");
+        crate::stage::load_library_from_bytes(&bytes, "test-hook").expect("stage cdylib");
     let raw = crate::wire_up_raw(
         lib,
         r#"{"panic_decide": true}"#,
-        "panic-status".to_string(),
+        "test-hook".to_string(),
         crate::abi_kind::HOOK,
         "hook",
         Some(staged),

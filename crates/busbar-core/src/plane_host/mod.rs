@@ -1475,6 +1475,16 @@ pub fn transform_over_over(
                 };
             }
             busbar_api::TransformOutcome::Abstain => {}
+            // The hook could not answer — distinct from an abstain, and logged as such. See the
+            // matching arm on the LLM rewrite pass for why the `on_error` terminal is not resolved
+            // here yet: the rewrite chain's `(timeout, policy)` tuple does not carry it.
+            busbar_api::TransformOutcome::Failed { message } => {
+                tracing::warn!(
+                    hook = hook.name(),
+                    error = %message,
+                    "invoke rewrite hook could not answer; proceeding with the original arguments"
+                );
+            }
         }
     }
     // Re-serialize ONLY when a rewrite actually landed; otherwise hand back the caller's ORIGINAL bytes

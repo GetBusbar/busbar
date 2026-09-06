@@ -203,14 +203,21 @@ impl RoutingPolicy for DlopenPolicy {
 
     async fn transform(&self, req: &RoutingRequest<'_>, budget: Duration) -> TransformOutcome {
         let payload = (self.projectors.transform)(req);
-        // FAIL-CLOSED on transport/protocol error → Abstain (proceed with the ORIGINAL body); a
-        // parsed reply's reject IS honored by `transform_outcome`.
+        // A parsed reply's reject IS honored by `transform_outcome`. A hook that says it COULD NOT
+        // ANSWER, and a transport/protocol failure, are both `Failed` — the caller resolves
+        // `on_error` for them, exactly as it does on the decide path. Neither is an Abstain: an
+        // abstain means the hook looked and had nothing to change, and collapsing a failure into it
+        // is what let a screening gate fail OPEN with its `on_error: reject` never firing.
         match self
             .call_bounded(HookRequest::Transform { payload }, budget)
             .await
         {
             Ok(HookReply::Reply(v)) => (self.projectors.transform_outcome)(v),
-            _ => TransformOutcome::Abstain,
+            Ok(HookReply::Failed { message }) => TransformOutcome::Failed { message },
+            Ok(_) => TransformOutcome::Abstain,
+            Err(e) => TransformOutcome::Failed {
+                message: e.to_string(),
+            },
         }
     }
 
@@ -309,6 +316,10 @@ pub fn load_hook_from_bytes(
         slots: Arc::new(tokio::sync::Semaphore::new(MAX_INFLIGHT_HOOK_CALLS)),
     }))
 }
+
+#[cfg(test)]
+#[path = "tests/hook_transform_failure_tests.rs"]
+mod hook_transform_failure_tests;
 
 #[cfg(test)]
 #[path = "tests/hook_panic_status_tests.rs"]

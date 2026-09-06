@@ -422,6 +422,19 @@ pub(crate) async fn apply_global_rewrites(
                 return Err((status, message));
             }
             busbar_api::TransformOutcome::Abstain => {}
+            // The hook could not answer. Distinct from an abstain, and LOGGED as such — a rewrite
+            // gate that is down now leaves an operator-visible signal instead of looking exactly
+            // like a compressor with nothing to change. Resolving the hook's `on_error` chain here
+            // needs the terminal, which the rewrite chain's `(timeout, policy)` tuple does not
+            // carry; until it does, the body proceeds unmodified as it always has.
+            busbar_api::TransformOutcome::Failed { message } => {
+                tracing::warn!(
+                    hook = hook.name(),
+                    pool = pool_name,
+                    error = %message,
+                    "rewrite hook could not answer; proceeding with the original body"
+                );
+            }
         }
     }
     Ok(applied)

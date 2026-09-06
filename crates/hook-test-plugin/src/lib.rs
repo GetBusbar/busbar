@@ -74,6 +74,12 @@ struct HookConfig {
     /// the caller's `on_error` chain for it rather than letting the request proceed.
     #[serde(default)]
     fail_decide: Option<String>,
+    /// Report from `transform` that the hook COULD NOT ANSWER — the rewrite-path twin of
+    /// `fail_decide`. A screening/compressing gate whose classifier is unreachable takes this shape,
+    /// and it is NOT the same as returning "no changes": the engine must resolve the caller's
+    /// `on_error` chain for it rather than forward the untouched body.
+    #[serde(default)]
+    fail_transform: Option<String>,
 }
 
 struct TestGate {
@@ -88,6 +94,7 @@ struct TestGate {
     nack_configure: bool,
     panic_decide: bool,
     fail_decide: Option<String>,
+    fail_transform: Option<String>,
     /// A monotonically incrementing decide count, surfaced via `status` — proves the control-plane
     /// scrape reads a real observed metric back over the ABI. `AtomicU64` keeps `&self` (the handler
     /// is shared behind the ABI handle).
@@ -129,6 +136,16 @@ impl HookHandler for TestGate {
             return Err(msg.clone());
         }
         Ok(self.decide(payload))
+    }
+
+    /// The fallible rewrite entry point. A rewrite gate whose dependency is down reports that it
+    /// could not answer; collapsing that into an abstain forwards the very request it exists to
+    /// screen, with its body untouched.
+    fn transform_result(&self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+        if let Some(msg) = &self.fail_transform {
+            return Err(msg.clone());
+        }
+        Ok(self.transform(payload))
     }
 
     fn decide(&self, payload: &serde_json::Value) -> serde_json::Value {
@@ -258,6 +275,7 @@ fn open(cfg: &str) -> Result<Box<dyn HookHandler>, String> {
         nack_configure: c.nack_configure,
         panic_decide: c.panic_decide,
         fail_decide: c.fail_decide,
+        fail_transform: c.fail_transform,
         decides: std::sync::atomic::AtomicU64::new(0),
         notifies: std::sync::atomic::AtomicU64::new(0),
     }))

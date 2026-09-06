@@ -149,6 +149,10 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
     // A peer that advertises only the pre-units prefix, in a buffer that is only that long — there
     // are no bytes at all where `units_ptr`/`units_len` would sit.
     const PREFIX: usize = 64;
+    // Deliberately a HEAP buffer, not the array clippy would prefer: the point of the test is that
+    // the allocation ENDS at `PREFIX`, so a read past it is a real out-of-bounds access that Miri or
+    // ASan will flag. A stack array is surrounded by other live stack bytes and would swallow it.
+    #[allow(clippy::useless_vec)]
     let mut buf = vec![0u8; PREFIX];
     buf[..4].copy_from_slice(&(PREFIX as u32).to_ne_bytes());
     let p = buf.as_ptr().cast::<Usage>();

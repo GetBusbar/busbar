@@ -697,8 +697,29 @@ pub trait HookHandler: Send + Sync {
         Ok(self.decide(payload))
     }
     /// `transform` — a `prompt: rw` gate's rewrite/reject pass. Default: `{}` (abstain, original body).
+    ///
+    /// Implement [`HookHandler::transform_result`] instead if your rewrite can FAIL as distinct from
+    /// having nothing to change — the same difference `decide`/`decide_result` draw.
     fn transform(&self, _payload: &serde_json::Value) -> serde_json::Value {
         serde_json::json!({})
+    }
+
+    /// `transform`, with the ability to say the hook could not answer.
+    ///
+    /// ADDITIVE and defaulted to the infallible [`HookHandler::transform`], so every existing
+    /// implementation keeps compiling and behaving identically. Override this one when the rewrite
+    /// depends on something that can be down — a compressor's model endpoint, a PII screen's
+    /// classifier.
+    ///
+    /// `Err(message)` reaches the engine as a rewrite-path FAILURE and resolves the operator's
+    /// `on_error` chain. `Ok(json!({}))` remains a plain abstain: proceed with the original body.
+    /// Before this existed the two were the same value, so a screening gate whose classifier was
+    /// unreachable returned "no changes" and the request it was meant to stop went through with its
+    /// body untouched.
+    ///
+    /// The message goes to the operator's log. Do not put request content in it.
+    fn transform_result(&self, payload: &serde_json::Value) -> Result<serde_json::Value, String> {
+        Ok(self.transform(payload))
     }
     /// `notify` — a tap observation (fire-and-forget). Default: no-op.
     fn notify(&self, _payload: &serde_json::Value) {}
@@ -761,7 +782,10 @@ pub fn dispatch_hook(
             Ok(v) => HookReply::Reply(v),
             Err(message) => HookReply::Failed { message },
         },
-        HookRequest::Transform { payload } => HookReply::Reply(handler.transform(&payload)),
+        HookRequest::Transform { payload } => match handler.transform_result(&payload) {
+            Ok(v) => HookReply::Reply(v),
+            Err(message) => HookReply::Failed { message },
+        },
         HookRequest::Notify { payload } => {
             handler.notify(&payload);
             HookReply::None
