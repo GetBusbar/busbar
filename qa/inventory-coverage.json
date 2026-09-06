@@ -19,9 +19,9 @@
       "total": 227
     },
     "CONF": {
-      "covered": 0,
+      "covered": 1,
       "partial": 0,
-      "none": 205,
+      "none": 204,
       "total": 205
     },
     "LST": {
@@ -31,9 +31,9 @@
       "total": 2
     },
     "RT": {
-      "covered": 0,
+      "covered": 2,
       "partial": 0,
-      "none": 37,
+      "none": 35,
       "total": 37
     },
     "SEC": {
@@ -1105,8 +1105,12 @@
       "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 369,
-      "status": "none",
-      "citers": []
+      "status": "covered",
+      "citers": [
+        "admin.ops|PutHooksName|if-match-malformed",
+        "admin.ops|PutHooksName|if-match-stale",
+        "admin.ops|PutHooksName|ok"
+      ]
     },
     "CONF-221": {
       "family": "CONF",
@@ -3663,8 +3667,10 @@
       "family": "RT",
       "file": "docs/design/inventory/1.5.5-routes-admin.md",
       "line": 121,
-      "status": "none",
-      "citers": []
+      "status": "covered",
+      "citers": [
+        "ops.scrape|healthz|admin"
+      ]
     },
     "RT-004": {
       "family": "RT",
@@ -3740,8 +3746,10 @@
       "family": "RT",
       "file": "docs/design/inventory/1.5.5-routes-admin.md",
       "line": 132,
-      "status": "none",
-      "citers": []
+      "status": "covered",
+      "citers": [
+        "http.crosscut|wrong-method|GET-messages"
+      ]
     },
     "RT-020": {
       "family": "RT",
@@ -4673,7 +4681,7 @@
       "families": [
         "CONF"
       ],
-      "status": "UNMAPPED"
+      "status": "PARTIAL"
     },
     {
       "row": "C2",
@@ -4714,7 +4722,7 @@
       "families": [
         "RT"
       ],
-      "status": "UNMAPPED"
+      "status": "PARTIAL"
     },
     {
       "row": "R3",
@@ -4730,7 +4738,7 @@
       "families": [
         "RT"
       ],
-      "status": "UNMAPPED"
+      "status": "PARTIAL"
     },
     {
       "row": "R5",

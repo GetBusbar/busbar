@@ -1064,13 +1064,6 @@
       "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-config.md:358)"
     },
     {
-      "id": "CONF-220",
-      "family": "CONF",
-      "file": "docs/design/inventory/1.5.5-config.md",
-      "line": 369,
-      "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-config.md:369)"
-    },
-    {
       "id": "CONF-221",
       "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
@@ -1575,13 +1568,6 @@
       "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-routes-admin.md:120)"
     },
     {
-      "id": "RT-003",
-      "family": "RT",
-      "file": "docs/design/inventory/1.5.5-routes-admin.md",
-      "line": 121,
-      "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-routes-admin.md:121)"
-    },
-    {
       "id": "RT-004",
       "family": "RT",
       "file": "docs/design/inventory/1.5.5-routes-admin.md",
@@ -1650,13 +1636,6 @@
       "file": "docs/design/inventory/1.5.5-routes-admin.md",
       "line": 131,
       "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-routes-admin.md:131)"
-    },
-    {
-      "id": "RT-014",
-      "family": "RT",
-      "file": "docs/design/inventory/1.5.5-routes-admin.md",
-      "line": 132,
-      "reason": "no oracle cell in cells.json cites this row (docs/design/inventory/1.5.5-routes-admin.md:132)"
     },
     {
       "id": "RT-020",
