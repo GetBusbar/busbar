@@ -38,6 +38,13 @@ const ALLOWED_KEYS = new Set([
   "class", "title", "status", "evidence_count", "evidence_total", "unit", "meter", "sources",
   "id", "kind", "count", "total", "lane_count", "breakdown", "selftest", "runs_in", "note",
   "drilldown", "planes", "legs", "dialects", "carried", "waived", "missing", "by_dialect", "waivers",
+  // Per-source provenance of the claim itself. `evidence` is a repo-relative path to a test file or
+  // corpus directory — the same class of datum as `drilldown.path`, which is already public and is
+  // what the dashboard links to. `evidence_present` is a boolean. `shared_with` is a list of source
+  // ids stamped from the SAME sibling job result, present so a reader cannot mistake one CI job's
+  // verdict for N independent measurements. None of the three can carry source text: the path
+  // shape is checked below exactly as `path` is.
+  "evidence", "evidence_present", "shared_with",
   // drilldown + waiver
   "type", "path", "artifact", "lanes", "lane", "cases", "field", "date", "reason",
 ]);
