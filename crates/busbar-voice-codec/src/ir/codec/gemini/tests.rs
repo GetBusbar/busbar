@@ -267,6 +267,32 @@ fn an_undecodable_gemini_audio_payload_emits_no_frame() {
 }
 
 #[test]
+fn an_unreadable_output_token_cap_is_a_recorded_drop_not_a_lifted_cap() {
+    // A cap that does not fit is not "no cap". Silently dropping it hands the session an UNBOUNDED
+    // response where the client asked for a bounded one — the one direction a limit must never move.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let mut setup = gemini_setup();
+    setup["setup"]["generationConfig"]["maxOutputTokens"] = json!(5_000_000_000u64);
+    let ir = codec.read_up(wire(&setup.to_string()), &mut st);
+    let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) = &ir[0] else {
+        panic!("expected SessionConfigure");
+    };
+    assert_eq!(config.max_output_tokens, None, "the cap does not survive");
+    assert!(
+        st.dropped_fields().contains(&"maxOutputTokens"),
+        "and its loss is recorded, not silent: {:?}",
+        st.dropped_fields()
+    );
+    // The rest of the session still stands — one field is dropped, never the whole setup.
+    assert_eq!(config.voice.as_deref(), Some("Puck"));
+    assert_eq!(
+        config.instructions.as_deref(),
+        Some("You are a helpful voice agent.")
+    );
+}
+
+#[test]
 fn setup_adopts_pcm16_output_format() {
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();

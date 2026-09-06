@@ -175,7 +175,10 @@ fn vad_from_realtime_input_config(ric: &Value) -> Option<IrVad> {
 }
 
 /// Decode a Gemini `setup` object into the shared [`SessionConfig`] (the cross-dialect superset).
-fn session_config_from_setup(setup: &Value) -> SessionConfig {
+///
+/// A field the plane cannot model is DROPPED and RECORDED (the per-field drop-and-warn discipline the
+/// OpenAI session patch already follows) — never defaulted into a working setting nobody asked for.
+fn session_config_from_setup(setup: &Value, st: &mut DecodeState) -> SessionConfig {
     let gc = setup
         .get("generationConfig")
         .cloned()
@@ -197,11 +200,21 @@ fn session_config_from_setup(setup: &Value) -> SessionConfig {
         .and_then(|s| s.get("voiceName"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let max_output_tokens = gc
-        .get("maxOutputTokens")
-        .and_then(Value::as_u64)
-        .and_then(|n| u32::try_from(n).ok())
-        .map(MaxOutputTokens::Limit);
+    // A CAP THAT DOES NOT FIT IS NOT "NO CAP". Present-but-unreadable is a REFUSAL of that field: it
+    // is dropped and recorded, and the rest of the setup stands. Letting it fall through to `None`
+    // silently handed the session an UNBOUNDED response where the client asked for a bounded one —
+    // the one direction a limit must never move on its own. (The OpenAI dialect refuses the same
+    // narrowing on its own `max_response_output_tokens`.)
+    let max_output_tokens = match gc.get("maxOutputTokens") {
+        None | Some(Value::Null) => None,
+        Some(v) => match v.as_u64().and_then(|n| u32::try_from(n).ok()) {
+            Some(n) => Some(MaxOutputTokens::Limit(n)),
+            None => {
+                st.record_dropped_field("maxOutputTokens");
+                None
+            }
+        },
+    };
     SessionConfig {
         model: setup
             .get("model")
@@ -358,7 +371,7 @@ impl DuplexReader for GeminiLiveCodec {
         };
 
         if let Some(setup) = v.get(wire::SETUP) {
-            let cfg = session_config_from_setup(setup);
+            let cfg = session_config_from_setup(setup, st);
             // Gemini's downlink synthesis is 24 kHz PCM — the format the truncate math measures.
             if cfg.modalities.iter().any(|m| m == "audio") || cfg.modalities.is_empty() {
                 st.set_output_format(AudioFormat::Pcm16);
