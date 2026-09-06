@@ -11,13 +11,17 @@ use busbar_caps::UsageLine;
 /// Convert one configured rate — micro-units per unit of quantity — into the integer nano-unit
 /// rate all later arithmetic uses.
 ///
-/// This is the only decimal-to-money conversion IN THIS CRATE, and the only one the pricing law
-/// runs. It is not the only one in the tree: the admission unit carries a second copy of the same
-/// three lines, in its own rate projection, because that crate depends on nothing here and cannot
-/// call this. The two must agree exactly — a divergence would mean a request judged at one rate and
-/// billed at another — so a test generates ten thousand configured rates and asserts the two
-/// implementations return the same integer for every one of them. Change one of them and that test
-/// is where you will hear about it.
+/// THE ONLY DECIMAL-TO-MONEY CONVERSION IN THE TREE, now. It used to be one of two: the admission
+/// unit carried a second copy of the same three lines in its own rate projection, because that crate
+/// named nothing here and could not call across. Two copies of a rounding rule that must agree
+/// exactly is how a request comes to be JUDGED at one rate by the door and BILLED at another by the
+/// ledger — silently, with no error and no refusal, just a bill that does not match the decision
+/// that produced it. They did drift, the day a clamp landed on one of them and not the other.
+///
+/// So the admission unit calls this instead, and the clamp, the rounding rule and the multiply move
+/// the decision and the bill together by construction. The agreement test over ten thousand
+/// generated rates and every boundary value stays where it was: it is now a guard against the second
+/// copy coming back rather than a check that two copies match.
 ///
 /// Multiply by a thousand and round to nearest, half away from zero, exactly once. A value that is
 /// not finite, or not positive, becomes zero: config validation should already have refused it, and
