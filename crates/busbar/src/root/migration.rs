@@ -136,6 +136,37 @@ pub fn run(
     })
 }
 
+/// THE BOOT STEP: seal the opening on the node's own book, in the one slot the preamble names.
+///
+/// [`run`] takes the two seams; this takes the two objects the boot has — the store adapter and the
+/// node's one book — and joins them, which is the composition root's job and not the ledger unit's.
+/// Splitting it out from `run` is what lets the ordering rule be exercised over the real journal
+/// while `run` stays testable against a records double.
+///
+/// The marker goes on the journal under the metering step, because sealing the opening IS a
+/// metering-side write: it is the balance every later meter reading is measured from.
+///
+/// # Errors
+///
+/// As [`run`]. A degraded read is NOT an error and never refuses a boot — it comes back on
+/// [`Migration::key_rows_unreadable`]. What does come back here is the small set where continuing
+/// would be worse than stopping: the opening could not be signed, the ledger's own records could
+/// not be read or written, or the previous release's figures do not fit in a ledger figure. A node
+/// that served on any of those would be measuring its reconciliation identity from a checkpoint it
+/// never sealed, and the identity would report every row as out for the life of the deployment.
+pub fn at_boot(
+    adapter: &StoreAdapter,
+    book: &std::sync::Arc<std::sync::Mutex<crate::root::durability::Durability>>,
+    token: &busbar_caps::DurabilityToken,
+    cfg: &MigrationConfig,
+    wall: u64,
+    secret: Option<&dyn CheckpointSecret>,
+) -> Result<Migration, MigrationError> {
+    let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+    let mut records = durability.migration_records(token, busbar_caps::StepName::Meter);
+    run(adapter, &mut records, cfg, wall, secret)
+}
+
 /// The seal itself, over the two seams and nothing else.
 ///
 /// Separate from [`run`] because [`run`]'s job is to decide what gets read and this one's job is to
@@ -309,6 +340,169 @@ mod tests {
         assert!(!second.sealed_now());
         assert_eq!(rows.reads.get(), after_first);
         assert_eq!(second.marker(), first.marker());
+    }
+
+    /// A store that will not list its key rows, and answers for everything else.
+    ///
+    /// The one refusal is the one the preamble says costs the migration the buckets the key rows
+    /// would have named. Everything else answers, so what the opening seals over is exactly what the
+    /// CONFIGURATION named — which is the half the boot may not lose.
+    struct KeyRowsRefused;
+
+    impl busbar_api::Store for KeyRowsRefused {
+        fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
+            Ok(())
+        }
+
+        fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+            Ok(None)
+        }
+
+        fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
+            Err(busbar_api::StoreError(
+                "the key rows are on a replica that is not answering".to_string(),
+            ))
+        }
+
+        fn delete_key(&self, _id: &str) -> busbar_api::StoreResult<()> {
+            Ok(())
+        }
+
+        fn get_usage(
+            &self,
+            bucket_id: &str,
+            _window_start: u64,
+        ) -> busbar_api::StoreResult<busbar_api::UsageLedger> {
+            // The configured group bucket has spent; nothing else has. A migration that dropped the
+            // configured half along with the discovered one would answer the empty ledger here.
+            Ok(busbar_api::UsageLedger {
+                requests: u64::from(bucket_id == "team") * 7,
+                billable_requests: 0,
+                models: Vec::new(),
+            })
+        }
+
+        fn put_usage(
+            &self,
+            _bucket_id: &str,
+            _window_start: u64,
+            _ledger: &busbar_api::UsageLedger,
+        ) -> busbar_api::StoreResult<()> {
+            Ok(())
+        }
+
+        fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
+            Ok(())
+        }
+
+        fn list_metering(
+            &self,
+            _bucket: u64,
+        ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// THE WHOLE STEP, over the adapter the boot actually hands it, on the one degraded read the
+    /// preamble names: the key rows will not list, and the boot continues.
+    ///
+    /// Two things have to be true together and neither is enough alone. The fact that the discovered
+    /// buckets are missing is CARRIED rather than swallowed, so an operator is not told a complete
+    /// opening was sealed when it was not; and the buckets the CONFIGURATION named are opened
+    /// anyway, so the identity measures from the previous release's figures for the half the node
+    /// could still read rather than from zero.
+    #[test]
+    fn a_store_that_will_not_list_its_key_rows_still_opens_the_configured_buckets() {
+        let adapter = StoreAdapter::native(std::sync::Arc::new(KeyRowsRefused));
+        let mut records = NodeLocalRecords::new();
+
+        let migration =
+            run(&adapter, &mut records, &cfg(), 1_700_000_000, None).expect("the boot continues");
+
+        assert!(
+            migration
+                .key_rows_unreadable
+                .as_deref()
+                .is_some_and(|why| !why.is_empty()),
+            "the key rows would not list, and the reason travels with the answer"
+        );
+        assert!(migration.sealed_now(), "the opening is sealed anyway");
+        let Outcome::Sealed(opening) = &migration.outcome else {
+            panic!("the first boot seals");
+        };
+        assert_eq!(
+            opening
+                .checkpoint
+                .totals
+                .keys()
+                .map(|(key, _)| key.bucket.as_str().to_string())
+                .collect::<Vec<_>>(),
+            vec!["team".to_string()],
+            "the configured group bucket is opened even though the key rows were unreadable"
+        );
+    }
+
+    /// THE BOOT STEP, over the node's one book and the adapter the boot hands it.
+    ///
+    /// The step this module existed to describe and had no caller for. Two facts, and the second is
+    /// the one an upgrade turns on: the opening is sealed on the JOURNAL, so it is a record with a
+    /// position on the same chain the postings that follow it are on; and the next boot over the
+    /// same book finds the marker there and opens nothing a second time.
+    #[test]
+    fn the_boot_step_seals_the_opening_on_the_nodes_one_book() {
+        use busbar_caps::{DurabilityToken, KernelSeal};
+        use busbar_unit_wal::RecordClass;
+
+        let adapter = StoreAdapter::native(std::sync::Arc::new(KeyRowsRefused));
+        let book = crate::root::durability::node_book(
+            &crate::root::durability::DurabilityConfig::default(),
+            adapter.shipper(),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        let token = DurabilityToken::mint(&KernelSeal::acquire_for_kernel());
+
+        let first = at_boot(
+            &adapter,
+            &book.durability,
+            &token,
+            &cfg(),
+            1_700_000_000,
+            None,
+        )
+        .expect("the boot continues");
+        assert!(first.sealed_now(), "the first boot seals the opening");
+
+        let replayed = book
+            .durability
+            .lock()
+            .expect("the node's one book")
+            .journal
+            .replay()
+            .expect("the journal reads back")
+            .expect("and verifies");
+        assert_eq!(
+            replayed
+                .iter()
+                .filter(|r| r.class == RecordClass::Migration)
+                .count(),
+            1,
+            "the marker is a record on the node's own chain"
+        );
+
+        let second = at_boot(
+            &adapter,
+            &book.durability,
+            &token,
+            &cfg(),
+            1_700_000_100,
+            None,
+        )
+        .expect("the second boot continues");
+        assert!(
+            !second.sealed_now(),
+            "the second boot finds the marker and opens nothing again"
+        );
+        assert_eq!(second.outcome.marker(), first.outcome.marker());
     }
 
     /// A deployment with nothing behind it seals an opening at zero rather than refusing, and the
