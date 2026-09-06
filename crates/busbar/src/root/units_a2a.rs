@@ -1511,6 +1511,41 @@ mod tests {
         );
     }
 
+    /// **Two units of one second are ordered by the monotonic stamp, not by the wall clock.**
+    ///
+    /// The companion of the straddle above, from the other side: there the wall clock moved and the
+    /// ordering held; here the wall clock does not move at all — two units arriving inside one
+    /// second are indistinguishable by it — and the ordering still holds, because the reading that
+    /// orders them is not the one that dates them. Filled from the wall clock, both records carry
+    /// the same number twice and there is no order to read.
+    #[test]
+    fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
+        const ONE_SECOND: u64 = 1_700_000_000;
+
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some("a2a-team"));
+        let record = || {
+            deployment
+                .calling_at(chain.as_ref(), ONE_SECOND)
+                .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+        };
+
+        let first = record();
+        let second = record();
+
+        assert_eq!(
+            first.wall, second.wall,
+            "the wall clock cannot tell these two apart, which is the point"
+        );
+        assert!(
+            second.mono > first.mono,
+            "and the reading that orders them can: {} then {}",
+            first.mono,
+            second.mono
+        );
+    }
+
     /// A panic somewhere else does not stop this plane from sealing and settling.
     ///
     /// The node's durability is one lock, shared by every unit on every plane. A step that took it
