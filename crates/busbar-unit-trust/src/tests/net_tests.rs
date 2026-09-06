@@ -950,18 +950,14 @@ fn the_sealed_door_and_the_facts_door_are_one_implementation() {
         busbar_contract::DestinationFacts::KernelVerb { verb: "status" },
     ];
     for facts in cases {
-        let sealed = busbar_contract::VerifiedDestination::seal(&trust_token(), facts, "https", None);
+        let sealed =
+            busbar_contract::VerifiedDestination::seal(&trust_token(), facts, "https", None);
         let resolver = ScriptedResolver::new(vec![Ok(vec![ip("127.0.0.1")])]);
         let through_the_seal =
             check_destination(&sealed, &[], &resolver, strict(), &Denylist::default());
         let facts_resolver = ScriptedResolver::new(vec![Ok(vec![ip("127.0.0.1")])]);
-        let through_the_facts = check_destination_facts(
-            &facts,
-            &[],
-            &facts_resolver,
-            strict(),
-            &Denylist::default(),
-        );
+        let through_the_facts =
+            check_destination_facts(&facts, &[], &facts_resolver, strict(), &Denylist::default());
         assert_eq!(
             through_the_seal, through_the_facts,
             "the two doors disagree about {facts:?}"

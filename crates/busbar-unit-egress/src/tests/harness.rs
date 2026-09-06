@@ -20,9 +20,9 @@ use std::sync::{Arc, Mutex};
 
 use busbar_contract::{
     AdmitFacts, ArenaBytes, AuditFacts, ContentFacts, CredentialLocator, Ctx, DestinationFacts,
-    EgressBody, Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress,
-    Refusal, RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle,
-    Unit, UnitEnd, UsageLocators, VerifiedDestination,
+    EgressBody, Frame, Ingress, Ir, Kind, Labels, LaneId, PlaneFacts, Plugin, Progress, Refusal,
+    RoutePlan, ScopeFacts, SlabBytes, StreamId, TransportEnvelope, TransportKeyHandle, Unit,
+    UnitEnd, UsageLocators, VerifiedDestination,
 };
 use busbar_contract_transport::wire::ArrivalRecord;
 use busbar_contract_transport::wire::Conn;

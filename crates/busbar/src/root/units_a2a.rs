@@ -1175,7 +1175,11 @@ pub fn guard_destination(
     denylist: &busbar_unit_trust::Denylist,
 ) -> Result<Option<busbar_unit_trust::PinnedTarget>, busbar_unit_trust::NetworkRefusal> {
     match busbar_unit_trust::net::check_destination_facts(
-        candidate, &[], resolver, policy, denylist,
+        candidate,
+        &[],
+        resolver,
+        policy,
+        denylist,
     ) {
         // Only an upstream is dialled at an address. Every other kind reaches its destination
         // without one, so "this is not an upstream" is this caller's pass, not its refusal.
