@@ -129,18 +129,43 @@ fn identify_lifetime_is_clamped_and_defaulted() {
     assert!(cache.get("m", "cred-b", 1000 + 3600).is_none());
 }
 
+/// The jitter is `digest(credential)[0] % 3`, so it only ever takes the values 0, 1 or 2. A test
+/// that only checks a point well inside the base lifetime and a point well past the maximum jitter
+/// never actually exercises the jitter arithmetic — it would pass identically whether the jitter
+/// were `% 3`, always zero, or always the max. Proving it requires landing exactly on the boundary
+/// FOR A CREDENTIAL WHOSE JITTER IS KNOWN, on both ends of the range: `test_digest` hex-encodes the
+/// raw bytes verbatim, so `"cred"` (first byte `0x63` -> hex digit `'6'`) gives jitter 0 and a
+/// credential whose first byte is `0x20` (hex digit `'2'`) gives jitter 2 — the two ends of the
+/// range a flat constant or an off-by-one would get wrong in opposite directions.
 #[test]
 fn a_pass_lives_five_seconds_plus_a_deterministic_jitter() {
     let cache = CredentialCache::new(test_digest);
+
+    // Zero jitter: expires at exactly base (1000 + 5 = 1005).
     let g = cache.generation();
     cache.put("m", "cred", &AuthOutcome::Pass, 1000, g);
     assert!(
         cache.get("m", "cred", 1004).is_some(),
-        "a pass survives its base lifetime"
+        "still alive one second before the boundary"
     );
     assert!(
-        cache.get("m", "cred", 1008).is_none(),
-        "and never outlives the base plus the maximum jitter"
+        cache.get("m", "cred", 1005).is_none(),
+        "expired exactly at the base lifetime when the jitter is zero"
+    );
+
+    // Maximum jitter (2): expires at base + 2 (1000 + 7 = 1007), not at the base and not a second
+    // early or late either.
+    let max_jitter_credential = "\u{20}";
+    let g = cache.generation();
+    cache.put("m", max_jitter_credential, &AuthOutcome::Pass, 1000, g);
+    assert!(
+        cache.get("m", max_jitter_credential, 1006).is_some(),
+        "still alive one second before the jittered boundary — the base lifetime alone would have \
+         expired this two seconds early"
+    );
+    assert!(
+        cache.get("m", max_jitter_credential, 1007).is_none(),
+        "expired exactly at base plus the maximum jitter, not a second later"
     );
 }
 
