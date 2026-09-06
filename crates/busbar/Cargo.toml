@@ -175,7 +175,14 @@ root-voice = ["plane-voice"]
 # THE LLM PLANE THROUGH THE COMPOSITION ROOT, default OFF: the loop over the nine step files instead
 # of the shell over the engine. Same six dialects under the same six names. No config key, no
 # environment variable, no boot line; the oracle answers identically either way.
-root-llm = ["proto-llm", "busbar-llm/teller-waist"]
+# The plane-crate edge is written `busbar-llm?/…`, the same optional form `plane-voice` uses for
+# `busbar-voice?/runtime`: it turns the feature on when the crate is there, and says nothing when it
+# is not. `busbar-llm/teller-waist` (no `?`) would have re-declared the optional dependency, so the
+# line outlived the crate — `git rm -r crates/busbar-llm` left `root-llm` naming a dependency that no
+# longer exists and cargo refused to load the manifest before compiling a line. It costs nothing on
+# the built binary: `proto-llm` in the same list is what pulls the crate in, so the feature is on
+# whenever `root-llm` is.
+root-llm = ["proto-llm", "busbar-llm?/teller-waist"]
 # THE A2A PLANE ON THE KERNEL. Default OFF, and off is the point: the root is BUILT before any
 # plane is SWITCHED onto it, so this feature installs the composition and diverts no byte. With it
 # on, `main()` assembles the A2A plane's scope entries and its record-leg binding at boot and holds
