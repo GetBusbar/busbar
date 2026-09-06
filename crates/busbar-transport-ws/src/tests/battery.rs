@@ -368,6 +368,37 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     .await;
     let (a, b) = (dialled.unwrap(), accepted.unwrap());
 
+    // TWO-SIDED, because a one-sided cap test cannot tell a ceiling from a smaller default: a
+    // transport that refused everything, or one whose cap had been read as some other number
+    // entirely, passes an assertion that only says the oversized message was refused. So the
+    // message AT the cap must arrive whole first.
+    //
+    // What this still cannot separate is `max_frame_size` from `max_message_size`. Both are set to
+    // the same number by `ws_config`, and tungstenite reports either overrun the same way — a
+    // `Capacity` error this crate maps to `Framing`. The reason both are set is a buffering one:
+    // with only the message ceiling, one oversized FRAME is read into memory before the message it
+    // belongs to is refused. That is a claim about how much was allocated on the way to the same
+    // observable answer, and nothing outside the library can see it, so no cell here pins the frame
+    // ceiling on its own.
+    let at_cap = vec![b'k'; CAP];
+    bounded(
+        "peer.write(&a, StreamId(0), ArenaBytes::new(&at_cap))",
+        peer.write(&a, StreamId(0), ArenaBytes::new(&at_cap)),
+    )
+    .await
+    .expect("the peer puts a message exactly at the cap on the wire");
+
+    let mut frames = t.frames(b);
+    let (_s, frame) = bounded("frames.next()", frames.next())
+        .await
+        .expect("a message at the cap is a message")
+        .expect("and not a framing refusal");
+    assert_eq!(
+        frame.bytes.len(),
+        CAP,
+        "at the ceiling the message is delivered whole: this is a ceiling, not a smaller default"
+    );
+
     let oversized = vec![b'w'; 2 * CAP];
     bounded(
         "peer.write(&a, StreamId(0), ArenaBytes::new(&oversized))",
@@ -376,7 +407,6 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     .await
     .expect("the uncapped peer puts the oversized message on the wire");
 
-    let mut frames = t.frames(b);
     let outcome = tokio::time::timeout(Duration::from_secs(5), frames.next())
         .await
         .expect("the cap must be enforced rather than waited on")
@@ -489,16 +519,32 @@ async fn the_facts_the_layer_below_established_survive_the_upgrade() {
     assert_eq!(record.transport_chain, vec!["tcp", "tls", "ws"]);
 }
 
-/// A `tls` layer that has one connection to give up, and reports the facts a real one would.
+/// A lower layer that has one connection to give up, and reports the facts a real one would.
+///
+/// The key it answers to is a parameter, because the handoff guard reads exactly that: a source
+/// naming a DECLARED layer is admissible, one naming anything else is not, and telling those apart
+/// needs the same fixture under two names.
 struct StubLower {
+    key: &'static str,
     io: std::sync::Mutex<Option<tokio::io::DuplexStream>>,
 }
 
 impl StubLower {
+    /// The declared case: a `tls` layer, which `ws` composes over.
     fn holding(io: tokio::io::DuplexStream) -> Self {
+        Self::holding_as("tls", io)
+    }
+
+    fn holding_as(key: &'static str, io: tokio::io::DuplexStream) -> Self {
         Self {
+            key,
             io: std::sync::Mutex::new(Some(io)),
         }
+    }
+
+    /// Whether the stream is still this layer's — that is, whether `detach` was ever called.
+    fn still_holds(&self) -> bool {
+        self.io.lock().unwrap().is_some()
     }
 
     fn conn(&self) -> busbar_contract_transport::wire::Conn {
@@ -517,7 +563,7 @@ impl StubLower {
 
 impl busbar_contract::Plugin for StubLower {
     fn key(&self) -> &'static str {
-        "tls"
+        self.key
     }
     fn kind(&self) -> busbar_contract::Kind {
         busbar_contract::Kind::Transport
@@ -620,7 +666,7 @@ impl Transport for StubLower {
     ) -> Option<busbar_contract_transport::wire::RawStream> {
         let io = self.io.lock().unwrap().take()?;
         Some(busbar_contract_transport::wire::RawStream::new(
-            "tls",
+            self.key,
             conn.peer(),
             Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(io)),
         ))
@@ -943,6 +989,54 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     assert_eq!(err, TransportError::HandoffMismatch);
 }
 
+/// THE SAME REFUSAL, FROM A SOURCE WHOSE DETACH WOULD HAVE SUCCEEDED.
+///
+/// The cell above cannot see the admissibility guard at all. `ws` has no raw stream to hand up, so
+/// its own `detach` returns `None`, and `None` maps to `HandoffMismatch` — the same error the guard
+/// gives, by an entirely different route. Delete `if !COMPOSES_OVER.contains(&from.key())` and that
+/// cell stays green, because the very next line fails for its own reasons.
+///
+/// This one closes that. The source is a stub whose `detach` really does hand a live stream up and
+/// whose key is `stdio`, a transport `ws` does not declare it composes over. The only thing that
+/// can refuse it is the guard, and the proof that it did is that the source STILL HOLDS its stream
+/// afterwards: an undeclared handoff is refused before anything is taken, so the layer below can go
+/// on serving the connection it still owns.
+///
+/// A client is driven on the far end throughout, so with the guard removed this is not a refusal by
+/// another name: the adopt would complete the handshake and return a live connection.
+#[tokio::test]
+async fn a_handoff_from_an_undeclared_source_that_could_have_detached_is_still_refused() {
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    // `stdio` is a real transport in this project and one `ws` does NOT declare: COMPOSES_OVER is
+    // `http`, `tcp`, `tls`.
+    let below = StubLower::holding_as("stdio", end_a);
+    let ws = WsTransport::new();
+    let keys = test_key_handle();
+
+    // The far end speaks the WS opening handshake, so nothing but the guard stands between this
+    // adopt and a live connection.
+    let dialling = tokio::spawn(async move {
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio_tungstenite::client_async("ws://localhost/", end_b),
+        )
+        .await
+    });
+
+    let err = bounded(
+        "ws.adopt(&below, below.conn(), &keys)",
+        ws.adopt(&below, below.conn(), &keys),
+    )
+    .await
+    .expect_err("a handoff from a layer this transport does not compose over is not admissible");
+    assert_eq!(err, TransportError::HandoffMismatch);
+    assert!(
+        below.still_holds(),
+        "the refusal comes BEFORE the detach: an undeclared source keeps the stream it is serving"
+    );
+    dialling.abort();
+}
+
 /// One refusal, for the cells that need any refusal at all and nothing about which.
 fn test_refusal() -> busbar_contract::unit::Refusal<'static> {
     busbar_contract::unit::Refusal {
@@ -1042,6 +1136,73 @@ async fn a_refusal_that_could_not_be_written_is_reported_rather_than_claimed() {
     assert_eq!(err, TransportError::Closed);
 }
 
+/// A REFUSAL OVER A FENCED CONNECTION IS `Closed`, AND NOT THE `Reset` THE SEND ARM GIVES.
+///
+/// `unit0_refusal` has three arms and the cells above reach two of them: the send arm (a live
+/// connection whose peer has gone — `Reset`) and the `None` arm (a connection this transport no
+/// longer holds — `Closed`). Nothing reached the middle one, the connection this transport still
+/// holds but has already FENCED, so the arm could have been deleted and every cell stayed green.
+///
+/// It is not a redundant arm. A fenced connection is one whose writer was interrupted mid-frame, so
+/// the next thing written on it lands after half a WebSocket frame the peer will never be able to
+/// parse. Falling through to the send arm would put the refusal's bytes there and — if the socket
+/// took them — report `Ok(())`: a refusal claimed as delivered, into a stream the peer has already
+/// lost sync on. The session is over, so the answer is `Closed`, and the caller can tell it from
+/// the `Reset` that means "the connection was fine and the peer went away".
+///
+/// The fence is set through the production path — a write dropped mid-send — rather than by poking
+/// the flag, so this cell also holds the arm to a state the transport really does produce.
+#[tokio::test]
+async fn a_refusal_over_a_fenced_connection_is_closed_and_not_a_reset() {
+    let t = Arc::new(WsTransport::new());
+    // A duplex with no room, so the big write below cannot finish and is dropped mid-send.
+    let (a, b) = bounded("pair(&t, 8)", pair(&t, 8)).await;
+    let big = vec![b'x'; 1_000_000];
+    let write_fut = t.write(&a, StreamId(0), ArenaBytes::new(&big));
+    assert!(
+        tokio::time::timeout(Duration::from_millis(1), write_fut)
+            .await
+            .is_err(),
+        "the write must still be in the send when it is dropped"
+    );
+    let state = t
+        .state_of(a.id())
+        .expect("the connection is still registered");
+    assert!(
+        state.is_poisoned(),
+        "a write dropped mid-send fences the connection: that is the state under test"
+    );
+
+    // Take the peer away, so that the send arm — if the fence check were gone and control reached
+    // it — fails rather than parking on the full duplex. That makes the two arms tell each other
+    // apart by their error rather than by one of them hanging.
+    let peer = t.state_of(b.id()).expect("the peer connection is live");
+    t.close(b, CloseReason::Normal);
+    bounded("the close task giving up its handle", async {
+        while Arc::strong_count(&peer) > 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await;
+    drop(peer);
+
+    let refusal = test_refusal();
+    let err = bounded(
+        "unit0_refusal over a fenced connection",
+        t.unit0_refusal(a.clone(), None, &refusal, ArenaBytes::new(b"refused")),
+    )
+    .await
+    .expect_err("a fenced connection cannot carry a refusal, and must not claim to have");
+    assert_eq!(
+        err,
+        TransportError::Closed,
+        "a connection this transport had already fenced is Closed, not the Reset a live connection \
+         whose peer went away reports"
+    );
+    // And it is finalised like any other refusal.
+    assert!(t.state_of(a.id()).is_none(), "the refusal ended it");
+}
+
 #[allow(clippy::assertions_on_constants)]
 #[tokio::test]
 async fn transport_meta_matches_the_architecture_row() {
@@ -1115,6 +1276,45 @@ fn a_bracketed_ipv6_authority_parses_with_and_without_a_port() {
     assert_eq!(
         crate::transport::split_ws_url("wss://host/p").unwrap(),
         (true, "host".to_string(), 443, "/p".to_string())
+    );
+}
+
+/// AN AUTHORITY CARRYING USERINFO IS REFUSED, RATHER THAN DIALLED AS IF THE CREDENTIALS WERE HOST.
+///
+/// `split_ws_url` refuses an authority containing `@`, and until now nothing tested it — the guard
+/// could have been deleted and every cell in this file stayed green. What the guard prevents is not
+/// cosmetic: with it gone, `ws://user:pw@host:9000/p` parses as the HOST `user:pw@host` on port
+/// 9000, and that string is what gets interned, handed to the layer below as its dial address, and
+/// offered as the certificate name on the `wss` path. The destination the network guard verified
+/// named a host; what would be dialled is a host-shaped string with a password in it. A URL naming
+/// credentials this transport has no way to use is refused before any of that can happen.
+#[test]
+fn an_authority_carrying_userinfo_is_refused() {
+    // Both userinfo shapes: with a password and without. Neither is caught by any later check —
+    // strip the guard and both of these parse into a host and a port and are dialled.
+    assert_eq!(
+        crate::transport::split_ws_url("ws://user:pw@host:9000/p"),
+        Err(TransportError::AddressRefused),
+        "credentials in the authority are refused, not read as part of the host"
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("wss://user@host/p"),
+        Err(TransportError::AddressRefused),
+        "a bare username is userinfo too"
+    );
+
+    // And an authority with nothing in it names no host at all. This one is belt and braces: the
+    // empty-host check further down refuses it as well, so it does not on its own distinguish the
+    // guard — the two userinfo cases above are what do.
+    assert_eq!(
+        crate::transport::split_ws_url("ws:///p"),
+        Err(TransportError::AddressRefused),
+        "an empty authority names nothing to dial"
+    );
+    assert_eq!(
+        crate::transport::split_ws_url("ws://"),
+        Err(TransportError::AddressRefused),
+        "and neither does a URL that stops at the scheme"
     );
 }
 
