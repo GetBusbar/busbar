@@ -1868,6 +1868,7 @@ def calibrate(rows, cfg, path):
     rules["sealed-unit-traits"]["max_unsealed"] = by_id["sealed-unit-traits"]["current"]
     rules["hold-escapes"]["max_sites"] = by_id["hold-escapes"]["current"]
     rules["seal-sites"]["max_sites"] = by_id["seal-sites"]["current"]
+    rules["unit-no-finding-ids"]["max_hits"] = by_id["unit-no-finding-ids"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(

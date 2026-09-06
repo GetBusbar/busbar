@@ -53,6 +53,16 @@ busbar-mcp = ["busbar-mcp-codec"]
 busbar-a2a = ["busbar-a2a-codec"]
 busbar-voice = ["busbar-voice-codec"]
 
+# The surface ceilings from ARCHITECTURE.md section 1.1: what a PLUGIN AUTHOR has to read. These are
+# owner decisions, not ratchets that drift upward with the tree — construction-gate.sh reads them
+# from here (rather than a literal in the script) purely so --calibrate/--selftest can also produce
+# a green baseline value for a scratch copy; the checked-in numbers below never move except by the
+# owner's own hand.
+[gate.surface_ceilings]
+contract_caps = 3500
+grammar = 500
+contract_transport = 1000
+
 # ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
 [rules.one-attempt-seam]
 why = """Exactly one function in the workspace may send the egress request for a unit. Two twins \

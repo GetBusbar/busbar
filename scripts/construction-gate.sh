@@ -104,12 +104,26 @@ measure() {
   # THREE rows, not one, because the pair's ceiling is a budget for what a PLUGIN AUTHOR reads. The
   # closed span grammar and the transport-facing contract each moved out from under it into a crate
   # of their own, and a ceiling nothing measures is a ceiling that has been abolished rather than
-  # met: each split crate is gated at its own figure here, beside the pair it left.
+  # met: each split crate is gated at its own figure here, beside the pair it left. The figures
+  # themselves live in qa/construction.toml's [gate.surface_ceilings] (owner decisions, never
+  # ratcheted by the tree) — read from there, not restated here, so --calibrate can also produce a
+  # green value for them in a scratch copy without this script itself carrying two sources of truth.
+  local surface_ceilings sc_contract_caps sc_grammar sc_contract_transport
+  surface_ceilings="$(python3 - "$TOML" <<'PYEOF'
+import sys, tomllib
+with open(sys.argv[1], "rb") as fh:
+    cfg = tomllib.load(fh)
+sc = cfg.get("gate", {}).get("surface_ceilings", {})
+for key, default in (("contract_caps", 3500), ("grammar", 500), ("contract_transport", 1000)):
+    print(sc.get(key, default))
+PYEOF
+)"
+  { read -r sc_contract_caps; read -r sc_grammar; read -r sc_contract_transport; } <<<"$surface_ceilings"
   local surface_spec surface_id surface_crates surface_limit surface_what
   for surface_spec in \
-    "contract+caps|busbar-contract,busbar-caps|3500|the contract pair's plugin-visible surface" \
-    "grammar|busbar-grammar|500|the closed span grammar's surface" \
-    "contract-transport|busbar-contract-transport|1000|the transport-facing contract's surface"
+    "contract+caps|busbar-contract,busbar-caps|$sc_contract_caps|the contract pair's plugin-visible surface" \
+    "grammar|busbar-grammar|$sc_grammar|the closed span grammar's surface" \
+    "contract-transport|busbar-contract-transport|$sc_contract_transport|the transport-facing contract's surface"
   do
     IFS='|' read -r surface_id surface_crates surface_limit surface_what <<<"$surface_spec"
     surface_id="surface-ceiling:$surface_id"
@@ -301,6 +315,31 @@ case "${1:-}" in
     # file; that is all that runs first now. The written toml is unchanged.
     purity_scan
     python3 "$HELPERS/rules.py" --root "$ROOT" --toml "$TOML" --purity-hits "$OUT/purity-hits.tsv" --calibrate "$2"
+    # rules.py only calibrates the rules IT measures. The surface ceilings are measured by
+    # scripts/loc-surface.py, not by rules.py, so their calibrated value is measured fresh right
+    # here (a ceiling high enough to always pass, so only the "total" figure is wanted) and patched
+    # into the [gate.surface_ceilings] table rules.py already copied through unchanged.
+    for surface_spec in \
+      "contract_caps|busbar-contract,busbar-caps" \
+      "grammar|busbar-grammar" \
+      "contract_transport|busbar-contract-transport"
+    do
+      IFS='|' read -r surface_key surface_crates <<<"$surface_spec"
+      surface_now="$(python3 "$ROOT/scripts/loc-surface.py" --ceiling "$surface_crates=999999999" 2>/dev/null \
+                      | awk '$1=="total"{print $2}')"
+      [ -n "$surface_now" ] || continue
+      python3 - "$2" "$surface_key" "$surface_now" <<'PYEOF'
+import re
+import sys
+
+toml_path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(toml_path, encoding="utf-8") as fh:
+    text = fh.read()
+text = re.sub(rf"(?m)^({re.escape(key)}\s*=\s*)\d+$", rf"\g<1>{val}", text)
+with open(toml_path, "w", encoding="utf-8") as fh:
+    fh.write(text)
+PYEOF
+    done
     note "calibrated ceilings written to $2 (every ceiling = today's measurement)"
     exit 0
     ;;
