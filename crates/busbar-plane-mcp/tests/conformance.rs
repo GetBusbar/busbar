@@ -399,6 +399,60 @@ fn a_servers_own_request_opens_a_provider_unit() {
     }
 }
 
+/// A method only a CALLER may send is refused on the response side too.
+///
+/// The ingress side already refuses a caller who sends an upstream's method, and this is the same
+/// guard on the leg that was missing one. A server that sent `tools/call` back mid-call opened a
+/// unit of the caller's own class: the routing step gives that class a hop to a server, a
+/// redemption of the approval grant that says the CALLER may use the tool, and a call record — so
+/// the server drove a tool call on this node's budget and this node's authority, and nobody asked
+/// for it.
+#[test]
+fn a_server_cannot_send_a_callers_method() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    for row in ops::METHODS
+        .iter()
+        .filter(|r| r.sender == ops::Sender::Client)
+    {
+        let asked = request("42", row.method);
+        let frames = vec![response_frame(&asked)];
+        let mut cursor = FrameCursor::new(&frames);
+        assert_eq!(
+            plane
+                .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+                .err(),
+            Some(Decode::UnsupportedOperation),
+            "a server was allowed to send {}",
+            row.method
+        );
+    }
+}
+
+/// The three a server MAY send back still open a unit of the server's own.
+#[test]
+fn a_server_may_still_send_its_own_three_methods() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    for row in ops::METHODS
+        .iter()
+        .filter(|r| r.sender == ops::Sender::Provider)
+    {
+        let asked = request("42", row.method);
+        let frames = vec![response_frame(&asked)];
+        let mut cursor = FrameCursor::new(&frames);
+        match plane
+            .decode_response(&mut cursor, &sealed_destination(), None, &ctx)
+            .unwrap_or_else(|e| panic!("a server may send {} and got {e:?}", row.method))
+        {
+            Progress::OneShot(draft) => assert_eq!(draft.op, row.op),
+            other => panic!("{} decoded as {other:?}", row.method),
+        }
+    }
+}
+
 /// A result that asks the caller for something is a turn, not an ending.
 #[test]
 fn a_result_that_asks_for_something_is_a_turn() {
