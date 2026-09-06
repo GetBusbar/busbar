@@ -648,6 +648,7 @@ fn classify_wire_failure(err: &TransportError) -> (busbar_substrate::failover::S
             class: busbar_substrate::breaker::StatusClass::Network,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         })
     };
     match err {

@@ -1539,6 +1539,7 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
                 class: busbar_substrate::breaker::StatusClass::Network,
                 provider_signal: None,
                 retry_after: None,
+                ..Default::default()
             })
         }
         Some(RelayRefusal::Status { status, .. }) => {
@@ -1555,6 +1556,7 @@ fn classify_hop(refusal: Option<&RelayRefusal>) -> HopOutcome {
             class: busbar_substrate::breaker::StatusClass::ServerError,
             provider_signal: None,
             retry_after: None,
+            ..Default::default()
         }),
         Some(
             RelayRefusal::Guard(_)

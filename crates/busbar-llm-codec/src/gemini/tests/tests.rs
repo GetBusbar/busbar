@@ -2258,6 +2258,7 @@ fn test_stream_error_emits_full_google_rpc_status() {
         class: StatusClass::RateLimit,
         provider_signal: Some("slow down".to_string()),
         retry_after: None,
+        ..Default::default()
     };
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::Error(err))
@@ -2287,6 +2288,7 @@ fn test_stream_error_server_error_maps_internal() {
         class: StatusClass::ServerError,
         provider_signal: None,
         retry_after: None,
+        ..Default::default()
     };
     let (_, frame) = writer
         .write_response_event(&IrStreamEvent::Error(err))
