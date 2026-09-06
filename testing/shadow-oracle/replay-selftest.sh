@@ -107,27 +107,36 @@ rc="$(run "$FIX" "$W/usage" "$W/out-f")"
 n="$(fails_in "$W/out-f")"; cls="$(classes_of 'self|a|ok' "$W/out-f")"
 [ "$rc" != 0 ] && [ "$n" = 1 ] && [ "$cls" = "effects.usage" ] && say PASS "effects.usage divergence -> exactly one FAIL [effects.usage]" || say FAIL "usage divergence rc=$rc fails=$n classes=$cls"
 
-# (g) a cell's own `compare` list drops every OTHER class — mutate status AND usage, only usage owed
+# (g) a cell's own `compare` list drops every OTHER class it is ALLOWED to drop — a legal narrowing
+# keeps status (money) and gives up `headers`; mutate headers and status, only status is owed.
+# The narrowing must also be VISIBLE: the row carries `narrowed: [...]` naming what it gave up.
 mkdir -p "$W/gcells"
 python3 - "$CELLS" "$W/gcells/cells.json" <<'EOF'
 import json,sys
 d=json.load(open(sys.argv[1]))
 for c in d["cells"]:
     if c["id"] == "self|a|ok":
-        c["compare"] = ["effects.usage"]
+        # everything except `headers`: a legal narrowing gives up a class rated 1, never money
+        c["compare"] = ["status", "body", "effects.stderr", "effects.usage", "effects.usage_after_restart",
+                        "effects.store_errors", "effects.metrics", "effects.audit", "norm.rules",
+                        "effects.egress", "effects.readback", "effects.files", "effects.script"]
+        c["why"] = "selftest: the header set is not this cell's contract"
 json.dump(d, open(sys.argv[2], "w"))
 EOF
 cp -R "$FIX" "$W/compare"
 python3 - "$W/compare/cells/self__a__ok.json" <<'EOF'
 import json,sys
-p=sys.argv[1]; d=json.load(open(p)); d["status"]=418; d["effects"]["usage"]["spend_micros"]=19; json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)
+p=sys.argv[1]; d=json.load(open(p)); d["status"]=418; d.setdefault("headers",{})["x-selftest"]="1"; json.dump(d,open(p,"w"),separators=(",",":"),sort_keys=True)
 EOF
 # run_args hard-codes --cells "$CELLS"; call replay.sh directly here so the compare-list cells.json is used.
 bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/compare" --out "$W/out-g" --cells "$W/gcells/cells.json" \
   --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-g.log" 2>&1
 rc=$?
 cls="$(classes_of 'self|a|ok' "$W/out-g")"
-[ "$rc" != 0 ] && [ "$cls" = "effects.usage" ] && say PASS "cell 'compare' list -> only its named class shows (status dropped)" || say FAIL "compare list rc=$rc classes=$cls (expected effects.usage only, status must not appear)"
+[ "$rc" != 0 ] && [ "$cls" = "status" ] && say PASS "cell 'compare' list -> only its named classes show (headers dropped)" || say FAIL "compare list rc=$rc classes=$cls (expected status only, headers must not appear)"
+grep -q 'narrowed: \[headers\]' "$W/out-g/ledger.tsv" \
+  && say PASS "a narrowed cell's row says so ('narrowed: [headers]')" \
+  || say FAIL "a narrowed cell reported a bare verdict — the row does not name what it gave up: $(awk -F'\t' '$1=="self|a|ok"' "$W/out-g/ledger.tsv")"
 
 # (h) an `improvement` acceptance of a `status` class must be REFUSED by the loader (exit != 0),
 # even when golden and candidate are byte-identical — the register is checked whether or not it
@@ -478,5 +487,49 @@ if [ -s "${GOLD}/ledger.tsv" ] && [ -s "${here}/owed-baseline.txt" ]; then
     && say PASS "every golden PASS id is named in owed-baseline.txt (the ratchet covers all of them)" \
     || say FAIL "golden PASS id(s) missing from owed-baseline.txt, so they can stop being owed with no red row: ${unowed}"
 fi
+
+# (z) `compare` IS POLICED LIKE THE REGISTER IS. It is a whitelist with no owner, no kind and no
+# changelog line, so it is the widest waiver in the tree and the cheapest to write; the one shipped
+# use (`cli|--generate-signing-key`, `compare: ["status"]`) discarded effects.files on the one verb
+# that mints a secret — a build writing that key to disk would have been invisible. `compare` may
+# now only drop classes outside MONEY_CLASSES, never effects.files/effects.script, and must say why.
+mkdir -p "$W/xcells"
+compare_case() {  # <name> <json-fragment-for-the-cell> <expected-message> <label>
+  python3 - "$CELLS" "$W/xcells/$1.json" "$2" <<'EOF'
+import json,sys
+d=json.load(open(sys.argv[1]))
+patch=json.loads(sys.argv[3])
+for c in d["cells"]:
+    if c["id"] == "self|a|ok":
+        c.pop("why", None); c.update(patch)
+json.dump(d, open(sys.argv[2], "w"))
+EOF
+  bash "${here}/replay.sh" --golden "$FIX" --candidate "$W/same" --out "$W/out-x-$1" --cells "$W/xcells/$1.json" \
+    --allow-harness-skew --accepted "$W/no-accept.json" --baseline "$W/no-baseline.txt" >"$W/out-x-$1.log" 2>&1
+  local rc=$?
+  grep -q "$3" "$W/out-x-$1.log" && local msg_ok=1 || local msg_ok=0
+  [ "$rc" != 0 ] && [ "$msg_ok" = 1 ] \
+    && say PASS "$4" \
+    || say FAIL "$4 — NOT refused (rc=$rc msg_ok=$msg_ok, see $W/out-x-$1.log)"
+}
+compare_case money '{"compare":["body"],"why":"selftest"}' 'DROPS' \
+  "a 'compare' dropping a money class -> loader refuses"
+compare_case files '{"compare":["status","body","headers","effects.stderr","effects.usage","effects.usage_after_restart","effects.store_errors","effects.metrics","effects.audit","norm.rules","effects.egress","effects.readback","effects.script"],"why":"selftest"}' 'effects.files' \
+  "a 'compare' dropping effects.files -> loader refuses (a written keyset is invisible elsewhere)"
+compare_case nowhy '{"compare":["status","body","effects.stderr","effects.usage","effects.usage_after_restart","effects.store_errors","effects.metrics","effects.audit","norm.rules","effects.egress","effects.readback","effects.files","effects.script"]}' 'carries no .why.' \
+  "a 'compare' with no 'why' -> loader refuses"
+compare_case typo '{"compare":["stauts"],"why":"selftest"}' 'unknown compare class' \
+  "a 'compare' naming a misspelt class -> loader refuses (the typo would drop what it meant to keep)"
+
+# …and the SHIPPED corpus obeys the policy, so a future `compare: [status]` on a real cell is red
+# here rather than green forever.
+if python3 "${here}/diff-cells.py" --golden "$FIX" --candidate "$W/same" --out "$W/out-x-ship" \
+     --cells "${here}/cells.json" --accepted "${here}/accepted-differences.json" \
+     --allow-harness-skew >"$W/out-x-ship.log" 2>&1; then
+  say PASS "every 'compare' in the shipped cells.json obeys the policy"
+else
+  say FAIL "a shipped cell's 'compare' was refused: $(tail -3 "$W/out-x-ship.log")"
+fi
+
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
