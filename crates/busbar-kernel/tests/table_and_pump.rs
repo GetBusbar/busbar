@@ -929,3 +929,51 @@ fn a_handoff_mismatch_closes_the_session_on_either_framing() {
         );
     }
 }
+
+/// A key already live is not a slot to take, and the unit that asks for it is refused.
+///
+/// The session table one screen below already answers this: `Sessions::open` notices that the id it
+/// inserted displaced another and hands the claim straight back. The unit table has to answer it
+/// harder, because a displaced UNIT slot is not just a number — it is a `HoldCell` with a hold in
+/// it. Displaced out of the shard map, the slot is unreachable by `get`, by `remove` and above all
+/// by the SWEEP, which walks `snapshot`: nothing will ever take that hold, so it is a unit that
+/// never posts. And the count keeps the slot it claimed for it, so every duplicate ratchets the
+/// node one unit closer to a cap it will never come back down from.
+#[test]
+fn a_key_already_in_the_table_is_refused_rather_than_displacing_the_unit_holding_it() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(4, 0);
+    let live = table
+        .insert(enter(&kernel, 7, OriginKind::Client))
+        .expect("the first unit takes the slot");
+
+    let refused = table
+        .insert(enter(&kernel, 7, OriginKind::Client))
+        .expect_err("the key is live, so there is no slot to take");
+    assert_eq!(
+        refused.reason,
+        ReasonCode::InFlight,
+        "not the cap — the table has room; this key does not"
+    );
+
+    assert_eq!(
+        table.len(),
+        1,
+        "the refused unit's claim went back: a duplicate must not ratchet the count"
+    );
+    assert!(
+        table
+            .snapshot()
+            .iter()
+            .any(|slot| std::sync::Arc::ptr_eq(slot, &live)),
+        "and the unit that was already holding the key is still the one the sweep can reach"
+    );
+
+    // The claim really did come back: the table still admits up to its cap.
+    for key in 8..11 {
+        table
+            .insert(enter(&kernel, key, OriginKind::Client))
+            .map(|_| ())
+            .expect("three more fit under a cap of four");
+    }
+}
