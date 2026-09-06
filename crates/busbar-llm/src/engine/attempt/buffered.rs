@@ -50,15 +50,27 @@ impl Drop for BudgetSpendGuard<'_> {
 
 /// The token figures out of a delivery's neutral billing carrier, for the report-back.
 ///
-/// A flat-fee operation reports a non-token `Billing` (or none at all) and answers `None` here, which
-/// is the honest report: that response consumed no tokens to account for, and the metering series
-/// still counts its request through the accrual seam.
+/// A non-token `Billing` (or none at all) answers `None`, which is the honest report: that response
+/// consumed no TOKENS to account for, and the metering series still counts its request through the
+/// accrual seam.
+///
+/// Every variant is spelled. `Billing` is a CLOSED enum the pricer matches exhaustively, and a
+/// wildcard here would quietly answer `None` for a variant added after this was written — the one
+/// case where a new billable shape needs a reader to be looked at rather than to keep compiling. The
+/// four below are not token counts and cannot be converted into one: seconds of audio, characters of
+/// speech, a count of images and a flat fee are each priced off their own dimension, and inventing a
+/// token figure for any of them would put a number the provider never reported into the ledger.
 fn token_usage_of(
     usage: &Option<busbar_substrate::billing::Billing>,
 ) -> Option<busbar_substrate::billing::TokenUsage> {
+    use busbar_substrate::billing::Billing;
     match usage {
-        Some(busbar_substrate::billing::Billing::Tokens(t)) => Some(t.clone()),
-        _ => None,
+        Some(Billing::Tokens(t)) => Some(t.clone()),
+        Some(Billing::Duration { .. })
+        | Some(Billing::Characters { .. })
+        | Some(Billing::Images { .. })
+        | Some(Billing::Flat)
+        | None => None,
     }
 }
 

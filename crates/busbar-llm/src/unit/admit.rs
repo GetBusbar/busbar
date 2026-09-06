@@ -113,10 +113,9 @@ pub struct Admitted {
     /// concurrency gauges, which release when its last clone drops — i.e. when the response stream
     /// completes or the request unwinds — so it is built here, with the admission, and never later.
     ///
-    /// Read by the Route step, which carries it to every accrual site, and by Meter. `allow` while
-    /// the module is dark: nothing installs these steps yet, so the reader does not exist to the
-    /// compiler until the Route step lands.
-    #[allow(dead_code)]
+    /// Read by the Route step, which carries it to every accrual site, and by Meter — both of which
+    /// now exist, so the `allow(dead_code)` this field used to carry has been deleted rather than
+    /// left to cover a reader that arrived.
     pub(crate) sink: Option<crate::engine::UsageSink>,
     /// The door's own rendered refusal — bytes, not a posted record. Present exactly when the
     /// decision refuses, and handed to the Audit step's not-charged terminal there and nowhere
