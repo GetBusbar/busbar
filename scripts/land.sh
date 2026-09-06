@@ -62,20 +62,37 @@ if [ -n "$tests" ]; then
 fi
 
 if [ -n "$gate" ]; then
-  red="$("$here/scripts/construction-gate.sh" 2>&1 | grep -E '^FAIL  ' | awk '{print $2}' | grep -E "$gate" || true)"
+  # The gate's own exit status is not the verdict here (its verdict covers every rule); what this
+  # leg proves is that the named rows were MEASURED and are not red. A gate that produced no rows
+  # at all (missing python, missing ceilings file) is red, not green.
+  glog="$here/target/land-gate-$(date +%H%M%S).log"
+  "$here/scripts/construction-gate.sh" >"$glog" 2>&1 || true
+  rows="$(grep -cE '^(PASS|FAIL)  ' "$glog" || true)"
+  [ "${rows:-0}" -gt 0 ] || { echo "land.sh: RED — construction gate produced no rows (log: $glog)" >&2; exit 1; }
+  named="$(grep -E '^(PASS|FAIL)  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
+  [ -n "$named" ] || { echo "land.sh: RED — no gate row matches '$gate' (renamed rule?)" >&2; exit 1; }
+  red="$(grep -E '^FAIL  ' "$glog" | awk '{print $2}' | grep -E "$gate" || true)"
   [ -z "$red" ] || { echo "land.sh: RED — construction gate rows still red: $red" >&2; exit 1; }
   echo "land.sh: gate rows green: $gate"
 fi
 
 if [ -n "$families" ]; then
-  (cd "$here" && cargo build --release -p busbar 2>&1 | grep -E '^error' ) && { echo "land.sh: RED — release build" >&2; exit 1; }
+  # cargo's exit status is the verdict (a pipe into grep would let pipefail invert it).
+  blog="$here/target/land-build-$(date +%H%M%S).log"
+  if ! (cd "$here" && cargo build --release -p busbar >"$blog" 2>&1); then
+    grep -E '^error' "$blog" | head -5 >&2
+    echo "land.sh: RED — release build (log: $blog)" >&2; exit 1
+  fi
   out="$here/target/oracle/recordings/land-$(date +%H%M%S)"
   ORACLE_LISTEN_PORT=49901 ORACLE_ADMIN_PORT=49902 ORACLE_MOCK_PORT=49911 \
     "$here/testing/shadow-oracle/record.sh" --plane all --bin "$here/target/release/busbar" --filter "$families" \
     --out "$out" >"$out.log" 2>&1 || { echo "land.sh: RED — record.sh (see $out.log)" >&2; exit 1; }
+  # The same regex selects the cells on both sides (an ID filter, the domain record.sh --filter
+  # uses), and --strict makes the differ's exit code carry the verdict for this subset: zero owed
+  # cells, an unaccepted divergence, or an owed cell missing from the candidate is red.
   python3 "$here/testing/shadow-oracle/diff-cells.py" --golden "$here/target/oracle/recordings/golden" \
-    --candidate "$out" --out "$out.report" --allow-harness-skew --family "$families" \
+    --candidate "$out" --out "$out.report" --allow-harness-skew --id-filter "$families" --strict \
     || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; exit 1; }
-  echo "land.sh: oracle green on: $families"
+  echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed)"
 fi
 echo "land.sh: GREEN — landed $# commit(s) at $(git -C "$here" rev-parse --short HEAD)"
