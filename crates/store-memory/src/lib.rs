@@ -332,7 +332,27 @@ impl Store for MemoryStore {
     }
 
     fn put_credential(&self, secret: &CredentialSecret) -> StoreResult<()> {
+        // The owning key is read under the SAME critical section as the credential write, in
+        // `delete_key`'s fixed lock order (keys → creds) so the two can never deadlock against each
+        // other. Checking the key first and writing after would let a `delete_key` commit in the
+        // gap: its cascade removes the credentials that exist AT THAT MOMENT, so material written
+        // just behind it survives the tombstone and keeps resolving — the same read-then-write hole
+        // `put_key`'s own tombstone precondition closes, one door over.
+        let keys = self.keys_read();
         let mut creds = self.creds();
+        let Some(owner) = keys.get(&secret.meta.key_id) else {
+            return Err(StoreError(format!(
+                "put_credential: key '{}' does not exist; a credential must hang off a real key",
+                secret.meta.key_id
+            )));
+        };
+        if owner.deleted_at.is_some() {
+            return Err(StoreError(format!(
+                "put_credential: key '{}' is tombstoned; its credentials were revoked with it and \
+                 are never reissued",
+                secret.meta.key_id
+            )));
+        }
         // Reject an explicit slot pointed at a LIVE credential of the same (key_id, kind) — see the
         // trait doc: silently clobbering a working credential mid-overlap-window is almost always an
         // operator mistake, not an intended rotation.

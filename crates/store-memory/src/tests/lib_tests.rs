@@ -664,3 +664,33 @@ fn a_parked_listing_read_does_not_block_a_concurrent_point_read() {
          read is serialized behind the whole listing pass"
     );
 }
+
+/// A credential may only hang off a LIVE key. `delete_key` tombstones the key and cascades away
+/// every credential it owned precisely so the secret material stops resolving; a `put_credential`
+/// arriving afterwards (an in-flight rotation, a retry, a hydrating replica) put the material
+/// straight back under a key an operator had just revoked, and `lookup_credential_secret` resolved
+/// it — the tombstone cascade undone through the other door.
+#[test]
+fn put_credential_refuses_a_tombstoned_or_absent_key() {
+    let s = MemoryStore::new();
+
+    // No such key at all: nothing to own the credential.
+    assert!(
+        s.put_credential(&credential("orphan", "ghost", "AKIA_GHOST"))
+            .is_err(),
+        "a credential whose owning key names no row must be refused"
+    );
+
+    s.put_key(&key("a")).unwrap();
+    s.delete_key("a").unwrap();
+    assert!(
+        s.put_credential(&credential("c1", "a", "AKIA1")).is_err(),
+        "a credential minted onto a TOMBSTONED key must be refused"
+    );
+    assert!(
+        s.lookup_credential_secret("sigv4", "AKIA1")
+            .unwrap()
+            .is_none(),
+        "the refused credential must not resolve — that is the whole point of the cascade"
+    );
+}

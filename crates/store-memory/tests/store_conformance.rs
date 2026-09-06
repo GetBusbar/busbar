@@ -32,3 +32,8 @@ fn delete_key_unknown_id_is_an_error() {
 fn revoke_credential_unknown_id_is_an_error() {
     conf::assert_revoke_credential_unknown_id_is_an_error(&MemoryStore::new(), "conf");
 }
+
+#[test]
+fn put_credential_requires_a_live_key() {
+    conf::assert_put_credential_requires_a_live_key(&MemoryStore::new(), "conf");
+}

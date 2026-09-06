@@ -51,12 +51,17 @@ pub fn key_ids(ns: &str) -> Vec<String> {
         format!("{ns}_resurrect"),
         format!("{ns}_deltwice"),
         format!("{ns}_credowner"),
+        format!("{ns}_deadowner"),
     ]
 }
 
 /// Every credential id the suite writes under `ns`. See [`key_ids`].
 pub fn credential_ids(ns: &str) -> Vec<String> {
-    vec![format!("{ns}_cred")]
+    vec![
+        format!("{ns}_cred"),
+        format!("{ns}_orphan"),
+        format!("{ns}_deadcred"),
+    ]
 }
 
 /// A minimal live key. `id` names the row; every other field is a don't-care the checks never read.
@@ -215,6 +220,46 @@ pub fn assert_revoke_credential_unknown_id_is_an_error(store: &dyn Store, ns: &s
     store
         .revoke_credential(&cred_id, "leaked again")
         .expect("revoking an ALREADY-revoked credential is idempotent, not an error");
+}
+
+/// **`put_credential` requires a LIVE owning key.** A credential minted onto a key that names no
+/// row, or onto a TOMBSTONED one, must be refused: `delete_key` cascades a key's credentials away
+/// precisely so the secret material stops resolving, and accepting a write afterwards puts it back
+/// under a key an operator just revoked.
+///
+/// Enforced in the store for the same reason the tombstone rule above is: a caller that checks the
+/// key first and writes after is a read-then-write, and a `delete_key` committing in the gap cascades
+/// away only the rows that existed at that moment.
+///
+/// Skip on a backend with no credential support.
+pub fn assert_put_credential_requires_a_live_key(store: &dyn Store, ns: &str) {
+    let absent = format!("{ns}_no_such_owner");
+    assert!(
+        store
+            .put_credential(&credential(&format!("{ns}_orphan"), &absent))
+            .is_err(),
+        "a credential whose owning key names no row was accepted — the secret material now hangs \
+         off nothing and no cascade will ever reach it"
+    );
+
+    let key_id = format!("{ns}_deadowner");
+    let cred_id = format!("{ns}_deadcred");
+    store.put_key(&live_key(&key_id)).expect("seed the key");
+    store.delete_key(&key_id).expect("tombstone it");
+    assert!(
+        store
+            .put_credential(&credential(&cred_id, &key_id))
+            .is_err(),
+        "a credential minted onto a TOMBSTONED key was accepted — the tombstone cascade is undone \
+         through the other door"
+    );
+    assert!(
+        store
+            .lookup_credential_secret("sigv4", &format!("AKIA{cred_id}"))
+            .expect("lookup is never an error")
+            .is_none(),
+        "the refused credential still resolves on the verify path"
+    );
 }
 
 /// **`append_audit` on a duplicate `seq`:** identical record → `Ok` (the write-through retrying after
