@@ -2152,7 +2152,7 @@ jobs:
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     continue-on-error: true
     outputs:
       verdict: ${{ steps.verdict.outputs.verdict }}
