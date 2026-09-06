@@ -1162,19 +1162,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
-        // One class, one line, and the quantity is one the plane already had in front of it: the
-        // size of the document it read. There is no pointer to walk, so the locator carried the
-        // value and this step folds it.
-        let retained = RetainedLocatorValues::new(vec![LocatedValue {
-            class: CLASS_BYTES,
-            quantity: self.draft.response_bytes,
-            source: busbar_caps::QuantitySource::Locator {
-                direction: busbar_contract::ids::ClassDirection::Input,
-                // The quantity was not at a pointer: it is the size of the document the plane just
-                // read, which the locator carried by value precisely for this case.
-                ptr: busbar_caps::LocatorPtr::new(""),
-            },
-        }]);
+        let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
         // beside the located figure, never the charge.
         let kernel = KernelCounts::new(vec![busbar_unit_usage::KernelLine {
@@ -1334,6 +1322,29 @@ fn fee_evidence(
     }
 }
 
+/// This plane's one metered line: how many bytes, and which side of the exchange they came off.
+///
+/// One class, one line, and the quantity is one the plane already had in front of it: the size of
+/// the document it read. There is no pointer to walk, so the locator carries the value.
+///
+/// The DIRECTION is the side that quantity was measured on, and here that is the response — the
+/// answer document, not the request. It is not a label: a direction is what a class cap, a rate-card
+/// entry and a usage projection all partition on, so a line metered against one side while the
+/// deployment configured the other is a line silently exempt from its own limit. Written out here,
+/// beside the field it describes, so the two cannot be changed apart.
+fn bytes_located(draft: &A2aDraft) -> LocatedValue {
+    LocatedValue {
+        class: CLASS_BYTES,
+        quantity: draft.response_bytes,
+        source: busbar_caps::QuantitySource::Locator {
+            direction: busbar_contract::ids::ClassDirection::Response,
+            // The quantity was not at a pointer: it is the size of the document the plane just
+            // read, which the locator carried by value precisely for this case.
+            ptr: busbar_caps::LocatorPtr::new(""),
+        },
+    }
+}
+
 /// Whether the flat fee could land on this unit AT ALL — the question the hold has to size for.
 ///
 /// The hold is a promise that the settlement will fit, so what it reserves has to be decided by the
@@ -1411,6 +1422,41 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// **The metered line's direction is the side its quantity was measured on.**
+    ///
+    /// The quantity is the RESPONSE document's size — the draft's `response_bytes`, not its
+    /// `request_bytes` — so the locator that carries it says `Response`. A direction is not a label
+    /// on a line: it is the axis a class cap, a rate-card entry and the usage projection all
+    /// partition on, so a line metered as ingress while the deployment capped egress is a line that
+    /// is silently exempt from its own limit and still shows up on the bill.
+    ///
+    /// The two fields are asserted against ONE draft whose two byte counts differ, so a line that
+    /// took its quantity from the other side would show up here as a quantity mismatch rather than
+    /// pass by coincidence.
+    #[test]
+    fn the_metered_lines_direction_is_the_side_its_quantity_came_from() {
+        let draft = draft(ops::OP_MESSAGE_SEND);
+        assert_ne!(
+            draft.request_bytes, draft.response_bytes,
+            "the fixture's two sides differ, so the quantity below names one of them"
+        );
+
+        let located = bytes_located(&draft);
+        assert_eq!(located.class, CLASS_BYTES, "the plane's one class");
+        assert_eq!(
+            located.quantity, draft.response_bytes,
+            "the quantity is measured off the answer document"
+        );
+        match located.source {
+            busbar_caps::QuantitySource::Locator { direction, .. } => assert_eq!(
+                direction,
+                busbar_contract::ids::ClassDirection::Response,
+                "and the direction says so, rather than naming the side it did not come from"
+            ),
+            other => panic!("this plane carries its quantity by locator, not {other:?}"),
+        }
+    }
 
     /// **The record's two clocks are two readings, and the monotonic one cannot be walked back.**
     ///
