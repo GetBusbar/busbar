@@ -540,23 +540,31 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
 
 # ── the cells ───────────────────────────────────────────────────────────────────────────────────
 n=0
-while IFS= read -r cell; do
-  id="$(jq -r .id <<<"$cell")"
+# THE PRODUCER PROJECTS THE DISPATCH FIELDS; the loop reads them, it does not re-parse the cell to
+# find them. Every cell used to pay for seven `jq` processes BEFORE the filter and the skip guards
+# had even run — ~16k processes across the 2283-cell corpus, most of them for cells a --filter run
+# then discarded. The fields below are the same expressions, evaluated once, in the one jq pass that
+# was already reading the file. Joined on US (), with the whole cell LAST so it absorbs
+# anything after it; no projected value contains that byte or a newline (checked across cells.json).
+# NOT a tab: a tab is IFS *whitespace*, so bash collapses runs of them and drops leading/trailing
+# ones — and `.body_lines`/`.keep` are empty on almost every cell, so every field after them shifted
+# by one and the loop drove its requests with an empty `$cell`. A non-whitespace separator keeps
+# empty fields. `.why` is deliberately NOT projected: it is free text, and it is only wanted on the
+# rare skip path, which can afford its own jq.
+#
+#   `.outcome | tostring` and the `// ` defaults reproduce `jq -r` exactly, including "null".
+while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture plane cell; do
   [ -z "$FILTER" ] || [[ "$id" =~ $FILTER ]] || continue
-  outcome="$(jq -r .outcome <<<"$cell")"
   safe="${id//|/__}"
   raw="$OUT/raw/$safe"; mkdir -p "$raw"
-  driver="$(jq -r '.driver // "llm"' <<<"$cell")"
-  # `body_lines`: the cell's contract is the ABSENCE of matching lines; the normalizer keeps only those
-  keep_lines="$(jq -r '.body_lines // empty' <<<"$cell")"
-  # `keep`: the cell's contract is the PRESENCE of a specific header/JSON-key/metrics-line value that
-  # normalize.py would otherwise strip/blank by default — passed through verbatim as compact JSON.
-  keep_spec="$(jq -c '.keep // empty' <<<"$cell")"
-  if [ "$(jq -r '.needs_fixture // false' <<<"$cell")" = true ]; then
+  # `keep_lines` (.body_lines): the cell's contract is the ABSENCE of matching lines; the normalizer
+  # keeps only those. `keep_spec` (.keep): the contract is the PRESENCE of a specific
+  # header/JSON-key/metrics-line value normalize.py would otherwise strip — passed through verbatim.
+  if [ "$needs_fixture" = true ]; then
     record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
   fi
-  case "$(jq -r .plane <<<"$cell")" in
-    mcp|a2a) record "$id" SKIP "UNSUPPORTED: $(jq -r .plane <<<"$cell") is proven by its conformance rig, not recorded here" "named gap on the golden, never owed"; continue ;;
+  case "$plane" in
+    mcp|a2a) record "$id" SKIP "UNSUPPORTED: ${plane} is proven by its conformance rig, not recorded here" "named gap on the golden, never owed"; continue ;;
   esac
   if [ "$driver" = exec ]; then
     record_exec_cell "$id" "$cell" "$raw" "$safe"; continue
@@ -758,7 +766,16 @@ PY
   usage_note="$(jq -c '.effects.usage' "$OUT/cells/$safe.json")"
   record "$id" PASS "HTTP ${status}; usage Δ ${usage_note}" ""
   n=$((n + 1))
-done < <(jq -c --arg p "$PLANE" '.cells[] | select($p == "all" or .plane == $p)' "${here}/cells.json")
+done < <(jq -r --arg p "$PLANE" '
+  .cells[] | select($p == "all" or .plane == $p)
+  | [ .id,
+      (.outcome | tostring),
+      (.driver // "llm"),
+      (.body_lines // ""),
+      (if (.keep // null) == null then "" else (.keep | tojson) end),
+      ((.needs_fixture // false) | tostring),
+      .plane,
+      tojson ] | join("\u001f")' "${here}/cells.json")
 
 # Provenance: which harness revision (cells.json/normalize.py/etc — see harness-rev.sh) and which
 # exact binary file produced this recording, plus the host triple, so a later diff can tell "busbar
