@@ -633,6 +633,8 @@ mod rehearsal {
                 charged_at,
             ),
             audit::Served::of(resp),
+            // Refused before a destination was ever read, so no charge can have landed.
+            false,
         )
         .response
         .into_response()
@@ -833,6 +835,8 @@ mod rehearsal {
                         &UnitToken::mint(seal),
                         &audit_ctx(host, gov, &model, started, charged_at),
                         audit::Served::of(audit::render_refusal(PROTO, &outcome)),
+                        // Refused before the door ran, so no charge can have landed.
+                        false,
                     )
                     .response
                     .into_response();
@@ -880,6 +884,9 @@ mod rehearsal {
                 &UnitToken::mint(seal),
                 &audit_ctx(host, gov, &model, started, charged_at),
                 audit::Served::of(resp),
+                // The door's own answer. A door that refused charged nothing, and handing the real
+                // value rather than a literal `false` is what puts that under the door's assertion.
+                charged,
             )
             .response
             .into_response();
@@ -931,7 +938,7 @@ mod rehearsal {
         // here rather than inside the facts.
         let tables = crate::engine::EngineTables::new(rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
-        let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
+        let ctx = meter::MeterCtx::bind(meter_sink.as_ref(), lane, &facts, charged);
         // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
         // question it cannot answer: it holds no card, and inventing one here would be this crate
         // deciding what a lane's rates are. It answers nothing, and the hold below reaches no exit

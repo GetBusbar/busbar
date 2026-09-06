@@ -95,9 +95,10 @@ struct Carry {
     meter_sink: Option<crate::engine::UsageSink>,
     /// Whether the Meter step made the accrual itself rather than sealing the walk's.
     posted_here: bool,
-    /// What the Meter step said about the fee and the refund.
+    /// What the Meter step said about the fee. The REFUND is not carried beside it: the rule has one
+    /// spelling, on the step's own answer, and the Audit step reads it there. A second copy here was
+    /// a second place the rule could be asked and never was.
     fee_count: u32,
-    refund: bool,
     /// The bytes the terminal posted, which are the bytes the client is given.
     terminal: Option<Served>,
 }
@@ -137,6 +138,38 @@ pub struct LateReport {
     pub lane: String,
     /// That lane's provider, as the legacy row carries it.
     pub provider: String,
+}
+
+impl LateReport {
+    /// THE ONE SPELLING of what a unit consumed, for both instants it can be read at.
+    ///
+    /// The live Meter step and the late reading after the body drained are two READINGS of one unit,
+    /// and a unit that reports one shape at the step and a different shape after its body drained is
+    /// a unit whose two readings can disagree about what it consumed. So the shape is built here,
+    /// once, and both callers reach it — the tier projection, the fee count that is carried rather
+    /// than re-decided, and the two names the row is keyed by.
+    ///
+    /// `usage` is what the unit will be CHARGED on, already resolved by the caller: `None` for a
+    /// response whose billing failed, which reports an empty tier rather than no report at all. The
+    /// unit reached a lane and consumed nothing the node will charge for, and that is a different
+    /// statement from "no reading could be taken" — it still carries the fee.
+    pub(crate) fn of(
+        usage: Option<&busbar_substrate::billing::TokenUsage>,
+        fee_count: u32,
+        lane: &crate::engine::Lane,
+    ) -> Self {
+        LateReport {
+            usage: usage
+                .map(crate::engine::usage::tier_usage)
+                .unwrap_or_default(),
+            fee_count,
+            // The SERVING lane's config name, after any failover. That is the key space rates are
+            // written in, so the line this reports and the card entry that prices it are keyed by
+            // the same name with no translation between them.
+            lane: lane.model.clone(),
+            provider: lane.provider.clone(),
+        }
+    }
 }
 
 /// One request, as this plane's steps carry it.
@@ -375,12 +408,6 @@ impl Walk {
         self.lock().posted_here
     }
 
-    /// Whether the Audit step owes a refund of the fee base.
-    #[must_use]
-    pub fn refund(&self) -> bool {
-        self.lock().refund
-    }
-
     /// The status the CLIENT saw, once the walk has produced one.
     #[must_use]
     pub fn served_status(&self) -> Option<u16> {
@@ -456,20 +483,11 @@ impl Walk {
         // billable count and does not refund it. The count is the Meter step's own, on the same base
         // the legacy accounting charges on, and it is read here rather than decided a second time.
         let usage = if facts.billing_failed {
-            busbar_substrate::billing::Usage::default()
+            None
         } else {
-            facts
-                .usage
-                .as_ref()
-                .map(crate::engine::usage::tier_usage)
-                .unwrap_or_default()
+            facts.usage.as_ref()
         };
-        Some(LateReport {
-            usage,
-            fee_count: carry.fee_count,
-            lane: lane.model.clone(),
-            provider: lane.provider.clone(),
-        })
+        Some(LateReport::of(usage, carry.fee_count, lane))
     }
 
     /// Post the terminal's bytes. Private: the two doors below are the only posters.
@@ -529,7 +547,10 @@ impl Walk {
         fallback: impl FnOnce() -> Served,
     ) -> Decision<busbar_caps::step::Audit> {
         let bytes = self.take_bytes().unwrap_or_else(fallback);
-        let audited = crate::unit::audit::audit_refused(token, ctx, bytes);
+        // The door's own answer, handed to the door that refunds nothing so it can check its own
+        // premise rather than assume it.
+        let charged = self.lock().charged;
+        let audited = crate::unit::audit::audit_refused(token, ctx, bytes, charged);
         self.seal_terminal(audited.response);
         audited.decision
     }
@@ -671,7 +692,7 @@ impl Walk {
         }
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
-        let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts, charged);
+        let ctx = MeterCtx::bind(carry.meter_sink.as_ref(), lane, &facts, charged);
         let metered =
             crate::unit::meter::meter(token, usage, &ctx, None, &Outcome::Completed, worth);
         // What the ACCRUAL ARM reported about itself. `row` is filled whether this step posted or
@@ -679,7 +700,6 @@ impl Walk {
         // what the rehearsal asserts one-posting-per-unit on.
         carry.posted_here = metered.posted;
         carry.fee_count = metered.fee_count;
-        carry.refund = metered.refund;
         metered.decision
     }
 }
