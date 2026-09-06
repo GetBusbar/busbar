@@ -559,8 +559,14 @@ fn one_shots_run_under_a_small_fixed_concurrency() {
             Direction::Inbound,
             Shape::OneShot
         ),
-        Dispatch::Wait,
-        "the third waits rather than crowding out the open conversation"
+        Dispatch::Refuse {
+            step: StepName::Decode,
+            reason: ReasonCode::InFlightCap
+        },
+        "the third is REFUSED rather than crowding out the open conversation — and refused rather \
+         than told to wait, because a whole unit arrived in that frame and the pump holds no queue \
+         to keep it in: `Wait` is what a partial frame is answered with, and answering a whole one \
+         with it is a unit nobody renders, nobody counts and nobody ends"
     );
     scheduler.finish_one_shot();
     assert_eq!(
