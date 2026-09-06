@@ -914,7 +914,6 @@ mod rehearsal {
                 usage_sink: admitted.sink,
                 model_not_found_message: None,
                 // The rehearsal's one interner — the composition root's, standing in.
-                lanes: &LANES,
             },
         )
         .await;
@@ -1146,7 +1145,6 @@ mod rehearsal {
                     resolved_gov_key: None,
                     usage_sink: None,
                     model_not_found_message: None,
-                    lanes: &LANES,
                 },
             )
             .await;
@@ -1696,7 +1694,6 @@ mod rehearsal {
                 usage_sink: None,
                 model_not_found_message: None,
                 // The rehearsal's one interner — the composition root's, standing in.
-                lanes: &LANES,
             },
         )
         .await;
@@ -1765,7 +1762,6 @@ mod rehearsal {
                 usage_sink: None,
                 model_not_found_message: None,
                 // The rehearsal's one interner — the composition root's, standing in.
-                lanes: &LANES,
             },
         )
         .await;

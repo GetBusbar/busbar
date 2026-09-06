@@ -899,7 +899,6 @@ async fn body_arrival(proto: &'static str, a: ArrivalRequest) -> Response {
         caller_token: payload.caller_token.clone(),
         headers,
         body,
-        lanes: NODE.lanes(),
         // A body-model arrival: the model rides the body, so there is no URL fact to carry and the
         // dialect's miss copy, where it has one, is not this surface's.
         path: None,
@@ -978,7 +977,6 @@ async fn path_arrival(
         caller_token: payload.caller_token.clone(),
         headers,
         body,
-        lanes: NODE.lanes(),
         // THE URL'S FACTS, handed to the unit's own carry rather than pinned to a thread. They are
         // read by three steps — the parse-and-splice at step 0, the handler lookup at step 1 and the
         // dialect's miss copy at step 5 — and the third of those is on the far side of the loop's one
@@ -1494,7 +1492,6 @@ mod tests {
             caller_token: None,
             headers: json_headers(),
             body: fixture.body(),
-            lanes: node.lanes(),
             path: None,
         };
         node.answer(arrival, None).await
@@ -1584,7 +1581,6 @@ mod tests {
             caller_token: None,
             headers: json_headers(),
             body: fixture.body(),
-            lanes: node.lanes(),
             path: None,
         };
         let key = UnitKey::new(node.next_key.fetch_add(1, Ordering::Relaxed));
@@ -1907,7 +1903,6 @@ mod tests {
             caller_token: None,
             headers: json_headers(),
             body: path_body(proto),
-            lanes: node.lanes(),
             path: Some(facts),
         };
         let resp = node.answer(arrival, None).await;
@@ -2016,7 +2011,6 @@ mod tests {
             caller_token: None,
             headers: json_headers(),
             body: path_body(GEMINI),
-            lanes: node.lanes(),
             path,
         };
         let carried = Walk::open(base(Some(facts)));

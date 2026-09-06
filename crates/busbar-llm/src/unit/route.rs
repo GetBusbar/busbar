@@ -62,7 +62,7 @@ use axum::response::Response;
 use serde_json::Value;
 
 use busbar_caps::{step::Route, Decision, LaneId, ReasonCode, Refusal, RoutePlan, UnitToken};
-use busbar_contract::{DestinationFacts, Leg, Registration, UpstreamAddress};
+use busbar_contract::{DestinationFacts, Leg, UpstreamAddress};
 use busbar_substrate::observability::HOTPATH_LEVEL;
 use busbar_substrate::plane_host::EngineHost;
 
@@ -103,15 +103,6 @@ pub(crate) struct RouteInput<'a> {
     pub(crate) usage_sink: Option<UsageSink>,
     /// A dialect's pre-shaped candidate-miss body, or `None` for the neutral copy.
     pub(crate) model_not_found_message: Option<&'a str>,
-    /// THE NODE'S INTERNER, held by the composition root and lent for the length of the unit.
-    ///
-    /// A leg names a lane and a dial target, and both are `&'static str` on the contract's side
-    /// while a configured lane's name and base URL are runtime `String`s read out of config. The
-    /// bridge is interning them ONCE — the root's job, and the same one the trust unit crosses to
-    /// seal a verified destination — so the plan this step returns names the deployment's own lanes
-    /// rather than a literal spelled in a source file. Idempotent and bounded by the number of
-    /// configured lanes, so a request path may cross it.
-    pub(crate) lanes: &'a std::sync::Mutex<Registration>,
 }
 
 /// What the Route step produced.
@@ -179,28 +170,18 @@ pub(crate) fn candidates<'a>(
 /// bounded by the contract (`MAX_LEGS`) because a unit is one authorization — a pool wider than the
 /// bound plans the legs it is allowed to plan and the walk still walks every candidate it was
 /// handed, because the walk is driven by the candidate list and not by this value.
-fn plan_over(
-    rt: &Arc<NativeRuntime>,
-    cands: &[WeightedLane],
-    lanes: &std::sync::Mutex<Registration>,
-) -> RoutePlan {
+///
+/// The two names a leg is written in are READ, not derived: the lane row carries its dial target and
+/// its lane name already seated as the node's interned statics, put there when the generation's
+/// table was built. So this takes no lock at all — neither the node's registration, which used to be
+/// held across the whole candidate loop, nor the process vocabulary behind it, which used to be
+/// taken twice per candidate to recompute a value that had been constant since boot.
+fn plan_over(rt: &Arc<NativeRuntime>, cands: &[WeightedLane]) -> RoutePlan {
     let tables = EngineTables::new(rt);
     let all = tables.lanes();
     let mut plan = RoutePlan::default();
-    let mut reg = lanes
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for c in cands {
         let Some(lane) = all.get(c.idx) else {
-            continue;
-        };
-        // A name the node's vocabulary does not hold is a candidate this node does not route to.
-        // The vocabulary is filled from configuration at boot and closed after, so the only way a
-        // configured lane misses here is a lane that was never registered — and planning a leg to
-        // one would mean minting its name on the request path, which is the leak the interner
-        // exists to replace. Skipping is the same answer this loop already gives a candidate the
-        // tables no longer hold.
-        let (Some(authority), Some(model)) = (reg.key(&lane.base_url), reg.key(&lane.model)) else {
             continue;
         };
         let facts = DestinationFacts::Upstream {
@@ -208,10 +189,10 @@ fn plan_over(
             // different question from which transport carries it.
             transport: busbar_substrate::transport::Transport::Http.name(),
             address: UpstreamAddress::Socket {
-                authority,
+                authority: lane.authority,
                 sni: None,
             },
-            lane: LaneId::new(model),
+            lane: LaneId::new(lane.lane_id),
         };
         if plan.legs.push(Leg { destination: facts }).is_err() {
             break;
@@ -289,7 +270,6 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
         resolved_gov_key,
         usage_sink,
         model_not_found_message,
-        lanes,
     } = input;
 
     // Candidate resolution. A miss is a post-door refusal, shaped in the caller's own dialect and
@@ -344,7 +324,7 @@ pub(crate) async fn route_parts(input: RouteInput<'_>) -> RouteParts {
     // THE PLAN, named before the walk runs it: one leg per candidate the destination resolved to,
     // in the order the walk was handed them. The lane and the dial target are the deployment's own
     // runtime strings, interned once through the node's registration.
-    let plan = plan_over(rt, &cands, lanes);
+    let plan = plan_over(rt, &cands);
 
     // The walk is about to take the meter half, and its taps are where this unit's accrual is made
     // — see the Meter step's header for why a streamed answer's usage can become known nowhere
@@ -508,14 +488,9 @@ mod tests {
     use super::*;
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_caps::KernelSeal;
+    use busbar_contract::Registration;
     use busbar_substrate::store::{now as store_now, BreakerState};
     use serde_json::json;
-
-    /// THE INTERNER the composition root would lend, standing in for it here — process-wide and
-    /// idempotent, so a second leg over the same deployment leaks nothing further. A per-call one
-    /// would be a leak per request wearing a test's clothes.
-    static LANES: std::sync::LazyLock<std::sync::Mutex<Registration>> =
-        std::sync::LazyLock::new(|| std::sync::Mutex::new(Registration::new()));
 
     /// A kernel seal for the length of one leg, and the step-5 token minted from it — exactly as
     /// the loop lends it, and dropped when the call it was lent to returns.
@@ -775,7 +750,6 @@ mod tests {
                 resolved_gov_key: None,
                 usage_sink: None,
                 model_not_found_message: None,
-                lanes: &LANES,
             },
         )
         .await;
@@ -876,7 +850,6 @@ mod tests {
                             resolved_gov_key: None,
                             usage_sink: None,
                             model_not_found_message: None,
-                            lanes: &LANES,
                         },
                     )
                     .await;
@@ -962,7 +935,6 @@ mod tests {
                 resolved_gov_key: None,
                 usage_sink: None,
                 model_not_found_message: None,
-                lanes: &LANES,
             },
         )
         .await;
@@ -1043,7 +1015,6 @@ mod tests {
                 resolved_gov_key: None,
                 usage_sink: None,
                 model_not_found_message: None,
-                lanes: &LANES,
             },
         )
         .await;
@@ -1158,7 +1129,6 @@ mod tests {
                         resolved_gov_key: None,
                         usage_sink: None,
                         model_not_found_message: None,
-                        lanes: &LANES,
                     },
                 )
                 .await
@@ -1242,6 +1212,85 @@ mod tests {
             unit_miss.fired.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "a pre-forward refusal fires no completion tap through the Route step either"
+        );
+    }
+
+    /// NAMING THE LEGS RE-DERIVES NOTHING, INTERNS NOTHING AND LOCKS NOTHING.
+    ///
+    /// A leg names a lane and a dial target as borrowed static strings, and both are a pure
+    /// function of the lane row config froze at table-build time. Deriving them again while the
+    /// plan is being built means one process-wide vocabulary acquisition per candidate per side —
+    /// two per candidate — plus the node's own registration held across the whole candidate loop,
+    /// all to recompute a value that could not have changed since the generation was published.
+    ///
+    /// Measured, not argued, and measured on names NO other test in this image uses. That is what
+    /// makes the count a proof rather than a coincidence: the process vocabulary is cold for these
+    /// names until something interns them, so a planner that interns MUST grow it — and grow it per
+    /// candidate per side — while a planner that reads a seated field cannot grow it at all. The
+    /// vocabulary mutex is taken by exactly one thing, `Registration::key`, and a `key` call on a
+    /// cold name is a call this counter sees; zero growth over four cold candidates is therefore
+    /// zero acquisitions.
+    ///
+    /// The allocation count is the same claim from the other side. ONE is the floor and one is the
+    /// contract: `RoutePlan::legs` is a `BoundedVec` over a heap `Vec`, so filling it takes exactly
+    /// one buffer however many legs are pushed. Interning a cold name leaks a fresh `Box` and grows
+    /// a set, so anything above one here is naming work that has crept back onto the request path.
+    ///
+    /// Four candidates, so a per-candidate cost cannot hide inside a slack bound. Do not raise
+    /// either number to make a change green.
+    #[test]
+    fn naming_the_legs_over_a_pool_interns_nothing_and_allocates_only_the_plan() {
+        use crate::CountingJemalloc;
+
+        crate::testkit::install_test_seams();
+        let proto = crate::proto_codec::PROTO_OPENAI;
+
+        // WARM every first-touch lazy static this path can reach — the interner stand-in, the
+        // tables seam, the allocator's own bookkeeping — on a deployment whose names the rest of
+        // this file already interns. A first touch is a per-process cost, not a per-request one,
+        // and warming it HERE keeps the gate deployment below cold.
+        let warm = TestApp::new()
+            .lane(LaneSpec::new("m", proto, "http://127.0.0.1:9").provider("test"))
+            .pool("p", &[(0, 1)])
+            .build();
+        let (_warm_host, warm_rt) = crate::engine::test_host_rt(&warm);
+        let (warm_cands, _) = candidates(&warm_rt, "p").expect("the warm pool resolves");
+        let _ = plan_over(&warm_rt, &warm_cands);
+
+        // THE GATE DEPLOYMENT: four lanes behind one pool, under names nothing else spells.
+        let url = "http://127.0.0.1:9/leg-naming-gate";
+        let mut builder = TestApp::new();
+        for i in 0..4 {
+            builder = builder
+                .lane(LaneSpec::new(&format!("leg-naming-gate-m{i}"), proto, url).provider("test"));
+        }
+        let app = builder
+            .pool("leg-naming-gate-p", &[(0, 1), (1, 1), (2, 1), (3, 1)])
+            .build();
+        let (_host, rt) = crate::engine::test_host_rt(&app);
+        let (cands, _) = candidates(&rt, "leg-naming-gate-p").expect("the gate pool resolves");
+        assert_eq!(cands.len(), 4, "the gate pool must be four lanes wide");
+
+        let vocabulary_before = Registration::interned();
+        let _ = CountingJemalloc::reset();
+        let plan = plan_over(&rt, &cands);
+        let allocs = CountingJemalloc::count();
+        let vocabulary_after = Registration::interned();
+
+        assert_eq!(
+            plan.legs.len(),
+            4,
+            "every candidate must still be named as a leg"
+        );
+        assert_eq!(
+            vocabulary_after - vocabulary_before,
+            0,
+            "naming the legs of a planned walk interned {} fresh name(s) on the request path",
+            vocabulary_after - vocabulary_before
+        );
+        assert_eq!(
+            allocs, 1,
+            "naming the legs of a planned walk allocates the plan's own leg buffer and nothing else"
         );
     }
 }

@@ -31,7 +31,6 @@ use axum::http::HeaderMap;
 use axum::response::Response;
 
 use busbar_caps::{Decision, Meter, Outcome, Route, UnitToken, UsageToken};
-use busbar_contract::Registration;
 use busbar_substrate::plane_host::{EngineHost, EngineTablesView};
 
 use crate::unit::admit::Admitted;
@@ -59,10 +58,6 @@ pub struct WalkArrival {
     pub headers: HeaderMap,
     /// The request body, as it arrived.
     pub body: Bytes,
-    /// THE NODE'S INTERNER, held by the composition root and lent for the length of the unit. A
-    /// configured lane's name is a runtime `String` and a `LaneId` is a borrowed static one; this is
-    /// the bridge, and it is the root's because leaking is the root's decision to make.
-    pub lanes: Arc<Mutex<Registration>>,
     /// WHAT THE URL SAID, on the two surfaces whose model rides the path rather than the body.
     ///
     /// `None` is a body-model unit, which is every other surface on this plane. Where it is `Some`,
@@ -117,7 +112,6 @@ pub struct Walk {
     caller_token: Option<String>,
     headers: HeaderMap,
     body: Bytes,
-    lanes: Arc<Mutex<Registration>>,
     path: Option<crate::arrival::PathModelFacts>,
     carry: Mutex<Carry>,
 }
@@ -148,7 +142,6 @@ impl Walk {
             caller_token,
             headers,
             body,
-            lanes,
             path,
         } = arrival;
         let rt = crate::engine::native_runtime_arc(host.as_ref());
@@ -161,7 +154,6 @@ impl Walk {
             caller_token,
             headers,
             body,
-            lanes,
             path,
             carry: Mutex::new(Carry::default()),
         }
@@ -506,7 +498,6 @@ impl Walk {
                 .path
                 .as_ref()
                 .and_then(|path| path.model_not_found_message.as_deref()),
-            lanes: &self.lanes,
         })
         .await;
         let routed = crate::unit::route::seal(token, parts);
