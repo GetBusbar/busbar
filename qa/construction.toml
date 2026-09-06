@@ -518,7 +518,7 @@ why = """A value that carries secret bytes must hand-roll its `Debug` so the byt
 in the tree and out of it is handed a `Credential`, and the code that might format it is code this \
 repository cannot read. The carriers below are the named ones; adding a type that holds a resolved \
 secret, a client credential or key material means adding it here and writing the impl."""
-carriers = ["Credential", "SecretValue", "CredentialSecret", "KeyMaterial", "UpstreamAddress"]
+carriers = ["Credential", "SecretValue", "CredentialSecret", "KeyMaterial", "UpstreamAddress", "SecretOnce"]
 max_derived = 0
 
 # ── 23. no-escaped-newline-doc-comment ──────────────────────────────────────────────────────────────
