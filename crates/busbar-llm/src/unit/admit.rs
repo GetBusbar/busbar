@@ -68,6 +68,76 @@ use busbar_caps::{
 };
 use busbar_substrate::plane_host::EngineHost;
 
+/// What one destination name resolves to, as the accrual scope has to read it.
+///
+/// The three arms are the shipped candidate resolution's three answers, and they are kept apart
+/// because the accrual scope differs between the first two: a configured pool accrues under its own
+/// name, and a bare model lane belongs to no pool and accrues under the DEFAULT (empty) cell, which
+/// is the cell the shipped release charges it on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resolved {
+    /// A configured pool. `has_lane` is false for a pool with no member left to route to — which is
+    /// admitted rather than refused, and draws a slot, exactly as the shipped release charges it.
+    Pool {
+        /// Whether the pool has any member to route to.
+        has_lane: bool,
+    },
+    /// A bare model name that names one lane directly.
+    Lane,
+    /// The name names nothing this node has. The charged model-miss 404 is the Route step's, and it
+    /// is charged precisely because this step already ran.
+    Miss,
+}
+
+impl Resolved {
+    /// The cell an accrual on this destination scopes to, given the name that resolved.
+    fn cell(self, name: &str) -> &str {
+        match self {
+            // A bare lane routes on the default cell, exactly as the shipped path opens its sink.
+            Resolved::Lane => "",
+            Resolved::Pool { .. } | Resolved::Miss => name,
+        }
+    }
+
+    /// Whether there is an upstream to route to — the fact that makes a client unit draw a request
+    /// slot and post the flat fee.
+    fn has_lane(self) -> bool {
+        match self {
+            Resolved::Pool { has_lane } => has_lane,
+            Resolved::Lane => true,
+            Resolved::Miss => false,
+        }
+    }
+}
+
+/// The deployment, as this step reads it.
+pub trait DestinationCells {
+    /// What one name resolves to.
+    fn resolve(&self, name: &str) -> Resolved;
+}
+
+/// THE DEPLOYMENT, as the door reads one on a live node.
+///
+/// Read through the Route step's own candidate resolution rather than through a second reading of
+/// the tables: the cell this answers with is the cell the walk will route on, because it is the same
+/// call that produces it.
+impl DestinationCells for crate::engine::NativeRuntime {
+    fn resolve(&self, name: &str) -> Resolved {
+        match crate::unit::route::candidates(self, name) {
+            // The pool cell rides back as the destination's own name for a pool and as the empty
+            // default cell for a bare lane, which is the one bit that tells the two apart.
+            Some((cands, "")) => {
+                debug_assert_eq!(cands.len(), 1, "a bare model name names exactly one lane");
+                Resolved::Lane
+            }
+            Some((cands, _)) => Resolved::Pool {
+                has_lane: !cands.is_empty(),
+            },
+            None => Resolved::Miss,
+        }
+    }
+}
+
 /// What the door needs that the step shape has nowhere to put.
 ///
 /// The pinned arrival epoch is the important one: both the flat fee charged here and the token fee
@@ -81,6 +151,15 @@ use busbar_substrate::plane_host::EngineHost;
 pub struct AdmitCtx<'a> {
     /// The neutral host seam the door is reached through.
     pub host: &'a Arc<dyn EngineHost>,
+    /// The ONE question this step asks of the deployment: what the destination the charge landed on
+    /// RESOLVES to. Two answers this step hands on are the resolution's and not the caller's
+    /// spelling — the cell the sink accrues under, and whether there is an upstream to route to at
+    /// all — and asking here is what keeps them from being read off the pre-downgrade name.
+    ///
+    /// A view rather than the tables themselves, for the same reason the Verify step's guards take
+    /// one: the engine's runtime is this crate's own machinery and a step's context is named by the
+    /// composition root, which may not name it.
+    pub cells: &'a dyn DestinationCells,
     /// This request's governance context — the resolved key, or none.
     pub gov: &'a busbar_api::PlaneRequestCtx,
     /// The ingress protocol name, for the refusal's native error envelope.
@@ -146,15 +225,25 @@ pub type AdmitStep = for<'a, 'b> fn(
 
 /// Step 4. Ask the door, and open the hold its yes entitles the unit to.
 ///
-/// The verified set is read for one fact only: whether there is an upstream to route to. Every
-/// destination this plane verifies is an upstream lane, so a non-empty set is that fact; the kind
-/// tag that would say so directly is not on a verified destination yet.
+/// Two of the facts this step hands on are about the destination the charge LANDED on, and the door
+/// is where that stops being the caller's spelling: a budget `on_exhaust: downgrade` re-pools the
+/// admission, and the verified set this step is handed was built over the pre-downgrade name. So
+/// "which cell does the accrual scope to" and "is there an upstream to route to" are both asked of
+/// the effective name, through the same resolution the Route step walks with.
+///
+/// The verified set is therefore NOT what says whether there is an upstream: it answers about a pool
+/// the charge may no longer be on. Every destination this plane verifies is an upstream lane, so the
+/// two agree wherever nothing was downgraded — which is every request that is not re-pooled, and is
+/// why the difference is invisible until one is.
 pub fn admit(
     unit_token: &UnitToken<Admit>,
     admit_token: &AdmitToken<Admit>,
     ctx: &AdmitCtx<'_>,
     principal: &PrincipalId,
-    destinations: &[VerifiedDestination],
+    // The set the Verify step sealed, over the name the caller asked for. It is the loop's row and
+    // it is deliberately not read here: see this function's header for why the two facts that used
+    // to be read off it are asked of the effective destination instead.
+    _destinations: &[VerifiedDestination],
 ) -> Admitted {
     // THE door, taken without its terminal. Its `Err` is the refusal ALREADY rendered in the
     // ingress protocol's native envelope and NOT yet posted — nothing was charged, so nothing is
@@ -169,10 +258,24 @@ pub fn admit(
             // charging, and that request must finish with `charged = false`.
             let charged = admit.is_some();
             // A budget downgrade re-pooled the admission: the accrual scope is the pool the charge
-            // landed on, not the one the caller asked for, so the sink is built against it.
-            let pool = downgraded.as_deref().unwrap_or(ctx.destination);
-            let sink =
-                crate::native_ingress::usage_sink(ctx.host, ctx.gov, pool, ctx.charged_at, admit);
+            // landed on, not the one the caller asked for, so the effective name is the one
+            // resolved below.
+            let effective = downgraded.as_deref().unwrap_or(ctx.destination);
+            // WHAT THE EFFECTIVE NAME RESOLVES TO, asked once and read twice — the same resolution
+            // the shipped path runs before it opens its own sink, so the two cannot answer
+            // differently about one name.
+            //
+            // THE ACCRUAL SCOPE IS THE CELL, not the caller's spelling of the destination. Opening
+            // the sink on the raw name instead attributes a by-model request's token accrual to a
+            // pool bucket named after the model — a bucket the shipped release never charges.
+            let resolved = ctx.cells.resolve(effective);
+            let sink = crate::native_ingress::usage_sink(
+                ctx.host,
+                ctx.gov,
+                resolved.cell(effective),
+                ctx.charged_at,
+                admit,
+            );
             Admitted {
                 // The hold is opened at zero: it is accounting, and sizing it is the ledger
                 // phase's. See this module's header for why a small hold cannot refuse anyone.
@@ -181,8 +284,8 @@ pub fn admit(
                     Admission::Own(Hold::open(admit_token, principal.clone(), 0)),
                 ),
                 charged,
+                upstream_candidate: resolved.has_lane(),
                 effective_pool: downgraded,
-                upstream_candidate: !destinations.is_empty(),
                 sink,
                 refusal: None,
             }

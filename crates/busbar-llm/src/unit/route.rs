@@ -150,7 +150,7 @@ pub(crate) struct Routed {
 /// The pool cell name that rides alongside is the breaker's key and the exhaustion config's lookup:
 /// a bare model lane routes on the default (empty) cell, exactly as it always has.
 pub(crate) fn candidates<'a>(
-    rt: &Arc<NativeRuntime>,
+    rt: &NativeRuntime,
     destination: &'a str,
 ) -> Option<(Vec<WeightedLane>, &'a str)> {
     if let Some(members) = EngineTables::new(rt).pools().get(destination) {
