@@ -403,10 +403,23 @@ pub(crate) fn translate_request_cross_protocol(
             return match translated.wire {
                 busbar_substrate::wire::EgressWire::Bytes(b) => Ok(b),
                 // An opaque egress wire is always bytes; a JSON here is structurally impossible, but
-                // serialize it rather than panic on the request path.
-                busbar_substrate::wire::EgressWire::Json(v) => Ok(Bytes::from(
-                    busbar_substrate::json::to_vec(&v).unwrap_or_default(),
-                )),
+                // serialize it rather than panic on the request path — and answer the FAILURE the
+                // way the serialize arm at the end of this function answers its own. An
+                // `unwrap_or_default()` here sent the upstream an EMPTY body under a content type
+                // promising a request, so a serializer failure became a provider-side error about a
+                // request busbar never meant to make, charged to the caller and unreadable in the
+                // log. A shaped 500 says whose fault it was and stops before the wire.
+                busbar_substrate::wire::EgressWire::Json(v) => {
+                    match busbar_substrate::json::to_vec(&v) {
+                        Ok(p) => Ok(Bytes::from(p)),
+                        Err(_) => Err(Box::new(ingress_error(
+                            ingress_protocol,
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            KIND_API_ERROR,
+                            DETAIL_INTERNAL_ERROR,
+                        ))),
+                    }
+                }
                 // The handle could not write itself onto the egress dialect. REFUSE, on the same
                 // terminal an unrepresentable request already takes — forwarding an empty body
                 // would send a request the caller never made.

@@ -679,7 +679,6 @@ pub fn synthesize_completion(
             body,
         } = a;
         let p = payload(&ctx);
-        let parsed = crate::engine::LazyBody::parse(&body).ok();
         // THE DEFAULT CHAT PROTOCOL the synthesized completion is driven as — the registry's
         // residual-default protocol, read by NAME so no dialect literal appears here. `None` is the
         // all-planes-off configuration with no chat dialect to drive; the caller reads the non-2xx
@@ -690,6 +689,25 @@ pub fn synthesize_completion(
                 "no default chat protocol is installed",
             )
                 .into_response();
+        };
+        // THE BODY, PARSED — and a malformed one REFUSED, in the dialect the completion is driven
+        // as. `.ok()` swallowed the parse error here and drove on with `parsed = None`, so a body
+        // the arrival path answers with a 400 before the door was instead admitted, charged and
+        // relayed upstream by this entry point. Two ways in, one of them billing for a body it had
+        // already failed to read: the re-entry is meant to be byte-identical to an arrival, and
+        // this is the one place it was not. Refused AFTER the protocol is resolved so the refusal
+        // wears the same envelope the arrival's does.
+        let parsed = match crate::engine::LazyBody::parse(&body) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                tracing::debug!(detail = %busbar_substrate::json::parse_err_log(body.len()), "synthesized completion body JSON parse failed");
+                return busbar_substrate::proxy::ingress_error(
+                    proto,
+                    StatusCode::BAD_REQUEST,
+                    crate::engine::KIND_INVALID_REQUEST,
+                    "We could not parse the JSON body of your request.",
+                );
+            }
         };
         let op =
             busbar_substrate::handlers::chat(proto, busbar_substrate::transport::Transport::Http);
