@@ -41,6 +41,35 @@ impl<T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin> LowerIo for
 
 pub(crate) type Sock = WebSocketStream<Box<dyn LowerIo>>;
 
+/// What the layer below knew about this connection when it gave the stream up.
+///
+/// An upgrade replaces the layer an arrival record describes; it does not delete what the layers
+/// underneath already established. The port the bytes arrived on, the name offered at the TLS
+/// handshake, the protocol negotiated there and the certificate the peer presented are all facts
+/// about THIS connection that no later layer can re-derive — the `tls` layer has given the stream
+/// up and will never be asked again. `ws` declares Sni, Alpn and Port selector forms, so a record
+/// that answered zero and `None` to all of them made every location resolving on those forms
+/// unresolvable against a connection that genuinely had them.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct LowerFacts {
+    pub(crate) port: u16,
+    pub(crate) alpn: Option<String>,
+    pub(crate) sni: Option<String>,
+    pub(crate) peer_cert: Option<busbar_contract_transport::wire::CertFacts>,
+}
+
+impl LowerFacts {
+    /// The facts worth keeping out of the record the layer below reported.
+    pub(crate) fn of(record: &busbar_contract_transport::wire::ArrivalRecord) -> Self {
+        Self {
+            port: record.port,
+            alpn: record.alpn.clone(),
+            sni: record.sni.clone(),
+            peer_cert: record.peer_cert.clone(),
+        }
+    }
+}
+
 /// One connection's real state: the split socket halves behind the single write lock every
 /// outbound frame passes through, plus the poison fence for a write that never completed cleanly.
 pub(crate) struct ConnState {
@@ -56,10 +85,16 @@ pub(crate) struct ConnState {
     /// the layer below reported plus this one, carried across the handoff — a connection that named
     /// only itself was one a location could not resolve against.
     pub(crate) chain: Vec<&'static str>,
+    /// What the layer below reported about this connection, carried across the handoff.
+    pub(crate) lower: LowerFacts,
 }
 
 impl ConnState {
-    pub(crate) fn new(sock: Sock, chain: Vec<&'static str>) -> std::sync::Arc<Self> {
+    pub(crate) fn new(
+        sock: Sock,
+        chain: Vec<&'static str>,
+        lower: LowerFacts,
+    ) -> std::sync::Arc<Self> {
         use futures::StreamExt;
         let (writer, reader) = sock.split();
         std::sync::Arc::new(Self {
@@ -68,6 +103,7 @@ impl ConnState {
             poisoned: AtomicBool::new(false),
             closed: AtomicBool::new(false),
             chain,
+            lower,
         })
     }
 

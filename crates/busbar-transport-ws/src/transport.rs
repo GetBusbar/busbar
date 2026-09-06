@@ -28,7 +28,7 @@ use busbar_contract_transport::wire::Unit0Trigger;
 use busbar_contract_transport::AbiVersion;
 use tokio_tungstenite::tungstenite::Message;
 
-use crate::conn::{ConnState, LowerIo, Sock, WsConnHandle};
+use crate::conn::{ConnState, LowerFacts, LowerIo, Sock, WsConnHandle};
 
 /// How long a courtesy Close frame may take to reach the peer before this transport gives up on
 /// it. A peer whose receive window is full can never accept one, and a send with no bound would
@@ -192,9 +192,15 @@ impl WsTransport {
     /// Wrap an already-established, already-upgraded WS socket as a live connection. `Sock` is
     /// generic over the boxed duplex, so the battery drives this over an in-memory pair through
     /// the identical path a real TCP/TLS accept uses.
-    fn hold(&self, sock: crate::conn::Sock, peer: &str, chain: Vec<&'static str>) -> Conn {
+    fn hold(
+        &self,
+        sock: crate::conn::Sock,
+        peer: &str,
+        chain: Vec<&'static str>,
+        lower: LowerFacts,
+    ) -> Conn {
         let id = self.mint_id();
-        self.insert(id, ConnState::new(sock, chain));
+        self.insert(id, ConnState::new(sock, chain, lower));
         Conn::new(Arc::new(WsConnHandle {
             id,
             peer: peer.to_string(),
@@ -221,6 +227,7 @@ impl WsTransport {
             "ws://localhost/",
             peer,
             vec!["ws"],
+            LowerFacts::default(),
         )
         .await
     }
@@ -249,6 +256,7 @@ impl WsTransport {
         url: &str,
         peer: &str,
         chain: Vec<&'static str>,
+        lower: LowerFacts,
     ) -> Result<Conn, TransportError> {
         // Both roles are bounded by the same budget: a peer that never answers is the same
         // unbounded wait whichever side opened the stream.
@@ -272,7 +280,7 @@ impl WsTransport {
             Ok(result) => result?,
             Err(_) => return Err(TransportError::Timeout),
         };
-        Ok(self.hold(sock, peer, chain))
+        Ok(self.hold(sock, peer, chain, lower))
     }
 }
 
@@ -331,18 +339,26 @@ impl TransportMeta for WsTransport {
 }
 
 impl Transport for WsTransport {
+    /// What this connection arrived on, which is what the layers below it established plus the
+    /// upgrade this one ran.
+    ///
+    /// The upgrade replaces the layer the record describes; it does not undo the handshake beneath
+    /// it. This transport declares Sni, Alpn and Port among its selector forms, and the only place
+    /// those facts ever existed is the record the lower layer reported before it gave the stream
+    /// up — answering zero and `None` made every location resolving on them unresolvable against a
+    /// connection that really did have a port, a name and a negotiated protocol.
     fn arrival(&self, conn: &Conn) -> ArrivalRecord {
+        let state = self.state_of(conn.id());
+        let lower = state.as_ref().map(|s| &s.lower);
         ArrivalRecord {
             source: conn.peer(),
-            port: 0,
-            alpn: None,
-            sni: None,
-            peer_cert: None,
+            port: lower.map_or(0, |l| l.port),
+            alpn: lower.and_then(|l| l.alpn.clone()),
+            sni: lower.and_then(|l| l.sni.clone()),
+            peer_cert: lower.and_then(|l| l.peer_cert.clone()),
             // The chain the layer below reported, plus this one. An adopted connection knows
             // what it was handed; one this transport opened itself knows what it opened.
-            transport_chain: self
-                .state_of(conn.id())
-                .map_or_else(|| vec!["ws"], |s| s.chain.clone()),
+            transport_chain: state.map_or_else(|| vec!["ws"], |s| s.chain.clone()),
         }
     }
 
@@ -421,7 +437,11 @@ impl Transport for WsTransport {
                 )
                 .ok_or(TransportError::AddressRefused)?;
             let conn = lower.dial(&beneath, keys).await?;
-            let mut chain = lower.arrival(&conn).transport_chain;
+            // The whole record, not only the chain: the layer below is about to give the stream
+            // up and will never be able to answer for this connection again.
+            let below = lower.arrival(&conn);
+            let facts = LowerFacts::of(&below);
+            let mut chain = below.transport_chain;
             let raw = lower.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
             chain.push(<Self as TransportMeta>::KEY);
 
@@ -430,8 +450,15 @@ impl Transport for WsTransport {
                 if secure { "wss" } else { "ws" }
             );
             let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
-            self.handshake(Box::new(stream), false, &request_url, authority, chain)
-                .await
+            self.handshake(
+                Box::new(stream),
+                false,
+                &request_url,
+                authority,
+                chain,
+                facts,
+            )
+            .await
         })
     }
 
@@ -594,12 +621,17 @@ impl Transport for WsTransport {
             if !<Self as TransportMeta>::COMPOSES_OVER.contains(&from.key()) {
                 return Err(TransportError::HandoffMismatch);
             }
-            let mut chain = from.arrival(&conn).transport_chain;
+            // Read before the detach, for the same reason: after it, `from` knows nothing about
+            // this connection, and the port, name, protocol and certificate it established are
+            // facts about the connection rather than about the layer that observed them.
+            let below = from.arrival(&conn);
+            let facts = LowerFacts::of(&below);
+            let mut chain = below.transport_chain;
             let raw = from.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
             chain.push(<Self as TransportMeta>::KEY);
             let peer = raw.peer().to_string();
             let stream = tokio_util::compat::FuturesAsyncReadCompatExt::compat(raw.into_io());
-            self.handshake(Box::new(stream), true, "", &peer, chain)
+            self.handshake(Box::new(stream), true, "", &peer, chain, facts)
                 .await
         })
     }

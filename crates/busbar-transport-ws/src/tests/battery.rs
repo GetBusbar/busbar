@@ -292,6 +292,197 @@ async fn the_message_cap_is_the_operator_s_and_not_the_library_s() {
     );
 }
 
+/// A secure handshake happened underneath this connection, and the upgrade does not unhappen it.
+/// The port the bytes arrived on, the name offered, the protocol negotiated and the certificate
+/// presented exist in exactly one place — the record the lower layer reported before it gave the
+/// stream up — and `ws` declares Sni, Alpn and Port selector forms, so a record that answered zero
+/// and `None` to all four left every location resolving on them unresolvable against a connection
+/// that genuinely had them.
+#[tokio::test]
+async fn the_facts_the_layer_below_established_survive_the_upgrade() {
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let below = StubLower::holding(end_a);
+    let ws = WsTransport::new();
+    let keys = test_key_handle();
+
+    let (adopted, dialled) = tokio::join!(
+        ws.adopt(&below, below.conn(), &keys),
+        tokio_tungstenite::client_async("ws://localhost/", end_b)
+    );
+    let adopted = adopted.unwrap();
+    dialled.unwrap();
+
+    let record = ws.arrival(&adopted);
+    assert_eq!(record.port, 8443, "the port the bytes arrived on");
+    assert_eq!(record.sni.as_deref(), Some("edge.invalid"));
+    assert_eq!(record.alpn.as_deref(), Some("http/1.1"));
+    assert_eq!(
+        record.peer_cert.map(|c| c.fingerprint),
+        Some("sha256:stub".to_string()),
+        "the certificate the peer presented"
+    );
+    assert_eq!(record.transport_chain, vec!["tcp", "tls", "ws"]);
+}
+
+/// A `tls` layer that has one connection to give up, and reports the facts a real one would.
+struct StubLower {
+    io: std::sync::Mutex<Option<tokio::io::DuplexStream>>,
+}
+
+impl StubLower {
+    fn holding(io: tokio::io::DuplexStream) -> Self {
+        Self {
+            io: std::sync::Mutex::new(Some(io)),
+        }
+    }
+
+    fn conn(&self) -> busbar_contract_transport::wire::Conn {
+        struct Handle;
+        impl busbar_contract_transport::wire::ConnHandle for Handle {
+            fn id(&self) -> u64 {
+                1
+            }
+            fn peer(&self) -> String {
+                "203.0.113.7:54321".to_string()
+            }
+        }
+        busbar_contract_transport::wire::Conn::new(Arc::new(Handle))
+    }
+}
+
+impl busbar_contract::Plugin for StubLower {
+    fn key(&self) -> &'static str {
+        "tls"
+    }
+    fn kind(&self) -> busbar_contract::Kind {
+        busbar_contract::Kind::Transport
+    }
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::registry::TRANSPORT_ABI
+    }
+}
+
+impl Transport for StubLower {
+    fn arrival(
+        &self,
+        conn: &busbar_contract_transport::wire::Conn,
+    ) -> busbar_contract_transport::wire::ArrivalRecord {
+        busbar_contract_transport::wire::ArrivalRecord {
+            source: conn.peer(),
+            port: 8443,
+            alpn: Some("http/1.1".to_string()),
+            sni: Some("edge.invalid".to_string()),
+            peer_cert: Some(busbar_contract_transport::wire::CertFacts {
+                subject: "CN=peer".to_string(),
+                issuer: "CN=issuer".to_string(),
+                fingerprint: "sha256:stub".to_string(),
+            }),
+            transport_chain: vec!["tcp", "tls"],
+        }
+    }
+
+    fn listen<'a>(
+        &'a self,
+        _cfg: &'a dyn busbar_contract::TransportConfigView,
+        _keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Listener> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn accept<'a>(
+        &'a self,
+        _l: &'a busbar_contract_transport::wire::Listener,
+    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn dial<'a>(
+        &'a self,
+        _dest: &'a busbar_contract::VerifiedDestination,
+        _keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn frames(
+        &self,
+        _conn: busbar_contract_transport::wire::Conn,
+    ) -> std::pin::Pin<
+        Box<
+            dyn futures::Stream<
+                    Item = Result<
+                        (StreamId, busbar_contract::wire::Frame),
+                        busbar_contract_transport::wire::TransportError,
+                    >,
+                > + Send,
+        >,
+    > {
+        Box::pin(futures::stream::empty())
+    }
+
+    fn write<'a>(
+        &'a self,
+        _conn: &'a busbar_contract_transport::wire::Conn,
+        _stream: StreamId,
+        _bytes: ArenaBytes<'a>,
+    ) -> busbar_contract::Fut<'a, usize> {
+        Box::pin(async { Err(TransportError::Closed) })
+    }
+
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        _from: &'a dyn Transport,
+        _conn: busbar_contract_transport::wire::Conn,
+        _keys: &'a busbar_contract::TransportKeyHandle,
+    ) -> busbar_contract::Fut<'a, busbar_contract_transport::wire::Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn detach(
+        &self,
+        conn: &busbar_contract_transport::wire::Conn,
+    ) -> Option<busbar_contract_transport::wire::RawStream> {
+        let io = self.io.lock().unwrap().take()?;
+        Some(busbar_contract_transport::wire::RawStream::new(
+            "tls",
+            conn.peer(),
+            Box::new(tokio_util::compat::TokioAsyncReadCompatExt::compat(io)),
+        ))
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        Some("tcp")
+    }
+
+    fn close(
+        &self,
+        _conn: busbar_contract_transport::wire::Conn,
+        _reason: busbar_contract_transport::wire::CloseReason,
+    ) {
+    }
+
+    fn unit0_refusal<'a>(
+        &'a self,
+        _conn: busbar_contract_transport::wire::Conn,
+        _stream: Option<StreamId>,
+        _refusal: &'a busbar_contract::unit::Refusal,
+        _bytes: ArenaBytes<'a>,
+    ) -> busbar_contract::Fut<'a, ()> {
+        Box::pin(async { Err(TransportError::Closed) })
+    }
+}
+
 /// A bind address, for the layer below, and the operator's message cap where one is declared.
 struct HttpCfg(String, Option<i64>);
 impl busbar_contract::ConfigView for HttpCfg {
