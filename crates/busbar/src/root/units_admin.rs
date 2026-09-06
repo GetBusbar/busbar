@@ -1423,12 +1423,18 @@ pub(crate) fn verify(
 /// a scope refusal at this step rather than a surprise inside the operation.
 pub(crate) fn approve(
     binding: &AdminBinding,
-    granted: VerbScope,
+    granted: Option<VerbScope>,
     token: &UnitToken<Approve>,
     ctx: &UnitCtx,
     _principal: &PrincipalId,
     _destinations: &[VerifiedDestination],
 ) -> Decision<Approve> {
+    // A caller holding no grant at all is refused here, before the operation is reached. An absent
+    // grant is not a narrow one: there is no scope to compare the matrix against, so there is
+    // nothing this step could admit.
+    let Some(granted) = granted else {
+        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+    };
     let Some(request) = binding.units.request(ctx.key) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
@@ -2253,11 +2259,12 @@ impl AdminNode {
                 // The loop ran; the answer is whatever Route put there. A unit refused before Route
                 // has none, and the refusal it ended on is what the surface renders. Read BEFORE
                 // the guard below hands the entry back, because the entry is where the answer is.
-                self.units
-                    .admin
-                    .units
-                    .answer(key)
-                    .unwrap_or_else(|| refused_answer(&ended))
+                self.units.admin.units.answer(key).unwrap_or_else(|| {
+                    // The request is read back for the one refusal whose message names a
+                    // property of the endpoint rather than of the ending. It is still open here:
+                    // the guard below is what closes it.
+                    refused_answer(&ended, self.units.admin.units.request(key).as_ref())
+                })
             }
         };
 
@@ -2324,11 +2331,17 @@ impl Drop for Occupied<'_> {
 /// them and the loop knows which one this unit earned, so the ending is read rather than replaced
 /// by a single word.
 #[cfg(feature = "root-admin")]
-fn refused_answer(ended: &busbar_kernel::teller::Ended) -> AdminAnswer {
+fn refused_answer(
+    ended: &busbar_kernel::teller::Ended,
+    request: Option<&AdminRequest>,
+) -> AdminAnswer {
     match ended {
         busbar_kernel::teller::Ended::Settled { end, .. } => {
             if is_credential_refusal(end.outcome()) {
                 return door_answer();
+            }
+            if let (true, Some(request)) = (is_scope_refusal(end.outcome()), request) {
+                return scope_answer(request);
             }
             answer_for(end.outcome())
         }
@@ -2350,6 +2363,36 @@ fn is_credential_refusal(outcome: Outcome) -> bool {
         outcome,
         Outcome::Refused(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
             | Outcome::Failed(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
+    )
+}
+
+/// Whether this ending is the one about what the caller may DO, having been identified.
+#[cfg(feature = "root-admin")]
+fn is_scope_refusal(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Refused(_, ReasonCode::ScopeDenied) | Outcome::Failed(_, ReasonCode::ScopeDenied)
+    )
+}
+
+/// What the previous release answers a caller whose grant does not reach the operation.
+///
+/// Its message NAMES the scope that would have sufficed, which is why this cannot be rendered from
+/// the code alone: the scope is a property of the endpoint, read from the same matrix the approve
+/// step compared the grant against. No recorded cell exercises this ending — the published release's
+/// recordings hold no under-scoped call — so the three values are taken from that release's own
+/// admin error contract (`crates/busbar-core/src/admin/v1/contract/mod.rs`, `AdminError::Forbidden`)
+/// rather than from a recording, and the oracle cannot confirm them.
+#[cfg(feature = "root-admin")]
+fn scope_answer(request: &AdminRequest) -> AdminAnswer {
+    let needed = busbar_unit_scope::admin_required_scope(&request.method, &request.path);
+    error_answer_with_message(
+        403,
+        "forbidden",
+        &format!(
+            "insufficient scope: this endpoint requires `{}`",
+            needed.as_str()
+        ),
     )
 }
 
@@ -2833,6 +2876,24 @@ mod tests {
                 .as_str()
                 .expect("the cell records a content length"),
             "the length the caller is told is the length the recorded answer had"
+        );
+    }
+
+    /// A GRANT THAT DOES NOT REACH THE ENDPOINT IS THE PREVIOUS RELEASE'S FORBIDDEN, NAMING THE
+    /// SCOPE.
+    ///
+    /// Its message is the one refusal message this file cannot derive from the code, because it
+    /// states a property of the endpoint. No recorded cell holds an under-scoped call, so this is
+    /// pinned to the previous release's own admin error contract and the oracle cannot confirm it —
+    /// which is exactly why it is written down here rather than left to a reader to re-derive.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_grant_that_does_not_reach_the_endpoint_is_answered_with_the_scope_it_needed() {
+        let answer = scope_answer(&a_request());
+        assert_eq!(answer.status, 403);
+        assert_eq!(
+            String::from_utf8(answer.body).expect("the envelope is text"),
+            r#"{"error":{"code":"forbidden","message":"insufficient scope: this endpoint requires `read-only`"}}"#
         );
     }
 
@@ -5137,7 +5198,7 @@ mod tests {
             let token: UnitToken<Approve> = UnitToken::mint(&seal);
             let decision = approve(
                 &binding,
-                granted,
+                Some(granted),
                 &token,
                 &ctx,
                 &PrincipalId::new("admin"),
