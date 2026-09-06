@@ -206,3 +206,47 @@ fn nonstream_same_proto_all_protocols() {
             (21, 8),
         );
 }
+
+// ---- ONE PROJECTION: the buffered billing arm and the stream tap must agree ----
+
+/// A Cohere completion whose separately-metered `billed_units` differ from the raw `tokens` bucket
+/// must be ledgered IDENTICALLY whether it was served buffered or streamed. The buffered arm is
+/// `ChatRespHandle::billing()`; the streamed arm is the A-tap, which ledgers
+/// `IrUsage::to_token_usage()`. Both answer the SAME completion, so a divergence here is a
+/// same-request double answer: the operator is invoiced two different numbers depending on a
+/// `stream` flag the provider's own counts do not depend on. Guards against the buffered arm
+/// growing a SECOND projection that rebuilds `TokenUsage` from the RAW totals.
+#[test]
+fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
+    use busbar_substrate_values::billing::Billing;
+    use busbar_substrate_values::ir::handle::IrHandle;
+
+    // billed_units (120/50) deliberately DIFFER from the raw tokens bucket (100/40) — the only
+    // shape that can tell the two projections apart.
+    let body = br#"{"id":"c1","finish_reason":"COMPLETE","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]},"usage":{"billed_units":{"input_tokens":120,"output_tokens":50},"tokens":{"input_tokens":100,"output_tokens":40}}}"#;
+    let v: serde_json::Value = busbar_substrate_values::json::parse(body).expect("json body");
+    let ir = protocol_for("cohere")
+        .expect("known proto")
+        .reader()
+        .read_response(&v)
+        .expect("read_response");
+
+    // The STREAM tap's ledgered projection of this exact IR.
+    let streamed = ir.usage.to_token_usage();
+    assert_eq!(
+        (streamed.input, streamed.output),
+        (120, 50),
+        "the stream tap ledgers the BILLED counts"
+    );
+
+    // The BUFFERED billing arm over the same IR.
+    let buffered = match chat_handle::ChatRespHandle(ir).billing() {
+        Some(Billing::Tokens(t)) => t,
+        other => panic!("buffered chat billing must be token-shaped, got {other:?}"),
+    };
+    assert_eq!(
+        buffered, streamed,
+        "buffered and streamed billing must be ONE projection of one completion's usage — the \
+         buffered arm must not rebuild TokenUsage from the raw totals and ignore billed_units"
+    );
+}
