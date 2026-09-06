@@ -37,6 +37,23 @@
 //! A provider tool call takes no slot at all — it runs under the small fixed one-shot concurrency,
 //! so a burst of them cannot starve the conversation.
 //!
+//! **A tool call waits, and the wait has a table.** A provider-pushed tool call's leg is a client
+//! await-reply: the unit is not finished when the call is delivered, it is finished when the answer
+//! carrying that call's identifier comes back. Two of them open at once is the ordinary shape of a
+//! turn that asks for two tools, so which answer finishes which unit is a decision, and
+//! [`OpenToolCalls`] is where it is made. Three moments, and each of them is a real call site:
+//!
+//! - **Planned.** The wait is entered at [`Units::verify`], because that is the frame that plans the
+//!   leg and the last frame in which the identifier the plane's draft minted is readable at all.
+//! - **Answered.** A client's reply names the call it answers — the voice plane decodes it as a
+//!   frame of that call rather than of the turn it rode in on — and the pump hands the correlation
+//!   to [`OpenToolCalls::replied`], which either names the unit it wakes or refuses. There is no
+//!   third answer: a reply matched against "the only call open" is one collision away from paying a
+//!   call's hold out against another call's answer.
+//! - **Unanswered.** [`OpenToolCalls::expired`] is the node tick's sweep. It leaves an ending behind,
+//!   the unit's own [`Units::route`] reads it, and the call ends under the deadline its leg declared
+//!   rather than settling as though the answer had arrived.
+//!
 //! **The metering lease is the hold.** A live session cannot be metered after the fact: audio
 //! already streamed cannot be refunded, so a budget that is only checked afterwards is not a budget.
 //! The primitive that can enforce one is reserve-then-settle, and in this architecture that
@@ -61,10 +78,10 @@
 //! | arrival | *none* — the kernel's gate | the connection's own arrival record |
 //! | decode | the voice plane | the shape the pump already read off the frame |
 //! | authenticate | `busbar-unit-auth` | the claim's declared alternatives, the plane's narrowing, whether the credential rides the session |
-//! | verify | `busbar-unit-trust` | the plane's proposed destinations, the pool view, and the network guard over the dial target |
+//! | verify | `busbar-unit-trust` | the plane's proposed destinations, the pool view, the network guard over the dial target, and a tool call's reply leg entered as a wait |
 //! | approve | `busbar-unit-scope` | the policy view, where silence is a refusal |
 //! | admit | `busbar-unit-admission`, priced by `busbar-unit-cost` | the estimate, the bucket chain, the pinned arrival epoch |
-//! | route | the provider dial, over `busbar-unit-egress` | the dial target and the guard posture |
+//! | route | the provider dial, over `busbar-unit-egress` | the dial target and the guard posture, and what became of a tool call's wait |
 //! | meter | `busbar-unit-usage` | the turn's reported classes and the configured policy |
 //! | audit | `busbar-unit-audit` | the operation class and the finish class |
 //! | exit | `busbar-unit-ledger` under `busbar-unit-wal` | nothing: the loop settles |
@@ -272,6 +289,12 @@ pub trait ProviderDial: Send + Sync {
 /// root's interest in it is one bit wide: whether the session is still pumping. What a frame *is* is
 /// the plane's answer and what happens to the unit table because of it is the kernel pump's; this
 /// seam is only how the root asks the I/O half to keep the two connected.
+///
+/// It is also what drives [`OpenToolCalls`]: a frame that carries a tool reply is handed to
+/// [`OpenToolCalls::replied`], and the tick that runs beside the pump is what calls
+/// [`OpenToolCalls::expired`]. Neither is a method here, because neither is a question about the
+/// pump — they are the node's own table, and a seam that owned them would be the I/O half deciding
+/// which unit an answer belongs to.
 pub trait SessionPump: Send + Sync {
     /// Whether the pump is running for this session.
     fn is_pumping(&self, session: u64) -> bool;
