@@ -815,6 +815,31 @@ fn audit_finish(finish: FinishClass) -> busbar_unit_audit::FinishClass {
     }
 }
 
+/// What this plane asks the authentication chain, for one draft.
+///
+/// The three open surfaces of this protocol declare no scheme, so there is nothing to narrow within
+/// and nothing to present: the chain answers for the anonymous principal or it denies, and either
+/// answer is the chain's. Everything else presents a bearer credential and is narrowed to the one
+/// alternative the claim declares.
+///
+/// It is a function rather than four lines inside the step because the authenticate CELL drives the
+/// same request the step does. A cell that rebuilt this shape by hand would be pinning its own copy,
+/// and the copy is the one that drifts — the audience in particular, which is the whole reason a
+/// token minted for another plane does not open this one.
+fn auth_request(draft: &A2aDraft, now: u64) -> AuthRequest<'_> {
+    AuthRequest {
+        candidate: draft.credential.as_deref(),
+        scheme: draft.narrowing,
+        declared_schemes: draft.declared_schemes,
+        expected_aud: draft.expected_aud.as_deref(),
+        in_handshake: false,
+        now,
+        // A bound session's principal is the cached one; an unbound session re-authenticates every
+        // unit, which is what makes revocation gate new units on this plane at all.
+        new_unit: !draft.from_session,
+    }
+}
+
 impl<S: CellStore> Units for A2aUnits<'_, S> {
     fn arrival(&self, token: &UnitToken<Arrival>, _ctx: &UnitCtx) -> Decision<Arrival> {
         // The gate itself is the kernel's, over the configured budgets, and it has already run by
@@ -837,21 +862,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         token: &UnitToken<Authenticate>,
         _ctx: &UnitCtx,
     ) -> Decision<Authenticate> {
-        // The three open surfaces of this protocol declare no scheme, so there is nothing to narrow
-        // within and nothing to present: the chain answers for the anonymous principal or it
-        // denies, and either answer is the chain's. Everything else presents a bearer credential
-        // and is narrowed to the one alternative the claim declares.
-        let request = AuthRequest {
-            candidate: self.draft.credential.as_deref(),
-            scheme: self.draft.narrowing,
-            declared_schemes: self.draft.declared_schemes,
-            expected_aud: self.draft.expected_aud.as_deref(),
-            in_handshake: false,
-            now: self.bindings.now,
-            // A bound session's principal is the cached one; an unbound session re-authenticates
-            // every unit, which is what makes revocation gate new units on this plane at all.
-            new_unit: !self.draft.from_session,
-        };
+        let request = auth_request(&self.draft, self.bindings.now);
         // The chain's answer is the chain's, and a decision has no reader on it by design — the only
         // thing that opens one is the loop, with the kernel's seal. So the principal the audit and
         // the settlement need is recorded at the next step, which is handed it.
@@ -1348,6 +1359,135 @@ mod tests {
         assert_eq!(declared_scope(ops::OP_MESSAGE_SEND), Scope::Full);
         assert_eq!(declared_scope(ops::OP_TASK_CANCEL), Scope::Full);
         assert_eq!(declared_scope(ops::OP_PUSH_EVENT), Scope::Full);
+    }
+
+    /// A bad credential is refused before Verify is ever reached, through the node's own auth seams.
+    ///
+    /// THE authenticate STEP, over the loop. The step is not this file's own opinion about a
+    /// credential — it shapes the plane's request and hands it to the chain with the three seams the
+    /// node holds one set of (the cache, the signed-key verifier, the revocation view). What this
+    /// pins is that the shaping is right and the refusal lands AT the step:
+    ///
+    /// - a forged credential is `Unauthenticated`, not an admission;
+    /// - a credential minted for a DIFFERENT plane's audience is refused here too — the audience is
+    ///   the plane boundary and the verifier is where it is enforced, so an a2a token is not an mcp
+    ///   token and the reverse;
+    /// - a revoked credential is refused on a new unit, which is the answer `new_unit` exists for;
+    /// - the one approved credential reaches its principal, so the refusals above are the arm
+    ///   deciding and not a door that was shut to everything.
+    ///
+    /// ZERO EGRESS is the other half and it is structural: the draft carries an Upstream
+    /// destination, so this unit WOULD have dialled an agent, and every refusal below is a
+    /// `Decision<Authenticate>` — the kernel's loop runs no later step on a refusal, so Verify never
+    /// seals a destination and Route never gets a plan. The assertion that the draft really does
+    /// point at an agent is what keeps that meaningful: refusing a unit that was going nowhere would
+    /// prove nothing about egress.
+    #[test]
+    fn a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams() {
+        use crate::root::kernel::auth_bindings::{AuthBindings, KeyFacts, VirtualKeyDirectory};
+        use busbar_caps::{Authenticated, KernelSeal};
+        use busbar_unit_auth::{AuthChain, ChainVerdict};
+
+        /// The audience this plane's ingress requires of a signed token.
+        const AUD: &str = "a2a";
+
+        struct OneKey;
+
+        impl VirtualKeyDirectory for OneKey {
+            fn verify(
+                &self,
+                credential: &str,
+                _now: u64,
+                expected_aud: Option<&str>,
+            ) -> Option<KeyFacts> {
+                // The audience is the plane boundary, and the verifier is where it is enforced.
+                (credential == "tok" && expected_aud == Some(AUD)).then(|| KeyFacts {
+                    id: "key-a2a-1".to_string(),
+                    name: "an approved key".to_string(),
+                })
+            }
+
+            fn revoked(&self, credential: &str) -> bool {
+                credential == "burned"
+            }
+        }
+
+        // A chain naming the signed-key arm and no boxed module: the door stays shut and the arm is
+        // the one thing that can open it, which is what makes this cell about the arm.
+        let auth = Auth::new(AuthChain::new(Vec::new(), true));
+        assert!(!auth.chain().is_open());
+        assert!(matches!(
+            auth.chain().run_chain(Some("tok")),
+            ChainVerdict::Denied
+        ));
+
+        let bindings = AuthBindings::new(std::sync::Arc::new(OneKey));
+        let seal = KernelSeal::acquire_for_kernel();
+
+        // The unit is pointed at an agent. Every refusal below is therefore a dial that did not
+        // happen, rather than a unit that had no egress to refuse.
+        let mut base = draft(ops::OP_MESSAGE_SEND);
+        base.expected_aud = Some(AUD.to_string());
+        assert!(
+            base.has_upstream(),
+            "the fixture must reach an agent or the zero-egress half proves nothing"
+        );
+
+        let decide = |credential: &str| {
+            let mut d = draft(ops::OP_MESSAGE_SEND);
+            d.expected_aud = Some(AUD.to_string());
+            d.credential = Some(credential.to_string());
+            let seams = &bindings;
+            auth.resolve(
+                &auth_request(&d, 100),
+                seams.cache(),
+                seams.keys(),
+                seams.revocations(),
+                None,
+                &UnitToken::mint(&seal),
+            )
+            .into_result(&seal)
+        };
+
+        // A credential nobody minted.
+        match decide("forged") {
+            Err(refusal) => assert_eq!(refusal.reason(), ReasonCode::Unauthenticated),
+            Ok(other) => panic!("a forged credential was admitted as {other:?}"),
+        }
+
+        // A credential that was minted, and then burned. The revocation view is asked because this
+        // is a new unit; a bound session would not have asked.
+        match decide("burned") {
+            Err(refusal) => assert_eq!(refusal.reason(), ReasonCode::Revoked),
+            Ok(other) => panic!("a revoked credential was admitted as {other:?}"),
+        }
+
+        // The approved credential, for the WRONG plane's audience: the same bytes that open this
+        // plane do not open it under another plane's expectation.
+        let mut elsewhere = draft(ops::OP_MESSAGE_SEND);
+        elsewhere.expected_aud = Some("mcp".to_string());
+        elsewhere.credential = Some("tok".to_string());
+        let seams = &bindings;
+        let crossed = auth
+            .resolve(
+                &auth_request(&elsewhere, 100),
+                seams.cache(),
+                seams.keys(),
+                seams.revocations(),
+                None,
+                &UnitToken::mint(&seal),
+            )
+            .into_result(&seal);
+        match crossed {
+            Err(refusal) => assert_eq!(refusal.reason(), ReasonCode::Unauthenticated),
+            Ok(other) => panic!("another plane's audience opened this one: {other:?}"),
+        }
+
+        // And the arm does open, for the one credential it was given.
+        match decide("tok") {
+            Ok(Authenticated::Principal(p)) => assert_eq!(p.as_str(), "key-a2a-1"),
+            other => panic!("the bound seams did not reach the arm: {other:?}"),
+        }
     }
 
     /// A read-only grant does not reach a send.
