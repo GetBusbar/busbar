@@ -42,6 +42,7 @@
 //! The step that switches a plane onto the root is what fills it from the resolved config.
 
 use busbar_contract::Registration;
+use std::collections::BTreeMap;
 
 /// Every config-derived open-vocabulary key the root interns, in one list.
 ///
@@ -161,6 +162,20 @@ impl Vocabulary {
     /// interning it again.
     pub fn intern_all(&mut self, keys: &ConfigKeys) -> Vec<&'static str> {
         keys.all().map(|value| self.key(value)).collect()
+    }
+
+    /// The interned name of every configured group, looked up by the name configuration wrote.
+    ///
+    /// The door works in configuration's own `String`s and the slot works in the node's static
+    /// vocabulary, so something has to hold both halves of each pair. This is that value: built
+    /// once at boot, handed to the projection that resolves the group table, and read nowhere on
+    /// the request path. Interning is idempotent, so calling this after [`Vocabulary::intern_all`]
+    /// leaks nothing a second time — it returns the names that boot already leaked.
+    pub fn group_ids(&mut self, keys: &ConfigKeys) -> BTreeMap<String, &'static str> {
+        keys.groups
+            .iter()
+            .map(|name| (name.clone(), self.key(name)))
+            .collect()
     }
 
     /// Close the vocabulary. Nothing may intern after this.
