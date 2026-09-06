@@ -140,6 +140,21 @@ impl Kernel {
         AdminToken::mint(&self.seal)
     }
 
+    /// The journal's token, as the composition root lends it to an exit arm.
+    ///
+    /// The third token minted outside the loop, and for the same reason as the other two: making a
+    /// posting durable happens AFTER the exit has sealed the end, so there is no step of the unit
+    /// whose token could stand in, and the root's exit arm has a parameter no caller in the tree can
+    /// supply without this. Without it a root that wanted to journal what the loop posted had to
+    /// reach for the seal itself, which is the one symbol that must not be spelled outside this
+    /// crate.
+    ///
+    /// Kept beside the other two and named the same way, so the source scan that accounts for every
+    /// mint sees this one too.
+    pub fn durability_token(&self) -> busbar_caps::DurabilityToken {
+        busbar_caps::DurabilityToken::mint(&self.seal)
+    }
+
     /// The seal itself, for the other two places in the kernel that mint tokens: the recovery
     /// module, which materialises a hold from a journal record, and the node's sweep, which is the
     /// second and last holder of an exit token.

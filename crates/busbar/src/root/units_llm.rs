@@ -186,6 +186,21 @@ pub struct LlmNode {
     /// them through it again.
     lane_names: Mutex<LaneNames>,
     next_key: AtomicU64,
+    /// THE BOOK THIS NODE SETTLES ONTO, once the composition root has bound one. See [`bind_book`].
+    ///
+    /// A cell rather than a field, because the node is reached through a `static` — a bare `fn` is
+    /// what the arrival seam takes and a bare `fn` cannot capture — so the node exists before the
+    /// boot that owns the book has finished assembling it.
+    ///
+    /// [`bind_book`]: LlmNode::bind_book
+    book: std::sync::OnceLock<Arc<Mutex<crate::root::durability::Durability>>>,
+    /// The journal's token, minted from this node's own kernel at construction and lent to the exit
+    /// arm for the length of one settlement.
+    ///
+    /// Minted outside the loop because making a posting durable happens after the exit has sealed
+    /// the end: there is no step of the unit whose token could stand in, which is the same reason
+    /// the verbs unit's and the transport-key unit's are minted outside it.
+    durability_token: busbar_caps::DurabilityToken,
 }
 
 impl std::fmt::Debug for LlmNode {
@@ -205,8 +220,11 @@ impl LlmNode {
     #[must_use]
     pub fn new() -> Self {
         let lanes = Arc::new(Mutex::new(crate::root::kernel::new_registration()));
+        let kernel = crate::root::kernel::new_kernel();
         LlmNode {
-            kernel: crate::root::kernel::new_kernel(),
+            durability_token: kernel.durability_token(),
+            book: std::sync::OnceLock::new(),
+            kernel,
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where this deployment's admission-to-the-node decision is made and has always
             // been made. A second cap here would be a second answer to one question, and the one
@@ -233,6 +251,55 @@ impl LlmNode {
     #[must_use]
     pub fn lanes(&self) -> Arc<Mutex<Registration>> {
         Arc::clone(&self.lanes)
+    }
+
+    /// Bind this node's exit arm to the book the process settles onto.
+    ///
+    /// The one book, handed in rather than opened here, and that is the whole point of it: the
+    /// administrative views read the handle the boot holds, so a node that opened its own would post
+    /// onto a set of books nothing serves and serve a set of books nothing posts to. Both would look
+    /// healthy — an empty ledger reconciles — which is exactly why the binding is a wiring decision
+    /// the composition root makes rather than a default this node falls into.
+    ///
+    /// Unbound, the exit arm below does nothing and the unit ends as it always has. That is the
+    /// honest answer for a build with no root ledger in it, not a settlement quietly dropped.
+    pub fn bind_book(&self, book: Arc<Mutex<crate::root::durability::Durability>>) {
+        let _ = self.book.set(book);
+    }
+
+    /// Put what the loop posted onto the book, if this node has one.
+    ///
+    /// Three ways this does nothing, and each is a statement rather than a swallow. No book bound:
+    /// the build carries no root ledger and there is nowhere for the posting to go. Already settled:
+    /// the node's sweep took the hold first, and settling here would be the second settlement of one
+    /// unit. A posting the record could not hold: the loop already recorded the durability loss on
+    /// the end it sealed, and there is no posting to move.
+    ///
+    /// A journal that refuses the record is not a settlement rolled back. The books have moved and
+    /// the value was delivered; what is lost is the proof, which the exit arm's own error says.
+    fn settle_end(
+        &self,
+        principal: &PrincipalId,
+        charged_at: u64,
+        ended: busbar_kernel::teller::Ended,
+    ) {
+        let Some(book) = self.book.get() else {
+            return;
+        };
+        let busbar_kernel::teller::Ended::Settled { end, .. } = ended else {
+            return;
+        };
+        let Ok(posted) = end.into_posted() else {
+            return;
+        };
+        let mut durability = book.lock().unwrap_or_else(|p| p.into_inner());
+        let _settled = settle(
+            &mut durability,
+            principal,
+            charged_at,
+            &self.durability_token,
+            posted,
+        );
     }
 
     /// Walk one request through the loop and answer with what the terminal posted.
@@ -267,9 +334,13 @@ impl LlmNode {
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
         let principal = authenticate::principal_id(&arrival.gov);
+        // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
+        // kernel reads it at the exit. See `LlmUnit::meter`.
+        let meter = Arc::new(AccrualMeter::new());
         let unit = LlmUnit {
             node: self,
             seats,
+            meter: Arc::clone(&meter),
             op_class,
             model_hint,
             started: Instant::now(),
@@ -283,7 +354,7 @@ impl LlmNode {
             walk: Walk::open(arrival),
         };
 
-        let hold = busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal);
+        let hold = busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
@@ -316,8 +387,7 @@ impl LlmNode {
                     admin_listener: false,
                     kernel_verb_only: false,
                 };
-                let meter = AccrualMeter::new();
-                let _ended = busbar_kernel::teller::run_unit_async(
+                let ended = busbar_kernel::teller::run_unit_async(
                     &self.kernel,
                     &unit,
                     &ctx,
@@ -332,6 +402,11 @@ impl LlmNode {
                     &unit,
                 )
                 .await;
+                // THE EXIT ARM. The loop took the hold out of the cell and handed back a POSTING,
+                // which has moved no balance and left no record until something settles it — and
+                // until this line nothing did, so a unit ran, ended, posted, and posted into a value
+                // that was dropped on the floor.
+                self.settle_end(&principal, unit.charged_at, ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -417,6 +492,12 @@ pub struct LlmUnit<'n> {
     deferred: Mutex<Option<decode::DecodeRefusal>>,
     /// The model the caller named, once the ladder has read it.
     model: Mutex<String>,
+    /// THE LOOP'S OWN METER, held here as well as lent to the loop.
+    ///
+    /// The same value on both sides: the kernel is handed a borrow of this and the Meter step
+    /// accrues onto it, because the step that knows what the unit is worth is not the step the loop
+    /// hands the meter to. Two meters would be a unit that accrued on one and settled the other.
+    meter: Arc<AccrualMeter>,
 }
 
 impl std::fmt::Debug for LlmUnit<'_> {
@@ -428,6 +509,13 @@ impl std::fmt::Debug for LlmUnit<'_> {
 }
 
 impl LlmUnit<'_> {
+    /// What the Meter step priced this unit at, in nano-units, narrowed to the width a posting
+    /// holds. Saturating rather than wrapping: a figure too large for the record is the largest one
+    /// the record can hold, never a small one it silently became.
+    fn priced(&self) -> u64 {
+        u64::try_from(self.walk.priced_nanos()).unwrap_or(u64::MAX)
+    }
+
     /// The model the caller named.
     fn model(&self) -> String {
         self.model.lock().unwrap_or_else(|e| e.into_inner()).clone()
@@ -743,7 +831,13 @@ impl Units for LlmUnit<'_> {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
-        self.walk.meter(token, usage)
+        let decision = self.walk.meter(token, usage);
+        // THE ACCRUAL, once the step has priced what came back. `spend` on the plane's own hold and
+        // `accrue` on the kernel's are the same figure landing in two places, which is what the dual
+        // write is: the exit applies this total to the reservation the door opened at zero, and what
+        // nothing backs is carried out as an overdraft beside the settlement rather than refused.
+        self.meter.accrue(self.priced());
+        decision
     }
 
     fn audit(
@@ -800,11 +894,18 @@ impl Units for LlmUnit<'_> {
     fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
         let status = self.walk.served_status();
         Evidence {
-            // What this unit spent is on the governance ledger, posted once by the walk's tap or by
-            // the meter step, and the kernel's own cell is not a second copy of it. So the figure
-            // this table settles is zero and the marks below are what carry the evidence.
-            located: None,
-            accrued_floor: 0,
+            // WHAT THIS UNIT IS WORTH, as the Meter step priced it against the card its sink pinned
+            // at the door — the figure the settlement table posts, and the same one the walk's tap
+            // put on the governance ledger. Read rather than re-derived: pricing the same usage a
+            // second time here would price it against whatever card the deployment holds by now, and
+            // a unit that settles two different amounts on two books is the discrepancy the
+            // reconciliation exists to report, manufactured by the thing that reports it.
+            //
+            // `None` here used to make every posting zero, which is why the root's ledger answered
+            // with no rows on a node whose legacy rows carried a day's spend: a settlement of
+            // nothing is not a row, so the identity held over an empty table and said so.
+            located: Some(self.priced()),
+            accrued_floor: self.meter.total(),
             locator_required: false,
             terminal_error: status.is_some_and(|s| !(200..300).contains(&s)),
             recovered: false,
@@ -854,11 +955,16 @@ impl busbar_kernel::teller::RouteAwait for LlmUnit<'_> {
         // Dispatching through the pool the client asked for after charging a different one is the
         // bug this ordering makes impossible.
         let destination = self.walk.effective_pool(&self.model());
-        // THE METER IS LEFT UNBOUND, deliberately. What this unit spends is spent on the governance
-        // ledger, by the walk's own tap, in the window the arrival epoch pinned — and it is settled
-        // there. Accruing a second copy of it here would put one spend on two ledgers, so the
-        // kernel's meter reads zero, the headroom it offers reads zero with it, and any excess the
-        // hold cannot back is carried rather than charged twice.
+        // THE METER IS BOUND — at the Meter step, not here, and the argument this arm declines names
+        // the very meter that step accrues onto: the node holds one per unit and lends the same one
+        // to the loop's `Run`. The binding is late because the figure is: what this unit is worth
+        // does not exist until the step after this one has priced what came back, so a leg that
+        // accrued here could only accrue nothing.
+        //
+        // What it accrues is not a second charge. It is the SAME charge the walk's tap put on the
+        // governance ledger, written down on the root's book as well, which is the whole of what the
+        // dual write claims — and a meter left reading zero is what made that book answer with no
+        // rows at all for a node that had been serving all day.
         Box::pin(async move { self.walk.route(token, &destination).await })
     }
 }
@@ -933,6 +1039,15 @@ pub fn settle(
 /// reached here. One of these exists, it is built on first use, and every request on this plane
 /// walks through it.
 static NODE: LazyLock<LlmNode> = LazyLock::new(LlmNode::new);
+
+/// Bind the process's one node to the process's one book.
+///
+/// Called by the composition root at boot, with the same handle the administrative views were bound
+/// to. Without it the exit arm settles nothing and the root's ledger stays empty — which reads as a
+/// node that has posted nothing rather than as a node whose postings had nowhere to go.
+pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
+    NODE.bind_book(book);
+}
 
 /// One body-model arrival, driven through the loop.
 ///

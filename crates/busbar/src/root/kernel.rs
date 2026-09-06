@@ -253,6 +253,37 @@ impl ProductionUnits {
         #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
         store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
     ) -> Self {
+        ProductionUnits::new_sharing(
+            kernel,
+            auth_chain,
+            Arc::new(Mutex::new(durability)),
+            breaker_policy,
+            meter_policy,
+            scope_policy,
+            #[cfg(feature = "root-admin")]
+            admin,
+            store,
+        )
+    }
+
+    /// The same assembly over a book somebody else owns.
+    ///
+    /// [`ProductionUnits::new`] takes the durability by value, which says the node it builds is the
+    /// only thing that settles onto it — true of a node with one plane on the loop and false the
+    /// moment a second plane's exit arm needs the same book. This takes the handle instead, so the
+    /// caller keeps one and every arm that settles is settling onto the book these units read.
+    #[allow(clippy::too_many_arguments)]
+    #[must_use]
+    pub fn new_sharing(
+        kernel: &busbar_kernel::teller::Kernel,
+        auth_chain: AuthChain,
+        durability: Arc<Mutex<crate::root::durability::Durability>>,
+        breaker_policy: crate::root::adapters::BreakerPolicy,
+        meter_policy: crate::root::policy::MeterPolicyHandle,
+        scope_policy: crate::root::policy::ScopePolicy,
+        #[cfg(feature = "root-admin")] admin: crate::root::units_admin::AdminBinding,
+        store: Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+    ) -> Self {
         ProductionUnits {
             door: Door::new(InMemoryCells::new()),
             // The breaker unit's one diagnostic reaches the node's own logging rather than the
@@ -273,7 +304,7 @@ impl ProductionUnits {
             auth_bindings: auth_bindings::AuthBindings::without_directory(),
             trust: Trust,
             arrival_door: AdmissionDoor,
-            durability: Arc::new(Mutex::new(durability)),
+            durability,
             meter_policy,
             scope_policy,
             #[cfg(feature = "root-admin")]
@@ -323,18 +354,42 @@ impl ProductionUnits {
         write: Box<dyn busbar_unit_ledger::legacy::LegacyRows>,
         read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
     ) -> Self {
-        let kernel = new_kernel();
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
             write,
         )
         .expect("a memory-buffered journal cannot fail to open");
+        ProductionUnits::admin_only_sharing(
+            dispatch,
+            Arc::new(Mutex::new(durability)),
+            read,
+        )
+    }
 
-        let mut units = ProductionUnits::new(
+    /// The same composition again, over a book the caller already opened.
+    ///
+    /// The one constructor a boot that serves more than the administrative listener can use. The
+    /// other two open a book of their own, which is right for a node whose only settlements are the
+    /// admin plane's; it is wrong the moment a second plane's exit arm settles, because that arm
+    /// would be moving figures on a book these views cannot see. An operator reading the totals
+    /// would get an empty table off a node that had been posting all day — and an empty table
+    /// reconciles, so the emptiness would not even read as a fault.
+    ///
+    /// So the book arrives as an argument. The caller holds the same handle it passes here, and what
+    /// every plane settles onto is what these views read.
+    #[cfg(feature = "root-admin")]
+    #[must_use]
+    pub fn admin_only_sharing(
+        dispatch: Arc<dyn crate::root::units_admin::AdminDispatch>,
+        durability: Arc<Mutex<crate::root::durability::Durability>>,
+        read: Arc<dyn crate::root::units_admin::LegacyRowsRead>,
+    ) -> Self {
+        let kernel = new_kernel();
+        let mut units = ProductionUnits::new_sharing(
             &kernel,
             AuthChain::new(Vec::new(), false),
-            durability,
+            Arc::clone(&durability),
             crate::root::adapters::BreakerPolicy::new(),
             crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
             crate::root::policy::ScopePolicy::new(),
@@ -346,7 +401,7 @@ impl ProductionUnits {
         // does not exist until it has. Binding it here is what makes the served figures this node's
         // rather than an empty table that looks like a balanced one.
         units.admin.ledger = Arc::new(crate::root::units_admin::NodeLedger::new(
-            Arc::clone(&units.durability),
+            durability,
             read,
         ));
         units

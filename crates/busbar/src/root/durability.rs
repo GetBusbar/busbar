@@ -95,7 +95,7 @@ use std::path::{Path, PathBuf};
 use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
 use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_unit_ledger::checkpoint::Checkpoint;
-use busbar_unit_ledger::legacy::LegacyRows;
+use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
 use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
 use busbar_unit_ledger::settle::{Ledger, Settlement};
 use busbar_unit_ledger::totals::{TotalsKey, WindowStart};
@@ -592,6 +592,48 @@ pub fn build(
     legacy_rows: Box<dyn LegacyRows>,
 ) -> Result<Durability, OpenError> {
     build_for_node(cfg, 0, shipper, legacy_rows)
+}
+
+/// THE NODE'S ONE BOOK, and the read half of the dual write that goes with it.
+///
+/// Two halves of one value, handed out together for the same reason the ledger's own constructor
+/// takes them together: whatever a settlement dual-writes onto is what the reconciliation view has
+/// to read back. A caller that built the two separately would have a node whose ledger posts onto
+/// one set of rows while its views read another, and the identity over that pair reports every row
+/// as out.
+pub struct NodeBook {
+    /// The journal, the ledger and the two audit chains, behind the one lock every settlement and
+    /// every view takes.
+    pub durability: std::sync::Arc<std::sync::Mutex<Durability>>,
+    /// The previous release's rows, as the dual write fills them. The write half is inside the
+    /// ledger; this is the same value, kept so a view has somewhere to read them from.
+    pub rows: std::sync::Arc<RecordingRows>,
+}
+
+/// Open the one book a process settles onto.
+///
+/// ONE of these per process, built at boot and shared by every plane's exit arm and by the
+/// administrative views. A second would be a second set of books: money posted through one would be
+/// invisible to the other, and the views — which are what an operator reads to decide whether the
+/// dual write is keeping up — would answer over a book nothing settles into. That is not a
+/// hypothetical shape; it is what a node has when each mount builds its own.
+///
+/// Memory-buffered, with no data directory read and no shipper of its own, which is the previous
+/// release's shape: nothing is probed, nothing is opened, and no file appears beside a configuration
+/// that asked for none.
+#[must_use]
+pub fn node_book() -> NodeBook {
+    let rows = std::sync::Arc::new(RecordingRows::new());
+    let durability = build(
+        &DurabilityConfig { data_dir: None },
+        Box::new(busbar_unit_wal::NullShipper::new()),
+        Box::new(RecordingRows::clone(&rows)),
+    )
+    .expect("a memory-buffered journal cannot fail to open");
+    NodeBook {
+        durability: std::sync::Arc::new(std::sync::Mutex::new(durability)),
+        rows,
+    }
 }
 
 /// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this

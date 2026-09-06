@@ -1412,6 +1412,21 @@ async fn run(data_workers: usize) {
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
+    // THE PROCESS'S ONE BOOK. Every plane's exit arm settles onto it and the administrative ledger
+    // views read it, which is a property of there being ONE: a mount that opened its own would post
+    // onto books nothing serves and serve books nothing posts to, and both halves of that would look
+    // healthy, because an empty ledger reconciles. It is memory-buffered and reads no data
+    // directory, so nothing appears beside a configuration that asked for none, and it is built
+    // before either listener binds because the first accepted connection can settle.
+    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    let book = root::durability::node_book();
+
+    // THE ROOT-DRIVEN LLM PLANE'S EXIT ARM, bound to that book. The loop already ended every unit
+    // and handed back a posting; what this line adds is somewhere for the posting to go. Off, the
+    // arm settles nothing, which is the honest answer for a build with no root ledger in it.
+    #[cfg(feature = "root-llm")]
+    root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
+
     #[cfg(feature = "root-admin")]
     let admin_router = root::units_admin::mount(
         admin_router,
@@ -1419,7 +1434,13 @@ async fn run(data_workers: usize) {
         // The same ingress cap the router below the wrap was built with, because the wrap reads the
         // body before that router's own limit can.
         req_body_max,
-        root::kernel::ProductionUnits::admin_only,
+        |dispatch| {
+            root::kernel::ProductionUnits::admin_only_sharing(
+                dispatch,
+                std::sync::Arc::clone(&book.durability),
+                std::sync::Arc::clone(&book.rows) as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
+            )
+        },
     );
 
     // Bind the boot generation's engine host to the handle so it OWNS the only strong reference the boot

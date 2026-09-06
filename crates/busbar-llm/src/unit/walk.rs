@@ -98,6 +98,11 @@ struct Carry {
     /// What the Meter step said about the fee and the refund.
     fee_count: u32,
     refund: bool,
+    /// What this unit's usage PRICED AT, in nano-units, against the card its sink pinned at the
+    /// door. The Meter step already derives it to spend the plane's own hold against; keeping it
+    /// here is what lets a driver settling the same unit on a second book post the same money rather
+    /// than a figure of its own.
+    priced_nanos: u128,
     /// The bytes the terminal posted, which are the bytes the client is given.
     terminal: Option<Served>,
 }
@@ -338,6 +343,18 @@ impl Walk {
         self.lock().posted_here
     }
 
+    /// WHAT THIS UNIT'S USAGE PRICED AT, in nano-units, once the Meter step has priced it.
+    ///
+    /// Zero before that step runs, and zero after it for a unit that reached no serving lane or
+    /// billed none — which is the honest figure in both cases rather than an absence a caller would
+    /// have to invent something for. It is a READING of what the step already derived, never a
+    /// second pricing: a driver that priced the same usage again could price it against a different
+    /// card, and two cards is exactly how one unit ends up settling two amounts.
+    #[must_use]
+    pub fn priced_nanos(&self) -> u128 {
+        self.lock().priced_nanos
+    }
+
     /// Whether the Audit step owes a refund of the fee base.
     #[must_use]
     pub fn refund(&self) -> bool {
@@ -565,6 +582,7 @@ impl Walk {
         carry.posted_here = metered.posted;
         carry.fee_count = metered.fee_count;
         carry.refund = metered.refund;
+        carry.priced_nanos = metered.priced_nanos;
         metered.decision
     }
 }
