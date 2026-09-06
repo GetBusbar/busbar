@@ -740,18 +740,23 @@ impl Transport for TlsTransport {
     ) -> Fut<'a, ()> {
         Box::pin(async move {
             let inner = self.inner(conn.id()).ok_or(TransportError::Closed)?;
-            {
+            let delivered = {
                 let mut guard = inner.write.lock().await;
                 match &mut *guard {
-                    InnerWrite::Server(w) => deliver_refusal(w, bytes.as_slice()).await?,
-                    InnerWrite::Client(w) => deliver_refusal(w, bytes.as_slice()).await?,
+                    InnerWrite::Server(w) => deliver_refusal(w, bytes.as_slice()).await,
+                    InnerWrite::Client(w) => deliver_refusal(w, bytes.as_slice()).await,
                 }
-            }
+            };
             // A refusal finalises the connection, so it ends it the way `close` does: dropping the
             // registry's clone is not enough, because a frame stream that started before the
             // refusal holds its own clone and would stay parked on the socket forever, keeping the
             // rustls session alive with it. The flag is what ends that stream, after which the last
             // clone goes and the session and its socket really close.
+            //
+            // This runs on every path out, delivered or not. A refusal whose bytes never reached
+            // the peer is still a finalised connection — returning the write's error first would
+            // leave the entry registered and that pump parked, which is the leak this ends, on the
+            // one path where the peer is already gone.
             let removed = self.conns.lock().expect("poisoned").remove(&conn.id());
             if let Some(removed) = removed {
                 removed.finalise();
@@ -759,7 +764,7 @@ impl Transport for TlsTransport {
                 // reports done rather than on a task the caller cannot wait for.
                 send_close_notify(&removed).await;
             }
-            Ok(())
+            delivered
         })
     }
 }
