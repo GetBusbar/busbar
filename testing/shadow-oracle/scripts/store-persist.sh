@@ -20,6 +20,13 @@ repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
 PLUGIN="${1:?plugin name}"; SETTINGS="${2:-}"
 BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+# ONE KNOB, shared with record.sh's own boot_busbar: this cell does a REAL double boot of a
+# published plugin, and a bound sized for an idle laptop reads a saturated host's boot latency as
+# "never came up" -- a harness timing limit recorded as a product divergence. record.sh already
+# uses 60s for a hooks-variant boot (loading published plugins beside a build eating the CPU); this
+# cell loads a published store plugin the same way, so it gets the same bound from the same env var
+# instead of a second, independently-drifting hard-code.
+BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 LP="${STORE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48831}}" AP="${STORE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48832}}" MP="${STORE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48791}}"
 W="$RAW/store-work"; mkdir -p "$W/plugins"
 tarball="$(bash "${here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
@@ -88,7 +95,8 @@ step validate_tail "$(sed -e "s|${RAW}|<WORK>|g" -e "s|${BIN}|<WORK>|g" -e "s|${
 env_ "$BIN" --list-plugins >"$W/plugins.log" 2>&1; step list_plugins "$(grep -w "$alias_" "$W/plugins.log" | head -1 | tr '\n' ' ')"
 
 pid="$(spawn_ "$W/busbar1.log" "$BIN")"; track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 2 "$(tail -c 500 "$W/busbar1.log")"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" \
+  || fail 2 "boot 1 (first, fresh) did not come up within ${BOOT_BOUND}s: $(tail -c 500 "$W/busbar1.log")"
 mint="$(curl -sS -m 10 -X POST "http://127.0.0.1:${AP}/api/v1/admin/keys" -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' -d '{"name":"store-oracle","group":"oracle"}')"
 kid="$(jq -r '.id // empty' <<<"$mint")"; tok="$(jq -r '.token // empty' <<<"$mint")"
 [ -n "$kid" ] && [ -n "$tok" ] || fail 3 "$mint"
@@ -99,10 +107,21 @@ sleep 0.5
 u1="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"
 step usage_before_restart "$u1"
 kill $pid; wait $pid 2>/dev/null
-i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
+# THE OLD PROCESS MUST BE PROVEN GONE ON BOTH PORTS before the restart binds them, or the second
+# boot's /healthz poll can be answered by the FIRST busbar still draining its listeners -- read as
+# "persistence survived" for a process that never restarted. `kill`+`wait` only proves the pid was
+# reaped, not that the sockets are free (same shape as probe-store.sh's post-400893bd restart spin
+# and record.sh's own stop_busbar). Spin on BOTH ports, not just the data port.
+i=0
+while [ $i -lt 100 ] && { ! assert_port_free "$LP" || ! assert_port_free "$AP"; }; do sleep 0.1; i=$((i+1)); done
+if ! assert_port_free "$LP" || ! assert_port_free "$AP"; then
+  kill -9 "$pid" 2>/dev/null || true
+  fail 4 "port ${LP}/${AP} still answers after boot 1 was killed (waited 10s): the second boot would bind a port the first process still holds, so the persistence verdict would come from the instance that never restarted: $(tail -c 500 "$W/busbar1.log")"
+fi
 
 pid="$(spawn_ "$W/busbar2.log" "$BIN")"; track_pid $pid
-wait_for_http "http://127.0.0.1:${LP}/healthz" 30 || fail 4 "$(tail -c 500 "$W/busbar2.log")"
+wait_for_http "http://127.0.0.1:${LP}/healthz" "$BOOT_BOUND" \
+  || fail 4 "boot 2 (restart against the same store) did not come up within ${BOOT_BOUND}s: $(tail -c 500 "$W/busbar2.log")"
 k2="$(curl -sS -m 10 -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}")"
 step key_after_restart "$k2"
 u2="$(curl -sS -m 10 -H "Authorization: Bearer $ADMIN" "http://127.0.0.1:${AP}/api/v1/admin/keys/${kid}/usage" | jq -c 'del(.as_of)')"

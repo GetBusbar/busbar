@@ -175,14 +175,20 @@ boot_busbar() {  # [variant] start busbar, wait for /healthz, mint the three key
   assert_port_free "$ADMIN_PORT" || return 4
   BUSBAR_PID="$(oracle_spawn "$WORK/busbar.log" "$BIN")"; track_pid "$BUSBAR_PID"
   # busbar boots in tens of ms; poll at 25 ms (the shared wait_for_http sleeps a whole second).
-  # The bound is 60 s, not 20: a hooks-variant boot loads the published plugins, and on a machine
-  # running a test suite beside the recording that took longer than 20 s and read as a failed cell.
-  local w=0; while [ $w -lt 2400 ]; do
+  # The bound is ORACLE_BOOT_BOUND_SECS (default 60), not 20: a hooks-variant boot loads the
+  # published plugins, and on a machine running a test suite beside the recording that took longer
+  # than 20 s and read as a failed cell. ONE KNOB: scripts/store-persist.sh does its own real double
+  # boot of a published store plugin and reads this SAME env var, so a host slow enough to blow one
+  # bound blows both consistently instead of the harness inventing a second, independently-drifting
+  # hard-code.
+  local boot_bound="${ORACLE_BOOT_BOUND_SECS:-60}" w_max
+  w_max=$(( boot_bound * 40 ))  # 40 polls/sec at the 25ms step below
+  local w=0; while [ $w -lt "$w_max" ]; do
     curl -fsS -m 1 -o /dev/null "http://127.0.0.1:${LISTEN_PORT}/healthz" 2>/dev/null && break
     kill -0 "$BUSBAR_PID" 2>/dev/null || return 1
     sleep 0.025; w=$((w+1))
   done
-  [ $w -lt 2400 ] || return 1
+  [ $w -lt "$w_max" ] || return 1
   # /healthz answered — but by WHOM. Both listeners must be held by the pid we just spawned.
   assert_port_is_ours "$LISTEN_PORT" "$BUSBAR_PID" || return 4
   assert_port_is_ours "$ADMIN_PORT" "$BUSBAR_PID" || return 4
