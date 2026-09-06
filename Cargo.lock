@@ -593,6 +593,7 @@ name = "busbar-grammar"
 version = "1.6.0"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]
