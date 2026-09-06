@@ -170,6 +170,14 @@ enum Inner {
         /// read the peer may never answer; the registry removal alone would never reach it. This is
         /// the flag it checks, so it ends and the socket halves actually drop.
         closed: AtomicBool,
+        /// What WAKES that pump. The flag is only ever read once a read has returned, and the read
+        /// a half-written request parks on returns when the peer sends more — which is precisely
+        /// what a peer that has gone quiet never does. Against that peer the flag alone leaves the
+        /// pump parked for the life of the process, holding the last clone of the socket: one
+        /// leaked descriptor per closed connection and a drain that never finishes. The close
+        /// notifies this, every read is raced against it, and the stream ends where it was parked.
+        /// The sibling `tcp` crate closes the same way.
+        closing: tokio::sync::Notify,
     },
     /// A dialled destination: the exchange happens inside `write` once the message it is
     /// accumulating is complete, and pushes the response's frames into this channel for `frames` to
@@ -556,6 +564,7 @@ impl Transport for HttpTransport {
                 write: AsyncMutex::new(write),
                 leftover: AsyncMutex::new(Vec::new()),
                 closed: AtomicBool::new(false),
+                closing: tokio::sync::Notify::new(),
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -998,8 +1007,41 @@ fn request_target(dial: &http::Uri, path: &str) -> Result<http::Uri, TransportEr
 /// clone of its state ends rather than staying parked on a socket nobody is going to write to.
 fn finalise(conns: &Mutex<HashMap<u64, Arc<Inner>>>, id: u64) {
     let removed = conns.lock().expect("poisoned").remove(&id);
-    if let Some(Inner::Ingress { closed, .. }) = removed.as_deref() {
+    if let Some(Inner::Ingress {
+        closed, closing, ..
+    }) = removed.as_deref()
+    {
+        // The flag FIRST, then the wake: a pump that arms its wait and then re-reads the flag can
+        // never miss both the store and the notification, whichever order the two tasks interleave
+        // in. Reversed, a pump between the two sees neither and stays parked.
         closed.store(true, Ordering::Release);
+        closing.notify_waiters();
+    }
+}
+
+/// Read into this connection's own buffer, RACED against this connection's close.
+///
+/// `None` means the close won, and the caller ends its stream where it stood. The flag alone is
+/// read only once a read has RETURNED, and the read a half-written request parks on returns when
+/// the peer sends more — exactly what a peer that has gone quiet never does. So the close has to be
+/// a wake as well as a flag. The wait is armed BEFORE the flag is re-read, so a close landing
+/// between the two is seen as the flag and one landing after it as the notification; neither order
+/// leaves this parked. The sibling `tcp` crate reads the same way.
+async fn read_or_closed(
+    r: &mut ReadSide,
+    closed: &AtomicBool,
+    closing: &tokio::sync::Notify,
+) -> Option<io::Result<usize>> {
+    let mut wait = Box::pin(closing.notified());
+    wait.as_mut().enable();
+    if closed.load(Ordering::Acquire) {
+        return None;
+    }
+    let reading = std::pin::pin!(r.half.read(&mut r.scratch));
+    match futures::future::select(reading, wait).await {
+        futures::future::Either::Left((read, _)) => Some(read),
+        // The close won: the read is dropped where it stood.
+        futures::future::Either::Right(((), _)) => None,
     }
 }
 
@@ -1223,6 +1265,7 @@ async fn read_ingress_message(
         read,
         leftover,
         closed,
+        closing,
         ..
     } = inner
     else {
@@ -1242,11 +1285,10 @@ async fn read_ingress_message(
         if buf.len() >= READ_CHUNK_BYTES {
             return Err(TransportError::Framing);
         }
-        let n = r
-            .half
-            .read(&mut r.scratch)
-            .await
-            .map_err(|e| HttpTransport::map_io_err(&e))?;
+        let Some(read) = read_or_closed(r, closed, closing).await else {
+            return Ok(None);
+        };
+        let n = read.map_err(|e| HttpTransport::map_io_err(&e))?;
         if n == 0 {
             if buf.is_empty() {
                 // Nothing was ever begun: the peer opened a connection and closed it. That is the
@@ -1303,15 +1345,11 @@ async fn read_ingress_message(
             if read_so_far > max_body_bytes {
                 return Err(TransportError::Framing);
             }
-            let n = r
-                .half
-                .read(&mut r.scratch)
-                .await
-                .map_err(|e| HttpTransport::map_io_err(&e))?;
-            read_so_far += n;
-            if closed.load(Ordering::Acquire) {
+            let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);
-            }
+            };
+            let n = read.map_err(|e| HttpTransport::map_io_err(&e))?;
+            read_so_far += n;
             if n == 0 {
                 // The peer stopped before the terminal chunk: the declared framing did not happen,
                 // and guessing where the body ended is the one thing a transport must not do.
@@ -1332,14 +1370,10 @@ async fn read_ingress_message(
             return Err(TransportError::Framing);
         }
         while rest.len() < declared {
-            let n = r
-                .half
-                .read(&mut r.scratch)
-                .await
-                .map_err(|e| HttpTransport::map_io_err(&e))?;
-            if closed.load(Ordering::Acquire) {
+            let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);
-            }
+            };
+            let n = read.map_err(|e| HttpTransport::map_io_err(&e))?;
             if n == 0 {
                 // The peer stopped before the length it declared: the same answer the chunked
                 // branch gives a peer that stops before the terminal chunk. A body short of its
