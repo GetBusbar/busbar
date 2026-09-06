@@ -730,6 +730,196 @@ async fn a_handoff_from_an_undeclared_layer_is_a_mismatch() {
     server.close(server_conn, CloseReason::Normal);
 }
 
+/// A lower layer that has one connection to give up, under whatever key it is told to answer to.
+///
+/// The handoff guard reads exactly that key, so telling an admissible source from an inadmissible
+/// one needs the same fixture under two names — and, crucially, a `detach` that SUCCEEDS, so that
+/// the refusal cannot be coming from anywhere else.
+struct StubSource {
+    key: &'static str,
+    io: std::sync::Mutex<Option<tokio::io::DuplexStream>>,
+}
+
+impl StubSource {
+    fn holding_as(key: &'static str, io: tokio::io::DuplexStream) -> Self {
+        Self {
+            key,
+            io: std::sync::Mutex::new(Some(io)),
+        }
+    }
+
+    /// Whether the stream is still this layer's — that is, whether `detach` was ever called.
+    fn still_holds(&self) -> bool {
+        self.io.lock().unwrap().is_some()
+    }
+
+    fn conn(&self) -> Conn {
+        struct Handle;
+        impl ConnHandle for Handle {
+            fn id(&self) -> u64 {
+                1
+            }
+            // Parseable as a socket address, because `adopt` parses it: an unparseable peer is its
+            // own refusal, and this fixture must not be refused for any reason but its key.
+            fn peer(&self) -> String {
+                "203.0.113.7:54321".to_string()
+            }
+        }
+        Conn::new(StdArc::new(Handle))
+    }
+}
+
+impl busbar_contract::Plugin for StubSource {
+    fn key(&self) -> &'static str {
+        self.key
+    }
+    fn kind(&self) -> busbar_contract::Kind {
+        busbar_contract::Kind::Transport
+    }
+    fn abi(&self) -> busbar_contract_transport::AbiVersion {
+        busbar_contract_transport::registry::TRANSPORT_ABI
+    }
+}
+
+impl Transport for StubSource {
+    fn arrival(&self, conn: &Conn) -> ArrivalRecord {
+        ArrivalRecord {
+            source: conn.peer(),
+            port: 9443,
+            alpn: None,
+            sni: None,
+            peer_cert: None,
+            transport_chain: vec!["tcp"],
+        }
+    }
+
+    fn listen<'a>(
+        &'a self,
+        _cfg: &'a dyn TransportConfigView,
+        _keys: &'a TransportKeyHandle,
+    ) -> Fut<'a, Listener> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn accept<'a>(&'a self, _l: &'a Listener) -> Fut<'a, Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn dial<'a>(
+        &'a self,
+        _dest: &'a busbar_contract::VerifiedDestination,
+        _keys: &'a TransportKeyHandle,
+    ) -> Fut<'a, Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn frames(
+        &self,
+        _conn: Conn,
+    ) -> Pin<Box<dyn Stream<Item = Result<(StreamId, Frame), TransportError>> + Send>> {
+        Box::pin(futures::stream::empty())
+    }
+
+    fn write<'a>(
+        &'a self,
+        _conn: &'a Conn,
+        _stream: StreamId,
+        _bytes: ArenaBytes<'a>,
+    ) -> Fut<'a, usize> {
+        Box::pin(async { Err(TransportError::Closed) })
+    }
+
+    fn encode_envelope<'a>(
+        &self,
+        _fields: &[(&str, &[u8])],
+        body: &[u8],
+        arena: &'a dyn busbar_contract::Arena,
+    ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        arena
+            .alloc_bytes(body)
+            .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
+    }
+
+    fn adopt<'a>(
+        &'a self,
+        _from: &'a dyn Transport,
+        _conn: Conn,
+        _keys: &'a TransportKeyHandle,
+    ) -> Fut<'a, Conn> {
+        Box::pin(async { Err(TransportError::HandoffMismatch) })
+    }
+
+    fn detach(&self, conn: &Conn) -> Option<busbar_contract_transport::wire::RawStream> {
+        let io = self.io.lock().unwrap().take()?;
+        Some(busbar_contract_transport::wire::RawStream::new(
+            self.key,
+            conn.peer(),
+            Box::new(TokioAsyncReadCompatExt::compat(io)),
+        ))
+    }
+
+    fn composed_over(&self) -> Option<&'static str> {
+        Some("tcp")
+    }
+
+    fn close(&self, _conn: Conn, _reason: CloseReason) {}
+
+    fn unit0_refusal<'a>(
+        &'a self,
+        _conn: Conn,
+        _stream: Option<StreamId>,
+        _refusal: &'a busbar_contract::unit::Refusal,
+        _bytes: ArenaBytes<'a>,
+    ) -> Fut<'a, ()> {
+        Box::pin(async { Err(TransportError::Closed) })
+    }
+}
+
+/// THE HANDOFF REFUSAL, FROM A SOURCE WHOSE DETACH WOULD HAVE SUCCEEDED.
+///
+/// The sibling cell above offers `tls` another `tls` instance, and cannot see the admissibility
+/// guard at all: `TlsTransport::detach` refuses a connection a frame reader still holds, so that
+/// cell's source returns `None`, and `None` maps to `HandoffMismatch` — the same error the guard
+/// gives, reached by a completely different line. Delete `if !COMPOSES_OVER.contains(&from.key())`
+/// and it stays green.
+///
+/// Here the source hands a live stream up when asked, and answers to `ws` — a transport `tls` does
+/// not declare it composes over (`COMPOSES_OVER` is `tcp`, and only `tcp`). Nothing but the guard
+/// can refuse this, and the proof that the guard is what did is that the source STILL HOLDS its
+/// stream afterwards. A real TLS client runs on the far end throughout, so with the guard removed
+/// the adopt does not fail some other way — it completes the handshake and returns a connection.
+#[tokio::test]
+async fn a_handoff_from_an_undeclared_source_that_could_have_detached_is_still_refused() {
+    let (server_cfg, client_cfg) = self_signed();
+    let tls = TlsTransport::new();
+    tls.register_server_config(0, server_cfg);
+
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let below = StubSource::holding_as("ws", end_a);
+
+    // The far end speaks TLS, so nothing but the guard stands between this adopt and a live
+    // session.
+    let dialling = tokio::spawn(async move {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let connector = TlsConnector::from(client_cfg);
+        let name = ServerName::try_from("localhost").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), connector.connect(name, end_b)).await
+    });
+
+    let err = bounded(
+        "tls.adopt(&below, below.conn(), &fixture_key(0))",
+        tls.adopt(&below, below.conn(), &fixture_key(0)),
+    )
+    .await
+    .expect_err("a handoff from a layer this transport does not compose over is not admissible");
+    assert_eq!(err, TransportError::HandoffMismatch);
+    assert!(
+        below.still_holds(),
+        "the refusal comes BEFORE the detach: an undeclared source keeps the stream it is serving"
+    );
+    dialling.abort();
+}
+
 /// The transport-key unit is the registrant, and a listener has a key because the unit put one
 /// there.
 ///
