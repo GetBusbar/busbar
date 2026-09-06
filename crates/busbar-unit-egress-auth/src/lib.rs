@@ -254,21 +254,23 @@ pub enum LaneMismatch {
 /// every in-tree scheme's target) must still equal the [`VerifiedDestination`] the trust unit
 /// sealed. `field` names the envelope key that carries the destination (`"host"` for the schemes in
 /// this crate).
+///
+/// The value compared against is the sealed lane itself, read off the [`VerifiedDestination`] — not
+/// anything the caller passes alongside it. A caller-supplied expectation would only prove that the
+/// envelope still agrees with whatever the caller believed, which is exactly the belief a hook or a
+/// scheme's decoration could have moved; the seal is the authority, so it is the only thing this
+/// compares to. This field check stands in for the full three-way cross-check the kernel loop's
+/// Meter step runs, which also folds in the response-side locator this crate does not see.
 pub fn lane_cross_check(
     verified: &VerifiedDestination,
     field: &'static str,
     envelope: &[(String, String)],
-    expected_host: &str,
 ) -> Result<(), LaneMismatch> {
-    let _ = verified.lane(); // the lane this destination sits on; the field check below is what
-                             // stands in here for the full three-way cross-check the kernel loop's Meter step runs,
-                             // which also folds in the response-side locator this crate does not
-                             // see.
     let actual = envelope
         .iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(field))
         .map(|(_, v)| v.as_str());
-    if actual == Some(expected_host) {
+    if actual == Some(verified.lane().as_str()) {
         Ok(())
     } else {
         Err(LaneMismatch::EnvelopeDivergedFromVerifiedDestination { field })

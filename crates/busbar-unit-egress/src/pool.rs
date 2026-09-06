@@ -132,16 +132,23 @@ impl Pool {
     /// The blocklist is applied here, once, before the walk starts and before any terminal reads
     /// the membership — which is what stops a blocklisted member being reached by the least-bad
     /// terminal or counted into a shed's retry hint.
+    ///
+    /// A pool that blocklists nobody — the common case, and the one every hop of every walk pays
+    /// for — has nothing to filter, so it borrows its own membership rather than copying it. Only a
+    /// pool that actually excludes somebody builds a membership of its own. The answer derefs to
+    /// `&[Member]` either way, so a caller reads it exactly as it read the copy.
     #[must_use]
-    pub fn admissible_members(&self) -> Vec<Member> {
+    pub fn admissible_members(&self) -> std::borrow::Cow<'_, [Member]> {
         if self.failover.exclusions.is_empty() {
-            return self.members.clone();
+            return std::borrow::Cow::Borrowed(&self.members);
         }
-        self.members
-            .iter()
-            .filter(|m| !self.failover.exclusions.contains(&m.name))
-            .cloned()
-            .collect()
+        std::borrow::Cow::Owned(
+            self.members
+                .iter()
+                .filter(|m| !self.failover.exclusions.contains(&m.name))
+                .cloned()
+                .collect(),
+        )
     }
 
     /// Where a member sits in this pool's membership, by destination.

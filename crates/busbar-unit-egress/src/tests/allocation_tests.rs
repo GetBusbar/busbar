@@ -91,3 +91,39 @@ fn a_new_pool_starts_its_own_rotation_without_touching_an_existing_one() {
         "pool a's rotation carried on from where it was, whatever pool b did"
     );
 }
+
+/// The membership with the blocklist applied is read on every hop of every walk, and the pool that
+/// blocklists nobody is the common case by a wide margin. That case has nothing to compute, so it
+/// has nothing to copy either: it hands back a borrow of the pool's own membership, and only a pool
+/// that actually excludes somebody pays for the filtered copy.
+#[test]
+fn an_unblocked_pools_membership_is_borrowed_not_copied() {
+    use crate::pool::{Member, Pool};
+    use std::borrow::Cow;
+
+    let members = vec![
+        Member::new(DestinationId::new(0), "a", 1),
+        Member::new(DestinationId::new(1), "b", 1),
+    ];
+    let pool = Pool::new("p", members.clone());
+    assert!(
+        matches!(pool.admissible_members(), Cow::Borrowed(_)),
+        "an empty blocklist has nothing to filter, so nothing is copied"
+    );
+    assert_eq!(pool.admissible_members().as_ref(), members.as_slice());
+
+    let mut blocked = Pool::new("p", members);
+    blocked.failover.exclusions = vec!["b".to_string()];
+    let admissible = blocked.admissible_members();
+    assert!(
+        matches!(admissible, Cow::Owned(_)),
+        "a real blocklist yields a filtered membership of its own"
+    );
+    assert_eq!(
+        admissible
+            .iter()
+            .map(|m| m.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a"]
+    );
+}

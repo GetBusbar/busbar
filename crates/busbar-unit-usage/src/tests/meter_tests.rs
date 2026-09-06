@@ -351,10 +351,44 @@ fn the_fold_takes_its_policy_and_its_legs() {
     )
     .expect("within the line bound");
     assert_eq!(pairs(folded.usage.lines()), vec![(INPUT, 11)]);
-    // A located figure with no kernel companion to check it against is exactly the case the
-    // short form used to swallow: it produced the dispute and then discarded it.
+    // The disputes come back with the report rather than being dropped — and WHICH dispute is the
+    // whole of what the caller is being handed, so the assertion names it. The legs here are the
+    // default declaration, which says all three legs are produced, against retained values that
+    // carry no lane evidence at all: three declared legs that never arrived, which is one
+    // whole-unit lane dispute and nothing else. Asserting only that something was disputed would
+    // pass just as happily if the fold started reporting a different disagreement entirely.
+    let reasons: Vec<DisputeReason> = folded.disputes.iter().map(|d| d.reason).collect();
+    assert_eq!(reasons, vec![DisputeReason::LaneMismatch]);
+    assert_eq!(
+        folded.disputes[0].class, "",
+        "the lane is a whole-unit dispute, not a dispute about one class"
+    );
+
+    // And the legs are an argument, not a constant: the same fold with no leg declared at all has
+    // no lane to disagree about, so the only dispute left is the one the LINE earns — a reported
+    // cardinality with no kernel companion in this unit to be checked against.
+    let reported = meter(
+        &retained(vec![plane_count("objects", 42, "objects")]),
+        &counts(vec![]),
+        &MeterPolicy::default(),
+        &LegDeclaration {
+            admit_locator: false,
+            verified: false,
+            response: false,
+        },
+        &token(),
+    )
+    .expect("within the line bound");
+    let reasons: Vec<DisputeReason> = reported.disputes.iter().map(|d| d.reason).collect();
+    assert_eq!(reasons, vec![DisputeReason::NoCompanion]);
+    assert_eq!(reported.disputes[0].class, "objects");
+    assert_eq!(reported.disputes[0].reported, 42);
+    assert_eq!(
+        reported.disputes[0].companion, None,
+        "there was no companion — that is the dispute"
+    );
     assert!(
-        folded.disputed(),
-        "the disputes come back with the report rather than being dropped"
+        reported.usage.is_estimated(),
+        "an unchecked reported figure posts as an estimate"
     );
 }
