@@ -65,6 +65,27 @@ log()  { printf '\n\033[1m== %s\033[0m\n' "$*"; }
 note() { printf '  %s\n' "$*"; }
 die()  { printf '\033[31mqa-gate-run: %s\033[0m\n' "$*" >&2; exit 1; }
 
+# Echo `-p <crate>` for every workspace member that builds a cdylib, DERIVED from cargo metadata.
+#
+# THIS SET IS THE WHOLE POINT, so it is derived rather than restated. Every in-tree cdylib is a
+# plugin some test dlopens, and those tests PANIC under CI when their .so is missing rather than
+# skipping — so a crate missing from a hand-kept list costs a leg, loudly and late. That has already
+# happened twice: `busbar-export-example-plugin` was omitted and took out the loader leg, and the
+# hand-kept list then fell two crates behind the workspace (store-example, auth-static) while
+# `land.sh` named all of them. A `cargo test --workspace` builds every member cdylib as a side
+# effect; naming packages explicitly is faster, but only if the naming cannot go stale.
+cdylib_pkg_args() {
+  cargo metadata --no-deps --format-version 1 | python3 -c '
+import json, sys
+m = json.load(sys.stdin)
+names = sorted({p["name"] for p in m["packages"]
+                for t in p["targets"] if "cdylib" in t["crate_types"]})
+if not names:
+    sys.exit("qa-gate-run: cargo metadata reported no cdylib workspace members")
+print(" ".join(f"-p {n}" for n in names))
+'
+}
+
 # Emit a value to $GITHUB_OUTPUT when running under Actions; a no-op locally.
 gh_output() {
   [ -n "${GITHUB_OUTPUT:-}" ] || return 0
@@ -176,17 +197,13 @@ cmd_build() {
   log "build once (1/3): busbar + busbar-plugin-pack (release-check.sh Phase 0's exact line)"
   cargo build --release -p busbar -p busbar-plugin-pack
 
-  # THE LIST HERE IS THE WHOLE POINT, so state what governs it: every in-tree cdylib that some test
-  # dlopens, and each of those tests PANICS under CI when its .so is missing rather than skipping.
-  # `busbar-export-example-plugin` was omitted from this line and cost the loader leg in qa-gate run
-  # 31059945604 (`load_and_exercise_export_example_plugin`, "the export example plugin cdylib is not
-  # built under CI"). The old monolithic gate never noticed because it reached these tests through a
-  # `cargo test --workspace`, which builds every workspace member's cdylib as a side effect; naming
-  # packages explicitly is faster but makes the set a thing that can silently fall out of date.
-  # If you add a cdylib fixture crate to the workspace, add it here AND to cmd_loader.
+  # See cdylib_pkg_args: the set is derived from cargo metadata, so adding a cdylib fixture crate to
+  # the workspace needs no edit here or in cmd_loader.
+  local cdylibs; cdylibs="$(cdylib_pkg_args)" || die "could not derive the cdylib fixture set"
   log "build once (2/3): the in-tree dlopen fixture cdylibs (the loader job's exact line)"
-  cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin \
-    -p busbar-export-example-plugin
+  note "cdylib fixtures: ${cdylibs}"
+  # shellcheck disable=SC2086  # deliberately word-split: `-p a -p b ...`
+  cargo build --release $cdylibs
 
   log "build once (3/4): link the plugin-loader test binaries"
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader --no-run
@@ -405,14 +422,17 @@ cmd_loader() {
     echo "::warning::no ../store-sqlite sibling checkout - loader tests will fall back"
   fi
 
-  # Hydration should already have supplied these, but build them explicitly anyway: all three crates
+  # Hydration should already have supplied these, but build them explicitly anyway: these crates
   # hard-panic via their own path-discovery helpers under CI if they are ever missing, so a future
-  # regression fails loud rather than silently losing this coverage again. Keep this set identical
-  # to cmd_build's (2/3) line -- when they drifted, the artifact was missing the export-example
-  # cdylib and this belt-and-braces rebuild did not cover for it.
-  log "build the in-tree hook-test, secret-example and export-example cdylibs"
-  cargo build --release -p busbar-hook-test-plugin -p busbar-secret-example-plugin \
-    -p busbar-export-example-plugin
+  # regression fails loud rather than silently losing this coverage again. Identical to cmd_build's
+  # (2/3) line BY CONSTRUCTION now (both call cdylib_pkg_args) -- when the two lists drifted, the
+  # artifact was missing the export-example cdylib and this belt-and-braces rebuild did not cover
+  # for it.
+  local cdylibs; cdylibs="$(cdylib_pkg_args)" || die "could not derive the cdylib fixture set"
+  log "build the in-tree dlopen fixture cdylibs"
+  note "cdylib fixtures: ${cdylibs}"
+  # shellcheck disable=SC2086  # deliberately word-split: `-p a -p b ...`
+  cargo build --release $cdylibs
 
   log "loader-mechanism tests against the real sibling-built store-sqlite-plugin"
   DEV_GATE=1 cargo test --release -p busbar-plugin-loader
