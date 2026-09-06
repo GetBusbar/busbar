@@ -523,6 +523,23 @@ def cmd_record(args, git, ledger_path):
     sc["tree_hash"] = tree_hash(sc, all_files)
     sc["audited_at"] = at
     sc["fixed_at"] = None
+    # THE ROUNDS ARE KEPT, not overwritten. The flat fields above describe the LATEST round only, so
+    # a register that stored nothing else could never answer "has this scope come back zero twice, at
+    # the same hash, from two different auditors" -- which is the confirmation rule --check enforces.
+    # Appended (and de-duplicated on the (round, auditor) pair, so re-recording a round corrects it
+    # rather than inflating the count).
+    rounds = [r for r in (sc.get("rounds") or [])
+              if not (r.get("round") == args.round and r.get("auditor") == args.auditor)]
+    rounds.append({
+        "round": args.round,
+        "result": args.result,
+        "auditor": args.auditor,
+        "counts": counts,
+        "report": args.report,
+        "audited_at": at,
+        "tree_hash": sc["tree_hash"],
+    })
+    sc["rounds"] = rounds
     save(ledger_path, doc)
     print("recorded %s: round %s %s at %s (%s)" % (sc["id"], args.round, args.result, sc["audited_at"][:8], sc["tree_hash"][:12]))
     return 0
@@ -539,6 +556,42 @@ def cmd_fixed(args, git, ledger_path):
     save(ledger_path, doc)
     print("fixed %s at %s (re-hashed %s)" % (sc["id"], sc["fixed_at"][:8], sc["tree_hash"][:12]))
     return 0
+
+
+# Today's measured count of production/instrument scopes that are not yet double-confirmed clean
+# (139 scopes: 65 production + 13 instrument, of which every one is still owed -- 102 `unaudited`,
+# 36 `in_progress`, 1 with findings). It is a RATCHET, not a ceiling that makes the gate pass: the
+# run is RED while any scope is owed. This number exists so a debt that GROWS is called out on its
+# own line. Lower it as scopes are confirmed; never raise it.
+CONFIRMATION_DEBT_RATCHET = 78
+
+
+def confirmation_gap(row):
+    """Why this scope is not double-confirmed clean, or None when it is.
+
+    Two rounds, each `zero`, each stamped at the tree hash the scope's files hash to RIGHT NOW, by
+    two different auditors. Anything less is 'not yet', and the four ways of being less are named
+    separately so the worklist reads as an instruction rather than a verdict."""
+    sc = row["scope"]
+    if row["status"] in ("unaudited", "in_progress", "open"):
+        return "%s -- no confirmed round yet" % row["status"]
+    rounds = sc.get("rounds") or []
+    if not rounds:
+        # A register stamped before rounds were kept: the latest round is all there is, so it counts
+        # as exactly one. Named as such rather than silently treated as two.
+        rounds = [{
+            "result": sc.get("result"), "auditor": sc.get("auditor"), "tree_hash": sc.get("tree_hash"),
+        }]
+    current = row["current_hash"]
+    good = [r for r in rounds if r.get("result") == "zero" and r.get("tree_hash") == current]
+    auditors = {r.get("auditor") for r in good if r.get("auditor")}
+    if not good:
+        return "no round came back zero at the code's current hash (result/hash moved)"
+    if len(auditors) < 2:
+        return "only %d zero round(s) at the current hash, by %s -- owes a second, different auditor" % (
+            len(good), ", ".join(sorted(auditors)) or "an unnamed auditor",
+        )
+    return None
 
 
 def cmd_check(args, git, ledger_path):
@@ -588,14 +641,56 @@ def cmd_check(args, git, ledger_path):
                 )
             )
 
+    # ── THE CONFIRMATION RULE ─────────────────────────────────────────────────────────────────────
+    # What --check used to assert: coverage is complete, no scope is OPEN at HIGH/MEDIUM. What it did
+    # NOT assert: that anybody had looked. 102 of 139 scopes read `unaudited` and 36 read
+    # `in_progress`, and --check printed "GREEN -- coverage complete ... 0.0% of production LOC
+    # clean" in the same line as the zero. verify-1.6.0-done.sh spent that green as a DONE step: the
+    # release's audit evidence was a register that had recorded nothing.
+    #
+    # The rule the ledger's own doc states, enforced here: every PRODUCTION and INSTRUMENT scope owes
+    # TWO rounds that came back zero, at the SAME tree hash as the code has today, from DIFFERENT
+    # auditors. Two, because one pair of eyes that found nothing is not a finding of nothing; at the
+    # same hash, because a result about code that has since moved describes code that is gone; from
+    # different auditors, because a second look by the same reader repeats the first look's blind
+    # spots. Test-kind scopes are excluded: they are the proofs, not the product.
+    owed = []
+    for r in rows:
+        if r["scope"]["kind"] not in ("production", "instrument"):
+            continue
+        why = confirmation_gap(r)
+        if why:
+            owed.append((r, why))
+    if owed:
+        red = 1
+        print("audit ledger: %d production/instrument scope(s) are NOT double-confirmed clean:" % len(owed))
+        for r, why in owed[:20]:
+            print("  %-46s %-11s %s" % (r["scope"]["id"], r["status"], why))
+        if len(owed) > 20:
+            print("  ... and %d more (run `status` for the full table)" % (len(owed) - 20))
+        print("  The rule: two rounds back ZERO, at the code's CURRENT tree hash, from two different")
+        print("  auditors. `unaudited`, `in_progress`, `stale` and a single zero are all 'not yet'.")
+
+    # THE RATCHET. This gate went from green to red the day the rule above was written down, and the
+    # honest landing is red WITH the true number rather than a softer rule that keeps the green. The
+    # ratchet is today's measured debt and may only go DOWN: the run is RED while any scope is owed,
+    # and it is red AGAIN, separately and loudly, if the debt ever GROWS -- which is what a new
+    # unaudited crate looks like.
+    if len(owed) > CONFIRMATION_DEBT_RATCHET:
+        print(
+            "audit ledger: the confirmation debt GREW: %d scope(s) owed, ratchet %d. A new scope was "
+            "added without an audit, or an audit expired." % (len(owed), CONFIRMATION_DEBT_RATCHET)
+        )
+
     if red:
         print("audit ledger --check: RED")
         return 1
     prod = [r for r in rows if r["scope"]["kind"] == "production"]
     _clean, pct = bar(prod, "clean")
     print(
-        "audit ledger --check: GREEN -- %d scopes, coverage complete, no scope open at HIGH/MEDIUM "
-        "(%.1f%% of production LOC clean)" % (len(rows), pct)
+        "audit ledger --check: GREEN -- %d scopes, coverage complete, no scope open at HIGH/MEDIUM, "
+        "every production/instrument scope double-confirmed clean (%.1f%% of production LOC clean)"
+        % (len(rows), pct)
     )
     return 0
 
@@ -753,7 +848,10 @@ def selftest(work_dir):
     say(beta["tree_hash"] != before, "fixed re-hashes the scope at the fix commit")
     say(st["crates/beta/src"] == "fixed", "a fixed findings scope reads `fixed` (due a confirming round), not open")
     rc = cmd_check(None, git, ledger)
-    say(rc == 0, "--check is GREEN once the open finding is fixed (rc=%s)" % rc)
+    # `fixed` is not `confirmed`. One round that found something and a stamp saying it was fixed is
+    # one pair of eyes, once. --check used to go GREEN here, which is the green the release's DONE
+    # step was spending.
+    say(rc != 0, "--check is still RED after a fix: `fixed` is not two zero rounds (rc=%s)" % rc)
 
     # (g2) a record and a fix can be stamped at a NAMED commit, not only HEAD -- which is how a
     #      ledger is seeded honestly from history instead of back-dated to whenever it was built.
@@ -782,7 +880,8 @@ def selftest(work_dir):
     rc = cmd_check(None, git, ledger)
     say(rc != 0, "a new crate no scope covers makes --check RED (rc=%s)" % rc)
     cmd_sync(None, git, ledger, write=True)
-    say(cmd_check(None, git, ledger) == 0, "sync --write adds it and --check goes GREEN")
+    say(cmd_check(None, git, ledger) != 0,
+        "sync --write closes the coverage hole, and the new scope then owes its two rounds")
     say(
         find(load(ledger), "crates/alpha/src")["audited_at"] is not None,
         "sync preserved the audit record on the surviving scopes",
@@ -794,6 +893,38 @@ def selftest(work_dir):
     rows, _f, _h = enrich(load(ledger), git)
     order = [r["status"] for r in sorted(rows, key=lambda r: NEXT_ORDER.index(r["status"]) if r["status"] in NEXT_ORDER else 99)]
     say(order.index("unaudited") < order.index("clean"), "next puts unaudited ahead of clean")
+
+    # (j) THE CONFIRMATION RULE, all four ways of not meeting it and the one way of meeting it.
+    #     Every case is driven through the REAL cmd_record/cmd_check against the scratch repo.
+    def confirm(scope, *auditors, result="zero", round_base=10):
+        for i, who in enumerate(auditors):
+            a.scope, a.result, a.counts, a.at = scope, result, None, None
+            a.round, a.auditor, a.report = round_base + i, who, "docs/r.md"
+            cmd_record(a, git, ledger)
+
+    prod_ids = [s["id"] for s in load(ledger)["scopes"]
+                if s["kind"] in ("production", "instrument")]
+    # one zero round only
+    for sid in prod_ids:
+        confirm(sid, "opus")
+    say(cmd_check(None, git, ledger) != 0, "one zero round per scope is NOT enough -- --check is RED")
+    # two rounds, same auditor
+    for sid in prod_ids:
+        confirm(sid, "opus", "opus", round_base=20)
+    say(cmd_check(None, git, ledger) != 0,
+        "two zero rounds by the SAME auditor are one pair of eyes twice -- --check is RED")
+    # two rounds, two auditors: the rule is met
+    for sid in prod_ids:
+        confirm(sid, "opus", "sonnet", round_base=30)
+    say(cmd_check(None, git, ledger) == 0,
+        "two zero rounds at the current hash by two different auditors -- --check is GREEN")
+    # and the confirmation expires the moment the code moves
+    with open(os.path.join(root, "crates/alpha/src/lib.rs"), "a") as fh:
+        fh.write("pub fn six() -> u8 { 6 }\n")
+    git_("add", "-A")
+    git_("commit", "-q", "-m", "touch alpha again")
+    say(cmd_check(None, git, ledger) != 0,
+        "a confirmed scope whose code moved is stale, and stale is 'not yet' -- --check is RED")
 
     print("")
     if cases[1] == 0:

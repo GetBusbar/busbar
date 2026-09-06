@@ -521,12 +521,20 @@ fi
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothing open at HIGH/MEDIUM"
+begin_group "AUDIT-LEDGER — every production/instrument scope double-confirmed clean at the current hash"
 # qa/audit-ledger.json carries one scope per production path, its tree hash at the audited commit and
-# the round that produced the result. --check is red two ways: a tracked production file that no
-# scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
-# recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
-# docs/design/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
+# the rounds that produced the results. --check is red four ways: a tracked production file that no
+# scope covers (coverage cannot silently regress when a crate is added); a scope with findings
+# recorded and no fix commit stamped; a scope whose result was stamped at a tree hash the code has
+# since moved past (an audit describes one tree, not the code forever); and — the rule this DONE step
+# is actually buying — any production or instrument scope that has not come back ZERO twice, at the
+# code's current hash, from two DIFFERENT auditors.
+#
+# THAT LAST ONE IS WHY THIS STEP IS RED TODAY, and it is the honest answer. This step used to pass on
+# a register in which 102 of 139 scopes read `unaudited` and 36 read `in_progress`: --check printed
+# "GREEN — coverage complete … 0.0% of production LOC clean" and the release's DONE claim was bought
+# with it. 78 production/instrument scopes are owed their two rounds; scripts/audit-ledger.py's
+# CONFIRMATION_DEBT_RATCHET is that number and may only go down. `next` prints the worklist.
 if [ -f scripts/audit-ledger.py ]; then
   step "audit-ledger --selftest" python3 scripts/audit-ledger.py --selftest
   step "audit-ledger --check"    python3 scripts/audit-ledger.py --check
