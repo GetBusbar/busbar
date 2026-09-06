@@ -144,6 +144,14 @@ pub const CLASS_AUDIO_TOKENS_OUT: MeterClassId = MeterClassId::new("audio_tokens
 /// beside the other four rather than invented at the point a record is sealed.
 pub const OP_SESSION_OPEN: OpClassId = OpClassId::new("voice.session.open");
 
+/// The operation class a duplex turn is.
+///
+/// Declared once because three steps name it and one of them is a comparison: the decode step mints
+/// a unit under it, the declaration below lists it, and `crate::plane`'s `encode_end` closes the
+/// session's open turn only when the unit that ended IS one. A fourth spelling is a turn that never
+/// closes on one side of that comparison and closes on the other.
+pub const OP_DUPLEX_TURN: OpClassId = OpClassId::new("duplex_turn");
+
 /// The operation classes a unit of this plane can be.
 ///
 /// Five classes: the unit that opens a session, a duplex turn (the unit shape for the two duplex
@@ -153,7 +161,7 @@ pub const OP_SESSION_OPEN: OpClassId = OpClassId::new("voice.session.open");
 /// `IrDuplexTool::CallOpen` onto it).
 const OP_CLASSES: &[OpClassId] = &[
     OP_SESSION_OPEN,
-    OpClassId::new("duplex_turn"),
+    OP_DUPLEX_TURN,
     OpClassId::new("transcribe"),
     OpClassId::new("tts"),
     OpClassId::new("tool_call"),
