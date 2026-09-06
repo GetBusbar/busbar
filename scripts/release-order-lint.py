@@ -479,15 +479,24 @@ def check(root: str) -> Finding:
     #     | jq -c 'unique_by(.name)'  ->  [{"name":"qa-gate","conclusion":"skipped"}]
     # Every run on the sha must be judged, and a required workflow must be selected by the branch it
     # ran on (the qa push) and required to have concluded success.
+    #
+    # BOTH GATES, NOT JUST THE FIRST ONE. `branch-green` is not the only place the question is
+    # asked: `promote-release`'s "Refuse to tag a commit that is red RIGHT NOW" step re-asks it
+    # immediately before the tag is pushed, over the same API, and it kept `unique_by(.name)` for
+    # months after branch-green dropped it. A rule that lints one of two identical judgments leaves
+    # the LAST word on whether a commit is red as the weakest one. So the check is over every job
+    # that judges the sha, keyed by the jq call rather than by the job name.
     bg = rjobs.get("branch-green", "")
-    if bg:
-        if "unique_by" in bg:
+    promote_recheck = rjobs.get("promote-release", "")
+    for where, body in (("`branch-green`", bg), ("`promote-release`'s promote-time re-check", promote_recheck)):
+        if body and "unique_by" in body:
             bad.append(
-                "R12 release.yml's `branch-green` job collapses the run list with `unique_by`. That "
+                "R12 release.yml's %s collapses the run list with `unique_by`. That "
                 "keeps only the NEWEST run per workflow name, and a main push spawns a second, "
                 "all-skipped `qa-gate` run on the same sha - so a red qa soak reads green and the "
-                "release promotes over it. Judge every run on the sha."
+                "release promotes over it. Judge every run on the sha." % where
             )
+    if bg:
         if not re.search(r"^\s+PROMOTE_SOURCE_BRANCH:", bg, re.M):
             bad.append(
                 "R12 release.yml's `branch-green` job no longer selects the required workflow runs "
@@ -631,6 +640,13 @@ MUTATIONS = [
         "release.yml",
         lambda t: t.replace("                | map({name, status, conclusion, event",
                             "                | unique_by(.name)\n                | map({name, status, conclusion, event"),
+        "R12",
+    ),
+    (
+        "R12 the promote-time re-check goes back to one run per workflow name",
+        "release.yml",
+        lambda t: t.replace("            | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($not[]) | not)))\n            | .[] |",
+                            "            | map(select(.id != (env.GITHUB_RUN_ID | tonumber) and (.name | IN($not[]) | not)))\n            | unique_by(.name)\n            | .[] |"),
         "R12",
     ),
     (
