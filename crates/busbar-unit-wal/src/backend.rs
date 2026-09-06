@@ -294,6 +294,26 @@ impl SegmentBackend for FileSegment {
     }
 }
 
+/// Fsync the directory HOLDING `path`, which is what makes `path`'s own directory entry durable.
+///
+/// Best effort by construction: a filesystem that refuses to open a directory as a file (or refuses
+/// to fsync one) cannot be made to promise more than it does, and failing construction of the log
+/// over it would trade a weaker durability story for no log at all. The promise this crate makes —
+/// a sync that RETURNS SUCCESS was really durable — is carried by [`SegmentBackend::sync`], which
+/// does report its failure.
+fn sync_holding_dir(path: &Path) {
+    if let Some(parent) = path.parent() {
+        let parent = if parent.as_os_str().is_empty() {
+            Path::new(".")
+        } else {
+            parent
+        };
+        if let Ok(dir) = std::fs::File::open(parent) {
+            let _ = dir.sync_all();
+        }
+    }
+}
+
 /// Hands out file segments named `<index>.wal` inside one directory.
 #[derive(Debug)]
 pub struct DirectoryFactory {
@@ -304,9 +324,20 @@ impl DirectoryFactory {
     /// A factory over `dir`. The directory is created if it is absent — but note that CONSTRUCTING
     /// this type is already the decision to write to a disk. A node with no data directory never
     /// builds one, which is why it leaves no files behind.
+    ///
+    /// The creation is made DURABLE here rather than left to `create_dir_all`'s default, which
+    /// leaves the new directory ENTRY unfsynced: a power loss right after the first group commit
+    /// could then take the whole directory with it, segments included, even though every segment's
+    /// own `sync` returned success. A log that reports a durable write and then loses it to its own
+    /// holding directory has broken the one promise this crate exists to keep, so the parent gets
+    /// the fsync that makes the entry survive.
     pub fn new(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
+        let fresh = !dir.exists();
         std::fs::create_dir_all(&dir)?;
+        if fresh {
+            sync_holding_dir(&dir);
+        }
         Ok(DirectoryFactory { dir })
     }
 

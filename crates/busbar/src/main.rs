@@ -1217,15 +1217,6 @@ async fn run(data_workers: usize) {
     // was, which is what the neutrality cells read.
     #[cfg(feature = "root-voice")]
     mount_root_voice(&cfg.limits);
-    // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
-    // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
-    // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
-    // (that branch is gated on `prior.is_some()`) — the discarded closure is always `None`.
-    //
-    // blocking-ffi-lint: allow — BOOT. Two independent reasons, either sufficient: (1) `run()` is
-    // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
-    // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
-    // `serve_listener` below, so neither listener has been bound, let alone is accepting.
     // THE VOICE PLANE'S EGRESS CREDENTIAL, read off the deployment's ORDINARY provider catalog.
     // The voice plane's `streams:` grammar carries no credential field, so its realtime provider is
     // the one already serving the model that section targets: `streams.session.model` names a model,
@@ -1240,6 +1231,19 @@ async fn run(data_workers: usize) {
         .and_then(|provider| cfg.providers.get(&provider))
         .map(|p| (p.base_url.clone(), p.api_key.clone()));
 
+    // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
+    // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
+    // Boot has no `prior` App, so `build_app_from_config` never resolves a credential rotation here
+    // (that branch is gated on `prior.is_some()`) — the discarded closure is always `None`.
+    //
+    // blocking-ffi-lint: allow — BOOT. Two independent reasons, either sufficient: (1) `run()` is
+    // driven by `.block_on(run())` (this file, in `main()`), so it is polled on the MAIN thread, not
+    // on a Tokio worker — there is no worker to park; (2) this precedes the `tokio::join!` over
+    // `serve_listener` below, so neither listener has been bound, let alone is accepting.
+    //
+    // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
+    // the comment block that starts it and no further, so the voice-credential capture that used to
+    // stand between the two silently ate this exemption and left the build itself flagged.
     let (boot_app, _boot_gov_rotate) = build_app_from_config(
         cfg,
         plugins_cfg,

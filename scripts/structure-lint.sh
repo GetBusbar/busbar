@@ -1193,7 +1193,25 @@ CHOKE_POINTS=(
   #         dance built for small state/config artifacts — no correctness gained, real memory/IO
   #         cost paid on every rotation. See `export::file::rotate` for the rename-failure posture
   #         (never truncate un-archived data) that keeps this exemption honest.
-  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs,'"$CORE"'/export/file.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,'"$CORE"'/test_support/mod.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
+  #
+  #         LEDGERED EXEMPTION on the `sync_[ad]` and `fs::create_dir_all\(` rules for
+  #         `crates/busbar-unit-wal/src/backend.rs`. The WAL is not a CONSUMER of the durable-write
+  #         choke point, it is a SIBLING durability primitive, and the two own different hazards.
+  #         `durable::write` owns "publish a freshly computed, whole artifact so no reader ever sees
+  #         a torn write" — temp file, fsync, rename, cleanup. A write-ahead log does the opposite by
+  #         definition: it APPENDS at an offset into a segment that stays put and fsyncs that segment
+  #         IN PLACE, and its entire poison rule hangs on observing THAT sync's error honestly.
+  #         Re-emitting an operator-sized segment through a rename dance on every group commit would
+  #         destroy both the latency and the semantics the log exists for. The crate's own manifest
+  #         pins why it cannot simply call the owner: `busbar-caps` and `sha2`, "nothing else" — the
+  #         log deliberately depends on no engine crate, so `crates/api` is not reachable from it,
+  #         and making it reachable is a larger architectural change than the hazard is worth.
+  #         The exemption is kept honest the way the rotation one is: the directory creation here now
+  #         performs the parent fsync ITSELF (`backend::sync_holding_dir`), so the one facet that
+  #         rule protects — a new directory entry that does not survive a power loss — is COVERED,
+  #         not waived. A log that reported a durable write and then lost it with its own holding
+  #         directory would have broken the only promise this crate makes.
+  'A-persistence|DURABLE-BYPASS|crates/api/src/durable.rs (durable::write / write_with; AppHandle::commit_and_swap)|crates/api/src/tests/durable_tests.rs::fault_matrix_returns_err_untouched_target_no_temp_leak|route through crate::durable::write|fs::rename\(>>hand-rolled rename-to-publish>>crates/api/src/durable.rs,'"$CORE"'/export/file.rs;sync_[ad]>>hand-rolled fsync durability (sync_all/sync_data)>>crates/api/src/durable.rs,crates/busbar-unit-wal/src/backend.rs;fs::create_dir_all\(>>directory creation that leaves the new entry non-durable>>crates/api/src/durable.rs,'"$CORE"'/test_support/mod.rs,crates/busbar-unit-wal/src/backend.rs|persist-then-swap is only atomic if EVERY writer does the identical fsync/rename/cleanup dance'
 
   # ── B ── plugin FFI/ABI: one export boundary. A hand-written #[no_mangle] skips the
   #         null-out-guard-before-alloc, the mandatory catch_unwind, and the total status map.
@@ -1211,7 +1229,17 @@ CHOKE_POINTS=(
   # ── C ── admin config mutation: one transaction. A raw lock re-opens lock-then-arbitrary-code; a
   #         swap outside the section IS the lost update the lock exists to prevent. state.rs DEFINES
   #         swap/commit_and_swap, so it is allowed alongside txn.rs.
-  'C-config-mutation|MUTATION-BYPASS|'"$CORE"'/admin/v1/json/txn.rs (config_transaction)|'"$CORE"'/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap|route through json::txn::config_transaction|CONFIG_MUTATION_LOCK>>names the config mutation lock>>'"$CORE"'/admin/v1/json/txn.rs;commit_and_swap\(>>direct commit_and_swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs;\.swap\(>>direct swap on an AppHandle outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs>>Ordering::;AppHandle::swap\(>>direct AppHandle::swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs|a fresh post-lock snapshot + one persist-then-swap is the only way concurrent mutations cannot lose an update'
+  #
+  #         LEDGERED EXEMPTION on the `AppHandle::swap\(` rule for `$CORE/test_support/engine_kit.rs`,
+  #         on exactly the argument that already admits `state.rs`. The hit is not a mutation SITE: it
+  #         is the one line of `impl EngineHandle for AppHandle` that FORWARDS the trait method to the
+  #         inherent `AppHandle::swap` state.rs defines, so a plane's test-kit can drive the engine
+  #         handle through the neutral seam without naming `busbar_core::state`. A delegate that adds
+  #         no logic cannot lose an update that the definition it calls does not already lose;
+  #         inlining `state.rs`'s body here to dodge the pattern is what would actually create a
+  #         second implementation of the swap. The row is spelled at FILE granularity so a real
+  #         mutation added anywhere else under `test_support/` still trips.
+  'C-config-mutation|MUTATION-BYPASS|'"$CORE"'/admin/v1/json/txn.rs (config_transaction)|'"$CORE"'/admin/v1/json/tests/txn_tests.rs::concurrent_transactions_never_lose_a_swap|route through json::txn::config_transaction|CONFIG_MUTATION_LOCK>>names the config mutation lock>>'"$CORE"'/admin/v1/json/txn.rs;commit_and_swap\(>>direct commit_and_swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs;\.swap\(>>direct swap on an AppHandle outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs>>Ordering::;AppHandle::swap\(>>direct AppHandle::swap outside a transaction>>'"$CORE"'/admin/v1/json/txn.rs,'"$CORE"'/state.rs,'"$CORE"'/test_support/engine_kit.rs|a fresh post-lock snapshot + one persist-then-swap is the only way concurrent mutations cannot lose an update'
 
   # ── D ── OpenAPI error taxonomy: one declaration the generator PROJECTS. Enforced differently —
   #         there is no pattern to ban, because the hazard is an endpoint emitting an ErrKind the
