@@ -108,82 +108,46 @@ impl std::fmt::Display for StepName {
     }
 }
 
-macro_rules! step_marker {
-    ($(#[$doc:meta])* $name:ident, $facts:ty, $kernel:expr) => {
-        $(#[$doc])*
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub struct $name;
+macro_rules! step_markers {
+    ($($(#[$doc:meta])* $name:ident => $facts:ty, $kernel:expr;)*) => {
+        $(
+            $(#[$doc])*
+            #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+            pub struct $name;
 
-        impl sealed::Sealed for $name {}
+            impl sealed::Sealed for $name {}
 
-        impl Step for $name {
-            type Facts = $facts;
-            const NAME: StepName = StepName::$name;
-            const KERNEL_OWNED: bool = $kernel;
-        }
+            impl Step for $name {
+                type Facts = $facts;
+                const NAME: StepName = StepName::$name;
+                const KERNEL_OWNED: bool = $kernel;
+            }
+        )*
     };
 }
 
-step_marker!(
+step_markers! {
     /// Step 0 — the transport-level facts of a connection, read before any plane is known.
-    Arrival,
-    ArrivalRecord,
-    true
-);
-step_marker!(
+    Arrival => ArrivalRecord, true;
     /// Step 0b — the plane says what shape arrived: a draft unit, a frame, a close, a discard.
-    Decode,
-    OpClassId,
-    true
-);
-step_marker!(
+    Decode => OpClassId, true;
     /// Step 1 — who is calling, or one more round before that can be said.
-    Authenticate,
-    Authenticated,
-    false
-);
-step_marker!(
+    Authenticate => Authenticated, false;
     /// Step 2 — where the unit may go: the sealed set of destinations, before anything is charged.
-    Verify,
-    Vec<VerifiedDestination>,
-    false
-);
-step_marker!(
+    Verify => Vec<VerifiedDestination>, false;
     /// Step 3 — whether the caller may do this at all.
-    Approve,
-    ScopeFacts,
-    false
-);
-step_marker!(
+    Approve => ScopeFacts, false;
     /// Step 4 — the door. A pass yields either the unit's own hold or an accrual into a parent's.
-    Admit,
-    Admission,
-    false
-);
-step_marker!(
+    Admit => Admission, false;
     /// Step 5 — dial, send, relay, all under the hold.
-    Route,
-    RoutePlan,
-    false
-);
-step_marker!(
+    Route => RoutePlan, false;
     /// Step 6 — what the unit actually cost, folded from what the legs reported.
-    Meter,
-    Usage,
-    false
-);
-step_marker!(
+    Meter => Usage, false;
     /// Step 7 — how the unit ended, sealed for the record.
-    Audit,
-    AuditFacts,
-    false
-);
-step_marker!(
+    Audit => AuditFacts, false;
     /// Step 8 — the bytes that leave. The kernel's own step; no unit is asked.
-    Encode,
-    Frame,
-    true
-);
+    Encode => Frame, true;
+}
 
 // The facts each step carries forward are the contract crate's own types, named here rather than
 // restated. A capability is keyed on the contract's objects; it does not own a second spelling of
