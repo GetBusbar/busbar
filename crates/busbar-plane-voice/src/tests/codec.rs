@@ -972,3 +972,68 @@ mod base64_stdlib {
         out
     }
 }
+
+#[test]
+fn ws_frame_with_invalid_utf8_fails_closed_rather_than_hanging_on_need_more() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let invalid_utf8: &[u8] = &[0x74, 0x79, 0x70, 0x65, 0xff, 0xfe];
+    let frames = [frame(invalid_utf8)];
+    let mut cursor = FrameCursor::new(&frames);
+    let err = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect_err("a frame that cannot be read as UTF-8 is a refusal, not a partial read");
+    assert!(matches!(err, busbar_contract::wire::Decode::Malformed));
+}
+
+#[test]
+fn ws_frame_with_an_unrecognised_event_is_dropped_never_left_pending() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let unrecognised = serde_json::to_vec(&json!({
+        "type": "teleport.now",
+        "destination": "mars",
+    }))
+    .unwrap();
+    let frames = [frame(&unrecognised)];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("an unrecognised event decodes to a discard, not an error");
+    assert!(matches!(
+        ingress,
+        Ingress::Discard {
+            reason: busbar_contract::wire::DiscardCode::Unsupported
+        }
+    ));
+}
+
+#[test]
+fn ws_frame_carrying_no_bytes_yet_is_genuinely_need_more() {
+    let plane = openai_plane();
+    let arena = LeakArena;
+    let config = EmptyConfig;
+    let transport = WsStack::new("/v1/realtime");
+    let labels = Labels::new();
+    let c = ctx(&arena, &config, &transport, &labels);
+    let mut state = open_client_session(&plane, &c);
+
+    let frames = [frame(&[])];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, Some(&mut state), &c)
+        .expect("an empty frame is a partial read, not a refusal");
+    assert!(matches!(ingress, Ingress::NeedMore));
+}

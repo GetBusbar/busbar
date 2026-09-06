@@ -700,11 +700,24 @@ fn decode_ws_frame<'u>(
     ctx: &Ctx<'u>,
 ) -> Result<Ingress<'u>, Decode> {
     let frame = frames.next_frame().ok_or(Decode::Malformed)?;
+    // A frame the cursor carved but that carries no bytes yet is the one genuinely partial shape at
+    // this layer (mcp's own decode makes the same distinction on an empty body): wait for the rest.
+    if frame.bytes.is_empty() {
+        return Ok(Ingress::NeedMore);
+    }
+    // A frame WITH bytes that is not readable text is a refusal, not a partial read: nothing more
+    // ever arrives to complete an already-complete WS frame that failed to decode as UTF-8.
+    std::str::from_utf8(frame.bytes.as_slice()).map_err(|_| Decode::Malformed)?;
     // Borrowed, not copied: see `decode_response`'s own note on the downlink side of this.
     let reader = reader_for(dialect);
     let events = reader.read_up_ref(WireRef(frame.bytes.as_slice()), &mut state.codec);
     let Some(event) = events.into_iter().next() else {
-        return Ok(Ingress::NeedMore);
+        // A JSON document this dialect does not recognise is answered exactly the way
+        // `decode_response` answers an unrecognised server event and mcp answers an unrecognised
+        // notice: dropped, never left pending forever.
+        return Ok(Ingress::Discard {
+            reason: DiscardCode::Unsupported,
+        });
     };
     // Stashed so `encode_ingress_frame` never calls the stateful reader a second time for the same
     // wire frame (see `crate::session::Pending`'s doc comment).
