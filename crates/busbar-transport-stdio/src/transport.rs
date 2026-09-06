@@ -39,6 +39,22 @@ use crate::conn::{ConnState, ReaderSlot, StdioConnHandle};
 /// what a line may be.
 pub(crate) const MAX_LINE_BYTES: usize = 1024 * 1024;
 
+/// THE FRAME BOUNDARY, on both legs: `write` appends one and the read side splits on one.
+pub(crate) const FRAME_DELIMITER: u8 = b'\n';
+
+/// Whether a payload spells its own frame boundary, and so is not one frame.
+///
+/// A payload carrying the delimiter does not become the frame a caller asked for — it becomes two
+/// on the peer's side, the second of them a message nobody wrote, on a transport whose first
+/// message opens the session's first unit. Where a line ends is the one thing this transport
+/// refuses to guess: an unterminated tail is a framing error on the way in, and a half-written line
+/// fences the connection on the way out. A payload that spells its own boundary asks that question
+/// before any byte leaves, so it takes the same answer — and, since nothing has been written, the
+/// caller's connection is left usable rather than fenced.
+fn carries_the_delimiter(payload: &[u8]) -> bool {
+    payload.contains(&FRAME_DELIMITER)
+}
+
 /// How a call to [`read_line`] stopped.
 enum LineEnd {
     /// A newline was read: the bytes in the buffer are one whole line.
@@ -412,6 +428,11 @@ impl Transport for StdioTransport {
             }
             // The arena slice outlives every await here, so there is nothing to copy it into.
             let payload = bytes.as_slice();
+            if carries_the_delimiter(payload) {
+                // BEFORE the lock and before the fence: nothing has been written, so nothing is in
+                // doubt and the connection stays usable.
+                return Err(TransportError::Framing);
+            }
             let n = payload.len();
             // The lock FIRST, and only then the fence. A write still queued behind another writer
             // has put nothing on the wire, so a caller who drops it there has left nothing in
@@ -523,6 +544,12 @@ impl Transport for StdioTransport {
 /// it takes the same fence. What the caller gets back is whether the peer was actually told —
 /// discarding that reports a refusal as delivered over stdin nobody is reading any more.
 async fn write_refusal_line(state: &ConnState, payload: &[u8]) -> Result<(), TransportError> {
+    if carries_the_delimiter(payload) {
+        // A refusal body that spells its own boundary would put a second line on the wire as the
+        // last thing this transport ever says, and answering `Ok` would report the delivery of
+        // something the caller did not write.
+        return Err(TransportError::Framing);
+    }
     let mut w = state.writer.lock().await;
     let mut guard = PoisonGuard { state, armed: true };
     w.write_all(payload)

@@ -601,3 +601,71 @@ async fn a_closed_connection_delivers_no_further_frames() {
         "a line arriving after the close is not a frame"
     );
 }
+
+/// A PAYLOAD CARRYING THE DELIMITER IS NOT ONE FRAME, AND IS NOT WRITTEN.
+///
+/// This transport's frame boundary IS the newline: `write` appends one and the read side splits on
+/// one. So a payload with a `0x0A` in it does not become the frame the caller asked for — it becomes
+/// TWO on the peer's side of the pipe, the second of them a message the caller never wrote, on a
+/// session transport where the first message opens unit 0. The caller is told `Ok`, and the byte
+/// count it gets back describes a frame that never existed as one.
+///
+/// Guessing where the caller meant a line to end is the one thing this transport already refuses on
+/// both the read side (an unterminated tail is `Framing`, never a frame) and the write side (a
+/// half-written line fences the connection). A payload that spells its own boundary asks the same
+/// question before any byte leaves, so it takes the same answer — and, because nothing has been
+/// written, the connection is left usable rather than fenced.
+#[tokio::test]
+async fn a_payload_carrying_the_delimiter_is_refused_and_does_not_fence() {
+    let t = StdioTransport::new();
+    let (a, b) = pair(&t, 64 * 1024);
+
+    for smuggled in [
+        b"one\ntwo".as_slice(),
+        b"trailing\n",
+        b"\nleading",
+        b"crlf\r\nsplit",
+    ] {
+        let err = t
+            .write(&a, busbar_contract::StreamId(0), ArenaBytes::new(smuggled))
+            .await
+            .expect_err("a payload spelling its own frame boundary is not one frame");
+        assert_eq!(err, TransportError::Framing, "for {smuggled:?}");
+    }
+
+    // Nothing was written, so nothing is in doubt: the connection is not fenced, and the next
+    // well-formed write still goes out and arrives whole.
+    assert!(
+        !t.state_of(a.id()).unwrap().is_poisoned(),
+        "a refusal before the wire must not fence a connection nothing was written on"
+    );
+    t.write(
+        &a,
+        busbar_contract::StreamId(0),
+        ArenaBytes::new(b"one line"),
+    )
+    .await
+    .expect("a refused payload leaves the connection usable");
+
+    let mut frames = t.frames(b);
+    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    assert_eq!(
+        frame.bytes.as_slice(),
+        b"one line",
+        "and the smuggled lines never reached the peer at all"
+    );
+}
+
+/// The refusal leg takes the same answer: a refusal body carrying the delimiter would put a second
+/// line on the wire as the last thing this transport ever says, and a caller told the refusal was
+/// delivered would have recorded the delivery of something else.
+#[tokio::test]
+async fn a_refusal_body_carrying_the_delimiter_is_refused() {
+    let t = StdioTransport::new();
+    let (a, _b) = pair(&t, 4096);
+    let err = t
+        .unit0_refusal(a, None, &a_refusal(), ArenaBytes::new(b"refused\nand more"))
+        .await
+        .expect_err("a refusal that spells its own frame boundary is not one line");
+    assert_eq!(err, TransportError::Framing);
+}
