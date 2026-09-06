@@ -209,7 +209,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/openai".into()),
+            BucketScope::Pool("meter:5:gpt-4:openai".into()),
             86_400,
         )
         .settled,
@@ -220,7 +220,7 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
             totals,
             "team-a",
             CapDimension::Class("input".into()),
-            BucketScope::Pool("meter:gpt-4/azure".into()),
+            BucketScope::Pool("meter:5:gpt-4:azure".into()),
             86_400,
         )
         .settled,
@@ -235,6 +235,55 @@ fn the_opening_figures_are_the_legacy_figures_exactly() {
     assert!(opening.checkpoint.body_hash_verifies());
     assert_eq!(opening.checkpoint.checkpoint_seq, OPENING_CHECKPOINT_SEQ);
     assert!(opening.unreadable.is_empty());
+}
+
+/// TWO METERING ROWS THAT ARE NOT THE SAME ROW DO NOT SHARE A BALANCE.
+///
+/// `lane` and `provider` are names read out of the previous release's rows, and this crate does not
+/// get to say what characters they contain. Joining them on a separator either may hold makes the
+/// pair `("a/b", "c")` and the pair `("a", "b/c")` land on ONE key, so two balances that must never
+/// meet are added together — and the sum is indistinguishable from an ordinary figure, which is what
+/// makes it the worst arithmetic error a migration can commit: there is nothing left to compare the
+/// result against. The key length-frames its lane so no lane's content can move the boundary.
+#[test]
+fn a_separator_in_a_lane_cannot_make_two_metering_rows_into_one_balance() {
+    let shifted = meter_figure("team-a", 86_400, "a/b", "c", "input", 10);
+    let other = meter_figure("team-a", 86_400, "a", "b/c", "input", 20);
+    assert_ne!(
+        shifted.key(),
+        other.key(),
+        "two different lane/provider pairs share one balance — the join is not a key"
+    );
+
+    // And end to end: both rows migrate, and the opening holds them as two figures, not one of 30.
+    let source = SeededRows {
+        head: LegacyHead {
+            seq: Some(1),
+            hash: Some("d0d0…".to_string()),
+            balances: Vec::new(),
+            cells_read: 2,
+        },
+        figures: vec![shifted, other],
+        unreadable: Vec::new(),
+        reads: std::cell::Cell::new(0),
+    };
+    let mut records = NodeLocalRecords::new();
+    let Outcome::Sealed(opening) = sealed(&source, &mut records).expect("migrates") else {
+        panic!("the first boot seals");
+    };
+    assert_eq!(
+        opening.checkpoint.totals.len(),
+        2,
+        "two rows were read and one balance opened: they were folded together"
+    );
+    let mut amounts: Vec<i128> = opening
+        .checkpoint
+        .totals
+        .values()
+        .map(|t| t.settled)
+        .collect();
+    amounts.sort_unstable();
+    assert_eq!(amounts, vec![10, 20]);
 }
 
 /// Nothing is invented and nothing is lost: the sum of the sealed figures equals the sum of what was
