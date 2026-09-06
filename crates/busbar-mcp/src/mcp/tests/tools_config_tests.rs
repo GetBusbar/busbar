@@ -52,6 +52,77 @@ fn the_locked_section_shape_parses_into_the_values_it_declares() {
     );
 }
 
+/// THE SECTION VALUE IS THE DEFAULT THE ENTRY OVERRIDES — asserted through the SNAPSHOT dispatch
+/// actually holds, not only through the combine accessor. `filesystem` says nothing, so it inherits
+/// `passthrough`; `archive` says `own`, so it keeps it. Before the combine reached
+/// `Catalogue::build`, both came back `Own` and the section line governed nothing.
+#[test]
+fn the_section_credential_mode_governs_a_server_that_declares_none_and_never_one_that_does() {
+    let cfg = parse(
+        r#"
+upstream_credentials: passthrough
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow: { read_file: {} }
+archive:
+  url: "https://mcp.internal/ar"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow: { read_file: {} }
+  upstream_credentials: own
+"#,
+    )
+    .expect("a section-level credential mode is legal on its own");
+    let cat = super::super::catalogue::Catalogue::build(&cfg);
+    assert_eq!(
+        cat.server("filesystem")
+            .expect("filesystem is registered")
+            .upstream
+            .credentials,
+        Some(busbar_api::UpstreamCreds::Passthrough),
+        "a server that wrote no `upstream_credentials:` must inherit the section's; a parsed value \
+         that reaches no dispatch is an operator instruction busbar silently declined to follow"
+    );
+    assert_eq!(
+        cat.server("archive")
+            .expect("archive is registered")
+            .upstream
+            .credentials,
+        Some(busbar_api::UpstreamCreds::Own),
+        "SCALAR ⇒ OVERRIDE: the entry's own line wins over the section default"
+    );
+}
+
+/// AND THE CONFLICT REFUSAL FOLLOWS THE VALUE UP A LEVEL. `token_exchange:` mints busbar's own
+/// credential; a section-level `passthrough` says the caller supplies one. The per-entry rule the
+/// section split calls cannot see the section, so this refusal has to run after the split — and it
+/// has to run, or the combine above would hand dispatch two contradictory answers.
+#[test]
+fn a_section_level_passthrough_conflicts_with_an_entry_level_token_exchange_and_refuses_boot() {
+    let err = parse(
+        r#"
+upstream_credentials: passthrough
+filesystem:
+  url: "https://mcp.internal/fs"
+  pin: { mechanism: cert_spki, key: "sha256/PIN==" }
+  tools_allow: { read_file: {} }
+  aud: "https://mcp.internal/fs"
+  token_exchange:
+    token_url: "https://idp.internal/token"
+    subject_token: { env: BUSBAR_SUBJECT_TOKEN }
+"#,
+    )
+    .expect_err(
+        "a `token_exchange:` under a section that says the CALLER supplies the credential is the \
+         same conflict as one written on the entry, and refusing only the entry spelling means the \
+         section spelling is the way past the check",
+    );
+    assert!(
+        err.contains("token_exchange") && err.contains("passthrough"),
+        "the diagnostic has to name both halves so the operator knows which line to delete: {err}"
+    );
+}
+
 /// The reserved word space does NOT vary per plane, and that is no longer an assertion about two
 /// constants — there is ONE constant, `plane::config::RESERVED_SECTION_KEYS`, and this section is
 /// read through the shared split that consults it. What remains testable, and what this asserts, is

@@ -963,12 +963,14 @@ impl ToolsCfg {
     // not routing). The rule below is still stated here, and still delegates to the one grammar
     // rule in `hooks::attach_list`, because the combine belongs to the section it describes.
     //
-    // The UPSTREAM-CREDENTIAL combine below still has none: the effective mode is read off the
-    // catalogue snapshot's `UpstreamPosture` rather than through `effective_upstream_credentials`,
-    // because the snapshot is what dispatch holds and reaching back into `ToolsCfg` from a request
-    // path would be a second reader of the operator's intent. It is written and pinned here because
-    // the OVERRIDE-scalar combine is a rule of the config grammar itself, and a grammar rule
-    // discovered at the moment its first caller lands is a grammar rule decided by that caller.
+    // THE UPSTREAM-CREDENTIAL COMBINE NOW HAS ONE TOO, and it is the SNAPSHOT BUILD rather than a
+    // request path: `Catalogue::build` resolves the effective mode once per config generation into
+    // the `UpstreamPosture` dispatch holds, so there is still exactly one reader of the operator's
+    // intent at request time — it is just a reader that has finally been told what the section said.
+    // Before that call landed, `server_entry` read `def.upstream_credentials` alone: a section-level
+    // `tools.upstream_credentials: passthrough` parsed, passed validation, and then governed nothing,
+    // so every server that had not repeated the line got `Own` and busbar spent its own credential
+    // against an operator's written instruction that the caller supplies one.
     #![cfg_attr(any(not(test), not(feature = "test-support")), allow(dead_code))]
 
     /// The effective hook set for one server: `tools.hooks ∪ tools.<server>.hooks`, deduped, in
@@ -1015,11 +1017,21 @@ impl<'de> Deserialize<'de> for ToolsCfg {
             validate_server,
         )?;
 
-        Ok(ToolsCfg {
+        let cfg = ToolsCfg {
             all_server_hooks: section.hooks,
             all_server_upstream_credentials: section.upstream_credentials,
             servers: section.entries,
-        })
+        };
+        // THE SECTION-LEVEL PASS, and it has to be here rather than inside `validate_server`: the
+        // per-entry rule the split calls cannot see the section it sits in, so a section-level
+        // `upstream_credentials: passthrough` combined with an entry-level `token_exchange:` used to
+        // boot clean and then hand dispatch two contradictory answers. Now that the section value
+        // actually governs (`Catalogue::build`), the refusal has to follow it.
+        for (name, def) in &cfg.servers {
+            refuse_credential_conflict(name, def, cfg.effective_upstream_credentials(name))
+                .map_err(serde::de::Error::custom)?;
+        }
+        Ok(cfg)
     }
 }
 
@@ -1337,6 +1349,34 @@ fn validate_endpoint(at: &str, def: &McpServerDefCfg) -> Result<(), String> {
     Ok(())
 }
 
+/// THE CREDENTIAL CONFLICT, at whichever level the `passthrough` was written.
+///
+/// An exchange mints BUSBAR's credential. `passthrough` says the CALLER supplies the credential.
+/// Configuring both is an operator asking for two different answers to one question, and silently
+/// preferring either is how a deputy is created.
+///
+/// `effective` is the mode that will actually govern this server: the entry's own value when
+/// `validate_server` calls it (the section is not visible from inside a per-entry rule), and the
+/// COMBINED value when the section pass calls it after the split. Both callers exist because the
+/// refusal only bites where the mode bites, and until the combine reached the snapshot the section
+/// level did neither. A conflict written one level up is the same conflict.
+fn refuse_credential_conflict(
+    name: &str,
+    def: &McpServerDefCfg,
+    effective: Option<busbar_api::UpstreamCreds>,
+) -> Result<(), String> {
+    if def.token_exchange.is_some()
+        && matches!(effective, Some(busbar_api::UpstreamCreds::Passthrough))
+    {
+        return Err(format!(
+            "`tools.{name}`: `token_exchange:` mints BUSBAR's own down-scoped credential, and \
+             `upstream_credentials: passthrough` says the CALLER supplies one. Set one or the \
+             other."
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> {
     let at = format!("`tools.{name}`");
 
@@ -1564,19 +1604,9 @@ pub fn validate_server(name: &str, def: &McpServerDefCfg) -> Result<(), String> 
                 tx.token_url
             ));
         }
-        // An exchange mints BUSBAR's credential. `passthrough` says the CALLER supplies the
-        // credential. Configuring both is an operator asking for two different answers to one
-        // question, and silently preferring either is how a deputy is created.
-        if matches!(
-            def.upstream_credentials,
-            Some(busbar_api::UpstreamCreds::Passthrough)
-        ) {
-            return Err(format!(
-                "{at}: `token_exchange:` mints BUSBAR's own down-scoped credential, and \
-                 `upstream_credentials: passthrough` says the CALLER supplies one. Set one or the \
-                 other."
-            ));
-        }
+        // The ENTRY-level half of the conflict. The SECTION-level half runs after the split, over
+        // the combined value — see `refuse_credential_conflict`.
+        refuse_credential_conflict(name, def, def.upstream_credentials)?;
         // RFC 8707 is not optional on an exchange: without a resource indicator the issued token is
         // spendable at any backend the AS serves, which is the audience-confusion the exchange
         // exists to prevent.
