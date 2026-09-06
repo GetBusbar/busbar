@@ -465,8 +465,10 @@ fn realtime_input_ga_audio_is_ir_fixpoint() {
 #[test]
 fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
     // The writer frames the GA `realtimeInput.audio` SINGLE blob (the shape this codec's own reader
-    // prefers), not the legacy `mediaChunks[]` array — and the mime states the rate the bytes are
-    // ACTUALLY in (the session's negotiated pcm16 = 24 kHz), never a rate they are not.
+    // prefers), not the legacy `mediaChunks[]` array — and the mime states the rate the UPLINK bytes
+    // are actually in. Gemini's two directions run at different rates, so the uplink mime is the
+    // pinned uplink fixtures' 16 kHz, and the DOWNLINK format cannot reach it: a session whose
+    // downlink is set does not change what the client's own audio is labelled.
     let codec = GeminiLiveCodec;
     let mut st = DecodeState::default();
     st.set_output_format(AudioFormat::Pcm16);
@@ -486,16 +488,93 @@ fn uplink_audio_is_framed_as_the_ga_blob_stating_its_true_rate() {
     assert!(ri["mediaChunks"].is_null(), "not the legacy array: {ri}");
     let mime = ri["audio"]["mimeType"].as_str().unwrap_or_default();
     assert!(
-        !mime.contains("rate=16000"),
-        "pcm16 bytes are 24 kHz; the mime must not claim 16 kHz: {mime}"
+        !mime.contains("rate=24000"),
+        "the uplink is 16 kHz; the downlink's rate must not be stamped on it: {mime}"
     );
-    assert_eq!(mime, "audio/pcm;rate=24000");
+    assert_eq!(mime, "audio/pcm;rate=16000");
     // And the codec reads its own frame back to the same bytes.
     let ir = codec.read_up(w, &mut DecodeState::default());
     let IrClientEvent::AudioFrame(f) = &ir[0] else {
         panic!("expected AudioFrame");
     };
     assert_eq!(&f.media[..], b"uplink-pcm");
+}
+
+#[test]
+fn each_direction_states_its_own_negotiated_rate() {
+    // The two directions are derived from their own state, so one session frames 16 kHz up and
+    // 24 kHz down — exactly what the pinned fixtures carry in each direction.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    let up = codec
+        .write_up(
+            IrClientEvent::AudioFrame(IrAudioFrame {
+                dir: UpDown::Up,
+                seq: 0,
+                media: Bytes::from_static(b"up"),
+                origin: IrAudioRef::default(),
+            }),
+            &mut st,
+        )
+        .expect("uplink audio frames");
+    let down = codec
+        .write_down(
+            IrServerEvent::AudioFrame(IrAudioFrame {
+                dir: UpDown::Down,
+                seq: 0,
+                media: Bytes::from_static(b"down"),
+                origin: IrAudioRef::default(),
+            }),
+            &mut st,
+        )
+        .expect("downlink audio frames");
+    assert_eq!(
+        as_value(&up)["realtimeInput"]["audio"]["mimeType"],
+        json!("audio/pcm;rate=16000")
+    );
+    assert_eq!(
+        as_value(&down)["serverContent"]["modelTurn"]["parts"][0]["inlineData"]["mimeType"],
+        json!("audio/pcm;rate=24000")
+    );
+}
+
+#[test]
+fn a_g711_uplink_frames_nothing_rather_than_a_pcm_mime() {
+    // Gemini has no g711 mode, so there is no honest mime for one. A negotiated g711 INPUT drops the
+    // uplink frame instead of labelling g711 bytes as PCM — and it does not disturb the downlink,
+    // which is negotiated separately and still frames its own rate.
+    let codec = GeminiLiveCodec;
+    let mut st = DecodeState::default();
+    st.set_input_format(AudioFormat::G711Ulaw);
+    assert!(
+        codec
+            .write_up(
+                IrClientEvent::AudioFrame(IrAudioFrame {
+                    dir: UpDown::Up,
+                    seq: 0,
+                    media: Bytes::from_static(b"ulaw"),
+                    origin: IrAudioRef::default(),
+                }),
+                &mut st,
+            )
+            .is_none(),
+        "no Gemini mime describes g711 uplink audio"
+    );
+    let down = codec
+        .write_down(
+            IrServerEvent::AudioFrame(IrAudioFrame {
+                dir: UpDown::Down,
+                seq: 0,
+                media: Bytes::from_static(b"down"),
+                origin: IrAudioRef::default(),
+            }),
+            &mut st,
+        )
+        .expect("the downlink is negotiated separately and still frames");
+    assert_eq!(
+        as_value(&down)["serverContent"]["modelTurn"]["parts"][0]["inlineData"]["mimeType"],
+        json!("audio/pcm;rate=24000")
+    );
 }
 
 #[test]

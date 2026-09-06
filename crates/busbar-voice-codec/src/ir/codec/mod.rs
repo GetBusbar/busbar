@@ -160,6 +160,13 @@ pub struct DecodeState {
     played_clock_ms: Option<u64>,
     /// Negotiated OUTPUT format the truncate math measures against.
     output_fmt: AudioFormat,
+    /// Negotiated INPUT format — what the bytes the CLIENT sends are in.
+    ///
+    /// It is a separate field from `output_fmt` because the two directions of a session are
+    /// negotiated separately and need not agree: a dialect may take one format up and synthesize
+    /// another down. A writer that framed the uplink from `output_fmt` would label the client's own
+    /// audio with the model's synthesis format, which is a description of bytes nobody sent.
+    input_fmt: AudioFormat,
 }
 
 impl Default for DecodeState {
@@ -177,6 +184,7 @@ impl Default for DecodeState {
             played_bytes: 0,
             played_clock_ms: None,
             output_fmt: AudioFormat::Pcm16,
+            input_fmt: AudioFormat::Pcm16,
         }
     }
 }
@@ -323,6 +331,19 @@ impl DecodeState {
     /// Adopt the negotiated output audio format (from a `session.update` / `session.created`).
     pub fn set_output_format(&mut self, fmt: AudioFormat) {
         self.output_fmt = fmt;
+    }
+
+    /// The negotiated INPUT format — what the client's uplink bytes are in. Defaults to `pcm16`
+    /// until a session config states otherwise, which is what an unstated input format means on
+    /// every dialect this plane speaks.
+    #[must_use]
+    pub fn input_format(&self) -> AudioFormat {
+        self.input_fmt
+    }
+
+    /// Adopt the negotiated input audio format (from a session config that states one).
+    pub fn set_input_format(&mut self, fmt: AudioFormat) {
+        self.input_fmt = fmt;
     }
 
     /// Account `n` bytes of downlink audio as RELAYED for the current item.

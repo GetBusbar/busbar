@@ -72,21 +72,32 @@ mod wire {
 /// probe never drift apart.
 const PCM_24K_MIME: &str = "audio/pcm;rate=24000";
 
-/// THE MIME FOR THE FORMAT THE BYTES ARE ACTUALLY IN. Gemini tags the rate per frame; the plane
-/// negotiates it per session, so the mime is derived from the negotiated format rather than fixed.
+/// The Gemini Live mime for 16 kHz signed-16 LE PCM — the rate Gemini REQUIRES on the uplink, and
+/// the rate the pinned uplink fixtures state. Named beside its downlink twin so neither direction's
+/// mime can be spliced into the other's frame.
+const PCM_16K_MIME: &str = "audio/pcm;rate=16000";
+
+/// THE MIME FOR THE FORMAT THE BYTES IN THIS DIRECTION ARE ACTUALLY IN.
 ///
-/// The uplink used to state `rate=16000` unconditionally — Gemini's REQUIRED input rate — while the
-/// bytes were the negotiated `pcm16`, which this plane defines as 24 kHz. That is a label describing
-/// audio nobody sent: the peer resamples nothing and plays 24 kHz samples at 16 kHz. The rate the
-/// plane does not convert is a real gap, recorded as a named asymmetry in the cross-dialect map; a
-/// mime that lies about it is a different, worse thing, because it makes the gap invisible.
+/// Gemini runs its two directions at DIFFERENT rates — 16 kHz up, 24 kHz down — and the shared
+/// `Pcm16` token carries no rate of its own, so the rate belongs to the DIRECTION and the format
+/// token only says whether PCM is being spoken at all. That is why this takes both: a mime derived
+/// from the format alone can only be right for one direction, and [`audio_format_from_mime`] already
+/// reads the wire this same directional way.
 ///
-/// `None` for a format Gemini has no PCM mime for: this dialect has no g711 mode at all (the map
-/// records the telephony codecs as having no Gemini twin), and there is no honest mime to write.
-fn pcm_mime(fmt: AudioFormat) -> Option<&'static str> {
-    match fmt {
-        AudioFormat::Pcm16 => Some(PCM_24K_MIME),
-        AudioFormat::G711Ulaw => None,
+/// Each direction must also be derived from ITS OWN negotiated format. The uplink read the DOWNLINK
+/// format and the downlink spliced a bare constant, so a session whose two directions disagreed got
+/// one direction's answer stamped on the other's bytes — a label describing audio nobody sent, and
+/// the kind that makes a real rate gap invisible rather than loud.
+///
+/// `None` for a format Gemini has no PCM mime for: this dialect has no g711 mode at all (the
+/// cross-dialect map records the telephony codecs as having no Gemini twin), and there is no honest
+/// mime to write for one.
+fn pcm_mime(fmt: AudioFormat, dir: UpDown) -> Option<&'static str> {
+    match (fmt, dir) {
+        (AudioFormat::Pcm16, UpDown::Up) => Some(PCM_16K_MIME),
+        (AudioFormat::Pcm16, UpDown::Down) => Some(PCM_24K_MIME),
+        (AudioFormat::G711Ulaw, _) => None,
     }
 }
 
@@ -394,6 +405,13 @@ impl DuplexReader for GeminiLiveCodec {
             if cfg.modalities.iter().any(|m| m == "audio") || cfg.modalities.is_empty() {
                 st.set_output_format(AudioFormat::Pcm16);
             }
+            // The UPLINK format is adopted separately, from whatever the config states about the
+            // client's own audio. Gemini's `setup` states nothing about it, so an unstated input
+            // format leaves the default in place — `pcm16`, which on this dialect's uplink is the
+            // 16 kHz the pinned uplink fixtures carry and the rate Gemini requires.
+            if let Some(fmt) = cfg.input_audio_format {
+                st.set_input_format(fmt);
+            }
             return vec![IrClientEvent::Control(IrDuplexControl::SessionConfigure {
                 config: cfg,
             })];
@@ -650,7 +668,7 @@ impl DuplexWriter for GeminiLiveCodec {
             // `mediaChunks[]` array is still READ (a peer may speak it) but no longer written.
             IrClientEvent::AudioFrame(f) => json!({
                 wire::REALTIME_INPUT: {
-                    "audio": { "mimeType": pcm_mime(st.output_format())?, "data": encode_audio(&f.media) }
+                    "audio": { "mimeType": pcm_mime(st.input_format(), UpDown::Up)?, "data": encode_audio(&f.media) }
                 }
             }),
             IrClientEvent::Control(c) => match c {
@@ -756,7 +774,8 @@ impl DuplexWriter for GeminiLiveCodec {
             IrServerEvent::AudioFrame(f) => json!({
                 wire::SERVER_CONTENT: {
                     "modelTurn": { "parts": [ { "inlineData": {
-                        "mimeType": PCM_24K_MIME, "data": encode_audio(&f.media)
+                        "mimeType": pcm_mime(st.output_format(), UpDown::Down)?,
+                        "data": encode_audio(&f.media)
                     } } ] }
                 }
             }),
