@@ -975,6 +975,49 @@ if not waived:
     sys.exit("\n%s pins no waivers at all; refusing to trust an empty pin silently." % waivers_path)
 
 must = {k: v for k, v in per.items() if isinstance(v, dict) and v.get("level") == "MUST"}
+
+# TWO FLOORS, CHECKED BEFORE THE WAIVER ARITHMETIC, because the arithmetic below decides on the
+# set of FAILING requirements and a run that executed nothing has no failing requirements at all.
+# Without these, a subject leg whose every MUST came back `SKIPPED` -- a busbar that served a card
+# and then answered nothing, a suite whose collection broke, a `--sut-host` pointing at the wrong
+# port -- produces `FAIL, UNWAIVED (RED): (none)` and the leg passes having established nothing.
+# That is the same `grpc: 0/72 (72 skipped) OK` false green `testing/a2a-tck/check-baseline.py`
+# refuses for the CONTROL legs, and it was missing here, on the leg that judges busbar.
+#
+# The numbers are the control comparator's, deliberately: MIN_PLAUSIBLE_TOTAL/MIN_PLAUSIBLE_EXECUTED
+# there are 100/40 over all 129 requirements. This gate sees only the 114 MUSTs, of which the pinned
+# run executes 88 (85 PASS + the 3 waived PUSH-DELIVER FAILs; see WAIVERS.md), so both floors sit
+# well below the real numbers and fire on a COLLAPSE rather than on ordinary movement.
+MIN_MUST_TOTAL = 100
+MIN_MUST_EXECUTED = 40
+
+# Statuses that mean NOTHING RAN. Same set, and the same normalisation, as
+# testing/a2a-tck/check-baseline.py::SKIP_STATUSES -- `NOT TESTED` is on it because the TCK reports
+# a requirement no test touches that way, and counting it as executed was how a 73-requirement run
+# once looked like a 100-requirement one there.
+NOT_EXECUTED = {"SKIP", "SKIPPED", "NOT_APPLICABLE", "NOT_RUN", "NOT_TESTED", "UNKNOWN", ""}
+
+
+def _executed(status):
+    return str(status).strip().upper().replace(" ", "_").replace("-", "_") not in NOT_EXECUTED
+
+
+executed = sorted(k for k, v in must.items() if _executed(v.get("status")))
+if len(must) < MIN_MUST_TOTAL:
+    sys.exit(
+        "\nDISCOVERY FLOOR: this run reported only %d MUST requirements (floor %d). The pinned\n"
+        "suite declares 114. Fewer is a broken run, not a smaller specification, and a leg that\n"
+        "discovered almost nothing has no failures to report and would otherwise pass."
+        % (len(must), MIN_MUST_TOTAL)
+    )
+if len(executed) < MIN_MUST_EXECUTED:
+    sys.exit(
+        "\nEXECUTION FLOOR: this run EXECUTED only %d of %d MUST requirements (floor %d); %d were\n"
+        "reported SKIPPED or NOT TESTED. A suite that never ran has no unwaived failures, so\n"
+        "without this floor the leg would go green having judged busbar on nothing."
+        % (len(executed), len(must), MIN_MUST_EXECUTED, len(must) - len(executed))
+    )
+
 not_tested = sorted(k for k, v in must.items() if v.get("status") == "NOT TESTED")
 failing = sorted(k for k, v in must.items() if v.get("status") == "FAIL")
 unwaived = sorted(k for k in failing if k not in waived)
@@ -982,8 +1025,8 @@ waived_and_failing = sorted(k for k in failing if k in waived)
 waived_but_passing = sorted(k for k in waived if must.get(k, {}).get("status") not in (None, "FAIL"))
 
 print("")
-print("  REQUIREMENT-LEVEL BREAKDOWN (%d MUST requirements, %d NOT TESTED, %d FAIL):"
-      % (len(must), len(not_tested), len(failing)))
+print("  REQUIREMENT-LEVEL BREAKDOWN (%d MUST requirements, %d EXECUTED, %d NOT TESTED, %d FAIL):"
+      % (len(must), len(executed), len(not_tested), len(failing)))
 print("    NOT TESTED (suite limitation, not busbar evidence -- confirmed identical against the")
 print("    pinned a2a-go control in testing/a2a-tck/baselines/, so this is not gated):")
 for r in not_tested:
@@ -1192,21 +1235,36 @@ PY
     say "  ok: a MUST row with no requirement-level report behind it is RED"
   fi
 
-  # A minimal, disposable waiver pin used by the next four cases, so they do not depend on --
-  # or drift with -- the real testing/a2a-tck/subject-waivers.json.
+  # A minimal, disposable waiver pin used by the cases below, so they do not depend on -- or drift
+  # with -- the real testing/a2a-tck/subject-waivers.json.
   local pin; pin="$(mktemp)"
   printf '{"waived": ["PUSH-DELIVER-001"]}\n' > "$pin"
   local report; report="$(mktemp)"
 
+  # EVERY FIXTURE BELOW IS A PLAUSIBLY-SIZED RUN, and that is not decoration. The gate now enforces
+  # a discovery floor and an execution floor before it looks at a single failure, so a one-row
+  # fixture would be refused for its SIZE and every case below would "pass" while proving nothing
+  # about the waiver arithmetic it was written for. `_tck_report` builds a 114-MUST report with
+  # `n_executed` of them executed, and each case perturbs exactly the one thing it is about.
+  _tck_report() {   # _tck_report <out> <n_executed> <extra-python-dict-entries>
+    python3 - "$1" "$2" "$3" <<'PY'
+import json, sys
+out, n_executed, extra = sys.argv[1], int(sys.argv[2]), sys.argv[3]
+per = {}
+for i in range(114):
+    per["REQ-%03d" % i] = {
+        "level": "MUST",
+        "status": "PASS" if i < n_executed else "NOT TESTED",
+    }
+per.update(json.loads(extra) if extra else {})
+json.dump({"per_requirement": per}, open(out, "w"))
+PY
+  }
+
   # RED 7: an UNWAIVED MUST requirement reports FAIL. Red regardless of the suite's own row, and
   # regardless of how many other requirements pass.
   printf '| MUST | 113 | 1 | 0 | 114 |\n' > "$tmp"
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'SOME-REQ-001': {'level': 'MUST', 'status': 'FAIL'},
-}}, open('$report', 'w'))
-"
+  _tck_report "$report" 88 '{"SOME-REQ-001": {"level": "MUST", "status": "FAIL"}}'
   if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
     say "  MISS: an unwaived FAIL requirement was accepted"; failures=$((failures+1))
   else
@@ -1215,12 +1273,7 @@ json.dump({'per_requirement': {
 
   # GREEN 1: the ONLY FAIL requirement is inside the pin. Green, because that failure is expected
   # and dated in WAIVERS.md, not because nothing failed.
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'PUSH-DELIVER-001': {'level': 'MUST', 'status': 'FAIL'},
-}}, open('$report', 'w'))
-"
+  _tck_report "$report" 88 '{"PUSH-DELIVER-001": {"level": "MUST", "status": "FAIL"}}'
   if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
     say "  ok: a FAIL requirement inside the pinned waiver set is accepted"
   else
@@ -1229,28 +1282,44 @@ json.dump({'per_requirement': {
 
   # GREEN 2: NOT TESTED requirements are never gated on, however many there are -- they are the
   # suite's own limitation, not evidence about busbar. This is the case that used to be misread as
-  # 21 busbar failures.
-  python3 -c "
-import json
-per = {'NOT-TESTED-%03d' % i: {'level': 'MUST', 'status': 'NOT TESTED'} for i in range(21)}
-per['PUSH-DELIVER-001'] = {'level': 'MUST', 'status': 'FAIL'}
-json.dump({'per_requirement': per}, open('$report', 'w'))
-"
+  # 21 busbar failures. 88 executed, 26 NOT TESTED, one waived FAIL: the pinned run's own shape.
+  _tck_report "$report" 88 '{"PUSH-DELIVER-001": {"level": "MUST", "status": "FAIL"}}'
   if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
     say "  ok: NOT TESTED requirements are reported, not gated on"
   else
     say "  MISS: NOT TESTED requirements were treated as failures"; failures=$((failures+1))
   fi
 
+  # RED 9: A SUITE THAT RAN NOTHING. Every MUST comes back SKIPPED, so there is not one unwaived
+  # FAIL to report -- which is exactly why the leg used to go green here. This is the shape of a
+  # subject that served a card and then answered nothing, and of a collection that broke. It is the
+  # `grpc: 0/72 (72 skipped) OK` false green, one instrument along.
+  _tck_report "$report" 0 ''
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+    say "  MISS: a run in which every MUST was SKIPPED/NOT TESTED was accepted"; failures=$((failures+1))
+  else
+    say "  ok: a run that executed no MUST at all is RED"
+  fi
+
+  # RED 10: THE REQUIREMENT SET COLLAPSED. A handful of requirements, all passing, is discovery
+  # having broken rather than the specification having shrunk -- and it too has no failures.
+  _tck_report "$report" 0 '{"SOME-REQ-001": {"level": "MUST", "status": "PASS"}}'
+  python3 - "$report" <<'PY'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+doc["per_requirement"] = {"SOME-REQ-001": {"level": "MUST", "status": "PASS"}}
+json.dump(doc, open(sys.argv[1], "w"))
+PY
+  if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
+    say "  MISS: a report carrying one MUST requirement was accepted"; failures=$((failures+1))
+  else
+    say "  ok: a collapsed requirement set is RED"
+  fi
+
   # RED 8: an empty pin is refused outright -- an empty waiver file would silently exempt nothing
   # while looking configured, which is a gate that always passes for the wrong reason.
   printf '{"waived": []}\n' > "$pin"
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
-}}, open('$report', 'w'))
-"
+  _tck_report "$report" 88 ''
   if _assert_tck_number_with_pin "$tmp" "$report" "$pin"; then
     say "  MISS: an empty waiver pin was accepted"; failures=$((failures+1))
   else
@@ -1258,17 +1327,12 @@ json.dump({'per_requirement': {
   fi
   rm -f "$tmp" "$pin" "$report"
 
-  # GREEN 3: a clean report (no FAIL, no NOT TESTED) is accepted, so none of the checks above is one
-  # that refuses everything.
+  # GREEN 3: a clean report (no FAIL, every MUST executed) is accepted, so none of the checks above
+  # is one that refuses everything.
   local tmp2; tmp2="$(mktemp)"; local report2; report2="$(mktemp)"; local pin2; pin2="$(mktemp)"
   printf '| MUST | 114 | 0 | 0 | 114 |\n' > "$tmp2"
   printf '{"waived": ["PUSH-DELIVER-001"]}\n' > "$pin2"
-  python3 -c "
-import json
-json.dump({'per_requirement': {
-    'SOME-REQ-001': {'level': 'MUST', 'status': 'PASS'},
-}}, open('$report2', 'w'))
-"
+  _tck_report "$report2" 114 ''
   if _assert_tck_number_with_pin "$tmp2" "$report2" "$pin2"; then
     say "  ok: a clean requirement-level report is accepted"
   else
