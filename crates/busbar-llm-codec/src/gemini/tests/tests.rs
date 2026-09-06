@@ -6780,6 +6780,39 @@ fn gemini_schema_ref_flat_chain_depth_is_capped() {
     );
 }
 
+/// The byte→char offset INDEX must answer every offset exactly as converting that offset on its own
+/// does — including the two degradations the contract promises: a mid-codepoint offset resolves to
+/// the nearest earlier boundary, and a past-the-end (or negative) offset clamps. Driven over a
+/// multibyte text with the offsets SHUFFLED, since the index is built in ascending order and a
+/// lookup must not depend on the order the citations happen to arrive in.
+#[test]
+fn gemini_char_index_matches_per_offset_conversion() {
+    // ASCII, 2-byte, 3-byte and 4-byte codepoints, so most offsets land mid-character.
+    let text = "abc é ✓ 𝄞 déjà vu ✓✓ 𝄞𝄞 end";
+    let index = GeminiCharIndex::build(text);
+
+    // Every byte position, a couple past the end, and a negative — visited out of order.
+    let mut offsets: Vec<i64> = (-3..=(text.len() as i64 + 5)).collect();
+    // A deterministic shuffle: walk the range with a stride coprime to its length.
+    let n = offsets.len();
+    let shuffled: Vec<i64> = (0..n).map(|i| offsets[(i * 7 + 3) % n]).collect();
+    offsets = shuffled;
+
+    for b in offsets {
+        assert_eq!(
+            index.char_offset(b),
+            gemini_byte_offset_to_char(text, b),
+            "byte offset {b} must convert identically in {text:?}"
+        );
+    }
+
+    // An empty text is the degenerate case: every offset resolves to 0.
+    let empty = GeminiCharIndex::build("");
+    for b in [-1, 0, 1, 99] {
+        assert_eq!(empty.char_offset(b), gemini_byte_offset_to_char("", b));
+    }
+}
+
 /// The writer's `open_tools` accumulator grows one entry per distinct tool-block index a backend
 /// opens, and lives for the whole stream. The per-block byte cap bounds how LARGE one entry grows;
 /// nothing bounded how MANY there were, so an upstream streaming an unbounded run of distinct tool
