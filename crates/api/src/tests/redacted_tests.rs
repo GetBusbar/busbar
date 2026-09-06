@@ -52,12 +52,18 @@ fn clone_and_eq_operate_on_the_secret() {
     assert_ne!(a, Redacted::new("w".to_string()));
 }
 
-/// Equality is CONSTANT-TIME: it routes through the crate's `constant_time_eq` over the secret
-/// bytes rather than a plain `==`. This asserts the correctness contract that primitive must uphold
-/// for every case — equal, equal-length-but-differing, and different-length secrets — so the
-/// comparison stays a genuine equality even after being made timing-safe.
+/// Equality stays a GENUINE equality after being routed through the crate's `constant_time_eq`:
+/// equal secrets compare equal, equal-length-but-differing ones do not, ragged lengths do not, and
+/// empty compares equal to empty.
+///
+/// The name says correctness and not timing on purpose. Nothing below observes a duration, and
+/// nothing below could: a wall-clock assertion on a comparison this short is a coin flip under a
+/// loaded CI box, and a test that flakes is a test that gets deleted. The timing property is a
+/// property of `constant_time_eq` itself and is asserted where that primitive lives; what this
+/// file owes is that swapping a plain `==` for it did not quietly change what "equal" means — the
+/// failure a timing-safe rewrite actually tends to introduce.
 #[test]
-fn eq_is_constant_time_and_correct() {
+fn eq_stays_a_correct_equality_through_the_timing_safe_compare() {
     // Equal secrets compare equal.
     assert_eq!(
         Redacted::new("sk-abc-123".to_string()),
