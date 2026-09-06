@@ -510,9 +510,19 @@ impl ProtocolReader for BedrockReader {
                             // index so the writer re-emits it at the same position on a same-protocol
                             // passthrough instead of silently dropping the attachment. See
                             // `DOC_VIDEO_SENTINEL`.
+                            // TWO index spaces, and they are not the same number. `i` is the WIRE
+                            // position (what the writer splices this raw block back at), while `b`
+                            // is the position of the modelled block below inside the IR content
+                            // list — which is what the writer must match on to suppress its own
+                            // modelled emission. They diverge as soon as a block that occupies a
+                            // wire slot but produces no IR block (a `cachePoint` or `guardContent`)
+                            // precedes this one; matching the wire index against an IR index then
+                            // fails, the suppression does not fire, and the document goes upstream
+                            // TWICE — once modelled, once spliced.
                             message_doc_video.push(serde_json::json!({
                                 "m": msg_idx,
                                 "i": block_idx,
+                                "b": msg_content.len(),
                                 "block": { "document": document.clone() },
                             }));
                             // ALSO model it (cross-protocol), the same additive pattern
@@ -531,9 +541,12 @@ impl ProtocolReader for BedrockReader {
                             // A native Converse `video` block likewise has no IR counterpart; stash it
                             // verbatim so the writer re-emits it at the same position on a same-protocol
                             // passthrough. See `DOC_VIDEO_SENTINEL`.
+                            // `b` is the IR index of the modelled block below; `i` the wire slot.
+                            // See the `document` arm for why the two must be recorded separately.
                             message_doc_video.push(serde_json::json!({
                                 "m": msg_idx,
                                 "i": block_idx,
+                                "b": msg_content.len(),
                                 "block": { "video": video.clone() },
                             }));
                             // Modelled for the cross-protocol hop as well — see the `document` arm.

@@ -3828,6 +3828,52 @@ fn test_cache_point_round_trip() {
     );
 }
 
+/// A `cachePoint` (or `guardContent`) BEFORE a `document` must not make the document be sent twice.
+///
+/// The reader parks the raw document at its WIRE slot and also pushes a modelled block into the IR
+/// content list; the writer suppresses its modelled emission when it recognizes the parked one. A
+/// `cachePoint` occupies a wire slot but produces NO IR block, so past it the two indices disagree —
+/// and matching a wire index against an IR index made the suppression miss. The document then went
+/// upstream twice, once modelled and once spliced: the caller is charged for the attachment's tokens
+/// twice and the model reads it twice. Byte-identity of the round-trip is what proves it appears once.
+#[test]
+fn a_cache_point_before_a_document_does_not_double_the_document() {
+    let reader = BedrockReader;
+    let writer = BedrockWriter;
+    let wire = serde_json::json!({
+        "messages": [{"role": "user", "content": [
+            {"text": "here is the static preamble"},
+            {"cachePoint": {"type": "default"}},
+            {"document": {
+                "format": "pdf",
+                "name": "spec",
+                "source": {"s3Location": {"uri": "s3://b/spec.pdf"}}
+            }},
+            {"text": "now answer from it"}
+        ]}]
+    });
+
+    let ir = reader.read_request(&wire).expect("read_request");
+    let out = writer.write_request(&ir);
+
+    let content = out
+        .pointer("/messages/0/content")
+        .and_then(|c| c.as_array())
+        .unwrap_or_else(|| panic!("message content must be an array; got {out}"));
+    let docs = content
+        .iter()
+        .filter(|b| b.get("document").is_some())
+        .count();
+    assert_eq!(
+        docs, 1,
+        "the document must be sent EXACTLY once, not once modelled and once spliced; got {out}"
+    );
+    assert_eq!(
+        out, wire,
+        "the cachePoint+document round-trip must be byte-identical; got {out}"
+    );
+}
+
 /// A message whose ONLY content block is a `cachePoint` (no
 /// representable text/tool block) must re-emit the marker rather than the empty-content `""`
 /// placeholder — the splice runs BEFORE the placeholder substitution, so the cachePoint keeps
