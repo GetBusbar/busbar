@@ -31,8 +31,8 @@ mod store;
 pub mod usage_migration;
 
 pub use auth::{
-    constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, IdentityRefusal,
-    Principal, UpstreamCreds,
+    constant_time_eq, sha256_hex, AuthModule, AuthOutcome, AuthPrincipal, CallerToken,
+    IdentityRefusal, Principal, UpstreamCreds,
 };
 pub use auth::{
     AuthPlugin, BeginLogin, CompleteLogin, FieldKind, LoginField, LoginForm, LoginHop,

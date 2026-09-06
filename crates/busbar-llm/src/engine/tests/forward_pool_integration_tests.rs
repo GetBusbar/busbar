@@ -5159,7 +5159,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         busbar_core::state::CurrentApp(app.clone()),
         axum::extract::Path(("evil.example.com".to_string(), "../secret".to_string())),
         axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_core::auth::CallerToken::default()),
+        axum::extract::Extension(busbar_api::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body.clone(),
     )
@@ -5175,7 +5175,7 @@ async fn test_adhoc_rejects_unconfigured_provider_model() {
         busbar_core::state::CurrentApp(app),
         axum::extract::Path(("wrong-provider".to_string(), "test-model".to_string())),
         axum::extract::Extension(busbar_api::PlaneRequestCtx::default()),
-        axum::extract::Extension(busbar_core::auth::CallerToken::default()),
+        axum::extract::Extension(busbar_api::CallerToken::default()),
         axum::http::HeaderMap::new(),
         body,
     )

@@ -322,7 +322,7 @@ fn test_pre_routing_failure_does_not_refund_prior_charge() {
     assert_eq!(key_spend(&app, &key.id), 30, "prior charge seeded");
 
     // A malformed-JSON request on the SAME key fails pre-routing (model never resolved) → 400.
-    let caller = busbar_core::auth::CallerToken(None);
+    let caller = busbar_api::CallerToken(None);
     let headers = HeaderMap::new();
     let (host, _rt) = crate::engine::test_host_rt(&app);
     let resp = futures::executor::block_on(operation_ingress_inner(

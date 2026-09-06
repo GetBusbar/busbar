@@ -57,27 +57,12 @@ pub(crate) const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJEC
 // crate::auth::UpstreamCreds caller is unchanged.
 pub use busbar_api::UpstreamCreds;
 
-/// The caller's bearer token, threaded into request extensions by `auth_middleware` so handlers can
-/// forward it upstream in passthrough mode. `None` when no usable bearer token was presented.
-#[derive(Clone, Default)]
-pub struct CallerToken(pub Option<String>);
-
-// MANUAL Debug that NEVER prints the token contents. `CallerToken` wraps a caller credential and is
-// threaded into request extensions, so it can be reached by any future code that debug-formats the
-// extension map (or a struct that holds it). A derived `Debug` would print the plaintext token — a
-// latent credential leak the moment anything debug-logs it. Redact to presence only ("present" /
-// "absent"); never the length and never the value, since even the length is a (small) oracle.
-impl fmt::Debug for CallerToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("CallerToken")
-            .field(&if self.0.is_some() {
-                "<present>"
-            } else {
-                "<absent>"
-            })
-            .finish()
-    }
-}
+// The caller's bearer token carrier now lives beside [`busbar_api::AuthPrincipal`] — the other
+// request-extension carrier the auth middleware inserts — because it has NOTHING of the engine in
+// it: a `Option<String>` newtype and a redacting `Debug`. A plane's test that builds a request
+// extension map needs to name it, and naming it used to be a reach into `busbar_core::auth`.
+// Re-exported here BY IDENTITY so every `crate::auth::CallerToken` caller is unchanged.
+pub use busbar_api::CallerToken;
 
 // The auth CONTRACT — [`Principal`], [`AuthOutcome`], the [`AuthModule`] trait, and the
 // constant-time credential primitives — lives in the `busbar-api` crate (the one crate both the
