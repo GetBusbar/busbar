@@ -178,11 +178,46 @@ impl GovKit for crate::governance::GovState {
     ) -> Result<(VirtualKey, String), String> {
         crate::governance::GovState::mint_signed(self, spec, exp, now).map_err(|e| e.to_string())
     }
+    fn create_key_with_aws(
+        &self,
+        spec: NewKeySpec,
+        now: u64,
+    ) -> Result<(VirtualKey, String, String, String), String> {
+        crate::governance::GovState::create_key_with_aws(self, spec, now).map_err(|e| e.to_string())
+    }
+    fn admin_token_hash(&self) -> Option<String> {
+        crate::governance::GovState::admin_token_hash(self)
+    }
     fn delete_key(&self, id: &str) -> Result<(), String> {
         crate::governance::GovState::delete_key(self, id).map_err(|e| e.to_string())
     }
     fn revoke(&self, sub: &str, reason: &str) -> Result<(), String> {
         crate::governance::GovState::revoke(self, sub, reason).map_err(|e| e.to_string())
+    }
+    fn all_keys(&self) -> Result<Vec<VirtualKey>, String> {
+        crate::governance::GovState::all_keys(self).map_err(|e| e.to_string())
+    }
+    fn is_revoked(&self, sub: &str) -> bool {
+        crate::governance::GovState::is_revoked(self, sub)
+    }
+    fn update_key(
+        &self,
+        id: &str,
+        enabled: Option<bool>,
+        group: Option<Option<String>>,
+    ) -> Result<Option<VirtualKey>, String> {
+        crate::governance::GovState::update_key(self, id, enabled, group).map_err(|e| e.to_string())
+    }
+    fn try_admit(
+        &self,
+        cost: &dyn CostKit,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+    ) -> Result<(), String> {
+        crate::governance::GovState::try_admit(self, cost_model_ref(cost), key, pool, now)
+            .map(|_grant| ())
+            .map_err(|blocked| format!("{blocked:?}"))
     }
     fn refresh(&self) -> Result<(), String> {
         crate::governance::GovState::refresh(self).map_err(|e| e.to_string())

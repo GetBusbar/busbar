@@ -100,10 +100,51 @@ pub trait GovKit: Any + Send + Sync {
         exp: u64,
         now: u64,
     ) -> Result<(VirtualKey, String), String>;
+    /// Mint a key that ALSO carries a generated AWS SigV4 credential (the Bedrock-native auth
+    /// shape): the persisted key, its plaintext bearer secret, and the credential's access-key id
+    /// and secret access key. What a test needs to sign a SigV4 request against its own fixture.
+    fn create_key_with_aws(
+        &self,
+        spec: NewKeySpec,
+        now: u64,
+    ) -> Result<(VirtualKey, String, String, String), String>;
+    /// The SHA-256 hex digest of this registry's configured operator admin token, or `None` when no
+    /// admin token was supplied. The one fact the admin-token auth link keys its own INERTNESS on,
+    /// so a test asserts an unconfigured deployment stays inert without holding the plaintext.
+    fn admin_token_hash(&self) -> Option<String>;
     /// Delete key `id` and drop it from every cache.
     fn delete_key(&self, id: &str) -> Result<(), String>;
     /// Revoke the principal with subject id `sub` (every credential it holds), for `reason`.
     fn revoke(&self, sub: &str, reason: &str) -> Result<(), String>;
+    /// Every key this registry holds, tombstones included — the registry's whole view, for a test
+    /// that minted through a path which did not hand the key back (a boot-time provision).
+    fn all_keys(&self) -> Result<Vec<VirtualKey>, String>;
+    /// Whether subject id `sub` is on the revocation denylist — the fact a standing credential is
+    /// re-checked against, so a test asserts a revoke LANDED and not merely that the call returned.
+    fn is_revoked(&self, sub: &str) -> bool;
+    /// PATCH key `id`: flip `enabled` and/or rebind its `group` (the outer `Option` is
+    /// "field present", the inner one "bound / unbound"). `None` when no such key exists. What a
+    /// test disables a key with, so the next request meets a real disabled-key refusal.
+    fn update_key(
+        &self,
+        id: &str,
+        enabled: Option<bool>,
+        group: Option<Option<String>>,
+    ) -> Result<Option<VirtualKey>, String>;
+    /// Run THE DOOR's check-then-charge for `key` on `pool` at `now`, priced through `cost` — the
+    /// same admission the live path takes. `Err` carries the blocking bucket's reason.
+    ///
+    /// A test drives this for its CHARGE, not its grant: seeding a window's spend through the
+    /// authoritative in-memory path is the only way a later assertion sees the door enforce it (a
+    /// store-side poke is invisible to the in-memory gate). The grant itself is the engine's
+    /// accounting handle and has no assertion on it here, so it is not carried out through the seam.
+    fn try_admit(
+        &self,
+        cost: &dyn CostKit,
+        key: &VirtualKey,
+        pool: &str,
+        now: u64,
+    ) -> Result<(), String>;
     /// Re-read the registry from its store.
     fn refresh(&self) -> Result<(), String>;
     /// This registry as the neutral live-principal resolver a standing permission re-checks

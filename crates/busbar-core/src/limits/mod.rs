@@ -16,8 +16,6 @@
 //! retry-after ceiling) do NOT live here — they reach their site directly from `RootCfg.limits`.
 //! This module is only for the sites without such a path.
 
-use std::sync::RwLock;
-
 pub(crate) mod admission;
 
 use crate::config::{
@@ -26,123 +24,19 @@ use crate::config::{
     DEFAULT_REQUEST_BODY_MAX_BYTES, DEFAULT_USAGE_FLUSH_INTERVAL_MS,
 };
 
-/// The installed limits. `None` until `install` runs; `None` means "use the historical default",
-/// which is what the per-accessor fallback returns. An `RwLock` (not `OnceLock`) because the
-/// config plane RE-installs on every apply/reload — limit changes take effect live. Accessors take
-/// an uncontended read lock (writes happen only on config changes); the values these guard are not
-/// per-byte hot (per-request/per-connection reads at most).
-static INSTALLED: RwLock<Option<LimitsResolved>> = RwLock::new(None);
-
-/// TEST-ONLY. Serializes every test in this binary that MUTATES the process-global `INSTALLED`
-/// slot above (this module's `InstallGuard` tests, and `tls`'s body-bound tests, which install a
-/// non-default `LimitsResolved` to make themselves fast). Cargo runs those tests concurrently in
-/// ONE process, and an install is a whole-struct swap behind a shared lock, so without this a
-/// sibling test's install lands mid-assertion in another and both are flaky in a way that depends
-/// on machine core count. Lives HERE rather than in `tls`'s test module (where it started) because
-/// the hazard is the static, not the file: a lock that only the `tls` tests hold does not protect
-/// this module's tests from them, or theirs from these.
-///
-/// A `tokio::sync::Mutex`, not a `std` one, for two reasons: the `tls` holders await socket I/O for
-/// their entire critical section (holding a `std` guard across an await is clippy's
-/// `await_holding_lock`, `-D warnings` here), and it does not poison, so one failing test does not
-/// cascade into every other test that wants the lock. Synchronous tests take it with
-/// `blocking_lock()`, which is legal precisely because a plain `#[test]` fn has no runtime.
+// THE INSTALL SIDE lives with the shape it installs, in `busbar_substrate::config::limits`: the
+// process-global slot, the build-scoped rollback guard, and the test-only unconditional installer
+// with the lock that serializes it. Re-exported here BY IDENTITY at their historical
+// `busbar_core::limits::` paths — same statics, same guard type, same lock — so this crate's
+// composition root, its accessors below and its tests are untouched, and a plane crate's tests
+// install the same posture against the same slot without naming this crate.
+pub use busbar_substrate::config::limits::InstallGuard;
 #[cfg(any(test, feature = "test-support"))]
-pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-
-/// Install (or RE-install) the resolved limits process-wide: at boot from `main`'s construction
-/// path, and again on every config apply/reload — the newest install wins, so operator limit
-/// changes are live without restart.
-///
-/// TEST-ONLY. Production installs through [`InstallGuard`], never through this: a config that is
-/// subsequently REJECTED must not leave its limits behind, and an unconditional install is exactly
-/// what made that possible. `tls`'s handshake-bound tests moved to `InstallGuard` (it restores the
-/// prior value on drop, which a bare install cannot). The remaining consumer is
-/// `nonstream_tap_cap_is_read_once_per_decision` (`#[ignore]`d — see its own doc comment), whose
-/// SUBJECT is racing the live cap by re-installing it in a hot loop with no rollback between
-/// iterations; `InstallGuard` cannot serve that (a guard restores on drop, but the test wants the
-/// value to keep flipping mid-run).
-#[cfg(any(test, feature = "test-support"))]
-pub fn install(resolved: &LimitsResolved) {
-    *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
-    mirror_upstream_error_cap(Some(resolved));
-}
-
-/// INSTALL FOR THE DURATION OF A BUILD, AND ROLL BACK UNLESS THE BUILD SUCCEEDS.
-///
-/// `build_app_from_config` installs the candidate limits FIRST — it has to, because the build reads
-/// them through the deep-call-stack accessors above (the store open, the health-probe fallbacks, the
-/// routing policy timeout) — but every step AFTER the install is fallible: semantic validation, the
-/// plugin pre-flight, secret-ref resolution, the store open. Before this guard, a rejected apply
-/// left the REJECTED config's limits installed process-wide while the old `App` kept serving, and no
-/// error path put them back. That broke the surface's central promise that an invalid apply changes
-/// nothing, and it did so in the worst direction: the values `validate_limits` exists to reject —
-/// e.g. a `request_body_max_bytes` below `REQUEST_BODY_MAX_BYTES_FLOOR` — are precisely the ones
-/// that got installed anyway, because the range check runs after the install. A 400-ed
-/// `POST /config/apply` could shrink the live SigV4 auth-middleware buffer and the cross-protocol
-/// translate buffer under a still-running gateway, 401-ing larger Bedrock requests.
-///
-/// So: snapshot, install, and restore on drop unless [`InstallGuard::commit`] is called. Rollback on
-/// the DROP rather than on each `return Err` is what makes it total — a build step added later
-/// cannot forget to unwind, and neither can a `?`.
-#[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
-pub struct InstallGuard {
-    /// What was installed before — `None` when nothing was (boot, or a test process).
-    prior: Option<LimitsResolved>,
-    committed: bool,
-}
-
-impl InstallGuard {
-    /// Snapshot the currently-installed limits and install `resolved` in their place.
-    pub fn install(resolved: &LimitsResolved) -> Self {
-        let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
-        let prior = slot.clone();
-        *slot = Some(resolved.clone());
-        mirror_upstream_error_cap(Some(resolved));
-        Self {
-            prior,
-            committed: false,
-        }
-    }
-
-    /// The build succeeded: KEEP the installed limits.
-    pub(crate) fn commit(mut self) {
-        self.committed = true;
-    }
-}
-
-impl Drop for InstallGuard {
-    fn drop(&mut self) {
-        if !self.committed {
-            *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = self.prior.clone();
-            mirror_upstream_error_cap(self.prior.as_ref());
-        }
-    }
-}
+pub use busbar_substrate::config::limits::{install, LIMITS_TEST_LOCK};
 
 /// Read the installed value (or `None` when uninstalled — tests / pre-install).
 fn get() -> Option<LimitsResolved> {
-    INSTALLED.read().unwrap_or_else(|e| e.into_inner()).clone()
-}
-
-/// Mirror the upstream-error-body cap AND the egress translate-body cap into the neutral
-/// `busbar_substrate::proxy` process globals, so a plane crate (busbar-mcp reads the former,
-/// busbar-llm the latter) sees the SAME value core's `upstream_error_body_max_bytes()` /
-/// `translate_body_max_bytes()` return without reaching into `busbar-core`. Called after EVERY mutation
-/// of `INSTALLED` (install, reload, and the `InstallGuard` rollback) with that same slot's value,
-/// resolving the `None`/uninstalled case to the historical default exactly as each accessor does — the
-/// mirrors can never diverge from core's own reads.
-fn mirror_upstream_error_cap(slot: Option<&LimitsResolved>) {
-    let cap = slot
-        .map(|l| l.upstream_error_body_max_bytes)
-        .unwrap_or(crate::config::DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
-    busbar_substrate::proxy::set_max_upstream_buffered_bytes(cap);
-    // The egress translate-body cap is `request_body_max_bytes` (one knob feeds both ingress and this
-    // egress cap); mirror it with the SAME uninstalled-fallback the accessor uses.
-    let translate_cap = slot
-        .map(|l| l.request_body_max_bytes)
-        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
-    busbar_substrate::proxy::set_max_translate_body_bytes(translate_cap);
+    busbar_substrate::config::limits::installed()
 }
 
 /// The egress translate-body cap (bytes). COUPLED to ingress `request_body_max_bytes`: one knob

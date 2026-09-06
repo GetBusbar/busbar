@@ -227,8 +227,9 @@ mod tests {
     use super::*;
     use busbar_api::Store as _;
     use busbar_caps::{KernelSeal, LedgerToken, Posted, StepName, Usage, UsageToken};
-    use busbar_core::governance::{GovState, MemoryStore};
     use busbar_core::test_support::TestApp;
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     use std::collections::BTreeMap;
     use std::time::Instant;
 
@@ -274,8 +275,9 @@ mod tests {
                 )
                 .expect("seed the durable bucket");
         }
-        let gov =
-            std::sync::Arc::new(GovState::new_with_signer(store, None, None).expect("governance"));
+        let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+            .governance(store, None, None)
+            .expect("governance");
         let (key, _) = gov
             .create_key(
                 busbar_substrate::governance::NewKeySpec {
@@ -288,12 +290,13 @@ mod tests {
                 1_700_000_000,
             )
             .expect("create key");
-        let cost = busbar_core::cost::CostModel::resolve_parts(None, FEE_CENTS, &groups);
+        let cost =
+            crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, FEE_CENTS, &groups);
         // Enforcement is in-memory and authoritative, so the seeded durable spend has to be
         // hydrated into the cells exactly as boot hydrates it; without this the door would not see
         // it and would admit.
-        gov.hydrate_budgets(&cost, 0).expect("hydrate");
-        let app = TestApp::new().governance(gov).cost(cost).build();
+        gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
+        let app = TestApp::new().governance_kit(gov).cost_kit(cost).build();
         (app, std::sync::Arc::new(key))
     }
 

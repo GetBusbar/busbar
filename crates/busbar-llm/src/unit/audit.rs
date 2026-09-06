@@ -365,8 +365,9 @@ mod tests {
     use axum::http::StatusCode;
     use axum::response::IntoResponse;
     use busbar_caps::KernelSeal;
-    use busbar_core::governance::{GovState, MemoryStore};
     use busbar_core::proxy::reqlog::{RequestRecord, REQUESTS};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     /// The one operation class these fixtures seal, as a plane names its own.
     const OP: OpClassId = OpClassId::new("chat");
@@ -405,7 +406,9 @@ mod tests {
             &[7u8; 32],
             busbar_substrate::governance::signing::DEFAULT_KID,
         );
-        let gov = Arc::new(GovState::new_with_signer(store, None, Some(signer)).unwrap());
+        let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+            .governance(store, None, Some(signer))
+            .unwrap();
         let keys = names.map(|name| {
             gov.mint_signed(
                 busbar_substrate::governance::NewKeySpec {
@@ -425,7 +428,7 @@ mod tests {
         // that never configures one cannot tell the two doors apart at all.
         let app = TestApp::new()
             .keys_chain()
-            .governance(gov)
+            .governance_kit(gov)
             .lane(LaneSpec::new(
                 "m",
                 crate::proto_codec::PROTO_OPENAI,

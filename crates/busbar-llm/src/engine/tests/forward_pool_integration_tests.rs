@@ -392,7 +392,8 @@ async fn test_cross_protocol_nonstream_preserves_model() {
 #[tokio::test]
 async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
 
     let state = Arc::new(MockServerState::new());
@@ -413,9 +414,9 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -459,10 +460,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -522,7 +521,8 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
 #[tokio::test]
 async fn test_cross_protocol_stream_records_tokens_for_tpm() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
 
     // OpenAI-protocol SSE stream whose final chunk carries usage totalling 160 tokens
@@ -550,9 +550,9 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -597,10 +597,8 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
         )
         .pool("pas", &[(0, 1)])
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -972,7 +970,8 @@ async fn test_metrics_requires_auth_in_chain_mode() {
 #[tokio::test]
 async fn test_governance_vkey_auth_and_pool_acl() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -980,9 +979,9 @@ async fn test_governance_vkey_auth_and_pool_acl() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -998,7 +997,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
         .unwrap();
     let secret = token.as_str();
 
-    let app = TestApp::new().keys_chain().governance(gov).build();
+    let app = TestApp::new().keys_chain().governance_kit(gov).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_substrate::testkit::build_router(app);
@@ -1053,7 +1052,8 @@ async fn test_governance_vkey_auth_and_pool_acl() {
 async fn test_governance_budget_over_quota() {
     crate::testkit::install_test_seams();
     use busbar_api::Store;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1061,10 +1061,9 @@ async fn test_governance_budget_over_quota() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
-            .unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store.clone(), Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1109,16 +1108,16 @@ async fn test_governance_budget_over_quota() {
             ..Default::default()
         },
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, 1, &groups);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 1, &groups);
     // Enforcement is now IN-MEMORY (authoritative): hydrate the budget cells from the store — exactly
     // as boot does — so the admission gate sees the pre-seeded over-budget spend. (Without this the
     // store seed would be invisible to the in-memory gate and the request would be admitted.)
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
 
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(cost)
+        .governance_kit(gov)
+        .cost_kit(cost)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1177,17 +1176,17 @@ async fn test_governance_budget_over_quota() {
 /// needed — only a parseable body that carries `model` where the protocol expects it.
 async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
     use busbar_api::Store;
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store.clone(), Some("admintok".to_string()), Some(signer))
-            .unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store.clone(), Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1232,15 +1231,15 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
             ..Default::default()
         },
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, 1, &groups);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 1, &groups);
     // Enforcement is IN-MEMORY (authoritative): hydrate the budget cells from the durable store — as
     // boot does — so the pre-seeded over-budget spend is visible to the admission gate.
-    gov.hydrate_budgets(&cost, 0).expect("hydrate");
+    gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
 
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(cost)
+        .governance_kit(gov)
+        .cost_kit(cost)
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let router = busbar_substrate::testkit::build_router(app);
@@ -1428,7 +1427,8 @@ async fn test_budget_over_quota_bedrock_envelope() {
 #[tokio::test]
 async fn test_governance_rate_limit_429() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1436,9 +1436,9 @@ async fn test_governance_rate_limit_429() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1473,10 +1473,8 @@ async fn test_governance_rate_limit_429() {
     )]);
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
 
@@ -1543,16 +1541,17 @@ async fn test_governance_rate_limit_429() {
 /// `model` where the protocol expects it. An omitted `allowed_pools` admits every pool so the ACL
 /// never short-circuits the rate gate.
 async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     let store = Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, token) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -1586,10 +1585,8 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
     )]);
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let router = busbar_substrate::testkit::build_router(app);
@@ -1792,7 +1789,8 @@ async fn test_rate_limit_429_bedrock_native_envelope() {
 #[tokio::test]
 async fn test_governance_admin_api() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
 
     busbar_substrate::metrics::init();
     let store = Arc::new(MemoryStore::new());
@@ -1801,11 +1799,12 @@ async fn test_governance_admin_api() {
         &[9u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = Arc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
 
-    let app = TestApp::new().keys_chain().governance(gov).build();
+    let app = TestApp::new().keys_chain().governance_kit(gov).build();
+    let (host, rt) = crate::engine::test_host_rt(&app);
 
     let router = busbar_substrate::testkit::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -5448,7 +5447,7 @@ async fn test_openai_omits_max_tokens_injects_fallback_for_anthropic() {
     .await;
     assert_eq!(
             got.get("max_tokens").and_then(|v| v.as_u64()),
-            Some(busbar_core::proto::DEFAULT_MAX_TOKENS as u64),
+            Some(busbar_substrate::config::limits::DEFAULT_MAX_TOKENS as u64),
             "absent max_tokens must be backfilled with the fallback on →anthropic translation; got: {got}"
         );
 }

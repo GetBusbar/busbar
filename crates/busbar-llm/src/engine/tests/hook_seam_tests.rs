@@ -1662,16 +1662,17 @@ async fn max_tokens_saturates_not_wraps() {
 #[tokio::test]
 async fn send_user_projects_governance_key_identity() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = std::sync::Arc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = std::sync::Arc::new(
-        GovState::new_with_signer(store, None, Some(signer)).expect("gov state"),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, Some(signer))
+        .expect("gov state");
     let (key, secret) = gov
         .mint_signed(
             NewKeySpec {
@@ -1693,7 +1694,7 @@ async fn send_user_projects_governance_key_identity() {
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));
@@ -1838,10 +1839,13 @@ async fn send_user_falls_back_to_synthesized_group_key_identity() {
 #[tokio::test]
 async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = std::sync::Arc::new(MemoryStore::new());
-    let gov = std::sync::Arc::new(GovState::new(store, None).expect("gov state"));
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("gov state");
     let (disabled_key, secret) = gov
         .create_key(
             NewKeySpec {
@@ -1865,7 +1869,7 @@ async fn send_user_prefers_resolved_key_over_disabled_legacy_lookup() {
             "http://localhost",
         ))
         .pool("p", &[(0, 1)])
-        .governance(gov)
+        .governance_kit(gov)
         .build();
     let (host, rt) = crate::engine::test_host_rt(&app);
     let seen = Arc::new(StdMutex::new(None));

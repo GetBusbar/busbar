@@ -33,6 +33,26 @@ fn minimal_app() -> Arc<App> {
     TestApp::new().build()
 }
 
+/// [`minimal_app`] in its ENFORCING-VKEY posture: a governance registry, the built-in `keys` chain
+/// that makes a data-plane request require and resolve a virtual key, and the pricing table the
+/// door bills through.
+///
+/// Assembled through the BUILDER rather than by poking the three fields into an already-built `App`
+/// — which is what the fixtures here used to do. The two are the same App (`keys_chain()` installs
+/// byte-for-byte the middleware `keys_chain_auth()` returns), but only this one states the posture
+/// the way a composition root states it, and only this one takes the registry and the table as the
+/// neutral kit handles, so a fixture never has to name the engine's `GovState`/`CostModel`.
+fn governed_minimal_app(
+    gov: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::GovKit>,
+    cost: std::sync::Arc<dyn busbar_substrate::testkit::engine_kit::CostKit>,
+) -> Arc<App> {
+    TestApp::new()
+        .governance_kit(gov)
+        .keys_chain()
+        .cost_kit(cost)
+        .build()
+}
+
 #[test]
 fn test_finish_emits_request_metrics() {
     crate::testkit::install_test_seams();
@@ -124,11 +144,14 @@ fn test_affinity_header_session_mode_without_name_uses_default() {
 /// Build a governance-enabled App with a single budgeted key, plus return the key so the test
 /// can pass a matching GovCtx to `finish`. Just assembles the App + key; it performs no charge.
 fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
     // 30 cents flat per request, no per-token fee (the fee now lives on the CostModel).
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -141,11 +164,10 @@ fn governed_app_with_key() -> (Arc<App>, busbar_api::VirtualKey) {
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
-    let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.governance = Some(gov);
-    inner.auth = crate::test_support::keys_chain_auth();
-    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::flat(30));
+    let app = governed_minimal_app(
+        gov,
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(30),
+    );
     (app, key)
 }
 
@@ -359,14 +381,17 @@ fn test_finish_outcome_mapping_503_is_exhausted() {
 #[test]
 fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, SECS_PER_DAY};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::governance::SECS_PER_DAY;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
 
     let store = std::sync::Arc::new(MemoryStore::new());
-    let gov =
-        std::sync::Arc::new(GovState::new(store.clone(), Some("admintok".to_string())).unwrap());
-    let cost = std::sync::Arc::new(busbar_core::cost::CostModel::flat(30)); // 30c/request
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store.clone(), Some("admintok".to_string()), None)
+        .unwrap();
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(30); // 30c/request
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -379,13 +404,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.governance = Some(gov.clone());
-        inner.auth = crate::test_support::keys_chain_auth();
-        inner.cost = cost.clone();
-    }
+    let app = governed_minimal_app(gov.clone(), cost.clone());
     let govctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
@@ -400,10 +419,10 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 
     // Admission charge into the charged_at day window via the real admission charge (it lands the
     // flat fee into `budget_window("daily", charged_at)` = day_window).
-    gov.try_admit(&cost, &key, "", charged_at)
+    gov.try_admit(cost.as_ref(), &key, "", charged_at)
         .expect("an uncapped chain admits");
     assert_eq!(
-        gov.usage_for(&cost, &key.id, charged_at)
+        gov.usage_for(cost.as_ref(), &key.id, charged_at)
             .unwrap()
             .map(|u| u.spend_cents)
             .unwrap_or(0),
@@ -423,7 +442,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         resp,
     );
     assert_eq!(
-        gov.usage_for(&cost, &key.id, charged_at)
+        gov.usage_for(cost.as_ref(), &key.id, charged_at)
             .unwrap()
             .map(|u| u.spend_cents)
             .unwrap_or(0),
@@ -431,7 +450,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
         "non-2xx refund must land in the charged_at window (net 0)"
     );
     let in_today = gov
-        .usage_for(&cost, &key.id, busbar_substrate::store::now())
+        .usage_for(cost.as_ref(), &key.id, busbar_substrate::store::now())
         .unwrap()
         .map(|u| u.spend_cents)
         .unwrap_or(0);
@@ -456,8 +475,10 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
 #[tokio::test]
 async fn test_admit_check_uses_charged_at_window_not_clock() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore, SECS_PER_DAY};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::governance::SECS_PER_DAY;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
 
     let past_day: u64 = 1_700_000_000; // a fixed past day
@@ -474,8 +495,9 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
     // what the in-memory admission gate reads. (Enforcement is in-memory: seeding via the store
     // alone would be invisible to `admit_check`.)
     let store = std::sync::Arc::new(MemoryStore::new());
-    let gov =
-        std::sync::Arc::new(GovState::new(store.clone(), Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store.clone(), Some("admintok".to_string()), None)
+        .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "daycap".to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -492,9 +514,7 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
             ..Default::default()
         },
     )]);
-    let cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(
-        None, 30, &groups,
-    ));
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 30, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -507,22 +527,16 @@ async fn test_admit_check_uses_charged_at_window_not_clock() {
             1_700_000_000,
         )
         .unwrap();
-    gov.try_admit(&cost, &key, "", past_day)
+    gov.try_admit(cost.as_ref(), &key, "", past_day)
         .expect("first request fits the cap exactly");
 
-    let mut app = minimal_app();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.governance = Some(gov.clone());
-        inner.auth = crate::test_support::keys_chain_auth();
-        inner.cost = cost.clone();
-    }
+    let app = governed_minimal_app(gov.clone(), cost.clone());
     let govctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
 
     assert_eq!(
-        gov.derived_bucket_usage(&cost, "group:daycap@day", "day", true, past_day)
+        gov.derived_bucket_usage(cost.as_ref(), "group:daycap@day", "day", true, past_day)
             .unwrap()
             .spend_cents,
         30,
@@ -2109,7 +2123,8 @@ async fn test_served_request_increments_hot_path_metrics() {
 #[tokio::test]
 async fn test_role_bound_principal_governed_like_a_virtual_key() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
     let state = StdArc::new(MockServerState::new());
     for _ in 0..3 {
@@ -2120,7 +2135,9 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
     }
     let server = MockServer::new(state.clone()).await;
     let store = StdArc::new(MemoryStore::new());
-    let gov = StdArc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let auth_cfg = busbar_substrate::config::auth::AuthCfg::with_chain(vec![
         busbar_substrate::config::auth::AuthChainEntry::bare("test-groups-module"),
     ]);
@@ -2138,9 +2155,9 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
         .auth(StdArc::new(busbar_core::auth::AuthMiddleware::new_builtin(
             &auth_cfg,
         )))
-        .governance(gov)
+        .governance_kit(gov)
         // The old GovState carried fee 0; keep the no-charge semantics under the CostModel.
-        .cost(busbar_core::cost::CostModel::flat(0))
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(0))
         .build();
     {
         let inner = StdArc::get_mut(&mut app).expect("sole owner");
@@ -3257,10 +3274,13 @@ async fn test_unknown_model_404_uses_canonical_openai_type() {
 /// Build a governance-enabled App whose only key is allowed ONLY on pool `allowed-only` (so a
 /// request to any other pool is pool-rejected with 403). Returns the key for the GovCtx.
 fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -3273,12 +3293,10 @@ fn governed_app_pool_restricted() -> (Arc<App>, busbar_api::VirtualKey) {
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
-    let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.governance = Some(gov);
-    inner.auth = crate::test_support::keys_chain_auth();
-    // The 30c flat fee lives on the CostModel now.
-    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::flat(30));
+    let app = governed_minimal_app(
+        gov,
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_flat(30),
+    );
     (app, key)
 }
 
@@ -3510,10 +3528,13 @@ fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
 
 /// Governance-enabled App whose only key has a zero budget cap, so it is immediately over budget.
 fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -3526,10 +3547,6 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
-    let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.governance = Some(gov);
-    inner.auth = crate::test_support::keys_chain_auth();
     // A ZERO-cap GROUP budget: the very first request is over budget (keys carry no caps).
     let groups = std::collections::BTreeMap::from([(
         "empty".to_string(),
@@ -3547,19 +3564,23 @@ fn governed_app_over_budget() -> (Arc<App>, busbar_api::VirtualKey) {
             ..Default::default()
         },
     )]);
-    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(
-        None, 30, &groups,
-    ));
+    let app = governed_minimal_app(
+        gov,
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 30, &groups),
+    );
     (app, key)
 }
 
 /// Governance-enabled App whose key binds to a group with `{ requests: 0, per: minute }`, so the
 /// first request is rate-limited (keys carry no caps; the group is the limiter).
 fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -3572,10 +3593,6 @@ fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
-    let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.governance = Some(gov);
-    inner.auth = crate::test_support::keys_chain_auth();
     let groups = std::collections::BTreeMap::from([(
         "closed".to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -3592,9 +3609,10 @@ fn governed_app_rate_limited() -> (Arc<App>, busbar_api::VirtualKey) {
             ..Default::default()
         },
     )]);
-    inner.cost = std::sync::Arc::new(busbar_core::cost::CostModel::resolve_parts(
-        None, 30, &groups,
-    ));
+    let app = governed_minimal_app(
+        gov,
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 30, &groups),
+    );
     (app, key)
 }
 
@@ -5050,7 +5068,8 @@ async fn governed_pool_acl_router(
     protocol: &'static str,
     provider: &str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     // The lane needs a base_url, but the pool-ACL 403 short-circuits before any forward, so an
     // unreachable upstream is fine.
     let store = StdArc::new(MemoryStore::new());
@@ -5058,9 +5077,9 @@ async fn governed_pool_acl_router(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = StdArc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, secret) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -5077,7 +5096,7 @@ async fn governed_pool_acl_router(
         .unwrap();
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .lane(LaneSpec::new(model, protocol, "http://127.0.0.1:1").provider(provider))
         .pool(model, &[(0, 1)])
         .build();
@@ -5310,7 +5329,8 @@ async fn test_governance_pool_acl_403_bedrock_native_envelope() {
 #[tokio::test]
 async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
 
     // Pool A's backend would succeed (200) if the request ever reached it — proving the 403 is
@@ -5328,9 +5348,9 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = StdArc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, secret) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -5349,7 +5369,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     // Lane 0 → pool A (reachable mock). Lane 1 → pool B (the disallowed fallback target).
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
             LaneSpec::new(
@@ -5405,7 +5425,8 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
 #[tokio::test]
 async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
 
     let state = StdArc::new(MockServerState::new());
@@ -5421,9 +5442,9 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = StdArc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, secret) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -5441,7 +5462,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .lane(LaneSpec::new("A", crate::proto_codec::PROTO_ANTHROPIC, &a_url).provider("zai"))
         .lane(
             LaneSpec::new(
@@ -5596,16 +5617,17 @@ async fn test_adhoc_provider_mismatch_400_anthropic_envelope_via_router() {
 #[tokio::test]
 async fn test_adhoc_governance_pool_acl_403_via_router() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     busbar_substrate::metrics::init();
     let store = StdArc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = StdArc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, secret) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -5621,7 +5643,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
         .unwrap();
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
+        .governance_kit(gov)
         .lane(
             LaneSpec::new(
                 "claude-x",
@@ -5917,16 +5939,17 @@ async fn test_gemini_v1_stable_stream_generate_content_no_alt_sse() {
 async fn governed_limit_router(
     over: &'static str,
 ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>, String) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = StdArc::new(MemoryStore::new());
     let signer = busbar_substrate::governance::signing::TokenSigner::from_secret_bytes(
         &[7u8; 32],
         busbar_substrate::governance::signing::DEFAULT_KID,
     );
-    let gov = StdArc::new(
-        GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer)).unwrap(),
-    );
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), Some(signer))
+        .unwrap();
     let (_key, secret) = gov
         .mint_signed(
             busbar_substrate::governance::NewKeySpec {
@@ -5970,10 +5993,8 @@ async fn governed_limit_router(
     )]);
     let app = TestApp::new()
         .keys_chain()
-        .governance(gov)
-        .cost(busbar_core::cost::CostModel::resolve_parts(
-            None, 0, &groups,
-        ))
+        .governance_kit(gov)
+        .cost_kit(crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 0, &groups))
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
@@ -6279,10 +6300,13 @@ async fn test_forward_resolved_by_model_uses_lane_default_breaker_cell() {
 /// itself is uncapped - the CHAIN is what blocks. The 429 body must NAME the exhausted group.
 #[allow(clippy::field_reassign_with_default)]
 fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "finance".to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -6299,7 +6323,7 @@ fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
             ..Default::default()
         },
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, 30, &groups);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 30, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -6312,11 +6336,7 @@ fn governed_app_group_blocked() -> (Arc<App>, busbar_api::VirtualKey) {
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
-    let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.governance = Some(gov);
-    inner.auth = crate::test_support::keys_chain_auth();
-    inner.cost = std::sync::Arc::new(cost);
+    let app = governed_minimal_app(gov, cost);
     (app, key)
 }
 
@@ -6386,10 +6406,13 @@ async fn test_missing_group_fails_closed_at_ingress() {
 async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
     crate::testkit::install_test_seams();
     busbar_substrate::metrics::init();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -6406,18 +6429,12 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
         "m".to_string(),
         busbar_substrate::config::sections::RateEntryCfg::default(),
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(
         Some(&rate_card),
         0,
         &std::collections::BTreeMap::new(),
     );
-    let mut app = minimal_app();
-    {
-        let inner = Arc::get_mut(&mut app).expect("sole owner");
-        inner.governance = Some(gov);
-        inner.auth = crate::test_support::keys_chain_auth();
-        inner.cost = std::sync::Arc::new(cost);
-    }
+    let app = governed_minimal_app(gov, cost);
     let gov_ctx = busbar_api::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key.clone())),
     };
@@ -6458,10 +6475,13 @@ async fn test_unpriced_passthrough_model_rejected_when_rate_card_present() {
 fn governed_app_downgrade(
     allowed_pools: Option<Vec<String>>,
 ) -> (Arc<App>, busbar_api::VirtualKey) {
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -6478,7 +6498,7 @@ fn governed_app_downgrade(
             ..Default::default()
         },
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, 10, &groups);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 10, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -6491,11 +6511,8 @@ fn governed_app_downgrade(
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
+    let mut app = governed_minimal_app(gov, cost);
     let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.governance = Some(gov);
-    inner.auth = crate::test_support::keys_chain_auth();
-    inner.cost = std::sync::Arc::new(cost);
     inner
         .llm_runtime_mut()
         .pools
@@ -6546,10 +6563,13 @@ async fn test_budget_exhaustion_downgrades_pool() {
 #[tokio::test]
 async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
     crate::testkit::install_test_seams();
-    use busbar_core::governance::{GovState, MemoryStore};
+    use busbar_store_memory::MemoryStore;
     use busbar_substrate::governance::NewKeySpec;
+    use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
     let store = Arc::new(MemoryStore::new());
-    let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, Some("admintok".to_string()), None)
+        .unwrap();
     let groups = std::collections::BTreeMap::from([(
         "team".to_string(),
         busbar_substrate::config::groups::GroupCfg {
@@ -6587,7 +6607,7 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
             ..Default::default()
         },
     )]);
-    let cost = busbar_core::cost::CostModel::resolve_parts(None, 10, &groups);
+    let cost = crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, 10, &groups);
     let (key, _secret) = gov
         .create_key(
             NewKeySpec {
@@ -6600,11 +6620,8 @@ async fn test_downgrade_cycle_terminates_via_the_revisit_guard() {
             1_700_000_000,
         )
         .unwrap();
-    let mut app = minimal_app();
+    let mut app = governed_minimal_app(gov, cost);
     let inner = Arc::get_mut(&mut app).expect("sole owner");
-    inner.governance = Some(gov);
-    inner.auth = crate::test_support::keys_chain_auth();
-    inner.cost = std::sync::Arc::new(cost);
     inner
         .llm_runtime_mut()
         .pools

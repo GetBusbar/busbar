@@ -5,8 +5,12 @@
 //! the `limits:` / `health:` / `routing:` blocks and the flat resolved `LimitsResolved` every
 //! startup wire reads. Every field defaults — via a `default = "fn"` whose body is the historical
 //! hardcoded const — to today's behavior, so an absent key (the common case) is byte-for-byte
-//! unchanged. The process-wide INSTALL of the resolved values stays in busbar-core's `limits`
-//! module; busbar-core re-exports every item here at its historical `config::` path.
+//! unchanged. busbar-core re-exports every item here at its historical `config::` path.
+//!
+//! The process-wide INSTALL of the resolved values lives at the bottom of this page too — the slot,
+//! the rollback guard, and the test-only unconditional installer and serializing lock. The deep
+//! call-stack ACCESSORS that read it are still busbar-core's; only the state is neutral, which is
+//! what lets a plane crate's tests install a non-default posture without reaching into the engine.
 
 use serde::{Deserialize, Serialize};
 
@@ -101,8 +105,20 @@ pub const DEFAULT_TLS_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 /// far longer than any real client needs to send its next body chunk, so it cannot false-positive on
 /// a healthy upload.
 pub const DEFAULT_REQUEST_BODY_READ_TIMEOUT_SECS: u64 = 30;
-/// Default global fallback for the translation-injected `max_tokens` (mirrors `proto::DEFAULT_MAX_TOKENS`).
-pub const DEFAULT_DEFAULT_MAX_TOKENS: u32 = 4096;
+/// Conservative fallback for the `max_tokens` injected at a translation boundary when the source
+/// protocol omitted it (legal for OpenAI) but the target REQUIRES it (Anthropic, Bedrock — see
+/// `ProtocolWriter::requires_max_tokens`). Used only when the lane has no configured
+/// `default_max_tokens`. 4096 is a safe output ceiling across current chat models — large enough
+/// not to truncate typical completions, small enough not to be refused.
+///
+/// Lives HERE, beside the `limits:` block whose `default_max_tokens` key overrides it, rather than
+/// in a protocol module: the value is an operational cap, the same kind as every other constant on
+/// this page, and a plane crate reads it without naming the engine. busbar-core re-exports it at
+/// its historical `proto::DEFAULT_MAX_TOKENS` path.
+pub const DEFAULT_MAX_TOKENS: u32 = 4096;
+/// Default global fallback for the translation-injected `max_tokens`. The SAME number as
+/// [`DEFAULT_MAX_TOKENS`], and now literally it — the two can no longer drift.
+pub const DEFAULT_DEFAULT_MAX_TOKENS: u32 = DEFAULT_MAX_TOKENS;
 /// Default max concurrent webhook deliveries. Mirrors `observability.rs`.
 pub const DEFAULT_MAX_INFLIGHT_WEBHOOK_DELIVERIES: usize = 64;
 /// Default per-webhook delivery timeout (seconds). Mirrors `observability.rs`.
@@ -500,4 +516,145 @@ impl LimitsResolved {
             ..Self::default()
         }
     }
+}
+
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+// THE PROCESS-WIDE INSTALL of the resolved limits.
+//
+// The slot lives HERE, with the shape it holds, rather than in busbar-core: the deep-call-stack
+// accessors that read it are core's, but the SLOT is neutral state over a neutral struct, and a
+// plane crate's tests install a non-default posture (a small body cap, a short handshake bound) to
+// make themselves fast. With the slot in the engine, that install was an engine reach from a plane
+// test tree. busbar-core re-exports every item below at its historical `limits::` path, so its own
+// accessors, its composition root and its tests are unchanged by identity.
+// ───────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The installed limits. `None` until an install runs; `None` means "use the historical default",
+/// which is what each of busbar-core's per-accessor fallbacks returns. An `RwLock` (not a
+/// `OnceLock`) because the config plane RE-installs on every apply/reload — limit changes take
+/// effect live. Reads take an uncontended read lock (writes happen only on config changes), and the
+/// values these guard are not per-byte hot (per-request/per-connection reads at most).
+static INSTALLED: std::sync::RwLock<Option<LimitsResolved>> = std::sync::RwLock::new(None);
+
+/// The currently-installed limits, or `None` when nothing has been installed (boot, or a test
+/// process that never installed). Every accessor resolves that `None` to its own historical
+/// default constant.
+pub fn installed() -> Option<LimitsResolved> {
+    INSTALLED.read().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// TEST-ONLY. Serializes every test in a binary that MUTATES the process-global slot above
+/// (busbar-core's own `InstallGuard` tests and its TLS body-bound tests, and a plane crate's
+/// ingress body-cap tests, which install a non-default `LimitsResolved` to make themselves fast).
+/// Cargo runs those tests concurrently in ONE process, and an install is a whole-struct swap behind
+/// a shared lock, so without this a sibling test's install lands mid-assertion in another and both
+/// are flaky in a way that depends on machine core count. Lives beside the static rather than in
+/// any one test module because the hazard is the static, not the file — and now beside it across
+/// crates, so a plane's installs and the engine's serialize against EACH OTHER rather than only
+/// among themselves.
+///
+/// A `tokio::sync::Mutex`, not a `std` one, for two reasons: the TLS holders await socket I/O for
+/// their entire critical section (holding a `std` guard across an await is clippy's
+/// `await_holding_lock`, `-D warnings` here), and it does not poison, so one failing test does not
+/// cascade into every other test that wants the lock. Synchronous tests take it with
+/// `blocking_lock()`, which is legal precisely because a plain `#[test]` fn has no runtime.
+#[cfg(any(test, feature = "test-support"))]
+pub static LIMITS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Install (or RE-install) the resolved limits process-wide, unconditionally and with no rollback.
+///
+/// TEST-ONLY. Production installs through [`InstallGuard`], never through this: a config that is
+/// subsequently REJECTED must not leave its limits behind, and an unconditional install is exactly
+/// what made that possible. The remaining consumer is the one test whose SUBJECT is racing the live
+/// cap by re-installing it in a hot loop with no rollback between iterations — `InstallGuard` cannot
+/// serve that (a guard restores on drop, but the test wants the value to keep flipping mid-run).
+#[cfg(any(test, feature = "test-support"))]
+pub fn install(resolved: &LimitsResolved) {
+    *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = Some(resolved.clone());
+    mirror_derived_caps(Some(resolved));
+}
+
+/// TEST-ONLY. Write the slot DIRECTLY, including back to the uninstalled `None` — the raw poke
+/// [`install`] cannot express and [`InstallGuard`] must not be used for.
+///
+/// The consumer is the guard's OWN test file: its restore-on-drop fixture has to put the slot back
+/// exactly as it found it (uninstalled included) on the failure path, and it deliberately does not
+/// use `InstallGuard` for that, because a broken `InstallGuard::drop` would then silently repair the
+/// very state the assertions inspect. Mirrors the derived caps exactly as every other mutation does,
+/// so a raw poke cannot leave the `proxy` globals disagreeing with the accessors.
+#[cfg(any(test, feature = "test-support"))]
+pub fn set_installed(slot: Option<LimitsResolved>) {
+    mirror_derived_caps(slot.as_ref());
+    *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = slot;
+}
+
+/// INSTALL FOR THE DURATION OF A BUILD, AND ROLL BACK UNLESS THE BUILD SUCCEEDS.
+///
+/// busbar-core's `build_app_from_config` installs the candidate limits FIRST — it has to, because
+/// the build reads them through the deep-call-stack accessors (the store open, the health-probe
+/// fallbacks, the routing policy timeout) — but every step AFTER the install is fallible: semantic
+/// validation, the plugin pre-flight, secret-ref resolution, the store open. Before this guard, a
+/// rejected apply left the REJECTED config's limits installed process-wide while the old `App` kept
+/// serving, and no error path put them back. That broke the surface's central promise that an
+/// invalid apply changes nothing, and it did so in the worst direction: the values `validate_limits`
+/// exists to reject — e.g. a `request_body_max_bytes` below its floor — are precisely the ones that
+/// got installed anyway, because the range check runs after the install. A 400-ed
+/// `POST /config/apply` could shrink the live SigV4 auth-middleware buffer and the cross-protocol
+/// translate buffer under a still-running gateway, 401-ing larger Bedrock requests.
+///
+/// So: snapshot, install, and restore on drop unless [`InstallGuard::commit`] is called. Rollback on
+/// the DROP rather than on each `return Err` is what makes it total — a build step added later
+/// cannot forget to unwind, and neither can a `?`.
+#[must_use = "an uncommitted InstallGuard rolls the limits back when dropped"]
+pub struct InstallGuard {
+    /// What was installed before — `None` when nothing was (boot, or a test process).
+    prior: Option<LimitsResolved>,
+    committed: bool,
+}
+
+impl InstallGuard {
+    /// Snapshot the currently-installed limits and install `resolved` in their place.
+    pub fn install(resolved: &LimitsResolved) -> Self {
+        let mut slot = INSTALLED.write().unwrap_or_else(|e| e.into_inner());
+        let prior = slot.clone();
+        *slot = Some(resolved.clone());
+        mirror_derived_caps(Some(resolved));
+        Self {
+            prior,
+            committed: false,
+        }
+    }
+
+    /// The build succeeded: KEEP the installed limits.
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for InstallGuard {
+    fn drop(&mut self) {
+        if !self.committed {
+            *INSTALLED.write().unwrap_or_else(|e| e.into_inner()) = self.prior.clone();
+            mirror_derived_caps(self.prior.as_ref());
+        }
+    }
+}
+
+/// Mirror the upstream-error-body cap AND the egress translate-body cap into the `proxy` process
+/// globals, so a reader that has no `App` in hand (the proxy paths, and the plane crates that read
+/// the translate cap) sees the SAME value busbar-core's own accessors return. Called after EVERY
+/// mutation of `INSTALLED` (install, reload, and the [`InstallGuard`] rollback) with that same
+/// slot's value, resolving the `None`/uninstalled case to the historical default exactly as each
+/// accessor does — the mirrors can never diverge from the accessors.
+fn mirror_derived_caps(slot: Option<&LimitsResolved>) {
+    let cap = slot
+        .map(|l| l.upstream_error_body_max_bytes)
+        .unwrap_or(DEFAULT_UPSTREAM_ERROR_BODY_MAX_BYTES);
+    crate::proxy::set_max_upstream_buffered_bytes(cap);
+    // The egress translate-body cap is `request_body_max_bytes` (one knob feeds both ingress and this
+    // egress cap); mirror it with the SAME uninstalled-fallback the accessor uses.
+    let translate_cap = slot
+        .map(|l| l.request_body_max_bytes)
+        .unwrap_or(DEFAULT_REQUEST_BODY_MAX_BYTES);
+    crate::proxy::set_max_translate_body_bytes(translate_cap);
 }
