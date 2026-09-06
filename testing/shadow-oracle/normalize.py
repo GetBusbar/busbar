@@ -13,6 +13,9 @@ What is normalized (each rule is a named entry in `applied`):
   id.wire             busbar-SYNTHESIZED wire ids: req_<hex>, resp_<hex>, msg_<hex>, chatcmpl-<hex>,
                       gemini/bedrock request ids (random bytes, hex) -> "<ID>"
   ts.unix             `created`/`timestamp`/`ts`/`at` integer unix seconds/millis -> 0
+  ts.usage-window     a `/usage` body's `window.start` / `window.end` (the UTC day boundary the
+                      window was computed against, not a contract of busbar's) -> 0; scoped to the
+                      `window` object only, so no other `start`/`end` key in any other body is touched
   audit.hash          audit-chain hashes / seals (hex >= 32) -> "<HASH>"; sealed timestamps -> 0
   metrics.absolute    metrics are captured as DELTAS by the recorder; absolutes never enter a golden
   metrics.timing      duration _sum / quantile / histogram-bucket samples DROPPED (the _count stays)
@@ -111,6 +114,10 @@ ID_RULES = [
     (re.compile(r"-(aarch64|x86_64)-(apple-darwin|unknown-linux-gnu|pc-windows-msvc)"), "-<TRIPLE>"),  # plugin tarball names carry the host triple
 ]
 TS_KEYS = {"created", "timestamp", "ts", "at", "sealed_at", "opened_at", "closed_at", "time", "as_of", "expires_at", "created_at", "updated_at", "last_used_at", "started_at"}
+# The `/usage` body's `window` object: {start, end} are UTC-day-boundary unix seconds computed
+# against "now", not a busbar contract -- scoped to the `window` key specifically (not every
+# `start`/`end` anywhere) so a real `start`/`end` elsewhere (e.g. a pool/audit range) still diffs.
+USAGE_WINDOW_KEYS = {"start", "end"}
 # JSON keys whose value is a measured latency, never a contract (admin pool views; `latencyMs` is
 # AWS Bedrock's own spelling on Converse's `metrics` member — S-3's "latencyMs is timing and
 # normalized" decision, extended to every cell that carries it, not only the same-dialect one)
@@ -189,6 +196,8 @@ def norm_json(v, applied: set, key_id: str | None, parent_key: str = "", path: s
                 # no further scrubbing at or under it -- for THIS cell that literal value IS the
                 # contract (e.g. openapi info.version, a plugin digest).
                 applied.add("keep.json_key"); out[k] = x; continue
+            if parent_key == "window" and k in USAGE_WINDOW_KEYS and isinstance(x, (int, float)):
+                applied.add("ts.usage-window"); out[k] = 0; continue
             if k in TS_KEYS and isinstance(x, (int, float)):
                 applied.add("ts.unix"); out[k] = 0; continue
             if k in TIMING_KEYS and isinstance(x, (int, float)):

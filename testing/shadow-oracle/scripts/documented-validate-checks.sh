@@ -30,7 +30,8 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 source "${repo}/testing/fleet-fixtures/lib.sh"
-BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
+BIN="${BUSBAR_BIN:?}"; case "$BIN" in /*) ;; *) BIN="$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")" ;; esac
+RAW="${RAW:?}"; case "$RAW" in /*) ;; *) RAW="$(cd "$RAW" && pwd)" ;; esac
 W="$RAW/validate-checks-work"; mkdir -p "$W"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 
