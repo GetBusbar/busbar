@@ -45,6 +45,11 @@ pub(crate) type LowerIo = Box<dyn Lower>;
 /// up — the per-unit frame buffer the architecture's backpressure rule names.
 pub(crate) const INBOUND_FRAME_BUFFER: usize = 64;
 
+/// How many outbound messages one call may hold for a peer that is not reading — the same
+/// per-unit depth the inbound side keeps, in the other direction. Past it, `write()` waits on the
+/// peer rather than queueing on this process's heap and calling that "sent".
+pub(crate) const OUTBOUND_FRAME_BUFFER: usize = 64;
+
 /// How many served `:path`s one connection remembers. A long-lived connection serves calls
 /// forever; this diagnostic record is for the last handful, not a leak-shaped unbounded log of
 /// every RPC an HTTP/2 connection has ever carried.
@@ -53,8 +58,18 @@ pub(crate) const SERVED_PATHS_CAP: usize = 32;
 /// One inbound item: a stream-tagged frame, or a transport failure on that stream.
 pub(crate) type InboundItem = Result<(StreamId, Frame), TransportError>;
 
-/// One open gRPC call's outbound half: the channel `write()` feeds and the RPC task drains.
-pub(crate) type OutboundTx = mpsc::UnboundedSender<Vec<u8>>;
+/// One open gRPC call's outbound half: the channel `write()` feeds and the RPC task drains. Bounded
+/// at [`OUTBOUND_FRAME_BUFFER`], so a writer whose peer has stopped reading waits instead of
+/// queueing.
+pub(crate) type OutboundTx = mpsc::Sender<Vec<u8>>;
+
+/// The draining half of one call's outbound queue, as the RPC task holds it.
+pub(crate) type OutboundRx = mpsc::Receiver<Vec<u8>>;
+
+/// One call's outbound queue, at the one depth both sides of this crate open it with.
+pub(crate) fn outbound_channel() -> (OutboundTx, OutboundRx) {
+    mpsc::channel(OUTBOUND_FRAME_BUFFER)
+}
 
 /// Opening a call is asynchronous, so what the map holds is the OPENING, not the opened channel.
 ///

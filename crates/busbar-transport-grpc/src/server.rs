@@ -24,7 +24,6 @@ use std::task::{Context, Poll};
 use futures::Stream;
 use hyper::body::Incoming;
 use hyper_util::rt::{TokioExecutor, TokioIo};
-use tokio::sync::mpsc;
 use tonic::{Request, Response, Status};
 
 use busbar_contract::wire::Frame;
@@ -85,7 +84,7 @@ async fn handle_one_rpc(
     state.record_served_path(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
-    let (out_tx, out_rx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let (out_tx, out_rx) = crate::conn::outbound_channel();
     state
         .outbound
         .lock()
@@ -107,7 +106,7 @@ async fn handle_one_rpc(
 struct RpcHandler {
     state: Arc<ConnState>,
     stream_id: StreamId,
-    out_rx: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
+    out_rx: Option<crate::conn::OutboundRx>,
 }
 
 impl tower::Service<Request<tonic::Streaming<Vec<u8>>>> for RpcHandler {
@@ -226,14 +225,14 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::St
 /// the call's: hyper drops it when the RPC ends, and that is the moment the connection's outbound
 /// map should stop holding a sender nothing will ever drain again.
 pub(crate) struct OutStream {
-    rx: mpsc::UnboundedReceiver<Vec<u8>>,
+    rx: crate::conn::OutboundRx,
     state: Arc<ConnState>,
     stream_id: StreamId,
 }
 
 impl OutStream {
     pub(crate) fn new(
-        rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        rx: crate::conn::OutboundRx,
         state: Arc<ConnState>,
         stream_id: StreamId,
     ) -> Self {

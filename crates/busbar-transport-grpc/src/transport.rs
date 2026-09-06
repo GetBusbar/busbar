@@ -302,7 +302,10 @@ impl Transport for GrpcTransport {
                     return Err(e);
                 }
             };
-            tx.send(payload).map_err(|_| TransportError::Reset)?;
+            // Awaited, not queued: the call's outbound channel is bounded, so a peer that has
+            // stopped reading stalls this writer against the HTTP/2 flow-control window instead of
+            // letting it pile messages onto this process's heap and call them sent.
+            tx.send(payload).await.map_err(|_| TransportError::Reset)?;
             Ok(n)
         })
     }
@@ -392,7 +395,7 @@ impl Transport for GrpcTransport {
                     let call = state.outbound.lock().unwrap().remove(&stream.0);
                     if let Some(call) = call {
                         if let Ok(tx) = call.await {
-                            let _ = tx.send(payload);
+                            let _ = tx.send(payload).await;
                         }
                     }
                 }
@@ -400,7 +403,7 @@ impl Transport for GrpcTransport {
                     let calls: Vec<_> = state.outbound.lock().unwrap().values().cloned().collect();
                     for call in calls {
                         if let Ok(tx) = call.await {
-                            let _ = tx.send(payload.clone());
+                            let _ = tx.send(payload.clone()).await;
                         }
                     }
                     self.close(conn, CloseReason::Normal);

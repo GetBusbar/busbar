@@ -801,7 +801,7 @@ async fn served_paths_stays_bounded_across_many_calls() {
 #[tokio::test]
 async fn dropping_a_served_calls_outbound_stream_prunes_its_entry() {
     let state = crate::conn::ConnState::new(None, vec!["grpc"]);
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (tx, rx) = crate::conn::outbound_channel();
     state
         .outbound
         .lock()
@@ -1096,5 +1096,49 @@ async fn frames_end_when_the_connection_does() {
     assert!(
         ended.is_ok(),
         "the peer's frames() stayed pending with the connection gone"
+    );
+}
+
+/// The outbound half backpressures too, which is the other direction of the rule this connection
+/// already keeps inbound.
+///
+/// `write()` handed each message to an unbounded queue, so a peer that never read still let a
+/// writer accept messages without limit: every one of them queued on this process's heap, and the
+/// `Ok` it returned said "sent" about bytes that had not reached the wire and might never. Bounded,
+/// the writer waits on the peer, which is what the HTTP/2 flow-control window is for.
+#[tokio::test]
+async fn write_backpressures_a_peer_that_never_reads() {
+    let server_t = std::sync::Arc::new(server_transport());
+    let client_t = client_transport();
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+    // Accepted, and never read from: nothing polls the server's `frames()`, so the server's own
+    // inbound buffer fills, the flow-control window shuts, and the queue behind `write()` is the
+    // only place left for the messages to go.
+    let _server_conn = accept_task.await.unwrap().unwrap();
+
+    let message = vec![b'x'; 4096];
+    let flooded = tokio::time::timeout(Duration::from_secs(2), async {
+        for _ in 0..crate::conn::OUTBOUND_FRAME_BUFFER * 8 {
+            client_t
+                .write(&client_conn, StreamId(1), ArenaBytes::new(&message))
+                .await
+                .unwrap();
+        }
+    })
+    .await;
+    assert!(
+        flooded.is_err(),
+        "a writer outran a peer that never read: every message was accepted onto the heap"
     );
 }
