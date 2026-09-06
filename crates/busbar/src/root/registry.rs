@@ -70,7 +70,9 @@ use std::sync::Arc;
 
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::transport::TransportMeta;
-use busbar_contract::{check_composition, CompositionError, Plugin, Registered, Transport};
+use busbar_contract::{
+    check_composition, CompositionError, Plugin, Registered, Transport, UpstreamAddress,
+};
 use busbar_kernel::registry::{seal_claims, ClaimConflict, PlaneClaim, Registry, ResolvedOverlap};
 use busbar_plane_a2a::A2aPlane;
 use busbar_plane_admin::AdminPlane;
@@ -148,6 +150,36 @@ pub struct ComposedTransports {
     pub grpc: Arc<GrpcTransport>,
     /// The process's own standard streams.
     pub stdio: Arc<StdioTransport>,
+}
+
+impl ComposedTransports {
+    /// The instance that dials a destination which named `key`, given where the dial lands.
+    ///
+    /// Every key but `ws` has one instance and this is a lookup. `ws` is the exception the registry
+    /// cannot express: the registry seals by key, so exactly one `ws` may register, but a `ws://`
+    /// upgrade arrives on `http` while a `wss://` dial is only honest over `tls` — the transport
+    /// itself refuses a secure target over a cleartext lower layer rather than downgrade it. Those
+    /// are two compositions of one key, and the choice between them is the destination's scheme,
+    /// which is a fact of the dial rather than of the registry.
+    #[must_use]
+    pub fn dialer(&self, key: &str, address: &UpstreamAddress) -> Option<Arc<dyn Transport>> {
+        let secure = address
+            .authority()
+            .is_some_and(|authority| authority.starts_with("wss://"));
+        Some(match key {
+            TcpTransport::KEY => Arc::clone(&self.tcp) as Arc<dyn Transport>,
+            TlsTransport::KEY => Arc::clone(&self.tls) as Arc<dyn Transport>,
+            HttpTransport::KEY => Arc::clone(&self.http) as Arc<dyn Transport>,
+            SseTransport::KEY => Arc::clone(&self.sse) as Arc<dyn Transport>,
+            <WsTransport as TransportMeta>::KEY => {
+                let _ = secure;
+                Arc::clone(&self.ws) as Arc<dyn Transport>
+            }
+            GrpcTransport::KEY => Arc::clone(&self.grpc) as Arc<dyn Transport>,
+            StdioTransport::KEY => Arc::clone(&self.stdio) as Arc<dyn Transport>,
+            _ => return None,
+        })
+    }
 }
 
 /// What the boot seal produced: a registry nothing may add to after it, and the claim order every
@@ -929,6 +961,72 @@ mod tests {
         assert_eq!(
             unset.transports.http.max_body_bytes(),
             ClientSettings::default().request_body_max_bytes
+        );
+    }
+
+    /// The voice plane's realtime upstreams are `wss`, and this node must be able to dial one.
+    ///
+    /// The ws transport refuses a secure target over a cleartext lower layer rather than put a
+    /// plain upgrade on a wire the caller was told was encrypted. That refusal is right, and with a
+    /// single `ws` instance composed over `http` it also means every `wss://` upstream this
+    /// deployment has — OpenAI Realtime, Gemini Live — is refused at the dial. So the root composes
+    /// the key twice: the ingress instance over `http`, which is what an in-band upgrade arrives
+    /// on, and a dial-side instance over `tls`, which is the only composition under which `wss` is
+    /// honest. A `ws://` destination still resolves to the ingress instance, so nothing that worked
+    /// over cleartext quietly moved onto a different stack.
+    #[test]
+    fn a_secure_realtime_upstream_resolves_to_the_tls_composed_instance() {
+        let sealed = seal(ClientSettings::default()).expect("every claim names a live transport");
+        let ws_key = <WsTransport as TransportMeta>::KEY;
+
+        let secure = sealed
+            .transports
+            .dialer(
+                ws_key,
+                &UpstreamAddress::socket("wss://api.openai.com/v1/realtime"),
+            )
+            .expect("`ws` is a registered key");
+        assert_eq!(
+            secure.composed_over(),
+            Some(TlsTransport::KEY),
+            "a wss upstream must dial through the tls-composed instance, or the ws transport \
+             refuses it as a downgrade and the voice plane cannot reach a realtime provider at all"
+        );
+
+        let cleartext = sealed
+            .transports
+            .dialer(ws_key, &UpstreamAddress::socket("ws://127.0.0.1:8080/duplex"))
+            .expect("`ws` is a registered key");
+        assert_eq!(
+            cleartext.composed_over(),
+            Some(HttpTransport::KEY),
+            "a cleartext ws destination stays on the instance the in-band upgrade arrives on"
+        );
+
+        // The two are different objects, not one instance answering two ways.
+        assert!(!Arc::ptr_eq(&secure, &cleartext));
+
+        // And every other key is unchanged: one composition, one instance, whatever the address.
+        for (key, over) in [
+            (TcpTransport::KEY, None),
+            (HttpTransport::KEY, None),
+            (SseTransport::KEY, Some(HttpTransport::KEY)),
+            (GrpcTransport::KEY, Some(HttpTransport::KEY)),
+            (StdioTransport::KEY, None),
+        ] {
+            let dialer = sealed
+                .transports
+                .dialer(key, &UpstreamAddress::socket("wss://api.openai.com"))
+                .unwrap_or_else(|| panic!("`{key}` is a registered key"));
+            assert_eq!(dialer.composed_over(), over, "`{key}` resolved elsewhere");
+        }
+
+        assert!(
+            sealed
+                .transports
+                .dialer("twilio-media", &UpstreamAddress::socket("wss://example.invalid"))
+                .is_none(),
+            "a key the root never registered resolves to no instance"
         );
     }
 
