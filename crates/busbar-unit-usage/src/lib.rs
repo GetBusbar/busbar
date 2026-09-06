@@ -46,8 +46,7 @@ pub use lane::{cross_check_lane, LaneCheck, LaneLegs, LegDeclaration};
 pub use meter::{meter, Dispute, DisputeReason, Metered};
 pub use series::MeterCounts;
 pub use settlement::{
-    fee_count, posting_flags, requests_settled, settle, Evidence, FeeInputs, Finish, SettleFlag,
-    Settlement, StatusClass, UnitEndKind,
+    posting_flags, requests_settled, settle, Evidence, SettleFlag, Settlement, UnitEndKind,
 };
 pub use source::{quantity_from_raw, Direction, LocatorPtr, QuantitySource};
 
