@@ -443,6 +443,17 @@ impl Selector {
             | (Self::PathSuffix(s), Self::ExactPath(p)) => p.ends_with(s),
             (Self::ExactPath(p), Self::PathContains(s))
             | (Self::PathContains(s), Self::ExactPath(p)) => p.contains(s),
+            // A one-level prefix IS a pattern: the prefix's literals, then one more segment.
+            (Self::PrefixOneLevel(prefix), Self::PathPattern(pat))
+            | (Self::PathPattern(pat), Self::PrefixOneLevel(prefix)) => {
+                prefix_overlaps_pattern(prefix, pat)
+            }
+            // Two suffixes are both anchored to the same end, so one has to end the other.
+            (Self::PathSuffix(x), Self::PathSuffix(y)) => x.ends_with(y) || y.ends_with(x),
+            (Self::PathSuffix(s), Self::PathPattern(pat))
+            | (Self::PathPattern(pat), Self::PathSuffix(s)) => suffix_overlaps_pattern(s, pat),
+            (Self::PathContains(s), Self::PathPattern(pat))
+            | (Self::PathPattern(pat), Self::PathContains(s)) => contains_overlaps_pattern(s, pat),
             // Every remaining path pair mixes at least one open-ended form with another
             // open-ended form: a path satisfying both always exists, so they overlap.
             _ => true,
@@ -550,4 +561,188 @@ fn patterns_overlap(a: &[PathSeg], b: &[PathSeg]) -> bool {
         }
         i += 1;
     }
+}
+
+/// Whether a one-level prefix and a pattern can both match one path.
+///
+/// A one-level prefix is a pattern with a different spelling — the prefix's own segments as
+/// literals, then exactly one segment of any value — so the comparison is the segment walk that
+/// already exists, with the prefix read as that pattern rather than as a string.
+fn prefix_overlaps_pattern(prefix: &str, pattern: &[PathSeg]) -> bool {
+    let mut i = 0usize;
+    for literal in segments(prefix) {
+        match pattern.get(i) {
+            // The pattern ran out while the prefix still had segments to place.
+            None => return false,
+            Some(PathSeg::Tail) => return true,
+            Some(PathSeg::Var) => {}
+            Some(PathSeg::Lit(l)) if *l == literal => {}
+            Some(PathSeg::Lit(_)) => return false,
+        }
+        i += 1;
+    }
+    match pattern.get(i) {
+        // A tail takes whatever is left, and one segment is a thing it can take.
+        Some(PathSeg::Tail) => true,
+        // One level down is exactly one more segment, so the pattern has to END after this one —
+        // either because there is nothing after it, or because what is after it is a tail, and a
+        // tail matching NOTHING is a path one level under the prefix.
+        Some(_) => pattern.len() == i + 1 || matches!(pattern.get(i + 1), Some(PathSeg::Tail)),
+        None => false,
+    }
+}
+
+/// How many pieces a literal's own slashes cut it into, and the `k`th of them.
+///
+/// Both are `O(n)` walks over a literal that is a handful of bytes long, which is why the pieces
+/// are read twice rather than collected: this grammar allocates nowhere else.
+fn piece_count(literal: &str) -> usize {
+    literal.split('/').count()
+}
+
+/// The `k`th piece, or nothing when the literal has fewer.
+fn piece(literal: &str, k: usize) -> Option<&str> {
+    literal.split('/').nth(k)
+}
+
+/// Whether any interior piece is empty, which is a doubled slash inside the literal.
+///
+/// A path that matches a pattern may carry doubled slashes — the segment walk drops empty segments
+/// — so a literal asking for one is a shape this reasoning does not model, and the answer goes back
+/// to the conservative one.
+fn has_empty_interior_piece(literal: &str, from: usize, to: usize) -> bool {
+    (from..=to).any(|k| piece(literal, k).is_some_and(str::is_empty))
+}
+
+/// Whether a pattern segment can be a whole segment spelled exactly this way.
+fn segment_can_equal(segment: &PathSeg, want: &str) -> bool {
+    match segment {
+        PathSeg::Lit(l) => *l == want,
+        // A variable takes one segment of any value, and a segment is never empty.
+        PathSeg::Var => !want.is_empty(),
+        PathSeg::Tail => true,
+    }
+}
+
+/// Whether a path matching this pattern can END with this suffix.
+///
+/// A suffix's slashes are the arriving path's own slashes, so a suffix carrying `m` of them pins
+/// the pattern's LAST `m` segments: the pieces between those slashes are whole segments, counted
+/// from the end, and whatever comes before the first slash is the tail end of the segment before
+/// them. A pattern with a literal in one of those positions that does not match cannot produce a
+/// path ending that way, however its variables are filled in — and that is the proof of
+/// disjointness, not a guess at one.
+///
+/// Conservative — answering that they may overlap — wherever the shape is one this reasoning does
+/// not model: a tail (which can supply anything the suffix asks for), a suffix that ends at a slash,
+/// and a suffix carrying a doubled one.
+fn suffix_overlaps_pattern(suffix: &str, pattern: &[PathSeg]) -> bool {
+    if pattern.iter().any(|s| matches!(s, PathSeg::Tail)) {
+        return true;
+    }
+    let slashes = piece_count(suffix) - 1;
+    let n = pattern.len();
+    if slashes == 0 {
+        // No slash: the suffix lies inside the path's last segment.
+        return match pattern.last() {
+            None => false,
+            Some(PathSeg::Lit(l)) => l.ends_with(suffix),
+            Some(_) => true,
+        };
+    }
+    if has_empty_interior_piece(suffix, 1, slashes) {
+        return true;
+    }
+    if n < slashes {
+        // The suffix pins more whole segments than the pattern can ever produce.
+        return false;
+    }
+    // Pieces 1..=slashes are the pattern's last `slashes` segments, in order.
+    for k in 1..=slashes {
+        let want = piece(suffix, k).unwrap_or("");
+        if !segment_can_equal(&pattern[n - slashes + k - 1], want) {
+            return false;
+        }
+    }
+    let head = piece(suffix, 0).unwrap_or("");
+    if head.is_empty() {
+        // The suffix starts at a segment boundary, and the path's own leading slash is one.
+        return true;
+    }
+    // A non-empty head is the tail end of the segment before the pinned ones, so there has to be
+    // one, and it has to be able to end that way.
+    match n.checked_sub(slashes + 1).and_then(|i| pattern.get(i)) {
+        None => false,
+        Some(PathSeg::Lit(l)) => l.ends_with(head),
+        Some(_) => true,
+    }
+}
+
+/// Whether a path matching this pattern can CONTAIN this substring.
+///
+/// The same reasoning as the suffix rule with the anchor removed: a substring carrying slashes asks
+/// for consecutive whole segments somewhere in the path rather than at its end, so every placement
+/// is tried. A substring with no slash at all lands inside one segment, and any variable segment can
+/// be that one.
+fn contains_overlaps_pattern(needle: &str, pattern: &[PathSeg]) -> bool {
+    if pattern.iter().any(|s| matches!(s, PathSeg::Tail)) {
+        return true;
+    }
+    let slashes = piece_count(needle) - 1;
+    let n = pattern.len();
+    if slashes == 0 {
+        return pattern.iter().any(|segment| match segment {
+            PathSeg::Lit(l) => l.contains(needle),
+            _ => true,
+        });
+    }
+    if has_empty_interior_piece(needle, 1, slashes.saturating_sub(1)) {
+        return true;
+    }
+    let head = piece(needle, 0).unwrap_or("");
+    let last = piece(needle, slashes).unwrap_or("");
+    // `start` is the index of the segment the needle begins inside; `n` stands for "before the
+    // path's leading slash", which is where a needle that begins with a slash may also start.
+    for start in 0..=n {
+        let head_ok = if head.is_empty() {
+            true
+        } else {
+            match pattern.get(start) {
+                None => false,
+                Some(PathSeg::Lit(l)) => l.ends_with(head),
+                Some(_) => true,
+            }
+        };
+        if !head_ok {
+            continue;
+        }
+        // The pieces between the needle's first and last slash are whole segments, in order, from
+        // the one after `start`. A start of `n` means the needle opens at the leading slash.
+        let first = if start == n { 0 } else { start + 1 };
+        let middles_ok = (1..slashes).all(|k| {
+            pattern
+                .get(first + k - 1)
+                .is_some_and(|segment| segment_can_equal(segment, piece(needle, k).unwrap_or("")))
+        });
+        if !middles_ok {
+            continue;
+        }
+        let landing = first + slashes - 1;
+        if last.is_empty() {
+            // The needle ends at a slash: either a segment follows it, or that slash is the path's
+            // own trailing one, which the segment walk drops.
+            if landing <= n {
+                return true;
+            }
+        } else if let Some(segment) = pattern.get(landing) {
+            let hit = match segment {
+                PathSeg::Lit(l) => l.starts_with(last),
+                _ => true,
+            };
+            if hit {
+                return true;
+            }
+        }
+    }
+    false
 }

@@ -32,18 +32,26 @@
 //!
 //! ## The declared claim set seals, and this is where that is measured
 //!
-//! **209 of the cross-plane pairs overlap** — 90 across selector families and 119 within the path
-//! family. Both numbers follow from the overlap rule as the design writes it. Cross-family pairs
-//! overlap conservatively, because a request has both a path and a header and nothing proves they
-//! cannot coincide. Within the path family, a `PathContains` or `PathSuffix` claim overlaps any
-//! other claim on that family, which is stated as the rule and is what makes the reference plane's
-//! protocol-detection ladder — `PathContains("/v1/messages")`, `PathSuffix("/v1/embeddings")` and
-//! the rest — read as colliding with every other plane's mounted routes.
+//! **155 of the cross-plane pairs overlap** — 90 across selector families and 65 within the path
+//! family. Both numbers follow from the overlap rule as the design writes it, and neither is a
+//! rounding of the other.
 //!
-//! All 209 are settled by the sealed order, and none of them is a refusal. That is not the check
-//! being softened: every one of the 209 is a pair whose two claims sit at different precedence, so
+//! The 90 are the conservative arm, and they are conservative because a request really does carry
+//! both a path and a header: `HeaderPresent("x-api-key")` and `ExactPath("/mcp")` can be true of one
+//! arrival, so an overlap is the honest answer rather than a limitation. The 65 are what is left
+//! inside the path family once the grammar reads a suffix and a substring as the segment
+//! constraints they are: a suffix pins a pattern's last segments, a substring carrying slashes asks
+//! for consecutive whole ones, and a pattern with a literal in the way cannot produce a path that
+//! satisfies either. That reading is what took the path-family count from 119 to 65. Of the 65, 23
+//! involve a pattern ending in a tail (which can supply whatever the fragment asks for), 24 are a
+//! fragment landing inside a pattern's variable segment, and 18 are two fragment forms that can be
+//! satisfied at once by writing a path with both. Every one of them is a real shape, not a gap in
+//! the reasoning.
+//!
+//! All 155 are settled by the sealed order, and none of them is a refusal. That is not the check
+//! being softened: every one of the 155 is a pair whose two claims sit at different precedence, so
 //! the order already says which plane takes bytes both describe, and the pair is recorded in
-//! `resolved` with its winner named. The tests below pin the count at 209, the refusal count at
+//! `resolved` with its winner named. The tests below pin the count at 155, the refusal count at
 //! zero and the sealed order itself, so a declaration change that turns a resolved pair into a tie —
 //! the shape nothing can decide — has to say so here. A root that skipped the check to get a node
 //! running would be choosing which plane owns a request by accident of registration order, which is
@@ -461,11 +469,12 @@ mod tests {
     ///
     /// The two numbers come apart deliberately. The cross-family pairs are the conservative arm of
     /// the totality rule: a request has both a path and a header, so nothing proves a header claim
-    /// and a path claim cannot coincide. The same-family pairs are the substantive half — a
-    /// `PathContains` or `PathSuffix` claim overlaps any other claim on the path family, and the
-    /// reference plane's protocol-detection ladder is built out of exactly those two forms.
+    /// and a path claim cannot coincide. The same-family pairs are the substantive half, and they
+    /// are the half a tighter grammar moves: reading a suffix and a substring as the segment
+    /// constraints they are, rather than as fragments that overlap anything, takes them from 119 to
+    /// 65 without ever answering "disjoint" for a pair one arrival satisfies.
     #[test]
-    fn two_hundred_and_nine_cross_plane_pairs_overlap() {
+    fn one_hundred_and_fifty_five_cross_plane_pairs_overlap() {
         use busbar_kernel::grammar::family;
 
         let claims = plane_claims();
@@ -484,10 +493,63 @@ mod tests {
             }
         }
         assert_eq!(cross_family, 90);
-        assert_eq!(same_family, 119);
+        assert_eq!(same_family, 65);
     }
 
-    /// **The finding, answered.** Every one of those 209 overlaps is settled by the sealed order,
+    /// What the 65 path-family overlaps that remain actually ARE, one class at a time.
+    ///
+    /// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
+    /// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
+    /// each remaining pair is put in the class that explains it, and the classes are exhaustive:
+    ///
+    /// * a pattern that ends in a TAIL, against a fragment — the tail can spell whatever the
+    ///   fragment asks for, so a path satisfying both is written by filling the tail in;
+    /// * a pattern with a VARIABLE segment, against a fragment that fits inside one segment — the
+    ///   variable takes any single segment, and a fragment with no slash of its own is one;
+    /// * two FRAGMENT forms — a suffix and a substring — which are satisfied together by writing a
+    ///   path that ends the one way and contains the other.
+    ///
+    /// A pair that fits none of these would be the interesting one: a conservative answer with no
+    /// account of itself. There is none, and the assertion is that there is none.
+    #[test]
+    fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
+        use busbar_contract::grammar::PathSeg;
+        use busbar_kernel::grammar::family;
+
+        let claims = plane_claims();
+        let (mut tail, mut variable, mut fragments) = (0usize, 0usize, 0usize);
+        let ends_in_tail = |s: &Selector| matches!(s, Selector::PathPattern(p) if matches!(p.last(), Some(PathSeg::Tail)));
+        let has_variable = |s: &Selector| matches!(s, Selector::PathPattern(p) if p.iter().any(|g| matches!(g, PathSeg::Var)));
+        let is_fragment =
+            |s: &Selector| matches!(s, Selector::PathSuffix(_) | Selector::PathContains(_));
+
+        for (i, left) in claims.iter().enumerate() {
+            for right in &claims[i + 1..] {
+                if left.plane == right.plane
+                    || !claims_overlap(&left.claim, &right.claim)
+                    || family(&left.claim.selector) != family(&right.claim.selector)
+                {
+                    continue;
+                }
+                let (a, b) = (&left.claim.selector, &right.claim.selector);
+                if ends_in_tail(a) || ends_in_tail(b) {
+                    tail += 1;
+                } else if (has_variable(a) && is_fragment(b)) || (has_variable(b) && is_fragment(a))
+                {
+                    variable += 1;
+                } else if is_fragment(a) && is_fragment(b) {
+                    fragments += 1;
+                } else {
+                    panic!("{a:?} and {b:?} overlap for no reason this file can name");
+                }
+            }
+        }
+        assert_eq!(tail, 23);
+        assert_eq!(variable, 24);
+        assert_eq!(fragments, 18);
+    }
+
+    /// **The finding, answered.** Every one of those 155 overlaps is settled by the sealed order,
     /// and none of them is a refusal.
     ///
     /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
@@ -499,7 +561,7 @@ mod tests {
         let claims = plane_claims();
         let sealed = seal_claims(&claims);
 
-        assert_eq!(sealed.resolved.len(), 209);
+        assert_eq!(sealed.resolved.len(), 155);
         assert!(
             sealed.refused.is_empty(),
             "the declared claims do not seal: {:?}",

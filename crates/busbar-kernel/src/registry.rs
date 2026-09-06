@@ -25,9 +25,7 @@
 
 use std::sync::Arc;
 
-use busbar_contract::grammar::one_level_under;
-
-use crate::grammar::{Segment, Selector, SelectorFamily};
+use crate::grammar::{Selector, SelectorFamily};
 
 /// Which generation of the registry a lookup is against.
 ///
@@ -482,31 +480,16 @@ fn header_overlaps(left: &Selector, right: &Selector) -> bool {
     }
 }
 
-/// Path forms. Exact against exact is equality; a pattern is walked segment by segment, where a
-/// variable overlaps any literal and a tail overlaps any remaining suffix; anything involving a
-/// suffix or a "contains" fragment overlaps conservatively, because a path that satisfies both
-/// always exists.
+/// Path forms, as the contract decides them.
+///
+/// The rule is READ here rather than spelled a second time. It used to be transcribed — the same
+/// arms, one crate down — and a transcription is exactly where a boot that proves two claims
+/// disjoint and a request that matches both come apart: the contract is what a plane writes its
+/// claims in, so the contract's reading is the one the declaration means. What the kernel keeps of
+/// the path question is what the contract has no business knowing: how specific one selector is
+/// against another, which is the precedence order and not part of what a selector IS.
 fn path_overlaps(left: &Selector, right: &Selector) -> bool {
-    match (left, right) {
-        (Selector::ExactPath(a), Selector::ExactPath(b)) => a == b,
-        (Selector::ExactPath(p), Selector::PrefixOneLevel(prefix))
-        | (Selector::PrefixOneLevel(prefix), Selector::ExactPath(p)) => one_level_under(prefix, p),
-        (Selector::PrefixOneLevel(a), Selector::PrefixOneLevel(b)) => a == b,
-        (Selector::ExactPath(p), Selector::PathPattern(pattern))
-        | (Selector::PathPattern(pattern), Selector::ExactPath(p)) => pattern_matches(pattern, p),
-        (Selector::PathPattern(a), Selector::PathPattern(b)) => patterns_overlap(a, b),
-        (Selector::PrefixOneLevel(prefix), Selector::PathPattern(pattern))
-        | (Selector::PathPattern(pattern), Selector::PrefixOneLevel(prefix)) => {
-            patterns_overlap(pattern, &one_level_pattern(prefix))
-        }
-        (Selector::PathSuffix(a), Selector::PathSuffix(b)) => a.ends_with(b) || b.ends_with(a),
-        (Selector::PathSuffix(s), Selector::ExactPath(p))
-        | (Selector::ExactPath(p), Selector::PathSuffix(s)) => p.ends_with(s),
-        (Selector::PathContains(c), Selector::ExactPath(p))
-        | (Selector::ExactPath(p), Selector::PathContains(c)) => p.contains(c),
-        // Fragment forms against pattern forms: a path satisfying both can always be written.
-        _ => true,
-    }
+    left.overlaps(right)
 }
 
 /// Transport forms: same form compares its value, different forms coincide.
@@ -518,57 +501,6 @@ fn transport_overlaps(left: &Selector, right: &Selector) -> bool {
         | (Selector::Alpn(a), Selector::Alpn(b)) => a == b,
         (Selector::Port(a), Selector::Port(b)) => a == b,
         _ => true,
-    }
-}
-
-/// A one-level prefix as the pattern it is: the prefix's literals, then one variable.
-fn one_level_pattern(prefix: &'static str) -> Vec<Segment> {
-    let mut segments: Vec<Segment> = split_path(prefix).map(Segment::Lit).collect();
-    segments.push(Segment::Var);
-    segments
-}
-
-/// Split a path into its non-empty segments.
-fn split_path(path: &str) -> impl Iterator<Item = &str> {
-    path.split('/').filter(|s| !s.is_empty())
-}
-
-/// Does the pattern match this concrete path?
-fn pattern_matches(pattern: &[Segment], path: &str) -> bool {
-    let segments: Vec<&str> = split_path(path).collect();
-    let mut i = 0usize;
-    for (position, segment) in pattern.iter().enumerate() {
-        match segment {
-            Segment::Tail => return position == pattern.len() - 1,
-            Segment::Var => {
-                if i >= segments.len() {
-                    return false;
-                }
-                i += 1;
-            }
-            Segment::Lit(lit) => {
-                if segments.get(i) != Some(lit) {
-                    return false;
-                }
-                i += 1;
-            }
-        }
-    }
-    i == segments.len()
-}
-
-/// Could one path satisfy both patterns? Per segment: a variable overlaps any literal, two
-/// literals must be equal, and a tail overlaps whatever is left, including nothing.
-fn patterns_overlap(left: &[Segment], right: &[Segment]) -> bool {
-    let mut i = 0usize;
-    loop {
-        match (left.get(i), right.get(i)) {
-            (None, None) => return true,
-            (Some(Segment::Tail), _) | (_, Some(Segment::Tail)) => return true,
-            (None, Some(_)) | (Some(_), None) => return false,
-            (Some(Segment::Lit(a)), Some(Segment::Lit(b))) if a != b => return false,
-            _ => i += 1,
-        }
     }
 }
 

@@ -164,7 +164,10 @@ fn a_one_level_prefix_and_a_pattern_are_compared_segment_by_segment() {
         PathSeg::Var,
     ])));
     // A tail swallows whatever is left, so it reaches one level down as well.
-    assert!(prefix.overlaps(&Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Tail])));
+    assert!(prefix.overlaps(&Selector::PathPattern(&[
+        PathSeg::Lit("a2a"),
+        PathSeg::Tail
+    ])));
 }
 
 /// Two suffixes collide only when one of them ends the other.
@@ -185,11 +188,8 @@ fn two_suffixes_collide_only_when_one_ends_the_other() {
 /// however the rest of it is filled in.
 #[test]
 fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
-    let a2a_tasks = Selector::PathPattern(&[
-        PathSeg::Lit("a2a"),
-        PathSeg::Lit("tasks"),
-        PathSeg::Var,
-    ]);
+    let a2a_tasks =
+        Selector::PathPattern(&[PathSeg::Lit("a2a"), PathSeg::Lit("tasks"), PathSeg::Var]);
     // `/a2a/tasks/<id>` has three segments and the last two are `tasks` and one variable: no path
     // it matches can end `/v1/embeddings`, because that would need the second-from-last segment to
     // be `v1`.
@@ -213,11 +213,13 @@ fn a_suffix_against_a_pattern_pins_the_patterns_last_segments() {
     assert!(!Selector::PathSuffix("/v1/audio/speech")
         .overlaps(&Selector::PathPattern(&[PathSeg::Var, PathSeg::Var])));
     // And the whole-path alignment: the suffix may start at the leading slash itself.
-    assert!(Selector::PathSuffix("/v1/audio/speech").overlaps(&Selector::PathPattern(&[
-        PathSeg::Lit("v1"),
-        PathSeg::Lit("audio"),
-        PathSeg::Var,
-    ])));
+    assert!(
+        Selector::PathSuffix("/v1/audio/speech").overlaps(&Selector::PathPattern(&[
+            PathSeg::Lit("v1"),
+            PathSeg::Lit("audio"),
+            PathSeg::Var,
+        ]))
+    );
 }
 
 /// A substring against a pattern, decided rather than assumed.
@@ -244,10 +246,12 @@ fn a_substring_against_a_pattern_asks_for_consecutive_segments() {
     assert!(!Selector::PathContains("/a2a/agents/x/y").overlaps(&a2a_agents));
 
     // A tail answers anything.
-    assert!(Selector::PathContains("/v1/audio/").overlaps(&Selector::PathPattern(&[
-        PathSeg::Lit("api"),
-        PathSeg::Tail
-    ])));
+    assert!(
+        Selector::PathContains("/v1/audio/").overlaps(&Selector::PathPattern(&[
+            PathSeg::Lit("api"),
+            PathSeg::Tail
+        ]))
+    );
 }
 
 /// Fixture per pair within the header family.
