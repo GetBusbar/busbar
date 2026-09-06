@@ -7,13 +7,10 @@
 //! ## The one shape worth reading before the code
 //!
 //! The intermediate representation the contract asks a plane to build carries the body AND the
-//! resolved pointer spans. The arena a plane is handed allocates bytes and strings, and nothing
-//! else, so a plane cannot put a table of spans into it and hand back a borrow that lives as long as
-//! the unit. Every draft below therefore carries the body with an EMPTY span table, and everything
-//! this plane read is reported as a fact or as a span on the admit facts, both of which are
-//! by-value. The kernel's own scanner is what resolves pointers over the body. That is a finding
-//! about the contract's allocator, not a decision taken here, and it is written down in the crate's
-//! notes.
+//! resolved pointer spans, and `view` builds both: it resolves the pointers this plane declares
+//! through the contract's own span grammar and allocates the resulting table in the unit's arena,
+//! so every draft below hands the loop a body the kernel does not have to re-walk. The plane once
+//! handed back an empty table because the arena could not allocate one; it can, and this does.
 
 use busbar_contract::bounded::{ArenaBytes, BoundedVec, FactValue, Facts, Ir, Span};
 use busbar_contract::dest::{DestinationFacts, EgressBody, Leg, RoutePlan, VerifiedDestination};

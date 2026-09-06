@@ -29,8 +29,12 @@ struct Decoded<'u> {
     params: Vec<(&'static str, &'u str)>,
 }
 
-/// Identify which of the table's verbs a decoded body names, by re-scanning its `method`/`path`
-/// fields. See the module doc comment for why this is a fresh scan rather than a cached fact.
+/// Identify which of the table's verbs a body names, from its `method`/`path` members.
+///
+/// Called ONCE, at `decode_ingress`, which writes the verb it resolved into the draft's fact map;
+/// every later step reads it back off `Unit::draft_facts()` rather than scanning again. See the
+/// module doc comment: decode is the step entitled to read the bytes, and a second reading of one
+/// closed grammar is a second reading that can drift.
 fn identify<'u>(bytes: &'u [u8]) -> Option<Decoded<'u>> {
     // The envelope's two members are the request line's two structural values, so they are named
     // with the kernel's own reserved keys rather than with this crate's guess at their spelling.
