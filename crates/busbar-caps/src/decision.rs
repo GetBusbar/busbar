@@ -65,7 +65,7 @@ use crate::step::{Step, StepName};
 use crate::token::{KernelSeal, UnitToken};
 
 macro_rules! reasons {
-    ($($(#[$doc:meta])* $name:ident => $wire:literal,)*) => {
+    ($($(#[$doc:meta])* $name:ident => $wire:literal, $refusal:ident,)*) => {
         /// Why a unit was stopped. A closed vocabulary: the wire may render whatever a dialect
         /// renders, but the reason a unit ended is one of these and nothing else, so the journal,
         /// the refusal and the disputes report all name the same thing.
@@ -90,166 +90,120 @@ macro_rules! reasons {
                 }
             }
         }
+
+        // The one bridge from the kernel's reason vocabulary to the contract's spelling of it.
+        //
+        // The kernel decides in `ReasonCode` and the plane is handed a `RefusalReason` to render,
+        // so without a written-down join the two sides drift: a reason with no spelling on the far
+        // side reaches a client as whatever the nearest arm said, and the same reason spelled two
+        // ways on the two sides is the same defect wearing a different name. The join is the third
+        // column of the table above, so a reason added to the vocabulary does not compile until a
+        // client can be told about it, and this crate's own tests walk `ReasonCode::ALL` to check
+        // the mapping is injective -- two reasons that render as one spelling are two refusals
+        // nothing can tell apart.
+        impl From<ReasonCode> for busbar_contract::unit::RefusalReason {
+            fn from(code: ReasonCode) -> Self {
+                match code {
+                    $(ReasonCode::$name => busbar_contract::unit::RefusalReason::$refusal,)*
+                }
+            }
+        }
     };
 }
 
 reasons! {
     /// The in-flight table is full.
-    InFlightCap => "in_flight_cap",
+    InFlightCap => "in_flight_cap", InFlightCap,
     /// The node-global connection-cursor budget is exhausted.
-    CursorBudget => "cursor_budget",
+    CursorBudget => "cursor_budget", CursorBudget,
     /// The per-connection credential slab could not hold the credential span.
-    CredentialBudget => "credential_budget",
+    CredentialBudget => "credential_budget", CredentialBudget,
     /// The node-global session budget is exhausted.
-    SessionBudget => "session_budget",
+    SessionBudget => "session_budget", SessionBudget,
     /// The node-global body-spill budget is exhausted.
-    SpillBudget => "spill_budget",
+    SpillBudget => "spill_budget", SpillBudget,
     /// The per-unit arena is exhausted.
-    ArenaBudget => "arena_budget",
+    ArenaBudget => "arena_budget", ArenaBudget,
     /// The source is over its arrival rate.
-    RateLimited => "rate_limited",
+    RateLimited => "rate_limited", RateLimited,
     /// The request body is larger than the configured maximum.
-    BodyTooLarge => "body_too_large",
+    BodyTooLarge => "body_too_large", BodyTooLarge,
     /// The direction already has an open unit.
-    OpenSlotBusy => "open_slot_busy",
+    OpenSlotBusy => "open_slot_busy", OpenSlotBusy,
     /// The plane could not make sense of the bytes.
-    DecodeFailed => "decode_failed",
+    DecodeFailed => "decode_failed", DecodeFailed,
     /// The plane narrowed to an auth scheme its claim never declared.
-    SchemeNotDeclared => "scheme_not_declared",
+    SchemeNotDeclared => "scheme_not_declared", SchemeNotDeclared,
     /// The session is unbound, so a credential cannot be taken from it.
-    SessionUnbound => "session_unbound",
+    SessionUnbound => "session_unbound", SessionUnbound,
     /// No credential resolved to a principal.
-    Unauthenticated => "unauthenticated",
+    Unauthenticated => "unauthenticated", CredentialRejected,
     /// The challenge exchange ran past its round or byte bound.
-    ChallengeExhausted => "challenge_exhausted",
+    ChallengeExhausted => "challenge_exhausted", ChallengeExhausted,
     /// The credential was revoked.
-    Revoked => "revoked",
+    Revoked => "revoked", Revoked,
     /// The principal lacks the scope the operation requires.
-    ScopeDenied => "scope_denied",
+    ScopeDenied => "scope_denied", ScopeMissing,
     /// The principal is not permitted to reach the pool it named. Distinct from a plain scope
     /// denial: the ladder answers this one before it asks about pricing at all, and the two carry
     /// different statuses on the wire, so collapsing them would make two refusals indistinguishable
     /// to anything reading the record.
-    PoolNotPermitted => "pool_not_permitted",
+    PoolNotPermitted => "pool_not_permitted", PoolNotPermitted,
     /// The name the caller supplied has no configured rate. A bad request rather than an exhausted
     /// one: nothing is wrong with the caller's budget, the name simply cannot be billed. Modelled
     /// as its own reason rather than as the absence of a gate, so the record can say which of the
     /// two a refusal was.
-    NoRate => "no_rate",
+    NoRate => "no_rate", NoRate,
     /// A hook vetoed the unit.
-    HookVeto => "hook_veto",
+    HookVeto => "hook_veto", Vetoed,
     /// No destination survived verification.
-    NoDestination => "no_destination",
+    NoDestination => "no_destination", NoDestination,
     /// A budget in the principal's chain has no headroom.
-    OverBudget => "over_budget",
+    OverBudget => "over_budget", OverBudget,
     /// The principal's group is frozen.
-    GroupFrozen => "group_frozen",
+    GroupFrozen => "group_frozen", GroupFrozen,
     /// A meter class the present rate card does not price.
-    Unpriced => "unpriced",
+    Unpriced => "unpriced", Unpriced,
     /// The overdraft ceiling on a capped bucket is reached.
-    OverdraftCeiling => "overdraft_ceiling",
+    OverdraftCeiling => "overdraft_ceiling", OverdraftCeiling,
     /// The node's slice of the bucket window is behind the current epoch.
-    StaleSlice => "stale_slice",
+    StaleSlice => "stale_slice", StaleSlice,
     /// The journal cannot be written durably.
-    DurabilityUnavailable => "durability_unavailable",
+    DurabilityUnavailable => "durability_unavailable", DurabilityUnavailable,
     /// Two buckets in one chain disagree about the tier multiplier.
-    TierMismatch => "tier_mismatch",
+    TierMismatch => "tier_mismatch", TierMismatch,
     /// The idempotency key was already used; the earlier answer is replayed.
-    Replayed => "replayed",
+    Replayed => "replayed", Replayed,
     /// The idempotency key belongs to a unit still in flight.
-    InFlight => "in_flight",
+    InFlight => "in_flight", InFlight,
     /// The destination spent its lifetime request budget.
-    DestinationBudgetExhausted => "destination_budget_exhausted",
+    DestinationBudgetExhausted => "destination_budget_exhausted", DestinationBudgetExhausted,
     /// The circuit breaker for the destination is open.
-    BreakerOpen => "breaker_open",
+    BreakerOpen => "breaker_open", BreakerOpen,
     /// The destination could not be reached.
-    DestinationUnreachable => "destination_unreachable",
+    DestinationUnreachable => "destination_unreachable", DestinationUnreachable,
     /// Two evidence sources for the same unit disagree.
-    MeterDisputed => "meter_disputed",
+    MeterDisputed => "meter_disputed", MeterDisputed,
     /// A layer offered a handoff the layer adopting it does not compose over, or handed up a stream
     /// it cannot adopt. Its own reason rather than a framing failure: nothing was wrong with the
     /// bytes, the two legs simply did not agree on what they were doing.
-    HandoffMismatch => "handoff_mismatch",
+    HandoffMismatch => "handoff_mismatch", HandoffMismatch,
     /// A plane call panicked.
-    PlanePanic => "plane_panic",
+    PlanePanic => "plane_panic", PlanePanic,
     /// The task running the unit disappeared without an end.
-    TaskLost => "task_lost",
+    TaskLost => "task_lost", TaskLost,
     /// The unit made no progress within its deadline.
-    Stalled => "stalled",
+    Stalled => "stalled", Stalled,
     /// A minted secret placeholder did not appear exactly once at its declared location.
-    SecretPlaceholder => "secret_placeholder",
+    SecretPlaceholder => "secret_placeholder", SecretPlaceholder,
     /// The node is draining.
-    Drain => "drain",
+    Drain => "drain", Drain,
     /// A later unit superseded this one.
-    Superseded => "superseded",
+    Superseded => "superseded", Superseded,
     /// The client went away.
-    ClientGone => "client_gone",
+    ClientGone => "client_gone", ClientGone,
     /// The unit ran past its maximum duration.
-    DeadlineExceeded => "deadline_exceeded",
-}
-
-/// The one bridge from the kernel's reason vocabulary to the contract's spelling of it.
-///
-/// The kernel decides in `ReasonCode` and the plane is handed a `RefusalReason` to render, so
-/// without a written-down join the two sets drift: a reason with no spelling on the far side
-/// reaches a client as whatever the nearest arm said, and the same reason spelled two ways on the
-/// two sides is the same defect wearing a different name. The match is exhaustive and has no
-/// fallback arm, so a reason added to the vocabulary above does not compile until a client can be
-/// told about it, and `busbar-caps`'s own tests walk `ReasonCode::ALL` to check the mapping is
-/// injective — two reasons that render as one spelling are two refusals nothing can tell apart.
-impl From<ReasonCode> for busbar_contract::unit::RefusalReason {
-    fn from(code: ReasonCode) -> Self {
-        use busbar_contract::unit::RefusalReason as R;
-        match code {
-            // The reasons both sides already named, keeping each side's existing spelling: these
-            // are what a client sees today, and the wording is not this bridge's to change.
-            ReasonCode::InFlightCap => R::InFlightCap,
-            ReasonCode::CursorBudget => R::CursorBudget,
-            ReasonCode::CredentialBudget => R::CredentialBudget,
-            ReasonCode::SessionBudget => R::SessionBudget,
-            ReasonCode::BodyTooLarge => R::BodyTooLarge,
-            ReasonCode::OpenSlotBusy => R::OpenSlotBusy,
-            ReasonCode::SchemeNotDeclared => R::SchemeNotDeclared,
-            ReasonCode::SessionUnbound => R::SessionUnbound,
-            ReasonCode::Revoked => R::Revoked,
-            ReasonCode::NoDestination => R::NoDestination,
-            ReasonCode::OverBudget => R::OverBudget,
-            ReasonCode::GroupFrozen => R::GroupFrozen,
-            ReasonCode::Unpriced => R::Unpriced,
-            ReasonCode::OverdraftCeiling => R::OverdraftCeiling,
-            ReasonCode::StaleSlice => R::StaleSlice,
-            ReasonCode::DurabilityUnavailable => R::DurabilityUnavailable,
-            ReasonCode::TierMismatch => R::TierMismatch,
-            // The three the two sides named differently. One thing, two spellings, and this is
-            // where they are joined rather than in each renderer's head.
-            ReasonCode::Unauthenticated => R::CredentialRejected,
-            ReasonCode::ScopeDenied => R::ScopeMissing,
-            ReasonCode::HookVeto => R::Vetoed,
-            // The reasons that had no spelling a client could be shown at all.
-            ReasonCode::SpillBudget => R::SpillBudget,
-            ReasonCode::ArenaBudget => R::ArenaBudget,
-            ReasonCode::RateLimited => R::RateLimited,
-            ReasonCode::DecodeFailed => R::DecodeFailed,
-            ReasonCode::ChallengeExhausted => R::ChallengeExhausted,
-            ReasonCode::PoolNotPermitted => R::PoolNotPermitted,
-            ReasonCode::NoRate => R::NoRate,
-            ReasonCode::Replayed => R::Replayed,
-            ReasonCode::InFlight => R::InFlight,
-            ReasonCode::DestinationBudgetExhausted => R::DestinationBudgetExhausted,
-            ReasonCode::BreakerOpen => R::BreakerOpen,
-            ReasonCode::DestinationUnreachable => R::DestinationUnreachable,
-            ReasonCode::MeterDisputed => R::MeterDisputed,
-            ReasonCode::HandoffMismatch => R::HandoffMismatch,
-            ReasonCode::PlanePanic => R::PlanePanic,
-            ReasonCode::TaskLost => R::TaskLost,
-            ReasonCode::Stalled => R::Stalled,
-            ReasonCode::SecretPlaceholder => R::SecretPlaceholder,
-            ReasonCode::Drain => R::Drain,
-            ReasonCode::Superseded => R::Superseded,
-            ReasonCode::ClientGone => R::ClientGone,
-            ReasonCode::DeadlineExceeded => R::DeadlineExceeded,
-        }
-    }
+    DeadlineExceeded => "deadline_exceeded", DeadlineExceeded,
 }
 
 impl std::fmt::Display for ReasonCode {
