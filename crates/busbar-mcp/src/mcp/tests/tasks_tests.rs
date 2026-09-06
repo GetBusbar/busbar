@@ -450,3 +450,31 @@ fn the_detached_runner_discloses_its_frozen_principal_and_the_bound_it_trades_on
         "the freeze is no longer disclosed as a freeze"
     );
 }
+
+/// ONE TASK'S ANSWER MAP IS BOUNDED. `tasks/update` is repeatable by design, and every call used to
+/// insert every key it carried into a map that only ever grew — so one task id was an unbounded
+/// allocation a caller could drive with invented keys, inside a row the retention sweep will not
+/// drop while the task is active. `MAX_RETAINED_TASKS` bounds how MANY tasks exist and says nothing
+/// about how large one is.
+#[test]
+fn a_tasks_answer_map_stops_growing_at_its_ceiling_and_still_accepts_a_re_answer() {
+    let task = TASKS.create("key-bound", busbar_substrate::store::now_ms());
+    for i in 0..(MAX_TASK_ANSWERS * 4) {
+        let mut responses = serde_json::Map::new();
+        responses.insert(format!("invented_{i}"), serde_json::json!(i));
+        task.deliver(&responses, busbar_substrate::store::now_ms());
+    }
+    assert_eq!(
+        task.answers().len(),
+        MAX_TASK_ANSWERS,
+        "a caller inventing keys must not be able to grow one task's map past its ceiling"
+    );
+
+    // AND A KEY ALREADY PRESENT IS STILL AN UPDATE. Re-answering a round has to keep working at the
+    // ceiling, or the bound would break the exchange it exists to protect.
+    let mut again = serde_json::Map::new();
+    again.insert("invented_0".into(), serde_json::json!("second answer"));
+    task.deliver(&again, busbar_substrate::store::now_ms());
+    assert_eq!(task.answers()["invented_0"], "second answer");
+    assert_eq!(task.answers().len(), MAX_TASK_ANSWERS);
+}
