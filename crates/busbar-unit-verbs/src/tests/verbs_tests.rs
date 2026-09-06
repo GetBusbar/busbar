@@ -1348,6 +1348,64 @@ fn an_unbound_integrator_serves_no_view_rather_than_an_empty_one() {
     }
 }
 
+/// THE TWO MINTING VERBS ARE REFUSED ON THE GENERIC PATH, IN EVERY BUILD.
+///
+/// `create_key`/`rotate_key` have dedicated methods because they are the two operations with a
+/// replay cache: a retry inside the window must return the first response rather than mint a second
+/// credential. The generic dispatcher has none of that, so a caller that routes either verb through
+/// it hands the mint straight to the legacy catch-all and every retry mints again — a fresh admin
+/// credential per network hiccup, none of which the client asked for and only the last of which it
+/// sees.
+///
+/// A `debug_assert` said so in debug builds and said nothing in a release binary, which is the one
+/// build where it matters. The refusal is the same answer every other unresolvable precondition in
+/// this crate gets, and it is the same one in both profiles.
+#[test]
+fn the_two_minting_verbs_are_refused_on_the_generic_dispatcher_rather_than_double_minting() {
+    let admin = admin();
+    let log: SeamLog = std::sync::Arc::new(Mutex::new(Vec::new()));
+    let verbs = make_verbs(RoutingGovernance(std::sync::Arc::clone(&log)));
+
+    for verb in [KernelVerb::PostKeys, KernelVerb::PostKeysIdRotate] {
+        let Err(err) = verbs.execute(
+            verb,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        ) else {
+            panic!("{verb:?} must not be served by the generic dispatcher");
+        };
+        assert_eq!(err.reason, crate::refusal::ReasonCode::Internal);
+        assert_eq!(err.step, crate::refusal::RefusalStep::Admit);
+    }
+    assert!(
+        log.lock().unwrap().is_empty(),
+        "a minting verb reached a governance seam through the generic path"
+    );
+
+    // The control: another legacy mutation on the same executor still reaches the legacy seam.
+    verbs
+        .execute(
+            KernelVerb::PostGroups,
+            &admin,
+            "alice",
+            VerbScope::Full,
+            0,
+            None,
+            ApprovalState::NotYetApproved,
+            b"{}",
+        )
+        .expect("an ordinary legacy mutation is still served");
+    assert_eq!(
+        log.lock().unwrap().clone(),
+        vec![(KernelVerb::PostGroups, "legacy")]
+    );
+}
+
 /// The two 1.6.0 verbs the design binds as GETs are reads, and a read-only credential is what they
 /// ask for.
 ///

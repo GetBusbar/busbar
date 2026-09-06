@@ -406,6 +406,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     /// The generic dispatcher for every other verb: every legacy operation but the two above, the
     /// 17 new verbs (posture-gated), and nothing else — a caller for `PostKeys`/`PostKeysIdRotate`
     /// or a named surface must use the dedicated method / must not call this crate at all.
+    /// `PostKeys` and `PostKeysIdRotate` are refused here rather than served, because this path
+    /// carries none of the replay machinery their own methods do.
     #[allow(clippy::too_many_arguments)]
     pub fn execute(
         &self,
@@ -418,10 +420,14 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         approval: ApprovalState,
         request: &[u8],
     ) -> Result<Vec<u8>, Refusal> {
-        debug_assert!(
-            verb != KernelVerb::PostKeys && verb != KernelVerb::PostKeysIdRotate,
-            "create_key/rotate_key have dedicated methods with their own idempotency handling"
-        );
+        // The two minting verbs are REFUSED here, in every build, rather than asserted against in
+        // one of them. This path has no replay cache: routed through it, a mint reaches the legacy
+        // catch-all and a retry inside the idempotency window mints a second admin credential the
+        // client never asked for and will never see. A `debug_assert` said so in a debug build and
+        // said nothing in a release binary, which is the build where a miswired caller ships.
+        if verb == KernelVerb::PostKeys || verb == KernelVerb::PostKeysIdRotate {
+            return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Internal));
+        }
         self.admit(verb, actor, granted, now)?;
         // A ledger view is answered BEFORE the new-verb branch, and the ordering is the whole of
         // its posture: it never reaches `check_new_verb_admission`, because there is no mutation
