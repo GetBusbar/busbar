@@ -213,6 +213,82 @@ async fn byte_at_a_time_delivery_segments_identically_to_one_shot_delivery() {
     );
 }
 
+/// An upstream that streams events and never closes delivers them as they arrive.
+///
+/// This is the composition claim itself. `sse` re-segments the bytes `http` hands it, so whatever
+/// `http` withholds until the upstream closes, `sse` cannot segment until then either: an event
+/// stream would deliver zero frames until close, and one that never closes would deliver nothing
+/// ever. Nothing about `sse`'s own re-segmentation can rescue that, which is why the cell lives
+/// here as well as next door — this is where the shape is actually used.
+#[tokio::test]
+async fn a_never_closing_event_stream_delivers_its_events_as_they_arrive() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.unwrap();
+        let mut buf = [0_u8; 4096];
+        let _ = tokio::io::AsyncReadExt::read(&mut stream, &mut buf).await;
+        tokio::io::AsyncWriteExt::write_all(
+            &mut stream,
+            b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n",
+        )
+        .await
+        .unwrap();
+        // One event every 100ms, and no terminal chunk ever: the stream does not end.
+        for i in 0.. {
+            let event = format!("data: {{\"n\":{i}}}\n\n");
+            let mut piece = format!("{:x}\r\n", event.len()).into_bytes();
+            piece.extend_from_slice(event.as_bytes());
+            piece.extend_from_slice(b"\r\n");
+            if tokio::io::AsyncWriteExt::write_all(&mut stream, &piece)
+                .await
+                .is_err()
+            {
+                return;
+            }
+            let _ = tokio::io::AsyncWriteExt::flush(&mut stream).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    });
+
+    let uri = format!("http://{addr}/");
+    let http = std::sync::Arc::new(HttpTransport::new(ClientSettings::default()));
+    let sse = SseTransport::new(http);
+    let conn = sse
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        sse.write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        ),
+    )
+    .await
+    .expect("the request answers on the response head, not on the upstream's close")
+    .unwrap();
+
+    let mut frames = sse.frames(conn);
+    for i in 0..2 {
+        let (_s, frame) = tokio::time::timeout(std::time::Duration::from_secs(2), frames.next())
+            .await
+            .expect("an event arrives while the upstream is still streaming")
+            .unwrap()
+            .unwrap();
+        let (event, data) = proto::parse_sse_frame(frame.bytes.as_slice()).unwrap();
+        assert_eq!(event, "");
+        assert_eq!(data, format!("{{\"n\":{i}}}"));
+        assert_eq!(
+            frame.meta.status.is_some(),
+            i == 0,
+            "the inherited status leg rides the first response frame only"
+        );
+    }
+    server.abort();
+}
+
 /// An upstream that never ends a frame is refused at the cursor budget, not accumulated forever.
 ///
 /// Upstream response bytes are untrusted input, and unlike the request body there is no cap one

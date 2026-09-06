@@ -1141,7 +1141,11 @@ fn the_egress_chunked_body_is_decoded_once_across_many_write_calls() {
     let done = complete_message(&buffered, &mut cache, usize::MAX)
         .unwrap()
         .expect("the terminal chunk completes the message");
-    assert_eq!(done.body.len(), CALLS * 16, "the body is decoded byte-exact");
+    assert_eq!(
+        done.body.len(),
+        CALLS * 16,
+        "the body is decoded byte-exact"
+    );
 
     let fed = cache.feeds;
     assert!(
