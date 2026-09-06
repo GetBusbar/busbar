@@ -798,6 +798,24 @@ impl VoiceNode {
         }
     }
 
+    /// Resolve one caller's chain against the configured tree — once, at the session's open.
+    ///
+    /// The one place on this plane a chain is built. The session keeps what comes back and lends it
+    /// to every turn, so the walk of the group tree and the bucket ids it owns are paid for once per
+    /// conversation rather than once per frame.
+    ///
+    /// `None` is the caller bound to a group this node's configuration does not have: fail-closed,
+    /// and the unit lent no chain refuses. A caller bound to no group at all is `Some` — a chain of
+    /// one uncapped attribution bucket, which is what a deployment with no `groups:` section has.
+    #[must_use]
+    pub fn chain_for(
+        &self,
+        principal: &PrincipalId,
+        group: Option<&str>,
+    ) -> Option<busbar_unit_admission::BucketChain> {
+        self.groups.chain_for(principal.as_str(), group).ok()
+    }
+
     /// The next reading of the node's monotonic clock.
     fn tick(&self) -> u64 {
         self.mono.fetch_add(1, Ordering::AcqRel)
@@ -999,12 +1017,20 @@ pub struct VoiceUnit<'n> {
     pub from_session: bool,
     /// The dialect the decode step named.
     pub dialect: Dialect,
-    /// The group this session's caller charges through, as the deployment bound its key.
+    /// The buckets this session's caller is judged and charged against: its own attribution bucket,
+    /// then the group its key is bound to, then that group's parent, to the root.
     ///
-    /// A session-long fact rather than a per-turn one: the key is presented once, at the open, and
-    /// every turn of the session charges the same chain. `None` is the ordinary posture for a
-    /// deployment with no `groups:` section — authenticated, attributed, and under no group's cap.
-    pub group: Option<String>,
+    /// BORROWED, and a session-long fact rather than a per-turn one. The key is presented once, at
+    /// the open, so the chain it resolves to is settled before the first turn and cannot change
+    /// under the session; resolving it per turn would put a fresh vector of owned bucket ids on the
+    /// door's path for every frame of a live conversation, which is the one place on this plane
+    /// where per-unit work is per-frame work.
+    ///
+    /// `None` is the fail-closed arm and NOT the uncapped one: it is a caller bound to a group this
+    /// node's configuration does not have, whose caps therefore could not be read. A caller bound
+    /// to no group at all has a perfectly good chain of one uncapped attribution bucket, and gets
+    /// it.
+    pub chain: Option<&'n busbar_unit_admission::BucketChain>,
     /// What the turn reported, once the upstream reported it.
     pub usage: TurnUsage,
     /// The identifier a tool call's answer must carry, as the plane's draft minted it.
@@ -1075,7 +1101,7 @@ impl<'n> VoiceUnit<'n> {
             grants: Grants::of(Scope::Full),
             from_session: shape != UnitShape::SessionOpen,
             dialect: Dialect::OpenaiRealtime,
-            group: None,
+            chain: None,
             usage: TurnUsage::default(),
             call_id: None,
             now_ms: 0,
@@ -1107,34 +1133,16 @@ impl<'n> VoiceUnit<'n> {
         self
     }
 
-    /// The group this unit's caller charges through.
+    /// The chain this unit's caller charges through, as the session resolved it at the open.
     ///
-    /// Carried in rather than looked up here, for the reason every other fact on this struct is:
-    /// which group a key belongs to is the governance state's answer, decided before the first step
-    /// runs, and a step that resolved it would be a step deciding its own input.
+    /// Carried in rather than resolved here, for the reason every other fact on this struct is:
+    /// which buckets a key charges is settled before the first step runs, and a step that resolved
+    /// it would be a step deciding its own input — once per frame, for an answer that is the same
+    /// every time.
     #[must_use]
-    pub fn charging_through(mut self, group: impl Into<String>) -> Self {
-        self.group = Some(group.into());
+    pub fn charging_through(mut self, chain: &'n busbar_unit_admission::BucketChain) -> Self {
+        self.chain = Some(chain);
         self
-    }
-
-    /// The buckets this unit is judged and charged against: the caller's own attribution bucket,
-    /// then the group it charges through, then that group's parent, to the root.
-    ///
-    /// The same walk and the same precedence the shipped plane's door uses, over the table the root
-    /// resolved from the deployment's `groups:` section. The attribution bucket carries no caps and
-    /// never blocks; it is charged on every admission so a deployment with no groups still has one
-    /// figure per principal.
-    ///
-    /// # Errors
-    ///
-    /// The caller is bound to a group this node's configuration does not have. Fail-closed: caps
-    /// that cannot be read cannot be enforced, so nothing is admitted under them.
-    fn chain(
-        &self,
-        principal: &str,
-    ) -> Result<busbar_unit_admission::BucketChain, busbar_unit_admission::MissingGroup> {
-        self.node.groups.chain_for(principal, self.group.as_deref())
     }
 
     /// What the turn reported.
@@ -1254,13 +1262,12 @@ impl<'n> VoiceUnit<'n> {
     /// decision and cannot become one: zero means the reservation does not grow and the rest of the
     /// turn is carried as an overdraft, which is a turn that still runs.
     ///
-    /// Read off the session's own chain, so a turn grows into the window its group actually has
-    /// left rather than into an unbounded one. Only a bucket carrying a budget cap answers a
-    /// headroom, and the principal's attribution bucket carries none by construction — which is why
-    /// this reading needs the group and not the principal's name. A group this node cannot read is
-    /// zero, the same fail-closed direction the door takes.
+    /// Read off the session's own chain — the same value the door was judged against, not a second
+    /// copy of it — so a turn grows into the window its group actually has left rather than into an
+    /// unbounded one. A caller whose caps could not be read is zero, the same fail-closed direction
+    /// the door takes.
     fn headroom_nanos(&self) -> u64 {
-        let Ok(chain) = self.chain("") else {
+        let Some(chain) = self.chain else {
             return 0;
         };
         let door = self.node.door.lock().unwrap_or_else(|e| e.into_inner());
@@ -1270,7 +1277,7 @@ impl<'n> VoiceUnit<'n> {
             self.dialect.name(),
             self.epoch,
         )
-        .headroom_nanos(&chain)
+        .headroom_nanos(chain)
     }
 
     /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
@@ -1479,8 +1486,9 @@ impl Units for VoiceUnit<'_> {
         let estimate = self.estimate();
         // The chain the deployment configured, not an empty one. An empty chain is a yes from every
         // cap at once: no gauge is raised, no window bucket is read and no freeze flag is
-        // consulted, so a group's `concurrent: 1` would admit every turn that ever arrives.
-        let Ok(chain) = self.chain(principal.as_str()) else {
+        // consulted, so a group's `concurrent: 1` would admit every turn that ever arrives. Read
+        // from the session rather than resolved here, so this step allocates nothing to be judged.
+        let Some(chain) = self.chain else {
             // Fail-closed, rendered the way the door renders the same cause: a principal whose caps
             // cannot be read is over quota, not merely rate-limited.
             return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
@@ -1493,7 +1501,7 @@ impl Units for VoiceUnit<'_> {
             self.dialect.name(),
             self.epoch,
         );
-        let decision = unit.admit(&estimate, principal, &chain, admit, token);
+        let decision = unit.admit(&estimate, principal, chain, admit, token);
         // What the door counted, said out loud, so the loop can record one lease per capped group on
         // this unit's slot. The names are the root's interned ones; a refusal names nothing.
         for group in unit.group_leases() {
@@ -1999,6 +2007,21 @@ mod tests {
         }
     }
 
+    /// The chain a deployment with no `groups:` section resolves for every caller: one uncapped
+    /// attribution bucket, charged on every admission and blocking nothing.
+    ///
+    /// One value for the whole test module, because it is one value for the whole node — which is
+    /// the property the unit's borrow exists to make visible.
+    fn ungoverned() -> &'static busbar_unit_admission::BucketChain {
+        static CHAIN: std::sync::OnceLock<busbar_unit_admission::BucketChain> =
+            std::sync::OnceLock::new();
+        CHAIN.get_or_init(|| {
+            busbar_unit_admission::GroupTable::default()
+                .chain_for("acct:voice", None)
+                .expect("a caller bound to no group always resolves")
+        })
+    }
+
     fn ctx(key: u64) -> UnitCtx {
         UnitCtx {
             key: busbar_caps::UnitKey::new(key),
@@ -2176,6 +2199,7 @@ mod tests {
         let kernel = Kernel::new();
         let node = node(serviceable());
         let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
             .on_dialect(Dialect::OpenaiRealtime)
             .reporting(TurnUsage {
                 audio_tokens_in: 10,
@@ -2257,7 +2281,8 @@ mod tests {
         let kernel = Kernel::new();
         let mut node = node(serviceable());
         node.scope = crate::root::policy::ScopePolicy::new();
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, requests, .. } = run(&kernel, &unit) else {
             panic!("the exit settles it");
         };
@@ -2377,11 +2402,13 @@ mod tests {
         let kernel = Kernel::new();
 
         // The turn that empties the lease runs to the end and settles.
-        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
-            audio_tokens_out: 120,
-            audio_ms_in: 900,
-            ..TurnUsage::default()
-        });
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                audio_ms_in: 900,
+                ..TurnUsage::default()
+            });
         let Ended::Settled { end, .. } = run(&kernel, &turn) else {
             panic!("the exit path settles it");
         };
@@ -2393,7 +2420,8 @@ mod tests {
         );
 
         // And the next frame on that session does not get in.
-        let next = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let next =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &next) else {
             panic!("the exit path settles it");
         };
@@ -2415,7 +2443,8 @@ mod tests {
         );
 
         // A session that never ran dry is not caught by the mark.
-        let other = VoiceUnit::new(&node, UnitShape::Turn, 8, 1_700_000_000);
+        let other =
+            VoiceUnit::new(&node, UnitShape::Turn, 8, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &other) else {
             panic!("the exit path settles it");
         };
@@ -2428,7 +2457,8 @@ mod tests {
             panic!("the exit path settles it");
         };
         assert_eq!(end.outcome(), Outcome::Completed);
-        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let turn =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &turn) else {
             panic!("the exit path settles it");
         };
@@ -2442,7 +2472,8 @@ mod tests {
     #[test]
     fn a_refused_units_record_carries_the_refusal_and_its_step() {
         let node = node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let refused = Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied);
         let inputs = unit.audit_inputs(&ctx(1), refused, busbar_contract::FinishClass::Error);
         assert_eq!(inputs.outcome.unit_end, refused);
@@ -2516,6 +2547,7 @@ mod tests {
         now_ms: Millis,
     ) -> Ended {
         let unit = VoiceUnit::new(node, UnitShape::ToolCall, session, 1_700_000_000)
+            .charging_through(ungoverned())
             .calling(call_id)
             .at_ms(now_ms);
         let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
@@ -2666,7 +2698,8 @@ mod tests {
     fn a_tool_call_that_minted_no_identifier_is_refused_rather_than_entered() {
         let kernel = Kernel::new();
         let node = node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000);
+        let unit = VoiceUnit::new(&node, UnitShape::ToolCall, 7, 1_700_000_000)
+            .charging_through(ungoverned());
         let Ended::Settled { end, .. } = run(&kernel, &unit) else {
             panic!("the exit settles it");
         };
@@ -2981,14 +3014,16 @@ mod tests {
     #[test]
     fn an_answered_turn_is_one_that_emitted_something() {
         let node = priced_node(serviceable());
-        let silent =
-            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+        let silent = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
                 audio_tokens_in: 90,
                 ..TurnUsage::default()
             });
         assert!(!silent.answered());
-        let spoken =
-            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
+        let spoken = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
                 audio_tokens_out: 3,
                 ..TurnUsage::default()
             });
@@ -3001,7 +3036,8 @@ mod tests {
     #[test]
     fn a_turn_opens_a_reservation_the_door_sized_off_the_estimate() {
         let node = priced_node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         // 5 micro-units per output token is 5_000 nano-units, and it is the dearest of the four.
         let estimate = unit.estimate();
         assert_eq!(estimate.per_class.len(), 1);
@@ -3057,7 +3093,8 @@ mod tests {
     #[test]
     fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
         let node = priced_node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let admit = busbar_caps::AdmitToken::<Admit>::mint(&seal);
         let token: UnitToken<Admit> = UnitToken::mint(&seal);
@@ -3127,11 +3164,13 @@ mod tests {
     #[test]
     fn a_turn_opens_accrues_settles_and_lands_on_the_journal() {
         let node = priced_node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
-            audio_tokens_out: 120,
-            audio_ms_in: 900,
-            ..TurnUsage::default()
-        });
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                audio_ms_in: 900,
+                ..TurnUsage::default()
+            });
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let kernel = Kernel::new();
         let Ended::Settled { end, .. } = run(&kernel, &unit) else {
@@ -3189,12 +3228,14 @@ mod tests {
     fn a_turn_past_its_estimate_grows_the_reservation_out_of_the_offered_headroom() {
         let node = priced_node(serviceable());
         let reserved = TURN_OPENING_TOKENS * 5_000;
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).reporting(TurnUsage {
-            audio_tokens_out: 3,
-            // Far past what the door sized for, and the chain this node runs caps nothing.
-            audio_ms_in: reserved + 12_345,
-            ..TurnUsage::default()
-        });
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 3,
+                // Far past what the door sized for, and the chain this node runs caps nothing.
+                audio_ms_in: reserved + 12_345,
+                ..TurnUsage::default()
+            });
         assert_eq!(
             unit.headroom_nanos(),
             u64::MAX,
@@ -3258,7 +3299,8 @@ mod tests {
             .flags()
             .contains(busbar_caps::PostingFlags::OVERDRAFT));
 
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         let settled = unit
             .settle(&who, posted, &busbar_caps::DurabilityToken::mint(&seal))
             .expect("the journal takes both records");
@@ -3428,7 +3470,8 @@ mod tests {
         // read off the plane's answer rather than restated, so a shape that drifted from the plane's
         // own vocabulary goes red here instead of pricing under a name nothing declares.
         let node = node(serviceable());
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let unit =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(ungoverned());
         assert_eq!(
             unit.decode(&UnitToken::mint(&seal), &ctx(1))
                 .into_result(&seal)
@@ -3651,8 +3694,10 @@ mod tests {
         let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
         let kernel = Kernel::new();
         let who = PrincipalId::new("acct:voice");
+        // Resolved once, at the open. Every turn below is lent this one value.
+        let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
         let turn =
-            || VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(GROUP);
+            || VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
 
         let first = turn();
         let (admitted, held) = ask_the_door(&kernel, &first, &who);
@@ -3693,9 +3738,15 @@ mod tests {
     fn a_voice_caller_bound_to_an_unconfigured_group_is_refused() {
         let node = node_governed_by(serviceable(), one_turn_at_a_time("voice-team"));
         let kernel = Kernel::new();
-        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
-            .charging_through("a-group-this-node-never-had");
-        let (decision, _) = ask_the_door(&kernel, &unit, &PrincipalId::new("acct:voice"));
+        let who = PrincipalId::new("acct:voice");
+        assert!(
+            node.chain_for(&who, Some("a-group-this-node-never-had"))
+                .is_none(),
+            "the group is not in the table, so the session has no chain to lend"
+        );
+        // And a turn lent none refuses, rather than running under caps nothing could read.
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let (decision, _) = ask_the_door(&kernel, &unit, &who);
         assert_eq!(
             decision
                 .expect_err("nothing is admitted under caps that cannot be read")
@@ -3713,16 +3764,51 @@ mod tests {
         let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
         let kernel = Kernel::new();
         let who = PrincipalId::new("acct:voice");
-        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(GROUP);
+        let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
+        let turn =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
         let (_, held) = ask_the_door(&kernel, &turn, &who);
         let _running = held.grant_taken().expect("the turn is counted");
 
-        let open =
-            VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 1_700_000_000).charging_through(GROUP);
+        let open = VoiceUnit::new(&node, UnitShape::SessionOpen, 8, 1_700_000_000)
+            .charging_through(&chain);
         let (decision, _) = ask_the_door(&kernel, &open, &who);
         assert!(
             decision.is_ok(),
             "unit zero's admission is the zero-priced one and draws no lease"
+        );
+    }
+
+    /// **The chain is lent, never rebuilt.** A live session's turns are frames of a conversation and
+    /// the door is on every one of them; a chain is a vector of owned bucket ids, so resolving one
+    /// per turn would put that vector on the admitting path per frame for an answer settled at the
+    /// open and unable to change under the session.
+    ///
+    /// So the unit holds a BORROW of what the session resolved. Two turns are handed the same
+    /// address — the property a per-turn `chain_for` cannot have however cheap it looks. The pin is
+    /// on the reference rather than on an allocation count because this crate has no library target
+    /// for a counting-allocator test binary to reach.
+    #[test]
+    fn two_turns_of_one_session_are_handed_the_same_chain() {
+        const GROUP: &str = "voice-team";
+        let node = node_governed_by(serviceable(), one_turn_at_a_time(GROUP));
+        let who = PrincipalId::new("acct:voice");
+        let chain = node.chain_for(&who, Some(GROUP)).expect("configured");
+
+        let first =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+        let second =
+            VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000).charging_through(&chain);
+        let (Some(one), Some(two)) = (first.chain, second.chain) else {
+            panic!("both turns were lent the session's chain");
+        };
+        assert!(
+            std::ptr::eq(one, two),
+            "one resolved chain, lent twice — not two copies of one answer"
+        );
+        assert!(
+            std::ptr::eq(one, &chain),
+            "and it is the session's own value"
         );
     }
 }

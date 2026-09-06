@@ -461,19 +461,20 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pinned: &'r [&'r str],
     /// The admission unit's long-lived door.
     pub door: &'r Door<S>,
-    /// The configured limit tree, resolved once at boot into the shape the door walks.
+    /// The buckets this caller is judged and charged against: its own attribution bucket, then the
+    /// group its key is bound to, then that group's parent, to the root.
     ///
-    /// Borrowed from the node's one table rather than resolved per unit: a second table would be a
-    /// second set of parent indices, and two answers to what a group's cap is.
-    pub groups: &'r busbar_unit_admission::GroupTable,
-    /// The group this caller charges through, as the deployment bound its key.
+    /// BORROWED, never built here. A chain is a walk of the boot-resolved group table and its
+    /// contents are owned strings; resolving one inside the admission step would put a fresh vector
+    /// of them on the door's path for every single unit, for an answer that cannot change while the
+    /// caller and the policy epoch stay the same. So the root resolves it once, where it resolves
+    /// the caller, and every unit of that caller reads the same one.
     ///
-    /// `None` is a real posture and the common one: a principal bound to no group is authenticated,
-    /// attributed on its own bucket, and under no group's cap — which is what a deployment with no
-    /// `groups:` section has for every caller. A principal bound to a group this node does not have
-    /// is a different thing entirely, and the chain refuses it rather than admitting under caps it
-    /// could not read.
-    pub group: Option<&'r str>,
+    /// `None` is the fail-closed arm and NOT the uncapped one: it is a caller bound to a group this
+    /// node's configuration does not have, whose caps therefore could not be read. A caller bound
+    /// to no group at all — the ordinary posture for a deployment with no `groups:` section — has a
+    /// perfectly good chain of one uncapped attribution bucket, and gets it.
+    pub chain: Option<&'r busbar_unit_admission::BucketChain>,
     /// What the door prices a unit against.
     pub pricer: &'r Pricer,
     /// What the deployment's card charges for a byte of the priced document, in nano-units.
@@ -569,28 +570,6 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     #[must_use]
     pub fn draft(&self) -> &A2aDraft {
         &self.draft
-    }
-
-    /// The buckets this unit is judged and charged against: the caller's own attribution bucket,
-    /// then the group it charges through, then that group's parent, to the root.
-    ///
-    /// The same walk and the same precedence the shipped plane's door uses, over the same table the
-    /// root resolved from the deployment's `groups:` section — so a group's `concurrent` cap, its
-    /// windowed limits and its freeze flag mean here what they mean there. The attribution bucket
-    /// carries no caps and never blocks; it is charged on every admission so that a deployment with
-    /// no groups at all still has one figure per principal.
-    ///
-    /// # Errors
-    ///
-    /// The caller is bound to a group this node's configuration does not have. Fail-closed: caps
-    /// that cannot be read cannot be enforced, so nothing is admitted under them.
-    fn chain(
-        &self,
-        principal: &PrincipalId,
-    ) -> Result<busbar_unit_admission::BucketChain, busbar_unit_admission::MissingGroup> {
-        self.bindings
-            .groups
-            .chain_for(principal.as_str(), self.bindings.group)
     }
 
     /// The balance one unit of this plane settles into: the caller's own attribution bucket, in
@@ -1033,8 +1012,9 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // charge that read two different clocks are a check of one window and a charge in another.
         // The chain the deployment configured, not an empty one. An empty chain is a yes from every
         // cap at once: no gauge is raised, no window bucket is read and no freeze flag is
-        // consulted, so a group's `concurrent: 1` would admit every unit that ever arrives.
-        let Ok(chain) = self.chain(principal) else {
+        // consulted, so a group's `concurrent: 1` would admit every unit that ever arrives. Read
+        // from the binding rather than resolved here, so this step allocates nothing to be judged.
+        let Some(chain) = self.bindings.chain else {
             // Fail-closed, and rendered the way the door renders it for the same cause: a principal
             // whose caps cannot be read is over quota, not merely rate-limited.
             return Decision::refuse(token, Refusal::new(ReasonCode::OverBudget));
@@ -1045,7 +1025,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             self.bindings.pool,
             self.bindings.now,
         );
-        let decision = unit.admit(&self.estimate(), principal, &chain, admit, token);
+        let decision = unit.admit(&self.estimate(), principal, chain, admit, token);
         // What the door counted, said out loud. The names are the interned ones the root handed the
         // chain's groups at registration; the loop records one lease per name on this unit's slot,
         // where its end and the node's sweep can both give them back. Empty on a refusal, and empty
@@ -1112,27 +1092,19 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // as it is NOW, and the exit is where it is spent. Zero is a top-up that does not happen,
         // never a unit that does not run.
         meter.offer_headroom({
-            // The same chain the door was judged against, rebuilt over the principal the
-            // authenticate step settled on — so a top-up is measured against the window that
-            // admitted this unit rather than against nothing at all. A group this node cannot read
-            // is a headroom of zero: a reservation that does not grow, never a unit that does not
-            // run.
-            let principal = self
-                .progress
-                .lock()
-                .expect("progress lock")
-                .principal
-                .clone();
-            let who = principal.as_ref().map_or("", PrincipalId::as_str);
-            match self.bindings.groups.chain_for(who, self.bindings.group) {
-                Err(_) => 0,
-                Ok(chain) => AdmissionUnit::new(
+            // The same chain the door was judged against — the same value, not a second copy of it
+            // — so a top-up is measured against the window that admitted this unit rather than
+            // against nothing at all. A caller whose caps could not be read is a headroom of zero:
+            // a reservation that does not grow, never a unit that does not run.
+            match self.bindings.chain {
+                None => 0,
+                Some(chain) => AdmissionUnit::new(
                     self.bindings.door,
                     self.bindings.pricer,
                     self.bindings.pool,
                     self.bindings.now,
                 )
-                .headroom_nanos(&chain),
+                .headroom_nanos(chain),
             }
         });
 
@@ -2461,6 +2433,24 @@ mod tests {
         }
     }
 
+    /// A breaker with every lane open, so lane health is never the reason a unit in these cells did
+    /// not reach the door.
+    struct EveryLaneOpen;
+
+    impl BreakerView for EveryLaneOpen {
+        fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
+            true
+        }
+        fn try_admit(
+            &self,
+            _pool: &str,
+            _lane: usize,
+            _now: u64,
+        ) -> Result<(), busbar_unit_trust::Unavailable> {
+            Ok(())
+        }
+    }
+
     /// A deployment whose per-kind rules all pass, so a destination question is never the reason a
     /// unit in these cells did not reach the door.
     struct EveryKindPasses;
@@ -2476,6 +2466,15 @@ mod tests {
             true
         }
         fn session_upstream_ok(&self) -> bool {
+            true
+        }
+        fn net_guard_passes(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn unit_price_within_max(&self, _dest: &DestinationFacts) -> bool {
+            true
+        }
+        fn breaker_admits(&self, _dest: &DestinationFacts, _at: &BreakerQuery<'_>) -> bool {
             true
         }
         fn session_principal_matches(&self) -> bool {
@@ -2581,10 +2580,20 @@ mod tests {
     }
 
     impl Deployment {
-        /// One unit of this deployment, charging through `group`.
+        /// Resolve one caller's chain, once — the step the root takes where it resolves the caller,
+        /// and the only place a chain is built. `None` is the group this node does not have.
+        fn resolve(
+            &self,
+            who: &PrincipalId,
+            group: Option<&str>,
+        ) -> Option<busbar_unit_admission::BucketChain> {
+            self.groups.chain_for(who.as_str(), group).ok()
+        }
+
+        /// One unit of this deployment, lent a chain somebody already resolved.
         fn calling<'r>(
             &'r self,
-            group: Option<&'r str>,
+            chain: Option<&'r busbar_unit_admission::BucketChain>,
         ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
             A2aUnits::new(
                 A2aBindings {
@@ -2593,13 +2602,13 @@ mod tests {
                     trust_token: &self.trust,
                     pools: &self.pools,
                     kinds: &self.kinds,
+                    breaker: &EveryLaneOpen,
                     resolver: &self.resolver,
                     guard: GuardPolicy::default(),
                     denylist: &self.denylist,
                     pinned: &[],
                     door: &self.door,
-                    groups: &self.groups,
-                    group,
+                    chain,
                     pricer: &self.pricer,
                     bytes_nanos: 0,
                     records: &self.records,
@@ -2608,7 +2617,7 @@ mod tests {
                     durability: &self.durability,
                     pool: "agents",
                     now: 1_700_000_000,
-                    origin: self.origin.clone(),
+                    origin: self.origin,
                 },
                 draft(ops::OP_MESSAGE_SEND),
                 Grants::of(Scope::Full),
@@ -2662,7 +2671,10 @@ mod tests {
         let deployment = deployment(one_call_at_a_time(GROUP));
         let who = PrincipalId::new("vk_agent");
 
-        let first = deployment.calling(Some(GROUP));
+        // Resolved once, where the root resolves the caller. Every unit below reads this one value.
+        let chain = deployment.resolve(&who, Some(GROUP));
+
+        let first = deployment.calling(chain.as_ref());
         let (admitted, held) = ask_the_door(&first, &who);
         assert!(admitted.is_ok(), "the first call of a group capped at one");
         assert_eq!(
@@ -2675,7 +2687,7 @@ mod tests {
         // yes.
         let running = held.grant_taken().expect("the yes is holding a count");
 
-        let second = deployment.calling(Some(GROUP));
+        let second = deployment.calling(chain.as_ref());
         let (refused, _) = ask_the_door(&second, &who);
         assert_eq!(
             refused.expect_err("the group is full").reason(),
@@ -2685,7 +2697,7 @@ mod tests {
 
         // The unit ends: the slot gives back what it held, and the group has room again.
         drop(running);
-        let third = deployment.calling(Some(GROUP));
+        let third = deployment.calling(chain.as_ref());
         let (after, _) = ask_the_door(&third, &who);
         assert!(
             after.is_ok(),
@@ -2700,8 +2712,13 @@ mod tests {
     fn an_a2a_caller_bound_to_no_group_is_admitted_and_counted_against_nothing() {
         let deployment = deployment(one_call_at_a_time("a2a-team"));
         let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, None);
+        assert!(
+            chain.is_some(),
+            "no group binding still resolves — to one uncapped attribution bucket"
+        );
         for _ in 0..3 {
-            let unit = deployment.calling(None);
+            let unit = deployment.calling(chain.as_ref());
             let (decision, slip) = ask_the_door(&unit, &who);
             assert!(decision.is_ok(), "no group binding is no cap");
             assert!(slip.taken().is_empty(), "and nothing to name on the slot");
@@ -2714,13 +2731,44 @@ mod tests {
     #[test]
     fn an_a2a_caller_bound_to_an_unconfigured_group_is_refused() {
         let deployment = deployment(one_call_at_a_time("a2a-team"));
-        let unit = deployment.calling(Some("a-group-this-node-never-had"));
-        let (decision, _) = ask_the_door(&unit, &PrincipalId::new("vk_agent"));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some("a-group-this-node-never-had"));
+        assert!(chain.is_none(), "the group is not in the table");
+        let unit = deployment.calling(chain.as_ref());
+        let (decision, _) = ask_the_door(&unit, &who);
         assert_eq!(
             decision
                 .expect_err("nothing is admitted under caps that cannot be read")
                 .reason(),
             ReasonCode::OverBudget
         );
+    }
+
+    /// **The chain is lent, never rebuilt.** The door is on every unit's path and a chain is a
+    /// vector of owned bucket ids; resolving one per unit would put that vector, and every string
+    /// in it, on the admitting path for an answer that cannot change while the caller and the
+    /// policy epoch stay the same.
+    ///
+    /// So the binding holds a BORROW. Two units of one caller are handed the same address, which is
+    /// the property a per-unit `chain_for` cannot have however cheap it looks — the pin is on the
+    /// reference rather than on an allocation count because this crate has no library target for a
+    /// counting-allocator test binary to reach.
+    #[test]
+    fn two_units_of_one_caller_are_handed_the_same_chain() {
+        const GROUP: &str = "a2a-team";
+        let deployment = deployment(one_call_at_a_time(GROUP));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some(GROUP)).expect("configured");
+
+        let first = deployment.calling(Some(&chain));
+        let second = deployment.calling(Some(&chain));
+        let (Some(one), Some(two)) = (first.bindings.chain, second.bindings.chain) else {
+            panic!("both units were lent a chain");
+        };
+        assert!(
+            std::ptr::eq(one, two),
+            "one resolved chain, lent twice — not two copies of one answer"
+        );
+        assert!(std::ptr::eq(one, &chain), "and it is the root's own value");
     }
 }
