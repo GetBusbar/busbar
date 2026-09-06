@@ -609,12 +609,36 @@ fn substitute_arguments(template: &str, params: Option<&serde_json::Value>) -> S
     else {
         return template.to_string();
     };
-    let mut out = template.to_string();
-    for (key, value) in args {
-        if let Some(text) = value.as_str() {
-            out = out.replace(&format!("{{{key}}}"), text);
+    // ONE PASS OVER THE TEMPLATE, never over the result. A pass PER ARGUMENT would substitute into
+    // an accumulator that already holds earlier arguments' text, so a `{b}` a caller spelled inside
+    // the value of `a` would be filled from `b` — one argument deciding what another means — and,
+    // chained, each argument would MULTIPLY the ones before it: ten linked keys in a 300-byte request
+    // is 10^10 bytes of string on a request thread. Reading the template once makes the output length
+    // the template plus the arguments, whatever those arguments spell.
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        // `{` is ASCII, so this is a char boundary; so is the `}` found below.
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('}') else {
+            // An unclosed `{` is the operator's literal text: emit the remainder verbatim.
+            out.push_str(&rest[open..]);
+            return out;
+        };
+        let name = &after[..close];
+        match args.get(name).and_then(|v| v.as_str()) {
+            Some(text) => out.push_str(text),
+            // RULE 2: an unknown placeholder is left alone, spelling and all.
+            None => {
+                out.push('{');
+                out.push_str(name);
+                out.push('}');
+            }
         }
+        rest = &after[close + 1..];
     }
+    out.push_str(rest);
     out
 }
 
