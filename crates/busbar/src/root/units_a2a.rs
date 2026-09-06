@@ -76,7 +76,7 @@ use busbar_caps::{
 use busbar_contract::dest::{DestinationFacts, Leg};
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
 use busbar_contract::unit::{FinishClass, ResourceLocator};
-use busbar_kernel::slice::GroupLeaseSlip;
+use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, UnitCtx, Units};
 use busbar_plane_a2a::{ops, records};
 use busbar_unit_admission::{Admission as _, AdmissionUnit, CellStore, Door, Estimate, Pricer};
@@ -1010,6 +1010,15 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         // for a chain with no capped group — this crate does not decide either.
         for group in unit.group_leases() {
             leases.counted(group);
+        }
+        // AND THE COUNT ITSELF, which is the cap rather than a reading of it. The door raises a
+        // gauge per capped group when it says yes and lowers it when the grant is dropped, so a
+        // grant that dies with this call is a cap released before the unit it admitted has done
+        // anything — every unit admitted against a count of zero. Handed to the slot, it is what
+        // makes the group's `concurrent` limit refuse the next unit while this one is in the air,
+        // and the slot's release at the unit's end is what makes it admit again afterwards.
+        if let Some(grant) = unit.take_grant() {
+            leases.holding(DoorGrant::new(grant));
         }
         decision
     }

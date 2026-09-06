@@ -131,7 +131,7 @@ use busbar_contract::dest::ClientMode;
 use busbar_contract::ids::{CorrelationRef, CorrelationValue, LaneId};
 use busbar_contract::ClaimKey;
 use busbar_kernel::reply::{AwaitingReplies, NotWaiting};
-use busbar_kernel::slice::GroupLeaseSlip;
+use busbar_kernel::slice::{DoorGrant, GroupLeaseSlip};
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
 use busbar_kernel::Millis;
 use busbar_plane_voice::claims::Dialect;
@@ -1438,6 +1438,14 @@ impl Units for VoiceUnit<'_> {
         // this unit's slot. The names are the root's interned ones; a refusal names nothing.
         for group in unit.group_leases() {
             leases.counted(group);
+        }
+        // AND THE COUNT ITSELF. The names above are what the node reads; this is the door's own
+        // gauge, and the gauge is the cap. It is raised by the yes and lowered when the grant dies,
+        // so a grant that does not outlive this call caps nothing at all. On the slot it lives as
+        // long as the unit does, and the unit's end — or the sweep, if the task is lost — is what
+        // gives the group its room back.
+        if let Some(grant) = unit.take_grant() {
+            leases.holding(DoorGrant::new(grant));
         }
         decision
     }
@@ -2965,6 +2973,86 @@ mod tests {
             }
             other => panic!("a priced turn opens a hold of its own, got {other:?}"),
         }
+    }
+
+    /// THE DOOR'S COUNT LEAVES THE DOOR'S STEP, or this plane's `concurrent` caps are decoration.
+    ///
+    /// A yes raises a gauge per capped group in the chain and the value it hands back is what holds
+    /// them up. Dropped where the decision was taken, the gauges are back to where they started
+    /// before the admitted unit has run a single step, and the next arrival is judged against a
+    /// count of nothing however many units are in flight. So the step has to hand the count over,
+    /// and the slip is where. The kernel does the rest: it belongs to the unit's slot from here,
+    /// and it goes back at whichever of the unit's two ends arrives first.
+    ///
+    /// The chain this deployment hands the door declares no capped group, so the count here is of
+    /// none — which is exactly why the assertion is about the HANDOVER and not about a number. A
+    /// step that keeps the grant caps nothing on any chain; a step that hands it over caps every
+    /// group the chain names.
+    #[test]
+    fn the_door_step_hands_its_count_to_the_slot_rather_than_dropping_it() {
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admit = busbar_caps::AdmitToken::<Admit>::mint(&seal);
+        let token: UnitToken<Admit> = UnitToken::mint(&seal);
+        let leases = GroupLeaseSlip::new();
+
+        let admission = unit
+            .admit(
+                &token,
+                &admit,
+                &ctx(1),
+                &PrincipalId::new("acct:voice"),
+                &[],
+                &leases,
+            )
+            .into_result(&seal)
+            .expect("the chain admits");
+        assert!(
+            leases.grant_taken().is_some(),
+            "the door's own count came out of the step, where the loop can put it on the slot"
+        );
+        if let busbar_caps::Admission::Own(hold) = admission {
+            let _ = busbar_caps::Posted::settle(
+                hold,
+                0,
+                &busbar_caps::Usage::report(&busbar_caps::UsageToken::mint(&seal), Vec::new())
+                    .expect("empty"),
+                &busbar_caps::LedgerToken::mint(&seal),
+            );
+        }
+    }
+
+    /// A refusal hands over nothing, because a refusal counted nothing.
+    ///
+    /// The other half of the rule, and the one that keeps the handover from becoming a leak: the
+    /// grant only exists on a yes, so a slip that carried one out of a refusal would be a count on
+    /// a group for a unit that never ran. The handshake is this plane's admission that never
+    /// reaches the chain at all.
+    #[test]
+    fn an_admission_that_never_reaches_the_chain_hands_over_no_count() {
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admit = busbar_caps::AdmitToken::<Admit>::mint(&seal);
+        let token: UnitToken<Admit> = UnitToken::mint(&seal);
+        let leases = GroupLeaseSlip::new();
+
+        let _ = unit
+            .admit(
+                &token,
+                &admit,
+                &ctx(1),
+                &PrincipalId::new("acct:voice"),
+                &[],
+                &leases,
+            )
+            .into_result(&seal)
+            .expect("a handshake is admitted holding nothing");
+        assert!(
+            leases.grant_taken().is_none(),
+            "the handshake never asked the door, so there is no count to hold"
+        );
     }
 
     /// **The lifecycle, end to end.** The door opens the reservation, the meter accrues against it,
