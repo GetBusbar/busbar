@@ -21,11 +21,20 @@ Use the exact **check-run name** (the job's `name:`), not the workflow name:
 | `cargo-deny (advisories · licenses · sources · bans)` | `security.yml` | Single-job workflow; its own status is the aggregator. |
 | `MCP conformance verdict` | `mcp-conformance.yml` | `verdict` job fans in over every MCP conformance leg (control/subject/battery/fixture-absence). |
 | `A2A conformance verdict` | `a2a-conformance.yml` | `verdict` job fans in over every A2A conformance leg. |
+| `Voice conformance verdict` | `voice-conformance.yml` | `verdict` job fans in over every Plane-4 (voice) leg: gate-selftest, the per-dialect spec matrix, replay, cross-parity, composition, provider-dial, boot-validate, governance-probe. Structurally identical to the MCP and A2A verdicts — same `if: always()`, same "a leg that did not EXECUTE is red, not skipped" rule, same set-equality lint (`testing/verdict-covers-every-leg.py`) holding its `needs:` to the workflow's job set. It triggers on `push: ['**']` and `pull_request` exactly as its two siblings do, so it gates code correctness on the same events they do and belongs in the same list. It was **missing from this table**, which is this file's own warned-about failure mode one level up: a hand-maintained enumeration that stopped covering what was added after it. |
 
-These four are the complete set of **push/pull_request** workflows that gate code correctness. Each
+These five are the complete set of **push/pull_request** workflows that gate code correctness. Each
 already terminates in a single aggregator job — nothing further is needed inside the workflows; the
-only manual step is ticking these four in **Settings → Branches → branch protection → Require status
+only manual step is ticking these five in **Settings → Branches → branch protection → Require status
 checks to pass** for `main` and `qa`.
+
+> **`cargo-deny` is PATH-FILTERED, and that changes how it must be required.** `security.yml`
+> triggers only on changes to `Cargo.toml`, `Cargo.lock`, `deny.toml` and its own file. A required
+> status check that never reports does not pass — GitHub leaves the PR pending on it forever — so
+> requiring this context outright blocks every PR that touches no dependency. Either drop the
+> `paths:` filter from `security.yml` (it then reports on every PR and can be required plainly), or
+> leave it required and accept that dependency-free PRs need the check to be reported some other
+> way. The other four aggregators run unconditionally and have no such caveat.
 
 ## Intentionally NOT branch-protection-required (and why)
 
