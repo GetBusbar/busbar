@@ -35,6 +35,15 @@
 //! `WarnCapture`s at once (e.g. a positive + a negative `cap`/`cap2`) without self-deadlocking; a
 //! DIFFERENT thread blocks until the holder fully releases.
 
+// INTEREST. `tracing` caches each callsite's interest PROCESS-GLOBALLY, and a callsite first
+// evaluated with no subscriber installed at all is cached "never" — after which no later
+// `with_default` capture can see it, because the macro short-circuits before it ever asks the
+// thread's dispatcher. That is a test in one file silently blinding a test in another, decided by
+// run order. So the FIRST `WarnCapture` built in a process installs a bare, layer-less registry as
+// the GLOBAL default and rebuilds the interest cache ONCE (`std::sync::Once`): every callsite then
+// answers "yes, someone is interested", forever, and the cache is never toggled back. It produces
+// no output and captures nothing — the actual capture is still the thread-local `with_default`
+// subscriber, unchanged — it only stops "interested" from ever being cached as "no".
 #[derive(Clone)]
 pub struct WarnCapture {
     messages: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
@@ -49,6 +58,7 @@ pub struct WarnCapture {
 
 impl Default for WarnCapture {
     fn default() -> Self {
+        ensure_capture_interest();
         Self {
             messages: std::sync::Arc::default(),
             max_level: tracing::Level::WARN,
@@ -61,6 +71,7 @@ impl WarnCapture {
     /// A capture that admits DEBUG-and-above (DEBUG, INFO, WARN, ERROR), for asserting on a
     /// benign-recurring diagnostic that emits at `diag_debug!`.
     pub fn capturing_debug() -> Self {
+        ensure_capture_interest();
         Self {
             messages: std::sync::Arc::default(),
             max_level: tracing::Level::DEBUG,
@@ -138,6 +149,22 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WarnCapture {
     }
 }
 
+/// Make every callsite's interest permanently "yes", ONCE per process — see the module note. A
+/// callsite fired with no subscriber installed caches "never" and is invisible to every later
+/// capture; a bare registry as the global default plus one rebuild makes that unreachable, and
+/// nothing rebuilds the cache again (a rebuild racing a concurrent test is the flake this
+/// replaces, not a second copy of it).
+fn ensure_capture_interest() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // A layer-less `Registry` filters nothing and emits nothing: installing it as the global
+        // default only makes `register_callsite` answer yes. Ignore the error — a binary that has
+        // already set a global default is already past the failure mode this closes.
+        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+        tracing::callsite::rebuild_interest_cache();
+    });
+}
+
 // ── The process-global reentrant serialization gate (see the module docs). ──────────────────────
 
 /// The gate's shared state: the current OWNER thread and its reentrancy count, or `None` when free.
@@ -199,3 +226,7 @@ impl Drop for GateHold {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/warn_capture_tests.rs"]
+mod warn_capture_tests;

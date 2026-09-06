@@ -2363,26 +2363,16 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for RequestIdSpanCaptu
 /// call is silently skipped — the `.expect("the forward span recorded a request_id field")` below
 /// then panics on a value that was never written, not because anything downstream was wrong.
 ///
-/// THE FIX: force interest to `Always` EXACTLY ONCE for the lifetime of this test binary
-/// ([`ensure_forward_span_interest_is_forced_on`], `std::sync::Once`-guarded) and NEVER rebuild the
-/// cache again. Once true, "is any dispatch interested" stays true forever, so there is nothing left
-/// to race: every thread's tracing macros keep querying their OWN current subscriber (thread-local
-/// via `set_default`, unchanged below) exactly as before, just without the global cache ever being
-/// toggled back off underneath a concurrently-running sibling. The one-time cost (this span is
-/// entered by every request for the rest of the process, on every thread) is a debug-level tracing
-/// allocation, not a correctness concern, and it is the same cost this test already paid for its
-/// own duration on every previous run.
+/// THE FIX: the SHARED capture fixture already does this. `WarnCapture`'s constructor installs a
+/// bare global registry once per binary and rebuilds the interest cache once, after which interest
+/// is affirmative forever and nothing rebuilds it again — so there is nothing left to race. This
+/// site holds one such capture rather than keeping a second copy of the same `Once`; the one-time
+/// cost (this span is entered by every request for the rest of the process, on every thread) is a
+/// debug-level tracing allocation, not a correctness concern.
 fn ensure_forward_span_interest_is_forced_on() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // A bare, layer-less `Registry` applies no level filter of its own, so installing it as the
-        // process GLOBAL default (not a thread-local override — this one MUST be visible to every
-        // thread, forever) is enough to make `register_callsite` answer "yes" for every span/event
-        // in the process, including `forward`'s debug-level one. It does nothing else: no output, no
-        // capture, so every OTHER test's tracing calls are unaffected beyond this one-time, one-way
-        // interest flip.
-        let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
-        tracing::callsite::rebuild_interest_cache();
+        drop(busbar_substrate::testkit::warn_capture::WarnCapture::default());
     });
 }
 
