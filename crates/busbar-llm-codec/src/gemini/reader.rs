@@ -148,8 +148,30 @@ impl ProtocolReader for GeminiReader {
         let (http_status, provider_code) = {
             let lower = String::from_utf8_lossy(body).to_lowercase();
             // The documented machine-readable reason wins on its own (it is unambiguous), regardless
-            // of which status name accompanied it.
-            let has_api_key_invalid_reason = lower.contains("api_key_invalid");
+            // of which status name accompanied it — so it is read from the field the documentation
+            // puts it in, and not from the body at large.
+            //
+            // Scanning the whole body for the token made the one override with the HARSHEST
+            // consequence the only one in this function with no gate on it. The context-length
+            // override above is gated on 400/413 precisely so a body that merely QUOTES token-overflow
+            // prose cannot reclassify a rate limit; this one parks the lane — HardDown for every
+            // tenant sharing that destination — and fired on the token appearing anywhere, under any
+            // status. Gemini echoes request content back in an `INVALID_ARGUMENT` message, so a client
+            // whose prompt contained the token could bench a healthy shared credential for everyone
+            // else with one request. The reason is an ErrorInfo field; reading it there is both what
+            // the comment above already claimed and the whole of the fix.
+            let has_api_key_invalid_reason = error_obj
+                .and_then(|e_obj| e_obj.get("details"))
+                .and_then(serde_json::Value::as_array)
+                .is_some_and(|details| {
+                    details.iter().any(|d| {
+                        d.get("reason")
+                            .and_then(serde_json::Value::as_str)
+                            .is_some_and(|r| {
+                                r.eq_ignore_ascii_case(GEMINI_ERROR_REASON_API_KEY_INVALID)
+                            })
+                    })
+                });
             // A prose api-key-invalid message: an explicit "api key" reference paired with a SPECIFIC
             // bad-key signal. The earlier heuristic accepted a BARE "invalid" token, which fired on any
             // INVALID_ARGUMENT field-validation 400 whose prose happened to also name an "api key"
