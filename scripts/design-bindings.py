@@ -873,6 +873,85 @@ def public_surface(text: str) -> str:
     return _BARE_AUDIT_ID.sub(repl, text) if text else text
 
 
+# ── The `inventory` column, reduced to the part that is load-bearing ─────────────────────────────
+# Appendix B writes a binding's `inventory` column as a file-prefix word plus whatever within-file
+# anchor the author had to hand: a section number, a row id, a source line span. Only the FILE
+# PREFIX is checkable — scripts/inventory-ref-lint.py says so in terms and deliberately resolves
+# nothing finer, because section numbers and row ids are renumbered by every refactor and Appendix
+# B's formatting for them is not consistent enough to parse without false positives. So the finer
+# anchors buy a public reader nothing: a `§2.4` or a `CONF-227` in a file anyone can fetch resolves
+# only inside a document they are not reading. They are dropped HERE, at the point the row becomes
+# a public artifact, rather than in ARCHITECTURE.md — the design doc is exactly where an author
+# should keep writing the precise anchor, and qa/design-bindings.json is its public projection.
+#
+# What is dropped:
+#   `§2.4`, `§3.6.1–3.6.2`, `§2.1(a)`  — a section reference, alone or as a run
+#   `7.4.1`, `4.5.10`                  — the same thing written without the sign
+#   `CONF-227`, `BOOT-172/173`, `SEC-001..020`, `ADM-*`, `C3`, `O1`, `W34` — a row or matrix id
+# What stays: the file-prefix word, any backticked source path, and a bare `:1055-1082`, which is a
+# SOURCE line span rather than a document anchor — it points into the shipped tree, which the
+# reader has. `PB-N` also stays: it names a row of Appendix B, which is the artifact this file IS,
+# and cited_cells() derives every binding's proof checks from those tokens.
+#
+# The column is redacted SEGMENT BY SEGMENT rather than by patching up punctuation afterwards: a
+# reference list is `;`- and `,`-separated, so a segment whose whole content was an anchor is
+# dropped entire and leaves no comma behind. The split is nesting-aware, because a source-path
+# segment legitimately carries both separators inside its own parentheses and backticks.
+_SECTION_RUN = re.compile(
+    r"§\s*\d+(?:\.\d+)*(?:\s*[/,–—-]\s*(?:§\s*)?\d+(?:\.\d+)*)*(?:\s*\(\s*[a-z]\s*\))?")
+_BARE_SECTION = re.compile(r"(?<![\w.\-])\d+(?:\.\d+)+(?![\w\-.])")
+_FAMILY_ROW_ID = re.compile(
+    r"(?<![\w-])(?!PB-)[A-Z]{2,8}-(?:\*|[A-Z]?\d{1,3}(?:\s*(?:/|\.\.)\s*\d{1,3})*)"
+    r"|(?<![\w-])[A-Z]\d{1,3}(?![\w-])")
+_ALNUM = re.compile(r"[A-Za-z0-9]")
+
+
+def _split_top(text: str, sep: str) -> list[str]:
+    """Split on `sep` only where it is not inside parentheses or a backtick span."""
+    parts, buf, depth, tick = [], [], 0, False
+    for ch in text:
+        if ch == "`":
+            tick = not tick
+        elif not tick and ch == "(":
+            depth += 1
+        elif not tick and ch == ")":
+            depth = max(0, depth - 1)
+        if ch == sep and depth == 0 and not tick:
+            parts.append("".join(buf))
+            buf = []
+            continue
+        buf.append(ch)
+    parts.append("".join(buf))
+    return parts
+
+
+def _redact_part(part: str) -> str:
+    p = _FAMILY_ROW_ID.sub("", _BARE_SECTION.sub("", _SECTION_RUN.sub("", part)))
+    p = re.sub(r"\(\s*[;,/–—-]*\s*\)", "", p)          # parenthetical emptied of its only anchor
+    p = re.sub(r"(?<![\w`])/+\s*", "", p)              # a separator whose operands are gone
+    p = re.sub(r"\s+", " ", p).strip(" ,;")
+    p = re.sub(r"\s*[–—]$", "", p)                     # the dangling half of a stripped range
+    p = re.sub(r"\s+(?:rows?|steps?)$", "", p)         # `rows` with its numbers gone
+    return p.strip(" ,;")
+
+
+def public_inventory(text: str) -> str:
+    """The `inventory` column as a public reader can actually use it: the file-prefix word (and any
+    bare source path beside it), with the within-file anchors removed."""
+    if not text:
+        return text
+    segments = []
+    for seg in _split_top(text, ";"):
+        parts = [_redact_part(p) for p in _split_top(seg, ",")]
+        parts = [p for p in parts if _ALNUM.search(p)]
+        if parts:
+            segments.append(", ".join(parts))
+    out = "; ".join(segments)
+    # A prefix word left alone by its own anchor reads better joined to the source span that
+    # followed it: `config, (:267)` was one citation, not two.
+    return re.sub(r"(?<=[A-Za-z]),\s*(?=[(:])", " ", out)
+
+
 def merge_checks(*lists: list[dict]) -> list[dict]:
     seen: set[tuple[str, str]] = set()
     out: list[dict] = []
@@ -906,6 +985,9 @@ def build(arch_text: str, cells_doc: dict, existing: dict | None) -> dict:
         checks = merge_checks(derive_oracle_checks(pb, cited, all_cells), seed, hand)
         entry = dict(b)
         entry["surface"] = public_surface(entry.get("surface", ""))
+        # Only the emitted copy is redacted; default_suggestion() below still keys off `b`, the
+        # raw Appendix B row, because its heuristic reads the family prefix this drops.
+        entry["inventory"] = public_inventory(entry.get("inventory", ""))
         if pb in NOTES:
             entry["note"] = NOTES[pb]
         if checks:

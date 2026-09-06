@@ -71,7 +71,7 @@
    "id": "PB-1",
    "surface": "hook `on_empty`",
    "binding": "default `reject` (fail-closed) when the gate declares none: 503 `KIND_OVERLOADED` \"No upstream satisfies a required gate's restriction. Please retry shortly.\"; on the restrict-empty arm `first` takes the SAME 503 (1.5.5 branches only on `Weighted`); `weighted` only when written, per PB-28; `first` orders only as an `on_error`-chain terminal; sealed per migrated gate",
-   "inventory": "proxy-hooks §2.4 (`engine/mod.rs:1055-1082`), config CONF-227",
+   "inventory": "proxy-hooks (`engine/mod.rs:1055-1082`), config",
    "status": "mapped",
    "checks": [
     {
@@ -94,7 +94,7 @@
    "id": "PB-2",
    "surface": "per-lane `max_concurrent`",
    "binding": "fail, never wait: `try_admit` → `AtCapacity`, the lane is skipped within the pick; waiting only under `on_exhausted: queue { max_ms }` with 1.5.5's semaphore",
-   "inventory": "proxy-hooks §2.7, governance 4.2.5",
+   "inventory": "proxy-hooks, governance",
    "status": "mapped",
    "checks": [
     {
@@ -138,7 +138,7 @@
    "id": "PB-3",
    "surface": "tripped / budget-exhausted / at-capacity lanes",
    "binding": "EXCLUDED from the walk exactly as `try_admit` excludes them (never \"ordered last and attempted\"); all excluded → the pool's `on_exhausted` terminal after the `requests` charge",
-   "inventory": "proxy-hooks §2.7 step 6, §3.5, §3.6",
+   "inventory": "proxy-hooks step 6",
    "status": "mapped",
    "checks": [
     {
@@ -182,7 +182,7 @@
    "id": "PB-4",
    "surface": "`on_exhausted` terminals",
    "binding": "default (key absent; `Status503` is the variant name, not a config spelling): 503 + `Retry-After` = the soonest GENUINE (> 0) cooldown among `lane_admissible` members as-is, else `AT_CAPACITY_RETRY_AFTER_SECS` = 2, the whole `.max(1)` · `least_bad` (one breaker-bypassing attempt) · `{ fallback_pool }` (cross-pool hop, restricts re-applied, plain SWRR, multi-level, visited guard; the charge follows the ATTEMPTED pool — PB-47) · `{ queue: { max_ms } }` (FIFO permit park ONLY if some exclusion was `AtCapacity`, else the 503 immediately; the winner re-checks `try_admit_breaker`; `busbar_pool_queued` gauge) — implemented by the egress unit's walk",
-   "inventory": "proxy-hooks §2.11 (`walk.rs:49-65`, `:176-334`), config CONF-096..100",
+   "inventory": "proxy-hooks (`walk.rs:49-65`, `:176-334`), config",
    "status": "mapped",
    "checks": [
     {
@@ -303,7 +303,7 @@
    "id": "PB-5",
    "surface": "pick order",
    "binding": "sticky-affinity fast path (`hash % cands.len()`, skipped on weight 0 or excluded lane); hooks stable-sorted by `priority`, globals first then config order; the LAST ordering gate wins, re-validated against the final post-restrict set, empty ⇒ abstain; at pick time a ranked lane is taken only if it is in this hop's candidate set, has non-zero weight and passes the side-effect-free `ready_in` peek — if none qualifies, fall through to SWRR over the same candidates (`select.rs:361-394`); base policy only when no gate ordered; then the SWRR floor",
-   "inventory": "proxy-hooks §2.4, §2.7 steps 2 and 5b, §7.7",
+   "inventory": "proxy-hooks, steps 2 and 5b",
    "status": "mapped",
    "checks": [
     {
@@ -375,7 +375,7 @@
    "id": "PB-6",
    "surface": "hook seats for migrated hooks",
    "binding": "every 1.5.5 hook runs AFTER the governance charge (rewrite, request taps, gates, base policy are all post-charge); a rewrite-gate `Reject` or a decision-gate reject consumes the `requests` slot (billable refunded); request-stage taps are `notify` only — fire-and-forget, reply ignored, errors swallowed (`fire_global_taps`) — and can never reject",
-   "inventory": "proxy-hooks §2.1, §2.2",
+   "inventory": "proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -405,7 +405,7 @@
    "id": "PB-7",
    "surface": "inbound shed",
    "binding": "`max_inbound_concurrent` covers EVERY data-listener route (`/stats`, `/v1/models`, `/v1beta/models`, `/metrics`, `/metrics/hooks`, `/auth/token`, `/healthz`); the static 503 body + `Retry-After: 1`; the admin listener is never capped",
-   "inventory": "routes-admin LST-001, ops §3",
+   "inventory": "routes-admin, ops",
    "note": "Resolved 2026-09-05 in 1.5.5: the shed was restored; proven by crates/busbar/tests/inbound_concurrency_shed.rs, the admission layer test and the concurrency|inbound-shed|n8 cell.",
    "status": "mapped",
    "checks": [
@@ -433,7 +433,7 @@
    "id": "PB-8",
    "surface": "request bounds for `http`/`sse` units",
    "binding": "only 1.5.5's: `failover.timeout_secs` (120 s walk deadline, checked UNCONDITIONALLY before every attempt streaming included → 503 + `DETAIL_REQUEST_TIMEOUT` on the pre-attempt check; the `pick_among` guard instead returns `None` and lands on the pool's `on_exhausted` terminal (503 `KIND_OVERLOADED` + `Retry-After`)); the per-request reqwest timeout applied only when NOT streaming; per-attempt time-to-headers cap with pool-member override; `upstream_request_timeout_secs` (default 300, no ceiling — the client-level TOTAL deadline that also bounds streams); `max_hops + 1` attempts; `failover.exclusions`; context-length exclusion of every candidate whose `context_max` <= the failed lane's (a `None` failed limit excludes only the failed lane, `engine/mod.rs:2099-2120`); NO `max_unit_duration` cut and NO drain deadline (SIGTERM drain is unbounded, streams run to completion); `max_unit_duration` is the stall sweep only (PB-48)",
-   "inventory": "proxy-hooks §2.8 rows 1 and 12 (`engine/mod.rs:1363-1373`, `:1694-1698`), ops §3.6, config CONF-130",
+   "inventory": "proxy-hooks rows 1 and 12 (`engine/mod.rs:1363-1373`, `:1694-1698`), ops, config",
    "note": "The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet.",
    "status": "mapped",
    "checks": [
@@ -536,7 +536,7 @@
    "id": "PB-10",
    "surface": "upstream disposition and status mapping",
    "binding": "the 31-row table (`TransientUpstream` / `HardDown` billing vs auth / `ContextLength` / `ClientFault` / passthrough 401–403, breaker records, metric labels, `kind` and detail literals) reproduced verbatim, one cell per row",
-   "inventory": "proxy-hooks §2.8, §3.4 (`:377-407`)",
+   "inventory": "proxy-hooks (`:377-407`)",
    "status": "mapped",
    "checks": [
     {
@@ -601,7 +601,7 @@
    "id": "PB-11",
    "surface": "plugin trust and ABI windows",
    "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin within its kind's 1.6.0 window (store [2,4] — OWNER DECISION: widened past the published-1.5.5 floor of [2,2] because ABI-4 stores are a later release and must load on this binary too, not a 1.5.5-parity constraint; auth [1,2], hook [1,1], export [2,2], secret [1,1] unchanged) loads through its ABI adapter (no \"floor 5\" precondition anywhere); `supported_abi(kind)` REPORTS the current window — boot, `--validate` and `POST /plugins/inspect` print `v2..=v4` for a store, never `v2..=v2` and never `v2..=v5`; a published-1.5.5 store (ABI 2) and an ABI-4 store both load; ABI 3 remains inside the window; `plugin-pack --abi-version` defaults to the 1.5.5 max; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest OUTSIDE that window is refused with 1.5.5's literal `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max})` printing the CURRENT range, never `PluginAbiTooOld`",
-   "inventory": "config CONF-184/185, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
+   "inventory": "config, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
    "note": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
    "status": "mapped",
    "checks": [
@@ -647,7 +647,7 @@
    "id": "PB-12",
    "surface": "export subsystem",
    "binding": "the built-in `export:` sinks (`prometheus`, `request-log-webhook`, `request-log-file`, `otlp`) are fire-and-forget at-most-once: never block the request path, never surface errors; the webhook admission gate is PER INSTANCE (`tests/webhook_tests.rs:222-268` at the tag proves it; CONF-249's \"shared\" wording is the defective row and is corrected in the inventory); `PRODUCED_STREAMS` and the validate-time refusals verbatim (`costs` / `decisions` / `identity` / `prompts` / `completions` rejected with the 16 literals, `fields:` exhaustive never additive, `buffer_seconds` required, `key_gauge_limit` 2000) — 1.6.0 never makes a refused stream name start producing; the file sink uses the fixed `MAX_INFLIGHT_FILE_APPENDS = 64` and ignores the key; `durable: true` a config refusal; `OnceLock` process globals; restart to repoint; a migrated export PLUGIN (none ship at the tag) keeps at-most-once, no-ack, no-retry and is not called on the data path; `Segment`, ack and retry exist only for 1.6.0-native export plugins",
-   "inventory": "plugins-stores §4 (:1510-1545), config CONF-249, :2367-2371",
+   "inventory": "plugins-stores (:1510-1545), config :2367-2371",
    "status": "mapped",
    "checks": [
     {
@@ -712,7 +712,7 @@
    "id": "PB-13",
    "surface": "`data_dir`",
    "binding": "DEFAULT UNSET; no data-dir probe, no data-dir files, no `DataDirNotWritable`, no `KeysetMissing`; the 1.5.5 overlay file `busbar-overlay.json` beside the resolved `config.yaml` and its boot writability probe (BOOT-W18) are unchanged (PB-49); the journal is memory-buffered and shipped to the configured store; the deployment keyset is sealed in the store ONLY where the store can hold it (a 1.6.0 native-ABI store); on a 1.5.5 ABI-2 store (which has no such method) and on the memory store the keyset is node-local and ephemeral and NOTHING depends on it on a 1.5.5-shaped deployment — no fingerprint check, no `KeysetMissing`, no ceremony — a node joins by starting with the shared config and store (rolling start); the WAL, local keyset, probe and import exist only when `data_dir` is written",
-   "inventory": "plugins-stores :945, ops :208, config CONF-009 / :744",
+   "inventory": "plugins-stores :945, ops :208, config :744",
    "note": "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5.",
    "status": "mapped",
    "checks": [
@@ -736,7 +736,7 @@
    "id": "PB-14",
    "surface": "store outage, peerless node",
    "binding": "serve-through: cells stay authoritative, admission never blocks or fails on the store, deltas retried each tick, reconcile when it returns; `/usage` returns `AdminError::Internal` (500) while the store is down; boot fails closed on a store error at hydrate; no drain, no `outage_grace`, no `StaleSlice`, no new-draw refusal — the fleet branches of §2.3/§4.6 apply only when `peers:` is written",
-   "inventory": "governance 7.4.1–7.4.5, 7.5.3",
+   "inventory": "governance",
    "status": "mapped",
    "checks": [
     {
@@ -752,7 +752,7 @@
    "id": "PB-15",
    "surface": "WAL high-water",
    "binding": "never refuses admission on a 1.5.5 config: without `data_dir` there is no WAL; with an explicit store the discard posture is sealed for every migrated config",
-   "inventory": "governance 7.4.1",
+   "inventory": "governance",
    "note": "No WAL or high-water concept exists in crates/ yet; the neutrality tripwire (no_data_dir_neutrality.rs + the ops.scrape no-ledger-series cell) turns red the day a WAL series or boot line appears on a config without data_dir.",
    "status": "mapped",
    "checks": [
@@ -776,7 +776,7 @@
    "id": "PB-16",
    "surface": "`/usage` and every legacy admin response",
    "binding": "byte-identical; NO additive lines — every alarm or delta named \"on the ledger endpoint (PB-16)\" in §4.2/§4.7/Appendix A lives on the 1.6.0 ledger endpoints (`/api/v1/admin/ledger/*`); a legacy metering row (`requests`, `spend_micros`, tokens) is written ONLY by the delivered-response tap — an admitted-but-undelivered unit (pool-empty 503, deadline 503, rewrite 500) writes no row and its fee is refunded on the non-2xx status; a terminal-error stream (delivered on 2xx headers) writes no token line and no legacy metering row but KEEPS the flat fee",
-   "inventory": "governance §6, 7.3.1, 5.2.11, 6.3.3 (`proxy/usage.rs:57-107`), routes-admin ADM-*",
+   "inventory": "governance (`proxy/usage.rs:57-107`), routes-admin",
    "status": "mapped",
    "checks": [
     {
@@ -813,7 +813,7 @@
    "id": "PB-17",
    "surface": "boot warnings",
    "binding": "none beyond 1.5.5's 228 unless a 1.6.0-additive key (`data_dir`, `peers`, `keyset_ref`, `wal_capacity`, …) is written",
-   "inventory": "config §3",
+   "inventory": "config",
    "status": "mapped",
    "checks": [
     {
@@ -836,7 +836,7 @@
    "id": "PB-18",
    "surface": "arrival budgets",
    "binding": "`spill_budget` = `max_inbound_concurrent × request_body_max_bytes`; cursor and credential budgets = `max_inbound_concurrent × 64 KiB`; `max_inbound_concurrent: 0` ⇒ every derived budget UNBOUNDED (1.5.5: no layer is added, BOOT-089e); the per-unit arena holds only per-frame transform output — relay and egress bodies live in the connection slab / spill — so neither the arena nor any budget refuses a request 1.5.5 accepted; the tighter RSS bound is the §10 gate, not a refusal",
-   "inventory": "config CONF-131, CONF-134 (:267)",
+   "inventory": "config (:267)",
    "status": "mapped",
    "checks": [
     {
@@ -859,7 +859,7 @@
    "id": "PB-19",
    "surface": "`MissingGroup`",
    "binding": "a key bound to a group absent from this node's config fails closed: `insufficient_quota`, 429 (400 on the one dialect), literal message",
-   "inventory": "governance §3.2.1, §3.6.7",
+   "inventory": "governance",
    "status": "mapped",
    "checks": [
     {
@@ -933,7 +933,7 @@
    "id": "PB-21",
    "surface": "idempotency",
    "binding": "per node, in process, TTL 600 s, `(actor, header)` / `(actor, \"rotate:{id}:{k}\")`, no body hash; the in-flight arm: a `Null` sentinel reservation, a concurrent duplicate ⇒ `409 {\"error\":{\"code\":\"conflict\",\"message\":\"a request with this Idempotency-Key is already in flight\"}}`, `Reserved` cleared on `Drop`, `InFlight` deliberately not; a replay returns the original `201`/`200` with no replay-marker header; a retry on another node mints twice",
-   "inventory": "routes-admin §4 (:305-311), auth-secrets §3",
+   "inventory": "routes-admin (:305-311), auth-secrets",
    "status": "mapped",
    "checks": [
     {
@@ -998,7 +998,7 @@
    "id": "PB-22",
    "surface": "admission decision",
    "binding": "CHECK-THEN-CHARGE under one set of shard guards: pass 1 checks every bucket of the pool-filtered chain and returns on the FIRST blocking bucket in chain order (metric priority `requests` → `tokens` → `budget`; that bucket names the 429 message and `Retry-After` scale), charging nothing — preceded by the phases OUTSIDE the shard guards: `MissingGroup` → FREEZE (403 `permission_error`, before any gauge or charge) → the `concurrent` CAS (429, its own message, `retry_after: None`) — PB-79; the Bedrock 400 (`quota_exceeded_status()`) applies ONLY to `budget` (`insufficient_quota`) and `MissingGroup`, never to `requests`/`tokens` (always 429 `rate_limit_error`); pass 2 then adds `requests` and `billable_requests` +1 on EVERY bucket of the chain (uncapped key bucket included; `capped_bucket_ids` is only the sweep-exemption set) and the fee lookahead; `budget` as `derived_cents >= cap || derived + fee > cap`, `tokens` post-hoc, `concurrent` gauge, pool scope, downgrade cascade, frozen groups; the hold is accounting only",
-   "inventory": "governance §3.1 (:196-197), §3.3 (:218-231), §3.4, 3.4.3, 2.7.2, 2.6.1 (`state.rs:1757-1849`)",
+   "inventory": "governance (:196-197), (:218-231), (`state.rs:1757-1849`)",
    "status": "mapped",
    "checks": [
     {
@@ -1063,7 +1063,7 @@
    "id": "PB-23",
    "surface": "`--safe-mode` as first argument",
    "binding": "exits 2 (\"unrecognized argument\") — reproduced; fixing it is an owner decision recorded here as OPEN",
-   "inventory": "ops §2",
+   "inventory": "ops",
    "status": "mapped",
    "checks": [
     {
@@ -1079,7 +1079,7 @@
    "id": "PB-24",
    "surface": "listeners",
    "binding": "two listeners always, admin claims only on the admin listener, `admin_require_mtls` guard",
-   "inventory": "routes-admin LST-001/002",
+   "inventory": "routes-admin",
    "status": "mapped",
    "checks": [
     {
@@ -1116,7 +1116,7 @@
    "id": "PB-25",
    "surface": "usage absent from a stream",
    "binding": "bills zero; kernel floor internal only",
-   "inventory": "dialects §4",
+   "inventory": "dialects",
    "status": "mapped",
    "checks": [
     {
@@ -1132,7 +1132,7 @@
    "id": "PB-26",
    "surface": "pre-charge vs post-charge exits",
    "binding": "every `finish_rejected` exit charges NOTHING: the governance guard in 1.5.5's order — pool-ACL 403 → reachable-fallback-pool ACL 403 (`fallback_pools_authorized`, visited-set guard) → no-rate 400 `invalid_request_error` \"no configured rate for model '{pool}'\" → admission 429 — plus malformed / non-object body 400, a MISSING `model` 400 `invalid_request_error` (`dispatch.rs:136-155`), the ad-hoc provider mismatch 400 (`ingress/mod.rs:1368-1393`), the two further 400s at routes-admin :222/:224, an unresolved name 404, unsupported path/action 404; every exit AFTER `governance_guard` retains the `requests` slot (`billable_requests` refunded on non-2xx): the priced-but-unrouted 404 through `finish_admitted`, rewrite 500, deadline 503, pool-empty 503, engine and upstream ends",
-   "inventory": "governance §3.1 steps 2–4, §3.6.1–3.6.2, §3.8.5–3.8.7 (`ingress/mod.rs:39-90, 362-394, 491-518`; `dispatch.rs:199-235`)",
+   "inventory": "governance steps 2–4, (`ingress/mod.rs:39-90, 362-394, 491-518`; `dispatch.rs:199-235`)",
    "status": "mapped",
    "checks": [
     {
@@ -1197,7 +1197,7 @@
    "id": "PB-27",
    "surface": "zero-token ends",
    "binding": "a response bills ZERO tokens (located and accrued figures internal evidence only) on every 1.5.5 not-billed arm: a stream ending with a terminal error signal (`terminal_error != None`); an SSE transport cut after the first byte (`stream_failed = true`); a buffered cross-protocol 2xx that fails after the upstream 2xx (transport failed mid-read → 502, over the translate cap → 500, untranslatable → 500); the `max_requests` lane unit is refunded on the pre-first-byte cut and the client disconnect, NOT on the post-first-byte transport cut; a client disconnect bills the partial tokens and refunds the LANE `max_requests` unit; the flat fee (`billable_requests`) is KEPT, as on every exit after 2xx headers were relayed (`ingress/mod.rs:574-579` refunds only on a non-2xx client status) — each arm one cell",
-   "inventory": "dialects §4.4; proxy-hooks §4 (:430-436; `engine/mod.rs:329-378`, `:552-589`, `response_body.rs:283-345`); governance 3.8.4",
+   "inventory": "dialects; proxy-hooks (:430-436; `engine/mod.rs:329-378`, `:552-589`, `response_body.rs:283-345`); governance",
    "status": "mapped",
    "checks": [
     {
@@ -1276,7 +1276,7 @@
    "id": "PB-28",
    "surface": "`on_empty: weighted` semantics",
    "binding": "for a GATE: that gate's restriction is skipped and the candidate set is unchanged; for the BASE POLICY: escape to full-pool SWRR; never \"the full verified set\" for a gate",
-   "inventory": "proxy-hooks §2.4, §2.5",
+   "inventory": "proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -1292,7 +1292,7 @@
    "id": "PB-29",
    "surface": "gate vs routing-policy 503 literals",
    "binding": "four distinct bodies reproduced: \"No upstream satisfies a required gate's restriction…\" / \"No upstream satisfies the routing policy's restriction…\" / \"A required gate could not complete…\" / \"The routing policy could not select an upstream…\", keyed on whether the failing hook is the pool's base policy or a decision gate",
-   "inventory": "proxy-hooks §7",
+   "inventory": "proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -1336,7 +1336,7 @@
    "id": "PB-30",
    "surface": "protocol detection",
    "binding": "the 14-rung `detect::protocol_id` ladder verbatim (header presence `anthropic-version` or `anthropic-beta` / `x-api-key` / `x-goog-api-key`; header prefix `AWS4-HMAC-SHA256`; path suffix / contains `…/v1/chat/completions`, `:generateContent`, `/converse`; the catch-all route); an unmatched path renders the PATH-INFERRED protocol's 404 (`proto_for_path`, which may differ from the detected protocol — `/v1/models/{rest}` detects gemini, renders openai); on the DATA listener any path equal to `/api` or under `/api/` gets the frozen admin envelope `{\"error\":{\"code\":\"not_found\",…}}` from `fallback_error_response` (three call sites: the data catch-all, `method_not_allowed_handler`, and `reshape_oversized_413` — the last on BOTH listeners) BEFORE `proto_for_path`; the admin listener's own route fallbacks are PB-76",
-   "inventory": "dialects §2.1(a); routes-admin RT-013, RT-040 (:197), :261-264 (`main.rs:1195-1205`)",
+   "inventory": "dialects; routes-admin (:197), :261-264 (`main.rs:1195-1205`)",
    "status": "mapped",
    "checks": [
     {
@@ -1394,7 +1394,7 @@
    "id": "PB-31",
    "surface": "plugin-declared routes",
    "binding": "`plugin_routes` verbatim: `/hooks/{owner}` or `/hooks/{owner}/*`, `/exports/{owner}` or `/exports/{owner}/*`, `/metrics`; `RouteAuth` incl. `None`; empty-body 405 and 404; the three 502 arms, of which the `DynExport::Err` 502 carries the loader's error text as its body; the 64-header cap; kernel-mounted from the declared table (the no-self-mount rule carves these out); a newly declared plugin route path is RESTART-scoped (PB-39)",
-   "inventory": "routes-admin RT-011 (:129, `plugin_routes.rs:101-111`), RT-012, §5.8",
+   "inventory": "routes-admin (:129, `plugin_routes.rs:101-111`)",
    "status": "mapped",
    "checks": [
     {
@@ -1459,7 +1459,7 @@
    "id": "PB-32",
    "surface": "admin mutation rate limiting",
    "binding": "`admin/rate.rs` verbatim: 60 s windows, `Config` 10/min, `Crud` 60/min, `PluginInspect` 30/min, `429 {\"code\":\"rate_limited\"}` + `Retry-After: 60`, enforced before the handler, first denial per window audited",
-   "inventory": "routes-admin §4",
+   "inventory": "routes-admin",
    "status": "mapped",
    "checks": [
     {
@@ -1496,7 +1496,7 @@
    "id": "PB-33",
    "surface": "`GET /auth/token`",
    "binding": "the browser exchange verbatim: unauthenticated exact-path bypass, `200 text/html` or `302` to the IdP, `?logout` / `?code` / `?method` / `?refresh` dispatch",
-   "inventory": "routes-admin RT-005",
+   "inventory": "routes-admin",
    "status": "mapped",
    "checks": [
     {
@@ -1561,7 +1561,7 @@
    "id": "PB-34",
    "surface": "secret-ref timing and value semantics",
    "binding": "every migrated `SecretRef` resolves at 1.5.5's EIGHT sites with 1.5.5's caching and failure posture: `store.settings.*` (boot-real, reload WARN-only — BOOT-W15/BOOT-170); auth-chain / admin-chain / login-method settings (re-resolved at every chain build, hard error `auth/mod.rs:322-324`); the memoized `secrets:` open-config block; provider `api_key` once at app build, memoized for the app lifetime; TLS once per listener; hook settings re-resolved at every `gate_transport_named` / configure push; plugin-backed refs re-resolved on each `resolve()` (the plugin re-opened each time); the admin token and `auth.signing_key` re-resolved at boot and on every apply/reload that DECLARES the credential, through the deferred `GovCredentialRotation` closure (removal is restart-scoped — a reload deleting the declaration leaves the live credential and signer in place, :2000-2002); `export.<n>.settings.*` refs resolve core-side before crossing the ABI (config :1163); no TTL, no watcher otherwise; an unresolvable provider key is a WARNING degrading to `\"\"`; built-ins (`env`, `file` — a strict two-way match) are unconditionally FIRST — a `kind: secret` plugin (incl. `secret-local`) can never shadow them; `{ literal: }` is NOT a `SecretRef` shape and is rejected by the schema at any `SecretRef` position (SEC-018/020); value semantics verbatim: `classify_setting` shape-only ordering with its one-level `{ literal: }` passthrough for non-secret settings, trailing `\\r\\n` trim, the empty-after-trim error text, fail-closed empties (SEC-020); `watch`/`refresh` are no-ops for migrated refs",
-   "inventory": "auth-secrets §7.4 (:1854-1856), §7.8, §7.9 (:2005-2007); config SEC-001..020, :1145, :1177-1180",
+   "inventory": "auth-secrets (:1854-1856), (:2005-2007); config :1145, :1177-1180",
    "status": "mapped",
    "checks": [
     {
@@ -1640,7 +1640,7 @@
    "id": "PB-35",
    "surface": "auth chain and credential cache",
    "binding": "`run_chain_cached` verbatim: config order, first `Identify` wins, `Reject` stops, `Pass` continues; `Open` ONLY when the chain declares no module AND no `keys` arm (`chain.is_empty() && !keys_in_chain`) — the mandatory in-tree `auth-lease` / `secret-local` plugins are NEVER members of the counted lists, so `auth.chain: []` stays anonymous-admit and `admin_auth: []` keeps `Grants::of(Scope::Full)`; all-`Pass` with a `keys` arm runs `keys_arm_verdict`, all-`Pass` without one is `Denied`; `auth_cache` only for modules whose `cacheable()` returns true (trait default FALSE — an external module that does not override it is re-verified every request), keyed `(module, sha256(cred))`, Identify TTL `min(ttl, 3600)` default 300 s, `PASS_TTL_SECS = 5` + jitter, `Reject` never cached, `MAX_ENTRIES = 4096`; the `keys` arm is cache-exempt; `POST /admin/auth/cache/flush` → `{\"flushed\": N}` with a real count; client credential carrier precedence `extract_client_token` verbatim: `Authorization: Bearer` → `x-api-key` → `x-goog-api-key`, a non-Bearer `Authorization` (e.g. SigV4) falls through to the next carrier — one cell per carrier pair",
-   "inventory": "auth-secrets §2.1 (:58-70), §2.3 (:113, :132-134), §2.9 (:607-612), :1430",
+   "inventory": "auth-secrets (:58-70), (:113, :132-134), (:607-612), :1430",
    "status": "mapped",
    "checks": [
     {
@@ -1756,7 +1756,7 @@
    "id": "PB-37",
    "surface": "ABI-2 store adapter fallback",
    "binding": "`call_with_legacy_default` verbatim: only `TransportErrorKind::Unsupported` opens a default, on `append_audit` / `list_audit` / `list_audit_tail` / `list_denylist`; everything else propagates",
-   "inventory": "plugins-stores §5.8",
+   "inventory": "plugins-stores",
    "status": "mapped",
    "checks": [
     {
@@ -1849,7 +1849,7 @@
    "id": "PB-39",
    "surface": "reload scope",
    "binding": "RESTART keys exactly as the inventory: `listen`, `admin_listen`, `tls`, `admin_tls`, `admin_require_mtls`, `store`, `limits.upstream_request_timeout_secs`, `limits.pool_max_idle_per_host`, `limits.pool_idle_timeout_secs`, `limits.max_inbound_concurrent`, `advanced.response_headers.server_timing` / `.route_policy`, `advanced.worker_threads` / `.upstream_http1_only` / `.upstream_h2_prior_knowledge`, a newly declared plugin route path, the OTLP sink / `metrics::configure` recorder / write-behind flusher — `config/reload` stores but does not apply their deltas, does not rebind, rebuild the acceptor or re-open the store, and returns 1.5.5's `ConfigReloadView { reloaded, config_version }` unchanged (the `note` + `reload_to_apply` field list belongs to `PUT /config/settings` (`handlers.rs:2654-2662`) and the newly-declared-route `note` to the NAMED-MAP mutations (`named_map.rs:530-538`, `:643-649`) — each reproduced at its own handler); LIVE on swap: `limits.upstream_error_body_max_bytes`, `advanced.rate_sweep_interval`, `advanced.usage_flush_interval_ms` and every other key; `limits.request_body_max_bytes` HALF-LIVE exactly as documented",
-   "inventory": "config §4.5 (:1046-1058)",
+   "inventory": "config (:1046-1058)",
    "status": "mapped",
    "checks": [
     {
@@ -1900,7 +1900,7 @@
    "id": "PB-40",
    "surface": "unknown-key refusal",
    "binding": "the serde `expected one of` list is byte-identical to 1.5.5's for EVERY `deny_unknown_fields` struct (all 49: the 44 enumerated at BOOT-P01 plus the five `section_patch!` twins in `config/patch.rs`, `GroupCfg` and `ChildDefault` included): every 1.6.0-additive key — top-level (`data_dir`, `peers`, `keyset_ref`, `wal_capacity`, `outage_grace`, …) AND per-bucket (`tier_bp`, `currency`, keyed by bucket name) — lives under ONE new top-level block `fleet:`, split off before the 1.5.5-shaped parse",
-   "inventory": "config BOOT-P01 (:515), :67",
+   "inventory": "config (:515), :67",
    "status": "mapped",
    "checks": [
     {
@@ -1923,7 +1923,7 @@
    "id": "PB-41",
    "surface": "1.6.0 warnings on 1.5.5 configs",
    "binding": "the store record-rate warning and the `keyset_ref`-unset warning fire ONLY when `data_dir` or `peers:` is written; otherwise they are ledger-endpoint lines; PB-17 holds for every 1.5.5 key incl. `store.module`",
-   "inventory": "config CONF-170, §3",
+   "inventory": "config",
    "status": "mapped",
    "checks": [
     {
@@ -1946,7 +1946,7 @@
    "id": "PB-42",
    "surface": "boot store probe",
    "binding": "a migrated config boots on 1.5.5's read-only hydrate (BOOT-172/173 only); no write-read-back, so a read-only replica or grant-restricted DB boots exactly as on 1.5.5; the write probe exists only with `data_dir` or `peers:`",
-   "inventory": "config BOOT-172/173",
+   "inventory": "config",
    "status": "mapped",
    "checks": [
     {
@@ -1961,7 +1961,7 @@
    "id": "PB-43",
    "surface": "operational routes",
    "binding": "`/healthz` on both listeners with the unconditional auth bypass, 200 `ok` iff any lane passes the NON-MUTATING `is_ready_any_cell` over the default and every per-pool cell, else 503 `no usable lanes` (side-effect-free, never steals the single-flight recovery probe); `/metrics` is `text/plain; version=0.0.4`; `/metrics/hooks` is a CORE axum route (not a plugin route), `text/plain; version=0.0.4; charset=utf-8`, with its exposition contract verbatim (no prefixing, one `hook=` label, `busbar_`-prefixed dropped, bucketless histogram as summary, first-occurrence type wins, `HOOK_METRICS_TTL_SECS = 10`, `MAX_HOOK_METRICS 64`, the name regex); `/stats` per RT-* with its 20 per-lane fields, `\"unbounded\"` string, `Unavailable` variant names classified breaker-first, `recovery_hint_ms` floor 2000 — the 1.6.0 refusal vocabulary never reaches it; `/metrics` declared only when `export.prometheus` is configured, `RouteAuth::Key` (data-plane client token, not admin); `/metrics/hooks` mounted only when `metrics::enabled()`; `/stats` per RT-*; absent the gate, the catch-all 404",
-   "inventory": "routes-admin RT-002/003/004/012; ops §4.3",
+   "inventory": "routes-admin; ops",
    "status": "mapped",
    "checks": [
     {
@@ -2082,7 +2082,7 @@
    "id": "PB-44",
    "surface": "`in_flight_reserve`",
    "binding": "0 unless a claimed transport declares `SESSION = true`; a 1.5.5 config sheds at exactly `max_inbound_concurrent`; the reserve is drawn only against session Unit 0 arrivals",
-   "inventory": "config CONF-134",
+   "inventory": "config",
    "status": "mapped",
    "checks": [
     {
@@ -2163,7 +2163,7 @@
    "id": "PB-46",
    "surface": "migrated hook seats",
    "binding": "a 1.5.5 `Request`-stage hook seats `After(Admit)` ahead of `Candidate` hooks, in 1.5.5's order; `Before(Approve)` is never used for a migrated hook",
-   "inventory": "proxy-hooks §2.1, §2.2",
+   "inventory": "proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -2186,7 +2186,7 @@
    "id": "PB-47",
    "surface": "scoped draws and fallback",
    "binding": "a scoped bucket is charged on the ATTEMPTED (effective, post-downgrade) pool — `attempt_pool`, which the refund also walks — \"accounting follows the traffic\"; a `{ fallback_pool }` hop draws and releases nothing",
-   "inventory": "governance 3.9.7 (:334; `ingress/mod.rs:191-196`, `state.rs:1640-1641`), proxy-hooks §2.11",
+   "inventory": "governance (:334; `ingress/mod.rs:191-196`, `state.rs:1640-1641`), proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -2230,7 +2230,7 @@
    "id": "PB-48",
    "surface": "stall sweep on `http`/`sse`",
    "binding": "the `max_unit_duration` sweep alarms only; the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL reqwest deadline (default 300 s, `main.rs:3179-3181`); there is no idle timer",
-   "inventory": "proxy-hooks §2.8, ops §3.6",
+   "inventory": "proxy-hooks, ops",
    "note": "max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.",
    "status": "mapped",
    "checks": [
@@ -2254,7 +2254,7 @@
    "id": "PB-49",
    "surface": "config overlay subsystem",
    "binding": "`config.locked`, `config.overlay` / `overlay.file`, `BUSBAR_CONFIG_OVERLAY`, `--safe-mode`'s function, BOOT-123/125, W18–W20, `NO_WRITABLE_OVERLAY_MSG` (wrapped in `AdminError::Validation` ⇒ 400 `invalid_request` at all five sites — `handlers.rs:461, 2093, 2492, 2951`, `named_map.rs:343`), persist-then-swap, tombstones, `0o600` — verbatim",
-   "inventory": "config C3",
+   "inventory": "config",
    "status": "mapped",
    "checks": [
     {
@@ -2305,7 +2305,7 @@
    "id": "PB-50",
    "surface": "`--migrate-config` and the 1.x detector",
    "binding": "23 markers, 18 passes, YAML to stdout, banner to stderr, exit codes 0/1/2, no interpolation, comments destroyed, nothing written — verbatim",
-   "inventory": "config C3, ops O1",
+   "inventory": "config, ops",
    "status": "mapped",
    "checks": [
     {
@@ -2350,7 +2350,7 @@
    "id": "PB-51",
    "surface": "`RUST_LOG`",
    "binding": "parsed as a bare `tracing::Level` only (no `EnvFilter`): `busbar=debug` falls back to INFO silently; the OTLP level floors at DEBUG independently",
-   "inventory": "ops O4",
+   "inventory": "ops",
    "status": "mapped",
    "checks": [
     {
@@ -2373,7 +2373,7 @@
    "id": "PB-52",
    "surface": "env-vs-config precedence",
    "binding": "env wins for `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_*`, `BUSBAR_PROVIDERS`; config wins for `BUSBAR_CONFIG_OVERLAY`; the five deprecation warnings; the worker-thread chain `BUSBAR_WORKER_THREADS > advanced.worker_threads > TOKIO_WORKER_THREADS > available_parallelism() > 1`, `.min(128)`, `0` ⇒ warn and ignore, with W34's wording from `config.yaml` and CONF-293's wording from the env path",
-   "inventory": "config §4.2 (:835), CONF-162, W34",
+   "inventory": "config (:835)",
    "status": "mapped",
    "checks": [
     {
@@ -2424,7 +2424,7 @@
    "id": "PB-53",
    "surface": "metric absences and gates",
    "binding": "the five counters with no `describe_*` (no `# HELP`); the recorder installed only with `export.prometheus`; `busbar_billing_truncated_total` pre-registered `.absolute(0)`; the two retired names never reappear",
-   "inventory": "ops O3",
+   "inventory": "ops",
    "status": "mapped",
    "checks": [
     {
@@ -2440,7 +2440,7 @@
    "id": "PB-54",
    "surface": "CLI / env / signals / spans cells",
    "binding": "§8.1 and `xtask gate` carry cells for every 1.5.5 CLI flag and exit code, env var, SIGHUP-not-handled, the 25 startup steps, the seven `#[instrument]` spans and the request-log record, diffed against the 1.5.5 binary — the 25 `run()` steps are an EXACT ORDERED sequence whose observable output is byte-identical (`busbar starting` stays the first log line; `Bootstrap` / `Migration` / `Policy` / keyset lines are DEBUG-level, never interleaved at INFO on a 1.5.5 config); the pre-runtime phase (CLI flags before any env/file access, the jemalloc purge enable with its two `[warn]` stderr lines, the `busbar-idle-purge` fallback thread) and `BUSBAR_PROFILE`'s 13 named stages verbatim; flags and exit codes as a SUBSET invariant: every 1.5.5 argument behaves identically; `--help` gains lines for the 1.6.0 subcommands (`--data-dir`, `operator keygen`, `keyset import`, `keyset recipient-keygen`, `policy sign`) and those arguments no longer exit 2 — the one additive CLI difference, stated",
-   "inventory": "ops O1/O2/O4, §2.1–2.2",
+   "inventory": "ops",
    "status": "mapped",
    "checks": [
     {
@@ -2463,7 +2463,7 @@
    "id": "PB-55",
    "surface": "active health probers",
    "binding": "`health.mode: none | dead | active`, 30 s interval, 5 s timeout, first probe one interval in, recovery and hard-down log lines, `PROBE_ERROR_BODY_CAP` — run as a kernel Tick, verbatim",
-   "inventory": "ops O2, governance G4",
+   "inventory": "ops, governance",
    "status": "mapped",
    "checks": [
     {
@@ -2507,7 +2507,7 @@
    "id": "PB-56",
    "surface": "egress HTTP client",
    "binding": "`redirect: Policy::none()`, `connect_timeout` 10 s, `tcp_keepalive` 60 s, `tcp_nodelay`, HTTP/2 keep-alive and adaptive-window settings, `pool_max_idle_per_host` / `pool_idle_timeout`, `advanced.upstream_http1_only` / `upstream_h2_prior_knowledge` — verbatim",
-   "inventory": "proxy-hooks P3",
+   "inventory": "proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -2523,7 +2523,7 @@
    "id": "PB-57",
    "surface": "exclusion point in the pick",
    "binding": "`select_weighted_for` filters weight-0, `!lane_admissible` (dead / `BudgetExhausted`) and breaker-open lanes BEFORE the SWRR credit walk; only an at-capacity lane (and the half-open probe race) reaches `try_admit` inside `pick_among` after selection and so consumes an SWRR turn — reproduced exactly",
-   "inventory": "proxy-hooks §2.7 step 6; `store/in_memory/mod.rs:869-900`, `select.rs:417-425`",
+   "inventory": "proxy-hooks step 6; `store/in_memory/mod.rs:869-900`, `select.rs:417-425`",
    "status": "mapped",
    "checks": [
     {
@@ -2560,7 +2560,7 @@
    "id": "PB-58",
    "surface": "admitted units and money",
    "binding": "on every 1.5.5-shaped deployment an ADMITTED `http`/`sse` unit is never ended for money: no `Aborted(Kernel { OverBudget })`, no `Aborted(Kernel { OverdraftCeiling })`; the overdraft ceiling is unbounded (flag-only) on every Migration-sealed bucket; `OverdraftCeiling` and `StaleSlice` are never refusal reasons on a 1.5.5 config; token overshoot is bounded only by the in-flight admitted requests, exactly as at the tag",
-   "inventory": "governance 3.3.5, 3.3.11; proxy-hooks §2.8–2.9",
+   "inventory": "governance; proxy-hooks",
    "note": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
    "status": "mapped",
    "checks": [
@@ -2598,7 +2598,7 @@
    "id": "PB-59",
    "surface": "multi-node admission (shared store, no `peers:`)",
    "binding": "admission cells are NODE-LOCAL: hydrated once at boot (BOOT-172/173), never re-read; `add_usage` atomic accumulate on the 100 ms flush; a node never sees another node's spend until restart, so a two-node deployment admits up to ≈ N× a cap exactly as 1.5.5; window-roll and `refund_bucket` semantics per the inventory; store slices are ledger-internal and never feed the decision",
-   "inventory": "governance 7.1.2, 7.2.5, 7.4.1, 7.5.1",
+   "inventory": "governance",
    "status": "mapped",
    "checks": [
     {
@@ -2687,7 +2687,7 @@
    "id": "PB-61",
    "surface": "chunked bodies",
    "binding": "a request body is accepted up to `request_body_max_bytes` (default 32 MiB, ceiling 1 GiB) regardless of chunk count; `MAX_NEEDMORE_FRAMES` never applies to body spooling",
-   "inventory": "config CONF-131",
+   "inventory": "config",
    "note": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
    "status": "mapped",
    "checks": [
@@ -2755,7 +2755,7 @@
    "id": "PB-63",
    "surface": "plugin reload / rollback mechanics",
    "binding": "the governance/store instance is REUSED across `plugins/reload` (keys, budgets, ledger survive); in-flight requests finish on the old snapshot; fail-closed on any pipeline error; ephemeral-mode degrade to report-only reconcile; `kind_restart_default` and the first-party-only `x-busbar-restart-required: false` override; rollback = persist-pin-then-rebuild with `If-Match`, `NO_WRITABLE_OVERLAY_MSG`, the two-stage revert error strings",
-   "inventory": "plugins-stores §2.16–2.17 (:476-478)",
+   "inventory": "plugins-stores (:476-478)",
    "status": "mapped",
    "checks": [
     {
@@ -2785,7 +2785,7 @@
    "id": "PB-64",
    "surface": "token-minting egress auth",
    "binding": "`jwt-bearer` and `oauth-client-credentials` mint through 1.5.5's background loop verbatim (a Tick-driven, I/O-permitted refresh against the configured `token_url`): `REFRESH_SKEW_SECS = 300`, `MIN_SLEEP_SECS = 30`, `expires_in` default 3600, header built once at mint; before the first mint the request path emits no header (`NoCredential`, the upstream 401 is classified `HardDown`/`Auth`, rendered INGRESS-NATIVE with the body never relayed, and the lane parked (PB-83)) and the active health prober SKIPS the lane (`is_ready()`'s only caller) so a pre-mint lane is never hard-down-parked; the egress-auth kind's purity rule carves out this loop",
-   "inventory": "proxy-hooks :462-470, :509-514, §5.5 (:512; `health.rs:272`)",
+   "inventory": "proxy-hooks :462-470, :509-514, (:512; `health.rs:272`)",
    "status": "mapped",
    "checks": [
     {
@@ -2836,7 +2836,7 @@
    "id": "PB-65",
    "surface": "egress auth wire behaviour",
    "binding": "the 7 schemes as wire bytes: `api-key` / `x-goog-api-key` header names; the Anthropic five-way key-prefix disambiguation incl. the mode-blind arm emitting BOTH `x-api-key` and `Authorization`; `anthropic-version` always appended; SigV4's SignedHeaders set, double-encoded canonical URI, `us-east-1` fallback, `access:secret[:session]` split; `jwt-bearer` / `oauth-client-credentials` fail closed to `NoCredential`; the header is omitted on an unencodable credential",
-   "inventory": "dialects §8.2; auth-secrets §7",
+   "inventory": "dialects; auth-secrets",
    "status": "mapped",
    "checks": [
     {
@@ -2901,7 +2901,7 @@
    "id": "PB-66",
    "surface": "request and response headers",
    "binding": "OWNER DECISION: an ALLOW-LISTED client request header rides upstream verbatim, scoped per egress dialect so a beta header sent for one dialect never leaks to a different one on a cross-protocol route or failover — `anthropic-beta` and `anthropic-version` only to a matching `anthropic` upstream, `OpenAI-Beta` only to a matching `openai` or `responses` upstream; every OTHER client request header is dropped, never forwarded; egress headers are otherwise the four-group construction (credential, three-case `content-type`, pinned native-SDK `user-agent`, `accept` with the Bedrock eventstream override) plus the allow-listed set above; on the response `retry-after` is busbar-SET (no dialect parses an upstream `Retry-After`); `content-type` is the upstream's VERBATIM on a same-protocol relay (`engine/mod.rs:2300-2321`) and otherwise the three cases of dialects :1304 — `application/json` for buffered and error responses, `writer.streaming_content_type()` when reframed (SSE, the gemini JSON array, bedrock `application/vnd.amazon.eventstream`), upstream verbatim same-protocol, and the relayed set is PER INGRESS WRITER — `ingress_relayed_response_header_names()`: bedrock `[\"x-amzn-requestid\", \"x-amzn-errortype\"]` (UUID v4 when absent), anthropic `[\"request-id\"]` (synthesized `req_01<24 base62>` when absent), every other dialect `[]`; everything else stripped; `advanced.response_headers.*` injections per PB-73 are outside this list",
-   "inventory": "dialects §8.1–8.4 (:1305-1316; `proto/mod.rs:695-697`), §6.5 (:997); `engine/egress.rs` `FORWARDED_CLIENT_HEADERS`",
+   "inventory": "dialects (:1305-1316; `proto/mod.rs:695-697`), (:997); `engine/egress.rs` `FORWARDED_CLIENT_HEADERS`",
    "note": "CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.",
    "status": "mapped",
    "checks": [
@@ -2974,7 +2974,7 @@
    "id": "PB-67",
    "surface": "per-dialect error mapping",
    "binding": "the 27-row scenario matrix (:942-970), the per-dialect auth-failure statuses (gemini 400 `invalid_request_error`; bedrock 403 kind `\"auth\"` with an empty message), the six error-envelope shapes, the kind→native tables, `extract_error`, the in-stream `StatusClass` mapping and the 11 `KIND_*` literals — reproduced verbatim, one cell per row",
-   "inventory": "dialects §6.2–6.6 (:965-975)",
+   "inventory": "dialects (:965-975)",
    "status": "mapped",
    "checks": [
     {
@@ -3039,7 +3039,7 @@
    "id": "PB-68",
    "surface": "network guard",
    "binding": "precedence: blocked iff `!allow_all` AND on the denylist AND NOT in `allow_overrides`; the hardcoded denylist (`169.254.0.0/16`, `100.100.100.200`, `168.63.129.16`, `192.0.0.192`, `fd00:ec2::254` + six metadata hostnames); `blocked_metadata_hosts` through the same canonicalizer; CIDR rejection; alternate-IPv4 expansion; no runtime DNS check; the `base_url + path` re-check; the public-https / private-http scheme rule with its two error literals",
-   "inventory": "proxy-hooks P4",
+   "inventory": "proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -3126,7 +3126,7 @@
    "id": "PB-70",
    "surface": "scrape shape",
    "binding": "`/metrics` on a 1.5.5 config exposes NO 1.6.0 series (ledger series live on the ledger endpoints); the pre-registered `.absolute(0)` counters and the `describe_*` absences per PB-53; the `busbar_request_duration_seconds` quantile set is NOT in the repo (exporter defaults; ops UNVERIFIED #1) — Phase −1 scrapes the 1.5.5 binary, records the set here as the resolution of that item, and the oracle diffs it",
-   "inventory": "ops O3 (:1123-1130)",
+   "inventory": "ops (:1123-1130)",
    "status": "mapped",
    "checks": [
     {
@@ -3153,7 +3153,7 @@
    "id": "PB-71",
    "surface": "documented behaviour",
    "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one §8.1 cell family (`documented-vs-actual`)",
-   "inventory": "ops §8",
+   "inventory": "ops",
    "status": "mapped",
    "checks": [
     {
@@ -3191,7 +3191,7 @@
    "id": "PB-73",
    "surface": "`advanced.response_headers`",
    "binding": "`server_timing` / `route_policy` default `false`, RESTART-scoped; `Server-Timing` is a router middleware stamping EVERY response whenever `server_timing: true` (`main.rs:1404-1428`); `x-busbar-route-policy` / `x-busbar-route-target` are emitted only when `route_policy: true` AND a non-default ordering hook (not the SWRR floor registered at `Migration`) produced the order — exactly `proxy/wire.rs:77-112`",
-   "inventory": "config CONF-165/166/167 (:302-304); proxy-hooks §2.12 row 11",
+   "inventory": "config (:302-304); proxy-hooks row 11",
    "status": "mapped",
    "checks": [
     {
@@ -3242,7 +3242,7 @@
    "id": "PB-74",
    "surface": "reserved-name sets",
    "binding": "`RESERVED_POOLS_SECTION_KEYS` (closed), `RESERVED_HOOK_NAMES` (frozen as of 1.5.3), `reserved_admin_name`, `EXPORT_MODULES` — frozen at their 1.5.5 membership; the three new planes add NO reserved word to any 1.5.5-parsed section (the `mcp:` / `a2a:` / `voice:` blocks live under `fleet:`, never top-level — PB-40), so no legal 1.5.5 `config.yaml` becomes a boot failure",
-   "inventory": "config :181-184, :795-800 (BOOT-P07, BOOT-056)",
+   "inventory": "config :181-184, :795-800",
    "status": "mapped",
    "checks": [
     {
@@ -3279,7 +3279,7 @@
    "id": "PB-75",
    "surface": "served OpenAPI document",
    "binding": "`GET /admin/openapi.json` (ADM-052, one of the 66) returns the 1.5.5 blob byte-identical EXCEPT `info.version`: OWNER DECISION — `info.version` reports the running binary's version (`CARGO_PKG_VERSION`, 1.6.0), the same rule `GET /admin/info` (ADM-042) already applies, not a 1.5.5-verbatim pin; every other byte — every path, schema, description and the document's shape — is VERBATIM; the 1.6.0 verbs are described at a new path (`/api/v1/admin/ledger/openapi.json`) — \"admin API a superset\" means routes, not the legacy document's bytes",
-   "inventory": "routes-admin ADM-052 (:409), :266-284",
+   "inventory": "routes-admin (:409), :266-284",
    "note": "The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial.",
    "status": "mapped",
    "checks": [
@@ -3303,7 +3303,7 @@
    "id": "PB-76",
    "surface": "admin listener route set",
    "binding": "the OUTER admin router has exactly its 1.5.5 route set and no fallback (an empty-bodied 404 outside `/api/v1/admin`); UNDER that prefix the nested router's fallbacks apply verbatim — unmatched path ⇒ `404 {\"error\":{\"code\":\"not_found\",…}}`, wrong method ⇒ the `method_not_allowed` envelope (`admin/v1/json/mod.rs:148-149`); `/stats`, `/metrics`, `/metrics/hooks`, `/v1/models` are data-listener verbs only (PB-43)",
-   "inventory": "routes-admin §2 (:93; `build_split_routers_with_limits`)",
+   "inventory": "routes-admin (:93; `build_split_routers_with_limits`)",
    "status": "mapped",
    "checks": [
     {
@@ -3361,7 +3361,7 @@
    "id": "PB-77",
    "surface": "`POST /signing-key/rotate`",
    "binding": "report-only exactly as at the tag: rotates nothing, audit action `signing_key.report`, `NothingToRotate` / `NoSigningKey`, the 200 body verbatim; a real 1.6.0 key ceremony lives on a new verb",
-   "inventory": "routes-admin ADM-065 (:422; `M:1713-1760`)",
+   "inventory": "routes-admin (:422; `M:1713-1760`)",
    "status": "mapped",
    "checks": [
     {
@@ -3392,7 +3392,7 @@
    "id": "PB-79",
    "surface": "admission refusal identity",
    "binding": "the refusal phase order is 1.5.5's: `MissingGroup` first → any FROZEN group in the chain → `concurrent` gauges innermost-first (`retry_after: None`, no `Retry-After`) → windowed buckets in pool-filtered chain order with metric priority `requests` → `tokens` → `budget`; the first blocking bucket names the 429 message and the `Retry-After` scale (Bedrock 400 only for `budget` and `MissingGroup`; `requests`/`tokens` are 429 `rate_limit_error` on every protocol — governance 3.6.3/3.6.5) — one cell per (phase, metric, depth)",
-   "inventory": "governance 3.2.1, 3.2.3–3.2.5, 3.2.7, 3.3.8 (`state.rs:1644-1679`, `:1791-1805`)",
+   "inventory": "governance (`state.rs:1644-1679`, `:1791-1805`)",
    "status": "mapped",
    "checks": [
     {
@@ -3457,7 +3457,7 @@
    "id": "PB-80",
    "surface": "breaker arithmetic",
    "binding": "cooldown `base << streak.min(63)` in u128 clamped to `max_cooldown_secs`; ±10 % jitter with the `[(duration/2).max(1), max_cooldown]` clamp; `honor_retry_after` as a floor up to `max_honored_retry_after_secs`; `hard_down_cooldown_secs`; single-flight half-open probe; the TRIP condition verbatim (`min_requests`, `threshold`, `consecutive_n`, 4.5.23's logical-trip counting, `busbar_breaker_trips_total`) — since PB-4's `Retry-After` and every 503 timing IS this value",
-   "inventory": "governance §4.5 rows 4.5.13–4.5.21",
+   "inventory": "governance",
    "status": "mapped",
    "checks": [
     {
@@ -3594,7 +3594,7 @@
    "id": "PB-82",
    "surface": "usage extraction",
    "binding": "1.5.5's §5.1 read contract is the locator: the cached count is SUBTRACTED from the wire prompt total on openai / responses / gemini (never billed twice); gemini `tokens_out` = `candidatesTokenCount + thoughtsTokenCount`; the forced upstream `stream_options.include_usage` and its two same-protocol hide-back seams (`suppress_same_proto_frame`, `strip_same_proto_usage`) reproduced, so no extra `{choices:[],usage}` chunk reaches an OpenAI client that did not opt in",
-   "inventory": "dialects §4.6 (:706-718), §5 (:780-794)",
+   "inventory": "dialects (:706-718), (:780-794)",
    "status": "mapped",
    "checks": [
     {
@@ -3652,7 +3652,7 @@
    "id": "PB-83",
    "surface": "breaker scope",
    "binding": "a `BreakerCell` per `(pool, member lane)` with independent Open/Closed per pool; only `max_concurrent`, the lifetime `max_requests`, and the HARD-DOWN park (a 401/402 auth-or-billing failure or a prober failure fans out across the default `\"\"` cell AND every per-pool cell for `hard_down_cooldown_secs`, `availability.rs:521-575`) are lane-global; `busbar_lane_state` and `/stats` per pool",
-   "inventory": "governance 4.5.10 (:421; `store/in_memory/breaker.rs:50-56`)",
+   "inventory": "governance (:421; `store/in_memory/breaker.rs:50-56`)",
    "status": "mapped",
    "checks": [
     {
@@ -3696,7 +3696,7 @@
    "id": "PB-84",
    "surface": "response-stage taps",
    "binding": "OWNER DECISION (1.6.0 rebuild, PR-0; amends the prior \"pre-forward refusals never tap\" text): the `response` stage fires ONCE per request that reaches the forward path (a streaming response taps at response-head time) OR is refused by auth on a hooked pool (401, pre-forward) — that refusal ALSO fires the completion tap once, with the synthetic outcome `rejected_by_auth` and the protocol-native status, so operators see refused requests in their taps; the 1.5.5 binary does the same (oracle cell `hooks|hooked-pool|unauth` pins it); every OTHER pre-forward refusal (403/429/413/404) never taps; `outcome ∈ {ok, failed, rejected_by_gate, rejected_by_auth}` is the only synthetic-field set — detached, fire-and-forget, under `MAX_INFLIGHT_TAP_NOTIFICATIONS = 1024`",
-   "inventory": "proxy-hooks §7.2 (`engine/mod.rs:198-221`, `hooks.rs:1407-1417`); `hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth`",
+   "inventory": "proxy-hooks (`engine/mod.rs:198-221`, `hooks.rs:1407-1417`); `hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth`",
    "note": "OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks|hooked-pool|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged.",
    "status": "mapped",
    "checks": [
@@ -3734,7 +3734,7 @@
    "id": "PB-85",
    "surface": "`max_tokens` injection",
    "binding": "on a cross-protocol request into a lane whose dialect `requires_max_tokens()`, `default_max_tokens` is injected ONLY when the IR carries none; a client-supplied value is never clamped or rewritten",
-   "inventory": "dialects §2.6 (:216-240; `ir/variant.rs:88-93`)",
+   "inventory": "dialects (:216-240; `ir/variant.rs:88-93`)",
    "status": "mapped",
    "checks": [
     {
@@ -3771,7 +3771,7 @@
    "id": "PB-86",
    "surface": "usage locators are plane-normalized",
    "binding": "the four token classes are read through the plane's §5.1 normalization, not a raw pointer (PB-82); the kernel never re-derives a class from the wire",
-   "inventory": "dialects §5.1",
+   "inventory": "dialects",
    "status": "mapped",
    "checks": [
     {
@@ -3786,7 +3786,7 @@
    "id": "PB-87",
    "surface": "non-chat billing classes",
    "binding": "`Billing::Flat` (moderation) and the per-op meters for embeddings / image / transcription / speech / rerank are sealed into the migrated card's declared set at `Migration` with 1.5.5's projection, so no class 1.5.5 billed is `Refused(Admit, Unpriced)` and no figure changes",
-   "inventory": "dialects §5.3 (:824-830)",
+   "inventory": "dialects (:824-830)",
    "status": "mapped",
    "checks": [
     {
@@ -3809,7 +3809,7 @@
    "id": "PB-88",
    "surface": "dialect pairs never refuse",
    "binding": "all 36 ingress×egress pairs are supported with NO pair-level refusal; the 60 bullet-level drop / clamp sites of §3.4 (39 with literal warns) plus the 10 universal `prepare_for_egress` steps of :366-381 (`n > 1 → 1` + warn, reasoning / prompt-cache gates, `cache_control` cap, hosted-tool drop, gemini `thoughtSignature` fill, `extra.clear()` — the mechanism behind the `service_tier` trap) degrade-with-warn exactly as at the tag; a plane may not refuse at the PAIR level; untranslatable CONTENT still renders 1.5.5's 400 `invalid_request_error` \"We could not process the content of your request.\" (dialects :969)",
-   "inventory": "dialects §3 (:342), §3.4 (:407-485)",
+   "inventory": "dialects (:342), (:407-485)",
    "status": "mapped",
    "checks": [
     {
@@ -3839,7 +3839,7 @@
    "id": "PB-89",
    "surface": "migrated hook `on_error`",
    "binding": "`default_on_error() = ON_ERROR_NOTHING`: a failing or timed-out migrated gate does NOT participate (the request is served); natives keep their 1.5.5 timeouts; `on_failure: closed` is for 1.6.0-native hooks only",
-   "inventory": "`config/mod.rs:1796-1799`; proxy-hooks §2.4–2.5",
+   "inventory": "`config/mod.rs:1796-1799`; proxy-hooks",
    "status": "mapped",
    "checks": [
     {
@@ -3860,7 +3860,7 @@
    "id": "PB-90",
    "surface": "unmapped 1.5.5 config keys",
    "binding": "`advanced.response_headers.*` (PB-73), `limits.max_keys_per_principal`, `auth.key_ttl`, `limits.reasoning_effort_budgets.*`, `limits.max_honored_retry_after_secs`, `limits.hard_down_cooldown_secs` (PB-80), `public_url`, `providers_file`, `identity-providers:`, `pools.<p>.affinity.*` (PB-5), `secrets:` — each lands on its 1.5.5 handler unchanged; §10's landing map is complete only with this row",
-   "inventory": "config C1 (the ≈ 12 keys with no other mention)",
+   "inventory": "config (the ≈ 12 keys with no other mention)",
    "status": "mapped",
    "checks": [
     {
@@ -3897,7 +3897,7 @@
    "id": "PB-91",
    "surface": "fee basis",
    "binding": "the flat fee follows the status of the first frame RELAYED TO THE CLIENT (`finish_inner` reads the client-facing `resp.status()`), so a buffered cross-protocol response whose upstream 2xx becomes a client 502/500 posts `fee_count = 0` (the governance fee refunded; the LANE `max_requests` unit is NOT refunded on the translate-cap arm — `budget_guard.disarm()`, :431 — and is refunded on the other two); the upstream status is internal evidence only",
-   "inventory": "governance 3.8.4 (`ingress/mod.rs:574-579`); proxy-hooks :430-432",
+   "inventory": "governance (`ingress/mod.rs:574-579`); proxy-hooks :430-432",
    "status": "mapped",
    "checks": [
     {
@@ -3927,7 +3927,7 @@
    "id": "PB-92",
    "surface": "`VirtualKey.expires_at`",
    "binding": "a stored, UNENFORCED field: the `keys` arm reads only the token `exp` (signature → `exp` → denylist → `by_id` generation); rotate re-mints at 90 d; nothing refuses on `expires_at`",
-   "inventory": "auth-secrets :151-161, :380, :389; 1.5.5-BEHAVIOUR §2 trap",
+   "inventory": "auth-secrets :151-161, :380, :389; 1.5.5-BEHAVIOUR trap",
    "status": "mapped",
    "checks": [
     {
@@ -3942,7 +3942,7 @@
    "id": "PB-93",
    "surface": "1.6.0-only store ops on an ABI-2 store",
    "binding": "the ABI-2 adapter answers every 1.6.0-only operation (`append_batch`, `record_put/get/scan`, `session_*`, `reserve/release`, `heads`, keyset seal) with a NODE-LOCAL in-memory shim (consistent with PB-13: the keyset is ephemeral and unused on such a deployment) — never an error, never a log line, never a boot refusal — so boot and serving on a 1.5.5 sqlite/postgres/mysql/valkey store are byte-identical; the journal on such a deployment is memory-buffered exactly as PB-13 states for `data_dir` unset; durability = the legacy rows' durability, the 1.5.5 rule",
-   "inventory": "plugins-stores §5.8; governance 7.5.3",
+   "inventory": "plugins-stores; governance",
    "status": "mapped",
    "checks": [
     {
@@ -3963,7 +3963,7 @@
    "id": "PB-94",
    "surface": "upstream credential mode",
    "binding": "`pools.upstream_credentials` / `pools.<p>.upstream_credentials` (`UpstreamCreds::{Own, Passthrough}`; a pool's scalar REPLACES the section default; BOOT-W04 warning): under `passthrough` the egress-auth unit sends the CALLER's token — `caller_token.unwrap_or(\"\")`, an empty credential for an unauthenticated caller — never the operator key; under `own` the operator key; the client credential masked from the cursor at step 0 is handed to the egress-auth unit as a `SecretSlot` for this purpose only",
-   "inventory": "config CONF-071 (:189), CONF-082 (:203); proxy-hooks §5.1 (:456-458)",
+   "inventory": "config (:189), (:203); proxy-hooks (:456-458)",
    "status": "mapped",
    "checks": [
     {
@@ -4000,7 +4000,7 @@
    "id": "PB-95",
    "surface": "migrated tap stages",
    "binding": "`routing`-stage taps fire inside the egress unit's walk ONCE PER FAILOVER ATTEMPT with 1.5.5's `stage { model, attempt_number (1-based), remaining_candidates, previous_failure }`; `candidate`-stage taps once after gate / base-policy reconcile with `remaining_candidates`; request-stage taps carry no `stage` object; the `hooks/wire.rs` payload byte for byte; `Before(Route)` as a single seat is for 1.6.0-native hooks only",
-   "inventory": "proxy-hooks §2.2 step 16, §2.8 step 4 (`engine/mod.rs:1324-1357`, `:1436-1458`), §7.2 (`hooks/wire.rs:36-65`)",
+   "inventory": "proxy-hooks step 16, step 4 (`engine/mod.rs:1324-1357`, `:1436-1458`), (`hooks/wire.rs:36-65`)",
    "status": "mapped",
    "checks": [
     {
@@ -4146,7 +4146,7 @@
    "id": "PB-98",
    "surface": "`error_map` and lane state carry-over",
    "binding": "the `error_map` ladder (provider code first, `context_length` suppressed on 5xx, built-ins only on 400/413, HTTP fallback incl. 529 and 408, unrecognized value warned once and ignored) drives condition→disposition; `restore_health_impl` carries lane state across a config apply (`(model, provider)` match, budget `snap.budget.min(new_cap)` only when `limited && >= 0`, `HalfOpen → Open`); the five ranking natives verbatim (`weighted` abstains; `cheapest` / `fastest` / `usage` demote a missing signal to last with `idx` tie-break, all-missing ⇒ abstain; `least_busy` never abstains); a migrated hook receives `wire::build`'s bytes with ops `decide` / `transform` / `notify`, reply precedence `reject > restrict > abstain > order`, a malformed `restrict` ⇒ empty set ⇒ `on_empty`; a tap fires only for callers inside its `groups:` scope (self + ancestors, empty = all); a rewrite with a missing container or non-string content is a silent no-op returning `false`; `pools.hooks:` combines additively with a pool's own `hooks:`, deduped by name, firing once at its section-level position",
-   "inventory": "proxy-hooks :118, :189-200, :363-371, :669-716, :752-767, :797; plugins-stores :1029-1033; config CONF-070",
+   "inventory": "proxy-hooks :118, :189-200, :363-371, :669-716, :752-767, :797; plugins-stores :1029-1033; config",
    "status": "mapped",
    "checks": [
     {
@@ -4498,7 +4498,7 @@
    "id": "PB-102",
    "surface": "alarms and the disputes report",
    "binding": "an alarm and a disputes-report entry are LEDGER-ENDPOINT rows only: no log event, no metric series, no stderr line on a 1.5.5 deployment (ops §5.3's event-field sweep and the closed 25-metric set are byte-identical); the `max_unit_duration` stall alarm on a long stream, the lane-mismatch alarm, the accrual-bound alarm and the `single`-posture mutation alarms all obey this",
-   "inventory": "ops §5.3, O3",
+   "inventory": "ops",
    "status": "mapped",
    "checks": [
     {
