@@ -1093,28 +1093,33 @@ fn progress_from_server_event<'u>(
             // a call sends fifty frames a second, so cloning it per frame is fifty copies a second
             // of a string that never changes.
             //
-            // Both arms hand back the same kind of thing, so the writer's own buffer goes into the
-            // arena as it is. It used to be copied into a vector first, purely so the two arms had
-            // one type between them — a copy the arms' shapes asked for and nothing else did.
-            let rendered: bytes::Bytes = match client_dialect {
+            // Each arm reaches the arena on its own rather than through one shared owning type: the
+            // carrier's renderer refills a buffer the SESSION holds, and handing its bytes through a
+            // per-frame owner put back exactly the allocation per frame the renderer exists to
+            // remove — the renderer's committed zero was true of the renderer and false of its only
+            // caller.
+            let bytes = match client_dialect {
                 Dialect::TwilioMediaStreams => {
                     let mulaw = ulaw::encode_frame(&f.media);
+                    // Taken and handed straight back, because the identifier beside it is borrowed
+                    // from the same state.
+                    let mut out = core::mem::take(&mut state.render_buf);
                     let sid = state.twilio_stream_sid.as_deref().unwrap_or_default();
-                    let mut out = Vec::new();
                     twilio::encode_media_into(&mut out, sid, &mulaw);
-                    out.into()
+                    let bytes = ctx.arena().alloc_bytes(&out).map_err(|_| Decode::Oversize);
+                    state.render_buf = out;
+                    bytes?
                 }
                 _ => {
-                    writer
+                    let rendered = writer
                         .write_down(IrServerEvent::AudioFrame(f), &mut state.codec)
                         .ok_or(Decode::Malformed)?
-                        .0
+                        .0;
+                    ctx.arena()
+                        .alloc_bytes(&rendered)
+                        .map_err(|_| Decode::Oversize)?
                 }
             };
-            let bytes = ctx
-                .arena()
-                .alloc_bytes(&rendered)
-                .map_err(|_| Decode::Oversize)?;
             let mut facts = Facts::new();
             facts
                 .set(

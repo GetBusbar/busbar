@@ -76,6 +76,14 @@ pub struct VoiceSessionState {
     pub twilio_stream_sid: Option<String>,
     /// The one already-decoded event a two-call step pair is carrying across (see [`Pending`]).
     pub pending: Option<Pending>,
+    /// The buffer one downlink audio frame is rendered into, held across frames.
+    ///
+    /// The renderer this crate carries for the carrier dialect clears and refills a buffer the
+    /// caller owns, and its committed cost is stated for a buffer that has already carried a frame
+    /// — which is the only shape that costs nothing. A call sends fifty downlink frames a second,
+    /// so a fresh vector per frame is fifty allocations a second the renderer was written to
+    /// remove. This is where the one buffer lives.
+    pub render_buf: Vec<u8>,
 }
 
 impl VoiceSessionState {
