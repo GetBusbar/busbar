@@ -55,6 +55,15 @@
 #   valkey's teardown is FLUSHDB on that index. Never FLUSHALL: one recording must not be able to
 #   erase another's.
 #
+#   AND FLUSHDB ON CREATE, NOT ONLY ON TEARDOWN. postgres and mysql namespaces are new empty
+#   databases by construction; valkey's are 15 fixed indexes that always exist and always hold
+#   whatever was last written to them. A run that is killed never reaches `ns-drop`, and the next
+#   run whose token hashes to the same index used to be handed that run's keys — which busbar then
+#   reads as its own persisted state, so a candidate can appear to have persisted what the golden
+#   wrote. `ns` therefore flushes the index before printing its DSN, and `ns-sweep` — the verb an
+#   operator reaches for AFTER a crash, and the one verb that used to leave the leak in place —
+#   flushes indexes 1-15. Index 0 is `url`'s own and is never touched by either.
+#
 # CREDENTIALS
 #   `busbar:busbar` against a throwaway container is not a credential and is not treated as one. What
 #   IS enforced: `url` and `ns` print to STDOUT for command substitution and log nothing, `set -x` is
@@ -248,7 +257,24 @@ do_ns() {
         -e "CREATE DATABASE IF NOT EXISTS ${db}" >/dev/null 2>&1 \
         || die "could not create namespace database ${db} on mysql"
       printf 'mysql://busbar:busbar@127.0.0.1:%s/%s\n' "$lport" "$db" ;;
+    # A NAMESPACE IS HANDED OUT EMPTY, OR IT IS NOT HANDED OUT. postgres and mysql get this for
+    # free — CREATE DATABASE makes a new, empty thing, and `ns` fails loudly if one is already
+    # there. valkey has no such thing: its namespaces are 15 fixed logical indexes that always
+    # exist, so `ns` was handing back an index carrying whatever the LAST run that hashed to it
+    # left behind. A run killed mid-recording leaks its keys; the next run's token hashes to the
+    # same index (the hash is of the token, and tokens repeat); busbar opens the store, finds
+    # keys/usage/ledger rows it never wrote, and READS THEM AS ITS OWN. That is precisely the
+    # cross-recording interference this whole namespace mechanism exists to prevent, and it is
+    # worse than sharing openly: the candidate can appear to have persisted what the golden wrote.
+    #
+    # FLUSHDB on THIS index, never FLUSHALL: one recording must not be able to erase another's.
+    # need_docker up front because a flush that cannot happen must be a refusal, not a shrug — an
+    # unflushable namespace is a dirty namespace, and printing its DSN anyway is the silent
+    # degradation the fixture exists to refuse.
     valkey)
+      need_docker
+      docker exec "$(container "$svc")" valkey-cli -n "$(ns_index "$token")" FLUSHDB >/dev/null 2>&1 \
+        || die "could not flush valkey namespace index $(ns_index "$token") before handing it out. A namespace that may still hold a crashed run's keys is not a namespace; refusing to print its DSN."
       printf 'redis://127.0.0.1:%s/%s\n' "$lport" "$(ns_index "$token")" ;;
   esac
 }
@@ -289,7 +315,26 @@ do_ns_sweep() {
           docker exec "$(container "$svc")" mysql -ubusbar -pbusbar \
             -e "DROP DATABASE IF EXISTS ${db}" >/dev/null 2>&1 && say "  swept ${db}"
         done ;;
-    valkey) say "  valkey namespaces are logical db indexes; nothing accumulates to sweep." ;;
+    # "NOTHING ACCUMULATES TO SWEEP" WAS FALSE, and it was the reassuring kind of false. What does
+    # not accumulate is the INDEXES — there are always exactly 16 and no `ns` can make a 17th. The
+    # KEYS inside them accumulate exactly as postgres/mysql databases do, and a killed run leaks
+    # them with no `ns-drop` ever running. The sweep verb is what an operator reaches for after a
+    # crash; it was the one verb that left the leak in place, so the leak survived the cleanup and
+    # was then read by the next run as its own state.
+    #
+    # Indexes 1-15 only. Index 0 is what `url` hands out — a caller's own base DSN, not a namespace
+    # this script ever created — and sweeping it would be exactly the FLUSHALL-shaped mistake
+    # ns-drop's comment refuses. This is the same rule ns_index encodes by never returning 0.
+    valkey)
+      local i swept=0
+      for i in $(seq 1 15); do
+        docker exec "$(container "$svc")" valkey-cli -n "$i" FLUSHDB >/dev/null 2>&1 && swept=$((swept + 1))
+      done
+      if [ "$swept" -eq 15 ]; then
+        say "  swept valkey namespace indexes 1-15 (index 0 is \`url\`'s own and is never touched)"
+      else
+        die "could not flush every valkey namespace index (${swept} of 15). A sweep that half-ran leaves a run's keys for the next run to read as its own; refusing to report a clean sweep."
+      fi ;;
   esac
 }
 
@@ -468,6 +513,81 @@ run_selftest() {
   else
     record "fixtures|lint-agrees" FAIL "the workflow-image gate could not run" \
       "cargo xtask gate service-images exited ${si_rc}: $(printf '%s' "$si_out" | tr '\t\n' '  ' | cut -c1-200)"
+  fi
+
+  # 12. A VALKEY NAMESPACE IS HANDED OUT EMPTY, AND `ns-sweep` ACTUALLY SWEEPS IT.
+  #     This is the one rule of this script that could not be checked by reading the table: it is
+  #     about what `ns` and `ns-sweep` DO. `ns` used to issue no command at all for valkey — it
+  #     printed a DSN for an index that still held whatever a crashed run left there, and the next
+  #     run read those keys as its own — and `ns-sweep` said "nothing accumulates to sweep", which
+  #     is true of the indexes and false of the keys inside them.
+  #
+  #     NO DOCKER, ON PURPOSE, LIKE EVERY ROW ABOVE. The `docker` here is a recording stand-in that
+  #     implements just enough valkey-cli (SET / KEYS / FLUSHDB over a directory per index) to hold
+  #     a PRE-SEEDED KEY — the crashed run's leftovers, concretely — and it is exercised through the
+  #     REAL do_ns and do_ns_sweep, not a re-implementation of them. What is proven is this script's
+  #     behaviour: that it issues the flush, on the right index, before it hands the DSN over.
+  local vk="${work}/valkey" shimbin="${work}/shim"
+  mkdir -p "$shimbin" "$vk"
+  cat >"${shimbin}/docker" <<'SHIM'
+#!/usr/bin/env bash
+# Minimal `docker exec <name> valkey-cli -n <index> <CMD> [args]` stand-in over $VALKEY_SHIM_DIR.
+# Anything it does not understand is an error, not a silent success: a stub that returns 0 for a
+# command it ignored would make the very check it serves vacuous.
+set -uo pipefail
+[ "${1:-}" = "exec" ] || { echo "shim: only 'docker exec' is implemented, got '${1:-}'" >&2; exit 64; }
+shift 2  # drop `exec` and the container name
+[ "${1:-}" = "valkey-cli" ] || { echo "shim: only valkey-cli is implemented, got '${1:-}'" >&2; exit 64; }
+shift
+[ "${1:-}" = "-n" ] || { echo "shim: valkey-cli must be given -n <index>, got '${1:-}'" >&2; exit 64; }
+idx="$2"; shift 2
+case "$idx" in ''|*[!0-9]*) echo "shim: index '$idx' is not a number" >&2; exit 64 ;; esac
+d="${VALKEY_SHIM_DIR:?VALKEY_SHIM_DIR must be set}/${idx}"; mkdir -p "$d"
+case "${1:-}" in
+  FLUSHDB) rm -f "$d"/* 2>/dev/null; echo OK ;;
+  SET)     printf '%s' "${3:-}" >"$d/${2:?}"; echo OK ;;
+  KEYS)    ls -1 "$d" 2>/dev/null ;;
+  *)       echo "shim: unimplemented valkey-cli command '${1:-}'" >&2; exit 64 ;;
+esac
+SHIM
+  chmod +x "${shimbin}/docker"
+
+  vk_seed() { mkdir -p "${vk}/$1"; printf 'crashed-run-left-this' >"${vk}/$1/leaked:$2"; }
+  vk_keys() { ls -1 "${vk}/$1" 2>/dev/null | wc -l | tr -d ' '; }
+
+  local tok="goldenstore_41277" tix dsn vbad=""
+  tix="$(ns_index "$tok")"
+
+  # ── ns: the index the token maps to is pre-seeded, then handed out
+  vk_seed "$tix" a; vk_seed "$tix" b
+  vk_seed 0 base                     # `url`'s own index — `ns` must not touch it
+  dsn="$( PATH="${shimbin}:${PATH}" VALKEY_SHIM_DIR="$vk" do_ns valkey "$tok" 2>"${work}/ns.err" )"
+  [ "$dsn" = "redis://127.0.0.1:$(svc_lport valkey)/${tix}" ] \
+    || vbad="${vbad}ns printed '${dsn}' rather than the namespace DSN ($(tr '\n' ' ' <"${work}/ns.err" | tail -c 160)); "
+  [ "$(vk_keys "$tix")" = "0" ] \
+    || vbad="${vbad}ns handed out index ${tix} still holding $(vk_keys "$tix") key(s) a crashed run left there — the next recording reads them as its own persisted state; "
+  [ "$(vk_keys 0)" = "1" ] || vbad="${vbad}ns touched index 0, which is \`url\`'s own and no namespace; "
+
+  # ── ns-sweep: every namespace index is cleared, index 0 is not
+  local i
+  for i in $(seq 1 15); do vk_seed "$i" leaked; done
+  PATH="${shimbin}:${PATH}" VALKEY_SHIM_DIR="$vk" do_ns_sweep valkey >"${work}/sweep.out" 2>&1
+  local left=0
+  for i in $(seq 1 15); do [ "$(vk_keys "$i")" = "0" ] || left=$((left + 1)); done
+  [ "$left" -eq 0 ] \
+    || vbad="${vbad}ns-sweep left ${left} of 15 namespace indexes holding keys — the verb an operator runs AFTER a crash is the one that left the leak in place; "
+  [ "$(vk_keys 0)" = "1" ] \
+    || vbad="${vbad}ns-sweep flushed index 0, which \`url\` hands out — one recording must not be able to erase another's; "
+
+  owe "fixtures|valkey-ns-flushed"
+  if [ -z "$vbad" ]; then
+    record "fixtures|valkey-ns-flushed" PASS \
+      "a valkey namespace is flushed before it is handed out, and ns-sweep clears 1-15 but never 0" \
+      "pre-seeded index ${tix} came back empty; 15 seeded indexes swept; index 0 untouched"
+  else
+    record "fixtures|valkey-ns-flushed" FAIL \
+      "a valkey namespace carries a previous run's keys into the next run" \
+      "${vbad}postgres/mysql namespaces are new empty databases; valkey's are fixed indexes that hold whatever the last run left, so busbar reads a crashed run's keys, usage and ledger rows as its own."
   fi
 
   GATE_NAME="store service fixtures" EXPECTED_IDS="$owed" LEDGER="$LEDGER" \
