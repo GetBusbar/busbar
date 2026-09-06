@@ -85,6 +85,10 @@ type ServerStream = tokio_rustls::server::TlsStream<BoxedIo>;
 type ClientStream = tokio_rustls::client::TlsStream<BoxedIo>;
 
 struct Inner {
+    /// The local port this connection stands on: the listener's for an accepted connection, the
+    /// ephemeral one the dial went out on for a dialled one, and the layer below's for an adopted
+    /// one — which is the only case where this transport did not open the socket itself.
+    local_port: u16,
     sni: Option<String>,
     alpn: Option<String>,
     peer_cert: Option<CertFacts>,
@@ -242,6 +246,7 @@ impl TlsTransport {
         stream: ServerStream,
         peer: SocketAddr,
         chain: Vec<&'static str>,
+        local_port: u16,
     ) -> Conn {
         let (_, server_conn) = stream.get_ref();
         let alpn = server_conn
@@ -260,6 +265,7 @@ impl TlsTransport {
         let (read, write) = tokio::io::split(stream);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
+            local_port,
             sni,
             alpn,
             peer_cert,
@@ -284,6 +290,7 @@ impl TlsTransport {
         stream: ClientStream,
         peer: SocketAddr,
         chain: Vec<&'static str>,
+        local_port: u16,
     ) -> Conn {
         let (_, client_conn) = stream.get_ref();
         let alpn = client_conn
@@ -304,6 +311,7 @@ impl TlsTransport {
         let (read, write) = tokio::io::split(stream);
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let inner = Arc::new(Inner {
+            local_port,
             sni: None,
             alpn,
             peer_cert,
@@ -426,7 +434,7 @@ impl Transport for TlsTransport {
         let inner = self.inner(conn.id());
         ArrivalRecord {
             source: conn.peer(),
-            port: 0,
+            port: inner.as_ref().map_or(0, |i| i.local_port),
             alpn: inner.as_ref().and_then(|i| i.alpn.clone()),
             sni: inner.as_ref().and_then(|i| i.sni.clone()),
             peer_cert: inner.as_ref().and_then(|i| i.peer_cert.clone()),
@@ -481,6 +489,7 @@ impl Transport for TlsTransport {
                 .await
                 .map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
+            let local_port = stream.local_addr().map_or(0, |a| a.port());
             // Every accepted connection on this listener uses the config registered for the slot
             // this listener was provisioned with in `listen` — not a fixed slot of accept's own —
             // because the listener has no per-connection SNI to route on before the handshake
@@ -505,7 +514,7 @@ impl Transport for TlsTransport {
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.insert_server(tls_stream, peer, vec!["tcp", "tls"]))
+            Ok(self.insert_server(tls_stream, peer, vec!["tcp", "tls"], local_port))
         })
     }
 
@@ -531,6 +540,7 @@ impl Transport for TlsTransport {
                 .await
                 .map_err(|e| Self::map_io_err(&e))?;
             stream.set_nodelay(true).ok();
+            let local_port = stream.local_addr().map_or(0, |a| a.port());
             let connector = TlsConnector::from(cfg);
             let server_name = ServerName::try_from(name)
                 .map_err(|_| TransportError::AddressRefused)?
@@ -539,7 +549,7 @@ impl Transport for TlsTransport {
                 .connect(server_name, Box::new(stream) as BoxedIo)
                 .await
                 .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.insert_client(tls_stream, addr, vec!["tcp", "tls"]))
+            Ok(self.insert_client(tls_stream, addr, vec!["tcp", "tls"], local_port))
         })
     }
 
@@ -659,7 +669,12 @@ impl Transport for TlsTransport {
             if !Self::COMPOSES_OVER.contains(&from.key()) {
                 return Err(TransportError::HandoffMismatch);
             }
-            let mut chain = from.arrival(&conn).transport_chain;
+            // Read before the stream is taken: once the source has given the connection up it
+            // knows nothing about it, and the port the bytes arrived on is the lower layer's to
+            // report — this transport never opened that socket.
+            let below = from.arrival(&conn);
+            let mut chain = below.transport_chain;
+            let local_port = below.port;
             let raw = from.detach(&conn).ok_or(TransportError::HandoffMismatch)?;
             chain.push(Self::KEY);
             let peer: SocketAddr = raw
@@ -683,7 +698,7 @@ impl Transport for TlsTransport {
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(|_| TransportError::HandshakeFailed)?;
-            Ok(self.insert_server(tls_stream, peer, chain))
+            Ok(self.insert_server(tls_stream, peer, chain, local_port))
         })
     }
 

@@ -739,6 +739,44 @@ async fn with_no_declared_name_the_address_itself_stands_in() {
     client.close(client_conn, CloseReason::Normal);
 }
 
+/// The arrival record names the port the connection actually arrived on.
+///
+/// `tls` binds its own listener, so the local port is a fact it holds rather than one only the
+/// layer below could know — and a resolver that distinguishes a data listener from an admin one by
+/// port reads this field. A constant zero is not that fact: it is every listener looking alike.
+#[tokio::test]
+async fn the_arrival_record_names_the_port_the_connection_arrived_on() {
+    let (server, listener, client) = bound_pair().await;
+    let addr = listener.local_addr();
+    let bound_port: u16 = addr
+        .parse::<SocketAddr>()
+        .expect("the listener binds a socket address")
+        .port();
+    let accept_fut = tokio::spawn({
+        let server = server.clone();
+        async move { server.accept(&listener).await.unwrap() }
+    });
+    let client_conn = client
+        .dial(&upstream_dest(&addr), &fixture_key(0))
+        .await
+        .unwrap();
+    let server_conn = accept_fut.await.unwrap();
+
+    assert_eq!(
+        server.arrival(&server_conn).port,
+        bound_port,
+        "an accepted connection reports the port its listener is bound to"
+    );
+    // The dialling side's own local port is an ephemeral one, but it is still a port this transport
+    // holds rather than a zero standing in for one.
+    assert_ne!(
+        client.arrival(&client_conn).port,
+        0,
+        "a dialled connection reports the local port it went out on"
+    );
+    client.close(client_conn, CloseReason::Normal);
+}
+
 /// The registration check: every reserved key this transport publishes is one it declares.
 ///
 /// The declaration is what a boot compares a plane's expectations against, so a key written and not
