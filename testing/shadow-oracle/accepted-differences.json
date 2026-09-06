@@ -438,6 +438,19 @@
         "headers"
       ],
       "rationale": "Spec fidelity: published include_usage says the token counts ride an ADDITIONAL final chunk whose choices array is always EMPTY. The Chat writer cannot emit two frames for one IR MessageDelta, so it folds the counts onto the chunk it does write and a downstream seam un-folds them into that trailing chunk. The writer folds whenever the terminal counts are nonzero -- NOT only when the delta carries a stop reason -- but both un-fold seams additionally required a non-null finish_reason beside the folded object. A backend that ends a stream with no stop reason (an incomplete Responses stream whose incomplete_details.reason the published spec does not name) produces exactly the chunk neither seam looked at: a client that asked for usage never received it, and a client that opted OUT was sent usage it had not asked for. Both seams now key on the folded object itself, which is only ever present because the writer put it there. Cross-dialect stream bodies only; the same-dialect byte-exact passthrough never reaches these seams, and no usage or billing class is waived -- busbar's own metering reads the IR-side tap upstream of this seam and never moved. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "K-1 rotate refuses an overlong key id like its siblings",
+      "kind": "breaking",
+      "changelog": "1.6.0 Improvements: rotate refuses an overlong key id like its siblings.",
+      "by": "owner (Matthew Jackson), 2026-09-06 oracle overlong-id coverage",
+      "cells": "^admin\\.ops\\|PostKeysIdRotate\\|overlong-id$",
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "`reject_overlong_id` is a per-handler call, and `POST /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never made it: read/patch/delete/usage/revoke all answer 400 `invalid_request` / \"id must be <= 64 characters\", rotate fell through to 404 `not_found` / \"key not found\". Rotate is also the handler where an unbounded id costs the most -- it is the only one that keys a process-global idempotency cache on the caller's bytes (`rotate:{id}:{k}`), retaining an entry sized by the request for the entry's full TTL -- so the guard sits ahead of the idempotency block rather than beside the governance check. 1.5.5's own contract omitted `Validation / Overlong` from this endpoint's declared error set; declaring it regenerates openapi.json purely additively. REGISTERED `breaking`, NOT `improvement`, because the differ permits only a `breaking` entry with a changelog line to accept the `status` class (diff-cells.py MONEY_CLASSES) -- 404 -> 400 is a status change on a refusal path, and the register's own rule is that no `improvement` may forgive one. In substance this is an improvement: a request that was refused is still refused, with the siblings' code and message instead of a misleading not-found. SCOPE: exactly one cell id. Every other `/keys/{id}` overlong-id cell must stay byte-identical to 1.5.5 -- five handlers that already have the bound may not move, and this entry cannot forgive them if they do."
     }
   ]
 }

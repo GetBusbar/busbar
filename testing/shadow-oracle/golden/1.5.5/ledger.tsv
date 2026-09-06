@@ -490,6 +490,7 @@ admin.ops|DeleteKeysId|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|DeleteKeysId|if-match-stale	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteKeysId|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|DeleteKeysId|ok	PASS	HTTP 204; usage Δ {}	
+admin.ops|DeleteKeysId|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteKeysId|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeleteOverlaySection|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteOverlaySection|if-match-stale	PASS	HTTP 409; usage Δ {}	
@@ -552,9 +553,11 @@ admin.ops|GetInfo|ok	PASS	HTTP 200; usage Δ {}
 admin.ops|GetInfo|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeysIdUsage|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetKeysIdUsage|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetKeysIdUsage|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|GetKeysIdUsage|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeysId|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetKeysId|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetKeysId|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|GetKeysId|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeys|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetKeys|unauth	PASS	HTTP 401; usage Δ {}	
@@ -606,6 +609,7 @@ admin.ops|PatchKeysId|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|PatchKeysId|if-match-stale	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchKeysId|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PatchKeysId|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|PatchKeysId|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchKeysId|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostAuthCacheFlush|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostAuthCacheFlush|ok	PASS	HTTP 200; usage Δ {}	
@@ -638,10 +642,12 @@ admin.ops|PostHooks|ok	PASS	HTTP 200; usage Δ {}
 admin.ops|PostHooks|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeysIdRevoke|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRevoke|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|PostKeysIdRevoke|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostKeysIdRevoke|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeysIdRotate|idempotent-replay	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostKeysIdRotate|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRotate|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|PostKeysIdRotate|overlong-id	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRotate|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeys|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostKeys|idempotent-replay	PASS	HTTP 201; usage Δ {}	
@@ -715,6 +721,7 @@ billing|key-usage|broke-after-429	PASS	HTTP 200; usage Δ {}
 billing|key-usage|fresh	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|noscope-after-403	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|refund-across-window	SKIP	UNSUPPORTED: a request that straddles the window roll: its flat per-request fee must be refunded from the SAME cell the charge landed on, so the view rea	named gap: the fixture this cell needs is not in the tree yet
+billing|rate-card|epoch-mid-window	PASS	HTTP 200; usage Δ {}	
 boot.refusal|BOOT-001|validate	PASS	exit 1; 	
 boot.refusal|BOOT-002|validate	PASS	exit 1; 	
 boot.refusal|BOOT-003|validate	PASS	exit 1; 	
@@ -2254,6 +2261,7 @@ ops.scrape|metrics|none	PASS	HTTP 401; usage Δ {}
 ops.scrape|stats|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|stats|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1betamodels	PASS	HTTP 200; usage Δ {}	
+ops.scrape|v1modelsid|retrieve	PASS	HTTP 405; usage Δ {}	
 ops.scrape|v1models|anthropic-fp	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1models|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1models|openai-fp	PASS	HTTP 200; usage Δ {}	
