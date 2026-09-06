@@ -600,6 +600,15 @@ max_sites = 0
 #
 #   The two remaining leaks are boot-time interners of the same shape as ids.rs.
 #
+#   scope.rs `reclaim_all` is the arena's per-entry reclaim boundary, named by function so the rest
+#   of the file is still held to the rule. Reclaiming runs code the arena does not own — a closer
+#   that kills a subprocess, a guard's real `Drop` — and the loop is reached from `Drop`, so an
+#   unbounded panic there both strands every entry after it (leaking exactly what the arena exists to
+#   reclaim) and, unwinding out of a drop already running during an unwind, aborts the node. No hold
+#   is in scope on either side of the call: the boundary wraps exactly one entry's reclaim, the entry
+#   is already out of the registry and is consumed whichever way it ends, and the registry lock is
+#   released before the loop starts.
+#
 #   handle_engine.rs `sweep` is the plane-callback boundary of the same family as the plane-host
 #   ones above, named by function so the rest of the engine is still held to the rule. The retention
 #   sweep is AMORTISED over submits, so the plane's `abandon` callback runs inside some OTHER
@@ -616,6 +625,7 @@ known_sites = [
   "crates/busbar-core/src/router.rs",
   "crates/busbar-substrate/src/plane/handle_engine.rs::sweep",
   "crates/busbar-substrate/src/plane_host/mod.rs",
+  "crates/busbar-substrate/src/plane_host/scope.rs::reclaim_all",
   "crates/busbar-substrate-values/src/proto.rs",
   "crates/busbar-transport-ws/src/transport.rs",
   "crates/plugin-loader/src/",
