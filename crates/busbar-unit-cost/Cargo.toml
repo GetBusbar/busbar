@@ -26,3 +26,13 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+
+# TESTS ONLY, AND THE RULE ABOVE STILL HOLDS. The decimal-to-money conversion exists TWICE in the
+# tree: once here, and once inside the admission unit's rate projection, because that crate depends
+# on nothing here and cannot call across. Two copies of a rounding rule that must agree exactly, and
+# nothing checking that they do, is how a request comes to be judged at one rate and billed at
+# another. This dev dependency is what lets a test ask both of them the same ten thousand questions.
+# It is dev-only: it is not linked into the library, it cannot affect a single integer multiply, and
+# the compiled crate still depends on `busbar-caps` and nothing else.
+[dev-dependencies]
+busbar-unit-admission = { path = "../busbar-unit-admission" }
