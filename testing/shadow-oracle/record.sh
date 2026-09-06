@@ -331,10 +331,22 @@ PY
 # Metering posts write-behind (usage_flush_interval_ms) and the gauges are scrape-time derived, so an
 # "after" snapshot taken at a fixed delay races the flush. Poll until two consecutive scrapes agree
 # (a fixed point), bounded, then snapshot — deterministic on every binary, never "sleep and hope".
+
+# A portable content digest for the settle fixed point. `md5`(1) is macOS-only: on Linux the old
+# `... | md5 2>/dev/null || true` printed NOTHING and the `|| true` swallowed the missing command, so
+# half of the fixed point (the metrics half) was the empty string on every Linux run — the loop then
+# settled on the usage view alone and snapshotted before metrics had caught up. No `|| true` here:
+# if no digest tool exists at all the caller must see it, not silently lose the metrics half.
+_digest() {  # stdin -> one hex digest line
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  else python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+  fi
+}
 settle_then_snapshot() {  # <dir> <key-id>
   local d="$1" kid="$2" i=0 prev="" cur=""
   while [ $i -lt 20 ]; do
-    cur="$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" 2>/dev/null | jq -c 'del(.as_of)' 2>/dev/null)$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" 2>/dev/null | grep -v '^#' | grep -v '_seconds' | sort | md5 2>/dev/null || true)"
+    cur="$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_ADMIN_TOKEN}" "http://127.0.0.1:${ADMIN_PORT}/api/v1/admin/keys/${kid}/usage" 2>/dev/null | jq -c 'del(.as_of)' 2>/dev/null)$(curl -fsS -m 5 -H "Authorization: Bearer ${ORACLE_TOKEN_OK}" "http://127.0.0.1:${LISTEN_PORT}/metrics" 2>/dev/null | grep -v '^#' | grep -v '_seconds' | sort | _digest)"
     [ -n "$prev" ] && [ "$cur" = "$prev" ] && [ $i -ge 2 ] && break
     prev="$cur"; sleep 0.15; i=$((i+1))
   done
