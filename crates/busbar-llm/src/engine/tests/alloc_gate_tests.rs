@@ -247,3 +247,121 @@ async fn alloc_gate_openai_passthrough_forward() {
 
     server.shutdown().await;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// GATE 3 (scaling / delivery arm): the request body must be materialized ONCE, not twice.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// How many `messages` entries the large body carries. Sized so the per-node cost of ONE extra
+/// materialization of the parsed request body is far larger than the run-to-run jitter of the
+/// surrounding tokio/reqwest/mock machinery — the gate below measures a difference, so the signal
+/// has to clear the noise by a wide margin rather than by a few allocations.
+const ECHO_SCALING_MESSAGES: usize = 4_000;
+
+/// COMMITTED BOUND — the maximum number of heap allocations by which a request carrying
+/// [`ECHO_SCALING_MESSAGES`] messages may exceed the SAME request carrying one message, on the
+/// buffered delivery arm (`attempt/respond.rs`, taken here because the client asked to stream and
+/// the upstream answered one JSON body).
+///
+/// WHAT THIS PINS, and it is a SCALING ceiling rather than a fixed cost: the client chooses the node
+/// count of the body, so every per-node wave this arm performs is work an unauthenticated-size input
+/// multiplies. The arm legitimately performs several — the parse that builds the request-echo
+/// context, the translate, the re-serialize — and this gate does not claim to count them. What it
+/// catches is a wave being ADDED.
+///
+/// MEASURED, both sides, on this tree at 4_000 messages: 84_005 (21 per message) with the parsed
+/// body handed to the buffered translate by MOVE; 104_000 (26 per message) with the deep clone that
+/// preceded it. The bound sits between them with jitter headroom, so re-introducing that clone — or
+/// any other whole-body materialization of the same class — fails RED. It is a DIFFERENCE, not a
+/// total, so it does not move when unrelated FIXED per-request costs change.
+const ECHO_BODY_SCALING_MAX_ALLOCS: u64 = 92_000;
+
+/// A well-formed OpenAI chat-completions request with `n` messages, asking to STREAM.
+///
+/// `stream: true` is what puts this on the buffered delivery arm even though ingress and egress
+/// speak the same dialect: the client asked for a stream and the upstream answered one JSON body,
+/// so the answer is buffered, translated and re-framed rather than relayed.
+fn openai_stream_body(n: usize) -> bytes::Bytes {
+    let messages: Vec<serde_json::Value> = (0..n)
+        .map(|i| json!({ "role": "user", "content": format!("message {i}") }))
+        .collect();
+    serde_json::to_vec(&json!({
+        "model": "gpt-4o",
+        "messages": messages,
+        "max_tokens": 16,
+        "stream": true,
+    }))
+    .unwrap()
+    .into()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn alloc_gate_request_echo_body_materialized_once() {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(MockServerState::new());
+    // One canned response per request below: 2 warm-ups + 2 measured.
+    for _ in 0..4 {
+        state.push(openai_ok());
+    }
+    let server = MockServer::new(state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "gpt-4o",
+            crate::proto_codec::PROTO_OPENAI,
+            &server.base_url(),
+        ))
+        .pool("", &[(0, 1)])
+        .build();
+
+    async fn one_request<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+        app: &Arc<A>,
+        body: bytes::Bytes,
+    ) {
+        let resp = crate::engine::forward_with_pool(
+            app,
+            vec![member(0)],
+            body,
+            None,
+            "",
+            None,
+            "openai",
+            crate::test_support::CHAT,
+            None,
+        )
+        .await;
+        assert_eq!(resp.status().as_u16(), 200, "the arm under test must be 200");
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    }
+
+    // WARM both shapes outside the measured window: the first request opens the upstream connection
+    // and primes lazy statics, none of it per-request steady-state cost.
+    one_request(&app, openai_stream_body(1)).await;
+    one_request(&app, openai_stream_body(ECHO_SCALING_MESSAGES)).await;
+
+    let _ = CountingJemalloc::reset();
+    one_request(&app, openai_stream_body(1)).await;
+    let small = CountingJemalloc::count();
+
+    let _ = CountingJemalloc::reset();
+    one_request(&app, openai_stream_body(ECHO_SCALING_MESSAGES)).await;
+    let large = CountingJemalloc::count();
+
+    let delta = large.saturating_sub(small);
+    eprintln!(
+        "[alloc-gate] buffered delivery arm: small={small} large={large} \
+         delta={delta} over {ECHO_SCALING_MESSAGES} messages"
+    );
+
+    assert!(
+        delta <= ECHO_BODY_SCALING_MAX_ALLOCS,
+        "THE BUFFERED DELIVERY ARM GAINED A PER-NODE ALLOCATION WAVE: a body with \
+         {ECHO_SCALING_MESSAGES} messages cost {delta} allocations more than a one-message body, \
+         over the committed bound {ECHO_BODY_SCALING_MAX_ALLOCS}. The client chooses that node \
+         count, so a wave added here is work an attacker-sized body multiplies — the last one to be \
+         removed was a deep clone of the whole parsed request body. If a new wave is genuinely \
+         required, say why and re-measure this bound in the same commit."
+    );
+
+    server.shutdown().await;
+}
