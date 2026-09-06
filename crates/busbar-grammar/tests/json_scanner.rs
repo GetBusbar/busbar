@@ -195,3 +195,34 @@ fn an_array_index_is_the_pointer_grammars_index_and_not_whatever_parses() {
     // Zero on its own is the one index that may start with a zero.
     assert_eq!(found(body, "/items/0"), b"10");
 }
+
+/// Nest `depth` arrays around a `1`, and the pointer that walks down to it.
+fn nested(depth: usize) -> (Vec<u8>, String) {
+    let mut body = vec![b'['; depth];
+    body.push(b'1');
+    body.extend(std::iter::repeat_n(b']', depth));
+    (body, "/0".repeat(depth))
+}
+
+#[test]
+fn ten_thousand_open_brackets_are_an_answer_rather_than_a_stack_overflow() {
+    // The depth bound is stated in the crate's own documentation as the reason it is a bound at
+    // all: a hostile body that is ten thousand open brackets has to come back as a refusal, and
+    // the only way to show that is to hand the scanner one.
+    let body = vec![b'['; 10_000];
+    assert_eq!(resolve_pointer(&body, "/0"), Resolved::Malformed);
+    assert_eq!(resolve_pointer(&body, ""), Resolved::Malformed);
+}
+
+#[test]
+fn the_depth_bound_is_where_the_documentation_says_it_is() {
+    let (body, pointer) = nested(60);
+    assert_eq!(found(&body, &pointer), b"1", "60 deep is inside the bound");
+
+    let (body, pointer) = nested(70);
+    assert_eq!(
+        resolve_pointer(&body, &pointer),
+        Resolved::Malformed,
+        "70 deep is past it"
+    );
+}
