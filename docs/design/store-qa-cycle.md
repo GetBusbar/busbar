@@ -384,6 +384,23 @@ backend dropping out of coverage is red on every subsequent run.
 
 Never on a schedule, never "to make it green".
 
+**Rev moves are recorded here, in order, with the reason.** `harness_rev` is COMPUTED
+(`harness-rev.sh`), never pinned in a file, so nothing in the tree changes when it moves and a move
+can otherwise pass unremarked. Each entry names the revision it moved to and what moved it, so a
+golden whose `meta.json` stamps an older rev can be traced to the exact change that stranded it:
+
+| harness_rev | what moved it |
+| --- | --- |
+| `6c243f42abc2bf4a…` | the rev the checked-in `golden/1.5.5` was recorded under (`meta.json.harness_rev`). |
+| `d238d8d8b6088612…` | `integration/oracle-phase0` tip. The golden was ALREADY skewed against the tree at this point — the differ's `--allow-harness-skew` was carrying it. |
+| `3ddac3c2b6930702…` | three differ fixes cherry-picked off `keep-oracle-p2`: a script cell's own `effects` keys compared by no class, an empty after-scrape written as a negated absolute, and the golden ledger read at its first row where the verdict reads its last. Two of the three are `*.py` beside `harness-rev.sh`, so they are in the hash. |
+| `bbbbd0c138617cb7…` | `normalize.py`'s `eventstream.frames` rule (and `diff-cells.py` learning its representation). This is trigger 1 above, verbatim — "the harness changes (`cells.json`, `normalize.py`, …)" — and it is the rev the re-recorded `golden/1.5.5` is stamped with. |
+
+The last row is the one that forces the full re-record: a normalizer rule changes what every cell's
+`applied` set and body look like, so a golden recorded before it cannot be compared against a
+candidate recorded after it. There is no partial path — `merge-recordings.py` refuses parts whose
+`harness_rev` differs, by design.
+
 ### 3.2 (b) Candidate recording per stage
 
 Unchanged in shape; only the cell count grows. `record.sh --bin target/release/busbar --plane all`
