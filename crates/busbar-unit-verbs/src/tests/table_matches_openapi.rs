@@ -118,6 +118,38 @@ fn no_duplicate_operation_ids_in_the_table() {
     );
 }
 
+/// The dry-run carve-out is not hand-transcribed a second time anywhere this test can reach: the
+/// set asserted here is DERIVED from `LEGACY_VERBS` itself (method `POST` and scope `ReadOnly`),
+/// then checked against the fixture's own column, so the two can never silently drift out of step
+/// the way a second literal copy of the same two paths could.
+#[test]
+fn table_derived_read_only_post_paths_match_the_fixture_column() {
+    let table_read_only_posts: BTreeSet<&str> = LEGACY_VERBS
+        .iter()
+        .filter(|r| r.method == "POST" && r.scope == VerbScope::ReadOnly)
+        .map(|r| r.path)
+        .collect();
+
+    let fixture_read_only_posts: BTreeSet<String> = fixture_ops()
+        .into_iter()
+        .filter(|op| op.method == "POST" && op.scope == "read-only")
+        .map(|op| op.path)
+        .collect();
+    let fixture_read_only_posts: BTreeSet<&str> =
+        fixture_read_only_posts.iter().map(String::as_str).collect();
+
+    assert_eq!(
+        table_read_only_posts, fixture_read_only_posts,
+        "the table's read-only POST paths, derived from LEGACY_VERBS, must be exactly the \
+         fixture's dry-run carve-out"
+    );
+    assert_eq!(
+        table_read_only_posts.len(),
+        2,
+        "1.5.5 names exactly two stateless dry-run POSTs"
+    );
+}
+
 #[test]
 fn scope_split_is_34_read_only_32_full() {
     let read_only = LEGACY_VERBS

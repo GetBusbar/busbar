@@ -76,17 +76,10 @@ pub struct LegacyVerbRow {
     pub operation_id: &'static str,
     /// The scope `required_scope(method, path)` resolves to for this row: pinned here rather than
     /// recomputed, and derived from the method alone except for the two stateless dry-run POSTs
-    /// named in [`READ_ONLY_POST_PATHS`].
+    /// named inline in [`scope_for`] (1.5.5's `required_scope` carve-out, reproduced verbatim).
+    /// Every other `POST`/`PUT`/`PATCH`/`DELETE` is `Full`; every `GET`/`HEAD` is `ReadOnly`.
     pub scope: VerbScope,
 }
-
-/// The two `POST` paths that are read-only dry-runs rather than mutations (1.5.5's
-/// `required_scope` carve-out, reproduced verbatim). Every other `POST`/`PUT`/`PATCH`/`DELETE` is
-/// `Full`; every `GET`/`HEAD` is `ReadOnly`.
-pub const READ_ONLY_POST_PATHS: &[&str] = &[
-    "/api/v1/admin/config/validate",
-    "/api/v1/admin/plugins/inspect",
-];
 
 /// Resolve the scope a (method, path) pair requires, using exactly 1.5.5's rule: every read is
 /// `ReadOnly`; the two stateless dry-run POSTs are `ReadOnly`; everything else is `Full`. This is
