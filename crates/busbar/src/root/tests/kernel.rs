@@ -19,27 +19,42 @@ fn an_apply_moves_the_card_and_leaves_a_pinned_reader_on_the_one_it_took() {
         "a holder that has heard no apply prices nothing"
     );
 
-    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-    holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 3)));
+    let absent = |fee| {
+        move |generation: u64| {
+            busbar_unit_cost::RateCard::absent(
+                busbar_unit_cost::RateCardVersion::new(format!("root-llm@{generation}")),
+                fee,
+            )
+        }
+    };
+
+    holder.apply(absent(3));
     let admitted = holder.pin().expect("the first apply put a card in place");
-    assert_eq!(admitted.fee_unit_price_nanos(), 30_000_000);
+    assert_eq!(admitted.card.fee_unit_price_nanos(), 30_000_000);
+    assert_eq!(admitted.generation, 1, "the boot resolution is the first");
 
     // The apply a request in flight must not feel.
-    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-    holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 11)));
+    holder.apply(absent(11));
     assert_eq!(
-        admitted.fee_unit_price_nanos(),
+        admitted.card.fee_unit_price_nanos(),
         30_000_000,
         "a reader that pinned before the apply was repriced by it"
     );
+    let next = holder.pin().expect("the second apply put a card in place");
     assert_eq!(
-        holder
-            .pin()
-            .expect("the second apply put a card in place")
-            .fee_unit_price_nanos(),
+        next.card.fee_unit_price_nanos(),
         110_000_000,
         "the apply did not reach the next admission's card"
     );
+
+    // AND THE TWO CARDS ARE TELLABLE APART, which is the whole of what a version is for: the
+    // journal stamps the number and the card is named after it, so a posting can be traced back
+    // to the configuration that priced it. Two applies used to produce one constant name and a
+    // stamp of zero, which said only that a card existed.
+    assert_eq!(next.generation, 2);
+    assert_ne!(admitted.generation, next.generation);
+    assert_eq!(admitted.card.version().as_str(), "root-llm@1");
+    assert_eq!(next.card.version().as_str(), "root-llm@2");
 }
 
 /// A chain with one module in it, so the front door is CLOSED without needing a governance state

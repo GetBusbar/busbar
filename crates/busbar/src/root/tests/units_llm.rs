@@ -564,6 +564,7 @@ fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
             &mut durability,
             &who,
             arrived,
+            0,
             &busbar_caps::DurabilityToken::mint(&seal),
             posted,
         )
@@ -713,6 +714,7 @@ async fn the_exit_arm_puts_the_loops_posting_on_the_journal() {
         &mut durability,
         &who,
         Arrived::at(EPOCH * 1_000, 0),
+        0,
         &busbar_caps::DurabilityToken::mint(&seal),
         posted,
     )

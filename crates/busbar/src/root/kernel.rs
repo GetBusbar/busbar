@@ -139,7 +139,28 @@ pub struct RootCard {
     /// `None` until the boot resolution raises the rate-apply seam. Absent, a report is not priced
     /// and nothing is posted — the honest answer for a build that has read no configuration yet,
     /// rather than a fallback card whose figures no operator wrote.
-    card: arc_swap::ArcSwapOption<busbar_unit_cost::RateCard>,
+    in_force: arc_swap::ArcSwapOption<InForce>,
+    /// How many applies this holder has taken. The next one's VERSION, and the reason a version is
+    /// a fact about this process rather than a constant: two cards built from two different
+    /// configurations used to be told apart by nothing at all.
+    applied: std::sync::atomic::AtomicU64,
+}
+
+/// A card and the version that identifies it, as one value a reader pins.
+///
+/// Together rather than beside each other, because a posting records BOTH — what it was priced at
+/// and which card said so — and two values pinned separately are two values that can be pinned at
+/// two different instants. There is one apply, so there is one pair.
+#[derive(Debug)]
+pub struct InForce {
+    /// Which apply put this card in place: `1` for the boot resolution, one more for each reload.
+    ///
+    /// The number the journal's posting record carries, and the number the card's own
+    /// [`busbar_unit_cost::RateCardVersion`] is named after — one fact spelled two ways rather than
+    /// two facts that can disagree. A record stamped `0` is one no card priced.
+    pub generation: u64,
+    /// The rates themselves.
+    pub card: Arc<busbar_unit_cost::RateCard>,
 }
 
 impl std::fmt::Debug for RootCard {
@@ -154,16 +175,30 @@ impl RootCard {
     /// The returned `Arc` is the reader's to keep: a swap after this call replaces what the NEXT
     /// caller sees and leaves this one holding the card it was admitted under.
     #[must_use]
-    pub fn pin(&self) -> Option<Arc<busbar_unit_cost::RateCard>> {
-        self.card.load_full()
+    pub fn pin(&self) -> Option<Arc<InForce>> {
+        self.in_force.load_full()
     }
 
-    /// Put `card` in place of whatever is there, atomically.
+    /// Put a card in place of whatever is there, atomically, and give it this process's next
+    /// version.
     ///
     /// Called on the boot resolution and again on every apply/reload, always with a card built from
-    /// the configuration the engine just resolved its own rates from.
-    pub fn apply(&self, card: Arc<busbar_unit_cost::RateCard>) {
-        self.card.store(Some(card));
+    /// the configuration the engine just resolved its own rates from. The version is drawn HERE and
+    /// handed to the builder rather than chosen by the caller, because a version is a statement
+    /// about how many times this holder has moved and the holder is the only thing that knows.
+    ///
+    /// The rate-apply seam is raised by the one place that resolves a configuration, so the applies
+    /// arrive in order and a version is monotonic; what this guarantees on its own is that no two
+    /// applies are given the same one.
+    pub fn apply(&self, build: impl FnOnce(u64) -> busbar_unit_cost::RateCard) {
+        let generation = self
+            .applied
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .saturating_add(1);
+        self.in_force.store(Some(Arc::new(InForce {
+            generation,
+            card: Arc::new(build(generation)),
+        })));
     }
 }
 
@@ -195,16 +230,21 @@ pub static ROOT_CARD: LazyLock<RootCard> = LazyLock::new(RootCard::default);
 /// difference matters: absent prices every class at nothing and still charges the flat fee, which is
 /// exactly what the previous release bills for that deployment.
 ///
-/// The version is a constant name rather than a hash of the configuration, and that is a stated
-/// limit rather than an oversight: the postings this card prices are read back at the width the node
-/// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
-/// day the books grow that column, this is the one line that fills it. The NAME stays `root-llm`
-/// because a version string is a recorded value, not a label: changing it here would move every
-/// posting's card version in the books for a code move that computes the same card.
+/// The version is the holder's APPLY GENERATION — `root-llm@1` for the boot resolution, one more
+/// for each reload — rather than a constant name or a hash of the configuration. A constant told two
+/// cards apart by nothing, which mattered the moment the card became swappable: a posting priced
+/// before a rate change and one priced after it carried the same version, and the journal's own
+/// version column carried a zero beside them. A hash would be a better answer and is not this one:
+/// it would have to be stable across the neutral view the seam carries, and the number that says
+/// WHICH APPLY is the fact the record actually needs.
+///
+/// Named here and stamped on the posting in `settle`, off the same pinned value, so the card's name
+/// and the record's number cannot disagree.
 fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
     per_request_fee: i64,
     present: bool,
+    generation: u64,
 ) -> busbar_unit_cost::RateCard {
     // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
     // across a crate boundary, in the same canonical order, with nothing computed on the way.
@@ -222,7 +262,7 @@ fn card_from_config<'r>(
         })
     });
     busbar_unit_cost::RateCard::from_config(
-        busbar_unit_cost::RateCardVersion::new("root-llm"),
+        busbar_unit_cost::RateCardVersion::new(format!("root-llm@{generation}")),
         lanes,
         per_request_fee,
     )
@@ -238,11 +278,14 @@ pub struct CardRepricer;
 
 impl busbar_substrate::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply(Arc::new(card_from_config(
-            rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-            rates.fee_cents,
-            rates.present,
-        )));
+        ROOT_CARD.apply(|generation| {
+            card_from_config(
+                rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
+                rates.fee_cents,
+                rates.present,
+                generation,
+            )
+        });
     }
 }
 
