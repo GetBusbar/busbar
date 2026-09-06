@@ -105,6 +105,30 @@ die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # shellcheck source=scripts/mcp-subject/boot.sh
 . "$(dirname "$0")/mcp-subject/boot.sh"
 
+# ONE REAPER, INSTALLED BEFORE ANYTHING IS SPAWNED, and it reads its list when it FIRES rather than
+# when it is installed.
+#
+# The two defects this shape exists to refuse. First, `boot_busbar_subject` spawns three processes
+# (the diagnostic upstream, busbar, the credential shim) and only its CALLER used to install the
+# trap, so a boot that died partway — a config busbar refuses, a shim that will not start — left
+# whatever had already started running with nothing arranged to kill it. Those orphans hold their
+# loopback ports, and a busbar left over from an earlier commit is a subject a LATER run can be
+# pointed at and judged against: a verdict about a binary that is not the one under test.
+#
+# Second, a trap installed per-site with the pid EXPANDED AT INSTALL TIME is a trap that overwrites
+# whatever the previous site installed. `trap` is process-global, so the subject leg's trap replaced
+# the control leg's and the control peer stopped being reaped at all. The list below is ADDITIVE and
+# `$SUBJECT_PIDS` is read at fire time, so a boot that sets it after the trap is armed is still
+# covered.
+REAP_PIDS=""
+SUBJECT_PIDS=""
+reap_all() {
+  local p
+  for p in $REAP_PIDS ${SUBJECT_PIDS:-}; do kill "$p" 2>/dev/null || true; done
+}
+reap_add() { REAP_PIDS="$REAP_PIDS $*"; }
+trap reap_all EXIT
+
 usage() { sed -n '2,70p' "$0" | sed 's/^# \{0,1\}//'; }
 
 # ARMED OR RED, in one place so it can be tested in one place.
@@ -236,8 +260,7 @@ finding, not a busbar finding."; }
 
   ( cd "$sdk" && npx tsx "$SDK_FIXTURE" ) >"$dir/control-server.log" 2>&1 &
   local server_pid=$!
-  # shellcheck disable=SC2064
-  trap "kill $server_pid 2>/dev/null || true" EXIT
+  reap_add "$server_pid"
 
   # READINESS BY OBSERVATION, not by sleeping. The wait ends when the endpoint answers ANYTHING —
   # a 4xx is a perfectly good proof that a server is listening, and waiting for a 2xx would make
@@ -276,9 +299,10 @@ official_subject() {
 
   local target
   if [ -n "${MCP_SUBJECT_BUSBAR_BIN:-}" ]; then
+    # The reaper is already armed and reads SUBJECT_PIDS when it fires, so a boot that dies between
+    # its first spawn and its last one leaves nothing behind.
+    SUBJECT_PIDS=""
     boot_busbar_subject
-    # shellcheck disable=SC2064
-    trap "kill $SUBJECT_PIDS 2>/dev/null || true" EXIT
     target="$SUBJECT_URL"
   else
     target="$MCP_CONFORMANCE_SUBJECT_URL"
@@ -409,8 +433,7 @@ battery_subject() {
     SEAM_PID=$!
     # Reaped even if the boot below dies: a leaked hostile peer would hold a port and outlive the
     # job that started it.
-    # shellcheck disable=SC2064
-    trap "kill $SEAM_PID 2>/dev/null || true" EXIT
+    reap_add "$SEAM_PID"
     say "   hostile seam upstream on 127.0.0.1:$seam_port (control $seam_control, log $seamdir/seam-upstream.log)"
 
     # EXPORTED BEFORE THE BOOT, because `subject_write_config` reads it: the registration has to
@@ -418,9 +441,8 @@ battery_subject() {
     # a different test.
     export MCP_SEAM_UPSTREAM_URL="http://127.0.0.1:$seam_port/mcp"
 
+    SUBJECT_PIDS=""
     MCP_SUBJECT_WORKDIR="$workdir" boot_busbar_subject
-    # shellcheck disable=SC2064
-    trap "kill $SUBJECT_PIDS $SEAM_PID 2>/dev/null || true" EXIT
     MCP_SUBJECT_SERVER_CMD="node $(pwd)/$MCP_BATTERY_DIR/scripts/stdio-http-bridge.mjs $SUBJECT_URL"
     export MCP_SUBJECT_SERVER_CMD
 
