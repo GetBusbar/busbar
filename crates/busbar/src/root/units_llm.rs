@@ -2610,6 +2610,8 @@ mod tests {
             model_hint: None,
             started: Instant::now(),
             charged_at: EPOCH,
+            // The card the root would have pinned at admission, pinned here the same way so the
+            // fixture prices through the step the live loop prices through.
             card: crate::root::kernel::ROOT_CARD.pin(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
