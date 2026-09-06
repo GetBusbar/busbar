@@ -129,3 +129,14 @@ A caller's MCP ask for a capability was refused by policy. This is a routine per
 
 **What to do:** None — self-heals. The refusal reason is recorded in the audit and call log.
 
+<a id="mcp-demotion-row-unreadable"></a>
+### BUSBAR-7105 — A durable MCP demotion record could not be decoded at boot
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `mcp-demotion-row-unreadable`
+
+A row in the durable MCP demotion record did not decode into a demotion at boot. The               row exists because an upstream was QUARANTINED — a live observation disagreed with               the operator's approval — so an unreadable one is a quarantine busbar can no longer               read the terms of, and skipping it silently would let a drifted upstream be served               again on the strength of a corrupt byte. The replay fails CLOSED: the server named by               the row stays demoted when its name can still be salvaged, and the row is retained               either way so the evidence is not destroyed by the restart that found it.
+
+**What to do:** Investigate the durable governance store: an undecodable plane record is either              corruption or tampering. Capture the store for review before it is overwritten, then              clear the named server's demotion deliberately once the upstream is known good —              busbar will not clear it for you.
+
