@@ -1085,7 +1085,24 @@ fn server_entry(id: &str, def: &McpServerDefCfg) -> ServerEntry {
             pin,
             def.tools_allow
                 .iter()
-                .filter_map(|(tool, allow)| allow.schema_hash.clone().map(|h| (tool.clone(), h)))
+                // A BLANK HASH IS NO HASH, and dropping it here is what keeps
+                // `ToolEntry::dispatch_digest`'s promise true. That accessor stands the EMPTY STRING
+                // in for "the operator approved no hash", and says it cannot admit anything because
+                // a tool with no hash is absent from this map. An operator who wrote
+                // `schema_hash: ""` (or a line of whitespace) put `Some("")` into it, so the
+                // approval held `At("")`, the digest offered was `""`, and the two MATCHED — a tool
+                // dispatching against an approval of nothing, on exactly the comparison that exists
+                // to catch a rug-pull. Trimmed rather than merely tested for empty, for the same
+                // reason `key: "  "` is refused on the pin: a value made of spaces is a value the
+                // operator did not write.
+                .filter_map(|(tool, allow)| {
+                    allow
+                        .schema_hash
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|h| !h.is_empty())
+                        .map(|h| (tool.clone(), h.to_string()))
+                })
                 .collect(),
         ),
         None => Approval::registered(),
