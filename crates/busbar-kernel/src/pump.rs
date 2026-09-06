@@ -211,7 +211,10 @@ impl Scheduler {
                         .unwrap_or(false);
                     if won {
                         if let Some(session) = session {
-                            session.release_open(stream, direction);
+                            // Only the direction the superseded unit was actually holding. The
+                            // frame's own direction may belong to a third unit that is still
+                            // relaying, and freeing that one is the second hold this rule forbids.
+                            session.release_open_by(stream, direction, target);
                         }
                     }
                     return Dispatch::Supersede { target, won };

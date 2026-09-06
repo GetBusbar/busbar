@@ -606,6 +606,20 @@ impl SessionSlot {
             .copied()
     }
 
+    /// Give the direction back, but only if `unit` is the one holding it.
+    ///
+    /// An interrupt names a UNIT and the frame carrying it names a DIRECTION, and nothing makes a
+    /// plane put the two together. Freeing whatever happens to hold the direction would hand a
+    /// live conversation's slot to the unit taking over from a different one, which is two units
+    /// relaying one direction under two holds. Read and removed under one lock, because a check
+    /// the caller makes separately is a check another frame can land in the middle of.
+    pub fn release_open_by(&self, stream: StreamId, direction: Direction, unit: UnitKey) {
+        let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+        if open.get(&(stream, direction)) == Some(&unit) {
+            open.remove(&(stream, direction));
+        }
+    }
+
     /// Give the direction back, at the unit's end.
     pub fn release_open(&self, stream: StreamId, direction: Direction) {
         self.open

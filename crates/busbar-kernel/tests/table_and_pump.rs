@@ -475,6 +475,56 @@ fn a_superseding_open_reaches_the_compare_and_set_even_on_an_occupied_direction(
     );
 }
 
+/// The interrupt names a unit; the frame carrying it names a direction. A plane may put the two
+/// apart, and when it does the direction the frame arrived on belongs to somebody else. Freeing it
+/// would hand a live conversation's direction to the unit taking over from a DIFFERENT one, which
+/// is the two-holds-on-one-direction the whole slot exists to prevent.
+#[test]
+fn a_supersede_frees_only_the_direction_the_superseded_unit_was_holding() {
+    let kernel = Kernel::new();
+    let table = InFlight::new(8, 0);
+    let sessions = Sessions::new(4);
+    let session = sessions
+        .open(kernel.session_id(3), Binding::Bound, 0)
+        .expect("under the session budget");
+
+    let target = busbar_caps::UnitKey::new(21);
+    let bystander = busbar_caps::UnitKey::new(22);
+    for key in [target, bystander] {
+        table
+            .insert(Enter {
+                key,
+                ..enter(&kernel, key.get(), OriginKind::Client)
+            })
+            .map_err(|_| ())
+            .expect("under the cap");
+    }
+    session
+        .claim_open(StreamId(1), Direction::Inbound, target)
+        .expect("the slot was free");
+    session
+        .claim_open(StreamId(2), Direction::Inbound, bystander)
+        .expect("the slot was free");
+
+    // The interrupt names the unit on stream 1; the frame arrives on stream 2.
+    let scheduler = Scheduler::default();
+    let verdict = scheduler.dispatch(
+        Some(&session),
+        &table,
+        StreamId(2),
+        Direction::Inbound,
+        Shape::Open {
+            interrupt: Some(target),
+        },
+    );
+    assert_eq!(verdict, Dispatch::Supersede { target, won: true });
+    assert_eq!(
+        session.open_unit(StreamId(2), Direction::Inbound),
+        Some(bystander),
+        "the bystander still owns the direction its own frame arrived on"
+    );
+}
+
 #[test]
 fn one_shots_run_under_a_small_fixed_concurrency() {
     let kernel = Kernel::new();
