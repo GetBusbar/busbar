@@ -62,7 +62,7 @@ pub use amend::{
 };
 pub use legacy::{
     AuditEntry, AuditInput, AuditLog, Chain, ChainBreak, ChainBreakKind, ChainedRecord, Clock,
-    DurableSeam, NoSeam, SystemClock, ADMIN_LOG, AUDIT_ACTIONS, MAX_AUDIT_ENTRIES, OUTCOME_APPLIED,
+    DurableSeam, NoSeam, ADMIN_LOG, AUDIT_ACTIONS, MAX_AUDIT_ENTRIES, OUTCOME_APPLIED,
     OUTCOME_DEGRADED, OUTCOME_REJECTED,
 };
 pub use record::{

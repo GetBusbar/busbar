@@ -10,8 +10,8 @@
 use std::sync::{Arc, Mutex};
 
 use crate::legacy::{
-    verify_chain, AuditEntry, AuditLog, Clock, DurableSeam, AUDIT_ACTIONS, MAX_AUDIT_ENTRIES,
-    OUTCOME_APPLIED, OUTCOME_REJECTED,
+    verify_chain, AuditEntry, AuditLog, Clock, DurableSeam, NoSeam, AUDIT_ACTIONS,
+    MAX_AUDIT_ENTRIES, OUTCOME_APPLIED, OUTCOME_REJECTED,
 };
 
 // ── THE FROZEN PERSISTED BYTES ───────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ fn a_chain_persisted_by_an_earlier_build_still_verifies() {
     );
 
     // And the ring takes them, resumes after them, and keeps chaining.
-    let log = AuditLog::new();
+    let log = ring();
     log.restore_from_store(persisted).unwrap();
     log.record_by("hook.register", "hook:compress", OUTCOME_APPLIED, "admin");
     let all = log.export();
@@ -97,6 +97,16 @@ impl DurableSeam for RecordingSeam {
     }
 }
 
+/// A ring on a stopped clock and no durable seam — what a test that does not care about the
+/// timestamp wants. The clock is injected here rather than defaulted in the crate, because the crate
+/// has no clock of its own to default to.
+fn ring() -> AuditLog {
+    AuditLog::with(
+        Box::new(FixedClock(Arc::new(Mutex::new(1_700_000_000)))),
+        Box::new(NoSeam),
+    )
+}
+
 fn log_at(ts: u64) -> (AuditLog, Arc<Mutex<u64>>, RecordingSeam) {
     let clock = Arc::new(Mutex::new(ts));
     let seam = RecordingSeam::default();
@@ -112,7 +122,7 @@ fn log_at(ts: u64) -> (AuditLog, Arc<Mutex<u64>>, RecordingSeam) {
 
 #[test]
 fn export_load_roundtrip_resumes_chain() {
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     log.record_by("hook.delete", "hook:a", OUTCOME_REJECTED, "admin");
     let exported = log.export();
@@ -120,7 +130,7 @@ fn export_load_roundtrip_resumes_chain() {
 
     // Restore into a fresh log — a fresh boot. The chain is intact and the sequence resumes AFTER
     // the highest restored one.
-    let restored = AuditLog::new();
+    let restored = ring();
     restored.load(exported);
     assert!(restored.verify(), "restored chain must verify");
     restored.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
@@ -138,7 +148,7 @@ fn export_load_roundtrip_resumes_chain() {
 
 #[test]
 fn record_and_list_newest_first() {
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     log.record_by("hook.delete", "hook:a", OUTCOME_APPLIED, "admin");
     let entries = log.list(10);
@@ -149,7 +159,7 @@ fn record_and_list_newest_first() {
 
 #[test]
 fn hash_chain_links_and_verifies() {
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     log.record_by("hook.register", "hook:b", OUTCOME_REJECTED, "admin");
     log.record_by("hook.delete", "hook:a", OUTCOME_APPLIED, "admin");
@@ -163,7 +173,7 @@ fn hash_chain_links_and_verifies() {
     // Tamper: change a recorded field in place, and verification fails.
     let mut tampered = entries.clone();
     tampered[1].resource = "hook:elsewhere".to_string();
-    let fresh = AuditLog::new();
+    let fresh = ring();
     fresh.load(tampered);
     assert!(!fresh.verify(), "an edited entry must not verify");
 }
@@ -172,7 +182,7 @@ fn hash_chain_links_and_verifies() {
 fn a_rejection_is_recorded_as_faithfully_as_an_application() {
     // Both outcomes are audited. A log that recorded only successes would be silent about exactly
     // the traffic somebody probing the surface generates.
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("key.rotate", "key:abc", OUTCOME_REJECTED, "someone");
     let entries = log.list(1);
     assert_eq!(entries[0].outcome, OUTCOME_REJECTED);
@@ -182,7 +192,7 @@ fn a_rejection_is_recorded_as_faithfully_as_an_application() {
 
 #[test]
 fn the_ring_is_bounded_and_prunes_the_oldest() {
-    let log = AuditLog::new();
+    let log = ring();
     for i in 0..MAX_AUDIT_ENTRIES + 50 {
         log.record_by(
             "hook.register",
@@ -210,7 +220,7 @@ fn the_ring_is_bounded_and_prunes_the_oldest() {
 fn a_restore_larger_than_the_cap_is_pruned_to_the_newest_entries() {
     // A chained snapshot LONGER than the cap. The ring prunes itself as it fills, so the oversized
     // list is accumulated one newest-entry-at-a-time as the appends happen.
-    let unpruned = AuditLog::new();
+    let unpruned = ring();
     let mut chained: Vec<AuditEntry> = Vec::new();
     for i in 0..MAX_AUDIT_ENTRIES + 50 {
         unpruned.record_by(
@@ -223,7 +233,7 @@ fn a_restore_larger_than_the_cap_is_pruned_to_the_newest_entries() {
     }
     assert_eq!(chained.len(), MAX_AUDIT_ENTRIES + 50);
 
-    let restored = AuditLog::new();
+    let restored = ring();
     restored.load(chained);
     assert_eq!(
         restored.export().len(),
@@ -240,6 +250,26 @@ fn a_restore_larger_than_the_cap_is_pruned_to_the_newest_entries() {
     assert!(restored.verify());
 }
 
+/// A SNAPSHOT AT THE TOP OF THE RANGE MUST NOT PANIC. The resume point is one past the highest
+/// restored position, and the highest position a `u64` can hold has no "one past" — so the addition
+/// saturates. Restoring a ring is boot work: a node that panicked here would fail to start because
+/// of an arithmetic edge in a log, which is a worse outcome than a resume point that stops climbing.
+#[test]
+fn a_restore_at_the_top_of_the_range_saturates_instead_of_panicking() {
+    let (log, _clock, _seam) = log_at(1_700_000_000);
+    log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
+    let mut snapshot = log.export();
+    snapshot[0].seq = u64::MAX;
+
+    let (restored, _clock2, _seam2) = log_at(1_700_000_000);
+    restored.load(snapshot);
+    assert_eq!(
+        restored.export().len(),
+        1,
+        "the snapshot is seeded rather than rejected"
+    );
+}
+
 #[test]
 fn the_cap_is_a_thousand() {
     assert_eq!(MAX_AUDIT_ENTRIES, 1000);
@@ -247,7 +277,7 @@ fn the_cap_is_a_thousand() {
 
 #[test]
 fn filtering_matches_exactly_and_pages_from_the_newest() {
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     log.record_by("key.rotate", "key:1", OUTCOME_APPLIED, "admin");
     log.record_by("hook.register", "hook:b", OUTCOME_APPLIED, "admin");
@@ -274,11 +304,11 @@ fn filtering_matches_exactly_and_pages_from_the_newest() {
 
 #[test]
 fn a_restored_entry_is_not_marked_as_recorded_here() {
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     assert!(log.export()[0].recorded_here, "a live append is marked");
 
-    let restored = AuditLog::new();
+    let restored = ring();
     restored.load(log.export());
     assert!(
         !restored.export()[0].recorded_here,
@@ -288,7 +318,7 @@ fn a_restored_entry_is_not_marked_as_recorded_here() {
 
 #[test]
 fn the_provenance_flag_is_not_on_the_wire_and_there_are_eight_fields() {
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     let entry = &log.export()[0];
     // Serialised as a map, the flag is absent and the eight wire fields are present. Checked by
@@ -313,18 +343,18 @@ fn the_provenance_flag_is_not_on_the_wire_and_there_are_eight_fields() {
 
 #[test]
 fn a_restore_from_a_store_verifies_before_it_is_trusted_and_seeds_either_way() {
-    let log = AuditLog::new();
+    let log = ring();
     log.record_by("hook.register", "hook:a", OUTCOME_APPLIED, "admin");
     log.record_by("hook.delete", "hook:a", OUTCOME_APPLIED, "admin");
     let good = log.export();
 
-    let fresh = AuditLog::new();
+    let fresh = ring();
     assert!(fresh.restore_from_store(good.clone()).is_ok());
     assert_eq!(fresh.len(), 2);
 
     let mut broken = good;
     broken[1].action = "hook.something-else".to_string();
-    let fresh = AuditLog::new();
+    let fresh = ring();
     let verdict = fresh.restore_from_store(broken);
     assert!(verdict.is_err(), "a tampered tail is reported");
     assert_eq!(
@@ -396,7 +426,7 @@ fn every_action_name_reads_as_a_noun_and_a_verb() {
 fn every_action_name_chains_and_verifies() {
     // The whole vocabulary, through the chain, so a name that somehow broke the digest is caught by
     // the set rather than by whichever call site happened to be exercised.
-    let log = AuditLog::new();
+    let log = ring();
     for action in AUDIT_ACTIONS {
         log.record_by(action, "resource:x", OUTCOME_APPLIED, "admin");
     }
@@ -409,7 +439,7 @@ fn concurrent_recorders_produce_sequences_in_insertion_order() {
     // The position is allocated INSIDE the entries lock. Allocating it outside let two recorders
     // interleave — the one with the higher number taking the lock first — and produce out-of-order
     // sequences in the ring.
-    let log = Arc::new(AuditLog::new());
+    let log = Arc::new(ring());
     let mut threads = Vec::new();
     for t in 0..8u64 {
         let log = Arc::clone(&log);

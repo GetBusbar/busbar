@@ -93,7 +93,7 @@
 use std::path::{Path, PathBuf};
 
 use busbar_caps::{DurabilityLost, DurabilityToken, StepName};
-use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord};
+use busbar_unit_audit::{AuditChain, AuditLog, AuditRecord, Clock, NoSeam};
 use busbar_unit_ledger::checkpoint::Checkpoint;
 use busbar_unit_ledger::legacy::LegacyRows;
 use busbar_unit_ledger::migration::{MigrationError, MigrationMarker, MigrationRecords};
@@ -589,6 +589,23 @@ pub fn build(
     build_for_node(cfg, 0, shipper, legacy_rows)
 }
 
+/// The root's wall clock, in whole seconds since the Unix epoch, as every other reading on this
+/// path spells it: a clock that reads before the epoch gives zero rather than panicking.
+///
+/// It lives HERE, in the composition root, because reading the wall clock is the root's job. The
+/// audit unit takes a [`Clock`] and has no implementation of its own — a unit that could read the
+/// clock could produce a different record from the same inputs, and then replaying the inputs would
+/// no longer reproduce the record.
+struct RootWallClock;
+
+impl Clock for RootWallClock {
+    fn now(&self) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs())
+    }
+}
+
 /// Build the journal, the ledger and the two audit chains.
 ///
 /// The whole decision is the first `match`. Everything after it is the same on both branches, which
@@ -623,7 +640,10 @@ pub fn build_for_node(
         // write, and both are release requirements rather than deployment choices.
         ledger: Ledger::dual_writing(legacy_rows),
         record: AuditChain::new(),
-        legacy: AuditLog::new(),
+        // The ring takes the ROOT's clock. The audit unit has none of its own to fall back on, which
+        // is the point: reading the wall clock is the composition root's job, and a unit that could
+        // do it for itself would stop being replayable from its inputs.
+        legacy: AuditLog::with(Box::new(RootWallClock), Box::new(NoSeam)),
         checkpoints: Vec::new(),
     })
 }
