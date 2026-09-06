@@ -18,10 +18,10 @@
       "none": 0,
       "total": 227
     },
-    "CFG": {
-      "covered": 1,
+    "CONF": {
+      "covered": 0,
       "partial": 0,
-      "none": 204,
+      "none": 205,
       "total": 205
     },
     "LST": {
@@ -31,9 +31,9 @@
       "total": 2
     },
     "RT": {
-      "covered": 2,
+      "covered": 0,
       "partial": 0,
-      "none": 35,
+      "none": 37,
       "total": 37
     },
     "SEC": {
@@ -44,1438 +44,1436 @@
     }
   },
   "ids": {
-    "CFG-001": {
-      "family": "CFG",
+    "CONF-001": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 72,
       "status": "none",
       "citers": []
     },
-    "CFG-002": {
-      "family": "CFG",
+    "CONF-002": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 73,
       "status": "none",
       "citers": []
     },
-    "CFG-003": {
-      "family": "CFG",
+    "CONF-003": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 74,
       "status": "none",
       "citers": []
     },
-    "CFG-004": {
-      "family": "CFG",
+    "CONF-004": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 75,
       "status": "none",
       "citers": []
     },
-    "CFG-005": {
-      "family": "CFG",
+    "CONF-005": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 76,
       "status": "none",
       "citers": []
     },
-    "CFG-006": {
-      "family": "CFG",
+    "CONF-006": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 77,
       "status": "none",
       "citers": []
     },
-    "CFG-007": {
-      "family": "CFG",
+    "CONF-007": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 78,
       "status": "none",
       "citers": []
     },
-    "CFG-008": {
-      "family": "CFG",
+    "CONF-008": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 79,
       "status": "none",
       "citers": []
     },
-    "CFG-009": {
-      "family": "CFG",
+    "CONF-009": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 80,
       "status": "none",
       "citers": []
     },
-    "CFG-010": {
-      "family": "CFG",
+    "CONF-010": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 81,
       "status": "none",
       "citers": []
     },
-    "CFG-011": {
-      "family": "CFG",
+    "CONF-011": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 82,
       "status": "none",
       "citers": []
     },
-    "CFG-012": {
-      "family": "CFG",
+    "CONF-012": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 83,
       "status": "none",
       "citers": []
     },
-    "CFG-013": {
-      "family": "CFG",
+    "CONF-013": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 84,
       "status": "none",
       "citers": []
     },
-    "CFG-014": {
-      "family": "CFG",
+    "CONF-014": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 85,
       "status": "none",
       "citers": []
     },
-    "CFG-015": {
-      "family": "CFG",
+    "CONF-015": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 86,
       "status": "none",
       "citers": []
     },
-    "CFG-016": {
-      "family": "CFG",
+    "CONF-016": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 87,
       "status": "none",
       "citers": []
     },
-    "CFG-017": {
-      "family": "CFG",
+    "CONF-017": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 88,
       "status": "none",
       "citers": []
     },
-    "CFG-018": {
-      "family": "CFG",
+    "CONF-018": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 89,
       "status": "none",
       "citers": []
     },
-    "CFG-019": {
-      "family": "CFG",
+    "CONF-019": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 90,
       "status": "none",
       "citers": []
     },
-    "CFG-020": {
-      "family": "CFG",
+    "CONF-020": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 91,
       "status": "none",
       "citers": []
     },
-    "CFG-021": {
-      "family": "CFG",
+    "CONF-021": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 92,
       "status": "none",
       "citers": []
     },
-    "CFG-022": {
-      "family": "CFG",
+    "CONF-022": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 93,
       "status": "none",
       "citers": []
     },
-    "CFG-023": {
-      "family": "CFG",
+    "CONF-023": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 94,
       "status": "none",
       "citers": []
     },
-    "CFG-024": {
-      "family": "CFG",
+    "CONF-024": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 95,
       "status": "none",
       "citers": []
     },
-    "CFG-025": {
-      "family": "CFG",
+    "CONF-025": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 96,
       "status": "none",
       "citers": []
     },
-    "CFG-026": {
-      "family": "CFG",
+    "CONF-026": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 97,
       "status": "none",
       "citers": []
     },
-    "CFG-027": {
-      "family": "CFG",
+    "CONF-027": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 98,
       "status": "none",
       "citers": []
     },
-    "CFG-028": {
-      "family": "CFG",
+    "CONF-028": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 99,
       "status": "none",
       "citers": []
     },
-    "CFG-029": {
-      "family": "CFG",
+    "CONF-029": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 100,
       "status": "none",
       "citers": []
     },
-    "CFG-030": {
-      "family": "CFG",
+    "CONF-030": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 119,
       "status": "none",
       "citers": []
     },
-    "CFG-031": {
-      "family": "CFG",
+    "CONF-031": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 120,
       "status": "none",
       "citers": []
     },
-    "CFG-032": {
-      "family": "CFG",
+    "CONF-032": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 121,
       "status": "none",
       "citers": []
     },
-    "CFG-040": {
-      "family": "CFG",
+    "CONF-040": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 141,
       "status": "none",
       "citers": []
     },
-    "CFG-041": {
-      "family": "CFG",
+    "CONF-041": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 142,
       "status": "none",
       "citers": []
     },
-    "CFG-042": {
-      "family": "CFG",
+    "CONF-042": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 143,
       "status": "none",
       "citers": []
     },
-    "CFG-043": {
-      "family": "CFG",
+    "CONF-043": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 144,
       "status": "none",
       "citers": []
     },
-    "CFG-044": {
-      "family": "CFG",
+    "CONF-044": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 145,
       "status": "none",
       "citers": []
     },
-    "CFG-045": {
-      "family": "CFG",
+    "CONF-045": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 146,
       "status": "none",
       "citers": []
     },
-    "CFG-046": {
-      "family": "CFG",
+    "CONF-046": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 147,
       "status": "none",
       "citers": []
     },
-    "CFG-047": {
-      "family": "CFG",
+    "CONF-047": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 148,
       "status": "none",
       "citers": []
     },
-    "CFG-048": {
-      "family": "CFG",
+    "CONF-048": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 149,
       "status": "none",
       "citers": []
     },
-    "CFG-049": {
-      "family": "CFG",
+    "CONF-049": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 150,
       "status": "none",
       "citers": []
     },
-    "CFG-050": {
-      "family": "CFG",
+    "CONF-050": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 151,
       "status": "none",
       "citers": []
     },
-    "CFG-051": {
-      "family": "CFG",
+    "CONF-051": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 152,
       "status": "none",
       "citers": []
     },
-    "CFG-052": {
-      "family": "CFG",
+    "CONF-052": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 153,
       "status": "none",
       "citers": []
     },
-    "CFG-053": {
-      "family": "CFG",
+    "CONF-053": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 154,
       "status": "none",
       "citers": []
     },
-    "CFG-054": {
-      "family": "CFG",
+    "CONF-054": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 155,
       "status": "none",
       "citers": []
     },
-    "CFG-060": {
-      "family": "CFG",
+    "CONF-060": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 167,
       "status": "none",
       "citers": []
     },
-    "CFG-061": {
-      "family": "CFG",
+    "CONF-061": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 168,
       "status": "none",
       "citers": []
     },
-    "CFG-062": {
-      "family": "CFG",
+    "CONF-062": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 169,
       "status": "none",
       "citers": []
     },
-    "CFG-063": {
-      "family": "CFG",
+    "CONF-063": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 170,
       "status": "none",
       "citers": []
     },
-    "CFG-064": {
-      "family": "CFG",
+    "CONF-064": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 171,
       "status": "none",
       "citers": []
     },
-    "CFG-065": {
-      "family": "CFG",
+    "CONF-065": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 172,
       "status": "none",
       "citers": []
     },
-    "CFG-066": {
-      "family": "CFG",
+    "CONF-066": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 173,
       "status": "none",
       "citers": []
     },
-    "CFG-067": {
-      "family": "CFG",
+    "CONF-067": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 174,
       "status": "none",
       "citers": []
     },
-    "CFG-070": {
-      "family": "CFG",
+    "CONF-070": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 188,
       "status": "none",
       "citers": []
     },
-    "CFG-071": {
-      "family": "CFG",
+    "CONF-071": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 189,
       "status": "none",
       "citers": []
     },
-    "CFG-080": {
-      "family": "CFG",
+    "CONF-080": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 201,
       "status": "none",
       "citers": []
     },
-    "CFG-081": {
-      "family": "CFG",
+    "CONF-081": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 202,
       "status": "none",
       "citers": []
     },
-    "CFG-082": {
-      "family": "CFG",
+    "CONF-082": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 203,
       "status": "none",
       "citers": []
     },
-    "CFG-083": {
-      "family": "CFG",
+    "CONF-083": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 204,
       "status": "none",
       "citers": []
     },
-    "CFG-084": {
-      "family": "CFG",
+    "CONF-084": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 205,
       "status": "none",
       "citers": []
     },
-    "CFG-085": {
-      "family": "CFG",
+    "CONF-085": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 206,
       "status": "none",
       "citers": []
     },
-    "CFG-086": {
-      "family": "CFG",
+    "CONF-086": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 207,
       "status": "none",
       "citers": []
     },
-    "CFG-087": {
-      "family": "CFG",
+    "CONF-087": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 208,
       "status": "none",
       "citers": []
     },
-    "CFG-088": {
-      "family": "CFG",
+    "CONF-088": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 209,
       "status": "none",
       "citers": []
     },
-    "CFG-089": {
-      "family": "CFG",
+    "CONF-089": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 210,
       "status": "none",
       "citers": []
     },
-    "CFG-090": {
-      "family": "CFG",
+    "CONF-090": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 211,
       "status": "none",
       "citers": []
     },
-    "CFG-091": {
-      "family": "CFG",
+    "CONF-091": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 212,
       "status": "none",
       "citers": []
     },
-    "CFG-092": {
-      "family": "CFG",
+    "CONF-092": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 213,
       "status": "none",
       "citers": []
     },
-    "CFG-093": {
-      "family": "CFG",
+    "CONF-093": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 214,
       "status": "none",
       "citers": []
     },
-    "CFG-094": {
-      "family": "CFG",
+    "CONF-094": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 215,
       "status": "none",
       "citers": []
     },
-    "CFG-095": {
-      "family": "CFG",
+    "CONF-095": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 216,
       "status": "none",
       "citers": []
     },
-    "CFG-096": {
-      "family": "CFG",
+    "CONF-096": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 217,
       "status": "none",
       "citers": []
     },
-    "CFG-097": {
-      "family": "CFG",
+    "CONF-097": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 218,
       "status": "none",
       "citers": []
     },
-    "CFG-098": {
-      "family": "CFG",
+    "CONF-098": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 219,
       "status": "none",
       "citers": []
     },
-    "CFG-099": {
-      "family": "CFG",
+    "CONF-099": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 220,
       "status": "none",
       "citers": []
     },
-    "CFG-100": {
-      "family": "CFG",
+    "CONF-100": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 221,
       "status": "none",
       "citers": []
     },
-    "CFG-101": {
-      "family": "CFG",
+    "CONF-101": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 223,
       "status": "none",
       "citers": []
     },
-    "CFG-102": {
-      "family": "CFG",
+    "CONF-102": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 224,
       "status": "none",
       "citers": []
     },
-    "CFG-103": {
-      "family": "CFG",
+    "CONF-103": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 225,
       "status": "none",
       "citers": []
     },
-    "CFG-110": {
-      "family": "CFG",
+    "CONF-110": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 236,
       "status": "none",
       "citers": []
     },
-    "CFG-111": {
-      "family": "CFG",
+    "CONF-111": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 237,
       "status": "none",
       "citers": []
     },
-    "CFG-112": {
-      "family": "CFG",
+    "CONF-112": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 238,
       "status": "none",
       "citers": []
     },
-    "CFG-113": {
-      "family": "CFG",
+    "CONF-113": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 239,
       "status": "none",
       "citers": []
     },
-    "CFG-114": {
-      "family": "CFG",
+    "CONF-114": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 240,
       "status": "none",
       "citers": []
     },
-    "CFG-115": {
-      "family": "CFG",
+    "CONF-115": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 241,
       "status": "none",
       "citers": []
     },
-    "CFG-116": {
-      "family": "CFG",
+    "CONF-116": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 242,
       "status": "none",
       "citers": []
     },
-    "CFG-120": {
-      "family": "CFG",
+    "CONF-120": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 250,
       "status": "none",
       "citers": []
     },
-    "CFG-121": {
-      "family": "CFG",
+    "CONF-121": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 251,
       "status": "none",
       "citers": []
     },
-    "CFG-122": {
-      "family": "CFG",
+    "CONF-122": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 252,
       "status": "none",
       "citers": []
     },
-    "CFG-123": {
-      "family": "CFG",
+    "CONF-123": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 253,
       "status": "none",
       "citers": []
     },
-    "CFG-124": {
-      "family": "CFG",
+    "CONF-124": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 254,
       "status": "none",
       "citers": []
     },
-    "CFG-130": {
-      "family": "CFG",
+    "CONF-130": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 263,
       "status": "none",
       "citers": []
     },
-    "CFG-131": {
-      "family": "CFG",
+    "CONF-131": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 264,
       "status": "none",
       "citers": []
     },
-    "CFG-132": {
-      "family": "CFG",
+    "CONF-132": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 265,
       "status": "none",
       "citers": []
     },
-    "CFG-133": {
-      "family": "CFG",
+    "CONF-133": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 266,
       "status": "none",
       "citers": []
     },
-    "CFG-134": {
-      "family": "CFG",
+    "CONF-134": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 267,
       "status": "none",
       "citers": []
     },
-    "CFG-135": {
-      "family": "CFG",
+    "CONF-135": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 268,
       "status": "none",
       "citers": []
     },
-    "CFG-136": {
-      "family": "CFG",
+    "CONF-136": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 269,
       "status": "none",
       "citers": []
     },
-    "CFG-137": {
-      "family": "CFG",
+    "CONF-137": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 270,
       "status": "none",
       "citers": []
     },
-    "CFG-138": {
-      "family": "CFG",
+    "CONF-138": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 271,
       "status": "none",
       "citers": []
     },
-    "CFG-139": {
-      "family": "CFG",
+    "CONF-139": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 272,
       "status": "none",
       "citers": []
     },
-    "CFG-140": {
-      "family": "CFG",
+    "CONF-140": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 273,
       "status": "none",
       "citers": []
     },
-    "CFG-141": {
-      "family": "CFG",
+    "CONF-141": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 274,
       "status": "none",
       "citers": []
     },
-    "CFG-142": {
-      "family": "CFG",
+    "CONF-142": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 275,
       "status": "none",
       "citers": []
     },
-    "CFG-143": {
-      "family": "CFG",
+    "CONF-143": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 276,
       "status": "none",
       "citers": []
     },
-    "CFG-144": {
-      "family": "CFG",
+    "CONF-144": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 277,
       "status": "none",
       "citers": []
     },
-    "CFG-145": {
-      "family": "CFG",
+    "CONF-145": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 278,
       "status": "none",
       "citers": []
     },
-    "CFG-146": {
-      "family": "CFG",
+    "CONF-146": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 279,
       "status": "none",
       "citers": []
     },
-    "CFG-147": {
-      "family": "CFG",
+    "CONF-147": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 280,
       "status": "none",
       "citers": []
     },
-    "CFG-150": {
-      "family": "CFG",
+    "CONF-150": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 289,
       "status": "none",
       "citers": []
     },
-    "CFG-151": {
-      "family": "CFG",
+    "CONF-151": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 290,
       "status": "none",
       "citers": []
     },
-    "CFG-152": {
-      "family": "CFG",
+    "CONF-152": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 291,
       "status": "none",
       "citers": []
     },
-    "CFG-160": {
-      "family": "CFG",
+    "CONF-160": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 297,
       "status": "none",
       "citers": []
     },
-    "CFG-161": {
-      "family": "CFG",
+    "CONF-161": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 298,
       "status": "none",
       "citers": []
     },
-    "CFG-162": {
-      "family": "CFG",
+    "CONF-162": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 299,
       "status": "none",
       "citers": []
     },
-    "CFG-163": {
-      "family": "CFG",
+    "CONF-163": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 300,
       "status": "none",
       "citers": []
     },
-    "CFG-164": {
-      "family": "CFG",
+    "CONF-164": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 301,
       "status": "none",
       "citers": []
     },
-    "CFG-165": {
-      "family": "CFG",
+    "CONF-165": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 302,
       "status": "none",
       "citers": []
     },
-    "CFG-166": {
-      "family": "CFG",
+    "CONF-166": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 303,
       "status": "none",
       "citers": []
     },
-    "CFG-167": {
-      "family": "CFG",
+    "CONF-167": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 304,
       "status": "none",
       "citers": []
     },
-    "CFG-170": {
-      "family": "CFG",
+    "CONF-170": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 310,
       "status": "none",
       "citers": []
     },
-    "CFG-171": {
-      "family": "CFG",
+    "CONF-171": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 311,
       "status": "none",
       "citers": []
     },
-    "CFG-172": {
-      "family": "CFG",
+    "CONF-172": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 312,
       "status": "none",
       "citers": []
     },
-    "CFG-180": {
-      "family": "CFG",
+    "CONF-180": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 322,
       "status": "none",
       "citers": []
     },
-    "CFG-181": {
-      "family": "CFG",
+    "CONF-181": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 323,
       "status": "none",
       "citers": []
     },
-    "CFG-182": {
-      "family": "CFG",
+    "CONF-182": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 324,
       "status": "none",
       "citers": []
     },
-    "CFG-183": {
-      "family": "CFG",
+    "CONF-183": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 325,
       "status": "none",
       "citers": []
     },
-    "CFG-184": {
-      "family": "CFG",
+    "CONF-184": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 326,
       "status": "none",
       "citers": []
     },
-    "CFG-185": {
-      "family": "CFG",
+    "CONF-185": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 327,
       "status": "none",
       "citers": []
     },
-    "CFG-186": {
-      "family": "CFG",
+    "CONF-186": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 328,
       "status": "none",
       "citers": []
     },
-    "CFG-187": {
-      "family": "CFG",
+    "CONF-187": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 329,
       "status": "none",
       "citers": []
     },
-    "CFG-188": {
-      "family": "CFG",
+    "CONF-188": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 330,
       "status": "none",
       "citers": []
     },
-    "CFG-189": {
-      "family": "CFG",
+    "CONF-189": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 331,
       "status": "none",
       "citers": []
     },
-    "CFG-190": {
-      "family": "CFG",
+    "CONF-190": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 332,
       "status": "none",
       "citers": []
     },
-    "CFG-200": {
-      "family": "CFG",
+    "CONF-200": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 339,
       "status": "none",
       "citers": []
     },
-    "CFG-201": {
-      "family": "CFG",
+    "CONF-201": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 340,
       "status": "none",
       "citers": []
     },
-    "CFG-202": {
-      "family": "CFG",
+    "CONF-202": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 341,
       "status": "none",
       "citers": []
     },
-    "CFG-203": {
-      "family": "CFG",
+    "CONF-203": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 342,
       "status": "none",
       "citers": []
     },
-    "CFG-204": {
-      "family": "CFG",
+    "CONF-204": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 343,
       "status": "none",
       "citers": []
     },
-    "CFG-205": {
-      "family": "CFG",
+    "CONF-205": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 344,
       "status": "none",
       "citers": []
     },
-    "CFG-206": {
-      "family": "CFG",
+    "CONF-206": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 345,
       "status": "none",
       "citers": []
     },
-    "CFG-207": {
-      "family": "CFG",
+    "CONF-207": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 346,
       "status": "none",
       "citers": []
     },
-    "CFG-210": {
-      "family": "CFG",
+    "CONF-210": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 352,
       "status": "none",
       "citers": []
     },
-    "CFG-211": {
-      "family": "CFG",
+    "CONF-211": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 353,
       "status": "none",
       "citers": []
     },
-    "CFG-212": {
-      "family": "CFG",
+    "CONF-212": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 354,
       "status": "none",
       "citers": []
     },
-    "CFG-213": {
-      "family": "CFG",
+    "CONF-213": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 355,
       "status": "none",
       "citers": []
     },
-    "CFG-214": {
-      "family": "CFG",
+    "CONF-214": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 356,
       "status": "none",
       "citers": []
     },
-    "CFG-215": {
-      "family": "CFG",
+    "CONF-215": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 357,
       "status": "none",
       "citers": []
     },
-    "CFG-216": {
-      "family": "CFG",
+    "CONF-216": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 358,
       "status": "none",
       "citers": []
     },
-    "CFG-220": {
-      "family": "CFG",
+    "CONF-220": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 369,
-      "status": "covered",
-      "citers": [
-        "admin.ops|PutHooksName|ok"
-      ]
+      "status": "none",
+      "citers": []
     },
-    "CFG-221": {
-      "family": "CFG",
+    "CONF-221": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 370,
       "status": "none",
       "citers": []
     },
-    "CFG-222": {
-      "family": "CFG",
+    "CONF-222": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 371,
       "status": "none",
       "citers": []
     },
-    "CFG-223": {
-      "family": "CFG",
+    "CONF-223": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 372,
       "status": "none",
       "citers": []
     },
-    "CFG-224": {
-      "family": "CFG",
+    "CONF-224": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 373,
       "status": "none",
       "citers": []
     },
-    "CFG-225": {
-      "family": "CFG",
+    "CONF-225": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 374,
       "status": "none",
       "citers": []
     },
-    "CFG-226": {
-      "family": "CFG",
+    "CONF-226": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 375,
       "status": "none",
       "citers": []
     },
-    "CFG-227": {
-      "family": "CFG",
+    "CONF-227": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 376,
       "status": "none",
       "citers": []
     },
-    "CFG-228": {
-      "family": "CFG",
+    "CONF-228": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 377,
       "status": "none",
       "citers": []
     },
-    "CFG-229": {
-      "family": "CFG",
+    "CONF-229": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 378,
       "status": "none",
       "citers": []
     },
-    "CFG-230": {
-      "family": "CFG",
+    "CONF-230": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 379,
       "status": "none",
       "citers": []
     },
-    "CFG-231": {
-      "family": "CFG",
+    "CONF-231": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 380,
       "status": "none",
       "citers": []
     },
-    "CFG-232": {
-      "family": "CFG",
+    "CONF-232": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 381,
       "status": "none",
       "citers": []
     },
-    "CFG-233": {
-      "family": "CFG",
+    "CONF-233": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 382,
       "status": "none",
       "citers": []
     },
-    "CFG-234": {
-      "family": "CFG",
+    "CONF-234": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 383,
       "status": "none",
       "citers": []
     },
-    "CFG-240": {
-      "family": "CFG",
+    "CONF-240": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 389,
       "status": "none",
       "citers": []
     },
-    "CFG-241": {
-      "family": "CFG",
+    "CONF-241": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 390,
       "status": "none",
       "citers": []
     },
-    "CFG-242": {
-      "family": "CFG",
+    "CONF-242": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 391,
       "status": "none",
       "citers": []
     },
-    "CFG-243": {
-      "family": "CFG",
+    "CONF-243": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 392,
       "status": "none",
       "citers": []
     },
-    "CFG-244": {
-      "family": "CFG",
+    "CONF-244": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 393,
       "status": "none",
       "citers": []
     },
-    "CFG-245": {
-      "family": "CFG",
+    "CONF-245": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 394,
       "status": "none",
       "citers": []
     },
-    "CFG-246": {
-      "family": "CFG",
+    "CONF-246": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 395,
       "status": "none",
       "citers": []
     },
-    "CFG-247": {
-      "family": "CFG",
+    "CONF-247": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 396,
       "status": "none",
       "citers": []
     },
-    "CFG-248": {
-      "family": "CFG",
+    "CONF-248": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 397,
       "status": "none",
       "citers": []
     },
-    "CFG-249": {
-      "family": "CFG",
+    "CONF-249": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 398,
       "status": "none",
       "citers": []
     },
-    "CFG-250": {
-      "family": "CFG",
+    "CONF-250": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 399,
       "status": "none",
       "citers": []
     },
-    "CFG-251": {
-      "family": "CFG",
+    "CONF-251": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 400,
       "status": "none",
       "citers": []
     },
-    "CFG-252": {
-      "family": "CFG",
+    "CONF-252": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 401,
       "status": "none",
       "citers": []
     },
-    "CFG-253": {
-      "family": "CFG",
+    "CONF-253": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 402,
       "status": "none",
       "citers": []
     },
-    "CFG-260": {
-      "family": "CFG",
+    "CONF-260": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 409,
       "status": "none",
       "citers": []
     },
-    "CFG-261": {
-      "family": "CFG",
+    "CONF-261": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 410,
       "status": "none",
       "citers": []
     },
-    "CFG-262": {
-      "family": "CFG",
+    "CONF-262": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 411,
       "status": "none",
       "citers": []
     },
-    "CFG-270": {
-      "family": "CFG",
+    "CONF-270": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 427,
       "status": "none",
       "citers": []
     },
-    "CFG-271": {
-      "family": "CFG",
+    "CONF-271": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 428,
       "status": "none",
       "citers": []
     },
-    "CFG-272": {
-      "family": "CFG",
+    "CONF-272": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 429,
       "status": "none",
       "citers": []
     },
-    "CFG-273": {
-      "family": "CFG",
+    "CONF-273": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 430,
       "status": "none",
       "citers": []
     },
-    "CFG-280": {
-      "family": "CFG",
+    "CONF-280": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 442,
       "status": "none",
       "citers": []
     },
-    "CFG-281": {
-      "family": "CFG",
+    "CONF-281": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 443,
       "status": "none",
       "citers": []
     },
-    "CFG-282": {
-      "family": "CFG",
+    "CONF-282": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 444,
       "status": "none",
       "citers": []
     },
-    "CFG-283": {
-      "family": "CFG",
+    "CONF-283": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 445,
       "status": "none",
       "citers": []
     },
-    "CFG-284": {
-      "family": "CFG",
+    "CONF-284": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 446,
       "status": "none",
       "citers": []
     },
-    "CFG-285": {
-      "family": "CFG",
+    "CONF-285": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 447,
       "status": "none",
       "citers": []
     },
-    "CFG-286": {
-      "family": "CFG",
+    "CONF-286": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 448,
       "status": "none",
       "citers": []
     },
-    "CFG-287": {
-      "family": "CFG",
+    "CONF-287": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 449,
       "status": "none",
       "citers": []
     },
-    "CFG-288": {
-      "family": "CFG",
+    "CONF-288": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 450,
       "status": "none",
       "citers": []
     },
-    "CFG-290": {
-      "family": "CFG",
+    "CONF-290": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 459,
       "status": "none",
       "citers": []
     },
-    "CFG-291": {
-      "family": "CFG",
+    "CONF-291": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 460,
       "status": "none",
       "citers": []
     },
-    "CFG-292": {
-      "family": "CFG",
+    "CONF-292": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 461,
       "status": "none",
       "citers": []
     },
-    "CFG-293": {
-      "family": "CFG",
+    "CONF-293": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 462,
       "status": "none",
       "citers": []
     },
-    "CFG-294": {
-      "family": "CFG",
+    "CONF-294": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 463,
       "status": "none",
       "citers": []
     },
-    "CFG-295": {
-      "family": "CFG",
+    "CONF-295": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 464,
       "status": "none",
       "citers": []
     },
-    "CFG-296": {
-      "family": "CFG",
+    "CONF-296": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 465,
       "status": "none",
       "citers": []
     },
-    "CFG-297": {
-      "family": "CFG",
+    "CONF-297": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 466,
       "status": "none",
       "citers": []
     },
-    "CFG-298": {
-      "family": "CFG",
+    "CONF-298": {
+      "family": "CONF",
       "file": "docs/design/inventory/1.5.5-config.md",
       "line": 467,
       "status": "none",
@@ -3665,10 +3663,8 @@
       "family": "RT",
       "file": "docs/design/inventory/1.5.5-routes-admin.md",
       "line": 121,
-      "status": "covered",
-      "citers": [
-        "ops.scrape|healthz|admin"
-      ]
+      "status": "none",
+      "citers": []
     },
     "RT-004": {
       "family": "RT",
@@ -3744,10 +3740,8 @@
       "family": "RT",
       "file": "docs/design/inventory/1.5.5-routes-admin.md",
       "line": 132,
-      "status": "covered",
-      "citers": [
-        "http.crosscut|wrong-method|GET-messages"
-      ]
+      "status": "none",
+      "citers": []
     },
     "RT-020": {
       "family": "RT",
@@ -4677,9 +4671,9 @@
       "row": "C1",
       "label": "config keys (205) with defaults",
       "families": [
-        "CFG"
+        "CONF"
       ],
-      "status": "PARTIAL"
+      "status": "UNMAPPED"
     },
     {
       "row": "C2",
@@ -4694,7 +4688,7 @@
       "label": "reserved names, precedence, migration, reload",
       "families": [
         "BOOT",
-        "CFG"
+        "CONF"
       ],
       "status": "PARTIAL"
     },
@@ -4720,7 +4714,7 @@
       "families": [
         "RT"
       ],
-      "status": "PARTIAL"
+      "status": "UNMAPPED"
     },
     {
       "row": "R3",
@@ -4736,7 +4730,7 @@
       "families": [
         "RT"
       ],
-      "status": "PARTIAL"
+      "status": "UNMAPPED"
     },
     {
       "row": "R5",

@@ -71,7 +71,7 @@
    "id": "PB-1",
    "surface": "hook `on_empty`",
    "binding": "default `reject` (fail-closed) when the gate declares none: 503 `KIND_OVERLOADED` \"No upstream satisfies a required gate's restriction. Please retry shortly.\"; on the restrict-empty arm `first` takes the SAME 503 (1.5.5 branches only on `Weighted`); `weighted` only when written, per PB-28; `first` orders only as an `on_error`-chain terminal; sealed per migrated gate",
-   "inventory": "proxy-hooks §2.4 (`engine/mod.rs:1055-1082`), config CFG-227",
+   "inventory": "proxy-hooks §2.4 (`engine/mod.rs:1055-1082`), config CONF-227",
    "status": "mapped",
    "checks": [
     {
@@ -182,7 +182,7 @@
    "id": "PB-4",
    "surface": "`on_exhausted` terminals",
    "binding": "default (key absent; `Status503` is the variant name, not a config spelling): 503 + `Retry-After` = the soonest GENUINE (> 0) cooldown among `lane_admissible` members as-is, else `AT_CAPACITY_RETRY_AFTER_SECS` = 2, the whole `.max(1)` · `least_bad` (one breaker-bypassing attempt) · `{ fallback_pool }` (cross-pool hop, restricts re-applied, plain SWRR, multi-level, visited guard; the charge follows the ATTEMPTED pool — PB-47) · `{ queue: { max_ms } }` (FIFO permit park ONLY if some exclusion was `AtCapacity`, else the 503 immediately; the winner re-checks `try_admit_breaker`; `busbar_pool_queued` gauge) — implemented by the egress unit's walk",
-   "inventory": "proxy-hooks §2.11 (`walk.rs:49-65`, `:176-334`), config CFG-096..100",
+   "inventory": "proxy-hooks §2.11 (`walk.rs:49-65`, `:176-334`), config CONF-096..100",
    "status": "mapped",
    "checks": [
     {
@@ -433,7 +433,7 @@
    "id": "PB-8",
    "surface": "request bounds for `http`/`sse` units",
    "binding": "only 1.5.5's: `failover.timeout_secs` (120 s walk deadline, checked UNCONDITIONALLY before every attempt streaming included → 503 + `DETAIL_REQUEST_TIMEOUT` on the pre-attempt check; the `pick_among` guard instead returns `None` and lands on the pool's `on_exhausted` terminal (503 `KIND_OVERLOADED` + `Retry-After`)); the per-request reqwest timeout applied only when NOT streaming; per-attempt time-to-headers cap with pool-member override; `upstream_request_timeout_secs` (default 300, no ceiling — the client-level TOTAL deadline that also bounds streams); `max_hops + 1` attempts; `failover.exclusions`; context-length exclusion of every candidate whose `context_max` <= the failed lane's (a `None` failed limit excludes only the failed lane, `engine/mod.rs:2099-2120`); NO `max_unit_duration` cut and NO drain deadline (SIGTERM drain is unbounded, streams run to completion); `max_unit_duration` is the stall sweep only (PB-48)",
-   "inventory": "proxy-hooks §2.8 rows 1 and 12 (`engine/mod.rs:1363-1373`, `:1694-1698`), ops §3.6, config CFG-130",
+   "inventory": "proxy-hooks §2.8 rows 1 and 12 (`engine/mod.rs:1363-1373`, `:1694-1698`), ops §3.6, config CONF-130",
    "note": "The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet.",
    "status": "mapped",
    "checks": [
@@ -601,7 +601,7 @@
    "id": "PB-11",
    "surface": "plugin trust and ABI windows",
    "binding": "`plugins.trust` verbatim: publishers allow-list, embedded first-party key, `allow_unsigned` / `allow_third_party` (default false; unsigned or unknown-publisher plugin LOGGED and SKIPPED with the literal messages, never dlopened), `UntrustedFloored` never relaxed, catalog verdict strings; the operator-key digest set is an ADDITIVE 1.6.0 layer; every plugin within its kind's 1.6.0 window (store [2,4] — OWNER DECISION: widened past the published-1.5.5 floor of [2,2] because ABI-4 stores are a later release and must load on this binary too, not a 1.5.5-parity constraint; auth [1,2], hook [1,1], export [2,2], secret [1,1] unchanged) loads through its ABI adapter (no \"floor 5\" precondition anywhere); `supported_abi(kind)` REPORTS the current window — boot, `--validate` and `POST /plugins/inspect` print `v2..=v4` for a store, never `v2..=v2` and never `v2..=v5`; a published-1.5.5 store (ABI 2) and an ABI-4 store both load; ABI 3 remains inside the window; `plugin-pack --abi-version` defaults to the 1.5.5 max; `TRANSPORT_VERSION = 1` is checked FIRST in `wire_up_raw` and stays 1 with the six kind-neutral symbols; `plugins.fetch` runs before preflight at boot (`fatal_on_miss`) and on reload (warn-and-keep), verify-before-write, never under `--validate`; a manifest OUTSIDE that window is refused with 1.5.5's literal `manifest abi_version {n} is not supported for kind '{kind}' by this binary (supported range v{floor}..=v{max})` printing the CURRENT range, never `PluginAbiTooOld`",
-   "inventory": "config CFG-184/185, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
+   "inventory": "config CONF-184/185, plugins-stores :195, :224, :2000 (`plugin-sign/src/lib.rs:611-615`)",
    "note": "CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.",
    "status": "mapped",
    "checks": [
@@ -646,8 +646,8 @@
   {
    "id": "PB-12",
    "surface": "export subsystem",
-   "binding": "the built-in `export:` sinks (`prometheus`, `request-log-webhook`, `request-log-file`, `otlp`) are fire-and-forget at-most-once: never block the request path, never surface errors; the webhook admission gate is PER INSTANCE (`tests/webhook_tests.rs:222-268` at the tag proves it; CFG-249's \"shared\" wording is the defective row and is corrected in the inventory); `PRODUCED_STREAMS` and the validate-time refusals verbatim (`costs` / `decisions` / `identity` / `prompts` / `completions` rejected with the 16 literals, `fields:` exhaustive never additive, `buffer_seconds` required, `key_gauge_limit` 2000) — 1.6.0 never makes a refused stream name start producing; the file sink uses the fixed `MAX_INFLIGHT_FILE_APPENDS = 64` and ignores the key; `durable: true` a config refusal; `OnceLock` process globals; restart to repoint; a migrated export PLUGIN (none ship at the tag) keeps at-most-once, no-ack, no-retry and is not called on the data path; `Segment`, ack and retry exist only for 1.6.0-native export plugins",
-   "inventory": "plugins-stores §4 (:1510-1545), config CFG-249, :2367-2371",
+   "binding": "the built-in `export:` sinks (`prometheus`, `request-log-webhook`, `request-log-file`, `otlp`) are fire-and-forget at-most-once: never block the request path, never surface errors; the webhook admission gate is PER INSTANCE (`tests/webhook_tests.rs:222-268` at the tag proves it; CONF-249's \"shared\" wording is the defective row and is corrected in the inventory); `PRODUCED_STREAMS` and the validate-time refusals verbatim (`costs` / `decisions` / `identity` / `prompts` / `completions` rejected with the 16 literals, `fields:` exhaustive never additive, `buffer_seconds` required, `key_gauge_limit` 2000) — 1.6.0 never makes a refused stream name start producing; the file sink uses the fixed `MAX_INFLIGHT_FILE_APPENDS = 64` and ignores the key; `durable: true` a config refusal; `OnceLock` process globals; restart to repoint; a migrated export PLUGIN (none ship at the tag) keeps at-most-once, no-ack, no-retry and is not called on the data path; `Segment`, ack and retry exist only for 1.6.0-native export plugins",
+   "inventory": "plugins-stores §4 (:1510-1545), config CONF-249, :2367-2371",
    "status": "mapped",
    "checks": [
     {
@@ -712,7 +712,7 @@
    "id": "PB-13",
    "surface": "`data_dir`",
    "binding": "DEFAULT UNSET; no data-dir probe, no data-dir files, no `DataDirNotWritable`, no `KeysetMissing`; the 1.5.5 overlay file `busbar-overlay.json` beside the resolved `config.yaml` and its boot writability probe (BOOT-W18) are unchanged (PB-49); the journal is memory-buffered and shipped to the configured store; the deployment keyset is sealed in the store ONLY where the store can hold it (a 1.6.0 native-ABI store); on a 1.5.5 ABI-2 store (which has no such method) and on the memory store the keyset is node-local and ephemeral and NOTHING depends on it on a 1.5.5-shaped deployment — no fingerprint check, no `KeysetMissing`, no ceremony — a node joins by starting with the shared config and store (rolling start); the WAL, local keyset, probe and import exist only when `data_dir` is written",
-   "inventory": "plugins-stores :945, ops :208, config CFG-009 / :744",
+   "inventory": "plugins-stores :945, ops :208, config CONF-009 / :744",
    "note": "data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5.",
    "status": "mapped",
    "checks": [
@@ -836,7 +836,7 @@
    "id": "PB-18",
    "surface": "arrival budgets",
    "binding": "`spill_budget` = `max_inbound_concurrent × request_body_max_bytes`; cursor and credential budgets = `max_inbound_concurrent × 64 KiB`; `max_inbound_concurrent: 0` ⇒ every derived budget UNBOUNDED (1.5.5: no layer is added, BOOT-089e); the per-unit arena holds only per-frame transform output — relay and egress bodies live in the connection slab / spill — so neither the arena nor any budget refuses a request 1.5.5 accepted; the tighter RSS bound is the §10 gate, not a refusal",
-   "inventory": "config CFG-131, CFG-134 (:267)",
+   "inventory": "config CONF-131, CONF-134 (:267)",
    "status": "mapped",
    "checks": [
     {
@@ -1923,7 +1923,7 @@
    "id": "PB-41",
    "surface": "1.6.0 warnings on 1.5.5 configs",
    "binding": "the store record-rate warning and the `keyset_ref`-unset warning fire ONLY when `data_dir` or `peers:` is written; otherwise they are ledger-endpoint lines; PB-17 holds for every 1.5.5 key incl. `store.module`",
-   "inventory": "config CFG-170, §3",
+   "inventory": "config CONF-170, §3",
    "status": "mapped",
    "checks": [
     {
@@ -2082,7 +2082,7 @@
    "id": "PB-44",
    "surface": "`in_flight_reserve`",
    "binding": "0 unless a claimed transport declares `SESSION = true`; a 1.5.5 config sheds at exactly `max_inbound_concurrent`; the reserve is drawn only against session Unit 0 arrivals",
-   "inventory": "config CFG-134",
+   "inventory": "config CONF-134",
    "status": "mapped",
    "checks": [
     {
@@ -2372,8 +2372,8 @@
   {
    "id": "PB-52",
    "surface": "env-vs-config precedence",
-   "binding": "env wins for `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_*`, `BUSBAR_PROVIDERS`; config wins for `BUSBAR_CONFIG_OVERLAY`; the five deprecation warnings; the worker-thread chain `BUSBAR_WORKER_THREADS > advanced.worker_threads > TOKIO_WORKER_THREADS > available_parallelism() > 1`, `.min(128)`, `0` ⇒ warn and ignore, with W34's wording from `config.yaml` and CFG-293's wording from the env path",
-   "inventory": "config §4.2 (:835), CFG-162, W34",
+   "binding": "env wins for `BUSBAR_WORKER_THREADS`, `BUSBAR_UPSTREAM_*`, `BUSBAR_PROVIDERS`; config wins for `BUSBAR_CONFIG_OVERLAY`; the five deprecation warnings; the worker-thread chain `BUSBAR_WORKER_THREADS > advanced.worker_threads > TOKIO_WORKER_THREADS > available_parallelism() > 1`, `.min(128)`, `0` ⇒ warn and ignore, with W34's wording from `config.yaml` and CONF-293's wording from the env path",
+   "inventory": "config §4.2 (:835), CONF-162, W34",
    "status": "mapped",
    "checks": [
     {
@@ -2687,7 +2687,7 @@
    "id": "PB-61",
    "surface": "chunked bodies",
    "binding": "a request body is accepted up to `request_body_max_bytes` (default 32 MiB, ceiling 1 GiB) regardless of chunk count; `MAX_NEEDMORE_FRAMES` never applies to body spooling",
-   "inventory": "config CFG-131",
+   "inventory": "config CONF-131",
    "note": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
    "status": "mapped",
    "checks": [
@@ -3191,7 +3191,7 @@
    "id": "PB-73",
    "surface": "`advanced.response_headers`",
    "binding": "`server_timing` / `route_policy` default `false`, RESTART-scoped; `Server-Timing` is a router middleware stamping EVERY response whenever `server_timing: true` (`main.rs:1404-1428`); `x-busbar-route-policy` / `x-busbar-route-target` are emitted only when `route_policy: true` AND a non-default ordering hook (not the SWRR floor registered at `Migration`) produced the order — exactly `proxy/wire.rs:77-112`",
-   "inventory": "config CFG-165/166/167 (:302-304); proxy-hooks §2.12 row 11",
+   "inventory": "config CONF-165/166/167 (:302-304); proxy-hooks §2.12 row 11",
    "status": "mapped",
    "checks": [
     {
@@ -3963,7 +3963,7 @@
    "id": "PB-94",
    "surface": "upstream credential mode",
    "binding": "`pools.upstream_credentials` / `pools.<p>.upstream_credentials` (`UpstreamCreds::{Own, Passthrough}`; a pool's scalar REPLACES the section default; BOOT-W04 warning): under `passthrough` the egress-auth unit sends the CALLER's token — `caller_token.unwrap_or(\"\")`, an empty credential for an unauthenticated caller — never the operator key; under `own` the operator key; the client credential masked from the cursor at step 0 is handed to the egress-auth unit as a `SecretSlot` for this purpose only",
-   "inventory": "config CFG-071 (:189), CFG-082 (:203); proxy-hooks §5.1 (:456-458)",
+   "inventory": "config CONF-071 (:189), CONF-082 (:203); proxy-hooks §5.1 (:456-458)",
    "status": "mapped",
    "checks": [
     {
@@ -4146,7 +4146,7 @@
    "id": "PB-98",
    "surface": "`error_map` and lane state carry-over",
    "binding": "the `error_map` ladder (provider code first, `context_length` suppressed on 5xx, built-ins only on 400/413, HTTP fallback incl. 529 and 408, unrecognized value warned once and ignored) drives condition→disposition; `restore_health_impl` carries lane state across a config apply (`(model, provider)` match, budget `snap.budget.min(new_cap)` only when `limited && >= 0`, `HalfOpen → Open`); the five ranking natives verbatim (`weighted` abstains; `cheapest` / `fastest` / `usage` demote a missing signal to last with `idx` tie-break, all-missing ⇒ abstain; `least_busy` never abstains); a migrated hook receives `wire::build`'s bytes with ops `decide` / `transform` / `notify`, reply precedence `reject > restrict > abstain > order`, a malformed `restrict` ⇒ empty set ⇒ `on_empty`; a tap fires only for callers inside its `groups:` scope (self + ancestors, empty = all); a rewrite with a missing container or non-string content is a silent no-op returning `false`; `pools.hooks:` combines additively with a pool's own `hooks:`, deduped by name, firing once at its section-level position",
-   "inventory": "proxy-hooks :118, :189-200, :363-371, :669-716, :752-767, :797; plugins-stores :1029-1033; config CFG-070",
+   "inventory": "proxy-hooks :118, :189-200, :363-371, :669-716, :752-767, :797; plugins-stores :1029-1033; config CONF-070",
    "status": "mapped",
    "checks": [
     {

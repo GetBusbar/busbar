@@ -9,7 +9,7 @@
 #
 #   1. Reads every row id out of docs/design/inventory/*.md (only rows that live in a table whose
 #      header column is literally "id" count — a hyphenated word in some other column is not an
-#      id). The id family is the text before the first "-" (BOOT, CFG, SEC, ADM, RT, LST, ... —
+#      id). The id family is the text before the first "-" (BOOT, CONF, SEC, ADM, RT, LST, ... —
 #      whatever actually exists; the list is not hard-coded).
 #   2. Reads testing/shadow-oracle/cells.json (read-only — that tree belongs to another owner) and
 #      asks, for each inventory id, "does any oracle cell cite this id?" Two citation styles are
@@ -77,9 +77,9 @@ END_MARK = "<!-- coverage:end -->"
 # to have zero ids (because its source file has no id column) is honestly UNMAPPED - nothing here
 # invents an id that is not in the inventory file.
 ROW_FAMILIES = OrderedDict([
-    ("C1", ["CFG"]),          # config keys with defaults
+    ("C1", ["CONF"]),          # config keys with defaults
     ("C2", ["BOOT"]),         # boot refusals + warnings
-    ("C3", ["BOOT", "CFG"]),  # reserved names, precedence, migration, reload
+    ("C3", ["BOOT", "CONF"]),  # reserved names, precedence, migration, reload
     ("C4", ["SEC"]),          # secret refs
     ("R1", ["LST"]),          # listeners and router separation
     ("R2", ["RT"]),           # data-plane routes and ladder

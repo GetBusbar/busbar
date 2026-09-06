@@ -2421,7 +2421,7 @@ PB-95..PB-102 bind tap stages, the whole streaming byte layout, pristine request
 Vertex shim, `error_map` and lane-state carry-over, legacy rows / hydrate / erasure / metric timing,
 admin wire details incl. ETag and both `/auth/token` flows, inbound SigV4 / mTLS / body-throughput,
 and alarms as ledger-endpoint rows only. Inventory rows corrected under PB-72: the BEHAVIOUR rotate
-trap (peer nodes refresh `by_id` only on local mutation/restart) and CFG-249 (per-instance gate).
+trap (peer nodes refresh `by_id` only on local mutation/restart) and CONF-249 (per-instance gate).
 
 Observation recorded for the owner: on the same v1.28 the two reviewers returned 3 and 88 items, and
 Appendix B has grown from 25 to 102 bindings in five revisions while the misread rate stayed at

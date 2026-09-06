@@ -770,7 +770,7 @@ SUGGEST: dict[str, str] = {
 # A default suggestion when a binding has no hand-written one: pick by the inventory column.
 def default_suggestion(b: dict) -> str:
     inv = b.get("inventory", "")
-    if "config" in inv and ("BOOT" in inv or "CFG" in inv):
+    if "config" in inv and ("BOOT" in inv or "CONF" in inv):
         return "oracle cell in family boot.refusal / boot.warning (config mutation fixture), plus a unit test on the parse"
     if "routes-admin" in inv:
         return "oracle cell in family admin.ops or http.crosscut, plus an axum handler test asserting the literal body"
