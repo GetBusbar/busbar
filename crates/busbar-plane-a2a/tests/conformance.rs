@@ -495,6 +495,18 @@ fn the_metering_step_reports_what_it_read() {
     assert_eq!(lines[0].quantity, Some(answer.len() as u64));
     // A plane names no lane and no price.
     assert!(lines[0].lane.is_none());
+    // Which SIDE the class says it is sized from is the side the quantity was taken from. The
+    // quantity above is the ANSWER's own length, and the request this unit carries is a different
+    // length, so a declaration naming the request would be a rate card pricing a caller's request
+    // at the size of an agent's answer to it.
+    let declared = <A2aPlane as PlaneMeta>::METER_CLASSES
+        .iter()
+        .find(|c| c.key == lines[0].class)
+        .expect("the class the meter reports is one the plane declares");
+    assert_eq!(
+        declared.direction,
+        busbar_contract::ids::ClassDirection::Response
+    );
 }
 
 /// The introspection verb answers, and an undeclared verb does not.

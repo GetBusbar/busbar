@@ -639,7 +639,22 @@ fn the_metering_step_reports_what_it_read() {
         for line in locators.lines.as_slice() {
             // A plane names no lane and no price.
             assert!(line.lane.is_none());
-            assert!(McpPlane::METER_CLASSES.iter().any(|c| c.key == line.class));
+            let declared = McpPlane::METER_CLASSES
+                .iter()
+                .find(|c| c.key == line.class)
+                .unwrap_or_else(|| panic!("{op} meters the undeclared class {}", line.class));
+            // Which SIDE the class says it is sized from is the side the quantity was taken from.
+            // Both quantities here come off the answer — the call is counted once it has been
+            // answered, and the byte count is the answer's own length — so both classes declare
+            // themselves sized from the answer. A class that declared the request and reported the
+            // answer would have a rate card pricing one side of the exchange at the size of the
+            // other.
+            assert_eq!(
+                declared.direction,
+                busbar_contract::ids::ClassDirection::Response,
+                "{} is metered off the answer and declares another side",
+                line.class
+            );
         }
     }
 }

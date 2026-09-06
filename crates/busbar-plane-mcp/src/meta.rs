@@ -42,8 +42,13 @@ const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
         key: MeterClassId::new("bytes"),
         family: BYTE_FAMILY,
-        // Sized from the ingress-derived estimate, and settled from what the metering step read.
-        direction: ClassDirection::Input,
+        // Sized from the ANSWER, because the answer is what the metering step measures: the one
+        // quantity this plane reports under this class is the length of the document it just read
+        // back. The class used to declare itself sized from the request instead, which is a hold
+        // taken over one side of the exchange and settled from the other — and a rate card reading
+        // the declaration would have been pricing a caller's request at the size of a server's
+        // answer to it.
+        direction: ClassDirection::Response,
         default_divisor: 1,
     },
 ];
