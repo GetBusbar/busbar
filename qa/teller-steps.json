@@ -214,9 +214,10 @@
         "status": "mapped",
         "note": "shared kernel gate; plane-agnostic",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-mcp",
-          "note": "arrival is the shared kernel gate ahead of any plane's units; the root-mcp cells begin at a decoded draft and none of them drives it"
+          "test": "crates/busbar/src/root/units_mcp.rs::the_arrival_facts_are_the_stack_the_claim_was_matched_on",
+          "note": "the gate stays the kernel's, but the handover is this plane's and it is driven: the three claimed surfaces (http, sse over it, stdio) carry the transport's record forward unchanged, a claim naming a transport no claim of this plane makes is refused HandoffMismatch, and so is a claim whose transport is below rather than at the top of the composed chain -- an sse stack matched as a document request. Every later step resolves against these bytes, so a record handed on under the wrong claim authenticates one surface and answers another"
         }
       },
       "decode": {

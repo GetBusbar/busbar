@@ -50,8 +50,8 @@ use std::sync::Arc;
 
 use busbar_api::{PlaneDisposition, PlaneRecord, PlaneSelector, Store as AbiStore};
 use busbar_caps::{
-    Admit, AdmitToken, Authenticate, Decision, PrincipalId, TrustToken, UnitToken, UsageToken,
-    Verify,
+    Admit, AdmitToken, Arrival, ArrivalRecord, Authenticate, Decision, PrincipalId, ReasonCode,
+    Refusal, TrustToken, UnitToken, UsageToken, Verify,
 };
 use busbar_contract::dest::DestinationFacts;
 use busbar_contract::ids::{ClaimKey, LaneId, OpClassId, RecordSchemaId};
@@ -123,6 +123,51 @@ pub fn pool_key(server: &str) -> String {
 #[must_use]
 pub fn claim_key() -> ClaimKey {
     ClaimKey::new(<McpPlane as PlaneMeta>::KEY)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Step 0 — arrival, over the connection the transport recorded
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// One connection as the transport stack recorded it, paired with the claim it was matched by.
+///
+/// The record is borrowed rather than owned because the kernel holds it for the whole unit and this
+/// step neither keeps nor edits it.
+#[derive(Debug, Clone, Copy)]
+pub struct Arrived<'a> {
+    /// What the transports wrote about the connection, bottom layer first.
+    pub record: &'a ArrivalRecord,
+    /// The transport named by the claim that matched, which is the layer this plane believes it is
+    /// answering on.
+    pub claim_transport: &'a str,
+}
+
+/// The connection's own facts, carried forward for the steps that resolve against them.
+///
+/// The gate itself is the kernel's — the in-flight table, the rate, the cursor and spill budgets are
+/// all decided before any plane is known, and this step never sees them. What a plane's binding owes
+/// here is the handover, and the handover has one way of going wrong that only the plane can catch:
+/// the claim and the stack must be describing the same connection. Everything downstream depends on
+/// it. The scheme narrowing is a function of the transport; the audience is a function of whether
+/// the claim carries a scheme at all; every location the later steps resolve is resolved against
+/// this record and re-resolved after an upgrade. A record handed on under the wrong claim is a unit
+/// authenticated for one surface and answered on another.
+pub fn arrival(arrived: &Arrived<'_>, token: &UnitToken<Arrival>) -> Decision<Arrival> {
+    // A claim is the ONLY way this plane names a transport, so a transport no claim names is one no
+    // unit of this plane may arrive on — whatever else the node has registered.
+    if !claims::CLAIMS
+        .iter()
+        .any(|claim| claim.transport == arrived.claim_transport)
+    {
+        return Decision::refuse(token, Refusal::new(ReasonCode::HandoffMismatch));
+    }
+    // And the claim's transport is the TOP of the composed chain, not merely somewhere in it. The
+    // streamed surface stands on the document one, so a chain that ended at `sse` contains `http`;
+    // reading membership rather than the top would let a stream be matched as a request.
+    if arrived.record.transport_chain.last() != Some(&arrived.claim_transport) {
+        return Decision::refuse(token, Refusal::new(ReasonCode::HandoffMismatch));
+    }
+    Decision::proceed(token, arrived.record.clone())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1468,6 +1513,101 @@ mod tests {
         ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
             Ok(Vec::new())
         }
+    }
+
+    /// The connection's own facts reach the loop, and a claim that names a transport this stack is
+    /// not carrying does not.
+    ///
+    /// Arrival is the kernel's gate and no plane's decision, so what a plane's binding owes here is
+    /// not a second gate: it is the honest handover of what the transport recorded. The two ways
+    /// that handover can be dishonest are both driven. A claim naming a transport this plane never
+    /// claimed would put a unit of this plane on a layer no claim of its selects, and a claim whose
+    /// transport is not the layer the stack actually ended on would carry forward a record
+    /// describing a connection other than the one that arrived — the scheme narrowing, the audience
+    /// and every location the later steps resolve are all read off exactly these bytes.
+    #[test]
+    fn the_arrival_facts_are_the_stack_the_claim_was_matched_on() {
+        use busbar_caps::KernelSeal;
+
+        let seal = KernelSeal::acquire_for_kernel();
+        let over_tls = |chain: Vec<&'static str>| ArrivalRecord {
+            source: "198.51.100.7:52344".to_string(),
+            port: 8443,
+            alpn: Some("h2".to_string()),
+            sni: Some("mcp.example".to_string()),
+            peer_cert: None,
+            transport_chain: chain,
+        };
+
+        // The document surface: composed tcp → tls → http, matched by the claim that names http.
+        let record = over_tls(vec!["tcp", "tls", "http"]);
+        let decision = arrival(
+            &Arrived {
+                record: &record,
+                claim_transport: claims::TRANSPORT_HTTP,
+            },
+            &UnitToken::mint(&seal),
+        );
+        let carried = decision
+            .into_result(&seal)
+            .expect("the claim names the layer the stack ended on");
+        // Carried forward unchanged: the arrival step of a plane binding adds nothing to what the
+        // transport wrote, and a record that gained or lost a field here would be the root
+        // describing a connection rather than reporting one.
+        assert_eq!(carried, record);
+
+        // The streamed surface is one layer further up, and the locally launched one is a stack of
+        // one. Both are claims this plane makes, and both are the top of their own chain.
+        for (chain, transport) in [
+            (vec!["tcp", "tls", "http", "sse"], claims::TRANSPORT_SSE),
+            (vec!["stdio"], claims::TRANSPORT_STDIO),
+        ] {
+            let record = over_tls(chain);
+            assert!(
+                arrival(
+                    &Arrived {
+                        record: &record,
+                        claim_transport: transport,
+                    },
+                    &UnitToken::mint(&seal),
+                )
+                .into_result(&seal)
+                .is_ok(),
+                "{transport} is claimed and is the top of its own chain"
+            );
+        }
+
+        // A transport no claim of this plane names. The registry may well carry it — the node
+        // composes seven — but a unit of THIS plane arriving on it was matched by nothing, and a
+        // binding that shrugged and carried the record forward would have this plane answering
+        // bytes it never claimed.
+        let ws = over_tls(vec!["tcp", "tls", "http", "ws"]);
+        let refusal = arrival(
+            &Arrived {
+                record: &ws,
+                claim_transport: "ws",
+            },
+            &UnitToken::mint(&seal),
+        )
+        .into_result(&seal)
+        .expect_err("this plane claims no socket surface");
+        assert_eq!(refusal.reason(), ReasonCode::HandoffMismatch);
+        assert_eq!(refusal.step(), busbar_caps::StepName::Arrival);
+
+        // Claimed, but not the layer this connection ended on: an sse stack matched as a document
+        // request. Nothing is wrong with the bytes and nothing is wrong with the claim — the two
+        // simply do not describe the same connection.
+        let sse = over_tls(vec!["tcp", "tls", "http", "sse"]);
+        let refusal = arrival(
+            &Arrived {
+                record: &sse,
+                claim_transport: claims::TRANSPORT_HTTP,
+            },
+            &UnitToken::mint(&seal),
+        )
+        .into_result(&seal)
+        .expect_err("http is below the layer this stack ended on, not the layer itself");
+        assert_eq!(refusal.reason(), ReasonCode::HandoffMismatch);
     }
 
     /// The plane declares one scheme with two alternatives, and the authenticate binding offers the
