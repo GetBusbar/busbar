@@ -63,6 +63,16 @@
 /// formatting run BEFORE it at every call site), so nothing is concatenated onto a normalised value
 /// and re-served; within the one string being normalised, an unterminated `<letter` provably has no
 /// `>` after it and stays inert.
+///
+/// ## The output, not the input, is what must contain no tag
+///
+/// Deleting a tag JOINS the text before it to the text after it, and that join can lex as a tag even
+/// though neither side did: `<<IMPORTANT>IMPORTANT>` keeps its outer `<` (the byte after it is `<`,
+/// not a letter), drops the inner `<IMPORTANT>`, and the surviving `IMPORTANT>` snaps onto the
+/// surviving `<`. A scanner that only ever reads FORWARD cannot see that, so this one re-examines the
+/// tail of what it has already emitted after every deletion — the only moment at which two
+/// non-adjacent pieces of input become adjacent in the output. That check is the difference between
+/// "no tag in the input survives" and "no tag is in the output", and only the second is a defence.
 pub fn normalise(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out = String::with_capacity(input.len());
@@ -82,6 +92,10 @@ pub fn normalise(input: &str) -> String {
             }
             if let Some(end) = next_tag_end {
                 i = end + 1;
+                // The deletion just made `out`'s tail adjacent to `bytes[i..]`. That is the one and
+                // only way two non-adjacent pieces of input meet, so it is the one and only place a
+                // tag can appear in the output that was not one in the input.
+                collapse_reconstituted_tags(&mut out, bytes, &mut i, &mut next_tag_end);
                 continue;
             }
             // Unterminated: no `>` closes this `<` anywhere before end of input, so it is not a tag.
@@ -124,6 +138,54 @@ pub fn normalise_json(value: &serde_json::Value) -> serde_json::Value {
         ),
         other => other.clone(),
     }
+}
+
+/// Remove the tag that the just-completed deletion may have reconstituted across the seam between
+/// the emitted text and `bytes[i..]`, and keep removing while each removal makes another.
+///
+/// Only a `<` or `</` sitting at the very END of `out` can be the start of such a tag. Any earlier
+/// `<` in `out` is already followed by a character that was emitted with it — and it was emitted
+/// verbatim precisely because that character disqualified it as a tag opener — so it is inert for
+/// good, and nothing but this function ever removes a character from `out`.
+///
+/// Each removal drops the pending opener and advances the cursor past the closing `>`, so the cursor
+/// strictly increases and `out` strictly shrinks: the loop runs at most as many times as there are
+/// bytes, and the whole scan stays linear.
+fn collapse_reconstituted_tags(
+    out: &mut String,
+    bytes: &[u8],
+    i: &mut usize,
+    next_tag_end: &mut Option<usize>,
+) {
+    while let Some(opener) = pending_opener(out, bytes, *i) {
+        if next_tag_end.is_some_and(|end| end < *i) {
+            *next_tag_end = find_tag_end(bytes, *i);
+        }
+        // No `>` left anywhere ahead, so the seam cannot close into a tag and never will — deletions
+        // only ever remove bytes, so a `>` cannot appear later than the input already has one.
+        let Some(end) = *next_tag_end else { return };
+        out.truncate(out.len() - opener);
+        *i = end + 1;
+    }
+}
+
+/// The length of the `<` or `</` left dangling at the end of `out` that `bytes[i..]` would complete
+/// into a tag, or `None` when the seam is inert.
+fn pending_opener(out: &str, bytes: &[u8], i: usize) -> Option<usize> {
+    let head =
+        matches!(bytes.get(i), Some(c) if c.is_ascii_alphabetic() || *c == b'!' || *c == b'?');
+    if out.ends_with("</") {
+        // `</` needs only the name to follow.
+        return head.then_some(2);
+    }
+    if out.ends_with('<') {
+        // A bare `<` takes either form: the name may follow directly, or after a `/` that is still
+        // in the input rather than in `out`.
+        let closing = bytes.get(i) == Some(&b'/')
+            && matches!(bytes.get(i + 1), Some(c) if c.is_ascii_alphabetic() || *c == b'!' || *c == b'?');
+        return (head || closing).then_some(1);
+    }
+    None
 }
 
 /// Does the `<` at `i` begin something that lexes as a tag? See [`normalise`] for why this is a

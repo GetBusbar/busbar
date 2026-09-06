@@ -184,6 +184,34 @@ fn unterminated_tags_are_kept_verbatim_without_rescanning_the_tail() {
     );
 }
 
+/// NOR MAY THE RECONSTITUTION CHECK, WHICH IS THE OTHER SHAPE AN UPSTREAM GETS TO CHOOSE.
+///
+/// `<<<…a…>>>` is the adversarial input for the seam re-examination: every deletion hands the next
+/// one a fresh pending `<`. Re-normalising the whole string to a fixpoint would answer correctly and
+/// cost a pass per nesting level — quadratic on bytes the sender picked. Removing the opener and
+/// jumping past its `>` costs one step per level instead, and the cursor never goes backwards, so
+/// this stays inside the same wall-clock bound as the `>`-less case above.
+#[test]
+fn deep_reconstitution_nesting_does_not_reprocess_the_string_per_level() {
+    let depth = 100_000;
+    // `<<<a>a>a>` at scale: one opener per level, and each level's `>` is the one that closes the
+    // opener the level below it just had exposed.
+    let hostile = format!("{}a{}>", "<".repeat(depth), ">a".repeat(depth - 1));
+    let started = std::time::Instant::now();
+    let out = normalise(&hostile);
+    let elapsed = started.elapsed();
+    assert!(
+        !contains_tag(&out),
+        "every level must collapse, but {out:?} still lexes a tag"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "normalising {} bytes of {depth}-deep nesting took {elapsed:?}: the seam check is \
+         re-running the whole scan once per nesting level",
+        hostile.len()
+    );
+}
+
 /// The same monotone scan must not change WHICH bytes leave: tags interleaved with dangling `<`
 /// still strip exactly, and the first unterminated `<` does not swallow the tail behind it.
 #[test]
@@ -245,7 +273,8 @@ fn contains_tag(s: &str) -> bool {
         if b.get(j) == Some(&b'/') {
             j += 1;
         }
-        let starts = matches!(b.get(j), Some(c) if c.is_ascii_alphabetic() || *c == b'!' || *c == b'?');
+        let starts =
+            matches!(b.get(j), Some(c) if c.is_ascii_alphabetic() || *c == b'!' || *c == b'?');
         starts && b[j..].contains(&b'>')
     })
 }
