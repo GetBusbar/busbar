@@ -308,7 +308,7 @@ impl Transport for StdioTransport {
         Box::pin(futures::stream::unfold(
             (state, false),
             move |(state, done)| async move {
-                if done || state.is_poisoned() {
+                if done || state.is_poisoned() || state.is_closed() {
                     return None;
                 }
                 let mut lock = state.reader.lock().await;
@@ -376,6 +376,13 @@ impl Transport for StdioTransport {
                 // Hand the SAME slot back (read-ahead intact) so the NEXT poll of this stream
                 // keeps reading exactly where this one left off.
                 drop(held);
+                // The close may have landed while this read was parked on the peer, which is the
+                // ordinary way a pump meets one: the line that then arrives belongs to a
+                // connection that no longer exists, so it ends the pump rather than becoming a
+                // frame.
+                if state.is_closed() {
+                    return None;
+                }
                 match item {
                     None => None,
                     Some(result) => {
@@ -470,6 +477,10 @@ impl Transport for StdioTransport {
     fn close(&self, conn: Conn, _reason: CloseReason) {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
+            // Removing the registry entry is what stops new lookups; it does not reach a `frames()`
+            // pump that already holds its own clone of this state. The flag is what ends that pump,
+            // so the read side goes quiet at the same moment `write` starts answering `Closed`.
+            state.closed.store(true, Ordering::Release);
             tokio::spawn(async move {
                 if let Some(mut child) = state.child.lock().await.take() {
                     let _ = child.start_kill();

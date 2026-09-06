@@ -575,3 +575,29 @@ async fn a_line_within_the_maximum_is_still_a_frame() {
     assert!(frame.bytes.as_slice().iter().all(|&c| c == b'y'));
     writer.await.unwrap();
 }
+
+/// A closed connection delivers nothing more. `close` removes the registry entry, but a `frames()`
+/// pump started before it holds its own clone of the connection state and would otherwise keep
+/// reading the peer's lines up as inbound frames while every `write` on the same connection is
+/// already answered `Closed` — a one-directional half-life the contract does not describe.
+#[tokio::test]
+async fn a_closed_connection_delivers_no_further_frames() {
+    let t = StdioTransport::new();
+    let (end_a, end_b) = tokio::io::duplex(64 * 1024);
+    let (br, bw) = split(end_b);
+    let b = t.wrap_pair(br, bw, "a");
+    let (_ar, mut aw) = split(end_a);
+
+    // The pump exists before the close, so removing the registry entry cannot reach it.
+    let mut frames = t.frames(b.clone_for_test());
+    t.close(b, busbar_contract_transport::wire::CloseReason::Normal);
+    aw.write_all(b"after the close\n").await.unwrap();
+
+    assert!(
+        tokio::time::timeout(Duration::from_secs(5), frames.next())
+            .await
+            .expect("the pump must end rather than park on the reader")
+            .is_none(),
+        "a line arriving after the close is not a frame"
+    );
+}
