@@ -74,6 +74,18 @@ pub const READ_CHUNK_BYTES: usize = 16 * 1024;
 /// that will not talk are one number rather than two.
 pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// How long the courtesy `close_notify` alert may take to reach the peer before this transport gives
+/// the session up.
+///
+/// The alert is a write, and the first thing it waits for is the writer lock — held, in production,
+/// by whatever write is already in flight. A peer that has stopped reading never lets that write
+/// finish, so without a bound the alert waits forever: `close` has already dropped the only handle
+/// that could cancel its task, so that task, the writer lock, the rustls session and the socket
+/// under it outlive the connection for the life of the process, and `unit0_refusal` — which sends
+/// the alert inline — never answers its caller at all. Generous rather than tight: a peer whose
+/// receive window is briefly full is not a peer that has gone away.
+pub const CLOSE_NOTIFY_BUDGET: Duration = Duration::from_millis(250);
+
 /// Any duplex byte stream this transport can run a handshake over: the socket it opened itself, or
 /// the one a lower layer handed up. Boxing it is what lets one connection type cover both, so an
 /// adopted connection is not a second shape with a second set of methods.
@@ -826,16 +838,26 @@ fn split_address(
 /// attack looks like from the inside — and a peer that cannot tell a deliberate close from a
 /// truncated one has to treat every close as suspect. This transport knows which one this is, so
 /// it says so.
+///
+/// Bounded by [`CLOSE_NOTIFY_BUDGET`], because the alert is a courtesy and the session is already
+/// finalised: the lock it waits for is held by whatever write is in flight, and a peer that stopped
+/// reading never lets that finish. An unbounded wait here is a task, a writer lock, a rustls session
+/// and a socket that outlive the connection — and on the refusal path, a caller that is never
+/// answered. A peer that would not take the alert in time gets the abrupt close instead, which is
+/// the same close it would have got had this transport never sent one.
 async fn send_close_notify(inner: &Inner) {
-    let mut guard = inner.write.lock().await;
-    match &mut *guard {
-        InnerWrite::Server(w) => {
-            let _ = w.shutdown().await;
+    let _ = tokio::time::timeout(CLOSE_NOTIFY_BUDGET, async {
+        let mut guard = inner.write.lock().await;
+        match &mut *guard {
+            InnerWrite::Server(w) => {
+                let _ = w.shutdown().await;
+            }
+            InnerWrite::Client(w) => {
+                let _ = w.shutdown().await;
+            }
         }
-        InnerWrite::Client(w) => {
-            let _ = w.shutdown().await;
-        }
-    }
+    })
+    .await;
 }
 
 /// [`send_close_notify`] from `close`, which the trait makes synchronous.
