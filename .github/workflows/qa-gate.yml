@@ -181,7 +181,15 @@ jobs:
       #     scratch -- the exact duplicate build that build-once exists to remove.
       # So this is not a wall-clock cost: it REMOVES a redundant full build from the critical path
       # and is what makes this job genuinely fast.
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED, AND IT MUST EQUAL ci.yml's AND rust-toolchain.toml's. `@stable` means "whatever
+      # rustc released most recently the day this job happens to run", so this gate could judge the
+      # qa commit with a DIFFERENT compiler than the one CI judged it with and than the one
+      # release-stage.yml builds the shipped bytes with. A soak whose toolchain is a function of the
+      # calendar cannot say anything about the artifact that ships: it goes red on a lint nobody
+      # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
+      # already names this exact drift as the history it exists to prevent, and every job in ci.yml
+      # follows it; this file was the one that did not.
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: actions/download-artifact@v4
         with:
           name: ${{ env.BUILD_ARTIFACT }}
@@ -209,7 +217,15 @@ jobs:
         with:
           path: busbarAI
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED, AND IT MUST EQUAL ci.yml's AND rust-toolchain.toml's. `@stable` means "whatever
+      # rustc released most recently the day this job happens to run", so this gate could judge the
+      # qa commit with a DIFFERENT compiler than the one CI judged it with and than the one
+      # release-stage.yml builds the shipped bytes with. A soak whose toolchain is a function of the
+      # calendar cannot say anything about the artifact that ships: it goes red on a lint nobody
+      # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
+      # already names this exact drift as the history it exists to prevent, and every job in ci.yml
+      # follows it; this file was the one that did not.
+      - uses: dtolnay/rust-toolchain@1.98.0
       # rust-cache still earns its place HERE: it makes this one build faster run-over-run by
       # restoring the dependency graph. It cannot replace the artifact below, because it
       # deliberately drops workspace-member artifacts, and `busbar` IS where fat LTO is paid.
@@ -251,7 +267,15 @@ jobs:
         with:
           path: busbarAI
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED, AND IT MUST EQUAL ci.yml's AND rust-toolchain.toml's. `@stable` means "whatever
+      # rustc released most recently the day this job happens to run", so this gate could judge the
+      # qa commit with a DIFFERENT compiler than the one CI judged it with and than the one
+      # release-stage.yml builds the shipped bytes with. A soak whose toolchain is a function of the
+      # calendar cannot say anything about the artifact that ships: it goes red on a lint nobody
+      # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
+      # already names this exact drift as the history it exists to prevent, and every job in ci.yml
+      # follows it; this file was the one that did not.
+      - uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: actions/download-artifact@v4
         with:
@@ -289,7 +313,15 @@ jobs:
         with:
           path: busbarAI
           ref: ${{ github.event.workflow_run.head_sha || github.ref }}
-      - uses: dtolnay/rust-toolchain@stable
+      # PINNED, AND IT MUST EQUAL ci.yml's AND rust-toolchain.toml's. `@stable` means "whatever
+      # rustc released most recently the day this job happens to run", so this gate could judge the
+      # qa commit with a DIFFERENT compiler than the one CI judged it with and than the one
+      # release-stage.yml builds the shipped bytes with. A soak whose toolchain is a function of the
+      # calendar cannot say anything about the artifact that ships: it goes red on a lint nobody
+      # changed, or green over a miscompile CI would have caught. rust-toolchain.toml's own header
+      # already names this exact drift as the history it exists to prevent, and every job in ci.yml
+      # follows it; this file was the one that did not.
+      - uses: dtolnay/rust-toolchain@1.98.0
 
       - uses: actions/download-artifact@v4
         with:
