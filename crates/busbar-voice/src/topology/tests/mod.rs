@@ -143,7 +143,11 @@ impl DuplexPlane for EchoProvider {
         None
     }
     async fn handle(self: Arc<Self>, frame: Vec<u8>, out: DuplexHandle) {
-        out.emit(frame).await;
+        // The echo is what these tests observe, so a write that did not land is reported rather
+        // than read later as a frame the provider never sent.
+        if let Err(e) = out.emit(frame).await {
+            eprintln!("echo provider: the frame could not be written: {e}");
+        }
     }
 }
 

@@ -28,10 +28,13 @@ impl DuplexPlane for EchoPlane {
             if let Some(reply) = out.issue(call, outbound).await {
                 let mut got = b"got ".to_vec();
                 got.extend_from_slice(&reply);
-                out.emit(got).await;
+                out.emit(got).await.expect("write the answer frame");
             }
         } else {
-            out.emit(frame).await; // pure echo
+            // Pure echo. The write is EXPECTED to land: this plane's whole contract in these tests
+            // is that what goes in comes back, so a swallowed write error would silently turn a
+            // broken transport into a test that merely reads nothing.
+            out.emit(frame).await.expect("echo the frame");
         }
     }
 }
@@ -291,6 +294,76 @@ async fn an_abandoned_issue_leaves_no_registration_behind() {
     assert!(
         shared.pending.lock().unwrap().is_empty(),
         "the abandoned call took its registration with it"
+    );
+}
+
+/// A writer that REFUSES every write — a closed pipe, in one struct. The flush succeeds, so a test
+/// using it proves the failure is carried from the write itself and not merely from the drain.
+struct BrokenWriter;
+
+impl AsyncWrite for BrokenWriter {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Ready(Err(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "the far end is gone",
+        )))
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
+/// A frame that did NOT reach the wire is REPORTED, not swallowed. The transport has no business
+/// deciding what a lost line costs — that is the caller's to know — but it must say that one was
+/// lost. Before this, a broken pipe and a successful write were indistinguishable to every caller.
+#[tokio::test]
+async fn a_write_that_fails_is_reported_to_the_caller() {
+    let shared = new_shared(Box::new(NewlineSink {
+        writer: BrokenWriter,
+    }));
+    let handle = DuplexHandle { shared };
+    let err = handle
+        .emit(b"a line nobody will ever read".to_vec())
+        .await
+        .expect_err("a refused write must not report success");
+    assert_eq!(err.kind(), std::io::ErrorKind::BrokenPipe);
+}
+
+/// The FIRST caller policy: a call whose frame never left cannot be answered, so `issue` fails
+/// immediately instead of waiting out a deadline for a reply that is not coming — and it withdraws
+/// its registration on the way out, so the correlation table does not leak an entry per lost call.
+#[tokio::test]
+async fn a_call_whose_frame_is_lost_fails_at_once() {
+    let shared = new_shared(Box::new(NewlineSink {
+        writer: BrokenWriter,
+    }));
+    let handle = DuplexHandle {
+        shared: shared.clone(),
+    };
+    let call = handle.mint();
+    let answer = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        handle.issue(call, b"a call nobody will ever see".to_vec()),
+    )
+    .await
+    .expect("issue must not wait on an answer that can never arrive");
+    assert!(answer.is_none(), "the call failed");
+    assert!(
+        shared.pending.lock().unwrap().is_empty(),
+        "the withdrawn call left no entry behind in the correlation table"
     );
 }
 

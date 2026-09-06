@@ -124,9 +124,15 @@ impl DuplexHandle {
     /// a caller composing such a frame must not embed a newline; over the message sink (the
     /// [`serve_messages`] path) the frame IS one whole message and no terminator is added. The handle
     /// stays framing-agnostic: it hands the sink one frame and the sink decides the wire shape.
-    pub async fn emit(&self, frame: Vec<u8>) {
+    ///
+    /// `Err` means the frame did NOT reach the far end. The transport does not decide what that
+    /// costs — only the caller knows what it was writing, and the answers genuinely differ: an
+    /// answer to a request the far end is blocked on is a lost obligation (the caller must say so),
+    /// while a fire-and-forget notification is a line worth a diagnostic and nothing more. What the
+    /// transport must NOT do is what it used to: discard the error and report success.
+    pub async fn emit(&self, frame: Vec<u8>) -> std::io::Result<()> {
         let mut out = self.shared.sink.lock().await;
-        out.send(frame).await;
+        out.send(frame).await
     }
 
     /// Mint a fresh, non-zero [`CallRef`] for a call this side is about to issue. Monotonic for the
@@ -155,7 +161,13 @@ impl DuplexHandle {
             shared: self.shared.clone(),
             call: call.0,
         };
-        self.emit(frame).await;
+        // THIS caller's policy: a call whose frame never reached the far end can never be answered,
+        // so waiting on it is waiting for nothing — the call fails NOW rather than at whatever
+        // deadline the caller happens to be holding; the guard withdraws the registration.
+        if let Err(e) = self.emit(frame).await {
+            tracing::debug!(error = %e, call = call.0, "duplex: the frame issuing a call could not be written; failing the call");
+            return None;
+        }
         // `Err` is the channel closing (EOF dropped the sender) before an answer arrived; either way
         // the guard clears the entry as this frame unwinds.
         rx.await.ok()
@@ -211,10 +223,12 @@ struct Shared {
 /// ([`serve`], [`serve_messages`]) that pick the sink, not the sink trait itself.
 #[async_trait::async_trait]
 trait FrameSink: Send {
-    /// Write ONE frame, framed for this transport, and flush it.
-    async fn send(&mut self, frame: Vec<u8>);
+    /// Write ONE frame, framed for this transport, and flush it. `Err` means the frame did NOT reach
+    /// the wire — the caller decides what a lost frame costs it, because only the caller knows what
+    /// it wrote (see [`DuplexHandle::emit`]).
+    async fn send(&mut self, frame: Vec<u8>) -> std::io::Result<()>;
     /// Flush any buffered bytes at end-of-session.
-    async fn flush(&mut self);
+    async fn flush(&mut self) -> std::io::Result<()>;
 }
 
 /// The BYTE framing: a frame is its bytes then the `0x0A` terminator — byte-for-byte the wire the
@@ -225,13 +239,15 @@ struct NewlineSink<W> {
 
 #[async_trait::async_trait]
 impl<W: AsyncWrite + Unpin + Send> FrameSink for NewlineSink<W> {
-    async fn send(&mut self, mut frame: Vec<u8>) {
+    async fn send(&mut self, mut frame: Vec<u8>) -> std::io::Result<()> {
         frame.push(b'\n');
-        let _ = self.writer.write_all(&frame).await;
-        let _ = self.writer.flush().await;
+        // The write AND the flush both carry: a `write_all` that succeeded into a buffer the flush
+        // then failed to drain is a line that never reached the far end, which is the same loss.
+        self.writer.write_all(&frame).await?;
+        self.writer.flush().await
     }
-    async fn flush(&mut self) {
-        let _ = self.writer.flush().await;
+    async fn flush(&mut self) -> std::io::Result<()> {
+        self.writer.flush().await
     }
 }
 
@@ -244,15 +260,27 @@ struct MessageSink<Sk> {
 
 #[async_trait::async_trait]
 impl<Sk: Sink<Vec<u8>> + Unpin + Send> FrameSink for MessageSink<Sk> {
-    async fn send(&mut self, frame: Vec<u8>) {
+    async fn send(&mut self, frame: Vec<u8>) -> std::io::Result<()> {
         // `SinkExt::send` feeds then flushes; the message is one frame, so there is no terminator to
-        // add. A closed sink drops the frame — the reader side has already ended the session.
-        let _ = self.sink.send(frame).await;
+        // add. A closed sink REFUSES the frame, and says so: the caller's own policy decides what
+        // that costs, exactly as on the byte path. The sink's error type is the caller's and carries
+        // no bound this module can name, so the loss is reported without it.
+        self.sink
+            .send(frame)
+            .await
+            .map_err(|_| std::io::Error::other(SINK_REFUSED))
     }
-    async fn flush(&mut self) {
-        let _ = self.sink.flush().await;
+    async fn flush(&mut self) -> std::io::Result<()> {
+        self.sink
+            .flush()
+            .await
+            .map_err(|_| std::io::Error::other(SINK_REFUSED))
     }
 }
+
+/// What a message sink's own (unnameable) error becomes on the way out. In practice it is always the
+/// same condition: the far end closed and the sink will accept nothing more.
+const SINK_REFUSED: &str = "the message sink refused the frame (the channel is closed)";
 
 /// Assemble the shared spine over a chosen (type-erased) [`FrameSink`]. The mint starts at 1 so
 /// [`CallRef::NONE`] (`0`) is never handed out.
@@ -329,7 +357,13 @@ async fn drain_and_flush(shared: &Arc<Shared>) {
             h.abort();
         }
     }
-    shared.sink.lock().await.flush().await;
+    // END-OF-SESSION policy: whatever is still buffered is already unanswerable — the session is
+    // over and there is no one left to tell — so a failed final flush is a diagnostic, not a
+    // failure. Recorded rather than discarded: a channel that regularly ends with undrained bytes
+    // is a real symptom, and it used to leave no trace at all.
+    if let Err(e) = shared.sink.lock().await.flush().await {
+        tracing::debug!(error = %e, "duplex: the end-of-session flush failed; buffered bytes were lost");
+    }
 }
 
 /// SERVE one inbound byte-duplex channel over any `AsyncRead`/`AsyncWrite` pair until EOF, driving

@@ -466,10 +466,20 @@ impl Session {
     /// Write ONE JSON-RPC message as one frame. `serde_json` emits no raw newline, so the framing
     /// MUST (`STDIO.NO-EMBEDDED-NEWLINES`) holds by construction; the pump appends the one line
     /// terminator under its single write lock.
+    ///
+    /// THIS plane's policy for a write that fails: DIAGNOSE AND DROP. stdout IS the only channel to
+    /// the client — there is no second path to report the loss on and nothing to retry into, since a
+    /// broken pipe stays broken for the life of the session. What matters is that the loss is
+    /// recorded: a client hanging on an id it will never see answered used to leave no trace on this
+    /// side at all. The stderr line is the same register the plane already uses for a body it cannot
+    /// put on stdout.
     async fn emit(&self, value: &Value) {
         let Some(out) = self.channel() else { return };
         let bytes = serde_json::to_vec(value).unwrap_or_else(|_| b"null".to_vec());
-        out.emit(bytes).await;
+        if let Err(e) = out.emit(bytes).await {
+            let id = value.get("id").unwrap_or(&Value::Null);
+            eprintln!("busbar: mcp stdio serve: a message could not be written to stdout and was lost (id {id}): {e}");
+        }
     }
 
     /// Issue ONE busbar-originated request on the channel and await the client's answer, through the

@@ -522,7 +522,19 @@ where
             .on_server_frame(WireEvent(Bytes::from(frame)))
             .await;
         for up in plan.upstream {
-            out.emit(up.0.to_vec()).await;
+            // THIS leg's policy for a write that fails: DIAGNOSE AND STOP SENDING. The upstream
+            // socket is a session-long conversation, so a frame that never lands leaves the far end
+            // holding a state busbar no longer shares — and every later frame of this plan would be
+            // written into the same dead socket. Abandon the rest of the plan rather than emit
+            // frames the peer will never see; the downlink and the close below still run, so the
+            // client is still told.
+            if let Err(e) = out.emit(up.0.to_vec()).await {
+                tracing::warn!(
+                    error = %e,
+                    "voice: an upstream frame could not be written; abandoning the rest of this plan's upstream"
+                );
+                break;
+            }
         }
         for down in plan.downlink {
             self.core.carrier.send_downlink(down.0.to_vec());

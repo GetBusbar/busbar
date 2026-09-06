@@ -28,7 +28,13 @@ impl DuplexPlane for EchoPlane {
         None
     }
     async fn handle(self: Arc<Self>, frame: Vec<u8>, out: DuplexHandle) {
-        out.emit(frame).await;
+        // A write that does not land would make this echo silently stop echoing, which reads as a
+        // missing frame rather than a broken sink — so the loss is surfaced where it happens. The
+        // session ending mid-echo is the one legitimate way to get here, and the assertions on the
+        // far end have already run by then.
+        if let Err(e) = out.emit(frame).await {
+            eprintln!("echo plane: the frame could not be written: {e}");
+        }
     }
 }
 
