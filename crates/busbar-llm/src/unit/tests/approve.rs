@@ -121,18 +121,42 @@ fn a_seat_before_the_vetoing_one_is_consulted() {
 /// THE CLOSED REFUSAL SET IS ONE. Approve on this plane raises `HookVeto` and nothing else: the
 /// scope half has no closed lookup to fail against here (see the module docs), so a
 /// `ScopeDenied` from this step would be a permission answer with no table behind it.
+/// Each case names the outcome it EXPECTS, and the expectation is asserted whichever way the
+/// step answered. Reading the reason only inside an `if let Err(..)` made two different bugs
+/// invisible: a seated gate that quietly proceeded skipped the assertion entirely and passed,
+/// and so did an unseated step that refused for some reason of its own — the arm simply would
+/// not have run. A closed set is a claim about both halves, so both are checked.
 #[test]
 fn the_closed_refusal_set_is_exactly_the_veto() {
     let seal = seal();
     let always = Always;
-    for seats in [
-        Vec::<&dyn VetoSeat>::new(),
-        vec![&always as &dyn VetoSeat],
-        vec![&always as &dyn VetoSeat, &always as &dyn VetoSeat],
+    for (seats, refuses, why) in [
+        (
+            Vec::<&dyn VetoSeat>::new(),
+            false,
+            "no seat, nothing to veto",
+        ),
+        (vec![&always as &dyn VetoSeat], true, "one seat vetoes"),
+        (
+            vec![&always as &dyn VetoSeat, &always as &dyn VetoSeat],
+            true,
+            "the first of two seats vetoes",
+        ),
     ] {
         let d = approve(&UnitToken::<Approve>::mint(&seal), &caller(), &[], &seats);
-        if let Err(refusal) = d.into_result(&seal) {
-            assert_eq!(refusal.reason(), ReasonCode::HookVeto);
+        match d.into_result(&seal) {
+            Ok(_) => assert!(!refuses, "{why}: expected a refusal and the step proceeded"),
+            Err(refusal) => {
+                assert!(
+                    refuses,
+                    "{why}: expected the step to proceed and it refused"
+                );
+                assert_eq!(
+                    refusal.reason(),
+                    ReasonCode::HookVeto,
+                    "{why}: this step raises one reason and no other"
+                );
+            }
         }
     }
 }

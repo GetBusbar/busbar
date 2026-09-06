@@ -41,6 +41,19 @@ fn ctx<'a>(
     }
 }
 
+/// ONE KEY'S FEE BASE, off the same derived surface the enforcer and the dashboards read.
+///
+/// The billable count and the derived spend, which are the two figures a refund would move. Read
+/// through `derived_bucket_usage` rather than off a raw row because that is what a budget cap is
+/// compared against, so a refund that landed anywhere the enforcer can see it shows up here.
+fn fee_base(app: &Arc<crate::test_support::BuiltApp>, bucket: &str, now: u64) -> (u64, i64) {
+    let gov = app.governance.clone().expect("governance is configured");
+    let derived = gov
+        .derived_bucket_usage(&app.cost, bucket, "total", true, now)
+        .expect("usage read");
+    (derived.requests, derived.spend_cents)
+}
+
 /// A governed deployment with one key per leg, so each leg's terminal writes to a chain nothing
 /// else in this process is writing to.
 fn governed(
@@ -214,6 +227,12 @@ async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
     let unit_gov = busbar_api::PlaneRequestCtx {
         key: Some(Arc::new(keys[1].clone())),
     };
+    // THE FEE BASE BEFORE EITHER DOOR RAN. Both legs are refusals, so neither is entitled to
+    // move a figure here — and it is read before rather than assumed, because "nothing moved"
+    // is only a statement about a door if the starting figure is known.
+    let live_before = fee_base(&app, &keys[0].id, at);
+    let unit_before = fee_base(&app, &keys[1].id, at);
+
     let (_seal, token) = tokens();
     let unit = audit_refused(
         &token,
@@ -224,6 +243,27 @@ async fn audit_refused_matches_the_live_rejected_terminal_and_posts_once() {
     .into_response();
 
     assert_eq!(body_of(live).await, body_of(unit).await);
+    // THE LEDGER, which is what "never refunds" is a claim about. The test's name and its
+    // doc-comment both say this door refunds nothing, and until now nothing here read the books
+    // to find out: the record and the bytes would have agreed just the same if the step had
+    // decremented a shared window counter on its way past. A refund on this path is a blind
+    // decrement against some other, legitimately-charged request in the same window, so the
+    // assertion is that BOTH legs left the fee base exactly where they found it.
+    assert_eq!(
+        fee_base(&app, &keys[0].id, at),
+        live_before,
+        "the live rejected terminal charges nothing and refunds nothing"
+    );
+    assert_eq!(
+        fee_base(&app, &keys[1].id, at),
+        unit_before,
+        "the refused door charges nothing and refunds nothing"
+    );
+    assert_eq!(
+        (live_before, unit_before),
+        ((0, 0), (0, 0)),
+        "neither leg was ever charged, so there was nothing either could refund"
+    );
     let live_record = one_record(&keys[0].id);
     let unit_record = one_record(&keys[1].id);
     assert_eq!(shape(&live_record), shape(&unit_record));
