@@ -1614,6 +1614,42 @@ async fn a_connection_wide_refusal_is_delivered_before_a_dialled_connection_is_c
     );
 }
 
+/// The flush window is a property of CLOSING, not of where `close` happened to be called from.
+///
+/// Closing writes the connection-wide refusal to every call first and cuts the stream second, and
+/// the window between the two is what lets those bytes actually leave this process. Off a thread
+/// with no runtime — an operator tool, a shutdown path, a `Drop` — the fallback cut immediately and
+/// destroyed exactly the bytes the window exists to protect, with the caller already told they were
+/// delivered. Same close, same promise, two different answers depending on the caller's thread.
+///
+/// A plain `#[test]`, deliberately: no `#[tokio::test]` means no ambient runtime, which IS the
+/// condition under test.
+#[test]
+fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
+    let (near, far) = tokio::io::duplex(64);
+    // Held so the far end is a live peer rather than a closed one.
+    let _far = far;
+    let (_cuttable, cut) = crate::conn::Cuttable::new(Box::new(near));
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    state.arm_cut(cut.clone());
+    assert!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "the fixture is only honest with no runtime on this thread"
+    );
+
+    state.stop();
+
+    assert!(
+        !cut.is_cut(),
+        "a close must not cut the stream out from under bytes it has just accepted"
+    );
+    std::thread::sleep(crate::conn::CUT_GRACE + Duration::from_millis(500));
+    assert!(
+        cut.is_cut(),
+        "and the window is a window: past it the stream goes, whatever the peer is doing"
+    );
+}
+
 /// A finished call takes its OWN entry out of the outbound map, not whatever the id holds now.
 ///
 /// Cleanup runs when a call ends — from the dial side's forwarding task, from the served call's
