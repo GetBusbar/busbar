@@ -614,10 +614,12 @@ fn register_protocols() {
     #[cfg(feature = "proto-llm")]
     {
         installed.extend_from_slice(busbar_llm::DECLS);
-        // THE ROOT-DRIVEN URL-MODEL SURFACE (composition-root switch-over S2), default off — the
+        // THE ROOT-DRIVEN URL-MODEL SURFACE (composition-root switch-over S2), DEFAULT ON — the
         // path-axis twin of the `BODY_INGRESS` swap below. The table is the same two dialects under
         // the same two names and the answers are the plane's own; what the swap changes is the PATH a
-        // request takes to reach one. Off, this arm does not exist and the surface is the one it was.
+        // request takes to reach one. `root-llm` is in this crate's `default` feature list, so the
+        // shipped binary takes the second arm and the first is what a build that switches it OFF
+        // falls back to — the surface the plane served before the root drove it.
         #[cfg(not(feature = "root-llm"))]
         path_ingress.extend_from_slice(busbar_llm::PATH_INGRESS);
         #[cfg(feature = "root-llm")]
@@ -640,11 +642,12 @@ fn register_protocols() {
     )> = Vec::new();
     #[cfg(all(feature = "proto-llm", not(feature = "root-llm")))]
     body_ingress.extend_from_slice(busbar_llm::BODY_INGRESS);
-    // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), default off. The table is the
+    // THE ROOT-DRIVEN LLM SURFACE (composition-root switch-over S2), DEFAULT ON. The table is the
     // same six dialects under the same six names and the answers are the plane's own; what the swap
     // changes is the PATH a request takes to reach one — through the kernel's loop, over the plane's
     // nine step files, past the two audit doors and out through the one exit, instead of through the
-    // plane's own shell. Off, this line does not exist and the surface is the one it was.
+    // plane's own shell. `root-llm` ships in this crate's `default` feature list, so this line is the
+    // one that runs; the arm above is what a build that switches it off falls back to.
     #[cfg(all(feature = "proto-llm", feature = "root-llm"))]
     body_ingress.extend_from_slice(root::units_llm::BODY_INGRESS);
     busbar_substrate::ingress::arrival::install_body_ingress(body_ingress);
@@ -2270,9 +2273,13 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
 }
 
 // THE COMPOSITION ROOT. The kernel, the units, the planes and the transports composed in one
-// place — the only place in the tree entitled to name all four. Nothing in `main()` calls into it
-// yet: the root is built before any plane is switched onto it, so the shape can be checked against
-// the real traits while the serving path is untouched.
+// place — the only place in the tree entitled to name all four. `main()` CALLS INTO IT on the
+// default feature set: the administrative listener is mounted through `root::units_admin::mount`,
+// the LLM plane's path and body arrivals are the root's, and the node's one book is opened here and
+// bound to the root's exit arm. What is still true is the ordering the root was built under — the
+// shape was checked against the real traits before any plane was switched onto it — but the switch
+// has happened, and a reader who took this comment at its word would be looking for the serving path
+// somewhere it no longer is.
 mod root;
 
 #[cfg(test)]
