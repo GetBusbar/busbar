@@ -1054,6 +1054,9 @@ async fn drive_keeping_the_unit<'n>(
         op_class: OpClassId::new(arrival.operation.name()),
         model_hint: None,
         started: Instant::now(),
+        // The one arrival reading this fixture's charges and its abandoned settlement both date
+        // from, exactly as the drive pins one at the top of a live unit.
+        arrived: Arrived::at(EPOCH * 1_000, 0),
         charged_at: EPOCH,
         history: crate::root::kernel::ROOT_CARD.pin(),
         arrived: Arrived::at(EPOCH * 1_000, 0),
