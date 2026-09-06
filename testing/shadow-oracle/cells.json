@@ -55,18 +55,18 @@
     }
   ],
   "counts": {
-    "total": 2301,
+    "total": 2309,
     "by_plane": {
       "a2a": 468,
-      "core": 773,
+      "core": 781,
       "llm": 148,
       "mcp": 912
     },
     "by_family": {
       "a2a": 468,
-      "admin.ops": 234,
+      "admin.ops": 240,
       "auth.lifecycle": 3,
-      "billing": 12,
+      "billing": 13,
       "boot.refusal": 205,
       "boot.warning": 31,
       "cli": 14,
@@ -81,7 +81,7 @@
       "llm.wire": 141,
       "mcp": 912,
       "neutrality": 18,
-      "ops.scrape": 14,
+      "ops.scrape": 15,
       "plugins": 14,
       "queue": 2,
       "route.failover": 16,
@@ -5828,6 +5828,22 @@
       "why": "204; tombstones {KEY_NOSCOPE} (revoke-AND-forget). Run LAST among key ops. An over-long id is 400."
     },
     {
+      "id": "admin.ops|DeleteKeysId|overlong-id",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "DELETE",
+        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+    },
+    {
       "id": "admin.ops|DeleteKeysId|unauth",
       "plane": "core",
       "family": "admin.ops",
@@ -6942,6 +6958,22 @@
       "why": "200 KeyMeteringView for the current UTC-day bucket; governance off \u21d2 404."
     },
     {
+      "id": "admin.ops|GetKeysIdUsage|overlong-id",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+    },
+    {
       "id": "admin.ops|GetKeysIdUsage|unauth",
       "plane": "core",
       "family": "admin.ops",
@@ -6988,6 +7020,22 @@
         "listener": "admin"
       },
       "why": "200 KeyView (metadata; no secret). Over-long id 400."
+    },
+    {
+      "id": "admin.ops|GetKeysId|overlong-id",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
     },
     {
       "id": "admin.ops|GetKeysId|unauth",
@@ -8074,6 +8122,24 @@
       "why": "200 KeyView; `enabled: true` is a no-op-equivalent on {KEY_OK}. `group` is three-state (absent/null/value); rebind to a missing group is 400 Cond::RebindTargetM"
     },
     {
+      "id": "admin.ops|PatchKeysId|overlong-id",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PATCH",
+        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"enabled\":true}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+    },
+    {
       "id": "admin.ops|PatchKeysId|unauth",
       "plane": "core",
       "family": "admin.ops",
@@ -8766,6 +8832,22 @@
       "why": "200 RevokeView; denylists {KEY_BROKE} durably but keeps the binding (GET still 200). Idempotent: revoking again is 200. Governance off \u21d2 409."
     },
     {
+      "id": "admin.ops|PostKeysIdRevoke|overlong-id",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000/revoke",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
+    },
+    {
       "id": "admin.ops|PostKeysIdRevoke|unauth",
       "plane": "core",
       "family": "admin.ops",
@@ -8856,6 +8938,24 @@
         ]
       },
       "why": "200 RotatedKeyView (new secret shown once; old stops resolving \u2014 so {ORACLE_TOKEN_OK} is dead afterwards: run after every data-plane epoch). Idempotency keyed ("
+    },
+    {
+      "id": "admin.ops|PostKeysIdRotate|overlong-id",
+      "plane": "core",
+      "family": "admin.ops",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/keys/vk_00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000/rotate",
+        "headers": {
+          "Idempotency-Key": "oracle-idem-rotate-1"
+        },
+        "body": null,
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "an id past the 64-character bound on a caller-supplied path segment: an unbounded identifier otherwise reaches the store lookup and the audit `resource` string. 1.5.5 refuses 400 on five of the six `/keys/{id}` handlers and 404 on PostKeysIdRotate, the one handler that never calls the bound (see accepted-differences.json K-1)"
     },
     {
       "id": "admin.ops|PostKeysIdRotate|unauth",
@@ -10519,6 +10619,54 @@
       },
       "why": "a request that straddles the window roll: its flat per-request fee must be refunded from the SAME cell the charge landed on, so the view reads spend 0 and not one fee too high (M-1)",
       "needs_fixture": true
+    },
+    {
+      "id": "billing|rate-card|epoch-mid-window",
+      "plane": "core",
+      "family": "billing",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "method": "PUT",
+            "path": "/api/v1/admin/config/settings",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"rate_card\":{\"m-openai-chat\":{\"input_utok\":1000000,\"output_utok\":2000000}}}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "RECORDED TRUTH (published 1.5.5): a `rate_card` written through PUT /api/v1/admin/config/settings mid-window prices NEITHER request at the new rate \u2014 the read-time derivation both before and after the 200 uses the card the process booted with, so the write is restart-to-apply in practice even though docs/admin-api.md lists `rate_card` as live and hot-applied and the usage views promise reprice-on-read. The money class this pins: an operator's rate correction is accepted with a 200 and silently does not reach the bill."
     },
     {
       "id": "boot.refusal|BOOT-001|validate",
@@ -30702,6 +30850,22 @@
         "listener": "data"
       },
       "why": "gemini listing"
+    },
+    {
+      "id": "ops.scrape|v1modelsid|retrieve",
+      "plane": "core",
+      "family": "ops.scrape",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/v1/models/m-openai-chat",
+        "headers": {},
+        "body": null,
+        "auth": "ok",
+        "listener": "data"
+      },
+      "why": "1.5.5 has no retrieve rung on the models resource: GET /v1/models/{id} is 405, not a model view \u2014 recorded so the llm plane's model rung can never claim it silently"
     },
     {
       "id": "ops.scrape|v1models|anthropic-fp",
