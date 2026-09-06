@@ -299,6 +299,28 @@
         "body"
       ],
       "rationale": "Two upstream mid-stream failure shapes were served, and billed, as clean successes. (1) An OpenAI-compatible backend (OpenAI, Azure, vLLM, OpenRouter) that fails AFTER its 200 headers are on the wire delivers the failure inline as a `data: {\"error\":{...}}` SSE chunk carrying no `choices`; the openai_chat stream reader guarded only on the [DONE] sentinel and `choices`, so the chunk decoded to nothing at all -- no IrStreamEvent::Error, so terminal_error() stayed None, the breaker recorded no fault, the partial completion was billed in full, and a cross-protocol client got balanced block-stops plus an ordinary terminator with no hint the answer was truncated. The gemini, bedrock, anthropic and openai_responses readers each already pushed an Error for their equivalent frame. (2) A Cohere stream ending on the generic infra `finish_reason: \"ERROR\"` decoded to IrStopReason::Error but pushed no Error event, and no other dialect's writer has a native token for that reason, so every cross-protocol writer rendered it as a success terminator (stop/end_turn) -- the same outcome by a different route. 1.5.5 had the identical gap (v1.5.5:crates/busbar/src/proto/openai_chat/reader.rs read_response_events carries the same two guards and no error arm), so this is a deliberate divergence from the pin, named in the 1.6.0 CHANGELOG under Improvements. Strictly in the operator's and the client's favour: a failed request stops being charged for, and a failing lane finally trips. ERROR_TOXIC is deliberately untouched -- it maps to IrStopReason::Safety, a content-moderation refusal is a correctly-served response, and faulting a lane for one would trip the breaker on ordinary safety behaviour. No successful stream changes on any dialect. NO RECORDED CELL EXERCISES EITHER SHAPE: the oracle mock has no mock_control verb that injects an inline error chunk or a terminal ERROR finish_reason (the closest, `cut`, severs the body rather than sending an error frame), so the recorded llm family is unchanged. The divergence classes this WOULD produce on such a cell are `status` and `effects.usage`, and this register's own rule reserves both for a kind=breaking entry naming a CHANGELOG line; this entry therefore accepts `body` only, and if a fixture is ever added that drives one of these shapes the entry must be promoted by the owner rather than widened here."
+    },
+    {
+      "id": "M-3 Cohere billed_units bill the same buffered and streamed",
+      "kind": "breaking",
+      "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
+      "cells": "^llm\\|[a-z_]+\\|cohere\\|request\\|ok(_stream)?$|^billing\\|",
+      "classes": [
+        "effects.usage",
+        "body"
+      ],
+      "rationale": "Cohere reports usage TWICE -- a raw `usage.tokens` bucket and a separately-metered `usage.billed_units` bucket -- and billed_units is the count Cohere itself invoices the operator on. 1.5.5 read only `tokens` (its cohere reader parsed usage.tokens on both the stream and the non-stream path; billed_units was never read) and billed those. 1.6.0 lets billed_input_tokens/billed_output_tokens win over the raw totals inside IrUsage::to_token_usage, the one projection the ledger reads. This entry covers the BUFFERED arm finally reaching that same projection: chat_usage (the projection behind ChatRespHandle::billing()) had been rebuilding TokenUsage from the RAW IrUsage totals, so a single completion was billed the billed counts when streamed and the raw counts when buffered -- two different invoices for one completion, decided only by the caller's stream flag. Both arms now answer identically. No other dialect populates the billed fields, so every other backend's ledgered counts stay byte-identical to 1.5.5. The oracle's own mock sends billed_units EQUAL to tokens, so no recorded cell moves today; the entry is registered ahead of any fixture that makes them differ, which is exactly what S-8's caveat requires.",
+      "changelog": "1.6.0 Improvements: a Cohere backend's usage.billed_units is what the key is billed, on both the buffered and the streamed path"
+    },
+    {
+      "id": "F-014 Bedrock totalTokens counts the cache tokens AWS counts",
+      "kind": "improvement",
+      "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
+      "cells": "^llm\\|bedrock\\|[a-z_]+\\|request\\|ok(_stream)?$",
+      "classes": [
+        "body"
+      ],
+      "rationale": "AWS Converse reports inputTokens as the NON-cached input only and documents the full input as inputTokens + cacheReadInputTokens + cacheWriteInputTokens (its worked caching example totals 16 input + 4 output + 695 cache-write as totalTokens 715). 1.5.5's Bedrock writer derived totalTokens = inputTokens + outputTokens while emitting the two cache counts beside it as ADDITIVE siblings, so on a cache-bearing response the published parts summed PAST the published total and a consumer reading totalTokens -- the field AWS points accounting consumers at -- lost every cache token. Both write sites (the buffered Converse body and the streamed metadata frame) now publish the AWS sum. The component fields are untouched, a response with no cache activity is byte-identical to 1.5.5 (the omitted cache buckets add zero), and this is a Bedrock-INGRESS body shape only: nothing Busbar ledgers reads totalTokens, since the Bedrock reader never parses it. The oracle's mock reports no cache tokens, so no recorded cell moves today."
     }
   ]
 }

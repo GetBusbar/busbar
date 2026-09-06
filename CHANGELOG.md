@@ -66,6 +66,14 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   `--providers <path>` names the provider catalog (flag > `providers_file:` > `providers.yaml`
   beside the config); both are additive. `--version` adds a `build: profile=… target=…`
   provenance line under the version.
+- **Bedrock `usage.totalTokens` counts the cache tokens AWS counts.** Converse reports
+  `inputTokens` as the non-cached input only and states the full input as
+  `inputTokens + cacheReadInputTokens + cacheWriteInputTokens`; 1.5.5 derived
+  `totalTokens = inputTokens + outputTokens` while emitting the two cache counts beside it, so on a
+  cache-bearing response the published parts summed past the published total and a consumer reading
+  `totalTokens` lost every cache token. Both the buffered Converse body and the streamed `metadata`
+  frame now publish the AWS sum. The component fields are unchanged, as is a response with no cache
+  activity. See [Spec fidelity](#spec-fidelity).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
@@ -130,11 +138,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly two entries of kind `breaking`,
-both confined to the fallback/least-bad/queue hop; the primary hop's behaviour is unchanged in
-both. Everything else that touches a 1.5.5 config, request or plugin is named above as an
-improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
-identically, and every 1.5.5 key and minted secret carries over.
+The accepted-differences register for this release has exactly three entries of kind `breaking`:
+two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
+both), and one confined to Cohere backends that report `usage.billed_units`. Everything else that
+touches a 1.5.5 config, request or plugin is named above as an improvement or does not exist: a
+config written for 1.5.5 boots, validates and migrates identically, and every 1.5.5 key and minted
+secret carries over.
 
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
@@ -153,6 +162,15 @@ identically, and every 1.5.5 key and minted secret carries over.
   opt in now gets its usage chunk on the fallback hop too. **Migration:** if you priced or
   capacity-planned on 1.5.5's numbers for traffic that routinely fails over, expect those keys'
   recorded spend to rise to what they actually used; no config change is needed.
+- 1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both
+  the buffered and the streamed path. Cohere reports usage twice — a raw `usage.tokens` bucket and
+  a separately-metered `usage.billed_units` bucket, and `billed_units` is what the operator is
+  invoiced upstream. 1.5.5 read only `tokens` and billed those; 1.6.0 bills `billed_units` where
+  the backend reports it, and now does so identically whether the completion was served buffered or
+  streamed (the two answers for one completion previously differed). Only Cohere populates these
+  fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
+  Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
+  token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap

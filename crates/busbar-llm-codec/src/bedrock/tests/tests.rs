@@ -6082,9 +6082,10 @@ fn total_tokens_includes_cache_tokens_on_both_write_paths() {
         }
     });
     let resp = BedrockReader.read_response(&body).expect("read_response");
+    let writer = BedrockWriter;
 
     // Buffered Converse body: a Bedrock→Bedrock round-trip must reproduce the upstream total.
-    let out = BedrockWriter.write_response(&resp);
+    let out = writer.write_response(&resp);
     assert_eq!(
         out.pointer("/usage/totalTokens").and_then(|v| v.as_u64()),
         Some(wire_total),
@@ -6112,7 +6113,7 @@ fn total_tokens_includes_cache_tokens_on_both_write_paths() {
         stop_sequence: None,
         usage: resp.usage.clone(),
     };
-    let (et, payload) = BedrockWriter
+    let (et, payload) = writer
         .write_response_event(&usage_only)
         .expect("usage-only delta must emit a frame");
     assert_eq!(et, "metadata");
