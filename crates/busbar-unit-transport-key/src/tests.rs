@@ -61,6 +61,20 @@ impl AccessJournal for RecordingJournal {
     }
 }
 
+/// A `TlsConfigSink` that just keeps whatever it was handed, for reading a provisioned config back
+/// out in a test — the same role `TlsTransport` plays in production, without pulling a transport
+/// crate into this one's dependency graph.
+#[derive(Default)]
+struct RecordingSink {
+    server: std::sync::Mutex<Option<Arc<ServerConfig>>>,
+}
+impl TlsConfigSink for RecordingSink {
+    fn register_server_config(&self, _slot: u64, cfg: Arc<ServerConfig>) {
+        *self.server.lock().unwrap() = Some(cfg);
+    }
+    fn register_client_config(&self, _slot: u64, _cfg: Arc<rustls::ClientConfig>) {}
+}
+
 /// A valid self-signed cert/key pair resolves and builds a server-only `ServerConfig`, with ALPN
 /// pinned to `http/1.1` — the same construction `tls_happy_path_trusted_client_gets_200` drives end
 /// to end, checked here at the `ServerConfig` boundary instead of over a socket.
@@ -125,6 +139,56 @@ fn resolves_and_builds_mtls_config_when_client_ca_present() {
             ("ca".to_string(), AccessPurpose::ClientCa),
         ]
     );
+}
+
+/// `provision_server`'s advertised protocol list is the composition root's, not a literal buried
+/// in this unit: a listener that declares `h2` gets exactly `[b"h2"]`, and one that declares
+/// nothing — the default every existing caller still passes — gets exactly `[b"http/1.1"]`, byte
+/// for byte the same as [`resolves_and_builds_server_only_config_for_valid_pair`] pins at
+/// `build_server_config` directly.
+#[test]
+fn provisioning_carries_the_caller_declared_alpn_list() {
+    install_crypto_provider();
+    let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+    let token = TransportKeyToken::mint(&seal);
+
+    for (alpn, want) in [
+        (DEFAULT_ALPN, vec![b"http/1.1".to_vec()]),
+        (&[b"h2".as_slice()][..], vec![b"h2".to_vec()]),
+    ] {
+        let (cert_pem, key_pem) = gen_self_signed();
+        let source = MapSource(
+            [
+                ("cert", cert_pem.into_bytes()),
+                ("key", key_pem.into_bytes()),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        let journal = RecordingJournal::default();
+        let sink = RecordingSink::default();
+
+        provision_server(
+            &source,
+            &journal,
+            &sink,
+            &token,
+            Slot {
+                index: 0,
+                fingerprint: "fixture",
+            },
+            &TlsLocations {
+                cert: "cert",
+                key: "key",
+                client_ca: None,
+            },
+            alpn,
+        )
+        .unwrap();
+
+        let cfg = sink.server.lock().unwrap().clone().unwrap();
+        assert_eq!(cfg.alpn_protocols, want);
+    }
 }
 
 /// A cert/key pair that do not belong together is refused at `with_single_cert`, never silently

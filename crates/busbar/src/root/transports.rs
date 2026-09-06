@@ -171,7 +171,15 @@ pub fn provision_servers(
             index: listener.role.slot_index(),
             fingerprint: listener.fingerprint,
         };
-        let handle = provision_server(source, journal, sink, token, slot, &at)?;
+        let handle = provision_server(
+            source,
+            journal,
+            sink,
+            token,
+            slot,
+            &at,
+            busbar_unit_transport_key::DEFAULT_ALPN,
+        )?;
         provisioned.push(ProvisionedListener {
             role: listener.role,
             bind: listener.bind.clone(),

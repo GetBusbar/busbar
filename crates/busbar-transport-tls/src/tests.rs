@@ -409,6 +409,7 @@ async fn the_transport_key_unit_is_what_gives_a_listener_its_key() {
             key: "secret://tls/key",
             client_ca: None,
         },
+        busbar_unit_transport_key::DEFAULT_ALPN,
     )
     .expect("the unit resolves, journals and registers");
 
@@ -864,6 +865,7 @@ mod cg_49_sni {
                 key: "key-default",
                 client_ca: None,
             },
+            busbar_unit_transport_key::DEFAULT_ALPN,
         )
         .expect("names and default all resolve");
 

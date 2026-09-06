@@ -189,6 +189,13 @@ fn load_client_roots(pem: &[u8]) -> Result<RootCertStore, String> {
     Ok(roots)
 }
 
+/// The advertised protocol list every existing caller of [`provision_server`] and
+/// [`provision_server_named`] passes: `http/1.1`, byte-identical to what [`build_server_config`]
+/// has always hard-coded. A listener that wants to advertise something else — `h2`, once a gRPC
+/// listener exists — passes its own list to provisioning instead; this default is not that
+/// listener's business to know about.
+pub const DEFAULT_ALPN: &[&[u8]] = &[b"http/1.1"];
+
 /// Construct the rustls [`ServerConfig`] from resolved [`TlsMaterial`], ported unchanged from
 /// `busbar-core::tls::build_server_config`:
 ///
@@ -196,8 +203,10 @@ fn load_client_roots(pem: &[u8]) -> Result<RootCertStore, String> {
 ///   certificate chaining to that CA or the handshake fails (mTLS required).
 /// * `client_ca_pem` absent => `with_no_client_auth()` (server-only TLS).
 ///
-/// ALPN advertises only `http/1.1` — busbar's server speaks http/1.1, so this must not advertise
-/// h2.
+/// ALPN advertises only `http/1.1` here — busbar's server speaks http/1.1, and this building
+/// block keeps that default so every caller that does not ask for something else stays pinned to
+/// it. A caller that provisions with a different declared protocol list ([`provision_server`],
+/// [`provision_server_named`]) overrides it after this returns.
 pub fn build_server_config(material: &TlsMaterial) -> Result<ServerConfig, String> {
     let certs = load_cert_chain(&material.cert_pem)?;
     let key = load_private_key(&material.key_pem)?;
@@ -300,9 +309,12 @@ pub fn provision_server(
     token: &TransportKeyToken,
     slot: Slot,
     at: &TlsLocations<'_>,
+    alpn: &[&[u8]],
 ) -> Result<TransportKeyHandle, String> {
     let material = resolve_tls_material(source, journal, at.cert, at.key, at.client_ca)?;
-    sink.register_server_config(slot.index, Arc::new(build_server_config(&material)?));
+    let mut config = build_server_config(&material)?;
+    config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
+    sink.register_server_config(slot.index, Arc::new(config));
     Ok(issue_handle(token, slot.index, slot.fingerprint))
 }
 
@@ -395,6 +407,7 @@ impl ResolvesServerCert for SniCertResolver {
 /// A name's or the default's material could not be resolved through the secret source, or it did
 /// not parse into a usable certificate and key.
 #[allow(clippy::missing_panics_doc)]
+#[allow(clippy::too_many_arguments)]
 pub fn provision_server_named(
     source: &dyn SecretSource,
     journal: &dyn AccessJournal,
@@ -403,6 +416,7 @@ pub fn provision_server_named(
     slot: Slot,
     names: &[NamedTlsLocations<'_>],
     default_at: &TlsLocations<'_>,
+    alpn: &[&[u8]],
 ) -> Result<TransportKeyHandle, String> {
     let mut by_name = HashMap::with_capacity(names.len());
     for n in names {
@@ -425,7 +439,7 @@ pub fn provision_server_named(
         None => builder.with_no_client_auth(),
     };
     let mut config = builder.with_cert_resolver(Arc::new(SniCertResolver { by_name, default }));
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    config.alpn_protocols = alpn.iter().map(|p| p.to_vec()).collect();
 
     sink.register_server_config(slot.index, Arc::new(config));
     Ok(issue_handle(token, slot.index, slot.fingerprint))
