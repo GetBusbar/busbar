@@ -399,6 +399,26 @@ fn a_refusal_without_a_draft_still_renders() {
     assert_eq!(value["error"]["code"], jsonrpc::CODE_INVALID_REQUEST);
 }
 
+/// How many legs each operation class routes to.
+///
+/// The count is the shape of the plan — a send spends a grant, hops and settles; a listing reaches
+/// one record — so a leg that appears or disappears is a change to what an operation DOES, and it is
+/// written down here rather than left to a bound that can never fail.
+const EXPECTED_LEGS: &[(&str, usize)] = &[
+    ("message_send", 3),
+    ("message_stream", 3),
+    ("task_get", 2),
+    ("task_list", 1),
+    ("task_cancel", 4),
+    ("task_subscribe", 2),
+    ("push_config_create", 3),
+    ("push_config_get", 1),
+    ("push_config_list", 1),
+    ("push_config_delete", 3),
+    ("agent_card", 1),
+    ("push_event", 4),
+];
+
 /// Every operation class routes to at least one leg, and every leg is one a unit may reach.
 #[test]
 fn every_operation_routes_somewhere() {
@@ -422,9 +442,18 @@ fn every_operation_routes_somewhere() {
         );
         let plan = plane.route(&unit, &ctx);
         assert!(!plan.legs.is_empty(), "{op} routes nowhere");
+        let name = op.to_string();
+        let expected = EXPECTED_LEGS
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, legs)| *legs)
+            .unwrap_or_else(|| panic!("{op} has no expected leg count written down"));
+        assert_eq!(plan.legs.len(), expected, "{op} routes to a different plan");
+        // A plan filled to its ceiling is one a further leg would be dropped from without a word,
+        // so the ceiling is asserted as headroom rather than as a bound that cannot fail.
         assert!(
-            plan.legs.len() <= plan.legs.capacity(),
-            "{op} routes past the leg ceiling"
+            !plan.legs.is_full(),
+            "{op} routes with no leg headroom left"
         );
         for leg in plan.legs.as_slice() {
             if let busbar_contract::dest::DestinationFacts::PlaneRecord { schema, op: rop } =
