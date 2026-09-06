@@ -518,11 +518,27 @@ fn auth_plugin_role_binding_and_scope_cap_apply() {
         crate::admin::v1::contract::Grants::of(Scope::Full),
         "role binds full under the PLUGIN module name"
     );
-    // ..but the module's `max_admin_scope: read-only` ceiling caps the effective scope. Calling the
-    // actual `Grants::capped_by` production method (instead of re-implementing the ceiling with
-    // `std::cmp::min`) proves the real ceiling arithmetic under a plugin module name — a `full`
-    // binding capped by a `read-only` ceiling collapses to read-only.
-    let capped = bound.capped_by(Scope::ReadOnly);
+    // ..but the module's `max_admin_scope: read-only` ceiling caps the effective scope. The ceiling
+    // is READ OUT OF THE CONFIG through `project_auth_scope_caps` — the SAME projection boot builds
+    // `app.auth_scope_caps` from — rather than written here as the `Scope::ReadOnly` literal the
+    // config already states. A literal proves only that `capped_by` does subtraction: the
+    // projection could key the map by MODULE instead of by NAME (the exact defect its own doc
+    // comment records), hand back nothing, and the test would still be green because the literal
+    // supplied the answer the projection failed to. Reading it through the projection means a
+    // mis-keyed map floors this to the `read-only` default for a DIFFERENT reason than the config,
+    // and an escalating mis-key turns it red.
+    let caps = crate::router::project_auth_scope_caps(&cfg);
+    let ceiling = caps
+        .get("static-auth")
+        .map(String::as_str)
+        .and_then(Scope::parse)
+        .expect("the chain entry's max_admin_scope must reach the projection under its NAME");
+    assert_eq!(
+        ceiling,
+        Scope::ReadOnly,
+        "the projection must carry the ceiling the config wrote"
+    );
+    let capped = bound.capped_by(ceiling);
     assert_eq!(
         capped,
         crate::admin::v1::contract::Grants::of(Scope::ReadOnly),
@@ -1153,5 +1169,139 @@ fn an_identified_admin_chain_still_caches_its_identity() {
         app.credential_cache.flush_all(),
         1,
         "an identified admin chain must still cache the identity it resolved"
+    );
+}
+
+// ── A DENY SHORT-CIRCUITS THE CHAIN ──────────────────────────────────────────────
+//
+// Every ordering test above and below runs `[Pass, X]`, which only ever proves that a `Pass` DOES
+// defer to the next module. The opposite half — that a `Reject` STOPS, so a later module can never
+// overturn a module that has already refused the credential — had no test at all, and it is the
+// half that is a security property rather than an ergonomic one: a chain written
+// `[strict-idp, permissive-fallback]` must deny when the strict module refuses, not fall through to
+// the permissive one. The counting module below makes "was never consulted" observable, because
+// asserting only the verdict cannot distinguish a short-circuit from a later module that happens to
+// agree.
+
+/// Counts its `authenticate` calls and `Identify`s anything. Placed AFTER a `Reject` it must never
+/// be called at all.
+struct CountingIdentify(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+impl busbar_api::AuthModule for CountingIdentify {
+    fn name(&self) -> &'static str {
+        "counting-identify-module"
+    }
+    fn authenticate(&self, _candidate: Option<&str>) -> busbar_api::AuthOutcome {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_api::AuthOutcome::Identify(crate::auth::Principal {
+            id: "test:counted".to_string(),
+            name: None,
+            roles: vec![],
+            ttl_secs: None,
+        })
+    }
+    fn cacheable(&self) -> bool {
+        true
+    }
+}
+
+/// `[Reject, Identify]`: the chain denies, and the identifying module is NEVER CONSULTED. Both
+/// halves matter — a chain that ran the second module and then discarded its verdict would answer
+/// the same but would have paid its round-trip and, worse, would be one refactor away from
+/// preferring it.
+#[test]
+fn a_reject_short_circuits_the_chain_and_a_later_module_never_runs() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![
+            (
+                "cacheable-reject".to_string(),
+                Box::new(CacheableReject) as Box<dyn crate::auth::AuthModule>,
+            ),
+            (
+                "counting-identify".to_string(),
+                Box::new(CountingIdentify(calls.clone())) as Box<dyn crate::auth::AuthModule>,
+            ),
+        ],
+        /* has_plugin_module = */ false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+
+    let verdict = auth.run_chain_cached(Some("some-token"), Some(&cache), None, None);
+
+    assert_eq!(
+        verdict,
+        ChainVerdict::Denied,
+        "a module that REFUSES the credential decides the chain"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the module after the Reject must never be consulted"
+    );
+    assert_eq!(
+        cache.flush_all(),
+        0,
+        "and a denied chain admits nothing to the cache"
+    );
+}
+
+/// The control: move the SAME two modules to `[Identify, Reject]` and the chain identifies, so the
+/// test above is measuring ORDER and not merely the presence of a `Reject` anywhere in the list.
+#[test]
+fn the_first_deciding_module_wins_so_order_is_what_the_reject_test_measures() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let auth = AuthMiddleware::from_chain_for_test(
+        vec![
+            (
+                "counting-identify".to_string(),
+                Box::new(CountingIdentify(calls.clone())) as Box<dyn crate::auth::AuthModule>,
+            ),
+            (
+                "cacheable-reject".to_string(),
+                Box::new(CacheableReject) as Box<dyn crate::auth::AuthModule>,
+            ),
+        ],
+        /* has_plugin_module = */ false,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+
+    let verdict = auth.run_chain_cached(Some("some-token"), Some(&cache), None, None);
+
+    assert!(
+        matches!(verdict, ChainVerdict::Identified { .. }),
+        "the first module to DECIDE wins; the trailing Reject is never reached"
+    );
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+/// The admin chain owes the same guarantee, and runs its own copy of the loop. `[Reject, Identify]`
+/// on the admin plane must deny too — an admin chain that fell through to a permissive module after
+/// a refusal would hand the operator surface to a credential a module had already rejected.
+#[test]
+fn an_admin_reject_short_circuits_the_chain_too() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec![
+            "refusing-admin".to_string(),
+            "counting-identify".to_string(),
+        ])
+        .admin_module("refusing-admin", Box::new(CacheableReject))
+        .admin_module(
+            "counting-identify",
+            Box::new(CountingIdentify(calls.clone())),
+        )
+        .build();
+
+    let (verdict, _) = crate::auth::run_admin_chain(&app, Some("some-token"), None);
+
+    assert_eq!(
+        verdict,
+        ChainVerdict::Denied,
+        "an admin module that refuses the credential decides the admin chain"
+    );
+    assert_eq!(
+        calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "the admin module after the Reject must never be consulted either"
     );
 }
