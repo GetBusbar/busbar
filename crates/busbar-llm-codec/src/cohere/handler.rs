@@ -476,7 +476,8 @@ pub fn read_embeddings_response(
         .get("meta")
         .and_then(|m| m.get("billed_units"))
         .and_then(|b| b.get("input_tokens"))
-        .and_then(Value::as_u64)
+        // Cohere types its billed counts as `number`; read the double form too.
+        .and_then(super::super::usage_tail::token_count)
         .map(|n| busbar_substrate_values::billing::TokenUsage {
             input: n,
             ..Default::default()
@@ -543,7 +544,8 @@ pub fn read_rerank_response(wire: &[u8]) -> Result<crate::ir::rerank::RerankResp
             .get("meta")
             .and_then(|m| m.get("billed_units"))
             .and_then(|b| b.get("search_units"))
-            .and_then(Value::as_u64),
+            // Cohere types its billed counts as `number`; read the double form too.
+            .and_then(super::super::usage_tail::token_count),
         ..Default::default()
     })
 }
