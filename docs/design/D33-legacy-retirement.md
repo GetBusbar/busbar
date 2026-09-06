@@ -14,6 +14,14 @@
 >
 > What is left after the spellings is the real work, and it is **not** a move. See §3: the ceiling
 > forbids it.
+>
+> **Two corrections, found while executing (§5).** (1) `busbar-substrate` and
+> `busbar-substrate-values` have **zero** `busbar_core::` reach — not 161 and 13, but **nought**, in
+> production *and* in test code, and neither crate carries a Cargo edge to `busbar-core` at all, not
+> even a dev-dependency. Every remaining mention is a doc comment recording where an item used to
+> live. Those two crates are **already done**; the work item is retired, not scheduled. (2)
+> `busbar_core::admin::restart` cannot move to the root yet: it is a shared process-global that
+> core's own admin handler still writes (`begin_drain`, `can_restart`, `supervisor_detected`).
 
 ## 1. The ceiling, and what it decides
 
@@ -89,7 +97,7 @@ spelling change with no behavioural surface at all.
 | 1 | `metrics::init` | RE-EX (`busbar_substrate::metrics`) → REPLACE | `ops\|` | cut 2 |
 | 1 | `ingress::PathIngress` | RE-EX (`busbar_substrate::ingress::arrival::PathIngress`) → REPLACE — the root *already* names the substrate spelling one line away | `llm\|`, `route\|` | cut 2 |
 | 1 | `proxy::configure_route_policy_headers` | RE-EX (`busbar_substrate::proxy`) → REPLACE | `http\|`, `route\|` | cut 2 |
-| 1 | `admin::restart::{publish_shutdown, release_asked_drain, drain_released_at_exit}` | **MOVE** — `busbar-core/src/admin/restart.rs` is 152 lines of process-lifecycle broadcast with no `App` in its signature. Its one true owner is the composition root (it is the process). Move to `crates/busbar/src/root/`, delete the core module, core keeps no re-export (nothing else names it). 2 of 3 sites are in `root/units_admin.rs` — **not** an off-limits file. | `documented-admin-restart\|`, `admin.ops\|` | cut 3 |
+| 1 | `admin::restart::{publish_shutdown, release_asked_drain, drain_released_at_exit}` | **MOVE, but blocked.** `busbar-core/src/admin/restart.rs` is 152 lines of process-lifecycle broadcast with no `App` in its signature, and its one true owner is the composition root (it *is* the process). But the module is a set of process **globals** that core's own legacy admin handler still writes — `crate::admin::restart::{supervisor_detected, can_restart, begin_drain}` at `busbar-core/src/admin/v1/json/handlers.rs:2494,2506,2517`. Moving the module to the root would split one static across two crates and silently break `POST /admin/restart` → drain-release. The move lands **with the admin plane**, when `busbar-plane-admin` owns the restart verb and core's handler is deleted. | `documented-admin-restart\|`, `admin.ops\|` | blocked on the admin plane owning the restart verb |
 | 1 | `admin::planeverbs::CorePlaneAdminEnvelope` | REPLACE by `busbar_substrate::admin_verbs::install_plane_admin_envelope` (root names both today) | `admin.ops\|` | cut 3 |
 | 1 | `egress::seam::CoreHostlessEgress` | REPLACE by `busbar_substrate::egress::seam::HostlessEgress` (root names both today) | `llm\|`, `mcp\|` | cut 3 |
 | 1 | `cost::CostModel::resolve_parts` | **REPLACE** by `busbar-unit-cost`. Money path — byte-identity required, so this rides the late-accrual landing, never ahead of it. | `billing\|`, `teller-meter-row\|` | blocked |
@@ -166,13 +174,12 @@ boot-credential concerns the composition root already owns; they go **into `crat
 carries no §1.1 ceiling, and the core module is deleted outright (no re-export — nothing else names
 `admin::restart`). Must land after wave 0 only so the diffs do not overlap.
 
-**Wave 2 — `busbar-substrate`'s remaining backwards reach.** 161 non-test lines over 28 files. The
-direction is *down*: each item core still owns and substrate still names moves into
-`busbar-substrate` (or `-values`), core re-exports it, in-core call sites are unchanged. This is the
-established mechanic of the whole Phase-B extraction and the substrate's `lib.rs` documents it. The
-hard residue is `state::App` (7 sites) and `test_support::TestApp` (4) — those cannot move; they
-must be *replaced* by the `testkit` seam that already exists for exactly this reason. Must land
-after wave 0.
+**Wave 2 — `busbar-substrate`'s remaining backwards reach — *retired, nothing to do*.** Measured
+directly (§5): zero. The Phase-B extraction already finished this. The 161 and 13 in the brief are
+what a raw `grep` over the two crates returns, and every one of those lines is a `//` or `///`
+comment recording the item's former home. `busbar-substrate/Cargo.toml` names `busbar-core` in seven
+comment lines and in no dependency, dev-dependency or feature. **The counter, not the code, was the
+problem** — the purity lint strips comments and would have said so.
 
 **Wave 3 — the plane crates, one at a time, each after its default flip.** Order: **voice first**
 (5 k, flip queued, codec already carries the dialect), then **mcp** (12 k), then **a2a** (12 k),
@@ -219,3 +226,31 @@ The gate's baseline on `origin/integration/oracle-phase0` already carries red ro
 are pre-existing and are not this task's to fix; the obligation is **no new red row and no worse
 number**. Note that `ports-only-tests:busbar-llm` (29 against a ceiling of 20) is itself a legacy
 reach counter, so wave 0 should move it down, not up.
+
+## 5. What was measured, and how
+
+Every count in this document is reproducible from the tree. The commands, and the answers on
+`origin/integration/oracle-phase0`:
+
+```
+# the root's legacy reach, by crate
+grep -rho 'busbar_\(core\|llm\|substrate\|mcp\|a2a\|voice\)::[A-Za-z_:]*' \
+  crates/busbar/src/root/ crates/busbar/src/main.rs | sort -u        # 144 distinct
+
+# core-defined vs core-re-exported: 153 `pub use busbar_substrate…` lines in busbar-core
+grep -rn 'pub use busbar_substrate' crates/busbar-core/src --include='*.rs' | wc -l
+
+# the substrate's real reach — comments and test code excluded
+grep -rn 'busbar_core::' crates/busbar-substrate/src --include='*.rs' \
+  | grep -vE ':\s*(//|/\*|\*)' | wc -l                                # 0
+grep -rn 'busbar_core::' crates/busbar-substrate-values/src --include='*.rs' \
+  | grep -vE ':\s*(//|/\*|\*)' | wc -l                                # 0
+grep -n 'busbar-core' crates/busbar-substrate/Cargo.toml               # 7 hits, all comments
+```
+
+The lesson worth keeping: **a raw `grep` for a crate path counts prose.** In a tree whose migration
+discipline is "relocate the item and leave a comment saying where it came from", the comments
+accumulate exactly where the migration has *succeeded*, so the naive reach counter is highest
+precisely where the work is finished. Any future legacy-reach number in this project should be taken
+with comments stripped (as `scripts/plane-purity-lint.sh` already does) or it will send the next
+agent to clean a crate that is already clean.
