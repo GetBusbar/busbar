@@ -9,7 +9,7 @@
 //! have to agree:
 //!
 //! ```text
-//!   Σ ledger priced_amount, projected once to micro-units  ==  the row's spend_micros
+//!   Σ ledger priced_amount, projected once to micro-units  ==  the row's spend_micros × tier
 //!   Σ ledger fee_count                                     ==  the row's billable_requests
 //! ```
 //!
@@ -38,6 +38,38 @@
 //! whole row and divides once, so the ledger side has to as well or the identity would report a
 //! rounding convention as a discrepancy on every busy row.
 //!
+//! ## The tier, and which side of the comparison carries it
+//!
+//! The two sides do not agree about the tier multiplier, and pretending they do is how a discount
+//! group reports its discount as a discrepancy. The ledger side applies the tier when it PRICES —
+//! `busbar_unit_cost::price` divides the summed pre-tier amount by the tier once and stores the
+//! result — so a posting's `priced_amount` is already tiered. The previous release's read-time
+//! derivation has no tier in it at all: `derive_spend_micros` sums quantity × rate and adds the flat
+//! fee, and that is the whole of it. So the row's own figure is a PRE-TIER one, and comparing it
+//! against a post-tier sum reports the multiplier itself as the residual — a group at 9000 bp comes
+//! out ten per cent short on every row it has.
+//!
+//! Hence the row carries the tier it was charged at and the comparison projects the legacy figure
+//! through it. The tier belongs on the legacy side and not on the ledger side because that is where
+//! it is MISSING: the ledger's figure needs no adjustment, and adjusting it would be undoing work
+//! the pricing already did correctly.
+//!
+//! ### What has to hold for that projection to be exact
+//!
+//! Two conditions, both properties of the card rather than of this module, and both worth naming
+//! because the identity is exact only while they hold:
+//!
+//! - every posting's pre-tier amount is a whole number of MICRO-units, so the row's legacy figure
+//!   loses nothing to its own projection before the tier is applied to it. Configured rates are
+//!   micro-units per unit of quantity and the flat fee is CENTS lifted by `NANOS_PER_CENT`, so a
+//!   sub-micro line amount can only come from a sub-micro configured rate;
+//! - the tier divides each posting's pre-tier amount exactly, so the ledger's per-posting floors sum
+//!   to the row's single one.
+//!
+//! Where either fails the two sides truncate on OPPOSITE sides of the tier — the ledger after it,
+//! the legacy row before it — and the residual names a rounding convention rather than lost value.
+//! The tests below pin both conditions rather than assuming them.
+//!
 //! ## Why a residual and not a boolean
 //!
 //! Same reason the unit's own identity returns one. "The books do not balance" sends an operator
@@ -47,7 +79,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use busbar_unit_cost::{micros_of, Posting};
+use busbar_unit_cost::{apply_tier, micros_of, Posting, STANDARD_TIER_BP};
 use busbar_unit_ledger::identity::{residual, Residual};
 use busbar_unit_ledger::totals::Totals;
 
@@ -116,12 +148,58 @@ impl LedgerRow {
 }
 
 /// What the previous release's row carries for the same cell.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LegacyRow {
-    /// The row's derived spend in micro-units, as the legacy usage projection reports it.
+    /// The row's derived spend in micro-units, as the legacy usage projection reports it — PRE-TIER,
+    /// because that projection has no tier in it. See the module doc.
     pub spend_micros: i64,
     /// The row's billable request count — the base the flat fee is charged on.
     pub billable_requests: u64,
+    /// The tier multiplier, in basis points, the row's postings were charged at.
+    ///
+    /// The one field on this side that is not read off the row: a legacy row records what was used
+    /// and what the rates made of it, never which tier the chain serving it was on. It is supplied
+    /// by whoever builds the snapshot, from the same chain the pricing read it from, and it is a
+    /// field rather than an argument so that a snapshot spanning two tiers cannot be built by
+    /// forgetting which row is which.
+    pub tier_bp: u32,
+}
+
+impl Default for LegacyRow {
+    /// An absent row: no spend, no billable requests, and the NEUTRAL tier.
+    ///
+    /// Not `#[derive]`d, and the reason is the tier. A derived default is zero basis points, which
+    /// multiplies every figure it is applied to by nothing — so a row built with
+    /// `..Default::default()` would report its whole spend as unaccounted for, and the row
+    /// `reconcile` invents for a posting the previous release never saw would compare against a
+    /// figure the multiplier had already erased.
+    fn default() -> Self {
+        LegacyRow {
+            spend_micros: 0,
+            billable_requests: 0,
+            tier_bp: STANDARD_TIER_BP,
+        }
+    }
+}
+
+impl LegacyRow {
+    /// The row's money in the ledger's terms: the derived figure projected through the tier the
+    /// postings were charged at.
+    ///
+    /// `apply_tier` is the unit's own multiplier and is used rather than reimplemented, so the ledger
+    /// side and this side can never round the tier two different ways. It takes an unsigned amount,
+    /// which is what a derived spend is; the sign is carried around it rather than through it so that
+    /// a figure some future adjustment made negative scales by magnitude and keeps its sign, instead
+    /// of wrapping into an enormous positive one.
+    pub fn tiered_micros(&self) -> i128 {
+        let magnitude = apply_tier(u128::from(self.spend_micros.unsigned_abs()), self.tier_bp);
+        let magnitude = i128::try_from(magnitude).unwrap_or(i128::MAX);
+        if self.spend_micros < 0 {
+            -magnitude
+        } else {
+            magnitude
+        }
+    }
 }
 
 /// Everything the ledger posted, by row.
@@ -152,10 +230,14 @@ pub fn accumulate(snapshot: &mut LedgerSnapshot, row: RowKey, posting: &Posting)
 ///
 /// `since` is zeros for the same reason: a row's figures are the row's own total, not a delta from
 /// an earlier seal, so the snapshot before it is the one where nothing had happened.
+///
+/// `drawn` is the legacy figure THROUGH THE TIER, never the raw one. The ledger's postings arrive
+/// already tiered and the previous release's derivation never was, so the raw figure would report
+/// the multiplier as the residual on every row of a group that is not at the neutral tier.
 pub fn as_totals(ledger: &LedgerRow, legacy: &LegacyRow) -> Totals {
     Totals {
         settled: i128::from(ledger.micros()),
-        drawn: i128::from(legacy.spend_micros),
+        drawn: legacy.tiered_micros(),
         ..Totals::zero()
     }
 }
@@ -253,7 +335,7 @@ mod tests {
     use busbar_caps::{Hold, LedgerToken, Usage, UsageToken};
     use busbar_caps::{KernelSeal, MeterClassId, PrincipalId, QuantitySource, UsageLine};
     use busbar_unit_cost::{
-        derive_spend_micros, price, LaneClass, RateCard, RateCardVersion, STANDARD_TIER_BP,
+        derive_spend_micros, price, LaneClass, RateCard, RateCardVersion, NANOS_PER_MICRO,
     };
     use busbar_unit_ledger::legacy::{LegacyRows, RecordingRows};
     use busbar_unit_ledger::settle::Ledger;
@@ -266,8 +348,33 @@ mod tests {
     /// `0 == 0` on every row and the test would pass with the fee line unimplemented.
     const FEE_CENTS: i64 = 3;
 
-    /// The three lanes, each with a visibly different price so a row that took the wrong lane's
+    /// The tiers the fixture's buckets are charged at, one per bucket, because a tier is a property
+    /// of the chain a request was admitted through and every row under one bucket shares it.
+    ///
+    /// Three distinct values on purpose: the neutral one, a DISCOUNT and a SURCHARGE. A fixture at
+    /// the neutral tier alone proves nothing about the tier at all — `apply_tier` at ×1 is the
+    /// identity function, so the whole projection could be missing and every row would still
+    /// reconcile.
+    const DISCOUNT_TIER_BP: u32 = 9_000;
+    const SURCHARGE_TIER_BP: u32 = 15_000;
+
+    /// The tier each bucket's chain is on.
+    fn tier_of(bucket: &str) -> u32 {
+        match bucket {
+            "key-2" => DISCOUNT_TIER_BP,
+            "key-3" => SURCHARGE_TIER_BP,
+            _ => STANDARD_TIER_BP,
+        }
+    }
+
+    /// The four lanes, each with a visibly different price so a row that took the wrong lane's
     /// rate is a different number rather than the same one.
+    ///
+    /// `lane-d` is priced in HUNDREDTHS of a micro-unit, and it is the reason the module's
+    /// single-truncation rule is a claim about this fixture rather than about an imagined one: every
+    /// other lane's rate is a whole micro-unit, so every amount it produces is a whole number of
+    /// micro-units and no projection can lose anything. On `lane-d` a posting is a fraction of a
+    /// micro-unit and only the sum over the row reaches one.
     fn card() -> RateCard {
         RateCard::from_micro_rates(
             RateCardVersion::new("identity-test-1"),
@@ -278,6 +385,8 @@ mod tests {
                 (LaneClass::new("lane-b", "output"), 13.0),
                 (LaneClass::new("lane-c", "input"), 1.0),
                 (LaneClass::new("lane-c", "output"), 2.0),
+                (LaneClass::new("lane-d", "input"), 0.11),
+                (LaneClass::new("lane-d", "output"), 0.37),
             ],
             FEE_CENTS,
         )
@@ -326,10 +435,21 @@ mod tests {
         billable: bool,
     }
 
-    /// Sixteen settlements over three buckets, three lanes and two providers, with quantities
-    /// chosen so several rows carry a nano-unit remainder that only survives if the projection
-    /// happens once over the row (see the module doc). Two units are non-billable — a nested unit
-    /// and a tick — so the fee count is not simply the row's posting count.
+    /// Twenty-one settlements over four buckets, four lanes and two providers.
+    ///
+    /// `key-1` is on the neutral tier, `key-2` on a discount and `key-3` on a surcharge, so no row's
+    /// money is the same number with the tier projection missing as with it present. `key-4` runs
+    /// the sub-micro lane at the neutral tier, several postings to a row, so the row's figure is one
+    /// a per-posting projection would floor away — the module's single-truncation rule, exercised
+    /// rather than described.
+    ///
+    /// The discount and the surcharge stay on the whole-micro lanes, which is not an accident and is
+    /// the module doc's second exactness condition standing up: a sub-micro amount under a tier
+    /// truncates on opposite sides of the multiplier on the two paths, and a fixture that mixed them
+    /// would be asserting a rounding convention.
+    ///
+    /// Three units are non-billable — a nested unit, a tick, and one on the sub-micro lane — so the
+    /// fee count is not simply the row's posting count.
     fn settlements() -> Vec<Settlement> {
         let raw: &[(&'static str, &'static str, &'static str, u64, u64, bool)] = &[
             ("key-1", "lane-a", "prov-x", 11, 7, true),
@@ -348,6 +468,11 @@ mod tests {
             ("key-3", "lane-c", "prov-x", 5, 0, true),
             ("key-3", "lane-a", "prov-y", 2, 2, true),
             ("key-3", "lane-a", "prov-y", 6, 6, true),
+            ("key-4", "lane-d", "prov-x", 3, 2, true),
+            ("key-4", "lane-d", "prov-x", 1, 1, true),
+            ("key-4", "lane-d", "prov-x", 7, 0, false),
+            ("key-4", "lane-d", "prov-y", 2, 1, true),
+            ("key-4", "lane-d", "prov-y", 4, 5, true),
         ];
         raw.iter()
             .map(
@@ -397,7 +522,10 @@ mod tests {
             let usage = Usage::report(&usage_token(), lines(s.input, s.output))
                 .expect("the usage report is within the line limit");
             let fee_count = u64::from(s.billable);
-            let posting = price(&pinned, s.lane, &usage, fee_count, STANDARD_TIER_BP);
+            // THE TIER THE CHAIN WAS ON, read from the bucket rather than pinned to the neutral
+            // value: the ledger side is the side that applies it, and a fixture that only ever
+            // priced at ×1 would leave the legacy side's projection unexercised.
+            let posting = price(&pinned, s.lane, &usage, fee_count, tier_of(s.bucket));
 
             // The books move whatever the snapshot does: the red proof below drops a posting from
             // what the CHECK sees, not from what the ledger did, because the defect it stands in
@@ -439,11 +567,15 @@ mod tests {
                     billable,
                     true,
                 );
+                // The derivation is the previous release's and has no tier in it; the tier the row
+                // was charged at rides beside the figure, which is the whole of the projection.
+                let tier_bp = tier_of(row.bucket.as_str());
                 (
                     row,
                     LegacyRow {
                         spend_micros,
                         billable_requests: billable,
+                        tier_bp,
                     },
                 )
             })
@@ -481,7 +613,7 @@ mod tests {
                 settlement.lane,
                 &usage,
                 u64::from(settlement.billable),
-                STANDARD_TIER_BP,
+                tier_of(settlement.bucket),
             );
             let reserved = priced.priced_amount().min(u128::from(u64::MAX)) as u64;
 
@@ -537,7 +669,17 @@ mod tests {
             ledger.keys().collect::<Vec<_>>(),
             legacy.keys().collect::<Vec<_>>()
         );
-        assert!(ledger.len() >= 7, "the fixture must span several rows");
+        assert!(ledger.len() >= 9, "the fixture must span several rows");
+        // AND SEVERAL TIERS, or the projection the identity now performs is the identity function
+        // on every row it was checked over.
+        let tiers: BTreeSet<u32> = legacy.values().map(|r| r.tier_bp).collect();
+        assert_eq!(
+            tiers,
+            [STANDARD_TIER_BP, DISCOUNT_TIER_BP, SURCHARGE_TIER_BP]
+                .into_iter()
+                .collect::<BTreeSet<u32>>(),
+            "the fixture must reconcile at a discount and a surcharge, not only at the neutral tier"
+        );
 
         let out = reconcile(&ledger, &legacy);
         assert!(
@@ -551,7 +693,84 @@ mod tests {
         let priced: usize = ledger.values().filter(|r| r.priced_nanos > 0).count();
         assert!(priced >= 6, "only {priced} rows priced at anything at all");
         let fees: u64 = ledger.values().map(|r| r.fee_count).sum();
-        assert_eq!(fees, 14, "fourteen of the sixteen units are billable");
+        assert_eq!(fees, 18, "eighteen of the twenty-one units are billable");
+    }
+
+    /// THE TIER IS APPLIED, and the row that is not at the neutral tier says so.
+    ///
+    /// The plant this stands against is the projection going missing: `as_totals` reading the legacy
+    /// figure raw. Every row of `key-1` would still reconcile, because ×1 is the identity function —
+    /// so the check is made on the rows that are NOT at ×1, and it is made against a figure derived
+    /// here rather than against the one the comparison uses.
+    #[test]
+    fn a_row_off_the_neutral_tier_reconciles_at_its_own_multiplier_and_not_at_one() {
+        let s = settlements();
+        let (ledger, legacy, _) = drive(&s, None);
+
+        let mut checked = 0usize;
+        for (row, g) in &legacy {
+            if g.tier_bp == STANDARD_TIER_BP {
+                continue;
+            }
+            let l = ledger[row];
+            assert!(g.spend_micros > 0, "{row} priced at nothing");
+            // Spelled out rather than taken from `tiered_micros`: the figure the comparison is
+            // supposed to reach, computed the long way, from the multiplier the row was charged at.
+            let expected =
+                i128::from(g.spend_micros) * i128::from(g.tier_bp) / i128::from(STANDARD_TIER_BP);
+            assert_eq!(
+                i128::from(l.micros()),
+                expected,
+                "{row}: the ledger's tiered money is not the row's figure at the row's tier"
+            );
+            assert_ne!(
+                i128::from(l.micros()),
+                i128::from(g.spend_micros),
+                "{row}: the untiered figure must be a DIFFERENT number, or this proves nothing"
+            );
+            checked += 1;
+        }
+        assert!(
+            checked >= 4,
+            "only {checked} rows were off the neutral tier; the fixture must carry several"
+        );
+    }
+
+    /// THE FEE IS A WHOLE MICRO-UNIT, which is the condition the fee's two placements rely on.
+    ///
+    /// The fee enters the ledger's arithmetic PRE-truncation — as a priced line summed in before the
+    /// single divide — and the previous release's arithmetic POST-truncation, added to an already
+    /// projected figure. Those two land on the same number only while the fee's unit price is an
+    /// exact multiple of the micro-unit, and it is, because the configured fee is CENTS and a cent
+    /// is ten million nano-units. A fee grammar that grew a sub-cent scale would break the identity
+    /// on every billable row, silently, and this is where it would be heard about first.
+    #[test]
+    fn the_fee_is_an_exact_number_of_micro_units_on_both_sides() {
+        let card = card();
+        assert!(card.per_request_fee_cents() > 0, "the fixture charges a fee");
+        assert_eq!(
+            card.fee_unit_price_nanos() % NANOS_PER_MICRO,
+            0,
+            "a sub-micro fee would truncate on one side of the comparison and not the other"
+        );
+
+        // And the two placements, run: the fee summed in before the projection against the fee added
+        // after it, over a row whose TOKEN amount is deliberately not a whole micro-unit.
+        let pinned = card.pin();
+        let usage = Usage::report(&usage_token(), lines(3, 2)).expect("within the line limit");
+        let posting = price(&pinned, "lane-d", &usage, 1, STANDARD_TIER_BP);
+        assert_ne!(
+            posting.pre_tier_amount() % NANOS_PER_MICRO,
+            0,
+            "the sub-micro lane must leave a remainder, or the two placements cannot differ"
+        );
+        let l = lines(3, 2);
+        let legacy = derive_spend_micros(&card, [("lane-d", l.as_slice())].into_iter(), 1, true);
+        assert_eq!(
+            i128::from(micros_of(posting.priced_amount())),
+            i128::from(legacy),
+            "the fee before the truncation and the fee after it are the same money"
+        );
     }
 
     /// RED: drop ONE posting from what the check sees, and the residual names the row it went
@@ -654,6 +873,7 @@ mod tests {
             LegacyRow {
                 spend_micros: 7_000,
                 billable_requests: 1,
+                tier_bp: STANDARD_TIER_BP,
             },
         )]
         .into_iter()

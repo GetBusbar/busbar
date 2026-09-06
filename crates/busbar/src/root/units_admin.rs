@@ -435,6 +435,12 @@ impl NodeLedger {
                     LegacyRow {
                         spend_micros: busbar_unit_cost::micros_of(nanos),
                         billable_requests: 0,
+                        // NEUTRAL, and not because no group here is on a tier. The figure above is
+                        // read off postings the dual write already made, and what a posting carries
+                        // is its PRICED amount — the tier has been applied to it. Projecting it
+                        // through a multiplier a second time would charge this view's readers the
+                        // discount twice.
+                        tier_bp: busbar_unit_cost::STANDARD_TIER_BP,
                     },
                 )
             })
@@ -4142,6 +4148,7 @@ mod tests {
                     LegacyRow {
                         spend_micros: 7_000,
                         billable_requests: 2,
+                        ..LegacyRow::default()
                     },
                 ),
                 (
@@ -4156,6 +4163,7 @@ mod tests {
                         // books are short by 250 on this row and by nothing on the other.
                         spend_micros: 1_000 + SeededLedger::SHORT_BY_MICROS,
                         billable_requests: 1,
+                        ..LegacyRow::default()
                     },
                 ),
             ]

@@ -344,6 +344,10 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
                 // `requests`. That figure is the fee base, so it is what the fee count is checked
                 // against.
                 billable_requests: requests,
+                // The tier the binary's own chains are on. It is spelled rather than defaulted
+                // because it is the multiplier the postings above were priced at — the same value
+                // passed to `price`, read from one place so the two cannot drift apart.
+                tier_bp: STANDARD_TIER_BP,
             },
         );
     }
