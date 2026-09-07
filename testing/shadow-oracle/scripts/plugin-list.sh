@@ -23,5 +23,5 @@ YAML
 printf 'p:\n  protocol: openai\n  base_url: "http://127.0.0.1:1"\n' >"$W/providers.yaml"
 BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" ORACLE_UPSTREAM_KEY=x "$BIN" --list-plugins >"$W/stdout" 2>"$W/stderr"; rc=$?
 # the table's FILE column carries the host triple; keep everything else verbatim
-python3 "${here}/capture-exec.py" "$rc" "$W/stdout" "$W/stderr" --strip-path "$W" --strip-path "$BIN" \
+python3 "${BUSBAR_ORACLE_TOOL_DIR:-$here}/capture-exec.py" "$rc" "$W/stdout" "$W/stderr" --strip-path "$W" --strip-path "$BIN" \
   | python3 -c "import sys,json,re; d=json.load(sys.stdin); d['body']=re.sub(r'-(aarch64|x86_64)-(apple-darwin|unknown-linux-gnu|pc-windows-msvc)', '-<TRIPLE>', d['body']); print(json.dumps(d,separators=(',',':'),sort_keys=True))" >"$RAW/captured.json"
