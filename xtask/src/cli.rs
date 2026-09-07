@@ -17,8 +17,12 @@ usage:
   cargo xtask gate <name> [--selftest] [--report] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
+  cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>]
   cargo xtask denylist [--selftest] [--format=tsv]";
+
+/// The environment variable the legacy release-gate scripts write their ledger through.
+const LEGACY_LEDGER_ENV: &str = "LEDGER";
 
 pub fn main(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
@@ -116,6 +120,33 @@ fn gate(args: &[String]) -> i32 {
     let gate = (reg.build)();
     if want_selftest {
         return run_selftest(gate.as_ref(), &cx);
+    }
+
+    // THE PARITY ARM, used by every conversion before its Python or bash is deleted: run the
+    // legacy script and this gate over the same tree and require identical rows.
+    if args.iter().any(|a| a == "--parity") {
+        let Some(sep) = args.iter().position(|a| a == "--") else {
+            eprintln!("xtask gate {name} --parity: no legacy command given");
+            eprintln!("{USAGE}");
+            return 2;
+        };
+        let legacy: Vec<String> = args[sep + 1..].to_vec();
+        if legacy.is_empty() {
+            eprintln!("xtask gate {name} --parity: no legacy command after `--`");
+            return 2;
+        }
+        return match crate::parity::check(&cx, gate.as_ref(), &legacy, LEGACY_LEDGER_ENV) {
+            Ok(outcome) => {
+                crate::parity::print_outcome(reg.name, cx.scratch(), &outcome);
+                i32::from(!outcome.at_parity())
+            }
+            Err(e) => {
+                // The legacy half could not be RUN (or wrote nothing, which makes every comparison
+                // vacuous). That is exit 3 — "could not run" — never a parity green.
+                eprintln!("xtask gate {name} --parity: {e}");
+                3
+            }
+        };
     }
 
     let verdict = gates::execute(gate.as_ref(), &cx);
