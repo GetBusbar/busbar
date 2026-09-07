@@ -69,11 +69,26 @@ impl<V: Clone> IdempotencyCache<V> {
     }
 
     /// Probe (and, on a first sighting, reserve) `key` at time `now` (unix seconds). Sweeps every
-    /// entry whose age exceeds [`IDEMPOTENCY_TTL_SECS`] first — bounded exactly as 1.5.5's
+    /// COMMITTED entry whose age exceeds [`IDEMPOTENCY_TTL_SECS`] first — bounded exactly as 1.5.5's
     /// `cache.retain(...)` call at each mint/rotate site was.
+    ///
+    /// THE SWEEP DOES NOT TOUCH AN IN-FLIGHT SENTINEL, and the difference is not a detail. The TTL is
+    /// a REPLAY window: it says how long a completed call's response stays available to a retry, and
+    /// forgetting one costs a retry a fresh run of a mutation nobody has run yet. A sentinel answers
+    /// a different question — "is somebody running this right now?" — and forgetting one costs the
+    /// opposite: the next retry is told it is the first, so two live reservations exist for one
+    /// idempotency key, and two mints happen where the whole point of the sentinel was that one
+    /// would. The window is no bound on that answer either; a store gone slow, a rebuild behind a
+    /// config swap or a mint blocked on an unreachable signer all hold an uncancellable path past ten
+    /// minutes, and the longer it is stuck the more retries arrive to be admitted.
+    ///
+    /// A sentinel is bounded by its own [`Reservation`] instead: commit, clear and drop all resolve
+    /// it, so the only ones that outlive their call are the ones deliberately
+    /// [`leak`](Reservation::leak)ed — a mutation handed to a path that cannot be cancelled, which is
+    /// exactly the case that must go on refusing.
     pub fn probe(&self, key: (String, String), now: u64) -> Probe<'_, V> {
         let mut guard = self.slots.lock().unwrap_or_else(|e| e.into_inner());
-        guard.retain(|_, (t, _)| now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
+        guard.retain(|_, (t, v)| v.is_none() || now.saturating_sub(*t) < IDEMPOTENCY_TTL_SECS);
         match guard.get(&key) {
             Some((_, Some(v))) => Probe::Replay(v.clone()),
             Some((_, None)) => Probe::InFlight,
