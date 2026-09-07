@@ -47,16 +47,16 @@ fn both_carriers_correct_still_identifies() {
 fn non_matching_credentials_of_any_shape_never_identify() {
     let h = hash("the-real-admin-token");
     let bad_candidates = [
-        "",                                  // empty string
-        "\0\x01\x02\x7f-random-bytes-ish",   // control-byte garbage (as UTF-8-lossy text)
-        "a.b",                               // JWT-like but missing a segment (2 parts, not 3)
-        "a.b.c.d",                           // too many dot-separated parts
-        "not-a-jwt-at-all-just-plain-text",  // no dots at all
-        "not base64!!! ####",                // garbage, not valid base64
-        "eyJhbGciOiJub25lIn0..",             // JWT-shaped header but empty payload/sig segments
-        "the-real-admin-token-but-longer",   // near-miss, wrong length
-        "the-real-admin-toke",               // near-miss, truncated by one char
-        "the-real-admin-tokfn",              // near-miss, single-byte diff, same length
+        "",                                 // empty string
+        "\0\x01\x02\x7f-random-bytes-ish",  // control-byte garbage (as UTF-8-lossy text)
+        "a.b",                              // JWT-like but missing a segment (2 parts, not 3)
+        "a.b.c.d",                          // too many dot-separated parts
+        "not-a-jwt-at-all-just-plain-text", // no dots at all
+        "not base64!!! ####",               // garbage, not valid base64
+        "eyJhbGciOiJub25lIn0..",            // JWT-shaped header but empty payload/sig segments
+        "the-real-admin-token-but-longer",  // near-miss, wrong length
+        "the-real-admin-toke",              // near-miss, truncated by one char
+        "the-real-admin-tokfn",             // near-miss, single-byte diff, same length
     ];
     for cred in bad_candidates {
         // As the Bearer carrier alone.
