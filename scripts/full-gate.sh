@@ -178,7 +178,23 @@ construction_waiver() {
 # above does not swallow it by prefix.
 RELEASE_ORDER=1
 
-MIN_GATES=8
+# ── THE DISCOVERY FLOORS ARE RATCHETS, NOT TOKENS ────────────────────────────────────────────────
+# These were 8 and 10 against a `ci.yml` that yields 89 script invocations and 22 cargo invocations.
+# A floor eighty-one below the real number is not a floor; it is a value that can never be reached
+# except by a parser that has stopped working almost entirely. The case it exists for — a gate that
+# DISAPPEARS — is the case it could not see: delete every `testing/` invocation and half of
+# `scripts/`, and discovery returns 12, the floor waves it through, and the run prints
+# "12 gates ran, all pass" in the same words it uses for 89. That sentence is what a reader treats
+# as "CI's gates were run here".
+#
+# So the floors sit just under the real counts and move WITH `ci.yml`, in the same commit that
+# changes it. Deleting a gate from CI is now a two-line edit — the workflow and this number — which
+# is the point: a gate leaving the tree should cost somebody a decision, not happen in silence.
+# They are deliberately a few below the exact count so that a NEW gate does not red the runner
+# (a new gate is caught by the fails-closed classification instead, which is the right instrument
+# for it); shrinking is what these numbers are for.
+MIN_GATES=84
+MIN_CARGO_GATES=20
 
 # ── THE CARGO GATES ───────────────────────────────────────────────────────────────────────────────
 # CI's cargo invocations, normalised (spaces collapsed, `--verbose` dropped -- it changes output, not
@@ -355,7 +371,14 @@ mapfile -t DISCOVERED < <(
     | sed 's/^ *//' | sort -u
 )
 
-[ "${#DISCOVERED[@]}" -ge "$MIN_GATES" ] || die "discovered only ${#DISCOVERED[@]} gate invocation(s) in $CI_YML (floor $MIN_GATES). The parser is broken, and a broken discovery reports a clean tree."
+# THE RATCHET APPLIES TO CI, THE STRUCTURAL FLOOR APPLIES TO A FIXTURE. `--dump-gates FILE` points
+# discovery at a small hand-written fixture on purpose; holding that fixture to CI's own count would
+# force it to grow a copy of ci.yml, which is the drift this file exists to refuse. The fixture keeps
+# the original structural floor (it carries eight invocations of its own for exactly that reason) and
+# the real workflow keeps the ratchet.
+gate_floor="$MIN_GATES"
+[ "$CI_YML" = ".github/workflows/ci.yml" ] || gate_floor=8
+[ "${#DISCOVERED[@]}" -ge "$gate_floor" ] || die "discovered only ${#DISCOVERED[@]} gate invocation(s) in $CI_YML (floor $gate_floor). Either the parser is broken -- and a broken discovery reports a clean tree -- or gate invocations were DELETED from ci.yml, in which case lower MIN_GATES in the same commit and say which gate left."
 
 # After the floor, deliberately: `--dump-gates` relaxes nothing.
 if [ "${1:-}" = "--dump-gates" ]; then
@@ -381,6 +404,16 @@ if [ "${1:-}" = "--dump-cargo" ]; then
   printf '%s\n' "${CARGO_DISCOVERED[@]}"
   exit 0
 fi
+
+# AND THE CARGO HALF HAS THE SAME FLOOR, ON THE RUN PATH, WHERE IT DECIDES SOMETHING. It had one
+# only inside `--selftest`, and the run path is where it matters: `CARGO_LOCAL` is a HAND-WRITTEN
+# list that runs whatever discovery finds or fails to find, so a cargo reader that returned nothing
+# leaves CARGO_UNCLASSIFIED empty, nothing refuses, the fourteen hard-coded invocations run anyway,
+# and the run reports "all pass -- across 14 build configurations" while having compared its list
+# against ci.yml not at all. That is the same disease as a gate that disappears, one column over: the
+# check that CI and this file still agree stops happening, silently, and the sentence that announces
+# agreement keeps printing.
+[ "${#CARGO_DISCOVERED[@]}" -ge "$MIN_CARGO_GATES" ] || die "discovered only ${#CARGO_DISCOVERED[@]} cargo invocation(s) in $CI_YML (floor $MIN_CARGO_GATES). CARGO_LOCAL below would still run its own hard-coded list, so a green here would be a green against a list nobody compared with CI. Either the reader is broken, or cargo steps were deleted from ci.yml -- lower MIN_CARGO_GATES in the same commit and say which."
 
 # FAILS CLOSED, exactly as the script's rule does: a cargo invocation in `ci.yml` that is in NEITHER
 # list breaks this script until somebody decides which it is. Silence here is how the openapi and
@@ -493,6 +526,45 @@ if [ "${1:-}" = "--selftest" ]; then
     printf '  [ok]     an empty ci.yml is REFUSED (exit 2), so a broken parser cannot report a clean tree\n'
   fi
 
+  # AND A ci.yml THAT STILL PARSES BUT HAS LOST MOST OF ITS GATES. The empty-file case above proves
+  # only that a reader which finds NOTHING is refused; the case this floor exists for is a workflow
+  # that reads fine and from which gates have been DELETED. With the old floor of 8 against a real
+  # count of 89, eighty-one invocations could go and the runner printed "N gates ran, all pass" in
+  # the same words it prints for the full set. The fixture below is the real ci.yml with all but nine
+  # of its gate invocations struck out — it still parses, still has jobs, still has cargo steps.
+  GUTTED_TMP="$(mktemp -d)"
+  mkdir -p "$GUTTED_TMP/.github/workflows"
+  python3 - "$GUTTED_TMP/.github/workflows/ci.yml" <<'PY'
+import re, sys
+pat = re.compile(r'(scripts|testing)/[a-z0-9/-]+\.(sh|py|mjs)')
+kept, out = 0, []
+for line in open(".github/workflows/ci.yml"):
+    if pat.search(line):
+        kept += 1
+        if kept > 9:
+            line = pat.sub('true', line)
+    out.append(line)
+open(sys.argv[1], "w").writelines(out)
+PY
+  # The path is captured HERE rather than read as `$OLDPWD` inside the subshell: `$OLDPWD` is
+  # whatever directory the CALLER last `cd`ed out of, so a run started from anywhere but a shell
+  # whose previous directory happens to be this repo would point the child at a script that is not
+  # there — and a child that cannot start looks exactly like a child that refused, which is the
+  # answer this cell is checking for. A cell that passes when its subject never ran is the same
+  # false green as everything else in this file.
+  # …and it is THIS script, `$0`, not the one at the well-known path: a cell that always launches
+  # `scripts/full-gate.sh` proves whatever is committed there rather than whatever is being run, so
+  # the floor could be edited down and this cell would still print [ok] off the shipped copy. `$0`
+  # is made absolute because the child runs after a `cd`; the script already refuses to start
+  # anywhere but the repository root, so a relative `$0` is relative to here.
+  case "$0" in /*) GUTTED_SELF="$0" ;; *) GUTTED_SELF="$PWD/$0" ;; esac
+  if ( cd "$GUTTED_TMP" && bash "$GUTTED_SELF" --list >/dev/null 2>&1 ); then
+    printf '  [FAILED] a ci.yml with 80 of its 89 gate invocations DELETED was accepted -- the floor is a token, not a ratchet\n'; bad=1
+  else
+    printf '  [ok]     a ci.yml that lost most of its gate invocations is REFUSED (the floor is a ratchet)\n'
+  fi
+  rm -rf "$GUTTED_TMP"
+
   # Every skip carries a reason, or it becomes permanent by accident.
   for entry in "${SKIP_REASON[@]}"; do
     [ -n "${entry#*|}" ] && [ "${entry#*|}" != "$entry" ] || { printf '  [FAILED] a skip entry carries no reason: %s\n' "$entry"; bad=1; }
@@ -506,7 +578,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # THE CARGO HALF: discovery finds them, every one is classified, and the configurations that have
   # actually broken CI are among the ones that RUN here.
   n=${#CARGO_DISCOVERED[@]}
-  [ "$n" -ge 10 ] && printf '  [ok]     cargo discovery found %d invocations (floor 10)\n' "$n" \
+  [ "$n" -ge "$MIN_CARGO_GATES" ] && printf '  [ok]     cargo discovery found %d invocations (floor %d)\n' "$n" "$MIN_CARGO_GATES" \
     || { printf '  [FAILED] cargo discovery found only %d -- the parser missed CI build configurations\n' "$n"; bad=1; }
 
   if [ "${#CARGO_UNCLASSIFIED[@]}" -eq 0 ]; then
