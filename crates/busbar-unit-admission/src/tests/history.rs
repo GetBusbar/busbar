@@ -390,6 +390,34 @@ fn an_unpriced_lane_sizes_fee_only_and_leaves_the_refusal_where_it_was() {
     assert!(p.model_unpriced("a-model-nobody-priced"));
 }
 
+/// The prices that sized a reservation are consumed and discarded, and the reservation keeps a
+/// QUANTITY of nano-units. Nothing about which card produced it travels on it.
+#[test]
+fn a_hold_carries_a_quantity_of_nano_units_and_no_price_of_record() {
+    let history = History::opening(card_at(10.0, 25), OPENED_AT);
+    let sized = estimate(1_000, 0).size_at_arrival(
+        &history.current(),
+        &ctx(&[LANE], CurrencyCode::USD, OPENED_AT),
+    );
+    let seal = KernelSeal::acquire_for_kernel();
+    let admit: AdmitToken<Admit> = AdmitToken::mint(&seal);
+    let hold = Hold::open(&admit, PrincipalId::new("vk_shape"), sized.nanos());
+
+    // The prices that sized it are consumed and discarded. What the reservation keeps is a
+    // QUANTITY of nano-units, and a card, a history entry or a currency landing on it would make it
+    // a price of record — a second figure that could disagree with the lookup about what a unit
+    // cost, which is the whole thing the design removes.
+    let rendered = format!("{hold:?}");
+    for banned in ["card", "seq", "currency", "rate", "version", "history"] {
+        assert!(
+            !rendered.contains(banned),
+            "a hold named `{banned}`: {rendered}"
+        );
+    }
+    assert!(rendered.contains("reserved"), "it keeps the quantity");
+    settle(hold, &seal);
+}
+
 /// **A HOLD IS A RESERVATION, NOT A PRICE OF RECORD.** An undersized one tops up out of what the
 /// principal's slice still holds and carries whatever nothing can back as an overdraft. The unit
 /// runs to its end either way: there is no arm of a spend that refuses.
