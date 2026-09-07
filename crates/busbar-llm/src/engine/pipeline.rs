@@ -1548,5 +1548,9 @@ mod crossproto_delivery_billing_tests;
 mod send_envelope_tests;
 
 #[cfg(test)]
+#[path = "engine_tests/stream_deadline_tests.rs"]
+mod stream_deadline_tests;
+
+#[cfg(test)]
 #[path = "engine_tests/future_size_probe.rs"]
 mod future_size_probe;

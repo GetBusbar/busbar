@@ -15,8 +15,8 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 100,
-  "unproven": 2,
+  "mapped": 101,
+  "unproven": 1,
   "unmapped": 0,
   "gap": 2,
   "checks_by_kind": {
@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 57,
    "oracle-family": 5,
-   "test": 435
+   "test": 439
   }
  },
  "owner_decisions": {
@@ -2402,28 +2402,42 @@
   {
    "id": "PB-48",
    "surface": "stall sweep on `http`/`sse`",
-   "binding": "the `max_unit_duration` sweep alarms only; the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL reqwest deadline (default 300 s, `main.rs:3179-3181`); there is no idle timer",
+   "binding": "the `max_unit_duration` sweep alarms only (`busbar-kernel/src/tick.rs:141`, `Sweep::AlarmOnly`, which `sweep_outcome`/`sweep_settle` end nothing on); the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL deadline (default 300 s, `busbar-substrate/src/config/limits.rs:22`), armed once at send start and covering head and body (`busbar-llm/src/engine/attempt/send.rs:63-76`; at the tag this was reqwest's client-level total timeout, re-provided at the call site by the owned-client cutover); there is no idle timer",
    "inventory": "proxy-hooks, ops",
-   "note": "max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: max_unit_duration DOES exist -- it is the fourth parameter of `sweep()` at crates/busbar-kernel/src/tick.rs:141, and Sweep::AlarmOnly is the verdict it returns when the protocol declares no idle bound. The old note was wrong on the fact and the row was carried unproven on it. The sweep half is compared by crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, which drives sweep() past max_unit_duration with idle_bound_applies false, gets AlarmOnly, and shows sweep_settle takes no hold and ends no unit on it; nothing in crates/ calls sweep() on a production path at all, so the alarm is the most that can happen. The stream half is compared on the SHIPPED proxy path by crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier: the same black-holed upstream is cut at 7 s under one configuration and at 23 s under another, so the timer that fires is the operator's total deadline and no idle timer exists to fire first. The binding's `main.rs:3179-3181` anchor was dead and is amended in Appendix B to busbar-substrate/src/config/limits.rs:22 and busbar-llm/src/engine/attempt/send.rs:63-76.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "a_slow_unit_is_not_a_lost_one",
+     "ref": "crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one",
      "proves": "the max_unit_duration sweep on a protocol with no idle bound returns AlarmOnly, and settling an AlarmOnly verdict takes no hold and ends no unit; the kernel half of the binding (the total egress deadline is the engine's)",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_lost_task_is_settled_within_one_tick",
+     "ref": "crates/busbar-kernel/tests/recovery_and_ticks.rs::a_lost_task_is_settled_within_one_tick",
      "proves": "the sweep ends a unit only when the drop guard MARKED it, never merely for being silent",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier",
+     "proves": "the stream half of the binding on the SHIPPED proxy path: one black-holed upstream, two configurations of limits.upstream_request_timeout_secs, cut at exactly 7 s under one and exactly 23 s under the other. The timer that fires is the operator's total deadline (it tracks a number it would not know if it were a floor, a default or an interval of the runtime's own), and there is no idle timer, since the upstream is silent from the first instant and anything counting that silence would fire at the same moment in both runs",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::the_total_deadline_the_stream_rides_defaults_to_five_minutes",
+     "proves": "the deadline the binding names defaults to the 300 s it names",
      "source": "hand",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true."
+   "verdict": "PASS",
+   "verdict_detail": "test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_slow_unit_is_not_a_lost_one, test:crates/busbar-kernel/tests/recovery_and_ticks.rs::a_lost_task_is_settled_within_one_tick, test:crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier, test:crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::the_total_deadline_the_stream_rides_defaults_to_five_minutes"
   },
   {
    "id": "PB-49",
