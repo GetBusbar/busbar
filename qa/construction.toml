@@ -1111,9 +1111,16 @@ about EXISTENCE only: whether the rule would still fire at a site that IS there 
 rule's judgement, and this one does not second-guess it. Every waiver table in the file is walked, \
 including ones added after this rule was written."""
 # List-valued waivers whose entries are repo paths (`path`, `path::symbol` or `dir/`).
-waiver_list_keys = ["known_sites", "confined_to_paths", "exempt_files"]
+# `known_bare` is the assertion-free-tests worklist: eighteen `path::test_name` entries, every one
+# of them a waiver, and it was not on this list.
+waiver_list_keys = ["known_sites", "known_bare", "confined_to_paths", "exempt_files"]
 # Table-valued waivers whose KEYS are repo paths.
 waiver_table_keys = ["allowlist"]
+# Waivers written as a TABLE PER SITE, whose path is a value under one of these field names rather
+# than a list entry or a table key. `[rules.no-test-doubles-in-production.known_sites.<name>]` is
+# that shape -- `file = "crates/…"` beside `symbol`, `verdict` and `because` -- and the walk used to
+# descend straight past it, leaving every reviewed stand-in site unwatched.
+waiver_field_keys = ["file"]
 max_unused = 0
 
 # ── 33. assertion-free-tests ─────────────────────────────────────────────────────────────────────

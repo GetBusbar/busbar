@@ -143,12 +143,23 @@ def _waiver_paths(cfg):
     """Every repo path any waiver in the ceilings file names, as (where, path).
 
     Walks the whole configuration rather than a list of known rules, because the point of the rule
-    is that a waiver added tomorrow is watched too. Two shapes are read: a LIST under one of the
-    waiver key names (`known_sites`, `confined_to_paths`, `exempt_files`), and a TABLE whose KEYS
-    are paths (the per-file allow-lists). A string that does not look like a repo path — a crate
-    name, a symbol, a prose scope — is not a path and is left alone."""
-    keys = set(cfg["rules"]["unused-waiver"]["waiver_list_keys"])
-    tables = set(cfg["rules"]["unused-waiver"]["waiver_table_keys"])
+    is that a waiver added tomorrow is watched too. THREE shapes are read: a LIST under one of the
+    waiver key names (`known_sites`, `known_bare`, `confined_to_paths`, `exempt_files`), a TABLE
+    whose KEYS are paths (the per-file allow-lists), and a SCALAR under one of the waiver field
+    names (`file`), which is how a waiver written as a table-per-site spells the path it excuses.
+    A string that does not look like a repo path — a crate name, a symbol, a prose scope — is not a
+    path and is left alone.
+
+    THE THIRD SHAPE WAS THE HOLE. `[rules.no-test-doubles-in-production.known_sites.<name>]` is a
+    table whose path is a VALUE under `file`, not a list entry and not a key, so the walk descended
+    past it and every one of those reviewed sites was unwatched. So was `known_bare`, an
+    eighteen-entry per-test waiver that was simply not on the key list. Both are exactly what this
+    rule's own reason describes: an entry that goes on looking like it is watching a site that is
+    not there any more, while the file comes back under a name it no longer matches."""
+    c = cfg["rules"]["unused-waiver"]
+    keys = set(c["waiver_list_keys"])
+    tables = set(c["waiver_table_keys"])
+    fields = set(c.get("waiver_field_keys", []))
     out = []
 
     def looks_like_a_path(s):
@@ -166,6 +177,9 @@ def _waiver_paths(cfg):
                     for entry in v:
                         if looks_like_a_path(entry):
                             out.append((here, entry))
+                elif k in fields and isinstance(v, str):
+                    if looks_like_a_path(v):
+                        out.append((here, v))
                 else:
                     walk(v, here)
 
