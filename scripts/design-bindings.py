@@ -677,7 +677,22 @@ NOTES: dict[str, str] = {
     "PB-8": "The mapped tests cover the deadline, context_max exclusion and attempt caps; route_deadline_tests.rs pins DETAIL_REQUEST_TIMEOUT on the pre-attempt check and the pick_among None path landing on on_exhausted (503 overloaded + Retry-After); max_unit_duration does not exist yet.",
     "PB-66": "CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.",
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
-    "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
+    "PB-58": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs "
+             "declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six "
+             "times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a "
+             "Decision::refuse at StepName::Admit. The row was carried unproven on a note that was "
+             "wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT "
+             "OCCUR, which no behavioural test can settle, so it is settled on the shipped "
+             "VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of "
+             "reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and "
+             "contains no money reason; the set it constructs inside `Refusal::new` contains "
+             "OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a "
+             "door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named "
+             "in one production file, the module defining the rule, so no shipped path branches on "
+             "the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The "
+             "behavioural half is where the behaviour is: admit.rs's "
+             "over_budget_refuses_with_no_charge_and_nothing_to_refund and meter.rs's "
+             "a_spend_past_the_reservation_is_carried_out_as_an_overdraft.",
     "PB-61": "Resolved 2026-09-06: MAX_NEEDMORE_FRAMES is crates/busbar-contract/src/bounded.rs:41 and "
              "the pump reads it at crates/busbar-kernel/src/pump.rs:128, where the run of consecutive "
              "\"not yet\" answers is kept ON THE SESSION SLOT -- so `Scheduler::ask_again(None)` is the "
@@ -706,10 +721,6 @@ NOTES: dict[str, str] = {
 # some other subsystem happens to bear a matching name is the instrument lying. These are forced to
 # `unproven` and the note is the reason printed in the ledger's detail column.
 UNPROVEN_BY_NOTE: dict[str, str] = {
-    "PB-58": "the note on this row says OverBudget, OverdraftCeiling and StaleSlice do not exist in "
-             "crates/ and calls the binding vacuously true and untested. The four tests it cites are "
-             "admission-unit tests of the overdraft rule, which is a different subsystem from the "
-             "sealed-bucket refusal this binding is about. Nothing was compared.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────

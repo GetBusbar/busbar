@@ -15,8 +15,8 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 101,
-  "unproven": 1,
+  "mapped": 102,
+  "unproven": 0,
   "unmapped": 0,
   "gap": 2,
   "checks_by_kind": {
@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 57,
    "oracle-family": 5,
-   "test": 439
+   "test": 448
   }
  },
  "owner_decisions": {
@@ -2775,40 +2775,75 @@
    "surface": "admitted units and money",
    "binding": "on every 1.5.5-shaped deployment an ADMITTED `http`/`sse` unit is never ended for money: no `Aborted(Kernel { OverBudget })`, no `Aborted(Kernel { OverdraftCeiling })`; the overdraft ceiling is unbounded (flag-only) on every Migration-sealed bucket; `OverdraftCeiling` and `StaleSlice` are never refusal reasons on a 1.5.5 config; token overshoot is bounded only by the in-flight admitted requests, exactly as at the tag",
    "inventory": "governance; proxy-hooks",
-   "note": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: all three reason codes DO exist -- crates/busbar-caps/src/decision.rs declares OverBudget, OverdraftCeiling and StaleSlice, and OverBudget is constructed six times in production, once at crates/busbar-llm/src/unit/admit.rs:203 as a Decision::refuse at StepName::Admit. The row was carried unproven on a note that was wrong on the fact. Every clause of this binding is a claim that a SHAPE DOES NOT OCCUR, which no behavioural test can settle, so it is settled on the shipped VOCABULARY by crates/busbar/tests/money_never_ends_an_admitted_unit.rs: the set of reasons the tree constructs inside `Abort::Kernel` is exactly {ClientGone, Drain} and contains no money reason; the set it constructs inside `Refusal::new` contains OverBudget (the non-vacuity, and the binding's positive half -- money refuses at a door) and neither OverdraftCeiling nor StaleSlice; and `Overdraft::Ceiling` is named in one production file, the module defining the rule, so no shipped path branches on the ceiling and KernelVerb::SetOverdraftCeiling carries no payload -- flag-only. The behavioural half is where the behaviour is: admit.rs's over_budget_refuses_with_no_charge_and_nothing_to_refund and meter.rs's a_spend_past_the_reservation_is_carried_out_as_an_overdraft.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "running_past_the_reservation_posts_the_overdraft_rather_than_refusing",
+     "ref": "crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing",
      "proves": "an admitted unit that spends past its reservation runs to its end and posts the full amount flagged Overdraft; the loop has no path that ends an admitted unit for money",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "running_out_mid_unit_carries_rather_than_refusing",
+     "ref": "crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing",
      "proves": "the overdraft rule below the ceiling is continue-and-carry, and a total window is continue-with-no-carry; neither refuses",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "only_the_dimensions_that_accrue_mid_unit_can_overdraw",
+     "ref": "crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw",
      "proves": "requests and concurrency are decided at the door, so only nano-units and class quantities can end a unit owing anything",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "the_leases_go_back_on_every_end_whatever_it_was",
+     "ref": "crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was",
      "proves": "the exit path releases the unit's concurrency leases on every end, so no admitted unit is held open by an accounting failure",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason",
+     "proves": "the set of reasons the production tree constructs inside Abort::Kernel is exactly {ClientGone, Drain}: there is no Aborted(Kernel { OverBudget }) and no Aborted(Kernel { OverdraftCeiling }) to be had, and a third abort added tomorrow is named by this scan rather than going unnoticed",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with",
+     "proves": "the set of reasons the production tree constructs inside Refusal::new contains OverBudget -- money refuses at a door, which is the binding's positive half and the scan's non-vacuity -- and contains neither OverdraftCeiling nor StaleSlice",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on",
+     "proves": "Overdraft::Ceiling is named in exactly one production file, the module that defines the rule, so no shipped path branches on the ceiling; and KernelVerb::SetOverdraftCeiling carries no payload anywhere in the tree -- unbounded and flag-only, as the binding says",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/unit/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund",
+     "proves": "the behavioural half on the http/sse plane's own admission path: an over-budget request is a Decision::refuse at StepName::Admit carrying ReasonCode::OverBudget, charging nothing and leaving the ledger untouched -- a door, not an end",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-llm/src/unit/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft",
+     "proves": "the same plane's ADMITTED unit that spends past its reservation carries the excess out as an overdraft on the hold rather than being ended for it",
      "source": "hand",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested."
+   "verdict": "PASS",
+   "verdict_detail": "test:crates/busbar-kernel/tests/loop_battery.rs::running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::running_out_mid_unit_carries_rather_than_refusing, test:crates/busbar-kernel/tests/slices_and_leases.rs::only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:crates/busbar-kernel/tests/loop_battery.rs::the_leases_go_back_on_every_end_whatever_it_was, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::no_abort_the_shipped_kernel_can_raise_carries_a_money_reason, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::overdraft_ceiling_and_stale_slice_are_refusal_reasons_nothing_refuses_with, test:crates/busbar/tests/money_never_ends_an_admitted_unit.rs::the_overdraft_ceiling_is_a_verdict_no_shipped_path_branches_on, test:crates/busbar-llm/src/unit/admit.rs::over_budget_refuses_with_no_charge_and_nothing_to_refund, test:crates/busbar-llm/src/unit/meter.rs::a_spend_past_the_reservation_is_carried_out_as_an_overdraft"
   },
   {
    "id": "PB-59",
