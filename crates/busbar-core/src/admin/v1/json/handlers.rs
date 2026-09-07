@@ -595,7 +595,12 @@ pub(crate) async fn get_admin_auth(State(handle): State<Arc<AppHandle>>) -> Resp
 /// `GET /api/v1/admin/usage` — the fleet METERING read: current UTC-day bucket, raw token split
 /// per (model, provider) and per key + derived spend_micros (see the service/contract docs).
 /// `?window=<bucket-start-epoch>` selects a PAST UTC-day bucket (default: current). The response
-/// is ALWAYS one bucket — the pinned shape (see the contract doc).
+/// is ALWAYS one bucket — the pinned shape (see the contract doc). `?as_of=<history_seq>` cuts the
+/// figures at a rate-card history snapshot (default: the head) and the body echoes it, so a
+/// statement is regenerable from the snapshot printed on it. Both are parsed here and refused here
+/// — a query parameter this endpoint does not understand has never been silently ignored, and
+/// `as_of` least of all: ignoring it would answer a question about one snapshot with the figures of
+/// another and say nothing about having done so.
 pub(crate) async fn get_usage(
     State(handle): State<Arc<AppHandle>>,
     Query(q): Query<std::collections::HashMap<String, String>>,
@@ -611,7 +616,21 @@ pub(crate) async fn get_usage(
             }
         },
     };
-    respond(StatusCode::OK, service(&handle).get_usage(window).await)
+    let as_of = match q.get("as_of") {
+        None => None,
+        Some(v) => match v.parse::<u64>() {
+            Ok(s) => Some(s),
+            Err(_) => {
+                return err_json(&AdminError::Validation(
+                    "invalid `as_of`: expected a rate-card history sequence number".into(),
+                ))
+            }
+        },
+    };
+    respond(
+        StatusCode::OK,
+        service(&handle).get_usage(window, as_of).await,
+    )
 }
 
 /// `GET /api/v1/admin/config` — the effective running config snapshot (redacted; no secrets;
