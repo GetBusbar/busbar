@@ -11,6 +11,9 @@ use rustls::pki_types::pem::PemObject;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer};
 use std::sync::Arc as StdArc;
 
+/// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
+mod mutation_hardening;
+
 struct FixtureSeal;
 impl KernelSeal for FixtureSeal {
     fn seal_origin(&self) -> &'static str {
@@ -272,7 +275,14 @@ async fn half_close_and_cancel_mid_frame() {
     // clean end-of-stream is what the peer should see; the error arm stays because the alert goes
     // out on a task and this cell does not order itself against it. Either shape ends the stream
     // with no further data, which is this cell's point — the alert has a cell of its own.
-    match frames.next().await {
+    //
+    // Bounded: a `close` that never sends the peer anything and never drops the socket leaves this
+    // read parked on a peer that will never write again, which must fail fast rather than hang the
+    // suite.
+    match tokio::time::timeout(std::time::Duration::from_secs(3), frames.next())
+        .await
+        .expect("a closed connection's peer must see the close promptly")
+    {
         None => {}
         Some(Err(_)) => {}
         Some(Ok(_)) => panic!("no further data should arrive after the client closed"),
