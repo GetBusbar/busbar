@@ -632,6 +632,50 @@ else
   say FAIL "editing replay.sh did not move the harness revision (before=${hr_before:0:12} after=${hr_after:0:12} restored=${hr_restored:0:12})"
 fi
 
+# (ac) renormalize.sh IS FAITHFUL TO THE RECORDER'S CALL SITE, OR IT REFUSES. It rewrites a
+# recording's normalized cells IN PLACE — over the tracked golden — and its own header claims the
+# cell's `keep`/`body_lines` spec is "passed exactly as record.sh passes it". record.sh has FOUR
+# normalize.py invocations, not one, and they differ: an http cell gets --key-id and both keep
+# flags, an exec cell gets the keep flags and no --key-id, a concurrent cell gets --key-id alone,
+# and a script cell gets nothing at all. Passing all three uniformly means a `keep` on a script cell
+# is applied here and never was by the recorder — the golden silently becomes a cell no recording
+# ever produced, and the harness_rev re-stamp makes the rewrite look like an honest re-derivation.
+# No script or concurrent cell declares a spec TODAY, so that was faithful by luck; this case is the
+# rule. It drives the REAL renormalize.sh against a fixture corpus that gives a script cell a
+# `keep`, and requires a refusal that names the cell.
+rn="$W/renorm"; mkdir -p "$rn/raw/self__s__script" "$rn/cells"
+printf '{"status":0,"headers":{},"body":"{\\"ok\\":true}","effects":{"survived":"yes"}}' \
+  >"$rn/raw/self__s__script/captured.json"
+printf '{"status":0}' >"$rn/cells/self__s__script.json"
+printf '{"harness_rev":"x","version":"busbar 1.5.5"}' >"$rn/meta.json"
+cat >"$W/renorm-cells.json" <<'JSON'
+{"cells":[{"id":"self|s|script","driver":"script","keep":{"headers":["date"]}}]}
+JSON
+cp -R "$rn" "$rn-before"
+if bash "${here}/renormalize.sh" --cells "$W/renorm-cells.json" "$rn" >"$W/renorm.log" 2>&1; then
+  say FAIL "renormalize.sh applied a script cell's keep spec that record.sh never passes, and exited 0"
+else
+  if grep -q 'self|s|script' "$W/renorm.log" && grep -q 'record.sh:825' "$W/renorm.log" \
+     && cmp -s "$rn-before/cells/self__s__script.json" "$rn/cells/self__s__script.json"; then
+    say PASS "renormalize.sh refuses a cell whose spec record.sh's own call site would not have passed, and leaves the cell untouched"
+  else
+    say FAIL "renormalize.sh refused but did not name the cell/call site, or rewrote the cell anyway: $(tail -2 "$W/renorm.log")"
+  fi
+fi
+# …and the faithful case still re-normalizes: the refusal must not be a blanket.
+rn2="$W/renorm-ok"; mkdir -p "$rn2/raw/self__h__http" "$rn2/cells"
+printf '{"status":200,"headers":{"Date":"x"},"body":"{\\"ok\\":true}","effects":{}}' \
+  >"$rn2/raw/self__h__http/captured.json"
+printf '{"status":200}' >"$rn2/cells/self__h__http.json"
+printf '{"harness_rev":"x","version":"busbar 1.5.5"}' >"$rn2/meta.json"
+printf '{"cells":[{"id":"self|h|http","driver":"http"}]}' >"$W/renorm-cells-ok.json"
+if bash "${here}/renormalize.sh" --cells "$W/renorm-cells-ok.json" "$rn2" >"$W/renorm-ok.log" 2>&1 \
+   && grep -q '"status":200' "$rn2/cells/self__h__http.json"; then
+  say PASS "renormalize.sh still re-normalizes a cell whose driver matches its spec (the refusal is not a blanket)"
+else
+  say FAIL "renormalize.sh refused a faithful http cell: $(tail -2 "$W/renorm-ok.log")"
+fi
+
 # (y) THE HARNESS REVISION MUST COVER EVERY FILE THAT DECIDES A RECORDING OR A VERDICT. harness_rev
 # is the ONE fact that lets diff-cells refuse a golden and a candidate made under different rules,
 # and four files that decide exactly that were outside it: testing/fleet-fixtures/lib.sh (record.sh
