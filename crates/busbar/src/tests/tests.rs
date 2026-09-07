@@ -460,3 +460,242 @@ fn the_governed_call_port_reads_only_the_nodes_open_call_table() {
         );
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// A PLANE-GATED MODULE IS NAMED ONLY FROM CODE UNDER THE SAME GATE
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The features a `#[cfg(feature = "…")]` attribute names, or nothing if it is not a `cfg` gate.
+///
+/// `cfg_attr` is deliberately NOT a gate: it decorates code that compiles either way, so a feature
+/// named inside one says nothing about whether the line it sits over is compiled.
+fn cfg_gate_features(attr: &str) -> Vec<String> {
+    if !attr.starts_with("#[cfg(") && !attr.starts_with("#![cfg(") {
+        return Vec::new();
+    }
+    const KEY: &str = "feature = \"";
+    let mut out = Vec::new();
+    let mut rest = attr;
+    while let Some(at) = rest.find(KEY) {
+        rest = &rest[at + KEY.len()..];
+        let Some(end) = rest.find('"') else { break };
+        out.push(rest[..end].to_string());
+        rest = &rest[end..];
+    }
+    out
+}
+
+/// The net `{`/`(`/`[` minus `}`/`)`/`]` of a line, ignoring what is inside a string literal.
+fn bracket_delta(code: &str) -> i32 {
+    let mut delta = 0;
+    let mut in_str = false;
+    let mut escaped = false;
+    for c in code.chars() {
+        if in_str {
+            match c {
+                _ if escaped => escaped = false,
+                '\\' => escaped = true,
+                '"' => in_str = false,
+                _ => {}
+            }
+            continue;
+        }
+        match c {
+            '"' => in_str = true,
+            '{' | '(' | '[' => delta += 1,
+            '}' | ')' | ']' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
+}
+
+/// The gate every line of a source file is compiled under, as the features named by the `#[cfg(…)]`
+/// attributes covering it. `base` is the file's OWN gate — the one its `pub mod` declaration
+/// carries — which covers every line in it.
+///
+/// A LEXICAL READING, not a parse. Bracket depth is what closes a region: an attribute attaches to
+/// the item that follows it, and that item ends at the first point where depth is back where it
+/// started and the line closes with `;`, `,` or `}`. That covers the shapes the root actually
+/// writes — a gated field, a gated parameter, a gated `fn`, a gated `use`, and a gated `if` inside
+/// an ungated one — and anything it reads wrongly fails as a false ALARM, which someone reads,
+/// rather than a false all-clear, which nobody does.
+fn gate_by_line(src: &str, base: &[String]) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    // Regions still open, as (the depth the region closes back to, the features gating it).
+    let mut open: Vec<(i32, Vec<String>)> = Vec::new();
+    // The attributes read since the last code line, waiting for the item they attach to.
+    let mut pending: Vec<String> = Vec::new();
+    // A `#[cfg(all(\n  feature = "…",\n))]` spread over lines, held until its brackets balance.
+    let mut attr_buf = String::new();
+    let mut depth: i32 = 0;
+    for raw in src.lines() {
+        let mut active: Vec<String> = base.to_vec();
+        for (_, feats) in &open {
+            active.extend(feats.iter().cloned());
+        }
+        let code = raw.split("//").next().unwrap_or("").trim().to_string();
+        if !attr_buf.is_empty() {
+            attr_buf.push_str(&code);
+            if bracket_delta(&attr_buf) == 0 {
+                pending.extend(cfg_gate_features(&attr_buf));
+                attr_buf.clear();
+            }
+            active.extend(pending.iter().cloned());
+            out.push(active);
+            continue;
+        }
+        let attribute = code.starts_with("#[") || code.starts_with("#![");
+        if attribute && bracket_delta(&code) != 0 {
+            attr_buf = code;
+            active.extend(pending.iter().cloned());
+            out.push(active);
+            continue;
+        }
+        if attribute && code.ends_with(']') {
+            pending.extend(cfg_gate_features(&code));
+            active.extend(pending.iter().cloned());
+            out.push(active);
+            continue;
+        }
+        if attribute {
+            // `#[cfg(…)] field: Ty,` — the gate and the code it gates on one line.
+            let head = code.find(']').map_or("", |at| &code[..=at]);
+            pending.extend(cfg_gate_features(head));
+        }
+        active.extend(pending.iter().cloned());
+        out.push(active);
+        if code.is_empty() {
+            continue;
+        }
+        // A code line: whatever was pending gates the item it opens, until that item ends.
+        let start = depth;
+        depth += bracket_delta(&code);
+        let closes = code.ends_with(';') || code.ends_with(',') || code.ends_with('}');
+        if !pending.is_empty() && !(depth <= start && closes) {
+            open.push((start, std::mem::take(&mut pending)));
+        }
+        pending.clear();
+        while let Some((closes_at, _)) = open.last() {
+            if depth <= *closes_at && closes {
+                open.pop();
+            } else {
+                break;
+            }
+        }
+    }
+    out
+}
+
+/// Every `.rs` file under `dir`, test files excluded — a test naming a plane's module is compiled
+/// under its own `#[cfg(test)]` gate and is not the shipped path this invariant is about.
+fn source_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for entry in std::fs::read_dir(dir).expect("the crate's own source tree is readable") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.is_dir() {
+            if path.file_name().is_none_or(|n| n != "tests") {
+                source_files(&path, out);
+            }
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && path.file_name().is_some_and(|n| n != "tests.rs")
+        {
+            out.push(path);
+        }
+    }
+}
+
+/// A ROOT MODULE GATED ON A PLANE'S FEATURE IS NAMED ONLY FROM CODE UNDER THE SAME FEATURE.
+///
+/// The point of gating `units_<plane>` on `root-<plane>` is that the plane is DELETABLE: a build
+/// without the feature must still compile, boot and serve the remaining planes. One unconditional
+/// call into a gated module takes that away, and takes it away SILENTLY — every default build is
+/// green, and only the deletion gates, which are not what a change is usually run against, go red.
+/// That is exactly how a root whose rate card was built through the LLM plane's unit file shipped:
+/// the card is the root's, every plane's exit prices against it, and no build without that one
+/// plane could compile it.
+///
+/// So the rule is read off the source rather than trusted, and nothing here spells a plane: the
+/// gated module names and their features come from `root/mod.rs` itself, and every line in this
+/// crate that names one must be compiled under a `#[cfg]` carrying the same feature — from the
+/// file's own declaration or from an attribute over the line.
+#[test]
+fn a_plane_gated_module_is_named_only_from_code_under_the_same_feature() {
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let root_mod = std::fs::read_to_string(src.join("root/mod.rs"))
+        .expect("the composition root's own module file is where the gates are declared");
+
+    // (module name, the single feature its declaration is gated on).
+    let mut gated: Vec<(String, String)> = Vec::new();
+    let lines: Vec<&str> = root_mod.lines().collect();
+    for (i, line) in lines.iter().enumerate() {
+        let feats = cfg_gate_features(line.trim());
+        let [feature] = feats.as_slice() else {
+            continue;
+        };
+        let Some(decl) = lines.get(i + 1).map(|l| l.trim()) else {
+            continue;
+        };
+        let Some(name) = decl
+            .strip_prefix("pub mod ")
+            .or_else(|| decl.strip_prefix("mod "))
+            .and_then(|rest| rest.strip_suffix(';'))
+        else {
+            continue;
+        };
+        gated.push((name.to_string(), feature.clone()));
+    }
+    assert!(
+        gated.len() >= 4,
+        "the root declares one feature-gated module per switched plane, or this test is reading \
+         the wrong file: found {gated:?}"
+    );
+
+    let mut files = Vec::new();
+    source_files(&src, &mut files);
+    assert!(
+        files.len() > 10,
+        "the crate's source tree is more than {} files, or this test is walking the wrong one",
+        files.len()
+    );
+
+    let mut escapes: Vec<String> = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).expect("a source file this test just listed");
+        // The file's OWN gate: a gated module's whole body compiles under its feature, so a reach
+        // between two files of the same plane is not an escape.
+        let stem = file
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let parent = file
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let base: Vec<String> = gated
+            .iter()
+            .filter(|(name, _)| name == stem || name == parent)
+            .map(|(_, feature)| feature.clone())
+            .collect();
+        let gate = gate_by_line(&text, &base);
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or("");
+            for (name, feature) in &gated {
+                if !code.contains(&format!("{name}::")) || gate[i].iter().any(|f| f == feature) {
+                    continue;
+                }
+                let at = file.strip_prefix(&src).unwrap_or(file).display();
+                escapes.push(format!(
+                    "{at}:{}: names `{name}::` with no `{feature}` gate over it",
+                    i + 1
+                ));
+            }
+        }
+    }
+    assert!(
+        escapes.is_empty(),
+        "a plane's module is reached from code that compiles without that plane — the build \
+         without the feature cannot compile, and only the deletion gates would say so:\n  {}",
+        escapes.join("\n  ")
+    );
+}
