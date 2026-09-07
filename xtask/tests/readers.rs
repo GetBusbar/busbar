@@ -188,6 +188,86 @@ fn sha256_streams_the_same_digest_it_computes_in_one_shot() {
     );
 }
 
+// -------------------------------------------------------------------------------------------
+// discovery — the four exclusions and the one word boundary that make it a discovery, not a grep
+// -------------------------------------------------------------------------------------------
+
+use xtask::discovery;
+
+#[test]
+fn discovery_ignores_commands_quoted_in_prose() {
+    let yml = "\
+jobs:
+  a:
+    steps:
+      # scripts/in-a-comment.sh
+      - name: scripts/in-a-label.sh
+        run: |
+          scripts/real.sh --check
+          echo \"scripts/echoed.sh\"
+";
+    let found = discovery::script_gates(yml);
+
+    // THE COMMENT AND THE `name:` LABEL ARE NOT DISCOVERED. Those are the two exclusions the
+    // continuation fixture asserts, and they are the difference between a discovery and a grep.
+    assert!(!found.iter().any(|f| f.contains("in-a-comment")));
+    assert!(!found.iter().any(|f| f.contains("in-a-label")));
+    assert!(found.iter().any(|f| f == "scripts/real.sh --check"));
+
+    // AN ASYMMETRY, PINNED RATHER THAN QUIETLY REPAIRED: the SCRIPT half does not drop `echo`
+    // lines, only the CARGO half does. That is what `full-gate.sh` does, and the two discoveries
+    // agree invocation-for-invocation over the real `ci.yml` (67 each) precisely because this port
+    // reproduces it. Changing it here would break that parity claim while fixing nothing that
+    // occurs — no workflow line echoes a script path today. If one ever does, this test is where
+    // the decision gets made, with the diff in front of whoever makes it.
+    assert!(
+        found.iter().any(|f| f == "scripts/echoed.sh"),
+        "the script half's `echo` blindness is a known, non-triggering difference from the cargo \
+         half; it is pinned here so a change to it is deliberate"
+    );
+}
+
+#[test]
+fn the_word_boundary_after_the_extension_stops_a_tsv_becoming_a_gate() {
+    // Without `\b` the `ts` alternative matches inside `spec-digests.tsv` and discovery invents a
+    // gate out of a data file — which then fails closed and blocks every local run.
+    assert!(discovery::script_gates("        run: cat testing/spec-digests.tsv").is_empty());
+    assert!(discovery::script_gates("        run: cat scripts/golden-digests.tsv").is_empty());
+    assert_eq!(
+        discovery::script_gates("        run: node scripts/a.mjs"),
+        vec!["node scripts/a.mjs"]
+    );
+}
+
+#[test]
+fn cargo_norm_drops_the_redirect_and_its_target_but_keeps_quoted_arguments() {
+    assert_eq!(
+        discovery::cargo_norm("cargo test --workspace  2>&1 --verbose > /tmp/log"),
+        "cargo test --workspace"
+    );
+    assert_eq!(
+        discovery::cargo_norm("cargo build --features \"$FEATS\" --locked"),
+        "cargo build --features \"$FEATS\" --locked",
+        "cutting at the quote used to leave a dangling `--features` that classified as nothing"
+    );
+}
+
+#[test]
+fn only_the_gate_form_of_cargo_xtask_counts_as_a_gate_name() {
+    // `cargo xtask ledger` and `cargo xtask teller-steps` are SUBCOMMANDS. Counting them would make
+    // the registry set-equality demand a registration for something that was never a gate.
+    let yml = "\
+jobs:
+  a:
+    steps:
+      - run: |
+          cargo xtask gate tracing --selftest
+          cargo xtask ledger --check
+          cargo xtask teller-steps --root-legs
+";
+    assert_eq!(discovery::xtask_gate_names(yml), vec!["tracing"]);
+}
+
 #[test]
 fn py_repr_matches_pythons_percent_r_for_the_values_the_gates_print() {
     assert_eq!(json_lite::py_repr("passed"), "'passed'");

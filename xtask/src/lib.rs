@@ -23,6 +23,8 @@ pub mod audit_cmd;
 pub mod cli;
 pub mod ctx;
 pub mod denylist;
+pub mod discovery;
+pub mod full_gate;
 pub mod gates;
 pub mod gitp;
 pub mod json_lite;

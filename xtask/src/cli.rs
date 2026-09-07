@@ -21,7 +21,8 @@ usage:
   cargo xtask selftest [<name>]
   cargo xtask denylist [--selftest] [--format=tsv]
   cargo xtask teller-steps [--root-legs] [--root-legs-gating]
-  cargo xtask ledger {sync|status|next|record|fixed} | --check";
+  cargo xtask ledger {sync|status|next|record|fixed} | --check
+  cargo xtask full-gate [--list] [--selftest] [--dump-gates|--dump-cargo [FILE]]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -41,6 +42,12 @@ pub fn main(args: &[String]) -> i32 {
         // THE AUDIT REGISTER's commands. `cargo xtask gate audit-ledger` is `--check` as a
         // reconciled row set; this is the same computation plus the four commands that WRITE the
         // register (`sync`/`record`/`fixed`) or the report (`status`), which a gate must not do.
+        // RUN LOCALLY WHAT CI RUNS. Not a gate: it is the runner that discovers and drives the
+        // gates, so it has no owed row set of its own and nothing reconciles it.
+        Some("full-gate") => match open_ctx() {
+            Ok(cx) => crate::full_gate::main(&cx, &args[1..]),
+            Err(code) => code,
+        },
         Some("ledger") => match open_ctx() {
             Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
             Err(code) => code,

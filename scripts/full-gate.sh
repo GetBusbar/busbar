@@ -218,7 +218,7 @@ die() { printf 'full-gate: %s\n' "$*" >&2; exit 2; }
 #     same category as a `#` comment or a step `name:`, and none of the three is a gate.
 #
 # Shell comment lines inside a step are dropped here; the `#`/`name:` stripping downstream handles the
-# YAML level. `scripts/fixtures/full-gate/continuation-ci.yml` holds all four shapes and the selftest
+# YAML level. `xtask/fixtures/full-gate/continuation-ci.yml` holds all four shapes and the selftest
 # asserts on what discovery makes of them.
 ci_logical_lines() {
   awk '
@@ -420,7 +420,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # absent from both lists while the final "N gates, M skipped" line counts confidently past it. The
   # fixture carries one planted `testing/planted/gate.sh` invocation; against the old pattern,
   # `--dump-gates` on that fixture returns it nowhere.
-  PLANTED_FIXTURE="scripts/fixtures/full-gate/continuation-ci.yml"
+  PLANTED_FIXTURE="xtask/fixtures/full-gate/continuation-ci.yml"
   if [ ! -f "$PLANTED_FIXTURE" ]; then
     printf '  [FAILED] the discovery fixture %s is missing\n' "$PLANTED_FIXTURE"; bad=1
   elif bash "$0" --dump-gates "$PLANTED_FIXTURE" 2>/dev/null | grep -q '^bash testing/planted/gate.sh'; then
@@ -477,7 +477,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # to run the whole gate. The fixture holds that exact shape, together with the `echo` lines, the `#`
   # comment and the step `name:` that each quote a DIFFERENT cargo command: joining that welds an echo
   # onto a command is the other way to get this wrong, and it invents fragments CI never runs.
-  CONT_FIXTURE="scripts/fixtures/full-gate/continuation-ci.yml"
+  CONT_FIXTURE="xtask/fixtures/full-gate/continuation-ci.yml"
   if [ ! -f "$CONT_FIXTURE" ]; then
     printf '  [FAILED] the continuation fixture %s is missing -- the multi-line shape is unproven\n' "$CONT_FIXTURE"; bad=1
   else
