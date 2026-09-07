@@ -275,10 +275,15 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
             else:
                 detail[f"effects.{k}"] = {"paths": json_paths_diff(ge.get(k), ce.get(k))}
     # ORDER canonicalizations fire only when the input happened to be unsorted; whether a map came
-    # out sorted on one run is not a contract, so those rules never count as one-sided.
-    ORDER_RULES = {"boot.pool-order", "boot.error-order", "boot.pair-order", "keys.order"}
-    ga = [r for r in g.get("applied", []) + (g.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
-    ca = [r for r in c.get("applied", []) + (c.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
+    # out sorted on one run is not a contract, so those rules never count as one-sided. HOST_RULES
+    # join them here, and only here: a rule about what the RECORDING MACHINE can do cannot be a
+    # disagreement between two busbars, so it is not a norm.rules divergence — but unlike a re-sort
+    # it removes content, so it is REPORTED on the row instead of being silently forgiven.
+    # Both sets are the module-level ones: the hand-copied literal that used to sit here had already
+    # drifted off normalize.py's rule list.
+    _exempt = ORDER_RULES | HOST_RULES
+    ga = [r for r in g.get("applied", []) + (g.get("effects") or {}).get("exec_rules", []) if r not in _exempt]
+    ca = [r for r in c.get("applied", []) + (c.get("effects") or {}).get("exec_rules", []) if r not in _exempt]
     if sorted(ga) != sorted(ca):
         classes.append("norm.rules")
         detail["norm.rules"] = {"only_golden": sorted(set(ga) - set(ca)), "only_candidate": sorted(set(ca) - set(ga))}
@@ -523,6 +528,10 @@ def main() -> int:
             fam_stats[fam]["accepted"] += 1
         results.append({"id": cid, "family": fam, "plane": c.get("plane"), "weight": owed_w,
                         "classes": classes, "first_diff": first_diff_text(classes, detail), "detail": detail if classes else {},
+                        # A host-capability rule that fired on one side only is stated on the row even
+                        # when the cell is green — that is the whole point of it having its own
+                        # category rather than sitting in the norm.rules exemption unremarked.
+                        **({"platform": _skew} if (_skew := host_rule_skew(g, cc)) else {}),
                         **({"accepted": {"id": acc["id"], "kind": acc["kind"], "rationale": acc["rationale"], "by": acc["by"]}} if acc else {})})
 
     fam_table = {}
