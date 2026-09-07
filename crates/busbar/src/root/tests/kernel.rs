@@ -177,7 +177,7 @@ fn every_config_apply_records_the_generation_that_wrote_it() {
 fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
     let holder = RootHistory::default();
     holder.apply(
-        super::card_from_config(
+        card_from_config(
             std::iter::empty::<(&str, busbar_substrate::billing::RawTierRates)>(),
             7,
             true,

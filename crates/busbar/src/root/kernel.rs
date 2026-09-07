@@ -114,6 +114,62 @@ pub fn node_currency() -> busbar_unit_cost::CurrencyCode {
     busbar_unit_cost::CurrencyCode::USD
 }
 
+/// The configured rates, in the cost unit's own card.
+///
+/// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is the engine's;
+/// turning those figures into a card is the cost unit's, on
+/// [`busbar_unit_cost::RateCard::from_config_in`] — so the class fan-out, the absent/present branch
+/// and the fee's clamp all happen where the card lives, and there is no arithmetic here to disagree
+/// with it. No plane below ever sees a rate at all.
+///
+/// IT LIVES IN THE ROOT'S NEUTRAL FILE, next to the history it feeds, because a rate card is a
+/// statement about a DEPLOYMENT and not about a plane — the same sentence [`RootHistory`] is written
+/// under. It was spelled in the LLM plane's root file for one release only because that plane was
+/// the first to need a priced report, and nothing about the four numbers it copies is an LLM fact:
+/// the input is the substrate's neutral [`busbar_substrate::billing::RawTierRates`] and the output is
+/// the cost unit's neutral card. Left there, deleting `crates/busbar-llm` took the composition root's
+/// rate-apply seam with it and the binary no longer built — a plane's directory holding a piece the
+/// neutral boot path cannot do without is exactly what the deletion test exists to catch.
+///
+/// A deployment with no `rate_card:` builds an ABSENT card rather than no card at all, and the
+/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
+/// exactly what the previous release bills for that deployment.
+///
+/// The card carries no version of its own. Which card a posting was priced against is the number of
+/// the history entry that holds it, and that number belongs to the history: a card naming itself
+/// would be a second identity that can disagree with the first. This relay builds the card;
+/// appending it to the history is [`RootHistory::apply`]'s.
+///
+/// THE CURRENCY IS THE CALLER'S, and it is passed in rather than assumed. The configured figures
+/// carry no currency of their own — a 1.5.5 deployment's rates are abstract cost units — so the
+/// currency a card is built in is a statement about the NODE, made once at [`node_currency`], and
+/// handed here. Defaulting it inside this relay would put a second answer to "what currency is this
+/// node's money in" in a body that has no business deciding, and the two answers would be free to
+/// drift.
+pub(crate) fn card_from_config<'r>(
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    per_request_fee: i64,
+    present: bool,
+    currency: busbar_unit_cost::CurrencyCode,
+) -> busbar_unit_cost::RateCard {
+    // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
+    // across a crate boundary, in the same canonical order, with nothing computed on the way.
+    let lanes = present.then(|| {
+        rates.into_iter().map(|(lane, raw)| {
+            (
+                lane,
+                busbar_unit_cost::TierRates {
+                    input: raw.input,
+                    output: raw.output,
+                    cache_read: raw.cache_read,
+                    cache_write: raw.cache_write,
+                },
+            )
+        })
+    });
+    busbar_unit_cost::RateCard::from_config_in(currency, lanes, per_request_fee)
+}
+
 /// A HISTORY PINNED BY ONE READER: the `Arc` it took at admission, and the snapshot it took with it.
 ///
 /// The two travel together because neither is the pin on its own. The `Arc` alone would let a reader
@@ -298,61 +354,6 @@ impl RootHistory {
 /// the boot that reads the configuration finishes, holding no history, which is exactly the state a
 /// report arriving that early should be priced in — it isn't.
 pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default);
-
-/// The configured rates, in the cost unit's own card.
-///
-/// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is the root's;
-/// turning those figures into a card is the cost unit's, on
-/// [`busbar_unit_cost::RateCard::from_config`] — so the class fan-out, the absent/present branch and
-/// the fee's clamp all happen where the card lives, and there is no arithmetic here to disagree with
-/// it. No plane sees a rate at all.
-///
-/// THE ROOT'S, NOT A PLANE'S. The card this builds is the one every plane's exit prices against —
-/// the holder above is the process's, reached by mcp, a2a, voice and admin exactly as it is by llm —
-/// so the relay belongs beside the holder and the repricer rather than in one plane's unit file. It
-/// lived in `units_llm` while llm was the only leg switched over, and a plane's unit file is
-/// compiled out with its plane: any build without that plane's feature lost the root's ability to
-/// price a card at all. The deletability of a plane is the whole point of the feature, so the thing
-/// that must survive every deletion lives on the ungated side of the seam.
-///
-/// A deployment with no `rate_card:` builds an ABSENT card rather than no card at all, and the
-/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
-/// exactly what the previous release bills for that deployment.
-///
-/// The card carries no version of its own any more. Which card a posting was priced against is the
-/// number of the history entry that holds it, and that number belongs to the history: a card naming
-/// itself would be a second identity that can disagree with the first. This relay builds the card;
-/// appending it to the history is [`RootHistory::apply`]'s.
-///
-/// THE CURRENCY IS THE CALLER'S, and it is passed in rather than assumed. The configured figures
-/// carry no currency of their own — a 1.5.5 deployment's rates are abstract cost units — so the
-/// currency a card is built in is a statement about the NODE, made once at [`node_currency`], and
-/// handed here. Defaulting it inside this relay would put a second answer to "what currency is this
-/// node's money in" in a file that has no business deciding, and the two answers would be free to
-/// drift.
-pub(crate) fn card_from_config<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    per_request_fee: i64,
-    present: bool,
-    currency: busbar_unit_cost::CurrencyCode,
-) -> busbar_unit_cost::RateCard {
-    // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
-    // across a crate boundary, in the same canonical order, with nothing computed on the way.
-    let lanes = present.then(|| {
-        rates.into_iter().map(|(lane, raw)| {
-            (
-                lane,
-                busbar_unit_cost::TierRates {
-                    input: raw.input,
-                    output: raw.output,
-                    cache_read: raw.cache_read,
-                    cache_write: raw.cache_write,
-                },
-            )
-        })
-    });
-    busbar_unit_cost::RateCard::from_config_in(currency, lanes, per_request_fee)
-}
 
 /// The root, answering the engine's rate-apply seam.
 ///
