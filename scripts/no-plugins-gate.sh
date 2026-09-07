@@ -55,7 +55,7 @@
 # working (see `--selftest`'s RED-A/RED-B, which use exactly that as a detector fixture).
 #
 # SELF-TEST. `--selftest` proves the gate cannot be lied to, in the discipline
-# `scripts/settings-leak-lint.sh` established: fixtures it MUST flag, and a fixture it must stay
+# `cargo xtask gate settings-leak` established: fixtures it MUST flag, and a fixture it must stay
 # silent on. Two of the REDs are the REAL featureless binary with a REAL dependency on a
 # compiled-out plugin; two are stub servers that pass every EARLIER assertion and fail exactly one
 # LATER one, which is how the gate proves its later assertions are load-bearing rather than
