@@ -98,7 +98,7 @@ busbar-transport-sse = { path = "../busbar-transport-sse" }
 # WebSocket, and the ONE transport that is optional: it is the voice plane's edge and nothing else
 # reaches it, so a build without voice must not carry it. Non-optional, `--no-default-features` still
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
-# exact leak scripts/duplex-ws-default-edge.sh exists to catch. `plane-voice` carries the edge.
+# exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-voice` carries the edge.
 busbar-transport-ws = { path = "../busbar-transport-ws", optional = true }
 busbar-transport-grpc = { path = "../busbar-transport-grpc" }
 busbar-transport-stdio = { path = "../busbar-transport-stdio" }

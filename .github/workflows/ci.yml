@@ -166,9 +166,9 @@ jobs:
       # would have caught the regression. Wired here (it is a `cargo tree` read, seconds, no build),
       # self-test first as everywhere else.
       - name: duplex-ws default-edge self-test
-        run: scripts/duplex-ws-default-edge.sh --selftest
+        run: cargo xtask gate duplex-ws-default-edge --selftest
       - name: duplex-ws default-edge gate (no WS in the default money-path closure)
-        run: scripts/duplex-ws-default-edge.sh
+        run: cargo xtask gate duplex-ws-default-edge
       # CI-UMBRELLA MEMBERSHIP lint: `ci-umbrella` is the ONE required check, and its `needs:` list
       # is the whole of what "CI is green" means. That list is hand-maintained, and a job added
       # without its `needs:` line is invisible to it: the job goes red and the required check reports
