@@ -10,9 +10,7 @@
 use busbar_caps::step::MeterClassId;
 use busbar_caps::{KernelSeal, QuantitySource, Usage, UsageLine, UsageToken};
 
-use crate::{
-    price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable,
-};
+use crate::{price, CurrencyCode, History, LaneClass, Posting, Priced, RateCard, Unpriceable};
 
 mod currency_tests;
 mod derive_tests;
