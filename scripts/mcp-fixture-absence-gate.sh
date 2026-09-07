@@ -314,7 +314,7 @@ run_gate() {
 # ── selftest ──────────────────────────────────────────────────────────────────────────────────────
 #
 # Fixtures the gate MUST flag, plus ones it must stay silent on -- the discipline
-# `no-plugins-gate.sh` and `settings-leak-lint.sh` established. Without this, both axes could be
+# `no-plugins-gate.sh` and `cargo xtask gate settings-leak` established. Without this, both axes could be
 # silently broken and the gate would report a confident green forever. The stand-ins are real files
 # and a real process, not mocks of the assertion.
 run_selftest() {

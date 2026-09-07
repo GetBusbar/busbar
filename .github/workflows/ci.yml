@@ -296,9 +296,9 @@ jobs:
       # Self-test runs FIRST (never trust the lint's verdict before proving the scanner still catches
       # a real leak), then it scans crates/busbar-core/src/admin.
       - name: Settings-leak lint self-test
-        run: scripts/settings-leak-lint.sh --selftest
+        run: cargo xtask gate settings-leak --selftest
       - name: Settings-leak lint
-        run: scripts/settings-leak-lint.sh
+        run: cargo xtask gate settings-leak
       # BLOCKING-FFI lint (1.5.3): a synchronous call into a dlopened PLUGIN (`transport_call`, and
       # the `dlopen` + constructor before it) must never run inline in an `async fn` — one such call
       # parks a Tokio worker for the plugin's full network timeout, and N concurrent callers stop the
