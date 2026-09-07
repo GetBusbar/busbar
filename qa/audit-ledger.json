@@ -355,18 +355,36 @@
    "paths": [
     "crates/busbar-a2a/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "7f485902036bf80af700b4cd69035cd416cb413c2aff9d6b3c977247c12f3d4e",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 3,
+    "LOW": 3
+   },
+   "report": "audits/prod-a2a.md — PARTIAL first read (wind-down): backend URL leaks into refusals; legacy pushback token never revoked; unmetered GetExtendedAgentCard/ListTasks",
+   "auditor": "opus-prod-auditor-a2a",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-a2a/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-a2a",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "7f485902036bf80af700b4cd69035cd416cb413c2aff9d6b3c977247c12f3d4e",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 3,
+      "LOW": 3
+     },
+     "report": "audits/prod-a2a.md — PARTIAL first read (wind-down): backend URL leaks into refusals; legacy pushback token never revoked; unmetered GetExtendedAgentCard/ListTasks"
+    }
+   ]
   },
   {
    "id": "crates/busbar-a2a-codec/src",
@@ -825,18 +843,36 @@
    "paths": [
     "crates/busbar-llm/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "0bad9cd81cd907f143cdf8c4174ba8988676421524731e661696acba3327872b",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 5,
+    "LOW": 3
+   },
+   "report": "audits/prod-llm.md — PARTIAL first read (wind-down): Meter step never receives a sink/hold on live units; non-SSE post-first-byte cut refunds",
+   "auditor": "opus-prod-auditor-llm",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-llm",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "0bad9cd81cd907f143cdf8c4174ba8988676421524731e661696acba3327872b",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 5,
+      "LOW": 3
+     },
+     "report": "audits/prod-llm.md — PARTIAL first read (wind-down): Meter step never receives a sink/hold on live units; non-SSE post-first-byte cut refunds"
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm-codec/src",
@@ -1345,18 +1381,36 @@
    "paths": [
     "crates/busbar-plugin/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "caf3501a42089431888d219c29c8915c31ae7b1515597eff9a94ec84c970193e",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plugin/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "caf3501a42089431888d219c29c8915c31ae7b1515597eff9a94ec84c970193e",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/busbar-substrate/src",
@@ -2905,16 +2959,17 @@
    "paths": [
     "crates/plugin-loader/src"
    ],
-   "tree_hash": "9e546c3a6f86423d5914b6fc030e74d08621813fd0b343a457e9a73199979933",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "tree_hash": "e5cf818335b9cc60a0d596efee2acdf5d55c6351e12bfcfde7bfeb022b1fba7e",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "MEDIUM": 6,
-    "LOW": 5
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
    },
-   "report": "read_buf no isize bound, publish_handle drop after catch_unwind, replay cache on wall clock, shim cannot say in-flight (ABI), key_bucket_plan double-count, staging dir via symlink reported; hold-escapes fixed; stale waivers red",
-   "auditor": "opus-pass2",
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-loader/src/tests"
@@ -2945,6 +3000,19 @@
       "LOW": 5
      },
      "report": "read_buf no isize bound, publish_handle drop after catch_unwind, replay cache on wall clock, shim cannot say in-flight (ABI), key_bucket_plan double-count, staging dir via symlink reported; hold-escapes fixed; stale waivers red"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "e5cf818335b9cc60a0d596efee2acdf5d55c6351e12bfcfde7bfeb022b1fba7e",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
     }
    ]
   },
@@ -2954,18 +3022,36 @@
    "paths": [
     "crates/plugin-pack/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "c4eee4b0205e454824878bfa779aeffb42caead81efdb062e8c3daa98f0a7f85",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-pack/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "c4eee4b0205e454824878bfa779aeffb42caead81efdb062e8c3daa98f0a7f85",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/plugin-sdk/src",
@@ -2973,18 +3059,17 @@
    "paths": [
     "crates/plugin-sdk/src"
    ],
-   "tree_hash": "b46ac9eb8ddd63ce8f4bebbcfa2ee9cda71acc84ae97c2b570818c915e674bdd",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 5,
+   "tree_hash": "34a10e3aced4ac756871a07cbde23fb71d78f8b16cb5eb962742d90ffcc758d7",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 6,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 9,
-    "LOW": 6,
-    "NIT": 5
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
    },
-   "report": "findings against substrate+plugin-loader+plugin-sdk+timing; the reading's detail was not carried into the register",
-   "auditor": "opus",
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sdk/src/tests"
@@ -3003,6 +3088,19 @@
       "NIT": 5
      },
      "report": "findings against substrate+plugin-loader+plugin-sdk+timing; the reading's detail was not carried into the register"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "34a10e3aced4ac756871a07cbde23fb71d78f8b16cb5eb962742d90ffcc758d7",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
     }
    ]
   },
@@ -3012,18 +3110,36 @@
    "paths": [
     "crates/plugin-sign/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b39cbda5887ca455a23ff38104dfb538ea110cdb0c259a6d4f585b0c9669b14c",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sign/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "b39cbda5887ca455a23ff38104dfb538ea110cdb0c259a6d4f585b0c9669b14c",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/plugin-testkit/src",
@@ -3031,18 +3147,36 @@
    "paths": [
     "crates/plugin-testkit/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "4721b81ba45d84cd262a119b1f128455767c0b47f32bda368d65e4670fe1d965",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-testkit/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "4721b81ba45d84cd262a119b1f128455767c0b47f32bda368d65e4670fe1d965",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/secret-example-plugin/src",
@@ -3069,18 +3203,36 @@
    "paths": [
     "crates/secret-ref/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "a79f067f11b066245a1dfe8077a1f7185611592ac22d995931245e354655b348",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 4,
+    "MEDIUM": 15,
+    "LOW": 24
+   },
+   "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks",
+   "auditor": "opus-prod-auditor-plugins",
    "fixed_at": null,
    "exclude": [
     "crates/secret-ref/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-prod-auditor-plugins",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "a79f067f11b066245a1dfe8077a1f7185611592ac22d995931245e354655b348",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 15,
+      "LOW": 24
+     },
+     "report": "audits/prod-plugins.md — PARTIAL first read of the plugin toolchain, counts are the combined toolchain total: bare repr(u8) enums decoded from plugin memory; one-sided sized-struct guard; docs promise an anti-downgrade floor evaluate() lacks"
+    }
+   ]
   },
   {
    "id": "crates/store-example-plugin/src",
@@ -3126,18 +3278,49 @@
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
+   "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 19,
+    "MEDIUM": 34,
+    "LOW": 24
+   },
+   "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree",
+   "auditor": "opus-xtask-auditor-a",
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
    ],
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-xtask-auditor-b",
+     "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
+     "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
+     "counts": {
+      "HIGH": 45,
+      "MEDIUM": 55,
+      "LOW": 21
+     },
+     "report": "audits/xtask-b.md — PARTIAL (17 verified first-hand 7/6/4, 104 delegated leads): full-gate set-equality check runs on no automated path; green cases discharge proof coverage; scan.rs counts braces inside string literals"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-xtask-auditor-a",
+     "audited_at": "c37dcde5492b6fe1142331dd39244b8a1ce24298",
+     "tree_hash": "15373fe3762b2964a65f429073f08bf1b137e136f479118e158868e1a7d7c2ed",
+     "counts": {
+      "HIGH": 19,
+      "MEDIUM": 34,
+      "LOW": 24
+     },
+     "report": "audits/xtask-a.md — PARTIAL (~79% read): four brace counters ignore string literals (live at taxonomy.rs:610); fourteen rules across nine gates deletable with selftest green; REGISTRY_NOT_IN_CI justifications never checked against the tree"
+    }
+   ]
   },
   {
    "id": "crates/api/src/tests",
@@ -5368,18 +5551,17 @@
    "paths": [
     "testing/shadow-oracle"
    ],
-   "tree_hash": "e1742a86af4a748780a18dc7fffdcc7e197f4e95f0fe8cdc615b7cd126924ead",
-   "audited_at": "44c5c8a18a890a14a90cc3c20e648dcdfe4172e6",
-   "round": 5,
+   "tree_hash": "46da699ec4f82cf96cfcdf744ffde0fce2cb2f29bd1184a49b9aa003cd177dc6",
+   "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 6,
-    "LOW": 3,
-    "NIT": 1
+    "HIGH": 11,
+    "MEDIUM": 14,
+    "LOW": 10
    },
-   "report": "recorder fresh eyes: the mock resolved two shipped control shapes to no verb and served healthy, a broken mutation tool wrote itself into the ledger as a named gap, the outage clear was never checked, a boot cell had a private ten-second bound; two cells cannot observe what they name without a new capture; 14 plants, 2 survivors",
-   "auditor": "opus-instr-p3-recorder",
+   "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red",
+   "auditor": "opus-oracle-auditor-b",
    "fixed_at": null,
    "rounds": [
     {
@@ -5460,6 +5642,32 @@
       "NIT": 1
      },
      "report": "recorder fresh eyes: the mock resolved two shipped control shapes to no verb and served healthy, a broken mutation tool wrote itself into the ledger as a named gap, the outage clear was never checked, a boot cell had a private ten-second bound; two cells cannot observe what they name without a new capture; 14 plants, 2 survivors"
+    },
+    {
+     "round": 6,
+     "result": "findings",
+     "auditor": "opus-oracle-auditor-a",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "46da699ec4f82cf96cfcdf744ffde0fce2cb2f29bd1184a49b9aa003cd177dc6",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 14,
+      "LOW": 12
+     },
+     "report": "audits/oracle-tool-a.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): enumerate-cells swallows a corrupt cells.json and can shrink the corpus green; an improvement waiver can forgive a body-10 refusal; rigs-ledger fails open on a corrupt/missing baseline"
+    },
+    {
+     "round": 7,
+     "result": "findings",
+     "auditor": "opus-oracle-auditor-b",
+     "audited_at": "da4c3e4000c386e3aa3002d5ee57b85a0a319676",
+     "tree_hash": "46da699ec4f82cf96cfcdf744ffde0fce2cb2f29bd1184a49b9aa003cd177dc6",
+     "counts": {
+      "HIGH": 11,
+      "MEDIUM": 14,
+      "LOW": 10
+     },
+     "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red"
     }
    ]
   },
