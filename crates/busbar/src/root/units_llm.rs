@@ -691,14 +691,27 @@ fn priced_amount(
     token: &busbar_caps::UsageToken,
     report: &LateReport,
 ) -> u64 {
-    let posting = busbar_unit_cost::price(
-        &card.pin(),
+    // A posting is QUANTITIES and an instant; what it costs is a lookup against the card in force
+    // at that instant. This arm still holds one card rather than a history, so it asks the lookup
+    // for that card directly — the arithmetic is the same single-sited multiply-and-sum either way,
+    // and wiring the history through to here is the next wave's.
+    let posting = busbar_unit_cost::Posting::from_usage(
         &report.lane,
         &usage_record(token, &report.usage),
         u64::from(report.fee_count),
         busbar_unit_cost::STANDARD_TIER_BP,
+        0,
+        0,
     );
-    u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX)
+    let priced = busbar_unit_cost::price_at_card(
+        busbar_unit_cost::HistorySeq::OPENING,
+        card,
+        &posting,
+        busbar_unit_cost::CurrencyCode::USD,
+    );
+    priced
+        .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
@@ -1599,10 +1612,10 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
 /// difference matters: absent prices every class at nothing and still charges the flat fee, which is
 /// exactly what the previous release bills for that deployment.
 ///
-/// The version is a constant name rather than a hash of the configuration, and that is a stated
-/// limit rather than an oversight: the postings this card prices are read back at the width the node
-/// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
-/// day the books grow that column, this is the one line that fills it.
+/// The card carries no version of its own any more. Which card a posting was priced against is the
+/// number of the history entry that holds it, and that number belongs to the history: a card naming
+/// itself would be a second identity that can disagree with the first. This relay builds the card;
+/// appending it to the history is the wave that holds the history.
 pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
     per_request_fee: i64,
@@ -1623,11 +1636,7 @@ pub(crate) fn card_from_config<'r>(
             )
         })
     });
-    busbar_unit_cost::RateCard::from_config(
-        busbar_unit_cost::RateCardVersion::new("root-llm"),
-        lanes,
-        per_request_fee,
-    )
+    busbar_unit_cost::RateCard::from_config(lanes, per_request_fee)
 }
 
 /// One body-model arrival, driven through the loop.

@@ -53,7 +53,9 @@ use std::process::{Child, Command};
 use std::time::{Duration, Instant};
 
 use busbar_caps::{KernelSeal, MeterClassId, QuantitySource, Usage, UsageLine, UsageToken};
-use busbar_unit_cost::{price, LaneClass, RateCard, RateCardVersion, STANDARD_TIER_BP};
+use busbar_unit_cost::{
+    price, CurrencyCode, History, LaneClass, Posting, RateCard, STANDARD_TIER_BP,
+};
 
 // The binary has no library target, so the composition root's identity check is reached the only
 // way an integration test can reach it: by compiling the same source file into this test binary.
@@ -292,8 +294,11 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         "the admitted requests must have landed"
     );
 
-    let card = card();
-    let pinned = card.pin();
+    // The card, as the migration seals it: a SINGLE-ENTRY history effective from instant zero, so
+    // `card_at` resolves to that entry for every posting and the lookup is arithmetically the
+    // pinned card it replaces.
+    let history = History::opening(card(), 0);
+    let view = history.current();
     let mut ledger = LedgerSnapshot::new();
     let mut legacy = LegacySnapshot::new();
 
@@ -326,13 +331,16 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         // and projects once, so a per-posting remainder that would floor away on its own survives
         // into the row's figure.
         for _ in 0..requests {
-            let posting = price(&pinned, &lane, &one_response(), 1, STANDARD_TIER_BP);
+            let quantities =
+                Posting::from_usage(&lane, &one_response(), 1, STANDARD_TIER_BP, 0, 0);
+            let posting = price(&view, &quantities, CurrencyCode::USD)
+                .expect("the opening entry covers instant zero and names USD");
             assert_eq!(
-                posting.priced_amount(),
+                posting.priced_nanos,
                 NANOS_PER_RESPONSE,
                 "one delivered response prices at a pinned figure"
             );
-            assert_eq!(posting.fee_count(), 1);
+            assert_eq!(posting.fee_count, 1);
             accumulate(&mut ledger, key.clone(), &posting);
         }
         legacy.insert(
@@ -608,7 +616,6 @@ fn get_bytes(port: u16, path: &str, bearer: &str) -> Vec<u8> {
 /// asking the binary for its card would be asking one side of the comparison to supply the other.
 fn card() -> RateCard {
     RateCard::from_micro_rates(
-        RateCardVersion::new("ledger-identity-1"),
         [
             (LaneClass::new(LANE, "input"), INPUT_UTOK),
             (LaneClass::new(LANE, "output"), OUTPUT_UTOK),
