@@ -24,6 +24,7 @@ pub mod ci_umbrella;
 pub mod denylist_gate;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
+pub mod no_self_filed_issues;
 pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod segregation;
@@ -480,6 +481,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(tracing_lint::TracingGate),
         summary: "every #[instrument] span is bound to an explicit Level, set in one place",
+    },
+    Registration {
+        name: "no-self-filed-issues",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(no_self_filed_issues::NoSelfFiledIssuesGate),
+        summary: "the repository does not open issues against itself, nor ask for the scope to",
     },
 ];
 
