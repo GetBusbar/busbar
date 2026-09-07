@@ -379,6 +379,46 @@ PYEOF
     say FAIL "the runs-in-CI check does not separate an invoked gate from one that only exists on disk"
   fi
 
+  # (k) A NOTE THAT SAYS "UNTESTED" OUTRANKS A GREEN CITATION. Some rows carried a note in the
+  #     ledger's own words -- "does not exist in crates/", "vacuously true", "untested" -- while
+  #     being counted as mapped, because a test fn of some other subsystem happened to match the ref
+  #     by name. A binding whose own record says nothing was compared is unproven, whatever its
+  #     citation list looks like. Driven with an injected table so the case asserts the rule; the
+  #     second arm pins that the four real ids are actually in the shipped table.
+  if "$PY" - <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+shipped = set(m.UNPROVEN_BY_NOTE)
+bad = []
+for want in ("PB-17", "PB-48", "PB-58", "PB-61"):
+    if want not in shipped:
+        bad.append(f"{want} is not carried as unproven-by-note")
+    if not m.UNPROVEN_BY_NOTE[want].strip() if want in shipped else False:
+        bad.append(f"{want} carries no reason")
+# The rule itself: a real, existing test ref does NOT rescue a row the note disqualifies.
+ctx = m.check_context({"cells": []}, m.CRATES, m.ROOT, m.GOLDEN_LEDGER)
+real = sorted(k for k, v in ctx["idx"].items() if len(v) == 1)[0]
+m.UNPROVEN_BY_NOTE = {"PB-SELFTEST": "the surface this binding names does not exist in crates/"}
+b = {"id": "PB-SELFTEST", "surface": "noted untested",
+     "checks": [{"kind": "test", "ref": real, "status": "mapped"}]}
+status, verdict, detail = m.binding_verdict(b, ctx)
+if not (status == "unproven" and verdict == "FAIL" and "does not exist in crates/" in detail):
+    bad.append(f"a noted-untested row with a real test ref came back {status}/{verdict}: {detail}")
+# and the same row is `mapped` once the note is gone, so the table is what decides, not the ref
+m.UNPROVEN_BY_NOTE = {}
+if m.binding_verdict(b, ctx)[0] != "mapped":
+    bad.append("removing the note did not restore the row -- the case proves nothing")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+sys.exit(1 if bad else 0)
+PYEOF
+  then
+    say PASS "a binding whose own note says nothing was compared is unproven, whatever it cites"
+  else
+    say FAIL "a noted-untested binding was still counted as proven"
+  fi
+
   echo
   if [ "$fails" -eq 0 ]; then echo "design bindings selftest: GREEN (${cases} cases)"; return 0; fi
   echo "design bindings selftest: RED (${fails}/${cases} cases failed)"; return 1

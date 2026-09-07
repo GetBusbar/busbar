@@ -15,15 +15,15 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 99,
-  "unproven": 4,
+  "mapped": 95,
+  "unproven": 8,
   "unmapped": 0,
   "checks_by_kind": {
    "gate": 11,
    "lint": 5,
-   "oracle-cell": 49,
+   "oracle-cell": 48,
    "oracle-family": 4,
-   "test": 431
+   "test": 420
   }
  },
  "owner_decisions": {
@@ -867,7 +867,8 @@
    "surface": "boot warnings",
    "binding": "none beyond 1.5.5's 228 unless a 1.6.0-additive key (`data_dir`, `peers`, `keyset_ref`, `wal_capacity`, …) is written",
    "inventory": "config",
-   "status": "mapped",
+   "note": "The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's.",
+   "status": "unproven",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -884,8 +885,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "oracle-cell:ops.scrape|metrics|no-ledger-series, test:no_ledger_series_and_no_keyset_lines_without_data_dir"
+   "verdict": "FAIL",
+   "verdict_detail": "UNPROVEN, by the ledger's own note: The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's."
   },
   {
    "id": "PB-18",
@@ -2396,7 +2397,7 @@
    "binding": "the `max_unit_duration` sweep alarms only; the unit's only timers are PB-8's — a stream is cut only by the `upstream_request_timeout_secs` TOTAL reqwest deadline (default 300 s, `main.rs:3179-3181`); there is no idle timer",
    "inventory": "proxy-hooks, ops",
    "note": "max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "test",
@@ -2413,8 +2414,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "test:a_slow_unit_is_not_a_lost_one, test:a_lost_task_is_settled_within_one_tick"
+   "verdict": "FAIL",
+   "verdict_detail": "UNPROVEN, by the ledger's own note: max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true."
   },
   {
    "id": "PB-49",
@@ -2753,7 +2754,7 @@
    "binding": "on every 1.5.5-shaped deployment an ADMITTED `http`/`sse` unit is never ended for money: no `Aborted(Kernel { OverBudget })`, no `Aborted(Kernel { OverdraftCeiling })`; the overdraft ceiling is unbounded (flag-only) on every Migration-sealed bucket; `OverdraftCeiling` and `StaleSlice` are never refusal reasons on a 1.5.5 config; token overshoot is bounded only by the in-flight admitted requests, exactly as at the tag",
    "inventory": "governance; proxy-hooks",
    "note": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "test",
@@ -2784,8 +2785,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "test:running_past_the_reservation_posts_the_overdraft_rather_than_refusing, test:running_out_mid_unit_carries_rather_than_refusing, test:only_the_dimensions_that_accrue_mid_unit_can_overdraw, test:the_leases_go_back_on_every_end_whatever_it_was"
+   "verdict": "FAIL",
+   "verdict_detail": "UNPROVEN, by the ledger's own note: OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested."
   },
   {
    "id": "PB-59",
@@ -2886,7 +2887,7 @@
    "binding": "a request body is accepted up to `request_body_max_bytes` (default 32 MiB, ceiling 1 GiB) regardless of chunk count; `MAX_NEEDMORE_FRAMES` never applies to body spooling",
    "inventory": "config",
    "note": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "test",
@@ -2917,8 +2918,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "test:a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count, test:the_spill_budget_refuses_rather_than_growing, test:a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved, test:a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves"
+   "verdict": "FAIL",
+   "verdict_detail": "UNPROVEN, by the ledger's own note: MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap."
   },
   {
    "id": "PB-62",
