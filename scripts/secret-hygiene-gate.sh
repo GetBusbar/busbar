@@ -158,8 +158,24 @@ scan_fields() {
 }
 
 # ── THE SINK SCANNER (Check 2) ─────────────────────────────────────────────────────────────────────
-# Emits: expose_secret<TAB>file:line<TAB>trimmed-source  for any line where `.expose_secret()` and a
-# log/audit/metric sink token co-occur (same statement window == same source line, conservatively).
+# Emits: expose_secret<TAB>file:line<TAB>trimmed-statement  for any STATEMENT where `.expose_secret()`
+# and a log/audit/metric sink token co-occur.
+#
+# THE STATEMENT WINDOW IS A STATEMENT, NOT A LINE. This used to read one source line at a time, which
+# meant it only ever caught the leak written on a single line. rustfmt does not write it that way:
+# a `tracing::info!` with more than a field or two is split across lines, so the sink token lands on
+# one line and `.expose_secret()` on the next, the two never co-occur, and the gate reports zero.
+#
+#     tracing::info!(                      <- sink here
+#         api_key = %key.expose_secret(),  <- secret here, one line later
+#         "using key"
+#     );
+#
+# That is the normal, rustfmt-produced shape of the exact leak this check exists to catch, and it
+# went straight through. Lines are now accumulated into a statement buffer and flushed at a
+# statement terminator (`;` `{` `}` `,`) seen at paren depth 0 — so a multi-line macro call is ONE
+# window, while two adjacent single-line statements stay two, and `key.expose_secret()` handed to a
+# header injection on its own line still does not join the next line's log call.
 scan_sinks() {
   local sinks="$1"; shift
   [ "$#" -gt 0 ] || return 0
@@ -183,15 +199,29 @@ scan_sinks() {
       return res
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
-    BEGIN { nsk = split(sinks, SK, " ") }
-    FNR == 1 { inblk = 0 }
-    {
-      code = strip($0)
-      if (index(code, ".expose_secret()") == 0) next
-      for (k = 1; k <= nsk; k++) {
-        if (index(code, SK[k]) > 0) { printf "expose_secret\t%s:%d\t%s\n", FILENAME, FNR, trim(code); break }
+    function flush(   k) {
+      if (stmt != "" && index(stmt, ".expose_secret()") > 0) {
+        for (k = 1; k <= nsk; k++) {
+          if (index(stmt, SK[k]) > 0) {
+            printf "expose_secret\t%s:%d\t%s\n", stmtfile, stmtline, stmt; break
+          }
+        }
       }
+      stmt = ""; stmtline = 0; stmtfile = ""; pdepth = 0
     }
+    BEGIN { nsk = split(sinks, SK, " "); stmt = ""; pdepth = 0 }
+    FNR == 1 { flush(); inblk = 0 }
+    {
+      code = trim(strip($0))
+      if (code == "") next
+      if (stmt == "") { stmt = code; stmtline = FNR; stmtfile = FILENAME }
+      else { stmt = stmt " " code }
+      pdepth += gsub(/\(/, "(", code) - gsub(/\)/, ")", code)
+      if (pdepth < 0) pdepth = 0
+      last = substr(code, length(code), 1)
+      if (pdepth == 0 && (last == ";" || last == "{" || last == "}" || last == ",")) flush()
+    }
+    END { flush() }
   ' "$@"
 }
 
@@ -285,16 +315,36 @@ RED2
   out="$(scan_sinks "$SINKS" "$tmp/c2_red.rs")"
   if [ -n "$out" ]; then note "RED c2: caught \`.expose_secret()\` on a tracing:: sink line"; else fail=1; note "RED c2 FAILED: expose_secret-at-sink not flagged"; fi
 
+  # ── RED (Check 2, the shape rustfmt actually writes): the SAME leak split across lines. ──
+  # The single-line fixture above is not how this leak appears in the tree: rustfmt splits any
+  # tracing macro with more than a field or two, putting the sink on one line and the secret on the
+  # next. A line-at-a-time scanner reports zero on this file while the secret goes to the log.
+  cat >"$tmp/c2_red_multiline.rs" <<'RED3'
+fn leak(key: &Redacted<String>) {
+    tracing::info!(
+        api_key = %key.expose_secret(),
+        "using key"
+    );
+}
+RED3
+  out="$(scan_sinks "$SINKS" "$tmp/c2_red_multiline.rs")"
+  if [ -n "$out" ]; then
+    note "RED c2: caught the rustfmt-split \`.expose_secret()\` inside a multi-line tracing macro"
+  else
+    fail=1; note "RED c2 FAILED: multi-line expose_secret-at-sink not flagged"
+  fi
+
   # ── GREEN (Check 2): `.expose_secret()` at a NON-sink (header injection) — no hit. ──
   cat >"$tmp/c2_green.rs" <<'GREEN2'
 fn inject(key: &Redacted<String>, req: &mut Request) {
     req.header("authorization", format!("Bearer {}", key.expose_secret()));
     // tracing::info!("sent");  <- a sink in a COMMENT, on a different statement, is not a leak
+    tracing::info!(key_id = %key.reference(), "sent");
 }
 GREEN2
   out="$(scan_sinks "$SINKS" "$tmp/c2_green.rs")"
   if [ -z "$out" ]; then
-    note "GREEN c2: expose_secret at a header-injection (non-sink) + a commented sink flagged NONE"
+    note "GREEN c2: expose_secret at a header-injection, then a REAL sink on the NEXT statement — the statement window did not join them; flagged NONE"
   else
     fail=1; note "GREEN c2 FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
