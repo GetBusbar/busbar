@@ -16,6 +16,26 @@ const COMMITTED_JSON: &str = concat!(
     "/../../docs/diagnostics-a2a.json"
 );
 
+/// THE CATALOG IS NOT EMPTY, AND NOT ENTIRELY RETIRED.
+///
+/// Every other test in this file is a `for d in DIAGNOSTICS` loop whose assertions live INSIDE the
+/// loop, and `every_live_entry_documents_meaning_and_action` additionally `continue`s past every
+/// retired entry. A catalog that regressed to empty — a bad `cfg` gate, a botched merge — would
+/// therefore make all four of them pass green while every documented diagnostic silently
+/// disappeared. This is the floor that makes those loops mean something.
+#[test]
+fn the_catalog_is_not_empty() {
+    assert!(
+        !DIAGNOSTICS.is_empty(),
+        "the diagnostics catalog is empty, which makes every loop test in this file vacuous"
+    );
+    assert!(
+        DIAGNOSTICS.iter().any(|d| !d.retired),
+        "the catalog holds nothing but retired entries, which makes \
+         `every_live_entry_documents_meaning_and_action` vacuous"
+    );
+}
+
 /// Codes are unique within this plane's catalog — a collision would make one un-resolvable.
 #[test]
 fn codes_are_unique() {

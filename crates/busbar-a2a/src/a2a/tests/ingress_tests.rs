@@ -574,7 +574,7 @@ async fn a_foreign_origin_cannot_drive_this_plane() {
 
     // A LOCAL PAGE IS UNAFFECTED. A browser sends a loopback `Origin` only for a document served
     // from loopback, which is already inside the trust boundary — so this reaches the ordinary
-    // admission chain and is refused for want of a credential, not for its origin.
+    // admission chain and is refused THERE, not for its origin.
     let resp = client
         .post(format!("http://{addr}/a2a/agents/planner"))
         .header("content-type", "application/json")
@@ -583,10 +583,15 @@ async fn a_foreign_origin_cannot_drive_this_plane() {
         .send()
         .await
         .unwrap();
-    assert_ne!(
+    // PINNED TO THE ANSWER, not merely to "not 403". `assert_ne!(.., 403)` also passes on a `200`,
+    // so an admission-chain regression that ADMITTED this uncredentialled request would have read as
+    // proof that the origin check was correctly not firing.
+    assert_eq!(
         resp.status().as_u16(),
-        403,
-        "a loopback origin carries no rebinding risk and must not be refused for its origin"
+        503,
+        "a loopback origin carries no rebinding risk: this must reach the ordinary admission chain \
+         and be refused THERE, on the answer that chain gives this fixture — never 403 for its \
+         origin, and never admitted"
     );
 
     // AND A REQUEST WITH NO `Origin` AT ALL is not a browser request. Refusing those would refuse
@@ -598,7 +603,12 @@ async fn a_foreign_origin_cannot_drive_this_plane() {
         .send()
         .await
         .unwrap();
-    assert_ne!(resp.status().as_u16(), 403, "an agent sends no Origin");
+    assert_eq!(
+        resp.status().as_u16(),
+        503,
+        "an agent sends no `Origin`, so this must reach the ordinary admission chain and be refused \
+         THERE — never 403 for a header it did not send, and never admitted"
+    );
     handle.abort();
 }
 
