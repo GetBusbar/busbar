@@ -219,6 +219,13 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   refused as though it were not. The refund now resolves the same cell the charge did. Strictly in
   the caller's favour, reachable only on a boundary straddle, and the admission `requests` slot is
   still never refunded.
+- **The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.** New reads
+  `GET /api/v1/admin/ledger/{rate-history,repricings}`, a new operator-signed write
+  `POST /api/v1/admin/ledger/amend-rate-history`, and optional `?as_of=<history_seq>` and
+  `?currency=<CCY>` on the existing ledger reads. A card prices in one or more currencies natively,
+  with no pivot and no conversion. No 1.5.5 path, field or byte is touched; the new operations are
+  described at `docs/openapi-1.6.0-additive.json`, reached by name at
+  `GET /api/v1/admin/ledger/openapi.json`.
 - **A stream that dies mid-flight is no longer served, and billed, as a completed one.** Two
   upstream failure shapes reached the client as a clean success in 1.5.5. An OpenAI-compatible
   backend (OpenAI, Azure, vLLM, OpenRouter) that fails after its 200 headers are on the wire sends
@@ -233,10 +240,12 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly five entries of kind `breaking`:
+The accepted-differences register for this release has exactly seven entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
-from the hook view, and one refusal that now comes out of the resolver rather than the validator.
+from the hook view, one refusal that now comes out of the resolver rather than the validator, one
+key-rotate endpoint that now refuses an overlong id like its siblings, and one where a rate-card
+edit stops repricing history it should not touch.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -285,6 +294,21 @@ identically, and every 1.5.5 key and minted secret carries over.
   a CI job or log alert that matches the `config validation failed:` frame line to catch a bad
   config must also match `config errors:`, which is the frame every resolver refusal already used;
   no config change is needed.
+- 1.6.0 Improvements: rotate refuses an overlong key id like its siblings. `POST
+  /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never enforced the 64-byte
+  id bound the read/patch/delete/usage/revoke handlers already share, so an overlong id fell
+  through to a misleading 404 `not_found` instead of the siblings' 400 `invalid_request` / "id must
+  be <= 64 characters". **Migration:** a client that relied on the 404 for an overlong rotate id
+  must expect a 400 instead, matching every other `/keys/{id}` handler; no config change is needed.
+- 1.6.0 Changed: a rate-card edit prices what happens after it, not what happened before it. 1.5.5
+  derived every row's spend at read time from the current cost model, so a `PUT
+  /config/settings` rate-card edit re-priced every past row with no restart and no boundary.
+  1.6.0 keeps deriving spend at read time but reads it against the card in force at the posting's
+  instant, from an append-only dated rate-card history. A window with no mid-window card change
+  answers byte-identically; a window that had one now answers with the money each request was
+  actually earned under. **Migration:** if you rely on `GET /admin/usage` totals recalculating
+  after a rate-card change, they no longer do; use the new `amend-rate-history` verb to post an
+  attributed correction instead. See [the 1.6.0 migration guide](docs/migration-1.6.md).
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
