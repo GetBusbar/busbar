@@ -302,3 +302,7 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
     }
     Some(out)
 }
+
+#[cfg(test)]
+#[path = "tests/twilio_hardening.rs"]
+mod twilio_hardening;
