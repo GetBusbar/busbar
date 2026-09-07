@@ -96,7 +96,7 @@ emit "site:download-page"     "the marketing download page advertises this versi
 
 # ── Fleet + self-consistency ────────────────────────────────────────────────────────────────────
 emit "plugins:fleet-released" "every first-party plugin in plugins.yaml has a published release"
-emit "contract:drift"         "the contract's target list still matches release.yml's build matrix"
+emit "contract:drift"         "release-stage.yml still derives its build matrix from the contract, and names no target the contract does not declare"
 
 # ── The bundle image (getbusbar/busbar-headroom), rebuilt on the new busbar ─────────────────────
 # The one downstream docker-checks (which verifies the ENGINE image) does not cover: the bundle that
