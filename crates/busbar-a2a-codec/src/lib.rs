@@ -191,3 +191,12 @@ pub const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
 /// The `ErrorInfo.domain` every A2A error is reported under. The protocol's own, not busbar's: the
 /// reason tokens above are the specification's vocabulary and the domain says so.
 pub const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
+
+// THE WIRE VOCABULARY'S OWN CELLS. Plain `#[cfg(test)]`, NOT the `test-support` gate the three
+// `a2a::` modules carry: this file pins `ERRORS`, `LOCAL_VERB_METHODS` and `mounted_route` against
+// the conformance battery's transcribed table, and a specification pin that only runs when a
+// feature happens to be on is a pin that can be switched off by a `Cargo.toml` edit in another
+// crate. It costs nothing to run unconditionally — the whole file is constant comparisons.
+#[cfg(test)]
+#[path = "tests/vocabulary_tests.rs"]
+mod vocabulary_tests;
