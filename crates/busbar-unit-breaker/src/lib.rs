@@ -603,3 +603,11 @@ mod cell_fsm_tests;
 /// The unit's budget, probe release and at-capacity wait, asserted where each is decided.
 #[cfg(test)]
 mod unit_surface_tests;
+
+/// The hand-rolled `Retry-After` date parser and the class guard above it.
+#[cfg(test)]
+mod classify_date_tests;
+
+/// The composition root's clock helper.
+#[cfg(test)]
+mod clock_tests;
