@@ -1061,8 +1061,9 @@ pub(crate) struct EffectiveConfigView {
 /// busbar exposes the RAW INPUTS of cost, not just its own number. Every row carries the full token
 /// SPLIT (input / output / cache-read / cache-creation — each prices differently), so a consumer
 /// with its own (special/negotiated) price catalog reconstructs cost independently; `spend_micros`
-/// is busbar's DERIVED estimate from the operator's configured global prices, computed at read time
-/// (raw counts are what's stored — a price change re-prices history consistently).
+/// is busbar's DERIVED estimate, computed at read time as a lookup over the stored counts against
+/// the operator's card AS IT STOOD WHEN THEY WERE SPENT (raw counts are what's stored; the dated
+/// rate-card history is what prices them).
 ///
 /// Time base — THE PINNED SHAPE RULING: a usage response is ALWAYS exactly
 /// ONE fixed UTC-day metering bucket (`window`). `?window=<bucket-start-epoch>` selects a PAST
@@ -1074,9 +1075,16 @@ pub(crate) struct EffectiveConfigView {
 /// `GET /keys/{id}/usage`, not here. Empty aggregations when governance is disabled. No secrets —
 /// key ids/names only, never a token.
 ///
-/// LEDGER RULE (one loud contract sentence): `spend_micros` is a MUTABLE ESTIMATE — derived at
-/// read time from the operator's CURRENT prices, so a price change re-prices history. Never store
-/// it as a ledger charge; bill from the raw token split.
+/// Snapshot — `?as_of=<history_seq>` cuts the statement at a rate-card HISTORY SNAPSHOT (default:
+/// the head), and `as_of` in the body echoes the snapshot the figures were derived against, so a
+/// statement is reproducible from the two inputs it names: the stored counts, and the history at
+/// that number. A snapshot above the head is a 400, never a silently-clamped answer.
+///
+/// LEDGER RULE (one loud contract sentence): `spend_micros` is a DERIVED FIGURE, never a stored
+/// one — a lookup over the stored token counts against the card in force AT THE INSTANT THEY WERE
+/// SPENT, read from an append-only dated history, so a price edit prices what happens after it and
+/// does NOT re-price what happened before it. Never store it as a ledger charge; bill from the raw
+/// token split.
 /// The denomination reported alongside every `spend_micros` in the admin usage response. A SINGLE
 /// source of truth so a future removal (returning to the currency-agnostic stance) is one line.
 /// Emitted ONLY on `GET /api/v1/admin/usage` (the `currency` field of `UsageView`), never on the

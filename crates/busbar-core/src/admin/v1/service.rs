@@ -92,12 +92,86 @@ pub(crate) fn redact_settings_bags(v: &mut serde_json::Value) {
 
 use super::named_def_views::{export_def_view, identity_provider_view, unparseable_def_view};
 
+/// The dated rate-card history `/usage` prices against.
+///
+/// Money is a LOOKUP over quantities: the row keeps the token counts, and what they cost is
+/// `quantity × the rate of the card in force WHEN THE TOKENS WERE SPENT`, read from an append-only
+/// dated history. That is the whole of the change this seam exists for. Before it, `/usage` cloned
+/// whatever card was configured at the moment of the read and priced every row of the window at it,
+/// so an operator who corrected a price at noon changed what the morning had cost.
+///
+/// It is a seam and not a field on `App` because the history OUTLIVES the config it came from: a
+/// card is rebuilt on every apply, and a history that was rebuilt with it would be no history at
+/// all. What the node binds behind this is the append-only history the composition root holds, and
+/// what this crate does with it is read.
+///
+/// The seam offers no way to append, for the same reason [`crate::admin::v1::service`]'s ledger
+/// views offer no way to settle: a read surface that could move the history is a read surface that
+/// could move money, and "read-only" should be a property of the type rather than a promise in a
+/// comment.
+pub trait UsageCardHistory: Send + Sync {
+    /// The newest entry's sequence number — what the history is NOW.
+    ///
+    /// A reader comparing it against the snapshot its figures were cut at learns, without asking,
+    /// that the world has moved.
+    fn head(&self) -> u64;
+
+    /// The card that prices a row accrued under entry `card_seq`, as the snapshot `at` sees it.
+    ///
+    /// `None` means the snapshot covers no entry for that row — a hole, which is a refusal to
+    /// invent a figure and never a silent zero. The caller falls back to the card the node is
+    /// running, which for a single-entry history IS that entry.
+    fn card_at(&self, card_seq: u64, at: u64) -> Option<std::sync::Arc<crate::cost::CostModel>>;
+}
+
+/// The history the node bound, if it bound one.
+///
+/// A node that has not is running a SINGLE-ENTRY history: one card, effective from the beginning of
+/// time, which is exactly what a deployment that has never edited a price has. Every figure it
+/// derives is then arithmetically identical to the previous release's — same rates, same order,
+/// same saturation, same single truncation — which is why the absence of a binding is a correct
+/// answer here and not a degraded one.
+static USAGE_CARD_HISTORY: std::sync::OnceLock<std::sync::Arc<dyn UsageCardHistory>> =
+    std::sync::OnceLock::new();
+
+/// Bind the node's rate-card history behind the usage read. First call wins; later calls report
+/// that they lost rather than replacing a history somebody is already pricing against.
+pub fn install_usage_card_history(history: std::sync::Arc<dyn UsageCardHistory>) -> bool {
+    USAGE_CARD_HISTORY.set(history).is_ok()
+}
+
+/// The bound history, or `None` for the single-entry case.
+fn usage_card_history() -> Option<&'static std::sync::Arc<dyn UsageCardHistory>> {
+    USAGE_CARD_HISTORY.get()
+}
+
+/// Which entry of the history a metering row was accrued under.
+///
+/// The row carries it as a decimal string (`MeteringRow::pricing_version`, already across the store
+/// seam and already `#[serde(default)]`, so filling it moves no ABI). A row that carries nothing —
+/// every row written by the previous release, and every row written before the history was wired —
+/// resolves to the OPENING entry, which is correct rather than merely safe: the opening entry IS
+/// the card those tokens were earned under, by definition.
+fn accrued_under(pricing_version: &str) -> u64 {
+    pricing_version.parse::<u64>().unwrap_or(OPENING_HISTORY_SEQ)
+}
+
+/// The history's opening entry: effective from the beginning of time, with no end.
+///
+/// Zero is not a placeholder here. A history whose only entry is the opening one covers every
+/// instant, which is what makes a hole impossible in practice and what makes a deployment that has
+/// never edited a price answer byte-identically to the previous release.
+const OPENING_HISTORY_SEQ: u64 = 0;
+
 /// Derive busbar's spend ESTIMATE (micro-units, abstract cost units) for one PER-MODEL metering
-/// row from the CURRENT rate card: the row's tier-token split priced at that model's rates, plus
-/// the flat per-request fee x requests. Recomputed on every read (reprice-on-read: a rate-card
-/// correction changes historical figures on the next read; tokens are the stored truth). Metering
-/// rows attribute by the CONFIGURED model name, so the rate lookup goes through the
-/// `upstream_model` alias resolution.
+/// row against ONE card: the row's tier-token split priced at that model's rates, plus the flat
+/// per-request fee x requests. Metering rows attribute by the CONFIGURED model name, so the rate
+/// lookup goes through the `upstream_model` alias resolution.
+///
+/// The card it is handed is the card in force AT THE ROW'S INSTANT, resolved from the dated history
+/// by the caller — not the card the node happens to be running when somebody reads. The arithmetic
+/// is unchanged and is deliberately single-sited: a second copy of it against a second card is how
+/// a request comes to be judged at one rate and billed at another.
 fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
@@ -2122,16 +2196,42 @@ impl AdminService {
 
     /// `GET /api/v1/admin/usage` — the fleet METERING read (FinOps surface): the current UTC-day
     /// bucket's raw consumption, aggregated per (model, provider) and per key, each row carrying the
-    /// full token SPLIT plus a DERIVED `spend_micros` (computed here at read time from the
-    /// operator's configured global prices — raw counts are what's stored, so a consumer with its
-    /// own price catalog reconstructs cost from the split instead). `requests` counts DELIVERED
+    /// full token SPLIT plus a DERIVED `spend_micros` (computed here at read time as a LOOKUP over
+    /// the stored counts against the card in force when they were spent — raw counts are what's
+    /// stored, so a consumer with its own price catalog reconstructs cost from the split instead
+    /// and gets the same answer this read does). `requests` counts DELIVERED
     /// responses (the metering tap), not admissions; budget-enforcement state stays on
     /// `GET /keys/{id}/usage`. Read scope. Empty aggregations when governance is disabled. The
     /// store reads run on a blocking thread; never returns a secret — ids/names only.
     /// `window`: a caller-selected PAST bucket start (validated: bucket-aligned, not in the
     /// future); `None` = the current bucket. The response shape is pinned: always one bucket.
-    pub(crate) async fn get_usage(&self, window: Option<u64>) -> Result<UsageView, AdminError> {
+    ///
+    /// `as_of`: the rate-card HISTORY SNAPSHOT the figures are cut at; `None` = the head. A
+    /// statement is cut as of a snapshot, and naming it is what makes the statement reproducible:
+    /// the same two inputs — the quantities and the history at this number — give the same figures
+    /// forever, whatever has happened to the card since. `as_of` above the head is a 400 rather
+    /// than a silently-clamped answer, because a caller asking about a snapshot that does not exist
+    /// yet is asking a question this read cannot answer. The response echoes the snapshot it used.
+    pub(crate) async fn get_usage(
+        &self,
+        window: Option<u64>,
+        as_of: Option<u64>,
+    ) -> Result<UsageView, AdminError> {
         let now = crate::store::now();
+        // The snapshot the figures are cut at, resolved BEFORE the store reads so every row of one
+        // answer is priced against one history. Resolving it per row would let an append landing
+        // mid-read put two rows of one statement on two different histories.
+        let history = usage_card_history();
+        let head = history.map_or(OPENING_HISTORY_SEQ, |h| h.head());
+        let as_of = match as_of {
+            None => head,
+            Some(s) if s > head => {
+                return Err(AdminError::Validation(format!(
+                    "as_of is above the rate-card history head; got {s}, head is {head}"
+                )))
+            }
+            Some(s) => s,
+        };
         let current = crate::governance::metering_bucket(now);
         let bucket = match window {
             None => current,
@@ -2154,7 +2254,7 @@ impl AdminService {
         };
         let empty = || UsageView {
             window,
-            as_of: now,
+            as_of,
             currency: (),
             total: UsageBreakdown::default(),
             by_model: Vec::new(),
@@ -2216,7 +2316,10 @@ impl AdminService {
         for r in &rows {
             // Spend derives PER ROW (the model is known here - the per-model rate applies), then
             // aggregates ADDITIVELY into total/by_model/by_key, so every rollup is exact under a
-            // heterogeneous rate card.
+            // heterogeneous rate card. The per-row derive is also what makes the dated lookup work
+            // at all: each row resolves its OWN card out of the history before it is priced, so a
+            // window holding rows from either side of a price change reports each at what it was
+            // earned under, and the rollup above it is still an exact sum of exact rows.
             let row_view = UsageBreakdown {
                 tokens_input: r.tokens_input,
                 tokens_output: r.tokens_output,
@@ -2227,7 +2330,15 @@ impl AdminService {
                 requests: r.requests,
                 spend_micros: 0,
             };
-            let row_spend = derive_spend_micros_row(&cost, &r.model, &row_view);
+            // THE LOOKUP. The card is the one in force when this row's tokens were spent, as the
+            // snapshot sees it — not the one configured at the instant of the read. A node with no
+            // history bound, and a row that predates the history, both land on the card the node is
+            // running, which for a single-entry history IS the entry those tokens were earned
+            // under: same rates, same order, same saturation, same single truncation.
+            let card = history
+                .and_then(|h| h.card_at(accrued_under(&r.pricing_version), as_of))
+                .unwrap_or_else(|| cost.clone());
+            let row_spend = derive_spend_micros_row(&card, &r.model, &row_view);
             for b in [
                 &mut total,
                 by_model
@@ -2292,7 +2403,7 @@ impl AdminService {
         by_key.truncate(BY_KEY_CAP);
         Ok(UsageView {
             window,
-            as_of: now,
+            as_of,
             currency: (),
             total,
             by_model,
