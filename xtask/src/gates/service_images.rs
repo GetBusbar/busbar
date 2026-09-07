@@ -68,6 +68,31 @@ pub const ROW_PIN_MATCHES: &str = "images|workflow-pin-matches";
 pub const ROW_EVERY_PIN_USED: &str = "images|every-pin-used";
 pub const ROW_RELEASE_CHECK: &str = "images|release-check-tags";
 
+/// The shell's own TITLE for the three rules whose row ids could not be inherited.
+fn legacy_title(rule: &str) -> Option<&'static str> {
+    match rule {
+        ROW_FLOATING => Some("a workflow image is on a FLOATING tag"),
+        ROW_ROW_PRESENT => Some("a workflow image has no row in the pinned table"),
+        ROW_PIN_MATCHES => Some("a workflow image's digest disagrees with the pinned table"),
+        _ => None,
+    }
+}
+
+/// THE WIDENED SCAN SET, declared as the divergence it is.
+///
+/// The shell reads `.github/workflows/` and nothing else, so a container the release harness runs
+/// is not something it can see - which is why the qa gate's own floating tags were the drift that
+/// prompted widening the scan. Every probe of that rule is therefore a violation the legacy is
+/// green on, by construction rather than by accident.
+fn release_check_divergence(rule: &str) -> Option<crate::gates::Divergence> {
+    (rule == ROW_RELEASE_CHECK).then(|| crate::gates::Divergence::LegacyGreen {
+        reason: "the shell scans .github/workflows/ only, so a container the release harness runs \
+                 is outside everything it reads. Widening the scan to those tags is the point of \
+                 this rule, and the qa gate's own floating tags were the drift that prompted it."
+            .to_string(),
+    })
+}
+
 /// Twelve `image:` references exist today across `ci.yml` (4), `plugin-ci.yml` (6) and
 /// `release-stage.yml` (2). The floor is set below that on purpose: it must catch a scanner that
 /// broke, not fail every time somebody legitimately deletes a service. A floor of 1 catches
@@ -382,8 +407,13 @@ impl Gate for ServiceImagesGate {
                     overlay,
                     materialize,
                     expect_rule: rule.map(str::to_string),
-                    legacy_names: None,
-                    divergence: None,
+                    // Four of this gate's rows keep the shell's own ids and match directly. The
+                    // three per-image rules cannot: the shell keys those rows by FILE AND LINE, so
+                    // the id moved whenever a workflow was edited, and an id nobody can predict
+                    // cannot be a `Gate::owed` set. The rule became the id and the location moved
+                    // into the detail, so the probe carries the shell's TITLE for the same rule.
+                    legacy_names: rule.and_then(legacy_title).map(str::to_string),
+                    divergence: rule.and_then(release_check_divergence),
                 });
             }
         };
