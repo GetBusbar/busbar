@@ -71,10 +71,10 @@ DIALECTS = ("anthropic", "openai", "responses", "gemini", "bedrock", "cohere")
 REQUIRED_SCHEMA_KEYS = ("dialect", "surface", "source", "retrieved", "request", "response")
 
 
-def load_schemas():
+def load_schemas(schema_dir=SCHEMA_DIR, dialects=DIALECTS):
     """Read every vendored schema, refusing anything without provenance."""
     schemas = {}
-    for path in sorted(glob.glob(os.path.join(SCHEMA_DIR, "*.json"))):
+    for path in sorted(glob.glob(os.path.join(schema_dir, "*.json"))):
         with open(path, encoding="utf-8") as fh:
             doc = json.load(fh)
         for key in REQUIRED_SCHEMA_KEYS:
@@ -95,8 +95,8 @@ def load_schemas():
                 sys.exit(f"{path}: duplicate {direction} field(s) {dupes}")
         schemas[dialect] = doc
 
-    missing = sorted(set(DIALECTS) - set(schemas))
-    extra = sorted(set(schemas) - set(DIALECTS))
+    missing = sorted(set(dialects) - set(schemas))
+    extra = sorted(set(schemas) - set(dialects))
     if missing:
         sys.exit(f"no schema for registered dialect(s): {missing}")
     if extra:
@@ -156,12 +156,81 @@ def selftest(schemas):
     ok = True
 
     # 1. A schema stripped of its provenance must be REFUSED, not silently accepted.
-    for key in ("source", "retrieved"):
-        probe = dict(schemas["openai"])
-        probe.pop(key)
-        if all(probe.get(k) for k in REQUIRED_SCHEMA_KEYS):
-            print(f"SELFTEST FAIL: a schema without {key} would be accepted")
+    #
+    # THROUGH THE REAL `load_schemas`, over a real directory of real files. This case used to
+    # re-implement the guard's condition (`all(probe.get(k) for k in REQUIRED_SCHEMA_KEYS)`) rather
+    # than drive it, so it proved a property of a dict comprehension and nothing about the refusal.
+    # Planted -- the `if not doc.get(key)` line cut out of load_schemas entirely -- and the
+    # self-test stayed GREEN. It is the only thing standing between "a vendored schema with a
+    # source URL and a retrieval date" and "a hand-written list wearing a filename", so it is
+    # driven, in a scratch directory, one mutation at a time.
+    import json as _json
+    import tempfile as _tempfile
+
+    def refuses(mutate, dialects=DIALECTS):
+        """True iff load_schemas() exits on a schema set built by applying `mutate` to the real one."""
+        with _tempfile.TemporaryDirectory() as td:
+            for name, doc in schemas.items():
+                doc = _json.loads(_json.dumps(doc))
+                mutate(name, doc)
+                if doc is None:
+                    continue
+                with open(os.path.join(td, "%s.json" % name), "w", encoding="utf-8") as fh:
+                    _json.dump(doc, fh)
+            try:
+                load_schemas(td, dialects)
+            except SystemExit:
+                return True
+            except Exception as exc:  # a crash is a refusal, just not a legible one
+                print(f"  (note: refused by {type(exc).__name__}: {exc}, not by a named message)")
+                return True
+            return False
+
+    # The unmutated copy must LOAD, or every refusal below proves only that the copy is broken.
+    if refuses(lambda name, doc: None):
+        print("SELFTEST FAIL: an unmutated copy of the real schema set was refused")
+        ok = False
+
+    for key in REQUIRED_SCHEMA_KEYS:
+        def drop(name, doc, _k=key):
+            if name == "openai":
+                doc.pop(_k, None)
+        if not refuses(drop):
+            print(f"SELFTEST FAIL: a schema with no {key!r} was accepted by load_schemas")
             ok = False
+
+    for key in ("request", "response"):
+        def empty(name, doc, _k=key):
+            if name == "openai":
+                doc[_k] = []
+        if not refuses(empty):
+            print(f"SELFTEST FAIL: a schema whose {key!r} field list is EMPTY was accepted -- an "
+                  f"enumeration of nothing reports full coverage of a surface nobody listed")
+            ok = False
+
+    def dupe(name, doc):
+        if name == "openai":
+            doc["request"] = doc["request"] + doc["request"][:1]
+    if not refuses(dupe):
+        print("SELFTEST FAIL: a duplicate field in a schema was accepted")
+        ok = False
+
+    def rename(name, doc):
+        if name == "openai":
+            doc["dialect"] = "not-openai"
+    if not refuses(rename):
+        print("SELFTEST FAIL: a schema whose `dialect` disagrees with its filename was accepted")
+        ok = False
+
+    # A registered dialect with no schema file, and a schema file for no registered dialect: both
+    # are how the inventory silently loses (or invents) a whole surface.
+    if not refuses(lambda name, doc: doc.clear() if name == "openai" else None):
+        print("SELFTEST FAIL: a registered dialect whose schema went missing was accepted")
+        ok = False
+    if not refuses(lambda name, doc: None, dialects=tuple(d for d in DIALECTS if d != "openai")):
+        print("SELFTEST FAIL: a schema file for an unregistered dialect was accepted -- the "
+              "inventory would silently exclude that whole surface")
+        ok = False
 
     # 2. Every id must be unique — a collision would let one field's coverage claim stand in for
     #    another's, which is the shape of a fake green.
