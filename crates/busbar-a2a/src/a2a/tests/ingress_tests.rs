@@ -8,31 +8,16 @@
 //! this plane had before this module existed, so a test that called the handler would have passed
 //! against it.
 
-use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
 use busbar_plugin_loader::RouteAuth;
 use busbar_substrate::testkit::engine_kit_plus::EngineAppPlus;
 
-fn unpinned_agent(url: &str) -> AgentDefCfg {
-    AgentDefCfg {
-        url: url.to_string(),
-        pin: AgentPinCfg {
-            mechanism: PinMechanism::Unpinned,
-            key: None,
-            fingerprint: None,
-        },
-        reverify_ttl: None,
-        recovery_backoff: None,
-        protocol_version: None,
-        allow_private: false,
-        upstream_credentials: None,
-        upstream_credential: None,
-        egress_scopes: Vec::new(),
-        client_identity: None,
-        hooks: Vec::new(),
-    }
-}
+// THE ONE `unpinned_agent`, not a third field-for-field copy of it. `AgentDefCfg` gaining a field
+// only forces the copy whose own file is being edited to be updated; the others go on compiling
+// with a stale `Default`-shaped literal, and a security-relevant opt-in is exactly the kind of
+// field that would land that way.
+use crate::testkit::unpinned_agent;
 
 /// The engine's route table view the DATA router was actually built from — the same function
 /// production calls, with the same inputs, so the enumeration cannot describe a different surface.

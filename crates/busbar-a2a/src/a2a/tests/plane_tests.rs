@@ -11,7 +11,7 @@
 //! helpfully turned a declared fingerprint into an approval would approve a card nobody fetched.
 
 use super::*;
-use crate::a2a::config::{AgentDefCfg, PinMechanism};
+use crate::a2a::config::{AgentDefCfg, AgentPinCfg, PinMechanism};
 use crate::testkit::engine_boot::engine;
 use crate::testkit::TestAppA2aExt;
 use busbar_substrate::trust::TrustState;
@@ -24,25 +24,11 @@ fn cfg_with(agents: &[(&str, AgentDefCfg)]) -> AgentsCfg {
     out
 }
 
-fn unpinned_agent(url: &str) -> AgentDefCfg {
-    AgentDefCfg {
-        url: url.to_string(),
-        pin: AgentPinCfg {
-            mechanism: PinMechanism::Unpinned,
-            key: None,
-            fingerprint: None,
-        },
-        reverify_ttl: None,
-        recovery_backoff: None,
-        protocol_version: None,
-        allow_private: false,
-        upstream_credentials: None,
-        upstream_credential: None,
-        egress_scopes: Vec::new(),
-        client_identity: None,
-        hooks: Vec::new(),
-    }
-}
+// THE ONE `unpinned_agent`, not a third field-for-field copy of it. `AgentDefCfg` gaining a field
+// only forces the copy whose own file is being edited to be updated; the others go on compiling
+// with a stale `Default`-shaped literal, and a security-relevant opt-in is exactly the kind of
+// field that would land that way.
+use crate::testkit::unpinned_agent;
 
 /// An agent whose operator declared a COMPLETE pin: a root AND an approved fingerprint. The case
 /// where a lowering would be most tempted to hand back something already trusted.
