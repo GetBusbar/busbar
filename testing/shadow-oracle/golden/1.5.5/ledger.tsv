@@ -28,18 +28,18 @@ a2a|grpc|client|client|GetExtendedAgentCard|out_of_scope	SKIP	UNSUPPORTED: a2a i
 a2a|grpc|client|client|GetExtendedAgentCard|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetExtendedAgentCard|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetExtendedAgentCard|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|client|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|client|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|client|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|client|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|client|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|client|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetTask|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetTask|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetTask|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetTask|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetTask|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|GetTask|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|client|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|client|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|client|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|client|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|client|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|client|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|ListTaskPushNotificationConfigs|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|ListTaskPushNotificationConfigs|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|client|client|ListTaskPushNotificationConfigs|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -106,18 +106,18 @@ a2a|grpc|server|client|GetExtendedAgentCard|out_of_scope	SKIP	UNSUPPORTED: a2a i
 a2a|grpc|server|client|GetExtendedAgentCard|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetExtendedAgentCard|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetExtendedAgentCard|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|server|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|server|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|server|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|server|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|server|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|grpc|server|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetTask|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetTask|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetTask|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetTask|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetTask|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|GetTask|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|server|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|server|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|server|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|server|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|server|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|grpc|server|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|ListTaskPushNotificationConfigs|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|ListTaskPushNotificationConfigs|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|grpc|server|client|ListTaskPushNotificationConfigs|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -184,18 +184,18 @@ a2a|http+json|client|client|GetExtendedAgentCard|out_of_scope	SKIP	UNSUPPORTED: 
 a2a|http+json|client|client|GetExtendedAgentCard|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetExtendedAgentCard|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetExtendedAgentCard|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|client|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|client|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|client|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|client|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|client|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|client|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetTask|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetTask|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetTask|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetTask|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetTask|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|GetTask|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|client|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|client|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|client|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|client|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|client|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|client|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|ListTaskPushNotificationConfigs|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|ListTaskPushNotificationConfigs|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|client|client|ListTaskPushNotificationConfigs|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -262,18 +262,18 @@ a2a|http+json|server|client|GetExtendedAgentCard|out_of_scope	SKIP	UNSUPPORTED: 
 a2a|http+json|server|client|GetExtendedAgentCard|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetExtendedAgentCard|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetExtendedAgentCard|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|server|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|server|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|server|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|server|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|server|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|http+json|server|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetTask|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetTask|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetTask|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetTask|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetTask|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|GetTask|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|server|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|server|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|server|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|server|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|server|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|http+json|server|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|ListTaskPushNotificationConfigs|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|ListTaskPushNotificationConfigs|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|http+json|server|client|ListTaskPushNotificationConfigs|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -340,18 +340,18 @@ a2a|jsonrpc|client|client|GetExtendedAgentCard|out_of_scope	SKIP	UNSUPPORTED: a2
 a2a|jsonrpc|client|client|GetExtendedAgentCard|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetExtendedAgentCard|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetExtendedAgentCard|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetTask|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetTask|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetTask|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetTask|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetTask|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|GetTask|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|client|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|ListTaskPushNotificationConfigs|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|ListTaskPushNotificationConfigs|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|client|client|ListTaskPushNotificationConfigs|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -418,18 +418,18 @@ a2a|jsonrpc|server|client|GetExtendedAgentCard|out_of_scope	SKIP	UNSUPPORTED: a2
 a2a|jsonrpc|server|client|GetExtendedAgentCard|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetExtendedAgentCard|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetExtendedAgentCard|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetTask|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetTask|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetTask|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetTask|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetTask|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|GetTask|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+a2a|jsonrpc|server|client|GetTaskPushNotificationConfig|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs|malformed	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs|ok	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|client|ListTaskPushNotificationConfigs|out_of_scope	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -466,6 +466,7 @@ a2a|jsonrpc|server|server|PushNotificationDelivery|out_of_scope	SKIP	UNSUPPORTED
 a2a|jsonrpc|server|server|PushNotificationDelivery|over_budget	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|server|PushNotificationDelivery|unauthenticated	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 a2a|jsonrpc|server|server|PushNotificationDelivery|upstream_down	SKIP	UNSUPPORTED: a2a is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeleteExportName|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteExportName|if-match-stale	PASS	HTTP 409; usage Δ {}	
 admin.ops|DeleteExportName|not-found	PASS	HTTP 404; usage Δ {}	
@@ -506,30 +507,35 @@ admin.ops|GetAudit|ok	PASS	HTTP 200; usage Δ {}
 admin.ops|GetAudit|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetAuth|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetAuth|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetConfig|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetConfig|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetConfigDiff|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetConfigDiff|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetConfigSettings|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetConfigSettings|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetConfigVersions|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetConfigVersions|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetConfigVersionsV|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetConfigVersionsV|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetConfigVersionsV|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetConfigVersions|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetConfigVersions|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetConfig|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetConfig|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetExport|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetExport|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetExportName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetExportName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetExportName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetExport|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetExport|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetGroupsNameUsage|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetGroupsNameUsage|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetGroupsNameUsage|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetGroups|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetGroups|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetGroupsName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetGroupsName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetGroupsName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetGroups|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetGroups|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetGroupsNameUsage|not-found	PASS	HTTP 404; usage Δ {}	
+admin.ops|GetGroupsNameUsage|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetGroupsNameUsage|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetHooks|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetHooks|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetHooksName|not-found	PASS	HTTP 404; usage Δ {}	
+admin.ops|GetHooksName|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetHooksName|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetHooksNameHealth|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetHooksNameHealth|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetHooksNameHealth|unauth	PASS	HTTP 401; usage Δ {}	
@@ -539,42 +545,37 @@ admin.ops|GetHooksNameSchema|unauth	PASS	HTTP 401; usage Δ {}
 admin.ops|GetHooksNameStatus|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetHooksNameStatus|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetHooksNameStatus|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetHooksName|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetHooksName|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetHooksName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetHooks|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetHooks|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetIdentityProviders|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetIdentityProviders|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetIdentityProvidersName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetIdentityProviders|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetIdentityProviders|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetInfo|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetInfo|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetKeysIdUsage|not-found	PASS	HTTP 404; usage Δ {}	
-admin.ops|GetKeysIdUsage|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetKeysIdUsage|overlong-id	PASS	HTTP 400; usage Δ {}	
-admin.ops|GetKeysIdUsage|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetKeys|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetKeys|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeysId|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetKeysId|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetKeysId|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|GetKeysId|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetKeys|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetKeys|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetKeysIdUsage|not-found	PASS	HTTP 404; usage Δ {}	
+admin.ops|GetKeysIdUsage|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetKeysIdUsage|overlong-id	PASS	HTTP 400; usage Δ {}	
+admin.ops|GetKeysIdUsage|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetModels|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetModels|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetOpenapiJson|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetOpenapiJson|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetPlugins|ok	PASS	HTTP 400; usage Δ {}	
+admin.ops|GetPlugins|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetPluginsFileSchema|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetPluginsFileSchema|ok	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetPluginsFileSchema|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetPlugins|ok	PASS	HTTP 400; usage Δ {}	
-admin.ops|GetPlugins|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|GetPools|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetPools|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetPoolsName|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetPoolsName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetPoolsName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|GetPools|ok	PASS	HTTP 200; usage Δ {}	
-admin.ops|GetPools|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetProviders|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetProviders|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetUsage|no-usage-after-mutation	PASS	HTTP 200; usage Δ {}	
@@ -640,6 +641,10 @@ admin.ops|PostHooks|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|PostHooks|if-match-stale	PASS	HTTP 201; usage Δ {}	
 admin.ops|PostHooks|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostHooks|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|PostKeys|bad-body	PASS	HTTP 400; usage Δ {}	
+admin.ops|PostKeys|idempotent-replay	PASS	HTTP 201; usage Δ {}	
+admin.ops|PostKeys|ok	PASS	HTTP 201; usage Δ {}	
+admin.ops|PostKeys|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeysIdRevoke|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRevoke|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostKeysIdRevoke|overlong-id	PASS	HTTP 400; usage Δ {}	
@@ -649,10 +654,9 @@ admin.ops|PostKeysIdRotate|not-found	PASS	HTTP 404; usage Δ {}
 admin.ops|PostKeysIdRotate|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostKeysIdRotate|overlong-id	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRotate|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|PostKeys|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostKeys|idempotent-replay	PASS	HTTP 201; usage Δ {}	
-admin.ops|PostKeys|ok	PASS	HTTP 201; usage Δ {}	
-admin.ops|PostKeys|unauth	PASS	HTTP 401; usage Δ {}	
+admin.ops|PostPlugins|bad-body	PASS	HTTP 400; usage Δ {}	
+admin.ops|PostPlugins|ok	PASS	HTTP 201; usage Δ {}	
+admin.ops|PostPlugins|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostPluginsInspect|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostPluginsInspect|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsInspect|unauth	PASS	HTTP 401; usage Δ {}	
@@ -663,9 +667,6 @@ admin.ops|PostPluginsRollback|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|PostPluginsRollback|if-match-stale	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsRollback|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostPluginsRollback|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|PostPlugins|bad-body	PASS	HTTP 400; usage Δ {}	
-admin.ops|PostPlugins|ok	PASS	HTTP 201; usage Δ {}	
-admin.ops|PostPlugins|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostRestart|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostRestart|ok	PASS	HTTP 202; usage Δ {"unavailable":true}	
 admin.ops|PostRestart|unauth	PASS	HTTP 401; usage Δ {}	
@@ -705,7 +706,6 @@ admin.ops|PutIdentityProvidersName|if-match-stale	PASS	HTTP 200; usage Δ {}
 admin.ops|PutIdentityProvidersName|not-found	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutIdentityProvidersName|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|PutIdentityProvidersName|unauth	PASS	HTTP 401; usage Δ {}	
-admin.ops|admin-token|wrong-destination	PASS	HTTP 401; usage Δ {}	
 auth.lifecycle|key-expiry	PASS	script key-expiry.sh: status 0	
 auth.lifecycle|key-revoke	PASS	script key-revoke.sh: status 0	
 auth.lifecycle|key-rotate	PASS	script key-rotate.sh: status 0	
@@ -852,38 +852,39 @@ boot.refusal|BOOT-122|validate	PASS	exit 1;
 boot.refusal|BOOT-123|validate	PASS	exit 1; 	
 boot.refusal|BOOT-124|validate	PASS	exit 1; 	
 boot.refusal|BOOT-125|validate	PASS	exit 1; 	
-boot.refusal|BOOT-130|boot	PASS	exit 1; [2m2026-09-06T17:26:31.390082Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-131|boot	PASS	exit 1; [2m2026-09-06T17:26:31.766236Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-132|boot	PASS	exit 1; [2m2026-09-06T17:26:32.122014Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-133|boot	PASS	exit 1; [2m2026-09-06T17:26:32.481970Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-134|boot	PASS	exit 1; [2m2026-09-06T17:26:32.814250Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-135|boot	PASS	exit 1; [2m2026-09-06T17:26:33.192096Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-136|boot	PASS	exit 1; [2m2026-09-06T17:26:33.583090Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-137a|boot	PASS	exit 1; [2m2026-09-06T17:26:33.977899Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-137b|boot	PASS	exit 1; [2m2026-09-06T17:26:34.697227Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-137c|boot	PASS	exit 1; [2m2026-09-06T17:26:35.049741Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-138a|boot	PASS	exit 1; [2m2026-09-06T17:26:35.401122Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-138b|boot	PASS	exit 1; [2m2026-09-06T17:26:36.016925Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-138c|boot	PASS	exit 1; [2m2026-09-06T17:26:36.342578Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-139a|boot	PASS	exit 1; [2m2026-09-06T17:26:36.691157Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-139b|boot	PASS	exit 1; [2m2026-09-06T17:26:37.445069Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-140|boot	PASS	exit 1; [2m2026-09-06T17:26:37.768236Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-141|boot	PASS	exit 1; [2m2026-09-06T17:26:38.083898Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-130|boot	PASS	exit 1; [2m2026-09-07T21:29:01.053649Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-131|boot	PASS	exit 1; [2m2026-09-07T21:29:01.337789Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-132|boot	PASS	exit 1; [2m2026-09-07T21:29:01.622290Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-133|boot	PASS	exit 1; [2m2026-09-07T21:29:01.911416Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-134|boot	PASS	exit 1; [2m2026-09-07T21:29:02.202308Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-135|boot	PASS	exit 1; [2m2026-09-07T21:29:02.510006Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-136|boot	PASS	exit 1; [2m2026-09-07T21:29:02.817461Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-137a|boot	PASS	exit 1; [2m2026-09-07T21:29:03.123884Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-137b|boot	PASS	exit 1; [2m2026-09-07T21:29:04.071042Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-137c|boot	PASS	exit 1; [2m2026-09-07T21:29:04.362642Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-138a|boot	PASS	exit 1; [2m2026-09-07T21:29:04.670846Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-138b|boot	PASS	exit 1; [2m2026-09-07T21:29:05.605282Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-138c|boot	PASS	exit 1; [2m2026-09-07T21:29:05.892277Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-139a|boot	PASS	exit 1; [2m2026-09-07T21:29:06.198850Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-139b|boot	PASS	exit 1; [2m2026-09-07T21:29:07.146452Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-140|boot	PASS	exit 1; [2m2026-09-07T21:29:07.437383Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-141|boot	PASS	exit 1; [2m2026-09-07T21:29:07.728811Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-150|validate	PASS	exit 1; 	
 boot.refusal|BOOT-151|validate	PASS	exit 1; 	
 boot.refusal|BOOT-152|validate	PASS	exit 1; 	
-boot.refusal|BOOT-153|boot	PASS	exit 1; [2m2026-09-06T17:26:38.876268Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-152b|boot	SKIP	UNSUPPORTED: not yet recorded on the golden host (cell added 2026-09-07 after the linux record; record on the next linux run)	named gap
+boot.refusal|BOOT-153|boot	PASS	exit 1; [2m2026-09-07T21:29:08.500206Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-160|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ references unknown provider	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-161|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ references unknown model	named gap: the fixture this cell needs is not in the tree yet
-boot.refusal|BOOT-162|boot	PASS	exit 1; [2m2026-09-06T17:26:39.243400Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-170|boot	PASS	exit 1; [2m2026-09-06T17:26:41.310726Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-171|boot	PASS	exit 1; [2m2026-09-06T17:26:41.662783Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-162|boot	PASS	exit 1; [2m2026-09-07T21:29:08.822023Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-170|boot	PASS	exit 1; [2m2026-09-07T21:29:09.126475Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-171|boot	PASS	exit 1; [2m2026-09-07T21:29:09.430613Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-172|boot	PASS	script durable-governance-precondition.sh: status 1	
 boot.refusal|BOOT-173|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ governance boot: could not read stored keys to validate budget_group references 	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-174|boot	PASS	script durable-governance-precondition.sh: status 1	
 boot.refusal|BOOT-175|boot	PASS	script durable-governance-precondition.sh: status 1	
-boot.refusal|BOOT-180|boot	PASS	exit 0; [2m2026-09-06T17:26:49.648503Z[0m [33m WARN[0m heterogen	
-boot.refusal|BOOT-181|boot	PASS	exit 1; [2m2026-09-06T17:26:49.898113Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-180|boot	PASS	exit 0; [2m2026-09-07T21:29:13.375193Z[0m [33m WARN[0m heterogen	
+boot.refusal|BOOT-181|boot	PASS	exit 1; [2m2026-09-07T21:29:13.686879Z[0m [33m WARN[0m heterogen	
 boot.refusal|BOOT-182|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ server error on '	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-183|boot	SKIP	UNSUPPORTED: expect exit 1; stderr ∋ failed to build the tokio runtime	named gap: the fixture this cell needs is not in the tree yet
 boot.refusal|BOOT-184|boot	PASS	exit 2; 	
@@ -932,34 +933,34 @@ boot.warning|BOOT-W01|validate	PASS	exit 0; ok: config valid — 6 provider(s), 
 boot.warning|BOOT-W02|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
 boot.warning|BOOT-W03|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
 boot.warning|BOOT-W04|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
-boot.warning|BOOT-W10|boot	PASS	exit 0; [2m2026-09-06T17:26:58.846009Z[0m [33m WARN[0m metadata 	
-boot.warning|BOOT-W11|boot	PASS	exit 0; [2m2026-09-06T17:26:59.275302Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W12|boot	PASS	exit 0; [2m2026-09-06T17:26:59.551654Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W10|boot	PASS	exit 0; [2m2026-09-07T21:29:20.829829Z[0m [33m WARN[0m metadata 	
+boot.warning|BOOT-W11|boot	PASS	exit 0; [2m2026-09-07T21:29:21.137866Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W12|boot	PASS	exit 0; [2m2026-09-07T21:29:21.440049Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W13|boot	PASS	script durable-governance-precondition.sh: status 0	
-boot.warning|BOOT-W14|boot	PASS	exit 0; [2m2026-09-06T17:27:06.229993Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W15|boot	PASS	exit 0; [2m2026-09-06T17:27:06.500837Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W16|boot	PASS	exit 0; [2m2026-09-06T17:27:06.770144Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W17|boot	PASS	exit 0; [2m2026-09-06T17:27:06.997973Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W18|boot	PASS	exit 0; [2m2026-09-06T17:27:07.217856Z[0m [33m WARN[0m config is	
-boot.warning|BOOT-W19|boot	PASS	exit 0; [2m2026-09-06T17:27:07.434738Z[0m [33m WARN[0m config is	
+boot.warning|BOOT-W14|boot	PASS	exit 0; [2m2026-09-07T21:29:23.983209Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W15|boot	PASS	exit 0; [2m2026-09-07T21:29:24.295933Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W16|boot	PASS	exit 0; [2m2026-09-07T21:29:24.602691Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W17|boot	PASS	exit 0; [2m2026-09-07T21:29:24.911283Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W18|boot	PASS	exit 0; [2m2026-09-07T21:29:25.217819Z[0m [33m WARN[0m config is	
+boot.warning|BOOT-W19|boot	PASS	exit 0; [2m2026-09-07T21:29:25.528433Z[0m [33m WARN[0m config is	
 boot.warning|BOOT-W20|boot	PASS	exit 2; 	
-boot.warning|BOOT-W21|boot	PASS	exit 0; [2m2026-09-06T17:27:07.923481Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W22|boot	PASS	exit 0; [2m2026-09-06T17:27:08.420278Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W23|boot	PASS	exit 0; [2m2026-09-06T17:27:09.020195Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W21|boot	PASS	exit 0; [2m2026-09-07T21:29:26.119510Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W22|boot	PASS	exit 0; [2m2026-09-07T21:29:27.071468Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W23|boot	PASS	exit 0; [2m2026-09-07T21:29:28.024054Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W24|boot	PASS	script plugins-fetch-reload-miss.sh: status 200	
-boot.warning|BOOT-W25|boot	PASS	exit 0; [2m2026-09-06T17:27:11.910042Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W26|boot	PASS	exit 0; [2m2026-09-06T17:27:12.138651Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W25|boot	PASS	exit 0; [2m2026-09-07T21:29:30.817760Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W26|boot	PASS	exit 0; [2m2026-09-07T21:29:31.124645Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W30|validate	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
-boot.warning|BOOT-W31|boot	PASS	exit 0; [2m2026-09-06T17:27:12.496785Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W32|boot	PASS	exit 0; [2m2026-09-06T17:27:12.716168Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W33|boot	PASS	exit 0; [2m2026-09-06T17:27:12.939647Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W34|boot	PASS	exit 0; [2m2026-09-06T17:27:13.161847Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W35|boot	PASS	exit 0; [2m2026-09-06T17:27:13.377682Z[0m [33m WARN[0m heterogen	
-boot.warning|BOOT-W36|boot	PASS	exit 0; [2m2026-09-06T17:27:13.590943Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W31|boot	PASS	exit 0; [2m2026-09-07T21:29:31.574733Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W32|boot	PASS	exit 0; [2m2026-09-07T21:29:31.879407Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W33|boot	PASS	exit 0; [2m2026-09-07T21:29:32.080877Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W34|boot	PASS	exit 0; [2m2026-09-07T21:29:32.384880Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W35|boot	PASS	exit 0; [2m2026-09-07T21:29:32.689403Z[0m [33m WARN[0m heterogen	
+boot.warning|BOOT-W36|boot	PASS	exit 0; [2m2026-09-07T21:29:32.998039Z[0m [33m WARN[0m heterogen	
 boot.warning|BOOT-W40|boot	PASS	exit 0; 169.254.0.0/16 100.100.100.200 168.63.129.16 192.0.0.192 fd0	
 boot.warning|BOOT-W41|boot	PASS	exit 0; 169.254.0.0/16 100.100.100.200 168.63.129.16 192.0.0.192 fd0	
 boot.warning|BOOT-W42|boot	PASS	exit 0; plugins dir: plugins (plugins.enabled: false) no plugin tarb	
-cli|--generate-signing-key	PASS	exit 0; 5fc627cb40f4392c9d6e8adbe97e0ee0d21afcd9b673874071f3d580886c	
+cli|--generate-signing-key	PASS	exit 0; 405b4c6cf258ae8e757242a464e36dd82767ed39efd00ec48cf8eafe51f1	
 cli|--help	PASS	exit 0; busbar 1.5.5 — native-protocol LLM gateway  USAGE:     bus	
 cli|--list-plugins	PASS	exit 0; plugins dir: plugins (plugins.enabled: false) no plugin tarb	
 cli|--migrate-config|missing-path	PASS	exit 2; 	
@@ -968,8 +969,8 @@ cli|--print-metadata-blocklist	PASS	exit 0; 169.254.0.0/16 100.100.100.200 168.6
 cli|--safe-mode|first-arg	PASS	exit 2; 	
 cli|--validate|baseline	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
 cli|--version	PASS	exit 0; busbar 1.5.5 	
-cli|-V	PASS	exit 0; busbar 1.5.5 	
 cli|-h	PASS	exit 0; busbar 1.5.5 — native-protocol LLM gateway  USAGE:     bus	
+cli|-V	PASS	exit 0; busbar 1.5.5 	
 cli|env|BUSBAR_CONFIG-missing	PASS	exit 1; 	
 cli|env|RUST_LOG-crate-filter	PASS	exit 0; ok: config valid — 6 provider(s), 9 model(s), 7 pool(s)   	
 cli|unknown-flag	PASS	exit 2; 	
@@ -1127,7 +1128,7 @@ documented|changelog|docker-boots-and-mutation-refused	PASS	script documented-ov
 documented|changelog|headers-off-default	PASS	HTTP 200; usage Δ {}	
 documented|changelog|lane-available-metric	PASS	HTTP 200; usage Δ {}	
 documented|changelog|legacy-config-refused	PASS	exit 1; 	
-documented|changelog|no-keygen-at-boot	PASS	exit 1; [2m2026-09-06T17:28:41.198008Z[0m [33m WARN[0m heterogen	
+documented|changelog|no-keygen-at-boot	PASS	exit 1; [2m2026-09-07T21:30:26.732274Z[0m [33m WARN[0m heterogen	
 documented|changelog|no-per-key-gauge	PASS	HTTP 200; usage Δ {}	
 documented|changelog|retry-after-floor	PASS	HTTP 503; usage Δ {"requests":1}	
 documented|changelog|spend-metrics-labelled	PASS	HTTP 200; usage Δ {}	
@@ -1168,8 +1169,6 @@ http.crosscut|413|gemini-path	PASS	HTTP 413; usage Δ {}
 http.crosscut|413|mcp-streamable-http	SKIP	UNSUPPORTED: oversize on the MCP streamable-http mount: which envelope answers before the plane is reached (JSON-RPC error vs the path-inferred dialect e	named gap: the fixture this cell needs is not in the tree yet
 http.crosscut|413|openai	PASS	HTTP 413; usage Δ {}	
 http.crosscut|413|openai-unauth	PASS	HTTP 401; usage Δ {}	
-http.crosscut|HEAD|healthz	PASS	HTTP 200; usage Δ {}	
-http.crosscut|OPTIONS|chat	PASS	HTTP 401; usage Δ {}	
 http.crosscut|admin-outside-prefix|admin	PASS	HTTP 401; usage Δ {}	
 http.crosscut|admin-unknown|admin	PASS	HTTP 404; usage Δ {}	
 http.crosscut|admin-wrong-method|admin	PASS	HTTP 405; usage Δ {}	
@@ -1178,6 +1177,8 @@ http.crosscut|api|data	PASS	HTTP 401; usage Δ {}
 http.crosscut|auth-token|GET-none	PASS	HTTP 200; usage Δ {}	
 http.crosscut|auth-token|POST-empty	PASS	HTTP 401; usage Δ {}	
 http.crosscut|bearer-and-x-api-key	PASS	HTTP 200; usage Δ {}	
+http.crosscut|HEAD|healthz	PASS	HTTP 200; usage Δ {}	
+http.crosscut|OPTIONS|chat	PASS	HTTP 401; usage Δ {}	
 http.crosscut|unknown-path|anthropic-beta	PASS	HTTP 404; usage Δ {}	
 http.crosscut|unknown-path|anthropic-header	PASS	HTTP 404; usage Δ {}	
 http.crosscut|unknown-path|bare	PASS	HTTP 404; usage Δ {}	
@@ -1330,6 +1331,12 @@ llm|responses|responses|request|over_budget_total	PASS	HTTP 429; usage Δ {}
 llm|responses|responses|request|stream_upstream_error	SKIP	UNSUPPORTED: the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event	named gap: the fixture this cell needs is not in the tree yet
 llm|responses|responses|request|unauthenticated	PASS	HTTP 401; usage Δ {}	
 llm|responses|responses|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
+mcp|stdio|client|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|client|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|client|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|client|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|client|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|client|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|DELETE /mcp (terminate session)|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|DELETE /mcp (terminate session)|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|DELETE /mcp (terminate session)|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -1342,12 +1349,6 @@ mcp|stdio|client|client|GET /mcp (open SSE stream)|out_of_scope	SKIP	UNSUPPORTED
 mcp|stdio|client|client|GET /mcp (open SSE stream)|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|GET /mcp (open SSE stream)|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|GET /mcp (open SSE stream)|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|client|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|client|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|client|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|client|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|client|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|client|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|initialize|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|initialize|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|client|initialize|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -1558,6 +1559,12 @@ mcp|stdio|client|server|sampling/createMessage|out_of_scope	SKIP	UNSUPPORTED: mc
 mcp|stdio|client|server|sampling/createMessage|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|server|sampling/createMessage|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|client|server|sampling/createMessage|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|server|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|server|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|server|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|server|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|server|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|stdio|server|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|DELETE /mcp (terminate session)|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|DELETE /mcp (terminate session)|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|DELETE /mcp (terminate session)|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -1570,12 +1577,6 @@ mcp|stdio|server|client|GET /mcp (open SSE stream)|out_of_scope	SKIP	UNSUPPORTED
 mcp|stdio|server|client|GET /mcp (open SSE stream)|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|GET /mcp (open SSE stream)|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|GET /mcp (open SSE stream)|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|server|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|server|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|server|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|server|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|server|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|stdio|server|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|initialize|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|initialize|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|client|initialize|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -1786,6 +1787,12 @@ mcp|stdio|server|server|sampling/createMessage|out_of_scope	SKIP	UNSUPPORTED: mc
 mcp|stdio|server|server|sampling/createMessage|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|server|sampling/createMessage|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|stdio|server|server|sampling/createMessage|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|client|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|client|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|client|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|client|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|client|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|client|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|DELETE /mcp (terminate session)|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|DELETE /mcp (terminate session)|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|DELETE /mcp (terminate session)|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -1798,12 +1805,6 @@ mcp|streamable-http|client|client|GET /mcp (open SSE stream)|out_of_scope	SKIP	U
 mcp|streamable-http|client|client|GET /mcp (open SSE stream)|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|GET /mcp (open SSE stream)|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|GET /mcp (open SSE stream)|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|client|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|client|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|client|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|client|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|client|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|client|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|initialize|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|initialize|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|client|initialize|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -2014,6 +2015,12 @@ mcp|streamable-http|client|server|sampling/createMessage|out_of_scope	SKIP	UNSUP
 mcp|streamable-http|client|server|sampling/createMessage|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|server|sampling/createMessage|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|client|server|sampling/createMessage|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|server|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|server|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|server|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|server|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|server|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+mcp|streamable-http|server|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|DELETE /mcp (terminate session)|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|DELETE /mcp (terminate session)|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|DELETE /mcp (terminate session)|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -2026,12 +2033,6 @@ mcp|streamable-http|server|client|GET /mcp (open SSE stream)|out_of_scope	SKIP	U
 mcp|streamable-http|server|client|GET /mcp (open SSE stream)|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|GET /mcp (open SSE stream)|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|GET /mcp (open SSE stream)|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|server|client|completion/complete|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|server|client|completion/complete|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|server|client|completion/complete|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|server|client|completion/complete|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|server|client|completion/complete|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
-mcp|streamable-http|server|client|completion/complete|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|initialize|malformed	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|initialize|ok	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|client|initialize|out_of_scope	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
@@ -2242,6 +2243,9 @@ mcp|streamable-http|server|server|sampling/createMessage|out_of_scope	SKIP	UNSUP
 mcp|streamable-http|server|server|sampling/createMessage|over_budget	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|server|sampling/createMessage|unauthenticated	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
 mcp|streamable-http|server|server|sampling/createMessage|upstream_down	SKIP	UNSUPPORTED: mcp is proven by its conformance rig, not recorded here	named gap on the golden, never owed
+neutrality|boot-lines	PASS	exit 0; [2m2026-09-07T21:34:29.626337Z[0m [32m INFO[0m busbar st	
+neutrality|metrics-no-plane-series	PASS	HTTP 200; usage Δ {}	
+neutrality|metrics-series	PASS	HTTP 200; usage Δ {}	
 neutrality|NEUT-U-auth|validate	PASS	exit 1; 	
 neutrality|NEUT-U-export|validate	PASS	exit 1; 	
 neutrality|NEUT-U-groups|validate	PASS	exit 1; 	
@@ -2249,9 +2253,6 @@ neutrality|NEUT-U-identity-providers|validate	PASS	exit 1;
 neutrality|NEUT-U-models|validate	PASS	exit 1; 	
 neutrality|NEUT-U-providers|validate	PASS	exit 1; 	
 neutrality|NEUT-U-top|validate	PASS	exit 1; 	
-neutrality|boot-lines	PASS	exit 0; [2m2026-09-06T17:36:08.240587Z[0m [32m INFO[0m busbar st	
-neutrality|metrics-no-plane-series	PASS	HTTP 200; usage Δ {}	
-neutrality|metrics-series	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|a2a-shaped-404	PASS	HTTP 404; usage Δ {}	
 neutrality|routes|admin-openapi-paths	PASS	HTTP 200; usage Δ {}	
 neutrality|routes|healthz	PASS	HTTP 200; usage Δ {}	
@@ -2262,19 +2263,19 @@ neutrality|routes|voice-shaped-404	PASS	HTTP 404; usage Δ {}
 neutrality|stats-idle-zero	PASS	HTTP 200; usage Δ {}	
 ops.scrape|healthz|admin	PASS	HTTP 200; usage Δ {}	
 ops.scrape|healthz|data	PASS	HTTP 200; usage Δ {}	
-ops.scrape|metricshooks|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metrics|admin-listener	PASS	HTTP 401; usage Δ {}	
 ops.scrape|metrics|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metrics|no-ledger-series	PASS	HTTP 200; usage Δ {}	
 ops.scrape|metrics|none	PASS	HTTP 401; usage Δ {}	
+ops.scrape|metricshooks|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|stats|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|stats|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1betamodels	PASS	HTTP 200; usage Δ {}	
-ops.scrape|v1modelsid|retrieve	PASS	HTTP 405; usage Δ {}	
 ops.scrape|v1models|anthropic-fp	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1models|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1models|openai-fp	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1models|x-api-key	PASS	HTTP 200; usage Δ {}	
+ops.scrape|v1modelsid|retrieve	PASS	HTTP 405; usage Δ {}	
 plugins.load|auth-github	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-ldap	PASS	script plugin-list.sh: status 0	
 plugins.load|auth-oidc	PASS	script plugin-list.sh: status 0	
