@@ -257,6 +257,8 @@ run_selftest() {
               source-denylist:busbar-plane-llm lean-core no-default-bodies sealed-unit-traits \
               hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
               token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls seal-sites \
+              forbid-unsafe-deny:busbar-transport-tcp hold-escapes secret-carrier-debug \
+              unit-no-wall-clock unit-no-finding-ids \
               plane-no-money one-pricing-site one-pricing-site:fee-fields \
               legacy-reach no-test-doubles-in-production \
               gate-script-hygiene:strict-mode gate-script-hygiene:muffled-subject unused-waiver \

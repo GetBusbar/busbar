@@ -50,6 +50,7 @@ TOUCHED = [
     "crates/busbar/src/root/vocabulary.rs",
     "crates/busbar/src/root/units_llm.rs",
     "crates/busbar-plane-voice/src/claims.rs",
+    "crates/busbar-transport-tcp/src/lib.rs",
     "scripts/planted-gate-probe.sh",
 ]
 
@@ -360,6 +361,49 @@ def plant(rule, pristine, scratch, cfg, baseline, toml=None):
         src = src.replace(needle, "", 1)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(src)
+    elif rule.startswith("forbid-unsafe-deny:"):
+        # THE OTHER HALF OF forbid-unsafe. `deny` is a DIFFERENT regex from `forbid` -- it accepts
+        # either spelling -- and twelve rows were measured by it with no plant behind any of them,
+        # so the forbid plant above proved nothing about them. A transport crate is the sharpest
+        # subject: it is the kind that legitimately touches the wire, which is exactly why the
+        # weaker level is the one it must still carry.
+        crate = rule.split(":", 1)[1]
+        rel = f"crates/{crate}/src/lib.rs"
+        path = os.path.join(scratch, rel)
+        if not os.path.exists(path):
+            nothing_to_plant(f"{rel} does not exist yet")
+        with open(path, encoding="utf-8") as fh:
+            src = fh.read()
+        needle = next((n for n in ("#![deny(unsafe_code)]\n", "#![forbid(unsafe_code)]\n")
+                       if n in src), None)
+        if needle is None:
+            nothing_to_plant(f"no crate-root unsafe_code attribute found in {rel}")
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(src.replace(needle, "", 1))
+    elif rule == "hold-escapes":
+        # A deliberate way to make a hold disappear, planted in a crate that is neither on the
+        # reviewed-site ratchet nor inside any symbol's confined_to_paths. `ManuallyDrop` is the one
+        # escape spelling hold-discipline's own patterns do not also match, so this plant trips the
+        # workspace-wide symbol scan and nothing else.
+        append(scratch, "crates/busbar-voice/src/lib.rs",
+               "pub fn planted_escape(v: Vec<u8>) { let _ = std::mem::ManuallyDrop::new(v); }")
+    elif rule == "secret-carrier-debug":
+        # A named secret carrier that derives the Debug it is supposed to hand-roll. Declared in a
+        # crate that is not the carrier's real home, because the rule looks the declaration up by
+        # name wherever it sits -- which is the property under test.
+        append(scratch, "crates/busbar-voice/src/lib.rs",
+               "#[derive(Debug)]\npub struct KeyMaterial(u8);")
+    elif rule == "unit-no-wall-clock":
+        # A unit crate reading the clock in production code: an input nobody passed it.
+        append(scratch, "crates/busbar-unit-breaker/src/port.rs",
+               "pub fn planted_clock() -> std::time::Instant { std::time::Instant::now() }")
+    elif rule == "unit-no-finding-ids":
+        # A comment in a unit crate citing an audit worksheet that is not in this tree. Read on the
+        # RAW text, which is why the plant is a comment rather than code: every other plant here
+        # would be invisible to this rule and this one is invisible to every other.
+        append(scratch, "crates/busbar-unit-breaker/src/port.rs",
+               "// the rule this follows is written down as PB-1234, not in words\n"
+               "pub fn planted_citation() {}")
     elif rule == "plane-no-money":
         # A plane crate naming the card itself. `RateCard` is a money noun with no reading under
         # which a plane needs it, and it is deliberately NOT one of the pricing entry points
