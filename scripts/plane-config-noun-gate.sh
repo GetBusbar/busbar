@@ -50,7 +50,9 @@
 #
 # bash 3.2 + POSIX grep/awk, the same bare-runner posture as its siblings.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# `|| exit 1`: with no `set -e`, a failed cd would leave every relative root below resolving against
+# the CALLER's directory instead of the repo — a whole scan aimed somewhere nobody chose.
+cd "$(dirname "$0")/.." || exit 1
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -108,6 +110,56 @@ core_files() {
     | grep -vE '/tests/|_tests?\.rs$|/test_support/|/config/migrate' | sort
 }
 
+# ── THE ROOT GUARD and THE ZERO-FILE GUARD ────────────────────────────────────────────────────────
+# Copied, deliberately, from scripts/plane-grep-gate.sh. `find "$CORE_ROOT" … 2>/dev/null` swallows
+# the diagnostic for a root that was renamed, split or drained, and the pipe loses find's status: the
+# code stream comes back empty, every noun counts 0, and the report prints "four-noun config-parse
+# debt: 0" about a crate this gate never opened. Renaming crates/busbar-core printed that PASS. The
+# two guards are separate because they are two different failures with the same number — the root is
+# not there at all, versus the root is there and holds no production .rs. Both exit the PROCESS, so
+# they are called from run_report directly, never inside a `$(…)`.
+require_root() {
+  [ -d "$CORE_ROOT" ] && return 0
+  red "plane-config-noun gate: FAIL — scan root \`$CORE_ROOT\` is not a directory on disk."
+  note "A listed root that does not exist is scanned as ZERO files, and zero files parse no noun."
+  note "If the crate moved, point CORE_ROOT at its new home in a reviewed diff that says so."
+  exit 1
+}
+
+require_files() {
+  local n="$1"
+  [ "$n" -gt 0 ] && return 0
+  red "plane-config-noun gate: FAIL — \`$CORE_ROOT\` holds $n production .rs file(s); zero is RED."
+  note "A scan of zero files reports zero parse targets, which is indistinguishable from zero debt."
+  exit 1
+}
+
+# ── THE NOUN FLOOR — the guard on the SUBJECT, not the scan set ────────────────────────────────────
+# The two guards above prove this gate opened the right FILES. This one proves it has something to
+# LOOK FOR in them. `section_nouns` reads each noun off a plane crate's own PlaneDecl, and drops a
+# plane silently on two paths: the crate directory is not where this script expects it (a rename —
+# `crates/busbar-plane-mcp` already exists beside `crates/busbar-mcp`), or the `config_section` value
+# resolves to neither a literal nor a followable constant. A dropped plane is a noun this gate never
+# searches for, and not searching is arithmetically identical to zero debt: with the noun set EMPTY
+# the per-noun loop ran zero times, the debt printed 0, and the verdict read
+# `CLEAN — core names no section noun as a parse target. Arm the hard gate.` at exit 0 — in
+# report-only mode AND armed. Removing one plane crate quietly took the debt from 23 to 17 with no
+# diagnostic at all. The floor is the plane count itself, so a fifth plane raises it with no edit here.
+require_nouns() {
+  local nouns="$1" got want
+  # shellcheck disable=SC2086  # the split is the count; `set -f` makes it glob-safe
+  set -f; set -- $nouns;      got=$#; set +f
+  # shellcheck disable=SC2086  # same
+  set -f; set -- $PLANE_KEYS; want=$#; set +f
+  [ "$got" -eq "$want" ] && return 0
+  red "plane-config-noun gate: FAIL — resolved $got section noun(s) for $want plane key(s): [$nouns]"
+  note "Each plane declares its own noun via PlaneDecl.config_section; a plane that resolves to nothing"
+  note "is a noun this gate never looks for, and not looking reads exactly like zero debt."
+  note "Fix the plane's crate path or its PlaneDecl in a reviewed diff — never let the noun set shrink"
+  note "quietly. scripts/plane-keys.sh names the planes this floor counts."
+  exit 1
+}
+
 # THE COMMENT-STRIPPED CODE STREAM ("file:line:content"), so a noun in doc-comment prose is not a
 # parse target. Same stripping shape as scripts/plane-noun-gate.sh's build_code_stream.
 build_code_stream() {   # writes to $1
@@ -154,6 +206,10 @@ run_report() {
   hdr "four-noun config-parse debt in busbar-core (report-only)"
   note "section nouns (from each PlaneDecl.config_section): $nouns"
   note "scanned root: $CORE_ROOT  (non-test, comment-stripped, frozen migrator excluded)"
+
+  require_root
+  require_files "$(core_files | grep -c . || true)"
+  require_nouns "$nouns"
 
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   build_code_stream "$tmp/code"
@@ -211,10 +267,28 @@ FIX
   done
   [ "$ok" -eq 1 ] || fail=1
 
-  # The nouns must resolve from the real decls (not empty), or the gate would scan for nothing.
+  # The nouns must resolve from the real decls (not empty), or the gate would scan for nothing. This
+  # drives require_nouns ITSELF — the function the run path calls — rather than re-implementing its
+  # arithmetic as a `-ge 4`, which is how the floor came to exist only in the self-test in the first
+  # place: a check that lives in one branch and not the other proves nothing about the branch CI runs.
   local nouns; nouns="$(section_nouns)"
   local ncount; ncount="$(printf '%s' "$nouns" | wc -w | tr -d ' ')"
-  if [ "$ncount" -ge 4 ]; then note "resolved $ncount section nouns from the plane decls: $nouns"; else fail=1; note "FAILED: only resolved $ncount section nouns ($nouns)"; fi
+  if ( require_nouns "$nouns" ) >/dev/null 2>&1; then
+    note "resolved $ncount section nouns from the plane decls: $nouns"
+  else
+    fail=1; note "FAILED: the noun floor refuses this tree's own decls (resolved $ncount: $nouns)"
+  fi
+  # ── RED: a SHORT noun set — the way this meter reads zero debt over nouns it never searched for. ──
+  if ( require_nouns "tools agents pools" ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: a noun set short of the plane count was accepted (the debt would undercount silently)"
+  else
+    note "RED noun-floor: a noun set short of the plane count is refused, not scanned as partial"
+  fi
+  if ( require_nouns "" ) >/dev/null 2>&1; then
+    fail=1; note "FAILED: an EMPTY noun set was accepted (zero nouns searched reads as CLEAN)"
+  else
+    note "RED noun-floor: an empty noun set is refused, not reported as zero debt"
+  fi
 
   if [ "$fail" -ne 0 ]; then red "plane-config-noun-gate SELF-TEST FAILED"; return 1; fi
   grn "plane-config-noun-gate self-test: ALL GREEN (counts parse targets, ignores homonyms/seam)"
