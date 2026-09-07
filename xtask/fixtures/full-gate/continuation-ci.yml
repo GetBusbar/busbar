@@ -1,4 +1,4 @@
-# FIXTURE for `scripts/full-gate.sh --selftest`. This is NOT a workflow: nothing schedules it and
+# FIXTURE for `cargo xtask full-gate --selftest` (and `scripts/full-gate.sh --selftest`, until that script retires). This is NOT a workflow: nothing schedules it and
 # nothing runs the commands in it. It exists because the runner's discovery reads `.github/workflows/ci.yml`
 # LINE BY LINE, and a real CI step is free to spread one command over several lines.
 #
