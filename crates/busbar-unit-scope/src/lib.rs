@@ -390,3 +390,5 @@ pub fn approve(held: Grants, needed: Scope) -> Result<(), Refused> {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_bitset;
