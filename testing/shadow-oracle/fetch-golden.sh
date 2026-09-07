@@ -125,12 +125,29 @@ if [ -n "$CHECK_GOLDEN" ]; then
   # otherwise this check would compare the golden's provenance against an unverified file.
   verify_cached || exit 3
   have_bin_sha="$(binary_sha256 "$BIN")"
-  if [ "$have_bin_sha" != "$want_bin_sha" ]; then
-    echo "fetch-golden --check-golden: MISMATCH — ${meta_path} was recorded with binary_sha256 ${want_bin_sha} but the cached ${BIN} is ${have_bin_sha}" >&2
-    exit 3
+  if [ "$have_bin_sha" = "$want_bin_sha" ]; then
+    echo "ok  ${CHECK_GOLDEN}  binary_sha256 ${want_bin_sha:0:12} matches cached ${BIN}"
+    exit 0
   fi
-  echo "ok  ${CHECK_GOLDEN}  binary_sha256 ${want_bin_sha:0:12} matches cached ${BIN}"
-  exit 0
+  # A CHECKED-IN GOLDEN IS RECORDED ONCE, ON ONE MACHINE, AND REPLAYED ON EVERY OTHER. The recording
+  # names the binary that produced it; the machine reading it back has a DIFFERENT host triple and so
+  # a different — but equally pinned — release binary of the same version. Holding the golden to
+  # "the binary cached on THIS host" would make a committed golden unusable anywhere but the triple
+  # it was recorded on, which is the same as having no committed golden at all.
+  #
+  # The question the check exists to answer is narrower than "same file": it is "was this golden made
+  # by a 1.5.5 WE PIN, or by some other build that happens to print the same version string". So the
+  # fallback is the pin table itself, not a relaxation of it — the recording's binary_sha256 must be
+  # one of the `busbar-<triple>` rows golden-digests.tsv pins for this version. A digest that is in
+  # no row is still a MISMATCH and still fatal; nothing unpinned is ever accepted.
+  pinned_triple="$(awk -F'\t' -v v="$VERSION" -v s="$want_bin_sha" \
+    '$1==v && $2 ~ /^busbar-[a-z0-9_]+-/ && $2 !~ /\.(json|zip|tar\.gz)$/ && $3==s {sub(/^busbar-/, "", $2); print $2; exit}' "$DIGESTS")"
+  if [ -n "$pinned_triple" ]; then
+    echo "ok  ${CHECK_GOLDEN}  binary_sha256 ${want_bin_sha:0:12} is the pinned ${VERSION} busbar-${pinned_triple} (this host caches ${TRIPLE}; the golden was recorded on ${pinned_triple})"
+    exit 0
+  fi
+  echo "fetch-golden --check-golden: MISMATCH — ${meta_path} was recorded with binary_sha256 ${want_bin_sha}, which is neither the cached ${BIN} (${have_bin_sha}) nor any pinned ${VERSION} busbar-<triple> row in ${DIGESTS}" >&2
+  exit 3
 fi
 
 if [ "$CHECK" -eq 1 ]; then
