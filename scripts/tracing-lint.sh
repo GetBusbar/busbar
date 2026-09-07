@@ -42,33 +42,50 @@ hdr()  { printf '\n== %s ==\n' "$1"; }
 # paren balance, then — once balanced (parens closed, or a bare `#[instrument]`/`#[instrument;]`
 # with no parens at all) — flag it if the accumulated text never mentions `level`.
 INSTRUMENT_SCAN_AWK='
-  FNR==1 { in_attr=0; buf=""; start_line=0 }
+  function unclosed(   ) {
+    printf "%s:%d: #[instrument] attribute never closes — its parens do not balance before the end of the file, so this span AND EVERY LATER SPAN IN THIS FILE went unchecked\n", attr_file, start_line
+  }
+  FNR==1 { if (in_attr) unclosed(); in_attr=0; buf=""; code=""; start_line=0; opens=0; closes=0 }
   {
     line = $0
     is_comment = (line ~ /^[[:space:]]*\/\//)
+    # A paren inside a STRING LITERAL is text, not structure. Counting it as structure meant
+    # `#[instrument(level = "debug", name = "f(")]` never balanced, the accumulator swallowed the
+    # rest of the file, and every later level-less span in it was reported as clean. Strings are
+    # blanked before the parens are counted, and the same blanked text is what the `level` check
+    # reads — so a `name = "log_level"` no longer counts as declaring a level either.
+    nostr = line
+    gsub(/"(\\.|[^"\\])*"/, "\"\"", nostr)
     if (!in_attr) {
       if (!is_comment && line ~ /^[[:space:]]*#\[[[:space:]]*(tracing[[:space:]]*::[[:space:]]*)?instrument[[:space:]]*[](]/) {
         in_attr = 1
         start_line = FNR
+        attr_file = FILENAME
         buf = line
+        code = nostr
+        opens = 0
+        closes = 0
       } else {
         next
       }
     } else {
       buf = buf "\n" line
+      code = code "\n" nostr
     }
-    # Balanced once the accumulated text has equal '\''('\'' / '\'')'\'' counts — true immediately for
+    # Balanced once the accumulated code has equal '\''('\'' / '\'')'\'' counts — true immediately for
     # a bare `#[instrument]` (0 and 0) and once the closing `)]` lands for the parenthesized form.
-    openp = gsub(/\(/, "(", buf)
-    closep = gsub(/\)/, ")", buf)
-    if (openp == closep) {
-      if (buf !~ /level/) {
-        printf "%s:%d: #[instrument] with no explicit level= — must reference observability::HOTPATH_LEVEL (or a literal level) so it is filtered off by default\n", FILENAME, start_line
+    opens = gsub(/\(/, "(", code)
+    closes = gsub(/\)/, ")", code)
+    if (opens == closes) {
+      if (code !~ /level/) {
+        printf "%s:%d: #[instrument] with no explicit level= — must reference observability::HOTPATH_LEVEL (or a literal level) so it is filtered off by default\n", attr_file, start_line
       }
       in_attr = 0
       buf = ""
+      code = ""
     }
   }
+  END { if (in_attr) unclosed() }
 '
 scan_rule() { awk "$INSTRUMENT_SCAN_AWK" "$@"; }
 
@@ -130,7 +147,43 @@ GREEN
     fail=1; note "GREEN FAILED: expected silence, got: $hits"
   fi
 
-  note "self-test: ${pass}/2 fixture groups passed"
+  # STRING LITERALS: a paren or the word `level` inside a string is text, not structure. The first
+  # attribute below is legitimately levelled but carries an unbalanced `(` in a name; before this was
+  # fixed the accumulator never closed, swallowed the rest of the file, and reported the rogue span
+  # two declarations down as clean. The third claims a level only inside a string, which is not one.
+  cat >"${tmp}/strings.rs" <<'STRINGS'
+#[tracing::instrument(level = "debug", name = "f(unbalanced")]
+pub fn levelled_with_a_paren_in_a_string() {}
+
+#[tracing::instrument(name = "rogue", skip_all)]
+pub fn rogue_after_the_paren() {}
+
+#[tracing::instrument(name = "log_level", skip_all)]
+pub fn level_only_inside_a_string() {}
+STRINGS
+  hits=$(scan_rule "${tmp}/strings.rs")
+  n=$(printf '%s\n' "$hits" | grep -c ':' || true)
+  if [ "$n" -eq 2 ]; then
+    pass=$((pass+1)); note "STRINGS: a paren inside a string does not swallow the file (the span after it is still flagged), and \`name = \"log_level\"\` does not count as declaring a level"
+  else
+    fail=1; note "STRINGS FAILED: expected 2 hits, got ${n}: $hits"
+  fi
+
+  # UNCLOSED: an attribute whose parens never balance before EOF used to end the scan in silence.
+  # Silence is what a clean file looks like, so it has to be a reported finding instead.
+  cat >"${tmp}/unclosed.rs" <<'UNCLOSED'
+#[tracing::instrument(
+    level = "debug",
+    name = "never_closed",
+pub fn dangling() {}
+UNCLOSED
+  hits=$(scan_rule "${tmp}/unclosed.rs")
+  case "$hits" in
+    *"never closes"*) pass=$((pass+1)); note "UNCLOSED: an attribute that never balances is reported, not dropped in silence" ;;
+    *) fail=1; note "UNCLOSED FAILED: expected an unclosed-attribute finding, got: $hits" ;;
+  esac
+
+  note "self-test: ${pass}/4 fixture groups passed"
   if [ "$fail" -ne 0 ]; then
     note "tracing-lint SELF-TEST FAILED — the scanner would let a bypass through"
     return 1
