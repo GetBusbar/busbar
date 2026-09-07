@@ -39,6 +39,7 @@ pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
 pub mod structure_lint;
+pub mod teller_steps;
 pub mod tracing;
 pub mod workspace_deps;
 
@@ -694,6 +695,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(duplex_ws_default_edge::DuplexWsDefaultEdgeGate),
         summary: "no WebSocket crate in the default money-path dependency closure",
+    },
+    Registration {
+        name: "teller-steps",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(teller_steps::TellerStepsGate),
+        summary: "one cell per Teller step per plane, each with a second verdict over the root leg",
     },
 ];
 

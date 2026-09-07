@@ -85,6 +85,20 @@ impl Obj {
         self.index.contains_key(key)
     }
 
+    /// Remove a key, keeping every remaining key in its position. Used only by the selftests, which
+    /// plant a violation by taking a step or a leg OUT of the real committed matrix — a plant that
+    /// also reordered the file would be proving the reader, not the rule.
+    pub fn remove(&mut self, key: &str) -> Option<Json> {
+        let i = self.index.remove(key)?;
+        let (_, v) = self.entries.remove(i);
+        for slot in self.index.values_mut() {
+            if *slot > i {
+                *slot -= 1;
+            }
+        }
+        Some(v)
+    }
+
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
@@ -112,6 +126,13 @@ impl Json {
     }
 
     pub fn as_object(&self) -> Option<&Obj> {
+        match self {
+            Json::Object(o) => Some(o),
+            _ => None,
+        }
+    }
+
+    pub fn as_object_mut(&mut self) -> Option<&mut Obj> {
         match self {
             Json::Object(o) => Some(o),
             _ => None,
