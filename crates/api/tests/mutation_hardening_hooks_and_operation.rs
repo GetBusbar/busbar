@@ -108,10 +108,21 @@ fn op_shape_as_str_is_stable_and_distinct() {
     let strs: Vec<&str> = OpShape::ALL.iter().map(|s| s.as_str()).collect();
     assert_eq!(
         strs,
-        vec!["invoke", "catalogue", "fetch", "task", "subscribe", "control"]
+        vec![
+            "invoke",
+            "catalogue",
+            "fetch",
+            "task",
+            "subscribe",
+            "control"
+        ]
     );
     let unique: HashSet<&str> = strs.iter().copied().collect();
-    assert_eq!(unique.len(), strs.len(), "every shape's word must be distinct");
+    assert_eq!(
+        unique.len(),
+        strs.len(),
+        "every shape's word must be distinct"
+    );
 }
 
 #[test]
@@ -204,7 +215,10 @@ fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
     assert!(!dbg.is_empty(), "a no-op Debug body must be caught");
     assert!(dbg.contains("system_chars"), "{dbg}");
     assert!(dbg.contains("message_count"), "{dbg}");
-    assert!(dbg.contains('2'), "message_count must reflect the real count: {dbg}");
+    assert!(
+        dbg.contains('2'),
+        "message_count must reflect the real count: {dbg}"
+    );
     assert!(
         !dbg.contains("capital of France") && !dbg.contains("Paris"),
         "prompt text must never appear in Debug: {dbg}"
@@ -252,12 +266,8 @@ impl RoutingPolicy for MinimalPolicy {
 fn routing_policy_configure_default_is_a_loud_error() {
     let p = MinimalPolicy;
     let settings = serde_json::Map::new();
-    let result: Result<(), PolicyError> = block_on(p.configure(
-        "hook-1",
-        &settings,
-        1,
-        std::time::Duration::from_millis(10),
-    ));
+    let result: Result<(), PolicyError> =
+        block_on(p.configure("hook-1", &settings, 1, std::time::Duration::from_millis(10)));
     assert!(
         result.is_err(),
         "a transport that cannot be configured must error, never silently accept"
