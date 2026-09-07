@@ -1113,6 +1113,10 @@ impl SessionPlane for McpPlane {
 }
 
 #[cfg(test)]
+#[path = "tests/plane_hardening.rs"]
+mod plane_hardening;
+
+#[cfg(test)]
 mod tests {
     use super::{finish_of, member_of, refusal_render, sampling_destination, Codec};
     use busbar_contract::dest::DestinationFacts;
