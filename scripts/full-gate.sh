@@ -121,6 +121,11 @@ declare -a CARGO_LOCAL=(
   "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked"
   "cargo test -p busbar-llm --features teller-waist --locked --lib unit::"
   "cargo test -p busbar-timing --features timing --locked"
+  # The gate runner itself. `structure-lint` builds it once ahead of the gates it then runs, so a
+  # compile error in a gate is a build failure with a compiler's message rather than fourteen
+  # confusing step failures. It runs here for the same reason it runs there: every gate below is
+  # `cargo xtask gate …`, and a runner that does not build runs none of them.
+  "cargo build -p xtask --locked"
 )
 
 declare -a CARGO_CI_ONLY=(
