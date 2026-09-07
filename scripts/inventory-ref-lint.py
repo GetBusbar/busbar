@@ -57,9 +57,38 @@ PREFIX_RE = re.compile(r"^\s*`?([A-Za-z][A-Za-z.\-]*(?:\s[A-Za-z][A-Za-z\-]*)?)"
 KNOWN_PARSE_ARTIFACTS = {"PB-20"}
 
 
-def load_bindings() -> list[dict]:
+# ── THE FLOOR ─────────────────────────────────────────────────────────────────────────────────────
+# This lint's whole claim is "every Appendix B binding's inventory column resolves", and it is a
+# for-each over a list. Over the empty list it is true, and `doc.get("bindings", [])` produced the
+# empty list for two things that are not "there are no dangling references":
+#
+#   * a qa/design-bindings.json whose top-level key is no longer `bindings` -- the derivation that
+#     writes that file renames a key, and this lint reads zero rows and prints GREEN;
+#   * a derivation that ran and produced nothing, which is how Appendix B being retitled or the
+#     table parser drifting looks from here.
+#
+# Appendix B has carried far more than this for its whole life. The floor is well under the real
+# count so a genuine consolidation still passes, and a binding set that collapsed cannot.
+MIN_BINDINGS = 40
+
+
+def load_bindings() -> tuple[list[dict], list[str]]:
     doc = json.loads(BINDINGS.read_text())
-    return doc.get("bindings", [])
+    if not isinstance(doc, dict) or "bindings" not in doc:
+        return [], [
+            f"{BINDINGS} carries no top-level `bindings` key -- a lint that reads zero rows "
+            f"reports zero dangling references, which is not the same as a clean Appendix B"
+        ]
+    bindings = doc["bindings"]
+    if not isinstance(bindings, list):
+        return [], [f"{BINDINGS}: `bindings` is {type(bindings).__name__}, not an array"]
+    if len(bindings) < MIN_BINDINGS:
+        return bindings, [
+            f"{BINDINGS} yields {len(bindings)} binding(s), floor {MIN_BINDINGS}. Rows do not "
+            f"disappear on their own; a collapsed binding set has nothing to dangle and so is "
+            f"indistinguishable from a clean one. Fix the derivation rather than passing over it."
+        ]
+    return bindings, []
 
 
 def resolve_prefix(segment: str) -> tuple[str, Path] | None:
@@ -77,7 +106,7 @@ def resolve_prefix(segment: str) -> tuple[str, Path] | None:
     return ("?", Path("?"))  # unresolved prefix, flagged below
 
 
-def check_binding(b: dict, cache: dict[Path, str]) -> list[str]:
+def check_binding(b: dict, cache: dict[Path, bool]) -> list[str]:
     if b["id"] in KNOWN_PARSE_ARTIFACTS:
         return []
     inv = (b.get("inventory") or "").strip()
@@ -102,12 +131,17 @@ def check_binding(b: dict, cache: dict[Path, str]) -> list[str]:
     return problems
 
 
-def check(bindings_path: Path = BINDINGS) -> list[str]:
-    global BINDINGS
-    BINDINGS = bindings_path
-    bindings = load_bindings()
-    cache: dict[Path, str] = {}
-    problems: list[str] = []
+def check(bindings_path: Path = BINDINGS, floor: int = MIN_BINDINGS) -> list[str]:
+    # `check` used to leave BINDINGS pointing at whatever fixture it was last handed, so the next
+    # caller in the same process read a path that no longer exists. Both overrides are restored.
+    global BINDINGS, MIN_BINDINGS
+    saved_path, saved_floor = BINDINGS, MIN_BINDINGS
+    BINDINGS, MIN_BINDINGS = bindings_path, floor
+    try:
+        bindings, problems = load_bindings()
+    finally:
+        BINDINGS, MIN_BINDINGS = saved_path, saved_floor
+    cache: dict[Path, bool] = {}
     for b in bindings:
         problems.extend(check_binding(b, cache))
     return problems
@@ -144,14 +178,16 @@ def selftest() -> int:
                 {"id": "PB-X3", "inventory": "`config/mod.rs:1796-1799`; PB-72"},
             ]
         }
+        # The discrimination cases are one-row fixtures, so they run under a floor of 1; the floor
+        # itself is proven separately below, at its real value.
         gp = tdp / "good.json"
         gp.write_text(json.dumps(good))
-        problems = check(gp)
+        problems = check(gp, floor=1)
         say(problems == [], f"a real inventory file prefix is clean (got {problems})")
 
         bp = tdp / "bad_prefix.json"
         bp.write_text(json.dumps(bad_prefix))
-        problems = check(bp)
+        problems = check(bp, floor=1)
         say(
             len(problems) == 1 and "unrecognized inventory file prefix" in problems[0],
             f"an unrecognized file prefix is exactly one problem (got {problems})",
@@ -159,11 +195,48 @@ def selftest() -> int:
 
         np_ = tdp / "no_pointer.json"
         np_.write_text(json.dumps(no_pointer))
-        problems = check(np_)
+        problems = check(np_, floor=1)
         say(
             problems == [],
             f"a bare source-file backtick and a PB-N self-reference name no inventory file, so neither is flagged (got {problems})",
         )
+
+        # ── THE FLOOR. `for b in bindings: assert its pointer resolves` is TRUE over no bindings,
+        # and both of these produced no bindings while printing GREEN before the floor existed.
+        ep = tdp / "empty.json"
+        ep.write_text(json.dumps({"bindings": []}))
+        problems = check(ep)
+        say(
+            any("floor" in p for p in problems),
+            f"a binding set that collapsed to zero rows is REFUSED, not read as zero dangling refs (got {problems})",
+        )
+
+        rp = tdp / "renamed_key.json"
+        rp.write_text(json.dumps({"rows": bad_prefix["bindings"]}))
+        problems = check(rp)
+        say(
+            any("no top-level `bindings` key" in p for p in problems),
+            f"a renamed top-level key is REFUSED rather than read as an empty binding set (got {problems})",
+        )
+
+        # ...and the floor is not simply "refuse everything": a binding set AT the floor passes.
+        fp = tdp / "at_floor.json"
+        fp.write_text(json.dumps({
+            "bindings": [
+                {"id": f"PB-F{i}", "inventory": "routes-admin LST-001"}
+                for i in range(MIN_BINDINGS)
+            ]
+        }))
+        problems = check(fp)
+        say(problems == [], f"a binding set exactly at the floor still passes (got {problems})")
+
+    # The real file must clear the floor too, or the floor is a number about nothing.
+    real, real_problems = load_bindings()
+    say(
+        not real_problems and len(real) >= MIN_BINDINGS,
+        f"the tree's own {BINDINGS.name} carries {len(real)} bindings, at or above the floor "
+        f"of {MIN_BINDINGS} ({real_problems})",
+    )
 
     print()
     if fails == 0:
