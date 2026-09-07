@@ -576,14 +576,20 @@ deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # Ratchet: crates known to be missing the attribute today, so the gate does not go red the moment
 # this rule is born. Each is real debt the owner closes by adding the attribute and deleting the
 # name below; a new crate NOT on this list is held to the rule immediately.
+#
+# A NAME LEFT HERE AFTER THE DEBT IS PAID IS NOT DEAD WEIGHT, IT IS A HOLE. The name is what raises
+# that crate's ceiling from 0 to 1, so a crate that has since gained the attribute and is still
+# listed can LOSE it again and the row measures 1 against a ceiling of 1 and reads PASS -- on a
+# plane crate, the kind the architecture bars from unsafe by construction. Seven names were in that
+# state: busbar-plane-a2a and busbar-plane-mcp carry `#![forbid(unsafe_code)]` today, and
+# busbar-transport-{grpc,http,sse,tls,ws} carry the deny form. Struck, so each of those crates is
+# held to the rule again. Striking a paid name is part of paying the debt, not a separate errand.
 known_missing_forbid = [
   "hook-test-plugin", "hooks-ranking", "auth-static-plugin", "auth-admin-tokens",
-  "secret-example-plugin", "secret-ref", "busbar-plane-a2a", "busbar-plane-mcp",
+  "secret-example-plugin", "secret-ref",
 ]
 known_missing_deny = [
-  "busbar-transport-grpc", "busbar-transport-http", "busbar-transport-sse",
-  "busbar-transport-tls", "busbar-transport-ws", "plugin-loader",
-  "store-memory", "store-example-plugin", "export-example-plugin",
+  "plugin-loader", "store-memory", "store-example-plugin", "export-example-plugin",
 ]
 
 # ── 22. secret-carrier-debug (ARCHITECTURE.md section 3.7) ───────────────────────────────────────────────────
