@@ -181,6 +181,42 @@ target_field() {  # target_field <target> <field>
 #
 # A jq that fails here is a hard non-zero, never a short list: an owed set that quietly shrinks is
 # the vacuous-green this gate exists to eliminate.
+# ── RESOLVING ONE ID's VERDICT OUT OF THE LEDGER ────────────────────────────────────────────────
+#
+# THE FIRST ROW USED TO WIN, SO A PASS COULD SWALLOW A LATER FAIL. gate.sh read the ledger with
+# `awk -F'\t' -v i="$id" '$1==i{print; exit}'` and its comment said duplicates were "flagged below";
+# nothing below flagged them — the `unexpected` scan only finds ids the contract does not know
+# about. Meanwhile the ledger is opened with `[ -f "$LEDGER" ] || : > "$LEDGER"`, which does not
+# truncate, so a leg that reports twice (a step re-run against a persisted RUNNER_TEMP, a retry that
+# records on both attempts) leaves two rows for one id. If the PASS was written first, the FAIL was
+# never read and the gate went GREEN over a check that failed.
+#
+# A leg that reported two DIFFERENT verdicts for one id has not told us which is true; it has told
+# us the ledger is untrustworthy for that id. That is CONFLICT, and gate.sh treats it as red — not
+# because the worst status is necessarily right, but because "we have two answers" is not a pass.
+# Where every row agrees, the id resolves to that status, so an honest retry that reports the same
+# thing twice is unremarkable.
+#
+# Prints one of: PASS | FAIL | SKIP | CONFLICT | (empty, meaning no row at all — "did not run").
+ledger_status_for() {  # ledger_status_for <ledger-file> <id>
+  awk -F'\t' -v i="$2" '
+    $1 == i {
+      s = $2
+      if (s != "PASS" && s != "SKIP") s = "FAIL"   # anything not PASS/SKIP is a failure
+      if (seen && s != last) { conflict = 1 }
+      last = s; seen = 1
+    }
+    END {
+      if (!seen) exit 0
+      print (conflict ? "CONFLICT" : last)
+    }' "$1"
+}
+
+# The rows behind an id, for the detail line when they disagree.
+ledger_rows_for() {  # ledger_rows_for <ledger-file> <id>
+  awk -F'\t' -v i="$2" '$1 == i { printf "%s ", $2 }' "$1"
+}
+
 contract_asset_names() {  # contract_asset_names <tag>
   local tag="$1" per_target metadata
   per_target="$(contract_jq '.targets[] | select(.published == true) | "busbar-\(.target).\(.archive)"')" || {
