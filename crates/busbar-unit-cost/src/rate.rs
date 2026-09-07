@@ -260,8 +260,25 @@ impl RateCard {
         lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
         per_request_fee: i64,
     ) -> Self {
+        RateCard::from_config_in(CurrencyCode::USD, lanes, per_request_fee)
+    }
+
+    /// [`RateCard::from_config`], in a named currency.
+    ///
+    /// The currency-carrying spelling is the real one and [`RateCard::from_config`] is it at
+    /// [`CurrencyCode::USD`] — the currency a 1.5.5 deployment's uncurrencied figures are read as.
+    /// The composition root calls THIS one, with the currency its node declares, so that the card is
+    /// built in the same currency the lookup will be asked for. A card built in one currency and
+    /// read in another is not a conversion and must never become one: it is
+    /// [`crate::Unpriceable::CurrencyNotPriced`], and the point of naming the currency at the
+    /// constructor is that the mismatch is impossible rather than merely refused.
+    pub fn from_config_in<'a>(
+        currency: CurrencyCode,
+        lanes: Option<impl IntoIterator<Item = (&'a str, TierRates)>>,
+        per_request_fee: i64,
+    ) -> Self {
         let Some(lanes) = lanes else {
-            return RateCard::absent(per_request_fee);
+            return RateCard::absent_in(currency, per_request_fee);
         };
         let entries = lanes.into_iter().flat_map(|(lane, tiers)| {
             tiers
@@ -269,7 +286,7 @@ impl RateCard {
                 .into_iter()
                 .map(move |(class, micro)| (LaneClass::new(lane, class), micro))
         });
-        RateCard::from_micro_rates(entries, per_request_fee)
+        RateCard::from_micro_rates_in(currency, entries, per_request_fee)
     }
 
     /// Add one currency's rate to one cell, and record the currency on the card.
