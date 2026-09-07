@@ -6,7 +6,10 @@ impl ProtocolReader for ResponsesReader {
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        let u64_field = |k: &str| v.get(k).and_then(|x| x.as_u64());
+        // A token count arrives through the double-tolerant reader: an OpenAI-COMPATIBLE backend
+        // is free to serialize a count as `1200.0`, which `as_u64` answers `None` for — silently
+        // ledgering a real billed count as zero. See `usage_tail::token_count`.
+        let u64_field = |k: &str| v.get(k).and_then(super::super::usage_tail::token_count);
         let cached = super::read_cached_tokens(&v);
         // A truncated body bills the same cache tiers an untruncated one does: `cache_write_tokens`
         // is a slice of `input_tokens`, so recover it here too rather than pricing it as plain input.
@@ -1558,13 +1561,13 @@ impl ProtocolReader for ResponsesReader {
             // odd upstream where the slices exceed the total.
             input_tokens: usage_val
                 .and_then(|u| u.get("input_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(super::super::usage_tail::token_count)
                 .unwrap_or(0)
                 .saturating_sub(cached.unwrap_or(0))
                 .saturating_sub(cache_write.unwrap_or(0)),
             output_tokens: usage_val
                 .and_then(|u| u.get("output_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(super::super::usage_tail::token_count)
                 .unwrap_or(0),
             // `input_tokens_details.cache_write_tokens` is the CACHE-WRITE tier's count. The writer
             // has always emitted the member; leaving it unread priced those tokens at the plain input
@@ -1583,7 +1586,7 @@ impl ProtocolReader for ResponsesReader {
                 reasoning_tokens: usage_val
                     .and_then(|u| u.get("output_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(super::super::usage_tail::token_count),
                 ..Default::default()
             },
         };

@@ -1192,10 +1192,10 @@ fn read_cache_usage(
 ) -> (Option<u64>, Option<u64>) {
     let cache_creation_input_tokens = usage_obj
         .and_then(|u| u.get("cacheWriteInputTokens"))
-        .and_then(|v| v.as_u64());
+        .and_then(crate::usage_tail::token_count);
     let cache_read_input_tokens = usage_obj
         .and_then(|u| u.get("cacheReadInputTokens"))
-        .and_then(|v| v.as_u64());
+        .and_then(crate::usage_tail::token_count);
     (cache_creation_input_tokens, cache_read_input_tokens)
 }
 

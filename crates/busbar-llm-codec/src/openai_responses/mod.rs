@@ -1165,7 +1165,7 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
     usage_val
         .get("input_tokens_details")
         .and_then(|d| d.get("cached_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(crate::usage_tail::token_count)
 }
 
 /// Read the Responses CACHE-WRITE count from a `usage` object:
@@ -1180,7 +1180,7 @@ fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
     usage_val
         .get("input_tokens_details")
         .and_then(|d| d.get("cache_write_tokens"))
-        .and_then(|v| v.as_u64())
+        .and_then(crate::usage_tail::token_count)
 }
 
 /// Read the `usage` object off a STREAM TERMINAL's nested `Response` — the single reading every
@@ -1205,11 +1205,14 @@ fn read_stream_terminal_usage(response_obj: &serde_json::Value) -> Option<crate:
         // so subtract BOTH slices to leave only the uncached input.
         input_tokens: u
             .get("input_tokens")
-            .and_then(|v| v.as_u64())
+            .and_then(crate::usage_tail::token_count)
             .unwrap_or(0)
             .saturating_sub(cached.unwrap_or(0))
             .saturating_sub(cache_write.unwrap_or(0)),
-        output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        output_tokens: u
+            .get("output_tokens")
+            .and_then(crate::usage_tail::token_count)
+            .unwrap_or(0),
         // The streamed terminal reports the cache-WRITE tier's count exactly as the buffered twin
         // does.
         cache_creation_input_tokens: cache_write,
@@ -1224,7 +1227,7 @@ fn read_stream_terminal_usage(response_obj: &serde_json::Value) -> Option<crate:
             reasoning_tokens: u
                 .get("output_tokens_details")
                 .and_then(|d| d.get("reasoning_tokens"))
-                .and_then(|v| v.as_u64()),
+                .and_then(crate::usage_tail::token_count),
             ..Default::default()
         },
     })
