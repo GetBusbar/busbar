@@ -150,6 +150,133 @@ def check(root: str) -> Finding:
     docker = read("docker.yml")
     verify = read("verify-deploy.yml")
 
+    # R14. EVERY THIRD-PARTY ACTION RUNS FROM A COMMIT SHA, AND A TAG IS NOT A SHA.
+    #
+    # .github/dependabot.yml states this as a rule, at length: "EVERY `uses:` IN .github/workflows
+    # IS PINNED TO A COMMIT SHA, and this entry is what keeps that true instead of freezing it. A
+    # tag is not a pin: `actions/checkout@v7` is a ref the owner can force-move, so a compromised or
+    # simply changed action reaches our runners -- which hold `packages: write`, `id-token: write`
+    # and `attestations: write` -- with no diff on our side."
+    #
+    # Nothing checked it. Every `uses:` in the tree really is a 40-hex sha today, and reverting any
+    # one of them to `@v4` was proven green against actionlint, release-order-lint and
+    # ci-umbrella-lint alike -- a rule written down in a config file's comment and enforced nowhere
+    # is a rule that survives exactly as long as nobody is in a hurry. The scopes named in that
+    # comment are the reason this is a release-order rule and not a style rule: an action that can
+    # be force-moved under a name we already trust can push an image and mint an attestation, which
+    # is to say it can put a user-facing name on bytes nothing in this repository ever built.
+    #
+    # LOCAL `uses:` IS EXEMPT, AND ONLY LOCAL. `./.github/workflows/x.yml` resolves inside this
+    # repository at the caller's own commit; there is no third party and nothing to force-move.
+    # A `docker://` reference is refused outright rather than exempted: it is a registry tag by
+    # another spelling.
+    #
+    # THE TRAILING TAG COMMENT IS PART OF THE PIN, per the same dependabot note: without `# v7`
+    # Dependabot cannot tell what the sha stands for and silently stops updating it, so the pin rots
+    # into a permanently stale, unpatched version. A missing comment is therefore reported too.
+    uses_re = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)\s*(#.*)?$", re.M)
+    for name in sorted(os.listdir(wf)) if os.path.isdir(wf) else []:
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        for m in uses_re.finditer(strip_comments(read(name) or "")):
+            ref, comment = m.group(1), m.group(2)
+            if ref.startswith("./"):
+                continue
+            if "@" not in ref:
+                bad.append(
+                    "R14 %s: `uses: %s` names no ref at all, so it runs whatever the default "
+                    "branch holds today." % (name, ref)
+                )
+                continue
+            at = ref.rsplit("@", 1)[1]
+            if not re.fullmatch(r"[0-9a-f]{40}", at):
+                bad.append(
+                    "R14 %s: `uses: %s` is pinned to '%s', which is a ref the action's owner can "
+                    "force-move, not a commit. Our runners hold packages/id-token/attestations "
+                    "write; the bytes that run must be the bytes that were reviewed. Pin the sha "
+                    "and keep the tag as a trailing comment so Dependabot can still bump it."
+                    % (name, ref, at)
+                )
+            elif comment is None:
+                bad.append(
+                    "R14 %s: `uses: %s` is a bare sha with no trailing `# <tag>` comment. "
+                    "Dependabot reads that comment to learn which version the sha stands for; "
+                    "without it the pin stops being updated and rots into a stale, unpatched "
+                    "version." % (name, ref)
+                )
+
+    # R15. EVERY `gh attestation verify` NAMES THE WORKFLOW THAT SIGNED, NOT JUST THE REPOSITORY.
+    #
+    # `gh attestation verify <subject> --repo GetBusbar/busbar` asks one question: did SOME workflow
+    # in GetBusbar/busbar mint a build-provenance attestation over these exact bytes? Every workflow
+    # in this repository that can be given `id-token: write` and `attestations: write` answers it
+    # equally well -- including a workflow added by a pull request, running on a branch, that built
+    # an image nothing here staged and pushed it under a `staging-<sha>` name. release.yml's promote
+    # would find a verifying attestation on that tag, conclude the bytes are ours, and mint
+    # `getbusbar/busbar:X.Y.Z` over them. `--repo` is an ORG-SCOPED check being read as a PIPELINE
+    # check, and the gap between those two is the whole promote.
+    #
+    # `--signer-workflow` closes it: the attestation must carry the identity of the ONE workflow the
+    # staging path actually runs. "This release is attested" becomes "the stager made this."
+    #
+    # THE SIGNER IS THE REUSABLE WORKFLOW, NEVER ITS CALLER, and this rule enforces that rather than
+    # trusting a reviewer to remember it. `gh attestation verify --help` says so outright -- "if your
+    # attestation was generated via a reusable workflow then that reusable workflow is the signer
+    # whose identity needs to be validated" -- because the Fulcio certificate's SAN is the
+    # `job_workflow_ref`, the file holding the job that requested the OIDC token, not the
+    # `workflow_ref` of whatever called it. Naming release-stage.yml, the workflow a human would call
+    # "the stager", makes every verify FAIL and every promote refuse. That is a silent-looking
+    # one-word error with the whole release path behind it.
+    #
+    # SO THE ALLOWED SET IS DERIVED FROM THE TREE, NOT RESTATED HERE: it is exactly the workflows
+    # that run `actions/attest-build-provenance`. A hand-kept list would go stale the day the attest
+    # step moves files, and it would go stale in the direction that breaks releases. Move the attest
+    # step and this rule immediately names the new signer as the only acceptable value.
+    signers = set()
+    wf_names = sorted(os.listdir(wf)) if os.path.isdir(wf) else []
+    for name in wf_names:
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        if "actions/attest-build-provenance" in strip_comments(read(name) or ""):
+            signers.add("GetBusbar/busbar/.github/workflows/" + name)
+    # A shell statement, not a mention. This file and its siblings quote the user-facing command in
+    # prose and in `::error::` strings; only an invocation at the head of a statement (optionally
+    # behind `if`/`!`) is a real check whose flags matter.
+    verify_re = re.compile(r"^[ \t]*(?:if[ \t]+)?(?:![ \t]*)?gh attestation verify\b", re.M)
+    # The value stops at shell punctuation: `... build-artifact.yml; then` is a flag followed by the
+    # shell's statement separator, not a workflow path ending in a semicolon.
+    signer_re = re.compile(r"--signer-workflow[= \t]+[\"']?([^\s\"';&|)]+)")
+    for name in wf_names:
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        text = strip_comments(read(name) or "")
+        lines = text.splitlines()
+        for i, line in enumerate(lines):
+            if not verify_re.match(line):
+                continue
+            # Follow backslash continuations so a flag on the next line still counts.
+            cmd, j = line, i
+            while cmd.rstrip().endswith("\\") and j + 1 < len(lines):
+                j += 1
+                cmd += "\n" + lines[j]
+            m = signer_re.search(cmd)
+            if not m:
+                bad.append(
+                    "R15 %s:%d: `gh attestation verify` runs without --signer-workflow, so it "
+                    "accepts an attestation minted by ANY workflow in this repository -- a branch "
+                    "workflow that pushed its own bytes under a staging name passes it. Pin the "
+                    "signer to the reusable workflow that actually attests (%s)."
+                    % (name, i + 1, ", ".join(sorted(signers)) or "none found in the tree")
+                )
+            elif signers and m.group(1) not in signers:
+                bad.append(
+                    "R15 %s:%d: --signer-workflow names '%s', which does not run "
+                    "actions/attest-build-provenance in this tree. The signer is the reusable "
+                    "workflow the attest step lives in (job_workflow_ref), NOT the workflow that "
+                    "calls it -- naming the caller fails every verify and blocks every promote. "
+                    "Expected one of: %s." % (name, i + 1, m.group(1), ", ".join(sorted(signers)))
+                )
+
     # R1. NO WORKFLOW MAY BE TRIGGERED BY A VERSION TAG.
     # This is the root of the old order. If a `v*` tag push causes a build, then the tag has to
     # exist before the build, and the name is public before anything has verified it. Under the
@@ -408,15 +535,30 @@ def check(root: str) -> Finding:
                 "A build here ships bytes that are 'technically not what we QA'd' - the exact "
                 "defect the split removes. Build on qa; promote the record." % (marker, why)
             )
+    # READ THE WIRING, NOT THE MENTION. These two tests ask whether a job passes an INPUT to
+    # docker.yml, and they used to answer it with `"docker.yml" in <job text>` -- true of any job
+    # that names the file at all, in a comment or inside a shell string. That is a substring search
+    # standing in for a structural one, and it mistook R15's promote-time attestation check for a
+    # rebuild: `--signer-workflow .../docker.yml` is the flag that names who SIGNED the staged
+    # image, in the one job that must never build. The job also declares an unrelated `staging_tag:`
+    # OUTPUT, and the two together read as "asks docker.yml for a fresh build on main".
+    #
+    # A job passes inputs to docker.yml only if it CALLS docker.yml, so that is what is tested now:
+    # a `uses:` naming the local reusable workflow. Comments are blanked first for the reason this
+    # file already gives -- a rule that matches its own prose cannot be fixed without deleting the
+    # explanation, and the explanation an attestation pin most needs to carry is a workflow's name.
+    calls_docker = re.compile(r"^\s*uses:\s*\./\.github/workflows/docker\.yml\s*$", re.M)
     for j, jt in rjobs.items():
-        if "docker.yml" in jt and re.search(r"^\s+staging_tag:", jt, re.M):
+        jt = strip_comments(jt)
+        if calls_docker.search(jt) and re.search(r"^\s+staging_tag:", jt, re.M):
             bad.append(
                 "R10 release.yml's `%s` job passes `staging_tag:` to docker.yml, i.e. it asks for "
                 "a fresh image BUILD on the main push. Main never rebuilds: the promote consumes "
                 "the digest release-stage.yml recorded on qa." % j
             )
     for j, jt in sjobs.items():
-        if "docker.yml" in jt and re.search(r"^\s+promote_to:", jt, re.M):
+        jt = strip_comments(jt)
+        if calls_docker.search(jt) and re.search(r"^\s+promote_to:", jt, re.M):
             bad.append(
                 "R10 release-stage.yml's `%s` job passes `promote_to:` to docker.yml. The stage "
                 "workflow must never mint `X.Y.Z`/`latest`: it runs on EVERY qa iteration, and "
@@ -564,6 +706,53 @@ def check(root: str) -> Finding:
 # ---------------------------------------------------------------------------------------------
 
 MUTATIONS = [
+    (
+        # THE REGRESSION AS IT WOULD ACTUALLY ARRIVE: the verify is written the way the docs and
+        # every README write it -- subject plus `--repo` -- and it passes, on real attested bytes,
+        # every time anyone tests it. It only fails to be a pipeline check on the day someone else's
+        # workflow attests something. Proven on the PROMOTE, which is the invocation standing
+        # between a staging tag and a user-facing version number.
+        "R15 the promote's attestation check drops --signer-workflow",
+        "release.yml",
+        lambda t: re.sub(
+            r"[ \t]*--signer-workflow GetBusbar/busbar/\.github/workflows/docker\.yml[ \t]*\\\n",
+            "", t, count=1),
+        "R15",
+    ),
+    (
+        # The subtler half, and the one a careful reviewer produces: the flag is present and names
+        # the workflow a human would call "the stager". GitHub's signer is the reusable workflow the
+        # attest step lives in, so this spelling fails every verify and refuses every promote --
+        # green to read, red only in production.
+        "R15 the signer is named as the CALLER (release-stage.yml) instead of the attesting workflow",
+        "release.yml",
+        lambda t: t.replace(
+            "--signer-workflow GetBusbar/busbar/.github/workflows/docker.yml",
+            "--signer-workflow GetBusbar/busbar/.github/workflows/release-stage.yml", 1),
+        "R15",
+    ),
+    (
+        # THE REGRESSION AS IT WOULD ACTUALLY ARRIVE: someone copies a snippet out of an action's
+        # README, which is always written with the tag, and nothing anywhere notices. Proven against
+        # the signing installer on purpose -- that is the action whose bytes decide what a busbar
+        # release is signed with.
+        "R14 an action reverts from a sha to a force-movable tag",
+        "docker.yml",
+        lambda t: t.replace(
+            "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3",
+            "sigstore/cosign-installer@v3", 1),
+        "R14",
+    ),
+    (
+        # The quieter half. The sha stays a sha, so it still looks pinned; the tag comment goes, so
+        # Dependabot stops bumping it and the pin rots in place at whatever version it froze on.
+        "R14 a pin loses the trailing tag comment Dependabot reads",
+        "docker.yml",
+        lambda t: t.replace(
+            "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3",
+            "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac", 1),
+        "R14",
+    ),
     (
         "R1 a v* tag trigger comes back on release.yml",
         "release.yml",
