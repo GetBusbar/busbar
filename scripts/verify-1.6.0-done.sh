@@ -24,7 +24,7 @@
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
 #                    scenario/script/leg/suite that owns it and the rigs behind them pass
 #                    (rigs-ledger.sh), and every root-leg cell it calls proven runs over the loop.
-#   no-deferral      scripts/no-deferral-gate.sh --strict-done (nothing deferred; voice markers CLEARED).
+#   no-deferral      cargo xtask gate no-deferral-strict-done (nothing deferred; voice markers CLEARED).
 #   config-noun      scripts/plane-config-noun-gate.sh armed (GREP_GATE_REPORT_ONLY=0). Its residual is
 #                    a LOCKED-legitimate floor, not zero and not a done condition, so what is asserted
 #                    is the floor itself: the run must PRODUCE a count (a gate that errored, or whose
@@ -355,8 +355,8 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "NO-DEFERRAL — nothing deferred; voice skeleton markers CLEARED (strict-done)"
-step "no-deferral-gate --selftest"    bash scripts/no-deferral-gate.sh --selftest
-step "no-deferral-gate --strict-done" bash scripts/no-deferral-gate.sh --strict-done
+step "no-deferral --selftest"    cargo xtask gate no-deferral-strict-done --selftest
+step "no-deferral --strict-done" cargo xtask gate no-deferral-strict-done
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

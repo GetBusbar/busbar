@@ -100,7 +100,7 @@ All of D lands together (the doctrine gates cross-check each other):
   add voice to `installed_decls` + `PLANE_LEDGER_COLUMNS` + the axis assertion; any voice hook that is
   None-while-a-sibling-is-Some gets a ledger-anchored allow row or real wiring.
 - **D4. no-deferral** — with C done and the state assertion (handler Some, in default) satisfied, update the
-  allowlist floor and run `./scripts/no-deferral-gate.sh --strict-done` → GREEN.
+  allowlist floor and run `cargo xtask gate no-deferral-strict-done` → GREEN.
 
 ## Final verification → 11/11
 
