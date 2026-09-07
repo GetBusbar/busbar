@@ -17,7 +17,7 @@
 # being weakened. Neither substitutes for the other.
 #
 # `--selftest` proves the checker still catches a weakened profile before its verdict on the tree is
-# trusted (same discipline as scripts/structure-lint.sh et al). No external deps; bash 3.2 + awk.
+# trusted (same discipline as cargo xtask gate <name> --selftest et al). No external deps; bash 3.2 + awk.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

@@ -180,7 +180,7 @@ A grep gate, sibling of `plane-noun-gate.sh` / `plane-grep-gate.sh`, because N1 
 - **report-only today** (`GREP_GATE_REPORT_ONLY=1`, EXIT 0); `=0` arms the hard gate at DoD;
 - carries a `--selftest` that plants a fixture with a known parse-target leak and a known
   allowlisted homonym and asserts the meter counts the first and not the second (house rule: a
-  gate that cannot fail is worse than none — the `plane-delete-test.sh` / `structure-lint.sh`
+  gate that cannot fail is worse than none — the `plane-delete-test.sh` / `cargo xtask gate structure-lint`
   posture).
 
 ### 4b. `crates/busbar/tests/plane_isomorphism.rs` — a RUST TEST (Assertion I2 + I1)

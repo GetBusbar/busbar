@@ -17,7 +17,7 @@ Per-increment gate battery (all must pass before push):
 `cargo build --workspace` · `cargo build --no-default-features` · `cargo clippy --workspace --all-targets -- -D warnings` (0/0)
 · `cargo fmt --check` · `./scripts/plane-purity-lint.sh --check` (TOTAL 0 / BACKWARDS 0) · config-schema additive-only
 · `./scripts/plane-delete-test.sh --all` (four planes) · `cargo test --workspace` · `cargo test -p busbar-voice --features runtime`
-· `bash testing/voice-conformance/voice-conformance.sh` (0 failures) · `./scripts/structure-lint.sh` · `python3 scripts/public-hygiene-lint.py`.
+· `bash testing/voice-conformance/voice-conformance.sh` (0 failures) · `cargo xtask gate structure-lint` · `python3 scripts/public-hygiene-lint.py`.
 
 ---
 

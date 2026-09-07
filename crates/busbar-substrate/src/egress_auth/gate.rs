@@ -11,7 +11,7 @@
 //! below was written twice — once at `mcp/client/egress.rs`'s credential-selection site and once at
 //! `a2a/creds.rs`'s lease mint — and the two copies had already diverged: one checked that the
 //! caller's key was still LIVE and the other did not, and nobody decided that. Two implementations
-//! of one authorisation control is the shape this tree's `structure-lint.sh` ledger calls DEBT,
+//! of one authorisation control is the shape this tree's the `structure-lint` gate ledger calls DEBT,
 //! because the copy that is hardened and the copy that is not are indistinguishable from the
 //! outside.
 //!

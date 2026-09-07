@@ -583,7 +583,7 @@ pub(crate) fn plane_key_at(idx: u8) -> Option<&'static str> {
 
 /// RESOLVE A PLANE DECLARATION BY KEY. Allocates nothing.
 ///
-/// NAMED FOR ITS AXIS, not `decl_for`. `structure-lint.sh`'s declaration census holds
+/// NAMED FOR ITS AXIS, not `decl_for`. the `structure-lint` gate's declaration census holds
 /// `fn decl_for(` to EXACTLY ONE production occurrence — "there is exactly ONE by-name protocol
 /// resolution in busbar, and a second one is a second answer to which protocols exist". That rule
 /// is right and is not weakened to make room for this: plane resolution is a different axis and

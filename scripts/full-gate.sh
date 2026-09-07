@@ -393,7 +393,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # would have made it absent from both lists exactly like the `.mjs` was -- the parser narrowing
   # back by a different route. Naming one registry invocation here is what keeps that closed.
   #
-  # `structure-lint.sh` used to head this list and came off it the day it became
+  # The structure lint's shell used to head this list and came off it the day it became
   # `cargo xtask gate structure-lint`: a MUST entry naming a script ci.yml no longer runs would fail
   # for the one reason this case is not about. `release-script-lint.sh` takes its place as the shell
   # witness -- the list needs one of each LANGUAGE, and it keeps needing one for as long as any gate
