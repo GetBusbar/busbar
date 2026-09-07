@@ -33,7 +33,10 @@ fn unique(tag: &str) -> String {
 #[test]
 fn secret_error_constructors_set_the_matching_kind() {
     assert_eq!(SecretError::not_found("x").kind, SecretErrorKind::NotFound);
-    assert_eq!(SecretError::unavailable("x").kind, SecretErrorKind::Unavailable);
+    assert_eq!(
+        SecretError::unavailable("x").kind,
+        SecretErrorKind::Unavailable
+    );
     assert_eq!(SecretError::denied("x").kind, SecretErrorKind::Denied);
     assert_eq!(SecretError::invalid("x").kind, SecretErrorKind::Invalid);
     assert_eq!(SecretError::internal("x").kind, SecretErrorKind::Internal);
