@@ -740,3 +740,302 @@ fn the_ledgers_refusals_say_what_they_are() {
         "the three migration refusals do not read alike"
     );
 }
+
+/// **A RELEASE MOVES THREE COLUMNS, AND EACH IN ITS OWN DIRECTION.**
+///
+/// Value handed back to the store leaves the drawn column and the slice it was sitting in, and
+/// appears in the released column. A verb that moved none of them, or moved one the wrong way,
+/// leaves the books balanced against a store that no longer agrees with them.
+#[test]
+fn a_release_hands_value_back_to_the_store_in_all_three_columns() {
+    let mut ledger = Ledger::new();
+    let k = key("b");
+    ledger.record_draw(&k, 1, 1_000);
+    let drawn = ledger.book().get(&k, 1);
+    assert_eq!(drawn.drawn, 1_000);
+    assert_eq!(drawn.open_slice_remainders, 1_000);
+    assert_eq!(drawn.released, 0);
+
+    ledger.record_release(&k, 1, 300);
+    let after = ledger.book().get(&k, 1);
+    assert_eq!(
+        after.released, 300,
+        "the released column goes UP by what went back"
+    );
+    assert_eq!(
+        after.drawn, 700,
+        "the drawn column goes DOWN by the same amount"
+    );
+    assert_eq!(
+        after.open_slice_remainders, 700,
+        "and so does the slice it sat in"
+    );
+    assert_ne!(after, drawn, "a release is not a no-op");
+
+    // The identity still holds across the release: nothing was lost and nothing invented.
+    assert!(holds(&Totals::zero(), &after));
+}
+
+/// **AN ADJUSTMENT IS A MOVE, NOT A DELETION.** The amount leaves settled and appears in
+/// adjustments, so the value is still accounted for and the identity does not move.
+#[test]
+fn an_adjustment_moves_value_out_of_settled_and_into_its_own_column() {
+    let mut ledger = Ledger::new();
+    let token = ledger_token();
+    let k = key("b");
+    ledger.record_draw(&k, 1, 1_000);
+    ledger.record_hold_opened(&k, 1, 600);
+    ledger.record_slice_spent(&k, 1, 600);
+    ledger.settle(&k, 1, hold("a", 600), 600, &usage("tokens", 600), &token);
+    let posted = ledger.book().get(&k, 1);
+    assert_eq!(posted.settled, 600);
+    assert_eq!(posted.adjustments, 0);
+    assert!(holds(&Totals::zero(), &posted));
+
+    // Give 250 back to the payer: it leaves settled and lands in adjustments.
+    ledger.record_adjustment(&k, 1, 250);
+    let corrected = ledger.book().get(&k, 1);
+    assert_eq!(corrected.settled, 350, "the settled column goes DOWN");
+    assert_eq!(
+        corrected.adjustments, 250,
+        "and the adjustments column goes UP"
+    );
+    assert_ne!(corrected, posted, "an adjustment is not a no-op");
+    assert!(
+        holds(&Totals::zero(), &corrected),
+        "a pure reversal does not move the identity"
+    );
+
+    // A negative amount takes more rather than giving back, and the two columns move the other way.
+    ledger.record_adjustment(&k, 1, -100);
+    let taken = ledger.book().get(&k, 1);
+    assert_eq!(taken.settled, 450);
+    assert_eq!(taken.adjustments, 150);
+    assert!(holds(&Totals::zero(), &taken));
+}
+
+/// The open window's correction is the reversal AND the release, in that order, and both happen.
+#[test]
+fn an_adjustment_that_releases_does_the_reversal_and_the_release() {
+    let mut plain = Ledger::new();
+    let mut releasing = Ledger::new();
+    let k = key("b");
+    for ledger in [&mut plain, &mut releasing] {
+        ledger.record_draw(&k, 1, 1_000);
+        ledger.record_hold_opened(&k, 1, 600);
+        ledger.record_slice_spent(&k, 1, 600);
+        ledger.settle(
+            &k,
+            1,
+            hold("a", 600),
+            600,
+            &usage("tokens", 600),
+            &ledger_token(),
+        );
+    }
+    plain.record_adjustment(&k, 1, 250);
+    releasing.record_adjustment_releasing(&k, 1, 250);
+
+    let reversed = plain.book().get(&k, 1);
+    let handed_back = releasing.book().get(&k, 1);
+    // The reversal half is the same on both.
+    assert_eq!(handed_back.settled, reversed.settled);
+    assert_eq!(handed_back.adjustments, reversed.adjustments);
+    // The release half happened only on the second, in all three of its columns.
+    assert_eq!(handed_back.released, reversed.released + 250);
+    assert_eq!(handed_back.drawn, reversed.drawn - 250);
+    assert_eq!(
+        handed_back.open_slice_remainders,
+        reversed.open_slice_remainders - 250
+    );
+    assert_ne!(
+        handed_back, reversed,
+        "releasing is not the same act as reversing"
+    );
+    assert!(holds(&Totals::zero(), &handed_back));
+}
+
+/// **AN UNRECONCILED AMOUNT IS A MOVE OUT OF SETTLED, NEVER A PARALLEL TALLY.**
+///
+/// Booking it as a tally beside the settled column would count the value twice, and reporting an
+/// amount as settled that the store has not confirmed is the thing this verb exists to prevent.
+#[test]
+fn an_unreconciled_amount_moves_out_of_settled_rather_than_beside_it() {
+    let mut ledger = Ledger::new();
+    let k = key("b");
+    ledger.record_draw(&k, 1, 1_000);
+    ledger.record_hold_opened(&k, 1, 800);
+    ledger.record_slice_spent(&k, 1, 800);
+    ledger.settle(
+        &k,
+        1,
+        hold("a", 800),
+        800,
+        &usage("tokens", 800),
+        &ledger_token(),
+    );
+    let posted = ledger.book().get(&k, 1);
+    assert_eq!(posted.settled, 800);
+
+    ledger.record_unreconciled(&k, 1, 300);
+    let pending = ledger.book().get(&k, 1);
+    assert_eq!(pending.unreconciled, 300, "the unreconciled column goes UP");
+    assert_eq!(
+        pending.settled, 500,
+        "and the settled column goes DOWN by the same"
+    );
+    assert_eq!(
+        pending.settled + pending.unreconciled,
+        posted.settled,
+        "the value is counted once, not twice"
+    );
+    assert_ne!(
+        pending, posted,
+        "booking an unreconciled amount is not a no-op"
+    );
+    assert!(
+        holds(&Totals::zero(), &pending),
+        "a move does not move the identity"
+    );
+
+    // When the recompute agrees, the caller moves it back with a negative amount.
+    ledger.record_unreconciled(&k, 1, -300);
+    assert_eq!(ledger.book().get(&k, 1), posted);
+}
+
+/// A balance's key reads as its three parts, and each part reads as itself.
+///
+/// The key's rendered dimension and scope are what the checkpoint body is FRAMED from, so a part
+/// that rendered as nothing would let two different balances share one signed body.
+#[test]
+fn a_balance_key_reads_as_its_three_parts() {
+    use crate::totals::{BucketId, BucketScope, CapDimension, TotalsKey};
+
+    assert_eq!(CapDimension::NanoUnits.to_string(), "nano-units");
+    assert_eq!(CapDimension::Requests.to_string(), "requests");
+    assert_eq!(CapDimension::Concurrent.to_string(), "concurrent");
+    assert_eq!(
+        CapDimension::class(&MeterClassId::new("input")).to_string(),
+        "class input"
+    );
+    // The four render differently from one another, which is what keeps their keys apart.
+    let rendered = [
+        CapDimension::NanoUnits.to_string(),
+        CapDimension::Requests.to_string(),
+        CapDimension::Concurrent.to_string(),
+        CapDimension::Class("input".to_string()).to_string(),
+    ];
+    assert!(rendered.iter().all(|r| !r.is_empty()));
+    assert_eq!(
+        rendered
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        4
+    );
+
+    assert_eq!(BucketScope::All.to_string(), "all");
+    assert_eq!(
+        BucketScope::Pool("west".to_string()).to_string(),
+        "pool:west"
+    );
+    assert_ne!(
+        BucketScope::All.to_string(),
+        BucketScope::Pool("all".to_string()).to_string(),
+        "a pool named for the whole is not the whole"
+    );
+
+    assert_eq!(BucketId::new("b").to_string(), "b");
+    let rendered_key = TotalsKey::new(
+        BucketId::new("bucket-a"),
+        CapDimension::Requests,
+        BucketScope::Pool("west".to_string()),
+    )
+    .to_string();
+    assert_eq!(rendered_key, "bucket-a/requests/pool:west");
+}
+
+/// A book with a balance in it is NOT empty, and a book that has never been touched is.
+#[test]
+fn a_book_is_empty_only_before_anything_touches_it() {
+    let mut ledger = Ledger::new();
+    assert!(ledger.book().is_empty());
+    assert_eq!(ledger.book().len(), 0);
+
+    ledger.record_draw(&key("b"), 1, 5);
+    assert!(
+        !ledger.book().is_empty(),
+        "a book with a balance is not empty"
+    );
+    assert_eq!(ledger.book().len(), 1);
+    assert_eq!(ledger.book().iter().count(), 1);
+
+    // Retiring the only window it holds empties it again.
+    assert_eq!(ledger.book_mut().retain_from(2), 1);
+    assert!(ledger.book().is_empty());
+}
+
+/// The recompute checks exactly the postings its own node's mark is behind, and counts them.
+///
+/// A pass that checked everything again would recheck a day of postings every tick; a pass that
+/// checked nothing would report itself clean over money it never looked at.
+#[test]
+fn the_recompute_checks_what_its_own_node_is_behind_and_counts_it() {
+    use std::collections::BTreeMap;
+
+    use crate::recompute::{recompute, SealedPolicy};
+
+    let posting_at = |node: u64, node_seq: u64| Posting {
+        node,
+        node_seq,
+        key: key("b"),
+        window_start: 1,
+        policy_epoch: 1,
+        rate_card_version: 1,
+        lines: Vec::new(),
+        fee_count: 0,
+        tier_bp: 10_000,
+        pre_tier_amount: 0,
+        priced_amount: 0,
+        origin: PostingOrigin::Internal,
+    };
+    let mut cards = BTreeMap::new();
+    cards.insert(1u64, RateCard::empty(1));
+    let mut policies: BTreeMap<u64, SealedPolicy> = BTreeMap::new();
+    policies.insert(
+        1,
+        SealedPolicy {
+            epoch: 1,
+            cards,
+            tiers: BTreeMap::new(),
+        },
+    );
+
+    let postings = vec![
+        posting_at(1, 1),
+        posting_at(1, 2),
+        posting_at(2, 1),
+        posting_at(2, 2),
+    ];
+
+    // From the beginning, every posting is owed a recompute.
+    let first = recompute(Watermark::start(), &postings, &policies);
+    assert_eq!(first.checked, 4, "nothing has been checked before");
+    assert!(first.is_clean());
+    assert_eq!(first.watermark.mark_for(1), Some(2));
+    assert_eq!(first.watermark.mark_for(2), Some(2));
+
+    // Run again against the mark it left: nothing is behind it any more.
+    let second = recompute(first.watermark.clone(), &postings, &policies);
+    assert_eq!(second.checked, 0, "a posting is not rechecked twice");
+    assert_eq!(second.watermark, first.watermark);
+
+    // A mark on one node leaves the OTHER node's postings still owed, whatever their numbers.
+    let one_node_only = recompute(Watermark::from_pairs([(1u64, 9u64)]), &postings, &policies);
+    assert_eq!(
+        one_node_only.checked, 2,
+        "a mark on one node never skips another node's postings"
+    );
+    assert_eq!(one_node_only.watermark.mark_for(1), Some(9));
+    assert_eq!(one_node_only.watermark.mark_for(2), Some(2));
+}
