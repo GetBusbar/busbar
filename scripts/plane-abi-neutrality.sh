@@ -92,8 +92,31 @@ alt="$(IFS='|'; echo "${banned[*]}")"
 # spuriously. So strip the `<file>:<lineno>:` prefix and test the CODE ONLY — exactly as
 # `plane-purity-lint` scans the source line, never the path it lives under. The full prefixed line
 # is still what we PRINT, so a real hit is still reported with its file:line.
+# THE SCOPE IS THE ABI, AND A TEST IS NOT THE ABI. Files under a `tests/` directory are excluded.
+# This witness's stated subject is "the names the ABI actually exports", and a test function exports
+# nothing: it is not reachable from a plugin author's side of the boundary and is not part of any
+# capability surface. Leaving them in scope did not make the gate stronger, it made it WRONG — the
+# ban list holds `round` (A2A's role noun) and the crate's own POD test is called
+# `raw_fault_class_round_trips_every_named_class`, so the witness reported a neutrality leak in a
+# round-trip assertion and had been red on that ever since the test was written. A gate that is red
+# for a reason it does not mean is a gate people learn to route around.
+#
+# What is NOT given up: every declaration a plugin author can name still lives outside `tests/`, so
+# the leak this witness exists to catch — a capability named after one protocol — is caught exactly
+# as before. And the exclusion cannot silently empty the scan: the floor below refuses a run that
+# had nothing to read, because a ban over an empty file list matches nothing and reads as clean.
+scanned="$(find "$crate_src" -name '*.rs' -not -path '*/tests/*' | wc -l | tr -d ' ')"
+if [ "$scanned" -lt 1 ]; then
+  echo "FAIL plane-abi-neutrality: the scan covered $scanned file(s) under $crate_src." >&2
+  echo "  This gate is a BAN, and a ban over no files matches nothing and prints 'ok'. A clean" >&2
+  echo "  hot lane and an unread one are the same output, so the count is the only thing that" >&2
+  echo "  tells them apart." >&2
+  exit 1
+fi
+
 hits="$(
-  grep -rInE '^[[:space:]]*(pub[[:space:]]+)?(struct|enum|fn|type|const|trait|mod|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[:(=,])' "$crate_src" \
+  find "$crate_src" -name '*.rs' -not -path '*/tests/*' -print0 \
+    | xargs -0 grep -InE '^[[:space:]]*(pub[[:space:]]+)?(struct|enum|fn|type|const|trait|mod|[A-Za-z_][A-Za-z0-9_]*[[:space:]]*[:(=,])' \
     | awk -v pat="$alt" '{ code = $0; sub(/^[^:]*:[0-9]+:/, "", code); if (tolower(code) ~ tolower(pat)) print }' \
     || true
 )"
