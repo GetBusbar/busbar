@@ -1114,6 +1114,50 @@ def golden_recorded(ledger: Path) -> set[str]:
     return out
 
 
+# ── "Does CI actually RUN it?" ───────────────────────────────────────────────────────────────────
+# A `gate`, `lint` or `script` ref used to be proven by `(root / ref).exists()`. Existence on disk is
+# not a comparison: a gate nobody invokes has the same evidentiary value as a gate nobody wrote, and
+# the citation reads green forever either way. So a script-shaped ref is only proof when some
+# workflow under .github/workflows actually invokes it.
+#
+# WHAT COUNTS AS INVOKED, and why each source is in the set:
+#   * .github/workflows/*.yml -- the direct answer. Comment lines and step `name:` labels are
+#     stripped FIRST, exactly as scripts/full-gate.sh's own discovery strips them, because a script
+#     named in a comment or in a step's human-readable title is being TALKED ABOUT, not run. Three of
+#     the refs this check found were in precisely that position.
+#   * scripts/full-gate.sh's discovered set -- the indirection the owner's rule names. It needs no
+#     separate scan: full-gate.sh derives that set by grepping ci.yml, which is already read above.
+#   * qa/segments.toml -- the qa full tier's manifest, and a real invocation path: qa-gate.yml runs
+#     `scripts/qa-gate-run.sh segment <id>`, which runs the segment's `run =` line. It is admitted
+#     ONLY when a workflow is seen driving that runner, so the manifest cannot vouch for itself.
+#     Leaving it out would make this check lie in the other direction -- naming a gate that demonstrably
+#     runs every qa push as one that does not run at all.
+_COMMENT_LINE = re.compile(r"^[ \t]*#.*$", re.M)
+_STEP_LABEL = re.compile(r"^[ \t]*-?[ \t]*name:.*$", re.M)
+_PATH_TOKEN = re.compile(r"(?:scripts|testing|qa|xtask)/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+")
+SEGMENT_RUNNER = "scripts/qa-gate-run.sh"
+
+
+def _runnable_text(p: Path) -> str:
+    """A file's content with the lines that cannot run anything removed."""
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return _STEP_LABEL.sub("", _COMMENT_LINE.sub("", text))
+
+
+def ci_invoked_refs(root: Path) -> set[str]:
+    """Every script-shaped path CI actually invokes."""
+    wf_dir = root / ".github" / "workflows"
+    workflows = "\n".join(_runnable_text(p) for p in sorted(wf_dir.glob("*.y*ml"))) if wf_dir.is_dir() else ""
+    invoked = set(_PATH_TOKEN.findall(workflows))
+    segments = root / "qa" / "segments.toml"
+    if SEGMENT_RUNNER in invoked and segments.is_file():
+        invoked |= set(_PATH_TOKEN.findall(_runnable_text(segments)))
+    return invoked
+
+
 def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> dict:
     """Everything a per-check verdict needs, gathered once."""
     fam_cells: dict[str, list[str]] = defaultdict(list)
@@ -1126,6 +1170,7 @@ def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> di
         "fam_cells": fam_cells,
         "families": Counter((c.get("family") or c.get("plane") or "?") for c in cells_doc.get("cells", [])),
         "root": root,
+        "ci": ci_invoked_refs(root),
     }
 
 
@@ -1163,6 +1208,10 @@ def check_verdict(c: dict, ctx: dict) -> tuple[bool, str]:
     if k in ("lint", "gate", "script", "conformance"):
         if not (ctx["root"] / r).exists():
             return False, f"{k}:{r}"
+        if r not in ctx["ci"]:
+            return False, (f"{k}:{r} (exists on disk, but nothing under .github/workflows invokes it, "
+                           f"directly or through the qa segment manifest -- a gate nobody runs "
+                           f"compares nothing)")
         return True, ""
     return False, f"{k}:{r} (unknown check kind)"
 

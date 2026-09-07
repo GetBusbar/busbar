@@ -15,15 +15,15 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 101,
-  "unproven": 2,
+  "mapped": 99,
+  "unproven": 4,
   "unmapped": 0,
   "checks_by_kind": {
-   "gate": 13,
+   "gate": 11,
    "lint": 5,
-   "oracle-cell": 50,
-   "oracle-family": 5,
-   "test": 437
+   "oracle-cell": 49,
+   "oracle-family": 4,
+   "test": 431
   }
  },
  "owner_decisions": {
@@ -1603,7 +1603,7 @@
    "surface": "`GET /auth/token`",
    "binding": "the browser exchange verbatim: unauthenticated exact-path bypass, `200 text/html` or `302` to the IdP, `?logout` / `?code` / `?method` / `?refresh` dispatch",
    "inventory": "routes-admin",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -1662,8 +1662,8 @@
      "status": "mapped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|auth-token|GET-none, test:chooser_renders_0_1_n_buttons, test:redirect_begin_still_redirects, test:logout_renders_signed_out_and_clears_cookie, test:callback_state_mismatch_400, test:refresh_rotates_key_and_revokes_the_old_one, test:test_mcp_token_is_confined_to_the_mcp_plane, gate:scripts/release-check-1.5.2.sh"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: gate:scripts/release-check-1.5.2.sh (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing)"
   },
   {
    "id": "PB-34",
@@ -3378,7 +3378,7 @@
    "surface": "documented behaviour",
    "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one cell family (`documented-vs-actual`)",
    "inventory": "ops",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "oracle-family",
@@ -3395,8 +3395,8 @@
      "proves": "the full 56-claim ledger: `cell` for every testable claim (with its cell id(s)), `prose` with a one-line reason for the 23 claims not testable through the binary — nothing silently dropped"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "oracle-family:documented, gate:qa/documented-claims.json"
+   "verdict": "FAIL",
+   "verdict_detail": "partly proven; a referenced check settles nothing: gate:qa/documented-claims.json (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing)"
   },
   {
    "id": "PB-72",

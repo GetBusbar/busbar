@@ -338,6 +338,47 @@ PYEOF
     say FAIL "counts() called a binding with nothing compared 'mapped'"
   fi
 
+  # (j) A GATE NOBODY RUNS PROVES NOTHING. `(root/ref).exists()` was the whole test for a gate/lint
+  #     ref, so a script that had stopped being invoked -- or that was only ever NAMED in a workflow
+  #     comment or a step title -- carried a binding as proven for as long as the file stayed on disk.
+  #     Driven against a fixture tree rather than the repo, so the case asserts the RULE and does not
+  #     move the day a real workflow is edited. Both arms, because a check that only ever says no is
+  #     no better than one that only ever says yes.
+  if "$PY" - <<'PYEOF'
+import importlib.util, pathlib, sys, tempfile
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    (root / ".github" / "workflows").mkdir(parents=True)
+    (root / "scripts").mkdir()
+    for name in ("ran.sh", "talked-about.sh", "titled.sh", "orphan.sh"):
+        (root / "scripts" / name).write_text("#!/bin/sh\n")
+    (root / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  a:\n    steps:\n"
+        "      - name: run scripts/titled.sh one day\n"
+        "        run: scripts/ran.sh --check\n"
+        "      # scripts/talked-about.sh documents the phase this replaces\n")
+    ctx = m.check_context({"cells": []}, root / "crates", root, root / "no-ledger.tsv")
+    want = {"scripts/ran.sh": True, "scripts/talked-about.sh": False,
+            "scripts/titled.sh": False, "scripts/orphan.sh": False}
+    bad = []
+    for ref, expected in want.items():
+        got, why = m.check_verdict({"kind": "gate", "ref": ref, "status": "mapped"}, ctx)
+        if got is not expected:
+            bad.append(f"{ref}: got {got}, wanted {expected} ({why})")
+        if not expected and "invokes it" not in why:
+            bad.append(f"{ref}: reason does not name the missing invocation ({why})")
+    if bad:
+        print("; ".join(bad), file=sys.stderr)
+    sys.exit(1 if bad else 0)
+PYEOF
+  then
+    say PASS "a gate/lint ref is proof only when a workflow INVOKES it (a comment or a step title is not an invocation)"
+  else
+    say FAIL "the runs-in-CI check does not separate an invoked gate from one that only exists on disk"
+  fi
+
   echo
   if [ "$fails" -eq 0 ]; then echo "design bindings selftest: GREEN (${cases} cases)"; return 0; fi
   echo "design bindings selftest: RED (${fails}/${cases} cases failed)"; return 1
