@@ -66,6 +66,18 @@ build_matrix() {
   if [ -f "${plugin_root}/.busbar-ref" ]; then
     pin="$(cut -d' ' -f1 "${plugin_root}/.busbar-ref" | tr -d '[:space:]')"
   fi
+  # A MOVING REF IN FIELD 1 IS NOT A PIN, AND `resolve()` CANNOT TELL YOU SO. It turns a branch or
+  # tag name into a sha just as happily as it passes a 40-hex sha through, so a `.busbar-ref`
+  # reading `main` or `v1.6.0` resolved fine, matched whatever the moving leg resolved to, hit the
+  # dedupe below, and this script emitted ONE leg while announcing "CI and release agree by
+  # construction". They agreed about nothing: the "pinned" leg was tracking the same moving target
+  # as the moving leg, the PINNED-vs-MOVING split this whole file exists to maintain was gone, and
+  # the output said the opposite in the reassuring direction. release-on-upstream.yml writes a sha;
+  # anything else in field 1 is a mis-write, and a mis-write here is invisible by construction.
+  if [ -n "$pin" ] && ! printf '%s' "$pin" | grep -qE '^[0-9a-f]{40}$'; then
+    echo "::error::.busbar-ref field 1 is '${pin}', which is not a 40-hex commit sha. A moving ref there is not a pin: the 'pinned' leg would track whatever that ref points at today, collapse into the moving leg, and this CI would report that the release and the engine agree while proving nothing about the commit the release will actually build. Re-pin .busbar-ref to a sha." >&2
+    return 1
+  fi
   if [ -z "$pin" ]; then
     # Not fatal: a brand-new plugin repo has no pin until its first cut. But it must never be
     # silent, because it means CI is proving nothing about the release.
@@ -203,6 +215,25 @@ FAKE
   check "an unresolvable .busbar-ref pin fails, it does not warn" \
     "exit1" \
     "$(build_matrix "${tmp}/badpin" main >/dev/null 2>&1 && echo exit0 || echo exit1)"
+
+  # 5b. AN UNPINNED PIN IS A HARD FAILURE TOO, and it is the one that used to pass loudest. A
+  #     `.busbar-ref` holding a moving ref resolves, matches the moving leg, dedupes to ONE leg and
+  #     prints "CI and release agree by construction" — the reassuring output, for the case where
+  #     the release/CI split has silently ceased to exist. `main` resolves in the fake table, so
+  #     this proves the hex check and not merely another unresolvable ref.
+  mkdir -p "${tmp}/movingpin"
+  printf 'main 1.6.0\n' > "${tmp}/movingpin/.busbar-ref"
+  check "a .busbar-ref holding a moving ref instead of a sha fails" \
+    "exit1" \
+    "$(build_matrix "${tmp}/movingpin" main >/dev/null 2>&1 && echo exit0 || echo exit1)"
+  WARN_NEEDLE="is not a 40-hex commit sha"
+  check "and it says the pin is not a pin, rather than dedupe-ing it away" \
+    "yes" "$(warns build_matrix "${tmp}/movingpin" main)"
+  # The positive control: a real 40-hex pin on the SAME moving ref must still collapse to one leg,
+  # so the check is refusing an unpinned pin rather than refusing the steady state.
+  check "a 40-hex pin equal to the moving ref still collapses to one leg" \
+    'matrix={"include":[{"label":"pinned+main (same commit)","ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}' \
+    "$(build_matrix "${tmp}/same" main 2>/dev/null)"
 
   # 6. Every emitted matrix must be parseable JSON with a non-empty include list. A malformed
   #    matrix makes `fromJSON` fail at workflow level with a message that names neither this script
