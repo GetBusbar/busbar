@@ -18,13 +18,22 @@ fn test_support_and_testkit_share_one_capture_gate() {
     let held = crate::test_support::warn_capture::WarnCapture::default();
     let acquired = Arc::new(AtomicBool::new(false));
     let acquired_writer = acquired.clone();
+    // The spawned thread says "I am about to try" BEFORE it tries. Without it, the negative check
+    // below could pass on a loaded machine simply because the thread had not been scheduled yet —
+    // "it did not acquire" and "it never ran" are the same observation, and only the first is the
+    // claim. Waiting on the barrier makes the sleep a window for the ACQUIRE, not for the spawn.
+    let ready = Arc::new(std::sync::Barrier::new(2));
+    let ready_writer = ready.clone();
 
     let handle = std::thread::spawn(move || {
+        ready_writer.wait();
         let _other = crate::testkit::warn_capture::WarnCapture::default();
         acquired_writer.store(true, Ordering::SeqCst);
     });
 
-    // Give the spawned thread every chance to (wrongly) acquire immediately.
+    // Both threads are now past the barrier, so the spawned one is inside (or entering) the
+    // constructor. Give it every chance to (wrongly) acquire immediately.
+    ready.wait();
     std::thread::sleep(std::time::Duration::from_millis(200));
     assert!(
         !acquired.load(Ordering::SeqCst),

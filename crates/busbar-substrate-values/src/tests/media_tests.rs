@@ -104,10 +104,52 @@ fn image_output_is_additive_b64_and_url_coexist() {
         url: Some("https://example/img.png".into()),
         ..Default::default()
     };
-    // Both present, both kept — the losslessness requirement a one-of would break.
-    assert!(img.b64.is_some() && img.url.is_some());
-    assert!(img.has_payload());
-    assert!(!ImageOutput::default().has_payload());
+    // BOTH PRESENT IS A SHAPE THIS TYPE CAN HOLD, and the construction above compiling is the whole
+    // of that proof — a one-of (an enum, or a single field) could not have been written. Restating
+    // `img.b64.is_some() && img.url.is_some()` after building it with both was an assertion on the
+    // fixture's own literal: it could not fail, whatever `ImageOutput` did.
+    //
+    // What is left to check is the predicate, and it is checked over all four populations rather
+    // than only the one the fixture happens to be. `has_payload` is an OR: EITHER representation on
+    // its own is still an image, and only neither is not. An AND — the reading the both-present
+    // fixture alone cannot tell apart — would silently drop every url-only dall-e answer and every
+    // b64-only one.
+    assert!(img.has_payload(), "both representations");
+    assert!(
+        ImageOutput {
+            b64: Some("iVBORw0KGgo=".into()),
+            ..Default::default()
+        }
+        .has_payload(),
+        "an inline payload alone is an image"
+    );
+    assert!(
+        ImageOutput {
+            url: Some("https://example/img.png".into()),
+            ..Default::default()
+        }
+        .has_payload(),
+        "a URL alone is an image"
+    );
+    assert!(
+        !ImageOutput::default().has_payload(),
+        "and neither is the one case that is not"
+    );
+
+    // The two fields are independent storage, not two spellings of one slot: an output carrying only
+    // the URL is a DIFFERENT value from one carrying only the inline payload, and both differ from
+    // the one carrying both. A single-slot representation would collapse at least two of the three.
+    let b64_only = ImageOutput {
+        b64: img.b64.clone(),
+        ..Default::default()
+    };
+    let url_only = ImageOutput {
+        url: img.url.clone(),
+        ..Default::default()
+    };
+    assert_ne!(b64_only, url_only);
+    assert_ne!(img, b64_only);
+    assert_ne!(img, url_only);
 }
 
 /// The compile-time reverse table must be exactly what the per-call loop it replaced would have
