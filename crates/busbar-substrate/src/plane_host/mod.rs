@@ -1499,3 +1499,7 @@ pub trait ContainerGateSink: PlaneSlots {
 #[cfg(test)]
 #[path = "tests/gauntlet_session_tests.rs"]
 mod gauntlet_session_tests;
+
+#[cfg(test)]
+#[path = "tests/runtime_slot_key_tests.rs"]
+mod runtime_slot_key_tests;
