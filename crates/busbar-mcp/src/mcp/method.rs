@@ -2586,7 +2586,8 @@ const CODE_MISSING_CLIENT_CAPABILITY: i64 = busbar_mcp_codec::codec::CODE_MISSIN
 const CODE_INVALID_PARAMS: i64 = busbar_mcp_codec::codec::CODE_INVALID_PARAMS;
 
 /// THE TRIPPED-UPSTREAM ERROR — the owner-agreed rendering for a tripped MCP upstream. In the
-/// implementation-defined `-32000..-32099` band beside busbar's other extensions, because every
+/// implementation-defined `-32019..-32000` band beside busbar's other extensions — outside the
+/// `-32099..-32020` sub-range the MCP specification reserves for its OWN codes — because every
 /// reserved code is wrong for a specific reason: `-32603` says busbar broke (it did not), `-32601`
 /// says the tool does not exist (it does), `-32602` blames the caller. The call NEVER HAPPENED, so
 /// this is a JSON-RPC error and never an `isError` tool result — see `refuse_upstream_unavailable`.
@@ -2627,7 +2628,7 @@ fn refuse_upstream_unavailable(
 }
 
 /// Render a routed admission refusal. The availability shapes (`Empty`/`NoneAdmissible`) keep the
-/// EXACT rendering the degenerate cell decided — 503 + `Retry-After` + `-32030` with structured
+/// EXACT rendering the degenerate cell decided — 503 + `Retry-After` + `-32001` with structured
 /// `data`, never an `isError` result — with `server` naming the pool when one is configured (the
 /// pool is the unit the operator declared and the unit that has nothing left). A pin mismatch
 /// (`NotInterchangeable`) is NOT an availability fact: it is the operator's same-deployment claim

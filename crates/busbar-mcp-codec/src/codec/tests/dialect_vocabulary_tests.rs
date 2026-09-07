@@ -7,7 +7,7 @@
 //! Mutation testing over this crate left thirteen survivors that are all one sentence: **deleting
 //! the minus sign from an error-code constant changed nothing any test could see.** `-32700`
 //! became `+32700`, and so did `-32601`, `-32602`, `-32020`, `-32021`, `-32022`, `-32000`,
-//! `-32030` and both retired codes. A JSON-RPC code is exactly the kind of value that reads
+//! `-32001` and both retired codes. A JSON-RPC code is exactly the kind of value that reads
 //! plausibly while being wrong: a peer receiving `32601` does not recognise "method not found", it
 //! recognises nothing, and the client library's error branch for an unknown code is usually
 //! "retry", which is the worst possible answer to a method that will never exist.
@@ -91,9 +91,10 @@ fn every_code_this_dialect_defines_is_negative_and_inside_the_reserved_band() {
 /// in JSON-RPC's implementation-defined server-error range, and that separation is the whole reason
 /// it can coexist with codes the specification may add later.
 ///
-/// `CODE_UPSTREAM_UNAVAILABLE` is NOT checked here, because it does not hold this property — see
-/// [`the_upstream_unavailable_extension_is_recorded_as_sitting_in_the_reserved_sub_range`] below,
-/// which records why and what it costs.
+/// `CODE_UPSTREAM_UNAVAILABLE` holds the same property, and is checked here beside `CODE_REFUSED`
+/// rather than in a cell of its own — see
+/// [`the_upstream_unavailable_extension_sits_in_the_implementation_defined_range`] for the clause
+/// the conformance battery reads it against.
 #[test]
 fn the_spec_defined_codes_and_this_nodes_own_extensions_do_not_share_a_range() {
     let spec_reserved = -32099..=-32020;
@@ -107,44 +108,49 @@ fn the_spec_defined_codes_and_this_nodes_own_extensions_do_not_share_a_range() {
             "{code} is a specification-defined code and must sit in -32099..=-32020"
         );
     }
-    assert!(
-        !spec_reserved.contains(&CODE_REFUSED),
-        "CODE_REFUSED sits in the range the specification reserves for its OWN codes, where a \
-         future specification code would collide with it"
-    );
+    for (name, code) in [
+        ("CODE_REFUSED", CODE_REFUSED),
+        ("CODE_UPSTREAM_UNAVAILABLE", CODE_UPSTREAM_UNAVAILABLE),
+    ] {
+        assert!(
+            !spec_reserved.contains(&code),
+            "{name} ({code}) sits in the range the specification reserves for its OWN codes, where \
+             a future specification code would collide with it"
+        );
+    }
 }
 
-/// `CODE_UPSTREAM_UNAVAILABLE` IS INSIDE THE SPECIFICATION'S RESERVED SUB-RANGE, AND THE PINNED RIG
-/// HAS A CHECK THAT SAYS SO.
+/// `CODE_UPSTREAM_UNAVAILABLE` IS AN EXTENSION, SO IT LIVES WHERE EXTENSIONS ARE ALLOWED TO LIVE.
 ///
 /// `testing/mcp-conformance/src/core/jsonrpc.mjs` pins `SPEC_RESERVED_RANGE = [-32099, -32020]` and
 /// `SPEC_DEFINED_CODES` as exactly three codes (`-32020`, `-32021`, `-32022`).
-/// `src/suites/server-conformance.mjs:543-546` asserts `BASE.ERR.RESERVED-RANGE`: any error code a
-/// probed method answers with that is inside that sub-range and NOT one of those three is a
-/// conformance failure. `CODE_UPSTREAM_UNAVAILABLE` is `-32030` — inside the sub-range, not
-/// spec-defined — so a probe that provokes an unreachable upstream fails that check. It is latent
-/// only because the rig's current probe list does not reach an upstream-unavailable condition.
+/// `src/suites/server-conformance.mjs` asserts `BASE.ERR.RESERVED-RANGE`: any error code a probed
+/// method answers with that is inside that sub-range and NOT one of those three is a conformance
+/// failure. This code used to be `-32030` — inside the sub-range, not spec-defined — so any probe
+/// that provoked an unreachable upstream failed that check; it was latent only because the rig's
+/// probe list did not reach an upstream-unavailable condition. `SEAM.UPSTREAM-UNAVAILABLE-CODE`
+/// now reaches it, and this cell is the same clause read on this side of the seam.
 ///
-/// `CODE_REFUSED` shows the shape the fix takes: it is `-32000`, deliberately placed in JSON-RPC's
-/// IMPLEMENTATION-DEFINED server-error range, and its own doc comment says it was put there
-/// "because every reserved code is wrong for a specific reason". The same reasoning was not applied
-/// to `-32030`.
+/// `CODE_REFUSED` showed the shape: `-32000`, the FIRST code in JSON-RPC's implementation-defined
+/// server-error range, placed there "because every reserved code is wrong for a specific reason".
+/// `CODE_UPSTREAM_UNAVAILABLE` is the second, `-32001`, chosen for that same reason and adjacent to
+/// the refusal it sits beside on the wire.
 ///
-/// THIS CELL DOES NOT ASSERT THE PLACEMENT IS CORRECT — it asserts the two facts that make the
-/// hazard precise, so that the day the specification claims `-32030` this file goes red instead of
-/// the wire going quiet. Moving the constant is a wire-visible change across the codec/plane seam
-/// and is the owner's call, not this suite's.
+/// The band checked here is JSON-RPC 2.0 section 5.1's implementation-defined `-32099..=-32000`
+/// MINUS the sub-range MCP reserves, i.e. `-32019..=-32000`. A code outside it is either not a
+/// server error at all or is squatting on ground the specification may claim.
 #[test]
-fn the_upstream_unavailable_extension_is_recorded_as_sitting_in_the_reserved_sub_range() {
-    let spec_reserved = -32099..=-32020;
+fn the_upstream_unavailable_extension_sits_in_the_implementation_defined_range() {
+    let node_extensions = -32019..=-32000;
     assert!(
-        spec_reserved.contains(&CODE_UPSTREAM_UNAVAILABLE),
-        "CODE_UPSTREAM_UNAVAILABLE moved out of the specification's reserved sub-range — if that \
-         was deliberate, this cell and the finding it records should be deleted"
+        node_extensions.contains(&CODE_UPSTREAM_UNAVAILABLE),
+        "CODE_UPSTREAM_UNAVAILABLE is {CODE_UPSTREAM_UNAVAILABLE}, outside the -32019..=-32000 \
+         range left to a node's own extensions once MCP's reserved -32099..=-32020 sub-range is \
+         taken out: the conformance battery's BASE.ERR.RESERVED-RANGE clause fails on it"
     );
-    // The three codes the rig pins as specification-defined. If the specification ever claims
-    // -32030, this assertion goes red and the collision is a compile-time-adjacent fact rather
-    // than a conformance run nobody happened to provoke.
+    // The three codes the rig pins as specification-defined. None of them may be this one, and the
+    // range assertion above already guarantees that; asserted anyway, because the range is the
+    // reasoning and the collision is the consequence.
     let spec_defined = [
         CODE_HEADER_MISMATCH,
         CODE_MISSING_CLIENT_CAPABILITY,
@@ -153,6 +159,11 @@ fn the_upstream_unavailable_extension_is_recorded_as_sitting_in_the_reserved_sub
     assert!(
         !spec_defined.contains(&CODE_UPSTREAM_UNAVAILABLE),
         "CODE_UPSTREAM_UNAVAILABLE now collides with a specification-defined code"
+    );
+    assert_ne!(
+        CODE_UPSTREAM_UNAVAILABLE, CODE_REFUSED,
+        "the two extensions must stay distinguishable: a refusal busbar chose and an upstream \
+         busbar could not reach are different facts for the caller"
     );
 }
 
