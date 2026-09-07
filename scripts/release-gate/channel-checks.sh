@@ -65,6 +65,17 @@ openapi_version_ok() {  # openapi_version_ok <docver> <want>
   [ -n "$1" ] && [ "$1" = "$2" ]
 }
 
+# The pointer guard. One place, so a sixth pointer check cannot get a sixth answer. Returns 0 (and
+# records the row) when the newest published release could not be established, which is the caller's
+# cue not to make its own assertion — see the POINTER_UNRESOLVED block below for what it is for.
+POINTER_UNRESOLVED=0
+pointer_unresolved() {  # pointer_unresolved <id>
+  [ "$POINTER_UNRESOLVED" = 1 ] || return 1
+  record "$1" FAIL "the newest published release could not be established, so ${1} was not verified" \
+    "gh could not enumerate ${REPO:-the repository}'s releases (rate limit, token scope, or an outage). This row asserts what a user gets when they do not name a version; with the owed value unknown the only assertion available is against the version under test, which is this check's own input. Fix: re-run once the releases API is readable."
+  return 0
+}
+
 # ── --selftest ──────────────────────────────────────────────────────────────────────────────────
 #
 # Offline, before a single outbound call. Every case is one the code got WRONG in the green (or the
@@ -190,6 +201,32 @@ if [ "${1:-}" = "--selftest" ]; then
   if openapi_version_ok "" "1.6.0"; then nope "an ABSENT .info.version passed the version assertion"; else ok "an absent .info.version is RED, not skipped"; fi
   if openapi_version_ok "1.5.0" "1.6.0"; then nope "a WRONG .info.version passed"; else ok "a wrong .info.version is RED"; fi
 
+  # CASE 8: the POINTER GUARD. When gh cannot enumerate the published releases, the five pointer
+  # rows have no owed value; the code used to assign NEWEST="$V" and let them assert that the world
+  # points at the version under test — which is their own input. Each must be RED, by name, and the
+  # check that follows must not run.
+  POINTER_UNRESOLVED=1
+  REPO="acme/thing"
+  for st_id in release:latest-pointer helm:appversion brew:formula-version install:e2e site:download-page; do
+    st_reset
+    if pointer_unresolved "$st_id"; then
+      if [ "$(st_row "$st_id")" = "FAIL" ]; then
+        ok "${st_id} is RED when the newest published release cannot be established"
+      else
+        nope "${st_id} recorded $(st_row "$st_id") with the pointer set unresolved"
+      fi
+    else
+      nope "${st_id} was allowed to assert against its own input with the pointer set unresolved"
+    fi
+  done
+  POINTER_UNRESOLVED=0
+  st_reset
+  if pointer_unresolved release:latest-pointer; then
+    nope "the pointer guard fires even when the release list WAS readable — every pointer row is now dead"
+  else
+    ok "and with the release list readable the pointer checks run as before"
+  fi
+
   echo
   [ "$st_bad" = 0 ] && { echo "channel-checks selftest: the owed asset set and its two directions hold"; exit 0; }
   echo "channel-checks selftest: FAILED"; exit 1
@@ -222,11 +259,24 @@ NEWEST="$(gh api --paginate "repos/${REPO}/releases" \
   --jq '.[] | select(.draft==false and .prerelease==false) | .tag_name' 2>/dev/null \
   | sed 's/^v//' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)"
 if [ -z "${NEWEST:-}" ]; then
-  # Not recoverable by guessing. Every pointer assertion below would be vacuous, and a vacuous
-  # assertion that reports PASS is the failure mode this whole gate exists to eliminate.
-  echo "::warning::could not enumerate ${REPO}'s published releases; pointer checks will assert against the version under test (${V})."
+  # NOT RECOVERABLE BY GUESSING, AND IT USED TO GUESS. The two lines above this one already said
+  # "every pointer assertion below would be vacuous, and a vacuous assertion that reports PASS is
+  # the failure mode this whole gate exists to eliminate" — and then the code assigned NEWEST="$V"
+  # and carried on. All five pointer rows (release:latest-pointer, helm:appversion,
+  # brew:formula-version, install:e2e, site:download-page) then asserted that the world points at
+  # the version under test, which is a value derived from their own input rather than from the
+  # world. On a `gh` rate-limit, a token-scope change or a GitHub outage, five rows go PASS having
+  # compared the release under test to itself.
+  #
+  # A `::warning::` is also not a ledger row, so gate.sh never saw that this happened at all.
+  #
+  # So the five ids are recorded FAIL, by name, and the checks below do not run: a pointer whose
+  # owed value could not be established has not been verified, and "not verified" is red here.
+  echo "::warning::could not enumerate ${REPO}'s published releases."
+  POINTER_UNRESOLVED=1
   NEWEST="$V"
 fi
+
 POINTER_NOTE=""
 if [ "$NEWEST" != "$V" ]; then
   POINTER_NOTE=" (NOTE: ${V} is not the newest published release — ${NEWEST} is — so the default-pointer checks below correctly assert ${NEWEST}, not ${V}.)"
@@ -254,12 +304,14 @@ fi
 # checked over plain HTTP rather than api.github.com deliberately: the API is the exact dependency
 # install:no-api-github forbids, and using it here would make the gate's own resolution the first
 # thing to 403.
-loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)"
-if [ "${loc##*/releases/tag/}" = "$PTAG" ]; then
-  record "release:latest-pointer" PASS "github.com/${REPO}/releases/latest -> ${PTAG}${POINTER_NOTE}" ""
-else
-  record "release:latest-pointer" FAIL "the /releases/latest redirect does not point at ${PTAG}" \
-    "expected .../releases/tag/${PTAG} (the newest published release), observed '${loc:-<no redirect>}'. install.sh and every download button on getbusbar.com resolve through this, so all of them are handing users a different release. Fix: mark Release ${PTAG} as 'latest' — it is probably still a draft or flagged prerelease."
+if ! pointer_unresolved release:latest-pointer; then
+  loc="$(curl -fsS --max-time 30 -o /dev/null -w '%{redirect_url}' "https://github.com/${REPO}/releases/latest" 2>/dev/null || true)"
+  if [ "${loc##*/releases/tag/}" = "$PTAG" ]; then
+    record "release:latest-pointer" PASS "github.com/${REPO}/releases/latest -> ${PTAG}${POINTER_NOTE}" ""
+  else
+    record "release:latest-pointer" FAIL "the /releases/latest redirect does not point at ${PTAG}" \
+      "expected .../releases/tag/${PTAG} (the newest published release), observed '${loc:-<no redirect>}'. install.sh and every download button on getbusbar.com resolve through this, so all of them are handing users a different release. Fix: mark Release ${PTAG} as 'latest' — it is probably still a draft or flagged prerelease."
+  fi
 fi
 
 # ── release:no-extras — the asset list is exactly the contract, in both directions ──────────────
@@ -383,11 +435,13 @@ resolve_appver() {
     | awk '/^  busbar:/{f=1} f && /appVersion:/{print $2; exit}' | tr -d '"')"
   [ "$appver" = "$NEWEST" ]
 }
-if retry 8 15 resolve_appver; then
-  record "helm:appversion" PASS "GetBusbar/helm-charts busbar chart appVersion == ${NEWEST}${POINTER_NOTE}" ""
-else
-  record "helm:appversion" FAIL "the published helm chart's appVersion is not ${NEWEST}" \
-    "observed '${appver:-<none>}' in https://getbusbar.github.io/helm-charts/index.yaml. \`helm install\` deploys a different busbar than the newest release. Fix: re-run GetBusbar/helm-charts' release-on-upstream workflow for v${NEWEST}."
+if ! pointer_unresolved helm:appversion; then
+  if retry 8 15 resolve_appver; then
+    record "helm:appversion" PASS "GetBusbar/helm-charts busbar chart appVersion == ${NEWEST}${POINTER_NOTE}" ""
+  else
+    record "helm:appversion" FAIL "the published helm chart's appVersion is not ${NEWEST}" \
+      "observed '${appver:-<none>}' in https://getbusbar.github.io/helm-charts/index.yaml. \`helm install\` deploys a different busbar than the newest release. Fix: re-run GetBusbar/helm-charts' release-on-upstream workflow for v${NEWEST}."
+  fi
 fi
 
 # ── helm:render — the chart is not merely INDEXED, it renders ──────────────────────────────────
@@ -476,7 +530,9 @@ fetch_formula() {
 }
 if retry 6 15 fetch_formula; then
   fver="$(printf '%s' "$formula" | sed -n 's/^ *version *"\([^"]*\)".*/\1/p' | head -1)"
-  if [ "$fver" = "$NEWEST" ]; then
+  if pointer_unresolved brew:formula-version; then
+    :
+  elif [ "$fver" = "$NEWEST" ]; then
     record "brew:formula-version" PASS "the homebrew tap formula is version ${NEWEST}${POINTER_NOTE}" ""
   else
     record "brew:formula-version" FAIL "the homebrew tap formula is version '${fver:-<none>}', not ${NEWEST}" \
@@ -583,7 +639,9 @@ fi
 # install:e2e — run the LIVE script, with the environment scrubbed of GitHub credentials, and prove
 # a binary lands and reports the version under test. Deliberately not ./install.sh from the
 # checkout: a fix that merged and never deployed must still fail here.
-if [ -n "$script_body" ]; then
+if pointer_unresolved install:e2e; then
+  :
+elif [ -n "$script_body" ]; then
   ins="${WORK}/install"; mkdir -p "$ins"
   printf '%s' "$script_body" > "${ins}/install.sh"
   if ( cd "$ins" && env -u GITHUB_TOKEN -u GH_TOKEN -u GITHUB_ACTIONS -u CI \
@@ -611,7 +669,9 @@ fi
 # advertising v1.5.20, which is the shape of bug that only shows up once the minor rolls over.
 DL_URL="https://getbusbar.com/download/"
 dl_code="$(http_code "$DL_URL")"
-if [ "$dl_code" = "200" ]; then
+if pointer_unresolved site:download-page; then
+  :
+elif [ "$dl_code" = "200" ]; then
   page="$(fetch "$DL_URL" || true)"
   # ANCHORED ON BOTH SIDES. The old unanchored substring grep passed v1.5.2 against a page
   # advertising v1.5.20 — a bug that only appears once the patch number rolls into two digits, so
