@@ -1,0 +1,352 @@
+//! `audit-ledger` — IS THE INSTRUMENT SOUND?
+//!
+//! This gate and `cargo xtask ledger --check` are ONE computation
+//! ([`crate::audit_cmd::check`]) — two implementations of "is this register trustworthy" is exactly
+//! how a register comes to read red one way and green the other. What differs is WHICH OF THE SEVEN
+//! RULES EACH ONE IS THE JUDGE OF, and the split is not convenience:
+//!
+//! * **The gate owns the five rules about the REGISTER.** Does it carry every scope the tree
+//!   implies; is every entry readable; is every result a result; does every record's hash match the
+//!   tree at the commit it claims to have read; does every HIGH fix carry a confirming round. These
+//!   are questions about whether the instrument can be believed, and the answer is yes today. They
+//!   belong on a gate because a `no` is a regression somebody just introduced.
+//!
+//! * **`--check` owns the two rules about the AUDIT.** Is coverage complete, and is any scope still
+//!   open at HIGH/MEDIUM. Those are RED ON HEAD and red BY DESIGN — 42 scopes are open and the
+//!   audit is in flight — so they are the release-time DONE claim
+//!   (`scripts/verify-1.6.0-done.sh`), which is where they have always been called from and where a
+//!   red means "not finished yet" rather than "somebody broke something".
+//!
+//! Folding the second pair into `cargo xtask gate --all` would make the umbrella red for a fact
+//! nobody is expected to fix this week, and a red that is always red is a red people learn to skip.
+//! `--check` still judges all seven, so nothing stopped being enforced — it is enforced at the
+//! moment it means something.
+//!
+//! The selftest plants each violation into a COPY OF THE REAL REGISTER and requires the gate to
+//! name it — a synthetic fixture would prove the rules against a register shape the tree does not
+//! have.
+
+use crate::audit::{self, Git};
+use crate::audit_cmd::{self, CheckFindings};
+use crate::ctx::{Ctx, Edit, Overlay};
+use crate::gates::{prove_green, prove_red, Gate, Report};
+use crate::json_lite::{self, Json};
+use crate::ledger::{Row, Verdict};
+
+/// The two rules `--check` owns and the gate does not. They are RED ON HEAD by design; see the
+/// module note. `--check` prints them, `verify-1.6.0-done.sh` judges them.
+pub const ROW_COVERAGE: &str = "audit-ledger:coverage";
+pub const ROW_OPEN: &str = "audit-ledger:open-high-medium";
+
+pub const ROW_MISSING: &str = "audit-ledger:missing-scopes";
+pub const ROW_READABLE: &str = "audit-ledger:readable";
+pub const ROW_INVALID: &str = "audit-ledger:invalid-result";
+pub const ROW_STAMPED: &str = "audit-ledger:hash-matches-commit";
+pub const ROW_OWED: &str = "audit-ledger:fix-owes-confirmation";
+
+pub struct AuditLedgerGate;
+
+fn row(problems: &[String], id: &str, ok: &str, bad: &str, ok_detail: String) -> Row {
+    if problems.is_empty() {
+        Row::pass(id, ok, ok_detail)
+    } else {
+        Row::fail(id, bad, problems.join(" | "))
+    }
+}
+
+/// The FIVE rows the gate owns. The two `--check`-only rules are deliberately absent; see the
+/// module note.
+pub fn rows_from(f: &CheckFindings) -> Vec<Row> {
+    vec![
+        row(
+            &f.missing,
+            ROW_MISSING,
+            "the register carries every scope the tree implies",
+            "the tree implies scope(s) the register does not carry",
+            format!("{} scope(s)", f.scopes),
+        ),
+        row(
+            &f.problems,
+            ROW_READABLE,
+            "every register entry is readable",
+            "a register entry the instrument cannot read",
+            format!("{} scope(s)", f.scopes),
+        ),
+        row(
+            &f.invalid,
+            ROW_INVALID,
+            "every recorded result is one of the four known results",
+            "a recorded result is not a result",
+            format!("{} scope(s)", f.scopes),
+        ),
+        row(
+            &f.stamped,
+            ROW_STAMPED,
+            "every record's hash is the tree at the commit it claims to have read",
+            "a record's hash is not the tree at the commit it claims to have read",
+            format!("{} scope(s)", f.scopes),
+        ),
+        row(
+            &f.owed,
+            ROW_OWED,
+            "every HIGH finding stamped fixed carries a confirming round",
+            "a HIGH finding is stamped fixed with no confirming round",
+            format!("{} scope(s)", f.scopes),
+        ),
+    ]
+}
+
+impl Gate for AuditLedgerGate {
+    fn name(&self) -> &'static str {
+        "audit-ledger"
+    }
+
+    fn owed(&self) -> Vec<String> {
+        vec![
+            ROW_MISSING.to_string(),
+            ROW_READABLE.to_string(),
+            ROW_INVALID.to_string(),
+            ROW_STAMPED.to_string(),
+            ROW_OWED.to_string(),
+        ]
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        // The register may be OVERLAID by a selftest plant, so it is materialised into scratch and
+        // read from there rather than from the working tree. Everything else the check reads comes
+        // from git, which an overlay cannot fake — and should not: the universe of tracked files is
+        // the one input this instrument must not be able to shrink.
+        let register = match materialize_register(cx) {
+            Ok(p) => p,
+            Err(e) => {
+                return Verdict::of(
+                    self.owed()
+                        .iter()
+                        .map(|id| {
+                            Row::fail(
+                                id,
+                                "the register could not be read",
+                                format!("{e} — a rule that did not run is not a rule that passed"),
+                            )
+                        })
+                        .collect(),
+                )
+            }
+        };
+        let git = Git::new(cx.root());
+        match audit_cmd::check(&git, &register) {
+            Ok(f) => Verdict::of(rows_from(&f)),
+            Err(e) => Verdict::of(
+                self.owed()
+                    .iter()
+                    .map(|id| {
+                        Row::fail(
+                            id,
+                            "the register could not be judged",
+                            format!("{e} — a rule that did not run is not a rule that passed"),
+                        )
+                    })
+                    .collect(),
+            ),
+        }
+    }
+
+    fn selftest(&self, cx: &Ctx) -> Report {
+        let mut report = Report::new();
+        report.push(prove_green(
+            cx,
+            self,
+            "the committed register is sound under every rule the gate owns",
+            &[
+                ROW_MISSING,
+                ROW_READABLE,
+                ROW_INVALID,
+                ROW_STAMPED,
+                ROW_OWED,
+            ],
+        ));
+
+        let doc = match cx
+            .read(audit::REGISTER_REL)
+            .and_then(|t| json_lite::parse(&t))
+        {
+            Ok(d) => d,
+            Err(e) => {
+                report.note_infra_failure(format!("{}: {e}", audit::REGISTER_REL));
+                return report;
+            }
+        };
+
+        type Plant = (&'static str, &'static str, &'static str, fn(&mut Json));
+        let plants: Vec<Plant> = vec![
+            (
+                "the tree implies a scope the register does not carry",
+                ROW_MISSING,
+                "does not carry",
+                |d: &mut Json| drop_scope(d, "xtask/src"),
+            ),
+            (
+                "a result outside the four known results",
+                ROW_INVALID,
+                "not a result",
+                |d: &mut Json| set_first(d, "result", Json::Str("passed".to_string())),
+            ),
+            (
+                "a counts entry that is not a count",
+                ROW_READABLE,
+                "is not a count",
+                |d: &mut Json| {
+                    let mut c = json_lite::Obj::new();
+                    c.insert("HIGH", Json::Int(-1));
+                    set_first(d, "counts", Json::Object(c));
+                },
+            ),
+            (
+                "an unknown severity in counts",
+                ROW_READABLE,
+                "unknown severity",
+                |d: &mut Json| {
+                    let mut c = json_lite::Obj::new();
+                    c.insert("CRITICAL", Json::Int(1));
+                    set_first(d, "counts", Json::Object(c));
+                },
+            ),
+        ];
+
+        for (label, covers, naming, mutate) in plants {
+            let mut planted = doc.clone();
+            mutate(&mut planted);
+            let mut ov = Overlay::new();
+            let text = format!("{}\n", json_lite::dump_python(&planted));
+            if let Err(e) = Edit::Replace(text).apply(cx, audit::REGISTER_REL, &mut ov) {
+                report.note_infra_failure(format!("{label}: {e}"));
+                continue;
+            }
+            report.push(prove_red(cx, self, label, &[covers], ov, &[naming]));
+        }
+
+        // The two remaining rules need a REAL COMMIT to hash against, so they are planted as a
+        // recorded round on the first scope, at HEAD, at the register's own shape.
+        let Ok(head) = Git::new(cx.root()).head() else {
+            report.note_infra_failure(
+                "could not read HEAD, so the two rules whose subject is a recorded round are \
+                 unproven here rather than passing",
+            );
+            return report;
+        };
+
+        // A HIGH finding stamped fixed, with the fix stamped at the same commit the round read.
+        // Nobody has confirmed the fixed tree, and the fixer saying so is not a confirmation.
+        let mut planted = doc.clone();
+        stamp_first(cx, &mut planted, &head, "findings", "HIGH", true);
+        plant(
+            cx,
+            self,
+            &mut report,
+            &planted,
+            "a HIGH finding stamped fixed with nobody confirming it",
+            ROW_OWED,
+            "no confirming round",
+        );
+
+        // A round that NAMES a commit but stores a hash that is not the scope's hash there. That is
+        // a round stamped against a tree it did not read, and every later reading of it reads
+        // nothing. It is the only rule whose subject is the record rather than the finding.
+        let mut planted = doc.clone();
+        stamp_first(cx, &mut planted, &head, "in_progress", "", false);
+        set_first(&mut planted, "tree_hash", Json::Str("0".repeat(64)));
+        plant(
+            cx,
+            self,
+            &mut report,
+            &planted,
+            "a round stamped against a tree it did not read",
+            ROW_STAMPED,
+            "not the tree at the commit",
+        );
+
+        report
+    }
+}
+
+/// Overlay a planted register and require the gate to name the violation.
+fn plant(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    report: &mut Report,
+    doc: &Json,
+    label: &str,
+    covers: &str,
+    naming: &str,
+) {
+    let mut ov = Overlay::new();
+    let text = format!("{}\n", json_lite::dump_python(doc));
+    match Edit::Replace(text).apply(cx, audit::REGISTER_REL, &mut ov) {
+        Ok(()) => report.push(prove_red(cx, gate, label, &[covers], ov, &[naming])),
+        Err(e) => report.note_infra_failure(format!("{label}: {e}")),
+    }
+}
+
+/// Write the (possibly overlaid) register into scratch so the check reads the planted bytes.
+fn materialize_register(cx: &Ctx) -> Result<std::path::PathBuf, String> {
+    let text = cx.read(audit::REGISTER_REL)?;
+    let dest = cx.scratch().join(format!(
+        "audit-register-{}-{:?}.json",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    std::fs::write(&dest, text).map_err(|e| format!("{}: {e}", dest.display()))?;
+    Ok(dest)
+}
+
+fn scopes_mut(doc: &mut Json) -> Option<&mut Vec<Json>> {
+    match doc.as_object_mut()?.get_mut("scopes")? {
+        Json::Array(a) => Some(a),
+        _ => None,
+    }
+}
+
+fn drop_scope(doc: &mut Json, id: &str) {
+    if let Some(scopes) = scopes_mut(doc) {
+        scopes.retain(|s| s.get("id").as_str() != Some(id));
+    }
+}
+
+fn set_first(doc: &mut Json, key: &str, v: Json) {
+    if let Some(scopes) = scopes_mut(doc) {
+        if let Some(Json::Object(o)) = scopes.first_mut() {
+            o.insert(key, v);
+        }
+    }
+}
+
+fn stamp_first(cx: &Ctx, doc: &mut Json, at: &str, result: &str, severity: &str, fixed: bool) {
+    set_first(doc, "result", Json::Str(result.to_string()));
+    set_first(doc, "audited_at", Json::Str(at.to_string()));
+    set_first(doc, "round", Json::Int(1));
+    set_first(doc, "auditor", Json::Str("selftest".to_string()));
+    set_first(doc, "report", Json::Str("selftest".to_string()));
+    let mut c = json_lite::Obj::new();
+    if !severity.is_empty() {
+        c.insert(severity, Json::Int(1));
+    }
+    set_first(doc, "counts", Json::Object(c));
+    set_first(
+        doc,
+        "fixed_at",
+        if fixed {
+            Json::Str(at.to_string())
+        } else {
+            Json::Null
+        },
+    );
+    // The recorded hash must be the scope's REAL hash at `at`, or the hash-vs-commit rule fires
+    // instead of the rule this plant is aiming at — and a selftest that goes red for the wrong
+    // reason proves the wrong rule. The caller that wants THAT rule overwrites this afterwards.
+    if let Some(first) = scopes_mut(doc).and_then(|s| s.first().cloned()) {
+        if let Ok(all) = Git::new(cx.root()).files_at(at) {
+            let h = audit::tree_hash(&first, &all);
+            set_first(doc, "tree_hash", h.map_or(Json::Null, Json::Str));
+        }
+    }
+}

@@ -1,0 +1,875 @@
+//! THE AUDIT LEDGER — the 1.6.0 audit's row store and its queries.
+//!
+//! Ported from `scripts/audit-ledger.py`. The register (`qa/audit-ledger.json`) and the report it
+//! generates (`docs/design/AUDIT-STATUS.md`) STAY WHERE THEY ARE and stay byte-identical: this
+//! module reads and writes them through [`crate::json_lite`], which reproduces
+//! `json.dump(doc, fh, indent=1, ensure_ascii=False, sort_keys=False)` exactly, so `sync --write`
+//! under the Rust produces the same 147KB the Python produced.
+//!
+//! Five properties are the whole instrument, and each is a rule here rather than a convention:
+//!
+//! 1. **THE UNIVERSE IS EVERY TRACKED FILE.** Coverage is computed against `git ls-tree -r HEAD`,
+//!    not against a hand-kept list, so a new crate cannot be silently uncovered. A file in no scope
+//!    and on no excuse is RED.
+//! 2. **A RESULT DESCRIBES ONE TREE.** Every round carries the SHA-256 of the `path<TAB>blob-oid`
+//!    list of its scope's files at the audited commit. When the code moves the hash stops matching
+//!    and the scope reads `stale` — the result EXPIRED, it did not pass. Staleness is checked
+//!    THIRD, ahead of `in_progress`, `open`, `fixed` and `clean`, so no result kind can outrun it.
+//! 3. **CLEAN IS TWO ZERO ROUNDS FROM DISTINCT AUDITORS AT THE CURRENT HASH.** One auditor finding
+//!    nothing is `unconfirmed`, which is not a pass. The rounds list is APPEND-ONLY; `record` never
+//!    edits or replaces a round, and `sync` carries the list across verbatim.
+//! 4. **`fixed` IS NOT SELF-CERTIFYING.** Stamping a fix re-hashes the scope to the fix commit, so
+//!    the fixer's own pre-fix zero rounds cannot match the new hash — and a scope whose recorded
+//!    HIGH count is non-zero stays RED until somebody records a confirming zero round against the
+//!    fixed tree. You cannot close your own finding by asserting you closed it.
+//! 5. **AN UNREADABLE ENTRY IS RED, NEVER GUESSED.** A result outside the four known values, a
+//!    `counts` that is not an object, an unknown severity, a negative or boolean count — each is
+//!    `invalid`, and `invalid` can never fall through to `clean`.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use crate::json_lite::{self, Json, Obj};
+use crate::sha256::Sha256;
+
+pub const REGISTER_REL: &str = "qa/audit-ledger.json";
+pub const REPORT_REL: &str = "docs/design/AUDIT-STATUS.md";
+
+pub const SEVERITIES: [&str; 4] = ["HIGH", "MEDIUM", "LOW", "NIT"];
+pub const RESULTS: [&str; 4] = ["zero", "findings", "in_progress", "unaudited"];
+
+/// The order the totals table and the `--check` summary read in. It is a presentation order, and it
+/// deliberately puts `clean` first and `invalid` last so a register going wrong reads bottom-up.
+pub const STATUS_BARS: [&str; 8] = [
+    "clean",
+    "unconfirmed",
+    "fixed",
+    "in_progress",
+    "stale",
+    "open",
+    "unaudited",
+    "invalid",
+];
+
+/// The worklist order `next` ranks by: the entries that are wrong first, the entries that are
+/// merely unfinished after, and the finished ones last.
+pub const NEXT_ORDER: [&str; 7] = [
+    "invalid",
+    "open",
+    "unaudited",
+    "stale",
+    "fixed",
+    "unconfirmed",
+    "clean",
+];
+
+pub fn next_why(status: &str) -> &'static str {
+    match status {
+        "invalid" => "the register entry is not readable -- an unknown result or severity",
+        "open" => "findings recorded, no fix stamped",
+        "unaudited" => "never audited",
+        "stale" => "code changed since the audit",
+        "fixed" => "findings fixed, owes a confirming round",
+        "unconfirmed" => "one zero on this tree -- owes a second, independent zero",
+        "clean" => "two auditors read this tree and both found nothing",
+        _ => "a round is running against a recorded tree hash",
+    }
+}
+
+/// Instrument/QA paths that are code too, and are audited as their own scopes. A harness that
+/// decides whether the product is correct is exactly as worth auditing as the product.
+const INSTRUMENT_PATHS: [&str; 7] = [
+    "scripts",
+    "qa",
+    ".github/workflows",
+    ".githooks",
+    ".github/scripts",
+    "assets/readme",
+    "examples",
+];
+
+/// The crate whose `src/` is split, because its production code is two very different things.
+const SPLIT_CRATE: &str = "busbar";
+
+/// The register's own six-line preamble, regenerated on every `sync --write`.
+const REGISTER_COMMENT: [&str; 6] = [
+    "GENERATED scope list -- `cargo xtask ledger sync --write` derives it from the tree.",
+    "Audit records (round/result/report/auditor/fixed_at/tree_hash) are hand-stamped by",
+    "`record` and `fixed` and are preserved across sync.",
+    "tree_hash = sha256 over the sorted `path<TAB>blob-oid` list of the scope's tracked files at",
+    "the audited commit; when it stops matching the tree, the audit result has expired.",
+    "status is DERIVED at report time, never stored. See docs/design/AUDIT-STATUS.md.",
+];
+
+/// Tracked files that are deliberately in no scope. Manifests are governed by workspace-deps-lint
+/// and the construction gate, not by a code audit; the fixture trees are inputs to those gates.
+///
+/// `*` matches within one path segment and `**` spans segments — an excuse must cover exactly the
+/// subtree it names and no more. Each top-level tree is named individually ON PURPOSE, so adding a
+/// new one cannot inherit an excuse it was never granted.
+///
+/// This is a CONSTANT, not a read of the committed file, and `sync --write` regenerates the file's
+/// copy from it. That is what makes an excuse a source edit somebody reviews rather than a line
+/// somebody adds to a JSON file. `xtask/tests/readers.rs` pins it against the committed array.
+pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
+    (
+        "crates/*/Cargo.toml",
+        "crate manifest -- governed by workspace-deps-lint, not a code audit",
+    ),
+    (
+        "crates/*/Cargo.lock",
+        "resolved lockfile -- governed by the build gates, not a code audit",
+    ),
+    (
+        "crates/*/fixtures/**",
+        "fixture inputs a crate's own gate reads; not shipped code",
+    ),
+    (
+        "xtask/Cargo.toml",
+        "crate manifest -- governed by workspace-deps-lint, not a code audit",
+    ),
+    (
+        "xtask/fixtures/**",
+        "fixture trees the workspace-deps gate builds against",
+    ),
+    (
+        "docs/**",
+        "design and reference prose -- governed by the doc gates, not a code audit",
+    ),
+    (
+        "*.md",
+        "top-level project prose -- governed by the doc and changelog gates",
+    ),
+    ("LICENSE", "licence text"),
+    ("NOTICE", "attribution notice"),
+    (
+        "Cargo.toml",
+        "workspace manifest -- governed by workspace-deps-lint",
+    ),
+    (
+        "Cargo.lock",
+        "resolved lockfile -- governed by the build gates",
+    ),
+    (
+        "deny.toml",
+        "cargo-deny policy -- governed by the supply-chain gate",
+    ),
+    (
+        "rust-toolchain.toml",
+        "pinned toolchain -- governed by the build gates",
+    ),
+    (
+        "rustfmt.toml",
+        "formatter settings -- governed by `cargo fmt --check`",
+    ),
+    ("codecov.yml", "coverage service settings"),
+    (".cargo/**", "cargo invocation settings"),
+    (".editorconfig", "editor settings"),
+    (".gitignore", "vcs settings"),
+    (".gitattributes", "vcs settings"),
+    (".dockerignore", "container build context settings"),
+    (".github/ISSUE_TEMPLATE/**", "issue forms -- prose"),
+    (".github/*.md", "contribution prose"),
+    (
+        "Dockerfile",
+        "container recipe -- governed by the image build gate",
+    ),
+    ("docker/**", "container-local sample config"),
+    ("assets/*.png", "brand images"),
+    (
+        "org-profile/**",
+        "the GitHub org profile -- prose and brand images",
+    ),
+    (
+        "tests/migration-corpus/**",
+        "captured historical configs the migration gate replays; inputs, not code",
+    ),
+    ("config.yaml", "the shipped sample deployment config"),
+    ("plugins.yaml", "the shipped sample plugin manifest"),
+    ("providers.yaml", "the shipped sample provider table"),
+];
+
+// ---------------------------------------------------------------------------------------------
+// git
+// ---------------------------------------------------------------------------------------------
+
+/// The git reads the register rests on, always `-C <repo>` and never a `cd`.
+pub struct Git {
+    repo: std::path::PathBuf,
+}
+
+impl Git {
+    pub fn new(repo: impl Into<std::path::PathBuf>) -> Git {
+        Git { repo: repo.into() }
+    }
+
+    pub fn repo(&self) -> &Path {
+        &self.repo
+    }
+
+    pub fn run(&self, args: &[&str]) -> Result<String, String> {
+        crate::gitp::git(&self.repo, args)
+    }
+
+    pub fn head(&self) -> Result<String, String> {
+        Ok(self.run(&["rev-parse", "HEAD"])?.trim().to_string())
+    }
+
+    /// THE UNIVERSE: every tracked blob at `rev`, path -> blob oid. Blobs only — a submodule's
+    /// `commit` entry is not a file this repository's audit can read.
+    pub fn files_at(&self, rev: &str) -> Result<BTreeMap<String, String>, String> {
+        let out = self.run(&["ls-tree", "-r", rev, "--full-tree"])?;
+        let mut table = BTreeMap::new();
+        for line in out.lines() {
+            if line.is_empty() {
+                continue;
+            }
+            let Some((meta, path)) = line.split_once('\t') else {
+                continue;
+            };
+            let mut cols = meta.split_whitespace();
+            let (_mode, kind, oid) = (cols.next(), cols.next(), cols.next());
+            if kind == Some("blob") {
+                if let Some(oid) = oid {
+                    table.insert(path.to_string(), oid.to_string());
+                }
+            }
+        }
+        Ok(table)
+    }
+
+    pub fn commits_between(&self, old: &str, new: &str) -> Option<u64> {
+        self.run(&["rev-list", "--count", &format!("{old}..{new}")])
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+    }
+
+    /// LOC per blob, through ONE `git cat-file --batch` process rather than one per file.
+    ///
+    /// A final unterminated line counts as a line, which is what `wc -l` does not do and what the
+    /// Python does. An oid that is not a blob would desync the stream, so a record that does not
+    /// parse ends the read rather than shifting every later count by one file.
+    pub fn line_counts(&self, oids: &BTreeSet<String>) -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        if oids.is_empty() {
+            return out;
+        }
+        let mut child = match Command::new("git")
+            .arg("-C")
+            .arg(&self.repo)
+            .arg("cat-file")
+            .arg("--batch")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(_) => return out,
+        };
+        let feed: String = oids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        if let Some(mut stdin) = child.stdin.take() {
+            let _ = stdin.write_all(feed.as_bytes());
+        }
+        let Ok(done) = child.wait_with_output() else {
+            return out;
+        };
+        let buf = done.stdout;
+        let mut i = 0usize;
+        while i < buf.len() {
+            let Some(nl) = buf[i..].iter().position(|b| *b == b'\n') else {
+                break;
+            };
+            let header = String::from_utf8_lossy(&buf[i..i + nl]).into_owned();
+            i += nl + 1;
+            let mut cols = header.split_whitespace();
+            let (Some(oid), Some(_kind), Some(size)) = (cols.next(), cols.next(), cols.next())
+            else {
+                break;
+            };
+            let Ok(size) = size.parse::<usize>() else {
+                break;
+            };
+            if i + size > buf.len() {
+                break;
+            }
+            let body = &buf[i..i + size];
+            let lines = body.iter().filter(|b| **b == b'\n').count()
+                + usize::from(!body.is_empty() && body.last() != Some(&b'\n'));
+            out.insert(oid.to_string(), lines);
+            i += size + 1; // the record's trailing newline
+        }
+        out
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// scopes
+// ---------------------------------------------------------------------------------------------
+
+/// A fresh scope, in the register's key order. `exclude` appears only when non-empty and `rounds`
+/// only once a round has been recorded, which is exactly the shape the committed file carries.
+fn scope(id: &str, kind: &str, exclude: &[String]) -> Json {
+    let mut o = Obj::new();
+    o.insert("id", Json::Str(id.to_string()));
+    o.insert("kind", Json::Str(kind.to_string()));
+    o.insert("paths", Json::Array(vec![Json::Str(id.to_string())]));
+    o.insert("tree_hash", Json::Null);
+    o.insert("audited_at", Json::Null);
+    o.insert("round", Json::Null);
+    o.insert("result", Json::Str("unaudited".to_string()));
+    o.insert("counts", Json::Object(Obj::new()));
+    o.insert("report", Json::Null);
+    o.insert("auditor", Json::Null);
+    o.insert("fixed_at", Json::Null);
+    if !exclude.is_empty() {
+        o.insert(
+            "exclude",
+            Json::Array(exclude.iter().map(|e| Json::Str(e.clone())).collect()),
+        );
+    }
+    Json::Object(o)
+}
+
+/// DERIVE the scope list from the tree, so a new crate cannot be silently uncovered.
+///
+/// The order is production, then tests, then instruments — and within a crate, `src` before
+/// `build.rs`. It is the committed file's order and a diff is only readable if it stays.
+pub fn derive_scopes(root: &Path) -> Vec<Json> {
+    let mut prod = Vec::new();
+    let mut tests = Vec::new();
+    let mut inst = Vec::new();
+
+    let crates_dir = root.join("crates");
+    if crates_dir.is_dir() {
+        let mut entries: Vec<String> = std::fs::read_dir(&crates_dir)
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        entries.sort();
+        for name in entries {
+            let base = format!("crates/{name}");
+            if !root.join(&base).join("Cargo.toml").exists() {
+                continue;
+            }
+            if root.join(&base).join("src").is_dir() {
+                if name == SPLIT_CRATE {
+                    // The binary crate's production code is two very different things — the
+                    // composition root and the entry point — and one scope over both would let a
+                    // clean read of one stand in for the other.
+                    prod.push(scope(&format!("{base}/src/root"), "production", &[]));
+                    prod.push(scope(&format!("{base}/src/main.rs"), "production", &[]));
+                } else {
+                    prod.push(scope(
+                        &format!("{base}/src"),
+                        "production",
+                        &[format!("{base}/src/tests")],
+                    ));
+                }
+                if root.join(&base).join("src/tests").is_dir() {
+                    tests.push(scope(&format!("{base}/src/tests"), "test", &[]));
+                }
+            }
+            if root.join(&base).join("build.rs").exists() {
+                prod.push(scope(&format!("{base}/build.rs"), "production", &[]));
+            }
+            for sub in ["tests", "benches"] {
+                if root.join(&base).join(sub).is_dir() {
+                    tests.push(scope(&format!("{base}/{sub}"), "test", &[]));
+                }
+            }
+        }
+    }
+
+    if root.join("xtask/src").is_dir() {
+        prod.push(scope(
+            "xtask/src",
+            "production",
+            &["xtask/src/tests".to_string()],
+        ));
+    }
+    if root.join("xtask/src/tests").is_dir() {
+        tests.push(scope("xtask/src/tests", "test", &[]));
+    }
+
+    for p in INSTRUMENT_PATHS {
+        if root.join(p).exists() {
+            inst.push(scope(p, "instrument", &[]));
+        }
+    }
+    // The loose files directly in `.github/` — the release target tables, the artifact contract,
+    // the dependabot policy — decide what ships and to whom. Without a remainder scope they are
+    // the one place a release-critical file could sit forever in no scope at all.
+    if root.join(".github").exists() {
+        let mut ex: Vec<String> = INSTRUMENT_PATHS
+            .iter()
+            .filter(|p| p.starts_with(".github/"))
+            .map(|p| (*p).to_string())
+            .collect();
+        ex.push(".github/ISSUE_TEMPLATE".to_string());
+        inst.push(scope(".github", "instrument", &ex));
+    }
+
+    let testing = root.join("testing");
+    if testing.is_dir() {
+        let mut rigs: Vec<String> = std::fs::read_dir(&testing)
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .filter(|e| e.path().is_dir())
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect()
+            })
+            .unwrap_or_default();
+        rigs.sort();
+        for rig in &rigs {
+            inst.push(scope(&format!("testing/{rig}"), "instrument", &[]));
+        }
+        inst.push(scope(
+            "testing",
+            "instrument",
+            &rigs
+                .iter()
+                .map(|r| format!("testing/{r}"))
+                .collect::<Vec<_>>(),
+        ));
+    }
+
+    prod.extend(tests);
+    prod.extend(inst);
+    prod
+}
+
+fn under(path: &str, prefix: &str) -> bool {
+    path == prefix || path.starts_with(&format!("{}/", prefix.trim_end_matches('/')))
+}
+
+fn str_list(v: &Json) -> Vec<String> {
+    v.as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The files a scope owns: everything under one of its `paths` and under none of its `exclude`s.
+pub fn scope_files(sc: &Json, all: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let paths = str_list(sc.get("paths"));
+    let excl = str_list(sc.get("exclude"));
+    all.iter()
+        .filter(|(p, _)| paths.iter().any(|x| under(p, x)) && !excl.iter().any(|e| under(p, e)))
+        .map(|(p, o)| (p.clone(), o.clone()))
+        .collect()
+}
+
+/// The scope's tree hash: sha256 over the SORTED `path<TAB>oid\n` list.
+///
+/// A scope that owns NO FILE hashes to `None`, never to the digest of the empty string. The two
+/// readings — "this scope's files all hash to X" and "this scope has no files" — must not collapse,
+/// because the second one can never be clean.
+pub fn tree_hash(sc: &Json, all: &BTreeMap<String, String>) -> Option<String> {
+    let owned = scope_files(sc, all);
+    if owned.is_empty() {
+        return None;
+    }
+    let mut h = Sha256::new();
+    for (path, oid) in &owned {
+        h.update(format!("{path}\t{oid}\n").as_bytes());
+    }
+    Some(h.hexdigest())
+}
+
+/// The hash the scope's files ACTUALLY had at the commit the record claims to have read. A record
+/// whose stored hash disagrees with this was stamped against a tree it did not read.
+pub fn audited_tree_hash(sc: &Json, git: &Git) -> Option<String> {
+    let at = sc.get("audited_at").as_str()?;
+    let files = git.files_at(at).ok()?;
+    tree_hash(sc, &files)
+}
+
+// ---------------------------------------------------------------------------------------------
+// status
+// ---------------------------------------------------------------------------------------------
+
+/// The distinct auditors whose ZERO rounds stand at the CURRENT hash.
+///
+/// A pre-`rounds` register counts as one auditor, and only when the rounds scan produced none — a
+/// legacy fallback that must not add a second voice to a register that already has one.
+pub fn confirming_auditors(sc: &Json, current_hash: Option<&str>) -> BTreeSet<String> {
+    let mut who = BTreeSet::new();
+    if let Some(rounds) = sc.get("rounds").as_array() {
+        for r in rounds {
+            let auditor = r.get("auditor");
+            if r.get("result").as_str() == Some("zero")
+                && r.get("tree_hash").as_str() == current_hash
+                && auditor.truthy()
+            {
+                if let Some(a) = auditor.as_str() {
+                    who.insert(a.to_string());
+                }
+            }
+        }
+    }
+    if who.is_empty()
+        && sc.get("result").as_str() == Some("zero")
+        && sc.get("tree_hash").as_str() == current_hash
+        && sc.get("auditor").truthy()
+    {
+        if let Some(a) = sc.get("auditor").as_str() {
+            who.insert(a.to_string());
+        }
+    }
+    who
+}
+
+/// The scope's DERIVED status. Never stored — a stored status is a status that stops being true.
+pub fn status_of(sc: &Json, current_hash: Option<&str>) -> &'static str {
+    let result = sc.get("result").as_str().unwrap_or("unaudited");
+    // AN UNREADABLE RESULT IS THE ONE CASE WHERE GUESSING IS UNSAFE IN BOTH DIRECTIONS. It gets its
+    // own status, `--check` is red on it, and it can never fall through to `clean`.
+    if !RESULTS.contains(&result) {
+        return "invalid";
+    }
+    if result == "unaudited" || sc.get("audited_at").as_str().is_none() {
+        return "unaudited";
+    }
+    // STALENESS SITS THIRD, ahead of every result kind. A result describes one tree; when the tree
+    // moves the result expired, whatever it said.
+    if sc.get("tree_hash").as_str() != current_hash {
+        return "stale";
+    }
+    if result == "in_progress" {
+        return "in_progress";
+    }
+    if result == "findings" {
+        return if sc.get("fixed_at").truthy() {
+            "fixed"
+        } else {
+            "open"
+        };
+    }
+    if confirming_auditors(sc, current_hash).len() >= 2 {
+        "clean"
+    } else {
+        "unconfirmed"
+    }
+}
+
+/// Every way a register entry is unreadable, in scope order then `counts` order.
+pub fn register_problems(doc: &Json) -> Vec<String> {
+    let mut bad = Vec::new();
+    let Some(scopes) = doc.get("scopes").as_array() else {
+        return bad;
+    };
+    for sc in scopes {
+        let sid = sc.get("id").as_str().unwrap_or("<no id>").to_string();
+        let res = sc.get("result").as_str().unwrap_or("unaudited");
+        if !RESULTS.contains(&res) {
+            bad.push(format!(
+                "{sid}: result {} is not one of {}",
+                json_lite::py_repr_json(sc.get("result")),
+                RESULTS.join(", ")
+            ));
+        }
+        let counts = sc.get("counts");
+        if !counts.truthy() {
+            continue;
+        }
+        let Some(counts) = counts.as_object() else {
+            bad.push(format!(
+                "{sid}: counts is {}, want an object",
+                json_lite::py_type_name(counts)
+            ));
+            continue;
+        };
+        for (key, val) in counts.iter() {
+            if !SEVERITIES.contains(&key) {
+                bad.push(format!(
+                    "{sid}: unknown severity {} in counts (want {})",
+                    json_lite::py_repr(key),
+                    SEVERITIES.join(", ")
+                ));
+            }
+            // BOOLEANS AND NEGATIVES ARE NOT COUNTS. `HIGH: true` reads as 1 in Python and would
+            // otherwise quietly hold a scope open, or worse, quietly let one close.
+            let ok = matches!(val, Json::Int(n) if *n >= 0);
+            if !ok {
+                bad.push(format!(
+                    "{sid}: severity {key} = {} is not a count",
+                    json_lite::py_repr_json(val)
+                ));
+            }
+        }
+    }
+    bad
+}
+
+/// Segment-wise glob. `*` NEVER crosses a `/`; `**` spans segments. An excuse must cover exactly
+/// the subtree it names.
+pub fn glob_match(path: &str, pattern: &str) -> bool {
+    let pat: Vec<&str> = pattern.split('/').collect();
+    let seg: Vec<&str> = path.split('/').collect();
+    walk(&pat, &seg, 0, 0)
+}
+
+fn walk(pat: &[&str], seg: &[&str], mut pi: usize, mut si: usize) -> bool {
+    while pi < pat.len() {
+        if pat[pi] == "**" {
+            if pi + 1 == pat.len() {
+                return true;
+            }
+            return (si..=seg.len()).any(|k| walk(pat, seg, pi + 1, k));
+        }
+        if si >= seg.len() {
+            return false;
+        }
+        if !fnmatch(seg[si], pat[pi]) {
+            return false;
+        }
+        pi += 1;
+        si += 1;
+    }
+    si == seg.len()
+}
+
+/// `fnmatch.fnmatchcase` over one path segment: `*`, `?`, `[seq]` and `[!seq]`, case-sensitive.
+fn fnmatch(name: &str, pat: &str) -> bool {
+    let n: Vec<char> = name.chars().collect();
+    let p: Vec<char> = pat.chars().collect();
+    fnm(&n, &p, 0, 0)
+}
+
+fn fnm(n: &[char], p: &[char], ni: usize, pi: usize) -> bool {
+    if pi == p.len() {
+        return ni == n.len();
+    }
+    match p[pi] {
+        '*' => (ni..=n.len()).any(|k| fnm(n, p, k, pi + 1)),
+        '?' => ni < n.len() && fnm(n, p, ni + 1, pi + 1),
+        '[' => {
+            let Some(close) = p[pi + 1..].iter().position(|c| *c == ']') else {
+                return ni < n.len() && n[ni] == '[' && fnm(n, p, ni + 1, pi + 1);
+            };
+            let mut set = &p[pi + 1..pi + 1 + close];
+            let negate = set.first() == Some(&'!');
+            if negate {
+                set = &set[1..];
+            }
+            if ni >= n.len() {
+                return false;
+            }
+            let mut hit = false;
+            let mut k = 0;
+            while k < set.len() {
+                if k + 2 < set.len() && set[k + 1] == '-' {
+                    if set[k] <= n[ni] && n[ni] <= set[k + 2] {
+                        hit = true;
+                    }
+                    k += 3;
+                } else {
+                    if set[k] == n[ni] {
+                        hit = true;
+                    }
+                    k += 1;
+                }
+            }
+            hit != negate && fnm(n, p, ni + 1, pi + 2 + close)
+        }
+        c => ni < n.len() && n[ni] == c && fnm(n, p, ni + 1, pi + 1),
+    }
+}
+
+/// Tracked files belonging to NO scope and covered by no excuse. Coverage is incomplete while this
+/// is non-empty, and incomplete coverage is RED.
+pub fn coverage_gaps(doc: &Json, all: &BTreeMap<String, String>) -> Vec<String> {
+    let mut owned: BTreeSet<&String> = BTreeSet::new();
+    if let Some(scopes) = doc.get("scopes").as_array() {
+        for sc in scopes {
+            for p in scope_files(sc, all).keys() {
+                if let Some((k, _)) = all.get_key_value(p) {
+                    owned.insert(k);
+                }
+            }
+        }
+    }
+    // THE EXCUSES COME FROM THE FILE, not from the constant. `--check` judges the register that is
+    // committed; `sync --write` is what regenerates the list from source.
+    let excused: Vec<String> = doc
+        .get("uncovered_by_design")
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|e| e.get("glob").as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    all.keys()
+        .filter(|p| !owned.contains(p) && !excused.iter().any(|g| glob_match(p, g)))
+        .cloned()
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// the document
+// ---------------------------------------------------------------------------------------------
+
+/// A fresh register document around `scopes`, with the preamble and the excuse list regenerated
+/// from source.
+pub fn new_doc(scopes: Vec<Json>) -> Json {
+    let mut o = Obj::new();
+    o.insert(
+        "_comment",
+        Json::Array(
+            REGISTER_COMMENT
+                .iter()
+                .map(|s| Json::Str((*s).to_string()))
+                .collect(),
+        ),
+    );
+    o.insert(
+        "uncovered_by_design",
+        Json::Array(
+            UNCOVERED_BY_DESIGN
+                .iter()
+                .map(|(g, r)| {
+                    let mut e = Obj::new();
+                    e.insert("glob", Json::Str((*g).to_string()));
+                    e.insert("reason", Json::Str((*r).to_string()));
+                    Json::Object(e)
+                })
+                .collect(),
+        ),
+    );
+    o.insert("scopes", Json::Array(scopes));
+    Json::Object(o)
+}
+
+pub fn load(path: &Path) -> Result<Json, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    json_lite::parse(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// Write the register the way Python wrote it, down to the single trailing newline.
+pub fn save(path: &Path, doc: &Json) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+    }
+    std::fs::write(path, format!("{}\n", json_lite::dump_python(doc)))
+        .map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The keys `sync` CARRIES ACROSS from an existing scope, in this order. Assigning an existing key
+/// keeps its position; `rounds` does not exist in a freshly derived scope, so it lands last — which
+/// is exactly where the committed register has it.
+const PRESERVED: [&str; 9] = [
+    "tree_hash",
+    "audited_at",
+    "round",
+    "result",
+    "counts",
+    "report",
+    "auditor",
+    "fixed_at",
+    "rounds",
+];
+
+/// Merge the derived scope list with the register's records. A scope whose path left the tree loses
+/// its record with it — that is the `-` line `sync` prints, and it is deliberate: a record about
+/// code that no longer exists is not evidence about this tree.
+pub fn merge(derived: &[Json], existing: &[Json]) -> Vec<Json> {
+    let by_id: BTreeMap<&str, &Json> = existing
+        .iter()
+        .filter_map(|s| s.get("id").as_str().map(|i| (i, s)))
+        .collect();
+    derived
+        .iter()
+        .map(|d| {
+            let mut keep = d.clone();
+            let Some(id) = d.get("id").as_str() else {
+                return keep;
+            };
+            let Some(old) = by_id.get(id) else {
+                return keep;
+            };
+            if let Some(o) = keep.as_object_mut() {
+                for key in PRESERVED {
+                    if let Some(v) = old.as_object().and_then(|oo| oo.get(key)) {
+                        o.insert(key, v.clone());
+                    }
+                }
+            }
+            keep
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// derived rows, shared by status / next / check / the report
+// ---------------------------------------------------------------------------------------------
+
+pub struct RowView {
+    pub scope: Json,
+    pub id: String,
+    pub kind: String,
+    pub status: &'static str,
+    pub current_hash: Option<String>,
+    pub age: Option<u64>,
+    pub loc: usize,
+}
+
+/// Every scope with its derived status, age and LOC. One pass over git, because 144 scopes times a
+/// process each is the difference between a query and a coffee break.
+pub fn rows(doc: &Json, git: &Git) -> Result<Vec<RowView>, String> {
+    let all = git.files_at("HEAD")?;
+    let head = git.head()?;
+    let oids: BTreeSet<String> = all.values().cloned().collect();
+    let loc_by_oid = git.line_counts(&oids);
+
+    let mut out = Vec::new();
+    for sc in doc.get("scopes").as_array().unwrap_or(&[]) {
+        let current = tree_hash(sc, &all);
+        let status = status_of(sc, current.as_deref());
+        let age = sc
+            .get("audited_at")
+            .as_str()
+            .and_then(|at| git.commits_between(at, &head));
+        let loc = scope_files(sc, &all)
+            .values()
+            .map(|oid| loc_by_oid.get(oid).copied().unwrap_or(0))
+            .sum();
+        out.push(RowView {
+            id: sc.get("id").as_str().unwrap_or("<no id>").to_string(),
+            kind: sc.get("kind").as_str().unwrap_or("").to_string(),
+            scope: sc.clone(),
+            status,
+            current_hash: current,
+            age,
+            loc,
+        });
+    }
+    Ok(out)
+}
+
+/// The LOC and share of one status band over a row set. The denominator is floored at 1 so a tree
+/// with no measured lines reports 0.0% rather than dividing by zero — and the caller that cares
+/// about an empty tree checks the row count, which is the honest question.
+pub fn bar(rows: &[&RowView], key: &str) -> (usize, f64) {
+    let total: usize = rows.iter().map(|r| r.loc).sum();
+    let total = total.max(1);
+    let got: usize = rows.iter().filter(|r| r.status == key).map(|r| r.loc).sum();
+    (got, 100.0 * got as f64 / total as f64)
+}
+
+pub fn production(rows: &[RowView]) -> Vec<&RowView> {
+    rows.iter().filter(|r| r.kind == "production").collect()
+}

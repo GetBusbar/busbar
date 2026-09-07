@@ -94,6 +94,37 @@ fn the_committed_teller_matrix_round_trips_and_keeps_its_step_order() {
 }
 
 #[test]
+fn the_uncovered_by_design_constant_matches_the_committed_register() {
+    // The excuse list is a CONSTANT in Rust and `sync --write` regenerates the file's copy from it,
+    // so an excuse is a source edit somebody reviews rather than a line somebody adds to a 147KB
+    // JSON file. This pins the transcription: if the two ever disagree, the next `sync --write`
+    // silently rewrites 30 excuses and the diff that matters is buried.
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("qa/audit-ledger.json");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let doc = json_lite::parse(&text).unwrap();
+    let committed: Vec<(String, String)> = doc
+        .get("uncovered_by_design")
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e.get("glob").as_str().unwrap().to_string(),
+                e.get("reason").as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    let ours: Vec<(String, String)> = xtask::audit::UNCOVERED_BY_DESIGN
+        .iter()
+        .map(|(g, r)| ((*g).to_string(), (*r).to_string()))
+        .collect();
+    assert_eq!(committed, ours);
+}
+
+#[test]
 fn a_document_with_trailing_bytes_is_an_error_not_a_shorter_document() {
     assert!(json_lite::parse("{\"a\":1} {\"b\":2}").is_err());
     assert!(
@@ -104,6 +135,56 @@ fn a_document_with_trailing_bytes_is_an_error_not_a_shorter_document() {
         json_lite::parse(r#""\ud800""#).is_err(),
         "an unpaired surrogate must not decode to U+FFFD — a key that did would not compare \
          equal to itself on the next read"
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// sha256 — the digest the audit register's staleness rests on
+// -------------------------------------------------------------------------------------------
+
+#[test]
+fn sha256_matches_the_published_vectors() {
+    // If this digest is wrong, every one of the register's recorded tree hashes stops matching at
+    // once — and 144 scopes reading `stale` looks exactly like a tree nobody has audited.
+    assert_eq!(
+        xtask::sha256::hex(b""),
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    );
+    assert_eq!(
+        xtask::sha256::hex(b"abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
+    assert_eq!(
+        xtask::sha256::hex(b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"),
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    );
+    // A message that lands exactly on a block boundary, and a long one that exercises many blocks
+    // — the two lengths a hand-written padder gets wrong.
+    assert_eq!(
+        xtask::sha256::hex(&[b'a'; 64]),
+        "ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+    );
+    assert_eq!(
+        xtask::sha256::hex(&[b'a'; 1000000]),
+        "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
+    );
+}
+
+#[test]
+fn sha256_streams_the_same_digest_it_computes_in_one_shot() {
+    // The register hashes a scope one `path<TAB>oid\n` line at a time, so the streaming path is the
+    // one that actually runs.
+    let mut h = xtask::sha256::Sha256::new();
+    for chunk in [
+        "ab",
+        "cdbcdecdefdefgefghfghighijhijk",
+        "ijkljklmklmnlmnomnopnopq",
+    ] {
+        h.update(chunk.as_bytes());
+    }
+    assert_eq!(
+        h.hexdigest(),
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
     );
 }
 

@@ -18,6 +18,8 @@
 //! * [`parity`] — run the legacy script and the Rust gate over the same tree and require identical
 //!   rows, before any Python or bash is deleted.
 
+pub mod audit;
+pub mod audit_cmd;
 pub mod cli;
 pub mod ctx;
 pub mod denylist;
@@ -29,5 +31,6 @@ pub mod parity;
 pub mod planes;
 pub mod scan;
 pub mod selftest;
+pub mod sha256;
 pub mod toml_lite;
 pub mod yaml_lite;
