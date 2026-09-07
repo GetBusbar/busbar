@@ -1658,6 +1658,58 @@ jobs:
     timeout-minutes: 60
     env:
       BUSBAR_RELEASE_PUBKEY: ${{ vars.BUSBAR_RELEASE_PUBKEY }}
+    # THE BACKENDS BOTH SIDES RECORD AGAINST.
+    #
+    # The store families' cells boot a real backend, spend, restart and read back — persistence IS
+    # the thing under comparison. Without a backend here those cells were named gaps on both sides,
+    # so the oracle compared nothing and said "0 divergences" about the one family whose whole claim
+    # is durability. A gap on both sides is not agreement.
+    #
+    # Digests are NOT re-pinned here. testing/fleet-fixtures/service-images.tsv is the single pinned
+    # list (that is what the `service image pins` job enforces: every workflow `image:` line must
+    # equal a row in it), so these three are the same bytes the `check` job runs — postgres 16 and
+    # valkey 8 identically, and mysql 8 from the row plugin-ci.yml already uses. Re-pinning with
+    # `docker buildx imagetools inspect` here would create a second source of truth and the pin gate
+    # would refuse it, which is the gate working. The bump belongs in that one file.
+    services:
+      postgres:
+        image: postgres:16@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b
+        env:
+          POSTGRES_USER: busbar
+          POSTGRES_PASSWORD: busbar
+          POSTGRES_DB: busbar_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U busbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      # MySQL 8's FIRST boot initialises the datadir and restarts once, which is why its readiness
+      # budget is larger than the other two here exactly as service-images.tsv's ready_secs records.
+      mysql:
+        image: mysql:8@sha256:b3b90af2a6552ae30c266fdb7d5dd55f3afb72404bb78d37fe8a23eb857fd3fb
+        env:
+          MYSQL_ROOT_PASSWORD: busbar
+          MYSQL_USER: busbar
+          MYSQL_PASSWORD: busbar
+          MYSQL_DATABASE: busbar_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h localhost -ubusbar -pbusbar"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+      valkey:
+        image: valkey/valkey:8@sha256:495e4fecdc98ee48a20b207726caa5ab6451e0fac3642a9be10d9e70b3068df6
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "valkey-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
@@ -1683,6 +1735,15 @@ jobs:
           key: ${{ steps.rev.outputs.key }}
       - name: The differ can see a diff (replay selftest)
         run: bash testing/shadow-oracle/replay-selftest.sh
+      # THE FIXTURE GATE, PROVEN BEFORE ANYTHING EXPENSIVE. It decides, per cell, whether to RECORD
+      # or to name a gap — and only one of its two arms is ever exercised on a given machine: a box
+      # with no backend never takes the recording arm, and this job with the services above never
+      # takes the gap arm. A gate tested on one arm can start recording nothing, or recording
+      # against a backend it was never pointed at, and stay green either way. It needs no binary, no
+      # plugin and no backend, so it belongs here beside the replay selftest rather than after the
+      # build.
+      - name: The fixture gate decides both ways (fixture-gate selftest)
+        run: bash testing/shadow-oracle/fixture-gate-selftest.sh
       - name: Fetch the published 1.5.5 binary and plugins by digest
         run: |
           set -euo pipefail
@@ -1702,13 +1763,28 @@ jobs:
           cargo build -p busbar --release --locked
       - name: Both binaries accept the oracle config
         run: bash testing/shadow-oracle/selftest.sh target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
+      # BOTH RECORD STEPS CARRY THE SAME THREE VARIABLES, and that is the point of writing them out
+      # twice rather than lifting them to the job's `env:`. The oracle's answer is a COMPARISON, so
+      # the two sides must see the same backends or the comparison is between two different
+      # deployments and its verdict means nothing. Setting them on one side only is the failure that
+      # would be hardest to see: the golden would name a gap where the candidate recorded, and the
+      # differ would report a divergence that is really a difference in how the two were run. Kept
+      # adjacent and identical so a reader checks one against the other by eye.
       - name: Record the golden (once per oracle revision; cached)
+        env:
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
+          VALKEY_URL: redis://localhost:6379
         run: |
           set -euo pipefail
           if [ -s target/oracle/recordings/golden/ledger.tsv ]; then echo "golden cached"; exit 0; fi
           mkdir -p target/oracle/recordings/golden
           bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out target/oracle/recordings/golden
       - name: Record the candidate
+        env:
+          BUSBAR_TEST_POSTGRES_URL: postgres://busbar:busbar@localhost:5432/busbar_test
+          BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
+          VALKEY_URL: redis://localhost:6379
         run: |
           set -euo pipefail
           rm -rf target/oracle/recordings/candidate; mkdir -p target/oracle/recordings/candidate
