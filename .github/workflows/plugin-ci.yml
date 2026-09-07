@@ -62,6 +62,25 @@ on:
         # it is not an opinion. It is whatever that repo's release will actually build against.
         default: "main"
 
+# THE PRIVILEGE FLOOR THE CALLERS CANNOT SET FOR THEMSELVES.
+#
+# This file is `workflow_call`-only: about ten plugin repos invoke it, and every one of them does so
+# with `secrets: inherit`. Until this block existed there was no `permissions:` key anywhere in the
+# file, at either level, which means each caller's token arrived at `build-test-signoff` under THAT
+# REPO'S default workflow permissions -- an org/repo setting this file cannot see and the plugin
+# authors mostly have not thought about. A repo still on the read-write default handed a
+# `contents: write` token to a job whose entire purpose is to `cargo build --all-targets` and
+# `cargo test` a plugin checkout, i.e. to execute that repo's own `build.rs`, proc macros and test
+# code. Ten repos, one setting each, and none of it visible from here.
+#
+# A called workflow's `permissions:` can only NARROW what the caller granted, never widen it, so
+# declaring the floor here is unilateral and safe: it makes the ceiling a property of this file
+# instead of a property of ten repo settings pages. `contents: read` is the whole need -- the three
+# jobs check out source, build it, and (in `coverage`) upload to Codecov with an explicit
+# `CODECOV_TOKEN`, which is an action input and not a GITHUB_TOKEN scope.
+permissions:
+  contents: read
+
 jobs:
   # === WHICH BUSBAR DOES A PLUGIN'S CI ACTUALLY PROVE ANYTHING ABOUT ===
   #
