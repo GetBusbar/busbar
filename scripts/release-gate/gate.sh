@@ -96,9 +96,9 @@ exit 0
 STUB
   chmod +x "$tmp/fake/scripts/release-gate/expected-ids.sh"
   {
-    printf 'release:exists\tPASS\tok\t\n'
-    printf 'meta:openapi\tPASS\tok\t\n'
-    printf 'docker:label\tPASS\tok\t\n'
+    printf 'release:exists\tPASS\tok\t\t9.9.9\tdeadbee\n'
+    printf 'meta:openapi\tPASS\tok\t\t9.9.9\tdeadbee\n'
+    printf 'docker:label\tPASS\tok\t\t9.9.9\tdeadbee\n'
   } > "$tmp/fake/ledgers/leg.tsv"
   if LEDGER_DIR="$tmp/fake/ledgers" RUNNER_TEMP="$tmp/fake" GITHUB_STEP_SUMMARY=/dev/null \
      "$tmp/fake/scripts/release-gate/gate.sh" 9.9.9 >"$tmp/fake/out" 2>&1; then
@@ -222,8 +222,9 @@ STUB
   # Four names agreeing with each other is what those rows proved, and four names all pointing at
   # bytes qa never staged satisfies every one of them: a promote that rebuilt instead of retagging
   # pushes one image under every name. The case below is exactly that release.
-  local staged_img="sha256:$(printf '%064d' 1 | tr 0 b)"
-  local rebuilt_img="sha256:$(printf '%064d' 1 | tr 0 c)"
+  local staged_img rebuilt_img
+  staged_img="sha256:$(printf '%064d' 1 | tr 0 b)"
+  rebuilt_img="sha256:$(printf '%064d' 1 | tr 0 c)"
   jq -n --arg d "$staged_img" --arg c "$rebuilt_img" '{digest:$d, compat_digest:$c}' > "$sdir/img.json"
   if digest_matches "$rebuilt_img" "$rebuilt_img"; then
     ok "two registry names agreeing with each other still compare equal — which is why that was never the question"
@@ -379,6 +380,35 @@ if [ "$rows" -eq 0 ]; then
     echo
     echo "**Zero checks reported a result.** Nothing was verified. Ledger dir: \`${LEDGER_DIR}\`."
   } >> "$SUMMARY"
+  exit 1
+fi
+
+# ── THE ROWS MUST BE ABOUT THE RELEASE ON THE COMMAND LINE ─────────────────────────────────────
+#
+# Second, immediately after the vacuous-green guard and before a single verdict is read, because a
+# ledger about another release is not a weaker answer than no ledger — it is a CONFIDENT one. A
+# full set of green rows from the previous version reports "Every one of the 72 contracted checks
+# for <this version> ran and passed", which is true about the count and false about the subject,
+# and there is no later check that can notice.
+#
+# It gets here honestly: LEDGER is appended to and never truncated, download-artifact merges every
+# ledger it is handed into one directory, and the fan-out can be dispatched at a second version on
+# the same runner. Each row now stamps the version and the qa sha it was produced against, so this
+# is a comparison and not an inference.
+foreign="$(ledger_foreign_rows "$ALL" "${VERSION:-}")"
+if [ -n "$foreign" ]; then
+  echo "::error title=release gate::WRONG RELEASE: this gate was asked about '${VERSION:-<unknown>}' but the ledger carries rows about something else: ${foreign}. A row that names another version — or names none — cannot be counted toward this one, and a full set of stale green rows reads exactly like a verified release. RED by construction. Fix: the ledger is APPENDED to and never truncated, so a re-run on a persisted RUNNER_TEMP, a merged download-artifact directory, or a second dispatch on the same runner leaves the previous release's rows in place. Start from an empty LEDGER_DIR."
+  {
+    echo "## Release gate: RED — the ledger is about a different release"
+    echo
+    echo "Asked about \`${VERSION:-<unknown>}\`; these rows name something else: \`${foreign}\`"
+  } >> "$SUMMARY"
+  exit 1
+fi
+shas="$(ledger_sha_disagreements "$ALL")"
+if [ -n "$shas" ]; then
+  echo "::error title=release gate::TWO STAGINGS, ONE NAME: the ledger's rows were produced against more than one qa sha (${shas}). One version staged twice from two commits is two releases wearing one name — which is why the promote consumes a staged record and not a version. RED. Fix: verify every leg ran against the same staged record, and start from an empty LEDGER_DIR."
+  { echo; echo "### RED — the ledger mixes qa shas: \`${shas}\`"; } >> "$SUMMARY"
   exit 1
 fi
 
