@@ -542,8 +542,12 @@ assert f["carried_key"] == {"type": "CarriedCfg", "optional": True}, f["carried_
   # THE REAL TREE's SecretRef, not a fixture: all six inline-scalar spellings must be on record as
   # refused. `api_key: 483920175534` and `api_key: true` are perfectly ordinary YAML, and unquoted
   # is the spelling nobody thinks to check — so the assertion names the whole set rather than `str`.
+  # `str` left this list in 1.6.0: the bare scalar `none` is the one string a provider api_key
+  # accepts (registered breaking, waived by path). The generator records refused FORMS, not the
+  # accepted string set, so a future widening of which strings pass is a hole this case does not
+  # close; it is named in the config-schema.py conversion notes.
   py_assert "coverage: SecretRef's inline-literal refusals are fingerprinted" \
-    'assert t["manual-de SecretRef"]["refused"] == ["bool", "bytes", "f64", "i64", "str", "u64"], t["manual-de SecretRef"]'
+    'assert t["manual-de SecretRef"]["refused"] == ["bool", "bytes", "f64", "i64", "u64"], t["manual-de SecretRef"]'
   py_assert "coverage: UpstreamCreds IS fingerprinted" \
     'assert t["UpstreamCreds"]["variants"] == ["own", "passthrough"], t.get("UpstreamCreds")'
   py_assert "coverage: every derived container records its serde flags" \
