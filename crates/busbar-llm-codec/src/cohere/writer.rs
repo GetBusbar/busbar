@@ -765,12 +765,24 @@ impl ProtocolWriter for CohereWriter {
                 // client tracking billing/rate-limit data from the stream is not silently zeroed.
                 // IrUsage is always present (not Option); when upstream supplied nothing it is
                 // zero-valued, which serializes here as a safe `{input_tokens:0,output_tokens:0}`.
+                // `tokens.input_tokens` is the FULL prompt total on this wire (the cache hit is
+                // reported beside it, not subtracted from it) while the IR holds the UNCACHED
+                // share — add the cached share back, exactly as the buffered writer does.
                 let mut usage_obj = serde_json::json!({
                     "tokens": {
-                        "input_tokens": usage.input_tokens,
+                        "input_tokens": usage
+                            .input_tokens
+                            .saturating_add(usage.cache_read_input_tokens.unwrap_or(0)),
                         "output_tokens": usage.output_tokens
                     }
                 });
+                // The prompt-cache hit rides the stream's terminal frame exactly as it rides the
+                // buffered body; emitted only when the source reported one.
+                if let Some(c) = usage.cache_read_input_tokens {
+                    if let Some(uo) = usage_obj.as_object_mut() {
+                        uo.insert("cached_tokens".to_string(), serde_json::json!(c));
+                    }
+                }
                 // The separately-billed search units, in Cohere's native `billed_units` slot — the
                 // same field the buffered writer emits. `search_units` is not a token count at all,
                 // so its absence is invisible in a token total that reconciles perfectly; emitting
@@ -973,9 +985,17 @@ impl ProtocolWriter for CohereWriter {
 
         // Cohere format: usage.tokens.input_tokens, usage.tokens.output_tokens
         let mut tokens_map = serde_json::Map::new();
+        // `tokens.input_tokens` is the FULL prompt total on this wire — Cohere reports the cache
+        // hit alongside it in `cached_tokens`, not subtracted from it — while the IR holds the
+        // UNCACHED share with the cache count additive beside it. Add the cached share back so a
+        // Cohere -> Cohere hop re-emits exactly the prompt total the upstream reported. When no
+        // cache hit was reported this is the same number it always was.
         tokens_map.insert(
             "input_tokens".to_string(),
-            serde_json::json!(resp.usage.input_tokens),
+            serde_json::json!(resp
+                .usage
+                .input_tokens
+                .saturating_add(resp.usage.cache_read_input_tokens.unwrap_or(0))),
         );
         tokens_map.insert(
             "output_tokens".to_string(),
@@ -1063,6 +1083,12 @@ impl ProtocolWriter for CohereWriter {
                 "billed_units".to_string(),
                 serde_json::Value::Object(billed_units),
             );
+        }
+        // The prompt-cache hit, in Cohere's own top-level `cached_tokens` slot. Emitted only when
+        // the source reported one, so a response with no cache hit does not acquire a fabricated
+        // member.
+        if let Some(c) = resp.usage.cache_read_input_tokens {
+            usage_map.insert("cached_tokens".to_string(), serde_json::json!(c));
         }
         out.insert("usage".to_string(), serde_json::Value::Object(usage_map));
 
