@@ -44,7 +44,7 @@
 # so the lint proves it can go red before it is trusted to say green. It also asserts its own
 # executed case count, so deleted coverage cannot present itself as a pass.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+cd "$(dirname "$0")/.." || { echo "no-self-filed-issues: cannot cd to the repository root" >&2; exit 2; }
 
 WF_DIR=".github/workflows"
 
@@ -55,10 +55,23 @@ note() { printf '  %s\n' "$*"; }
 # Strip full-line and trailing `#` comments so prose about the ban does not trip the ban. Naive on
 # purpose about `#` inside quotes: a false POSITIVE here is a loud, fixable lint failure, whereas
 # tolerating comments would be a false NEGATIVE, and this file's whole point is failing closed.
-strip_comments() { sed -e 's/[[:space:]]#[^"'"'"']*$//' -e 's/^[[:space:]]*#.*$//' "$1"; }
+#
+# A SHELL CONTINUATION IS ONE COMMAND, SO IT IS JOINED INTO ONE LINE BEFORE MATCHING. grep matches
+# within a line, and the matcher was written as if a command could not span two — so the ordinary
+# block-scalar form
+#     curl -X POST -H "Authorization: token $GH_TOKEN" \
+#       "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" -d '{"title":"broken"}'
+# put the verb on one line and the endpoint on the next and scanned CLEAN. Claim (B) does not cover
+# it either: a call carrying a PAT from `secrets.*` never consults the workflow `permissions:` block
+# at all, so the token scope is no backstop against a hand-rolled request.
+strip_comments() {
+  sed -e 's/[[:space:]]#[^"'"'"']*$//' -e 's/^[[:space:]]*#.*$//' "$1" \
+    | sed -e ':x' -e '/\\$/{N;s/\\\n[[:space:]]*/ /;bx' -e '}'
+}
 
-# (A) issue-writing operations.
-ISSUE_WRITE_RE='gh (issue (create|edit|close|comment|reopen)|label create)|issues\.(create|update|createComment|addLabels)|(POST|--method[[:space:]]+POST)[^|]*\/issues|gh api[^|]*\/issues'
+# (A) issue-writing operations. Whitespace between tokens is `[[:space:]]+`, never a single literal
+# space: `gh  issue  create` is the same command as `gh issue create` and must read the same way.
+ISSUE_WRITE_RE='gh[[:space:]]+(issue[[:space:]]+(create|edit|close|comment|reopen)|label[[:space:]]+create)|issues\.(create|update|createComment|addLabels)|(POST|--method[[:space:]]+POST|-X[[:space:]]*POST)[^|]*\/issues|gh api[^|]*\/issues'
 # (B) the permission that makes them possible.
 ISSUE_PERM_RE='issues:[[:space:]]*write'
 
@@ -134,9 +147,47 @@ jobs:
       - run: exit 1   # never `gh issue create`
 YAML
 
+  # A shell continuation is one command. Both of these file an issue and neither fits on one line
+  # the way the matcher used to read them; this whole file scanned clean.
+  cat >"$tmp/continued.yml" <<'YAML'
+name: continued
+permissions:
+  contents: read
+jobs:
+  alert:
+    steps:
+      - run: |
+          curl -X POST -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues" -d '{"title":"broken"}'
+YAML
+
+  cat >"$tmp/spaced.yml" <<'YAML'
+name: spaced
+permissions:
+  contents: read
+jobs:
+  alert:
+    steps:
+      - run: gh  issue  create --title "broken" --body "see run"
+YAML
+
+  # A continuation inside PROSE is still prose: joining lines must not resurrect a comment.
+  cat >"$tmp/continued-comment.yml" <<'YAML'
+name: continued-comment
+# it used to run a curl -X POST \
+#   against the /issues endpoint. It does not any more.
+permissions:
+  contents: read
+jobs:
+  alert:
+    steps:
+      - run: exit 1
+YAML
+
   # name|expected-rc
   local c
-  for c in "clean.yml|0" "files-issue.yml|1" "grants-perm.yml|1" "comment-only.yml|0"; do
+  for c in "clean.yml|0" "files-issue.yml|1" "grants-perm.yml|1" "comment-only.yml|0" \
+           "continued.yml|1" "spaced.yml|1" "continued-comment.yml|0"; do
     local name="${c%%|*}" want="${c#*|}" got
     scan_file "$tmp/$name" >/dev/null 2>&1; got=$?
     cases=$((cases + 1))
@@ -149,8 +200,8 @@ YAML
   done
 
   # A deleted case must not look like a pass.
-  if [ "$cases" -ne 4 ]; then
-    red "  selftest FAIL: expected 4 cases, executed $cases (coverage was deleted)"
+  if [ "$cases" -ne 7 ]; then
+    red "  selftest FAIL: expected 7 cases, executed $cases (coverage was deleted)"
     fails=$((fails + 1))
   fi
 
@@ -171,7 +222,16 @@ fi
 
 printf '\n== no-self-filed-issues: the repo must not open issues against itself ==\n'
 
-mapfile -t FILES < <(find "$WF_DIR" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+# `while read` into an append, NOT `mapfile`. mapfile is bash 4.0 and /bin/bash on macOS is 3.2.57,
+# which this family names as a supported place to run its gates — release-check.sh even carries a
+# scanner for exactly this construct because it broke the release family once already, and this file
+# was not in that scanner's list. Under 3.2 the run was `mapfile: command not found` followed by two
+# `FILES: unbound variable` errors: it failed closed, but a gate that cannot run on a supported
+# platform is a gate whose verdict nobody there can obtain.
+FILES=()
+while IFS= read -r _wf; do
+  [ -n "$_wf" ] && FILES+=("$_wf")
+done < <(find "$WF_DIR" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
 
 # A discovery step that finds nothing passes everything.
 if [ "${#FILES[@]}" -lt 5 ]; then
