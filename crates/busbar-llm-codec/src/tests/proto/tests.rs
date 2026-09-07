@@ -339,6 +339,14 @@ fn test_openai_streaming_reasoning_blocks() {
         text_start.is_some() && text_delta,
         "text opens at index 1 after reasoning"
     );
+    // Compare POSITIONS, not `Option`s: `None < Some(_)` is true under the derived `Ord`, so
+    // `think_stop < text_start` was satisfied by the thinking block never closing AT ALL — the exact
+    // defect the message below names. Require the stop to exist first.
+    let think_stop = think_stop.expect(
+        "the thinking block must emit a BlockStop at index 0; without it an ingress accumulator \
+         leaves the thinking block open across the text block",
+    );
+    let text_start = text_start.expect("text opens a BlockStart at index 1");
     assert!(
         think_stop < text_start,
         "the thinking block must close before the text block opens"
@@ -2243,11 +2251,14 @@ mod ir_property_tests {
             assert_eq!(usage.cache_creation_input_tokens, Some(30));
             assert_eq!(usage.cache_read_input_tokens, Some(200));
 
-            // Verify they weren't collapsed: input != sum of cache tokens (anti-fab)
-            let cache_sum = 30 + 200;
+            // Verify they weren't collapsed: the DECODED input must not be the sum of the decoded
+            // cache buckets. Comparing the two literals `100` and `30 + 200` instead — as this did
+            // — is an arithmetic fact about the fixture, true whatever the reader returns.
             assert_ne!(
-                100, cache_sum,
-                "input_tokens must not be collapsed into cache token sum"
+                usage.input_tokens,
+                usage.cache_creation_input_tokens.unwrap_or(0)
+                    + usage.cache_read_input_tokens.unwrap_or(0),
+                "input_tokens must not be collapsed into the cache token sum"
             );
         } else {
             panic!("expected MessageDelta event");

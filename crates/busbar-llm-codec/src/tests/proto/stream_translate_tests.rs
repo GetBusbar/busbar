@@ -4513,12 +4513,18 @@ fn test_bedrock_and_responses_register() {
         gemini.writer().upstream_path_for_stream("gemini-pro", true),
         "/v1beta/models/gemini-pro:streamGenerateContent?alt=sse"
     );
-    // Non-Gemini protocols ignore the stream flag (single path).
+    // Non-Gemini protocols ignore the stream flag (single path). Pin the LITERAL on both arms:
+    // comparing the two accessors to each other is satisfied by both regressing together (e.g. both
+    // returning "" or the Responses path), which would send every OpenAI request to the wrong URL.
     assert_eq!(
         Protocol::openai()
             .writer()
             .upstream_path_for_stream("x", true),
-        Protocol::openai().writer().upstream_path_for("x")
+        "/v1/chat/completions"
+    );
+    assert_eq!(
+        Protocol::openai().writer().upstream_path_for("x"),
+        "/v1/chat/completions"
     );
 
     // Bedrock: model-in-path Converse URL + native SigV4 auth + ConverseStream
