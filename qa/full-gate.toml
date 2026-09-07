@@ -1,0 +1,105 @@
+# THE LOCAL SKIP REGISTER for `cargo xtask full-gate` — the gates CI runs that a laptop CANNOT,
+# each with a WRITTEN REASON.
+#
+# WHY THIS IS DATA AND NOT A RUST TABLE. Two reasons, and the second is the load-bearing one.
+#
+# 1. A skip is an owner-tightened knob. Removing one — deciding a gate CAN run locally now —
+#    should be a reviewable edit to a file whose whole content is that decision, not a diff
+#    buried in a runner.
+# 2. `cargo xtask gate segregation` forbids `xtask/src` from naming a file under
+#    testing/shadow-oracle/ that is not on its data allowlist: a gate runner that reaches into
+#    the oracle is a runner whose verdict moves when the oracle does. Six of the entries below
+#    are oracle harness scripts. They belong in the register precisely BECAUSE the runner does
+#    not run them, and putting the register in the runner would have meant either weakening
+#    that rule or lying to it. The register is data; the runner reads it.
+#
+# A skip with an EMPTY reason is refused by `cargo xtask full-gate --selftest`. A skip without a
+# reason becomes permanent.
+#
+# NOT LISTED, on purpose: every `--selftest` form (a gate self-test is hermetic and always runs,
+# whatever its script is classified as), and the four hermetic testing/ harness gates that each
+# take seconds.
+
+[[skip]]
+script = "scripts/release-check.sh"
+reason = "consumer-side verification of a PUBLISHED release: downloads tagged artifacts from GitHub Releases and Docker Hub. There is nothing to verify before a tag exists."
+
+[[skip]]
+script = "scripts/verify-artifact.py"
+reason = "per-artifact contract against BUILT release binaries. Needs the release matrix's outputs, which only the release workflow produces."
+
+[[skip]]
+script = "scripts/qa-gate-run.sh"
+reason = "the full qa fleet: ten plugin repos, service containers, a real Postgres/Valkey/MySQL. Runs on promotion, not on a laptop."
+
+[[skip]]
+script = "scripts/qa-segments.sh"
+reason = "drives the qa fleet segmentation; same fleet dependency as qa-gate-run.sh."
+
+[[skip]]
+script = "scripts/plugin-registry-check.sh"
+reason = "reads the published plugin registry over the network; a local run measures the network, not the tree."
+
+[[skip]]
+script = "scripts/loom.sh"
+reason = "exhaustive interleaving model, minutes of CPU per run. Deliberately out of the default loop; run it directly when touching the config swap."
+
+[[skip]]
+script = "scripts/txn-fence.sh"
+reason = "compiles a module that MUST FAIL to type-check, in its own target dir. Correct, but it inverts the exit code and confuses a batch runner; run it directly."
+
+[[skip]]
+script = "scripts/build-provenance-gate.sh"
+reason = "asserts the provenance stamp of a BUILT release binary ('… target/release/busbar release false'). Needs the release artifact the release build produces, exactly as verify-artifact.py does; a bare local run has no binary to inspect. The --selftest form runs here — it is the local mirror that proves the stamp discriminates."
+
+[[skip]]
+script = "scripts/proof-manifest.py"
+reason = "the Build-Proof-Dashboard collator, run ONLY on the dev/qa/main promotion branches (it needs --version/--out and re-emits docs/proof/<branch>.json). By its own contract it CHANGES NO GATE — it re-runs the cheap grep gates and records their verdicts — so there is nothing to prove locally on an integration branch."
+
+[[skip]]
+script = "scripts/release-order-lint.py"
+reason = "release-graph shape; included via its own entries below, see RELEASE_ORDER."
+
+[[skip]]
+script = "testing/shadow-oracle/fetch-golden.sh"
+reason = "downloads the PUBLISHED 1.5.5 release tarball from GitHub Releases and verifies it against golden-digests.tsv. It measures the network and a published artifact, not this tree."
+
+[[skip]]
+script = "testing/shadow-oracle/fetch-plugin.sh"
+reason = "same: fetches each published plugin artifact by digest over the network, one per plugin named in plugin-digests.tsv."
+
+[[skip]]
+script = "testing/shadow-oracle/selftest.sh"
+reason = "takes TWO built binaries as positional arguments (the release build and the cached 1.5.5 golden). Neither exists on a laptop until fetch-golden.sh has run and a release profile has been built; a bare invocation has nothing to compare."
+
+[[skip]]
+script = "testing/shadow-oracle/record.sh"
+reason = "drives a built binary through every recorded cell and writes a recording tree. Needs the release build and the fetched golden binary, exactly as selftest.sh does — CI runs it twice, once per side."
+
+[[skip]]
+script = "testing/shadow-oracle/replay.sh"
+reason = "compares the two recording trees record.sh produces. With no recordings there is nothing to replay; the harness's own logic IS proven here by testing/shadow-oracle/replay-selftest.sh, which runs."
+
+[[skip]]
+script = "testing/llm-conformance/run.sh"
+reason = "replays the candidate recording against the vendor specs pinned in spec-digests.tsv, which are fetched over the network and are not in the repository. Its harness logic is proven here by testing/llm-conformance/selftest.sh, which runs."
+
+[[skip]]
+script = "scripts/construction-gate.sh"
+reason = "RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceilings) while the construction work it measures is in flight; ci.yml runs its --check report-only (continue-on-error, verdict printed by the umbrella, not counted). Running it here would red the whole local gate on a fact CI does not score. Its --selftest DOES run here (the rule above). Run 'scripts/construction-gate.sh --check' directly for the report; DELETE this entry when the CI job is flipped to blocking."
+
+# The invocations discovery MUST find, one per shape the pattern has to keep: a plain .sh, two
+# .py, a .mjs behind a `node ` prefix (the extension set and the interpreter list, pinned by
+# example), and four real testing/ paths — discovery could not see a testing/ root at all until
+# the root list grew, so they are pinned here so it cannot shrink back.
+[discovery]
+must_find = [
+  "scripts/structure-lint.sh",
+  "scripts/public-hygiene-lint.py",
+  "scripts/workspace-deps-lint.py",
+  "scripts/check-proof-manifest-public.mjs",
+  "testing/shadow-oracle/replay-selftest.sh",
+  "testing/shadow-oracle/record.sh",
+  "testing/shadow-oracle/enumerate-cells.py",
+  "testing/llm-conformance/run.sh",
+]
