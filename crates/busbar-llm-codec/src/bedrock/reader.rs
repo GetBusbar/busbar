@@ -10,13 +10,20 @@ impl ProtocolReader for BedrockReader {
         // is free to serialize a count as `1200.0`, which `as_u64` answers `None` for — silently
         // ledgering a real billed count as zero. See `usage_tail::token_count`.
         let u64_field = |k: &str| v.get(k).and_then(super::super::usage_tail::token_count);
+        // The per-TTL cache-write split rides the same `usage` object a truncated body still
+        // carries, so a body too large to buffer whole reports the same breakdown a small one does.
+        let (cache_5m, cache_1h) = super::read_cache_details(Some(&v));
         Some(
             crate::ir::IrUsage {
                 input_tokens: u64_field("inputTokens").unwrap_or(0),
                 output_tokens: u64_field("outputTokens").unwrap_or(0),
                 cache_creation_input_tokens: u64_field("cacheWriteInputTokens"),
                 cache_read_input_tokens: u64_field("cacheReadInputTokens"),
-                detail: crate::ir::IrUsageDetail::default(),
+                detail: crate::ir::IrUsageDetail {
+                    cache_creation_5m_input_tokens: cache_5m,
+                    cache_creation_1h_input_tokens: cache_1h,
+                    ..Default::default()
+                },
             }
             .to_token_usage(),
         )
@@ -1136,6 +1143,11 @@ impl ProtocolReader for BedrockReader {
                 let usage_obj = data.get("usage").and_then(|u| u.as_object());
                 let (cache_creation_input_tokens, cache_read_input_tokens) =
                     read_cache_usage(usage_obj);
+                // The per-TTL cache-write split rides the STREAM's `metadata` frame exactly as it
+                // rides the buffered `usage`: the two TTLs price differently, so reading only the
+                // total made the same turn's bill reconcilable buffered and not reconcilable
+                // streamed.
+                let (cache_5m, cache_1h) = super::read_cache_details(data.get("usage"));
                 let usage = crate::ir::IrUsage {
                     input_tokens: usage_obj
                         .and_then(|u| u.get("inputTokens"))
@@ -1147,7 +1159,11 @@ impl ProtocolReader for BedrockReader {
                         .unwrap_or(0),
                     cache_creation_input_tokens,
                     cache_read_input_tokens,
-                    detail: crate::ir::IrUsageDetail::default(),
+                    detail: crate::ir::IrUsageDetail {
+                        cache_creation_5m_input_tokens: cache_5m,
+                        cache_creation_1h_input_tokens: cache_1h,
+                        ..Default::default()
+                    },
                 };
 
                 out.push(IrStreamEvent::MessageDelta {
@@ -1424,6 +1440,10 @@ impl ProtocolReader for BedrockReader {
         let usage_obj = obj.get("usage");
         let (cache_creation_input_tokens, cache_read_input_tokens) =
             read_cache_usage(usage_obj.and_then(|u| u.as_object()));
+        // `cacheDetails` — the per-TTL breakdown of `cacheWriteInputTokens`. The two TTLs are
+        // PRICED DIFFERENTLY, so the total alone leaves a bill that reconciles in aggregate and
+        // cannot be reconciled per line. See `read_cache_details`.
+        let (cache_5m, cache_1h) = super::read_cache_details(usage_obj);
         let usage = crate::ir::IrUsage {
             input_tokens: usage_obj
                 .and_then(|u| u.get("inputTokens"))
@@ -1435,7 +1455,11 @@ impl ProtocolReader for BedrockReader {
                 .unwrap_or(0),
             cache_creation_input_tokens,
             cache_read_input_tokens,
-            detail: crate::ir::IrUsageDetail::default(),
+            detail: crate::ir::IrUsageDetail {
+                cache_creation_5m_input_tokens: cache_5m,
+                cache_creation_1h_input_tokens: cache_1h,
+                ..Default::default()
+            },
         };
 
         Ok(crate::ir::IrResponse {
