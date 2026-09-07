@@ -321,6 +321,29 @@ oracle_scrape_metrics() {  # <listen-port> <token> <out-file>
   rm -f "$out"; return 1
 }
 
+# ── The fixture gate ────────────────────────────────────────────────────────────────────────────
+# A cell's `needs_fixture` says its fixture is absent, in one of two shapes:
+#
+#   true              flat: nothing in the tree supplies it and no environment can, so the cell is
+#                     always a named gap.
+#   <ENV_VAR_NAME>    env-gated: that variable carries the fixture (a backend connection URL), and
+#                     the cell is a named gap only while the variable is unset or empty.
+#
+# Absent / false / null mean the cell is recordable. This lives here, rather than inline in
+# record.sh, so the recorder and fixture-gate-selftest.sh decide with the SAME code: a gate whose
+# test reimplements it is a gate whose test can go on agreeing with a version that no longer runs.
+# Exit 0 = the fixture is missing (skip the cell); exit 1 = record it.
+#
+# DEFINED BEFORE THE SELFTEST BLOCK BELOW, which `exit`s on a direct `--selftest` run: a function
+# declared after it would never exist on that path.
+oracle_fixture_missing() {  # <needs_fixture value>
+  case "${1-}" in
+    ""|false|null) return 1 ;;
+    true) return 0 ;;
+    *) [ -z "${!1:-}" ] ;;
+  esac
+}
+
 # ── selftest ─────────────────────────────────────────────────────────────────────────────────────
 # This file is SOURCED by record.sh and replay.sh, so running it does nothing to a recording. Run
 # directly it proves the one thing in it that is pure logic and was silently wrong: how a mint
