@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The identity that ties the two readers together: the older release's read-time derivation, run
-//! against the pinned card, equals the sum of the nano-units the new layout stores.
+//! **THE MIGRATION'S EXACTNESS**, and the identity that ties the two readers together.
 //!
-//! This is the property the shadow comparison rests on. The two paths reach the same figure by
-//! different routes — one truncates the quantities to cents and then adds the fee in cents, the
-//! other sums the fee in as a line and truncates once at the end — and they agree because the fee
-//! line is an exact multiple of a cent.
+//! Every case in this file prices through a SINGLE-ENTRY HISTORY effective from instant zero — the
+//! shape a migration seals — and compares the answer against the legacy read-time derivation at
+//! that same card. The claim under test is the one the migration rests on: a single-entry history
+//! IS the pinned card, arithmetically, so a deployment that never edits a price sees no figure move
+//! at all.
+//!
+//! The two paths reach the same figure by different routes — one truncates the quantities to cents
+//! and then adds the fee in cents, the other sums the fee in as a line and truncates once at the
+//! end — and they agree because the fee line is an exact multiple of a minor unit.
 //!
 //! The generator is a plain congruential sequence written out here rather than a dependency: the
 //! cases must be identical on every machine and every run, and a money property that only fails on
@@ -15,9 +19,9 @@
 
 use super::*;
 use crate::{
-    cents_of, derive_spend_cents, derive_spend_micros, micros_of, price, STANDARD_TIER_BP,
+    cents_of, derive_spend_cents, derive_spend_micros, micros_of, STANDARD_TIER_BP,
 };
-use crate::{LaneClass, RateCard, RateCardVersion, FEE_CLASS, NANOS_PER_CENT};
+use crate::{LaneClass, RateCard, FEE_CLASS, NANOS_PER_CENT};
 
 /// A deterministic sequence. Same numbers everywhere, forever.
 struct Seq(u64);
@@ -41,14 +45,15 @@ impl Seq {
 /// open ones, so open classes take part in the identity too.
 const CLASSES: [&str; 6] = [INPUT, OUTPUT, CACHE_READ, CACHE_WRITE, "audio", "images"];
 
-/// The identity, over ten thousand generated postings: the older derivation at the pinned card
-/// equals the projection of the stored nano-units, in cents and in micro-units alike.
+/// The identity, over ten thousand generated postings: the legacy derivation at a card equals
+/// the projection of the lookup over a single-entry history holding that card, in cents and in
+/// micro-units alike. Ten thousand cases, unchanged in count from the pinned-card era.
 ///
 /// The generated ranges stay well inside the saturating region on purpose. Saturation itself is
 /// pinned by its own cases in the other files; mixing the two would let a case pass because both
 /// sides pinned at the top rather than because they agreed.
 #[test]
-fn the_older_derivation_at_the_pinned_card_equals_the_stored_nano_units() {
+fn the_lookup_over_a_single_entry_history_equals_the_legacy_derivation() {
     let mut seq = Seq(0x5EED_1234_ABCD_0001);
     for case in 0..10_000u32 {
         // A card over one lane: each class priced at up to ten thousand micro-units, to three
@@ -61,7 +66,7 @@ fn the_older_derivation_at_the_pinned_card_equals_the_stored_nano_units() {
             })
             .collect();
         let fee_cents = seq.below(1_000) as i64;
-        let card = RateCard::from_micro_rates(RateCardVersion::new("pinned"), entries, fee_cents);
+        let card = RateCard::from_micro_rates(entries, fee_cents);
 
         // A report of up to six lines with quantities up to a billion.
         let count = seq.below(CLASSES.len() as u64 + 1) as usize;
@@ -74,7 +79,7 @@ fn the_older_derivation_at_the_pinned_card_equals_the_stored_nano_units() {
         let report = usage(&reported);
         let plain = lines(&reported);
 
-        let posted = price(&card.pin(), "lane", &report, fee_count, STANDARD_TIER_BP);
+        let posted = priced(&card, "lane", &report, fee_count, STANDARD_TIER_BP);
         let derived_cents = derive_spend_cents(
             &card,
             [("lane", plain.as_slice())].into_iter(),
@@ -90,7 +95,7 @@ fn the_older_derivation_at_the_pinned_card_equals_the_stored_nano_units() {
 
         assert_eq!(
             derived_cents,
-            posted.cents(),
+            posted.minor(),
             "case {case}: derived cents must equal the projection of the stored nano-units"
         );
         assert_eq!(
@@ -109,7 +114,7 @@ fn the_older_derivation_at_the_pinned_card_equals_the_stored_nano_units() {
             false,
         );
         let stored_usage: u128 = posted
-            .lines()
+            .lines
             .iter()
             .filter(|l| l.class != FEE_CLASS)
             .fold(0u128, |a, l| a + l.amount_nanos);
@@ -119,7 +124,7 @@ fn the_older_derivation_at_the_pinned_card_equals_the_stored_nano_units() {
             "case {case}: usage alone"
         );
         let stored_fee = posted
-            .lines()
+            .lines
             .iter()
             .find(|l| l.class == FEE_CLASS)
             .expect("every posting carries a fee line")
@@ -223,14 +228,14 @@ fn the_identity_holds_at_the_neutral_tier_and_the_tier_is_the_only_divergence() 
     let plain = lines(&[(INPUT, 3), (OUTPUT, 4)]);
     let derived = derive_spend_cents(&c, [("m", plain.as_slice())].into_iter(), 1, true);
 
-    let neutral = price(&c.pin(), "m", &report, 1, STANDARD_TIER_BP);
-    assert_eq!(derived, neutral.cents());
+    let neutral = priced(&c, "m", &report, 1, STANDARD_TIER_BP);
+    assert_eq!(derived, neutral.minor());
 
-    let tiered = price(&c.pin(), "m", &report, 1, 15_000);
+    let tiered = priced(&c, "m", &report, 1, 15_000);
     assert_ne!(
         derived,
-        tiered.cents(),
+        tiered.minor(),
         "a tier away from neutral is expected to differ from the older derivation"
     );
-    assert_eq!(tiered.pre_tier_amount(), neutral.priced_amount());
+    assert_eq!(tiered.pre_tier_nanos, neutral.priced_nanos);
 }
