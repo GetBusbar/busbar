@@ -2,6 +2,18 @@ use super::*;
 use crate::ir::{IrBlockMeta, IrStreamEvent};
 use http::StatusCode;
 
+/// A signing context for the declaration-owned egress-auth builders. Only the Bedrock SigV4 builder
+/// reads any of these fields; the key-header builders ignore them entirely.
+fn a_signing_ctx() -> busbar_substrate_values::proto::SigningContext<'static> {
+    busbar_substrate_values::proto::SigningContext {
+        host: "example.invalid",
+        canonical_uri: "/",
+        body: b"{}",
+        timestamp_epoch: 1_752_000_000,
+        upstream_creds: busbar_api::UpstreamCreds::Own,
+    }
+}
+
 /// STRUCTURAL ROUND-TRIP MATRIX (the test class that would have caught the cohere object-shape
 /// and openai usage bugs): for EVERY protocol, writing a canonical IR stream through that
 /// protocol's WRITER and reading the frames back through its OWN READER must preserve the streamed
@@ -4450,9 +4462,13 @@ fn test_gemini_protocol_resolves() {
     let ir = reader.read_request(&j).expect("reader should parse");
     assert_eq!(ir.messages.len(), 1);
 
-    // Verify writer methods work
+    // Verify writer methods work. Pin the CONTENT, not just the key: `contains_key("contents")` is
+    // satisfied by `{"contents": []}`, i.e. the user's message dropped entirely.
     let output = writer.write_request(&ir);
-    assert!(output.as_object().unwrap().contains_key("contents"));
+    assert_eq!(
+        output["contents"][0]["parts"][0]["text"], "test",
+        "the user turn must survive to the gemini wire, got {output}"
+    );
 
     // Verify other protocol methods.: the real per-request path embeds the model via
     // upstream_path_for(); upstream_path() is just the model-independent base.
@@ -4461,10 +4477,18 @@ fn test_gemini_protocol_resolves() {
         writer.upstream_path_for("gemini-pro"),
         "/v1beta/models/gemini-pro:generateContent"
     );
-    let headers =
-        busbar_substrate_values::egress_auth::api_key_headers("x-goog-api-key", "test-key");
+    // Auth read off GEMINI'S OWN DECLARATION. Calling `api_key_headers("x-goog-api-key", …)` and
+    // asserting that name comes back asserts the helper echoes its argument — the header name was
+    // the test's input and the Gemini protocol was never consulted, so a regression to
+    // `Authorization: Bearer` (every upstream call 401s) stayed green.
+    let g_decl = decl_for("gemini").expect("gemini declares itself");
+    let build = g_decl
+        .egress_auth_headers
+        .expect("gemini declares a native egress-auth builder");
+    let headers = build("test-key", &a_signing_ctx());
     assert_eq!(headers.len(), 1);
     assert_eq!(headers[0].0.as_str(), "x-goog-api-key");
+    assert_eq!(headers[0].1.to_str().unwrap(), "test-key");
 
     // Verify error handling methods
     let status_code = StatusCode::TOO_MANY_REQUESTS;
@@ -4499,10 +4523,18 @@ fn test_bedrock_and_responses_register() {
     let responses = Protocol::responses();
     assert_eq!(responses.name(), "responses");
     assert_eq!(responses.writer().upstream_path(), "/v1/responses");
-    let headers = busbar_substrate_values::proto::bearer_auth_headers("responses", "sk-test");
-    assert_eq!(headers.len(), 1);
-    assert_eq!(headers[0].0.as_str(), "authorization");
-    assert_eq!(headers[0].1.to_str().unwrap(), "Bearer sk-test");
+    // Auth read off THE RESPONSES DECLARATION. `bearer_auth_headers("responses", …)` uses its first
+    // argument only for a diagnostic string and returns `authorization: Bearer {key}`
+    // unconditionally, so the old form asserted a constant and never consulted the protocol: if
+    // Responses stopped emitting an auth header, or switched to `api-key`, it stayed green.
+    let r_decl = decl_for("responses").expect("responses declares itself");
+    let r_build = r_decl
+        .egress_auth_headers
+        .expect("responses declares a native egress-auth builder");
+    let r_headers = r_build("sk-test", &a_signing_ctx());
+    assert_eq!(r_headers.len(), 1);
+    assert_eq!(r_headers[0].0.as_str(), "authorization");
+    assert_eq!(r_headers[0].1.to_str().unwrap(), "Bearer sk-test");
 
     // Gemini selects the streaming vs non-streaming endpoint by request intent.
     let gemini = Protocol::gemini();
