@@ -310,15 +310,16 @@ def selftest(root: Path) -> int:
         print("  [FAILED] the job/needs/RESULTS floors do not bite")
         failures += 1
 
-    # RED BEFORE GREEN, ON THE REAL FILE. Re-plant the historical defect (`deletion-test-matrix`
-    # absent from `needs`) in the tree's own ci.yml and require a RED; then require the tree GREEN.
+    # ON THE REAL FILE: re-plant the historical defect (`deletion-test-matrix` absent from `needs`)
+    # in the tree's own ci.yml and require the lint to refuse it; then require the untouched tree
+    # to pass.
     real = (root / WORKFLOW).read_text(encoding="utf-8")
     planted = re.sub(r"\n +- deletion-test-matrix(?=\n)", "", real, count=1)
     if planted == real:
         print("  [FAILED] could not plant the historical defect: `- deletion-test-matrix` is not in ci.yml's needs")
         failures += 1
     elif check_text(planted):
-        print("  [ok]     the real ci.yml with `deletion-test-matrix` removed from needs is REFUSED (red before green)")
+        print("  [ok]     the real ci.yml with `deletion-test-matrix` removed from needs is REFUSED")
     else:
         print("  [FAILED] removing an enforcement gate from the real umbrella's needs was ACCEPTED")
         failures += 1

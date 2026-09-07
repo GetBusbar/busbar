@@ -382,8 +382,8 @@ if [ "${1:-}" = "--selftest" ]; then
   # THE `testing/` HALF, planted rather than hoped for. Discovery hard-coded `scripts/` and was blind
   # to every gate under `testing/`; a gate a discovery cannot SEE is not skipped with a reason, it is
   # absent from both lists while the final "N gates, M skipped" line counts confidently past it. The
-  # fixture carries one planted `testing/planted/gate.sh` invocation, and this is the red-before-green:
-  # against the old pattern `--dump-gates` on that fixture returns it nowhere.
+  # fixture carries one planted `testing/planted/gate.sh` invocation; against the old pattern,
+  # `--dump-gates` on that fixture returns it nowhere.
   PLANTED_FIXTURE="scripts/fixtures/full-gate/continuation-ci.yml"
   if [ ! -f "$PLANTED_FIXTURE" ]; then
     printf '  [FAILED] the discovery fixture %s is missing\n' "$PLANTED_FIXTURE"; bad=1

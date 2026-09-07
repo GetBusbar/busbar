@@ -1296,10 +1296,10 @@ def family_floor_problems(was: dict, now: dict, accepted: set) -> list:
 def selftest() -> int:
     """Prove the per-family floor discriminates, by CONSTRUCTING the loss rather than hoping.
 
-    The red-before-green case is the real one: point a family's fixture at a path that does not
-    exist, exactly as a rename does, and watch its builder return [] without complaint. Under the
-    old code that loss went straight into cells.json on the next `--write` and nothing anywhere
-    objected; here the floor must refuse it.
+    The case that matters is the real one: point a family's fixture at a path that does not exist,
+    exactly as a rename does, and watch its builder return [] without complaint. Under the old code
+    that loss went straight into cells.json on the next `--write` and nothing anywhere objected;
+    here the floor must refuse it.
     """
     bad = 0
 

@@ -92,8 +92,8 @@ fi
 #
 # So every touched shell/python/workflow file is parsed, and every touched script that advertises a
 # `--selftest` runs it. These are cheap (seconds) and they catch the two failures that actually
-# happen to a picked gate script: it no longer parses, and its own red-before-green cases no longer
-# hold. What ran is NAMED in the GREEN line at the bottom, so the word "green" carries its scope.
+# happen to a picked gate script: it no longer parses, and its own self-test cases no longer hold.
+# What ran is NAMED in the GREEN line at the bottom, so the word "green" carries its scope.
 proof_notes=""
 gate_files="$(printf '%s\n' "$touched" | grep -E '^(scripts|testing|\.github)/.*\.(sh|py|mjs|yml|yaml)$' || true)"
 n_parsed=0; n_selftests=0

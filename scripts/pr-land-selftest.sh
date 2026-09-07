@@ -11,7 +11,7 @@
 # real push, real cherry-pick, real conflicts) and `gh` is a shim on PATH that records every call
 # and replays a canned check-run answer. What is exercised is exactly the script's own logic.
 #
-# Four cases, each red-before-green by construction:
+# Four cases, each proven by constructing the failing condition and confirming it is caught:
 #   A  a conflicting pick ABORTS: non-zero, no `pr create` in the call log, no branch left behind.
 #   B  the PR body NAMES every picked commit and its cherry-pick trailer.
 #   C  a red required check leaves the PR OPEN: non-zero, no `pr close`, auto-merge still armed.

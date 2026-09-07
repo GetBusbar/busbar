@@ -45,6 +45,6 @@ jobs:
       # THE PLANTED `testing/` GATE. Discovery hard-coded `scripts/` for its whole life, so the
       # eleven gate invocations `ci.yml` makes under `testing/` (the shadow-oracle harness and the
       # llm-conformance suite) were in NEITHER list: not run locally, and not named as CI-only
-      # either — the same worse-than-a-skip hole the `.mjs` gate fell through. This line is the
-      # red-before-green: `--dump-gates` on this fixture must find it, and did not.
+      # either — the same worse-than-a-skip hole the `.mjs` gate fell through. `--dump-gates` on this
+      # fixture must find this line; the check catches the case where it does not.
       - run: bash testing/planted/gate.sh --selftest
