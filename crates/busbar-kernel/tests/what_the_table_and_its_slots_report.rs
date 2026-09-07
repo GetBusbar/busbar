@@ -75,7 +75,11 @@ fn the_table_reports_its_ceiling_its_reserve_and_what_it_holds() {
 fn a_reserve_bigger_than_the_table_is_clamped_to_it() {
     let table = InFlight::new(4, 10);
     assert_eq!(table.cap(), 4);
-    assert_eq!(table.reserve(), 4, "the reserve is never more than the table");
+    assert_eq!(
+        table.reserve(),
+        4,
+        "the reserve is never more than the table"
+    );
 }
 
 /// A unit's slot carries the unit's OWN session, cancellation and progress clock.
