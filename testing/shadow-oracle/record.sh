@@ -606,6 +606,41 @@ _digest() {  # stdin -> one hex digest line
   else python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
   fi
 }
+# ── AN EGRESS RECORD IS NOT FINISHED UNTIL THE UPSTREAM ANSWERED IT ─────────────────────────────
+# The mock writes each egress record twice: once when the request arrives, once when it has served
+# the response (status, Retry-After, elapsed). For most cells the second write lands long before the
+# recorder gets here, because busbar cannot answer the client until the upstream answered busbar.
+#
+# `slow` is the exception, and it is exactly the cell that needs the response most. The mock sleeps
+# ORACLE_MOCK_SLOW_SECS; busbar gives up at its own attempt cap, which is SHORTER by construction —
+# that is what `route.failover|fo|primary-slow` is about — fails over, and answers the client while
+# the mock is still asleep. Snapshotting here would collect the primary's record in its request-only
+# form, and whether it had a response by then would depend on how the two timers raced on the day.
+# A recording that differs by which timer won is not a recording of busbar.
+#
+# So: wait for every record collected for this cell to carry a `response`, then proceed. The bound is
+# generous (a whole slow-verb sleep plus slack) and is a bound on a WAIT, never a source of bytes —
+# a record that never settles keeps its request-only shape and is compared as that, which is a real
+# difference the differ will report rather than one this loop papers over.
+egress_settle() {  # <cell-id> <record-file>...
+  local id="$1"; shift
+  [ $# -gt 0 ] || return 0
+  local deadline=$(( $(date +%s) + ${ORACLE_EGRESS_SETTLE_SECS:-15} )) f pending
+  while :; do
+    pending=0
+    for f in "$@"; do
+      python3 -c 'import json,sys
+try: sys.exit(0 if "response" in json.load(open(sys.argv[1])) else 1)
+except Exception: sys.exit(1)' "$f" || { pending=1; break; }
+    done
+    [ "$pending" = 0 ] && return 0
+    [ "$(date +%s)" -ge "$deadline" ] && {
+      echo "record.sh: egress records for $id still had no upstream response after ${ORACLE_EGRESS_SETTLE_SECS:-15}s" >&2
+      return 0
+    }
+    sleep 0.1
+  done
+}
 settle_then_snapshot() {  # <dir> <key-id>
   local d="$1" kid="$2" i=0 prev="" cur=""
   # the `before` snapshot opens a cell: clear the previous cell's verdict here, so SNAPSHOT_FAIL is
@@ -1039,6 +1074,7 @@ PY
   ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.after"
   egress_files=()
   while IFS= read -r f; do [ -n "$f" ] && egress_files+=("$WORK/egress/$f"); done < <(comm -13 "$raw/egress.before" "$raw/egress.after")
+  egress_settle "$id" "${egress_files[@]}"
   printf '%s\n' "$status" >"$raw/status"
   printf '%s\n' "$kid" >"$raw/key-id"
 
