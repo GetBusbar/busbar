@@ -221,13 +221,16 @@ degraded, or boot/config condition, never on the per-request happy path. The con
 `error!` for exactly the conditions above: a state an operator running at the default level should
 see. Whether a NEW event macro belongs at the hot level is a judgment call (does it fire on every
 successful request, or only on a rare/error path?) that a mechanical lint cannot make reliably
-without false positives, so it is enforced by review, not CI. See `scripts/tracing-lint.sh`'s header
-comment for why that script deliberately stops at the `#[instrument]`-level-presence rule.
+without false positives, so it is enforced by review, not CI. See `xtask/src/gates/tracing.rs`'s
+module comment for why that gate deliberately stops at the `#[instrument]`-level-presence rule.
 
-**Enforcement: `scripts/tracing-lint.sh`.** Runs in CI (the `structure-lint` job, alongside
+**Enforcement: `cargo xtask gate tracing`.** Runs in CI (the `structure-lint` job, alongside
 `structure-lint.sh` / `response-header-lint.sh`). Fails the build on any `#[tracing::instrument]` (or
 bare `#[instrument]`) anywhere in `crates/**/*.rs` (excluding `*/tests/*`) whose attribute text,
-gathered across however many lines it spans, never mentions `level`. `--selftest` proves the
+gathered across however many lines it spans, never mentions `level`. Parens and the word `level` are
+counted only OUTSIDE string literals, so `name = "f("` does not swallow the rest of the file and
+`name = "log_level"` does not count as declaring a level; an attribute that never balances before
+EOF is its own reported finding rather than the silent end of the scan. `--selftest` proves the
 scanner still catches a level-less instrument (bare, single-line, and multi-line shapes) before its
 verdict on the tree is trusted, mirroring `structure-lint.sh --selftest` /
 `response-header-lint.sh --selftest`.

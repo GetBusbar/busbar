@@ -378,7 +378,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "metrics_route_declared_only_when_configured", "/metrics is declared only with export.prometheus"),
     ],
     "PB-54": [
-        ("lint", "scripts/tracing-lint.sh", "every instrument span declares an explicit level"),
+        ("lint", "xtask/src/gates/tracing.rs", "every instrument span declares an explicit level"),
         ("oracle-family", "cli", "CLI flags and env cells diffed against the 1.5.5 binary"),
     ],
     "PB-55": [
