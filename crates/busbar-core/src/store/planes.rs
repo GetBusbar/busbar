@@ -150,7 +150,7 @@ impl PlaneBreakers {
                 // "prefer a sibling" half of a rule whose other half is "fail over to the next
                 // candidate"; with no sibling declared there is nothing to prefer, and benching
                 // the only member is not a preference, it is a 15-120s outage for every caller of
-                // that server, minted by ONE transient blip and rendered as `-32030
+                // that server, minted by ONE transient blip and rendered as `-32001
                 // upstream_unavailable` ... "open after repeated failures".
                 //
                 // This is a per-BREAKER setting, not a per-cell one, so it is set for the

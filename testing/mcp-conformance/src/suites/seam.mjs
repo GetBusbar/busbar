@@ -114,7 +114,7 @@ function requireUpstreamWasReached(peer, entries) {
       + '  1. THE SUBJECT REFUSED TO DIAL AT ALL. Its circuit breaker cell for this registration '
       + 'was open, so the call was fast-failed before any socket was opened and nothing could '
       + 'reach us. This is NOT a mount problem and no amount of checking the config will show it. '
-      + 'It is visible in the subject\'s own log as `-32030` / `upstream_unavailable` / '
+      + 'It is visible in the subject\'s own log as `-32001` / `upstream_unavailable` / '
       + '`retry_after_ms`, and because the battery shares ONE registration across every scenario, '
       + 'ONE earlier test that drove the cell open poisons every later one — look at what ran '
       + 'BEFORE this test, not at this test. A retry loop in the arm script counts as several '

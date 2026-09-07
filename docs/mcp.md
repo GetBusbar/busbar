@@ -445,14 +445,14 @@ A tripped server answers:
 
 - HTTP **`503 Service Unavailable`**
 - a **`Retry-After`** header, in seconds, populated from the cell's own remaining cooldown — an exact number rather than a guess, floored at 1 (`crates/busbar-core/src/store/planes.rs:220-224`)
-- a JSON-RPC **error** with code **`-32030`**, and structured `data`:
+- a JSON-RPC **error** with code **`-32001`**, and structured `data`:
 
 ```json
 {
   "jsonrpc": "2.0",
   "id": 1,
   "error": {
-    "code": -32030,
+    "code": -32001,
     "message": "MCP server `acme` is unavailable: its circuit breaker is open after repeated failures; busbar did not dispatch this call. Retry after 12s.",
     "data": { "reason": "upstream_unavailable", "server": "acme", "retry_after_ms": 12000 }
   }
@@ -461,7 +461,7 @@ A tripped server answers:
 
 (`crates/busbar-mcp/src/mcp/method.rs:2071-2109`.)
 
-**It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure, and the model then reasons from a lie and may report that false result onward as fact. `-32030` sits in JSON-RPC 2.0 §5.1's implementation-defined `-32000..-32099` band because each reserved code is wrong for a specific reason: `-32603` says Busbar broke (it did not), `-32601` says the tool does not exist (it does), `-32602` blames the caller (`crates/busbar-mcp/src/mcp/method.rs:2065-2075`).
+**It is an error, never a tool result with `isError: true`.** MCP's `isError` means *the tool ran and it failed*. A tripped breaker means *the call never happened*. Returning the second as the first tells the calling model that a tool executed and reported a failure, and the model then reasons from a lie and may report that false result onward as fact. `-32001` sits in JSON-RPC 2.0 §5.1's implementation-defined server-error band, and specifically in the `-32019..-32000` part of it that MCP has *not* reserved for its own codes (the specification reserves `-32099..-32020`, where it has so far defined `-32020`, `-32021` and `-32022`). An extension placed inside that reserved sub-range is a collision waiting for the next revision, and the conformance battery fails it as `BASE.ERR.RESERVED-RANGE`. It is an extension rather than a reserved code because each reserved code is wrong for a specific reason: `-32603` says Busbar broke (it did not), `-32601` says the tool does not exist (it does), `-32602` blames the caller (`crates/busbar-mcp/src/mcp/method.rs:2065-2075`).
 
 **These cells refuse on a trip and nothing less.** The MCP cell is built with `bench_below_trip_threshold: false` — the one field it does not take from the LLM defaults (`crates/busbar-core/src/store/planes.rs:81-98`). On an LLM pool, a sub-threshold failure arms a short cooldown meaning "prefer a sibling for a while", and failover is what keeps the caller served while it lasts. On a single MCP registration with no pool there is no sibling, so the same cooldown would mean "refuse *every* caller of this server for the next 15–120 seconds" after one transient blip, on a cell whose own trip predicate had just declined to trip. So the predicate is the published one and nothing weaker: **error rate ≥ 0.5 over at least 5 outcomes in a 30-second window**, cooldown 15 s escalating to 120 s (`crates/busbar-core/src/store/in_memory/mod.rs:563-574`, `:629-639`). An upstream's own `Retry-After` is still honoured, for as long as the upstream asked for — that is the upstream's backpressure, not Busbar inventing an outage.
 
@@ -477,7 +477,7 @@ A tripped server answers:
 | `-32020` | `400` | A mirrored routing header disagrees with the body (`mcp/envelope.rs:134`). |
 | `-32021` | `400` | The caller did not declare a client capability a `task_support: required` tool needs; `data.requiredCapabilities` names it. The status is fixed by the spec, not chosen (`mcp/method.rs:268-282`, `:2294-2303`). |
 | `-32022` | `400` | Unsupported protocol version; `data` carries `requested` and `supported` (`mcp/envelope.rs:136-139`). |
-| `-32030` | `503` | The upstream's breaker is open. |
+| `-32001` | `503` | The upstream's breaker is open. |
 | `-32601` | `404` | Unknown method — never a `200` carrying an error object. |
 | `-32602` | `400` | Structurally wrong params, including an absent or incomplete `params._meta`. |
 
