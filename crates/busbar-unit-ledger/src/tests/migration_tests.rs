@@ -492,8 +492,7 @@ fn a_clean_read_writes_the_marker_once() {
 fn an_unsigned_opening_writes_no_marker() {
     let source = a_serving_deployment();
     let mut records = NodeLocalRecords::new();
-    let err =
-        migrate(&source, &mut records, 1, 1, Some(&NoKey)).expect_err("the signer refuses");
+    let err = migrate(&source, &mut records, 1, 1, Some(&NoKey)).expect_err("the signer refuses");
     assert!(matches!(err, MigrationError::NotSealed(_)));
     assert!(
         !records.is_sealed(),
