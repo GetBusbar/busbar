@@ -2008,12 +2008,12 @@
     "number": 8013,
     "class": "governance",
     "slug": "provider-api-key-unresolved",
-    "title": "Provider api_key did not resolve (degraded to an empty key)",
+    "title": "Provider api_key did not resolve (degraded to an empty key) — RETIRED, see BUSBAR-8020",
     "severity": "actionable",
-    "summary": "A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that provider to an empty key. This is legitimate for keyless local upstreams (ollama/vLLM), but for a real provider it means egress will be unauthenticated and the upstream will reject with 401.",
-    "action": "If the provider needs a key, fix its `api_key` secret reference (the secret is missing or the resolver could not read it) and restart. If the upstream is genuinely keyless, no action is needed.",
+    "summary": "RETIRED. A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that provider to an empty key and started the lane anyway. 1.6.0 removed that degrade: an `api_key` that does not resolve now REFUSES BOOT (BUSBAR-8020), and an upstream that genuinely takes no credential is declared with `api_key: none`.",
+    "action": "Nothing emits this code. See BUSBAR-8020.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-8014",
@@ -2084,6 +2084,18 @@
     "severity": "actionable",
     "summary": "The write-behind metering accumulator (pending_metering) reached its cap while a NEW (key_id, bucket, model, provider) cell arrived — a sustained governance-store outage with diverse keys/models, where every flush re-queues the failed cells while new ones keep arriving. Rather than grow without bound OR silently drop billable usage, busbar COALESCES the arriving cell's counts into a per-bucket overflow sentinel: the day's token and request TOTALS are preserved, only their per-key/model/provider ATTRIBUTION is collapsed. Each coalesce also increments busbar_metering_pending_coalesced_total. Per-event detail is at debug; this is the human-cadence signal.",
     "action": "Restore the governance store — the accumulator overflows only under a sustained write outage. Usage is not lost (totals are retained under the overflow sentinel key), but once the store recovers the retained deltas flush and normal per-key attribution resumes. A steadily climbing coalesced counter means the outage has outlasted the cap.",
+    "since": "1.6.0",
+    "retired": false
+  },
+  {
+    "code": "BUSBAR-8020",
+    "number": 8020,
+    "class": "governance",
+    "slug": "provider-api-key-unresolvable",
+    "title": "Provider api_key did not resolve (boot refuses)",
+    "severity": "fatal",
+    "summary": "A provider's `api_key` secret reference could not be resolved — an unset environment variable, a missing or empty file, an unknown module, or a secret plugin that failed — so busbar refuses to start. It does not fall back to an empty credential: that lane could never authenticate, would report healthy, would be skipped by the health prober (no key, no probe), and would answer every request routed to it with a 401 from the upstream. The diagnostic names the provider and the reference (`env:VAR`, `file:/path`), never the value.",
+    "action": "Fix the reference so it resolves (set the variable, mount the file, install and trust the secret plugin), or — if this upstream genuinely takes NO credential, such as a local ollama or vLLM — declare that explicitly with `api_key: none`, which starts the lane with no credential and sends no auth header. `--validate` reports the same refusal before you deploy.",
     "since": "1.6.0",
     "retired": false
   },

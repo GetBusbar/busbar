@@ -2021,20 +2021,43 @@ pub const SAFE_MODE_OVERLAY_QUARANTINED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A provider api_key SecretRef did not resolve at boot; degraded to an empty key.
+/// RETIRED before 1.6.0 shipped, superseded by [`PROVIDER_API_KEY_UNRESOLVABLE`]: the degrade this
+/// code described no longer exists. The number is kept so a log line from a pre-release build still
+/// resolves to an entry that says what happened and what replaced it.
 pub const PROVIDER_API_KEY_UNRESOLVED: Diagnostic = Diagnostic {
     code: 8013,
     class: Class::Governance,
     slug: "provider-api-key-unresolved",
-    title: "Provider api_key did not resolve (degraded to an empty key)",
+    title: "Provider api_key did not resolve (degraded to an empty key) — RETIRED, see BUSBAR-8020",
     severity: Severity::Actionable,
-    summary: "A provider's `api_key` secret reference did not resolve at boot, so busbar degraded that \
-              provider to an empty key. This is legitimate for keyless local upstreams (ollama/vLLM), \
-              but for a real provider it means egress will be unauthenticated and the upstream will \
-              reject with 401.",
-    action: "If the provider needs a key, fix its `api_key` secret reference (the secret is missing \
-             or the resolver could not read it) and restart. If the upstream is genuinely keyless, no \
-             action is needed.",
+    summary: "RETIRED. A provider's `api_key` secret reference did not resolve at boot, so busbar \
+              degraded that provider to an empty key and started the lane anyway. 1.6.0 removed that \
+              degrade: an `api_key` that does not resolve now REFUSES BOOT (BUSBAR-8020), and an \
+              upstream that genuinely takes no credential is declared with `api_key: none`.",
+    action: "Nothing emits this code. See BUSBAR-8020.",
+    since: "1.6.0",
+    retired: true,
+};
+
+/// A provider api_key SecretRef did not resolve; boot refuses.
+pub const PROVIDER_API_KEY_UNRESOLVABLE: Diagnostic = Diagnostic {
+    code: 8020,
+    class: Class::Governance,
+    slug: "provider-api-key-unresolvable",
+    title: "Provider api_key did not resolve (boot refuses)",
+    severity: Severity::Fatal,
+    summary: "A provider's `api_key` secret reference could not be resolved — an unset environment \
+              variable, a missing or empty file, an unknown module, or a secret plugin that failed — \
+              so busbar refuses to start. It does not fall back to an empty credential: that lane \
+              could never authenticate, would report healthy, would be skipped by the health prober \
+              (no key, no probe), and would answer every request routed to it with a 401 from the \
+              upstream. The diagnostic names the provider and the reference (`env:VAR`, \
+              `file:/path`), never the value.",
+    action: "Fix the reference so it resolves (set the variable, mount the file, install and trust \
+             the secret plugin), or — if this upstream genuinely takes NO credential, such as a \
+             local ollama or vLLM — declare that explicitly with `api_key: none`, which starts the \
+             lane with no credential and sends no auth header. `--validate` reports the same \
+             refusal before you deploy.",
     since: "1.6.0",
     retired: false,
 };
@@ -3676,6 +3699,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &BUDGET_FLUSH_PARTIAL_FAILURE,
     &SAFE_MODE_OVERLAY_QUARANTINED,
     &PROVIDER_API_KEY_UNRESOLVED,
+    &PROVIDER_API_KEY_UNRESOLVABLE,
     &OPEN_RELAY_NO_AUTH,
     &STORE_SECRET_REF_UNRESOLVED,
     &GOVERNANCE_STORE_EPHEMERAL,
