@@ -63,13 +63,16 @@ fn every_ending_has_one_answer_and_only_completion_varies() {
 /// is carried by the `UnitEnd` in the audit row rather than smuggled into the class.
 #[test]
 fn a_kernel_abort_is_partial_like_any_other_abort() {
-    assert_eq!(
-        finish_class_of(
-            &UnitEnd::Aborted(AbortBy::Kernel {
-                reason: RefusalReason::SessionBudget,
-            }),
-            FinishClass::Complete
-        ),
-        finish_class_of(&UnitEnd::Aborted(AbortBy::Client), FinishClass::Complete)
+    let kernel = finish_class_of(
+        &UnitEnd::Aborted(AbortBy::Kernel {
+            reason: RefusalReason::SessionBudget,
+        }),
+        FinishClass::Complete,
     );
+    let client = finish_class_of(&UnitEnd::Aborted(AbortBy::Client), FinishClass::Complete);
+    // Both halves: the two agree, AND what they agree on is `Partial`. Comparing the two calls to
+    // each other alone is satisfied by a mapping that answers `Error` for every abort, which is the
+    // exact reading this cell exists to refuse.
+    assert_eq!(kernel, client, "who performed the abort changed the class");
+    assert_eq!(kernel, FinishClass::Partial);
 }

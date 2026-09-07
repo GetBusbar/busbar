@@ -124,7 +124,13 @@ fn the_mask_kinds_are_a_closed_set() {
     }
 }
 
-/// Every location form's mask kind is one of the closed set's members.
+/// Every location form is masked by the kind it is masked by.
+///
+/// Asserting only that the answer is a member of the closed set is an assertion no answer could
+/// fail — the previous test already pins that the set is the whole enum, so `ALL.contains(..)` was
+/// true of every value `mask()` can return. The kind is what decides whether a credential is still
+/// in the bytes a plane reads, so the expectation is a decision per form: `Query` masking `Nothing`
+/// would leave an API key in the read cursor with nothing to say so.
 #[test]
 fn every_location_form_masks_by_a_kind_the_closed_set_names() {
     let forms = [
@@ -142,6 +148,22 @@ fn every_location_form_masks_by_a_kind_the_closed_set_names() {
         },
     ];
     for form in forms {
+        // Exhaustive, with no catch-all: a location form added to the grammar stops compiling here
+        // until somebody decides how its span is hidden.
+        let expected = match form {
+            ArrivalLocation::Header(_)
+            | ArrivalLocation::Query(_)
+            | ArrivalLocation::PathSegment(_)
+            | ArrivalLocation::FirstFrameJsonPointer(_) => MaskKind::SameLengthFill,
+            ArrivalLocation::ClientCert => MaskKind::Nothing,
+            ArrivalLocation::Signed { .. } => MaskKind::SignatureSpan,
+            ArrivalLocation::HandshakeFrames { .. } => MaskKind::BoundedPrefix,
+        };
+        assert_eq!(
+            form.mask(),
+            expected,
+            "{form:?} is hidden by a different kind than the one it declares"
+        );
         assert!(
             MaskKind::ALL.contains(&form.mask()),
             "{form:?} masks by a kind the closed set does not name"
