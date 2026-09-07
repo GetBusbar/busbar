@@ -190,8 +190,12 @@ impl Gate for KernelTokenWirePurityGate {
 
     /// The legacy script prints one `path:line: raw wire field '…'` line per finding and a
     /// `RED --`/`GREEN --` verdict line. Both rows are read out of that, and out of nothing else.
-    fn legacy_rows(&self, run: &LegacyRun) -> Option<Result<Vec<Row>, String>> {
-        Some(translate(run))
+    fn has_legacy_adapter(&self) -> bool {
+        true
+    }
+
+    fn legacy_rows(&self, _cx: &Ctx, runs: &[LegacyRun]) -> Option<Result<Vec<Row>, String>> {
+        Some(translate(&runs[0]))
     }
 
     fn selftest(&self, cx: &Ctx) -> Report {
