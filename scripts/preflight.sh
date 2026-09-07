@@ -58,7 +58,10 @@ require_step() {   # require_step <path> <label> <cmd…>
     fail=1
   fi
 }
-require_step scripts/structure-lint.sh "structure-lint" ./scripts/structure-lint.sh
+# structure-lint has no script left to require: it is `cargo xtask gate structure-lint`, and a
+# registry gate that is missing exits 2 with the registry's own "no such gate" message rather than
+# vanishing the way an un-executable script did. `require_step` still guards the shell gates below.
+step "structure-lint"                    cargo xtask gate structure-lint
 # The config-mutation compile fence: a transaction body that reaches a store or
 # awaits must NOT type-check. The script inverts the verdict, so a clean build there fails here.
 require_step scripts/txn-fence.sh "txn compile fence" ./scripts/txn-fence.sh
