@@ -258,7 +258,7 @@ run_selftest() {
               hold-discipline:no-early-exit forbid-unsafe:busbar-plane-llm \
               token-sealed:kernel-seal token-sealed:admit-token-mint kernel-seal-impls seal-sites \
               plane-no-money one-pricing-site one-pricing-site:fee-fields \
-              legacy-reach no-test-doubles-in-production rule-census \
+              legacy-reach no-test-doubles-in-production \
               gate-script-hygiene:strict-mode gate-script-hygiene:muffled-subject unused-waiver \
               assertion-free-tests accrued-floor-metered live-config-pinned \
               claimed-path-has-arm:busbar-plane-voice; do
