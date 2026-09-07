@@ -257,12 +257,13 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly seven entries of kind `breaking`:
+The accepted-differences register for this release has exactly eight entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
 from the hook view, one refusal that now comes out of the resolver rather than the validator, one
-key-rotate endpoint that now refuses an overlong id like its siblings, and one where a rate-card
-edit stops repricing history it should not touch.
+key-rotate endpoint that now refuses an overlong id like its siblings, one where a rate-card
+edit stops repricing history it should not touch, and one provider credential that no longer
+degrades to an empty key.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -326,6 +327,25 @@ identically, and every 1.5.5 key and minted secret carries over.
   actually earned under. **Migration:** if you rely on `GET /admin/usage` totals recalculating
   after a rate-card change, they no longer do; use the new `amend-rate-history` verb to post an
   attributed correction instead. See [the 1.6.0 migration guide](docs/migration-1.6.md).
+
+- 1.6.0 Breaking: a provider whose `api_key` reference does not resolve now refuses boot; keyless
+  local upstreams must declare `api_key: none`. 1.5.5 logged
+  `[warn] provider <name> api_key (<reference>) empty` and started the lane with an empty
+  credential — a lane that reported healthy, was skipped by the health prober (no key, no probe),
+  and answered every request routed to it with a 401 from the upstream, with that one warning line
+  as the only signal. 1.6.0 treats the provider credential like every other secret: a reference
+  that does not resolve (unset variable, missing or empty file, unknown module, secret-plugin
+  error) stops boot under `BUSBAR-8020`, naming the provider and the reference (`env:VAR`,
+  `file:/path`) and never the value, and stops an admin apply/reload the same way. `--validate` has
+  refused this since 1.5.3, so it already names every provider that would now refuse.
+  **Migration:** run `busbar --validate` before upgrading. If the reference should resolve, fix it;
+  if the upstream genuinely takes no credential (a local ollama or vLLM), declare it with the new
+  `api_key: none` — a plain scalar accepted only on a provider `api_key`, and not with
+  `auth: jwt-bearer` or `auth: oauth-client-credentials`, which mint their token from the
+  credential. That lane starts, sends no auth header, and is skipped by the prober, exactly as the
+  empty-credential lane was. Omitting `api_key` remains an error, and `--migrate-config` does not
+  insert `none` for you: whether an upstream needs a credential is a fact about your deployment,
+  not something a migration can read off the config file.
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap

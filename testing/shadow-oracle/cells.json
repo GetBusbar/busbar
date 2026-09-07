@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2316,
+    "total": 2317,
     "by_plane": {
       "a2a": 468,
-      "core": 788,
+      "core": 789,
       "llm": 148,
       "mcp": 912
     },
@@ -67,7 +67,7 @@
       "admin.ops": 240,
       "auth.lifecycle": 3,
       "billing": 14,
-      "boot.refusal": 205,
+      "boot.refusal": 206,
       "boot.warning": 31,
       "cli": 14,
       "concurrency": 3,
@@ -13166,6 +13166,21 @@
         "env": {}
       },
       "why": "expect exit 1; stderr \u220b references secret module 'vault', which is not a built-in (`env` | `file`) and n",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|BOOT-152b|boot",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:BOOT-152b",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b provider 'gemini' api_key (env:ORACLE_UNSET_SECRET_152B) did not resolve",
       "needs_fixture": false
     },
     {

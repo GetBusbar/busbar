@@ -144,7 +144,7 @@ Busbar reads two YAML files:
 
 **Important: keys are never written into config.** `api_key: { env: VAR }` is a secret REFERENCE naming the *environment variable* that holds a provider's key; Busbar resolves it at startup (a `{ file: /path }` reference or a secret plugin work the same way). (Separately, `${VAR}` tokens elsewhere in `config.yaml` are expanded from the environment at load time.)
 
-**An unset referenced variable does NOT stop Busbar.** It logs a warning at boot and starts anyway, so the gateway serves and every request to that provider fails upstream on a missing credential. `--validate` does catch it: it resolves every `env:` and `file:` reference and exits `1` naming the first one that fails, so run it with the same environment the deployment will have. Read the boot log for `api_key did not resolve`.
+**An unset referenced variable STOPS Busbar.** A provider `api_key` reference that does not resolve refuses boot under `BUSBAR-8020`, naming the provider and the reference (never the value): Busbar will not start a lane that could only ever answer 401. `--validate` catches the same thing before you deploy — it resolves every `env:` and `file:` reference and exits `1` naming the first one that fails — so run it with the same environment the deployment will have. If an upstream genuinely takes no credential (a local ollama or vLLM), say so with `api_key: none`.
 
 ### Minimal `config.yaml` (one provider, one model, no auth)
 
