@@ -17,6 +17,14 @@ rust-version = "1.97"
 description = "Workspace tooling: `cargo xtask denylist` proves the pure plugin kinds carry no banned transitive source (ARCHITECTURE.md section 1.2, CG-59)."
 license = "Apache-2.0"
 
+# The gate logic is a LIBRARY and the binary is a five-line dispatcher over it. `cargo test -p
+# xtask` then drives every gate, reader and reconciliation directly — a test that has to shell out
+# to the binary can only assert on printed text, which is how a self-test ends up re-implementing
+# the thing it is supposed to prove.
+[lib]
+name = "xtask"
+path = "src/lib.rs"
+
 [[bin]]
 name = "xtask"
 path = "src/main.rs"
