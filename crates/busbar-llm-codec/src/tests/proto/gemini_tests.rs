@@ -340,8 +340,20 @@ fn test_gemini_write_response_event_message_delta() {
         Some("STOP")
     );
 
-    // Assert usageMetadata present
-    assert!(chunk.get("usageMetadata").is_some());
+    // Assert usageMetadata carries the EXACT counts off the event. `is_some()` alone was satisfied
+    // by `"usageMetadata": {}`, by zeroed counts, and by prompt/candidate being swapped — the read
+    // path pins these exactly, so the write path must too or a streamed Gemini call mis-bills.
+    let usage = chunk.get("usageMetadata").expect("usageMetadata emitted");
+    assert_eq!(
+        usage.get("promptTokenCount").and_then(|v| v.as_u64()),
+        Some(10),
+        "promptTokenCount must carry the event's input_tokens"
+    );
+    assert_eq!(
+        usage.get("candidatesTokenCount").and_then(|v| v.as_u64()),
+        Some(5),
+        "candidatesTokenCount must carry the event's output_tokens"
+    );
 }
 
 // stream fan-out with functionCall - ToolUse via functionCall

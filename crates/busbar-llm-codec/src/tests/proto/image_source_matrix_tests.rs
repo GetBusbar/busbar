@@ -57,11 +57,15 @@ fn base64_image_projects_or_drops_cleanly() {
         media_type: "image/png".to_string(),
         data: "QUJD".to_string(),
     });
-    // OpenAI emits a data URI carrying the base64 payload.
+    // OpenAI emits a data URI carrying the base64 payload. Pin the WHOLE URI, not just the payload
+    // bytes: `contains("QUJD")` alone is satisfied by the payload landing without its
+    // `data:image/png;base64,` header (or under the wrong key), which OpenAI rejects as an invalid
+    // image_url — the media type is as load-bearing as the bytes.
     let o = openai_writer().write_request(&req);
-    let s = serde_json::to_string(&o).unwrap();
-    assert!(
-        s.contains("QUJD"),
-        "base64 payload must survive to the OpenAI wire: {s}"
+    let url = o["messages"][0]["content"][0]["image_url"]["url"].as_str();
+    assert_eq!(
+        url,
+        Some("data:image/png;base64,QUJD"),
+        "base64 image must reach the OpenAI wire as a complete data URI, got {o}"
     );
 }

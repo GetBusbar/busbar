@@ -1510,9 +1510,12 @@ fn test_translate_bedrock_eventstream_egress_to_anthropic_ingress() {
     out.push_str(&String::from_utf8(st.finish()).unwrap());
     // Anthropic SSE framing with the translated content.
     assert!(out.contains("event: message_start"), "got:\n{out}");
+    // Pin the STRUCTURAL shape only: the `|| out.contains("Hi")` disjunct that used to widen this
+    // made the first half dead, so a delta emitted under the wrong key (e.g. a `thinking_delta`
+    // carrying "Hi", which a native Anthropic SDK accumulates as nothing) still satisfied it.
     assert!(
-        out.contains("\"text\":\"Hi\"") || out.contains("Hi"),
-        "text delta; got:\n{out}"
+        out.contains("\"text\":\"Hi\""),
+        "text delta must ride the anthropic `text` key; got:\n{out}"
     );
     assert!(out.contains("message_stop"), "terminator; got:\n{out}");
 

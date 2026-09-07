@@ -716,11 +716,13 @@ fn responses_input_file_survives_the_ir() {
     let parts = out["input"][0]["content"].as_array().expect("content");
     assert_eq!(parts[1]["type"], "input_file");
     assert_eq!(parts[1]["filename"], "spec.pdf");
-    assert!(
-        parts[1]["file_data"]
-            .as_str()
-            .unwrap_or_default()
-            .starts_with("data:application/pdf;base64,"),
+    // Pin the WHOLE data URI, payload included. `starts_with` checked only the header, so a base64
+    // re-encode bug that emitted the prefix with an empty or truncated payload — the PDF reaching
+    // the model as zero bytes — satisfied an assertion whose message says "the file bytes must
+    // round-trip". Every sibling attachment test in this file pins its exact payload.
+    assert_eq!(
+        parts[1]["file_data"].as_str(),
+        Some("data:application/pdf;base64,JVBERi0="),
         "the file bytes must round-trip, got {}",
         parts[1]
     );
