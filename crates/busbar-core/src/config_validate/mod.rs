@@ -1522,6 +1522,23 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // validates config structure without secrets present); resolution failures are boot-time
     // fail-closed errors.
     let mut check_secret = |what: String, r: &crate::config::SecretRef| {
+        // `none` declares that there is NO credential here. That is meaningful for a provider
+        // `api_key` (a keyless local upstream — ollama, vLLM) and meaningless everywhere else: a
+        // TLS cert, a signing key or an admin token has no credential-free mode, so accepting
+        // `none` there would silently disarm the thing the secret protects. Which paths may be
+        // keyless is decided in the walk that mints them — see `keyless_credential_allowed`.
+        if r.is_none() {
+            if !keyless_credential_allowed(&what) {
+                errors.push(format!(
+                    "{what}: `none` declares that there is NO credential, which is only meaningful \
+                     for a provider `api_key` (a keyless local upstream such as ollama or vLLM); \
+                     {what} requires a real secret reference, e.g. \
+                     {what}: {{ env: MY_SECRET_VAR }}"
+                ));
+            }
+            // Nothing structural left to check: `none` names no module settings at all.
+            return;
+        }
         // The built-in `env`/`file` modules need a NON-EMPTY key/path. The `{ env: "" }` /
         // `{ file: "" }` sugar already rejects an empty value in the deserializer
         // (secret-ref/src/lib.rs), but the CANONICAL `{ module: env, settings: { key: "" } }` form
@@ -1841,7 +1858,9 @@ pub fn metadata_denylist_entries() -> Vec<String> {
 /// cohesive unit (the walk, the exhaustive destructures, and the type inventory the coverage test
 /// checks the source against) and because `mod.rs` is at the structure-lint size ceiling.
 mod secret_refs;
-pub(crate) use secret_refs::{boot_resolved_secret_refs, secret_refs};
+pub(crate) use secret_refs::{
+    boot_resolved_secret_refs, keyless_credential_allowed, secret_refs,
+};
 
 /// THE PROVIDER SWEEP, PARAMETERISED ON THE KNOWN-PROTOCOL SET — by argument rather than by
 /// feature-gating the registry, because a feature that empties the registry would be a SECOND way
@@ -2058,6 +2077,15 @@ fn validate_providers_with(
             provider_cfg.auth,
             Some(crate::config::ProviderAuth::OAuthClientCredentials)
         ) {
+            // A keyless declaration contradicts the grant: this flow MINTS its token FROM the
+            // credential (`client_id:client_secret`), so `none` leaves it nothing to exchange.
+            if provider_cfg.api_key.is_none() {
+                errors.push(format!(
+                    "provider '{provider_name}' uses auth: oauth-client-credentials but declares \
+                     `api_key: none`; that grant mints its token FROM the credential \
+                     (`client_id:client_secret`), so there is nothing to declare keyless"
+                ));
+            }
             if provider_cfg
                 .token_url
                 .as_deref()
@@ -2145,6 +2173,15 @@ fn validate_providers_with(
             provider_cfg.auth,
             Some(crate::config::ProviderAuth::JwtBearer)
         ) {
+            // Same contradiction as the oauth arm above: this grant SIGNS its assertion with the
+            // credential (the service-account JSON or key file), so `none` disarms it entirely.
+            if provider_cfg.api_key.is_none() {
+                errors.push(format!(
+                    "provider '{provider_name}' uses auth: jwt-bearer but declares \
+                     `api_key: none`; that grant signs its assertion WITH the credential (the \
+                     service-account JSON or key file), so there is nothing to declare keyless"
+                ));
+            }
             let cred = crate::config::secret::resolve_builtin_string(&provider_cfg.api_key)
                 .unwrap_or_default();
             if !cred.trim().is_empty() {

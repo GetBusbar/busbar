@@ -1327,8 +1327,9 @@ fn cfg_with_credentials(
     token_path: &std::path::Path,
     key_path: &std::path::Path,
 ) -> crate::config::RootCfg {
-    let mut cfg =
-        cfg_with_provider_api_key(crate::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY"));
+    // `api_key: none` — this fixture's provider is never contacted, so it declares no credential
+    // rather than naming a variable it knows is unset (which now refuses boot).
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     let mut admin_entry = crate::config::AuthChainEntry::bare(crate::config::ADMIN_TOKENS_MODULE);
     admin_entry.token = Some(crate::config::SecretRef::file(
         token_path.to_string_lossy().to_string(),
@@ -1605,8 +1606,9 @@ fn a_rejected_config_leaves_no_limits_behind() {
     // assert nothing.
     const _: () = assert!(ILLEGAL < crate::config::REQUEST_BODY_MAX_BYTES_FLOOR);
 
-    let mut cfg =
-        cfg_with_provider_api_key(crate::config::SecretRef::env("BUSBAR_TEST_NO_SUCH_KEY"));
+    // `api_key: none` — this fixture's provider is never contacted, so it declares no credential
+    // rather than naming a variable it knows is unset (which now refuses boot).
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.limits.request_body_max_bytes = ILLEGAL;
 
     let Err(err) = build_once(cfg, None) else {

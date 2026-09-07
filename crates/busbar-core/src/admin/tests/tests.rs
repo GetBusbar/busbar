@@ -951,7 +951,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "providers": {"test-provider": {"api_key": {"env": "BUSBAR_TEST_APPLY_NO_KEY"}}},
+            "providers": {"test-provider": {"api_key": "none"}},
             "models": {
                 "m0": {"provider": "test-provider", "max_concurrent": 4},
                 "m-applied": {"provider": "test-provider", "max_concurrent": 4}
@@ -1036,7 +1036,7 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         "listen: 127.0.0.1:0
 providers:
   test-provider:
-    api_key: { env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY }
+    api_key: none
 models:
   m0:
     provider: test-provider
@@ -1815,7 +1815,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
         },
         "config": {
             "listen": "127.0.0.1:0",
-            "providers": {"test-provider": {"api_key": {"env": "BUSBAR_TEST_LOCKED_APPLY_NO_KEY"}}},
+            "providers": {"test-provider": {"api_key": "none"}},
             "models": {"m0": {"provider": "test-provider", "max_concurrent": 4}},
             "pools": {"p": {"members": [{"model": "m0"}]}}
         }
@@ -9028,7 +9028,7 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
         "listen: 127.0.0.1:0
 providers:
   test-provider:
-    api_key: { env: BUSBAR_TEST_RESET_NO_SUCH_KEY }
+    api_key: none
 models:
   m0:
     provider: test-provider
@@ -10419,7 +10419,7 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
             "listen: 127.0.0.1:0
 providers:
   test-provider:
-    api_key: {{ env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY }}
+    api_key: none
 models:
   m0:
     provider: test-provider
@@ -13099,7 +13099,7 @@ fn write_named_map_fixture(
         ("listen: 127.0.0.1:0
 providers:
   test-provider:
-    api_key: { env: BUSBAR_TEST_NAMEDMAP_NO_SUCH_KEY }
+    api_key: none
 models:
   m0:
     provider: test-provider

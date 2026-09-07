@@ -667,6 +667,11 @@ pub(crate) fn validate_secret_refs(
     for (what, r) in config_validate::secret_refs(cfg) {
         if r.module == config::secret::SECRET_MODULE_ENV
             || r.module == config::secret::SECRET_MODULE_FILE
+            // `none` names no module at all — it declares the ABSENCE of a credential — so there is
+            // nothing here for the registry to resolve, and it must never be looked up as though a
+            // `kind: secret` plugin called `none` could back it. WHERE it is permitted is
+            // `config_validate`'s call, not this one.
+            || r.is_none()
         {
             continue; // built-in resolver — already structurally checked in config_validate
         }
@@ -719,7 +724,10 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
         if r.module != config::secret::SECRET_MODULE_ENV
             && r.module != config::secret::SECRET_MODULE_FILE
         {
-            continue; // plugin-backed: the plugin may not be loadable here, and preflight covers it
+            // `none` is a declared ABSENCE, not a source: there is nothing to resolve and nothing
+            // that can fail. Every other non-built-in module is plugin-backed — the plugin may not
+            // be loadable here, and pre-flight covers it.
+            continue;
         }
         if let Err(e) = builtins.resolve(r) {
             return Err(format!("{what}: {e}"));

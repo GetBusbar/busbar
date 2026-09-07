@@ -227,11 +227,23 @@ pub(crate) fn sign_and_wire_path_parts(url_path: &str) -> (String, String) {
 /// `api-key: <key>` header instead — the deployment and `?api-version=` live in the provider's
 /// `path` override, so no new protocol is needed. An un-encodable key yields no auth header (the
 /// upstream then rejects with 401, classified by the breaker like any other auth failure).
+///
+/// NO CREDENTIAL ⇒ NO AUTH HEADER. An empty key means there is nothing to present: either the
+/// provider declared `api_key: none` (a keyless local upstream — ollama, vLLM), or a passthrough
+/// lane's caller arrived without a token. Sending `Authorization: Bearer ` with no token is
+/// strictly worse than sending nothing — a keyless upstream can reject a malformed empty
+/// credential, and an empty auth header is a proxy tell no native client emits. It also matches
+/// every other no-credential path here (an un-encodable key, an OAuth token not yet minted). A
+/// self-minting OAuth credential is exempt (`uses_key() == false`): its header never came from
+/// `key`, so an empty one says nothing about it.
 pub(crate) fn lane_auth_headers(
     lane: &crate::engine::Lane,
     key: &str,
     ctx: &busbar_substrate::proto::SigningContext,
 ) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+    if key.is_empty() && lane.credential.uses_key() {
+        return Vec::new();
+    }
     lane.credential.headers_for(key, ctx)
 }
 
