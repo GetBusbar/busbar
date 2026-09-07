@@ -114,12 +114,12 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("gate", "scripts/release-check.sh", "reject SLO on the real binary: 503 + Retry-After >= 2; soak-queue phase sees busbar_pool_queued > 0"),
     ],
     "PB-5": [
-        ("test", "sticky_affinity_never_selects_zero_weight_drained_member", "sticky fast path skipped on weight 0"),
+        ("test", "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member", "sticky fast path skipped on weight 0"),
         ("test", "sticky_fall_through_records_reason", "sticky fast path skipped on an excluded lane"),
         ("test", "test_sticky_yields_when_tripped", "sticky yields to the walk when the lane is tripped"),
-        ("test", "order_last_in_chain_wins", "the last ordering gate wins"),
-        ("test", "stale_order_filtered_against_post_restrict_set", "the order is re-validated against the post-restrict set"),
-        ("test", "last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate", "empty order abstains to the base policy"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins", "the last ordering gate wins"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set", "the order is re-validated against the post-restrict set"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate", "empty order abstains to the base policy"),
         ("test", "ordered_walk_falls_through_to_swrr_when_no_preferred_ready", "the ready_in peek then SWRR fall-through"),
         ("test", "ordered_walk_empty_order_is_swrr", "no ordering gate means the SWRR floor"),
     ],
@@ -185,8 +185,8 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
     ],
     "PB-20": [
         ("test", "the_admin_audit_digest_is_unchanged_by_the_unification", "hash = SHA-256 hex over the canonical prev|seq|ts|action|resource|outcome|principal"),
-        ("test", "hash_chain_links_and_verifies", "genesis prev_hash is empty; tamper breaks verify"),
-        ("test", "export_load_roundtrip_resumes_chain", "restore resumes the sequence"),
+        ("test", "crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies", "genesis prev_hash is empty; tamper breaks verify"),
+        ("test", "crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain", "restore resumes the sequence"),
         ("test", "admin_audit_chain_boot_verifies_from_frozen_bytes", "restore_from_store over frozen legacy bytes with zero chain breaks"),
         ("oracle-cell", "admin.ops|GetAudit|ok", "GET /audit diffed against the 1.5.5 binary"),
     ],
@@ -201,12 +201,12 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
     "PB-22": [
         ("test", "test_governance_over_budget_native_envelope_all_ingress", "budget is insufficient_quota, 429 everywhere and 400 on bedrock"),
         ("test", "test_governance_rate_limit_429_native_envelope_all_ingress", "requests is always 429 rate_limit_error, bedrock included"),
-        ("test", "chain_and_parent_blocks_child_and_charges_nothing", "a blocked attempt charges nothing on any chain bucket"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing", "a blocked attempt charges nothing on any chain bucket"),
         ("test", "test_group_blocked_429_names_the_budget_group", "the first blocking bucket names the 429 and charges 0"),
-        ("test", "budget_cap_derives_from_ledger_and_rate_card", "the derived + fee lookahead"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::budget_cap_derives_from_ledger_and_rate_card", "the derived + fee lookahead"),
         ("test", "test_group_token_spend_blocks_chain_admission", "tokens is enforced post-hoc via derived spend"),
-        ("test", "concurrent_gauge_holds_and_releases", "the concurrent gauge"),
-        ("test", "disabled_group_freezes_the_chain", "the FREEZE arm"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::concurrent_gauge_holds_and_releases", "the concurrent gauge"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain", "the FREEZE arm"),
     ],
     "PB-24": [
         ("test", "split_admin_listener_no_double_exposure", "admin claims only on the admin listener"),
@@ -282,17 +282,17 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "secret_ref_wrong_kind_plugin_fails_at_preflight", "a wrong-kind plugin ref fails at preflight"),
     ],
     "PB-35": [
-        ("test", "test_empty_chain_is_open_front_door", "an empty chain is Open with or without a credential"),
-        ("test", "test_nonempty_chain_fails_closed_on_all_pass", "all-Pass without a keys arm is Denied"),
-        ("test", "test_keys_in_chain_sets_flag_not_module", "the keys arm sets keys_in_chain and boxes no module"),
-        ("test", "test_chain_identifies_with_module_and_principal", "the first Identify wins"),
-        ("test", "test_extract_client_token_precedence_is_authorization_first", "carrier precedence: Authorization first"),
-        ("test", "test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
-        ("test", "test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door", "an empty chain is Open with or without a credential"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass", "all-Pass without a keys arm is Denied"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module", "the keys arm sets keys_in_chain and boxes no module"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal", "the first Identify wins"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first", "carrier precedence: Authorization first"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
         ("test", "verdict_rules_and_expiry", "Identify TTL clamp, Pass TTL, Reject never cached"),
         ("test", "bounded_eviction", "the MAX_ENTRIES cap"),
         ("test", "module_partitions_and_flush", "the cache is keyed per module and flush counts"),
-        ("test", "an_unauthenticated_chain_admits_nothing_to_the_cache", "run_chain_cached caches nothing for a denied chain"),
+        ("test", "crates/busbar-core/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache", "run_chain_cached caches nothing for a denied chain"),
         ("test", "test_admin_v1_credential_cache_and_flush_endpoint", "POST /auth/cache/flush returns a real flushed count"),
     ],
     "PB-36": [
@@ -343,8 +343,8 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "local_revoke_rejects_the_very_next_auth_attempt", "revoke is synchronous on the serving node"),
     ],
     "PB-47": [
-        ("test", "pool_scoped_accrual_and_refund_mirror_the_charge", "accrual and refund land on the pool the admission charged"),
-        ("test", "budget_block_carries_downgrade_target", "the block names the downgrade pool"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::pool_scoped_accrual_and_refund_mirror_the_charge", "accrual and refund land on the pool the admission charged"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::budget_block_carries_downgrade_target", "the block names the downgrade pool"),
         ("test", "test_budget_exhaustion_downgrades_pool", "admission lands on the effective post-downgrade pool"),
         ("test", "test_downgrade_cycle_terminates_via_the_revisit_guard", "the visited-set guard prevents a double charge"),
     ],
@@ -391,7 +391,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "redirects_surface_verbatim_and_are_followed_by_neither_stack", "redirect Policy::none"),
     ],
     "PB-57": [
-        ("test", "test_zero_weight_member_is_never_selected", "weight-0 lanes are filtered before selection"),
+        ("test", "crates/busbar-core/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected", "weight-0 lanes are filtered before selection"),
         ("test", "test_swrr_no_open_selection", "an open lane is filtered before the credit walk"),
         ("test", "test_swrr_all_down_returns_none", "all down selects none"),
         ("test", "a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves", "only an at-capacity lane reaches try_admit after selection"),
@@ -408,7 +408,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_reshape_oversized_413_passthrough", "non-413 and already-JSON pass through"),
     ],
     "PB-62": [
-        ("test", "required_scope_matrix", "reads are read-only, mutations full, config/validate and plugins/inspect read-only"),
+        ("test", "crates/busbar-core/src/admin/v1/contract/tests/tests.rs::required_scope_matrix", "reads are read-only, mutations full, config/validate and plugins/inspect read-only"),
         ("test", "required_scope_mutations_are_full", "every mutation requires full"),
         ("test", "openapi_paths_annotate_required_scope", "x-busbar-required-scope equals the enforced scope on every path"),
     ],
@@ -465,7 +465,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_ssrf_allows_private_and_loopback_by_default", "no over-blocking, no runtime DNS check"),
         ("test", "test_validate_rejects_non_https_base_url", "the public-https / private-http scheme rule literals"),
         ("test", "test_validate_token_url_ssrf_and_scheme", "the same rules on token_url"),
-        ("test", "the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
+        ("test", "crates/busbar-substrate/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
     ],
     "PB-73": [
         ("test", "server_timing_header_absent_by_default_present_when_enabled", "Server-Timing absent by default, on every response when enabled"),
@@ -494,10 +494,10 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_signing_key_rotate_reports_kid_and_revoke_all", "rotate is report-only with the signing_key.report audit action"),
     ],
     "PB-79": [
-        ("test", "missing_group_fails_closed", "MissingGroup fails closed at admission"),
-        ("test", "disabled_group_freezes_the_chain", "a frozen group blocks the chain"),
-        ("test", "chain_and_parent_blocks_child_and_charges_nothing", "a parent block charges nothing"),
-        ("test", "total_window_blocks_without_retry_after", "a block without Retry-After"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::missing_group_fails_closed", "MissingGroup fails closed at admission"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain", "a frozen group blocks the chain"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing", "a parent block charges nothing"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::total_window_blocks_without_retry_after", "a block without Retry-After"),
         ("test", "test_try_admit_rejects_at_group_cap", "the concurrent refusal carries retry_after None"),
         ("test", "test_chain_enforcement_rejects_naming_the_blocking_group", "the first blocking bucket names the refusal"),
         ("test", "test_governance_rate_limit_429_native_envelope_all_ingress", "requests refusal is 429 rate_limit_error on every ingress"),
@@ -564,7 +564,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("gate", "scripts/config-stability-gate.sh", "a key cannot silently stop landing (additive-only grammar)"),
     ],
     "PB-91": [
-        ("test", "refund_returns_the_fee_but_never_the_requests_limit_slot", "a refund returns the fee but never the requests slot"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot", "a refund returns the fee but never the requests slot"),
         ("test", "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx", "the fee follows the client-facing status"),
     ],
     "PB-94": [
@@ -1214,8 +1214,16 @@ def check_verdict(c: dict, ctx: dict) -> tuple[bool, str]:
             if path in ctx["idx"].get(name, set()):
                 return True, ""
             return False, f"test:{r} (no test fn by that name is declared in that file)"
-        if r not in ctx["idx"]:
+        files = ctx["idx"].get(r, set())
+        if not files:
             return False, f"test:{r}"
+        if len(files) > 1:
+            # A bare name that two files both declare does not name a test; it names a set. Delete
+            # the one the curation actually read and the citation stays green on its namesake, which
+            # is the failure this ledger exists to catch. Cite it as `path.rs::name`.
+            return False, (f"test:{r} (declared under a test attribute in {len(files)} files -- "
+                           f"{', '.join(sorted(files))} -- so the ref names no particular test; "
+                           f"cite it as path.rs::name)")
         return True, ""
     if k == "oracle-cell":
         if r not in ctx["cell_ids"]:

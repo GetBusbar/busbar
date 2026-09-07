@@ -419,6 +419,51 @@ PYEOF
     say FAIL "a noted-untested binding was still counted as proven"
   fi
 
+  # (l) A BARE NAME TWO FILES BOTH DECLARE NAMES NO TEST. `ref in idx` asked only whether SOMETHING
+  #     somewhere in the tree bore that name, so a citation survived the deletion of the very test it
+  #     was written against as long as a namesake existed elsewhere -- which is the exact failure this
+  #     ledger is for. Such a ref proves nothing until it is written `path.rs::name`. Both arms, over
+  #     a real ambiguous name found in the tree, so the case cannot pass vacuously.
+  if "$PY" - <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ctx = m.check_context({"cells": []}, m.CRATES, m.ROOT, m.GOLDEN_LEDGER)
+shared = sorted(k for k, v in ctx["idx"].items() if len(v) > 1)
+if not shared:
+    print("no name is declared in two files -- the case would pass vacuously", file=sys.stderr)
+    sys.exit(1)
+name = shared[0]
+files = sorted(ctx["idx"][name])
+bad = []
+ok, why = m.check_verdict({"kind": "test", "ref": name, "status": "mapped"}, ctx)
+if ok:
+    bad.append(f"the bare ambiguous ref {name} was accepted as proof")
+elif "path.rs::name" not in why:
+    bad.append(f"the reason does not say how to fix it: {why}")
+for f in files:
+    ok, why = m.check_verdict({"kind": "test", "ref": f"{f}::{name}", "status": "mapped"}, ctx)
+    if not ok:
+        bad.append(f"the disambiguated ref {f}::{name} was refused: {why}")
+# and a disambiguator pointing at a file that does not declare it is still refused
+ok, _ = m.check_verdict({"kind": "test", "ref": f"crates/nowhere/src/lib.rs::{name}", "status": "mapped"}, ctx)
+if ok:
+    bad.append("a disambiguator naming the wrong file was accepted")
+# no bare ambiguous ref may survive in the shipped ledger
+for pb, entries in m.SEED.items():
+    for kind, ref, _p in entries:
+        if kind == "test" and "::" not in ref and len(ctx["idx"].get(ref, ())) > 1:
+            bad.append(f"{pb} still cites the ambiguous bare name {ref}")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+sys.exit(1 if bad else 0)
+PYEOF
+  then
+    say PASS "a bare test name two files declare proves nothing; path.rs::name does, and only for the right file"
+  else
+    say FAIL "an ambiguous bare test ref was accepted as proof"
+  fi
+
   echo
   if [ "$fails" -eq 0 ]; then echo "design bindings selftest: GREEN (${cases} cases)"; return 0; fi
   echo "design bindings selftest: RED (${fails}/${cases} cases failed)"; return 1
