@@ -48,6 +48,72 @@ fn table_has_exactly_the_rows_the_count_declares() {
     assert_eq!(all_verbs().len(), VERB_COUNT);
 }
 
+/// The amendment's wire shape, as the design names it: a `POST`, under the `/ledger/`
+/// sub-prefix, on the full-scope side of the split.
+///
+/// The method is the load-bearing half. Every other row under `/ledger/` is a `GET`, and this
+/// plane decides scope and rate class off the `read_only` column that the method decides — so a
+/// row that reprices an already-invoiced window bound as a read would be reachable by a
+/// credential that may only look, and would spend no mutation budget doing it.
+#[test]
+fn the_amendment_is_a_full_scope_post_under_the_ledger_prefix() {
+    let row = resolve("POST", "/api/v1/admin/ledger/amend-rate-history")
+        .expect("the design names this path");
+    assert_eq!(row.verb, "amend_rate_history");
+    assert!(!row.read_only, "an amendment is not a read");
+    assert_eq!(row.op_class(), OP_WRITE);
+    assert!(row.template.starts_with("/api/v1/admin/ledger/"));
+    // The same path under a read method is not this operation, and the table invents nothing
+    // for it.
+    assert!(resolve("GET", "/api/v1/admin/ledger/amend-rate-history").is_none());
+}
+
+/// The five reads under the prefix are still five, and are still reads. The amendment joined
+/// their prefix and not their rung.
+#[test]
+fn the_amendment_did_not_change_what_a_ledger_read_is() {
+    assert_eq!(LEDGER_VERBS_1_6_0.len(), 5);
+    for entry in LEDGER_VERBS_1_6_0 {
+        assert_eq!(entry.method, "GET");
+        assert!(entry.read_only);
+        let row = resolve("GET", entry.path).expect("a declared read resolves");
+        assert_eq!(row.op_class(), OP_READ);
+        // A query string names arguments to a read, never a different one — the shape
+        // `?as_of=` and `?currency=` will arrive as.
+        assert_eq!(
+            resolve("GET", &format!("{}?as_of=7", entry.path)),
+            Some(row)
+        );
+    }
+}
+
+/// The additive rows never touch the pinned 66. The `/ledger/` prefix is 1.6.0-only surface, so
+/// no row this change adds may carry a path the 1.5.5 document declares — otherwise a client
+/// that fetched the pinned document before the upgrade would find an operation on a path it
+/// believes it already knows.
+#[test]
+fn no_new_row_lands_on_a_path_the_pinned_document_declares() {
+    let doc = fixture();
+    let pinned: Vec<&str> = doc["paths"]
+        .as_object()
+        .expect("paths is an object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    for entry in NEW_VERBS_1_6_0.iter().chain(LEDGER_VERBS_1_6_0.iter()) {
+        assert!(
+            !pinned.contains(&entry.path),
+            "{} lands on a path the pinned 1.5.5 document already declares",
+            entry.path
+        );
+    }
+    // and the pinned document declares no `/ledger/` path at all.
+    assert!(
+        !pinned.iter().any(|p| p.contains("/ledger/")),
+        "the 1.5.5 document must carry no /ledger/ path"
+    );
+}
+
 #[test]
 fn matches_a_templated_path_and_captures_the_param() {
     let params = match_path("/api/v1/admin/keys/{id}", "/api/v1/admin/keys/abc123").unwrap();
@@ -93,7 +159,10 @@ fn fixture() -> serde_json::Value {
 }
 
 /// Follow a document-local `$ref` chain to the schema it names.
-fn deref<'d>(doc: &'d serde_json::Value, mut node: &'d serde_json::Value) -> &'d serde_json::Value {
+fn deref<'d>(
+    doc: &'d serde_json::Value,
+    mut node: &'d serde_json::Value,
+) -> &'d serde_json::Value {
     while let Some(pointer) = node.get("$ref").and_then(serde_json::Value::as_str) {
         node = doc
             .pointer(pointer.trim_start_matches('#'))

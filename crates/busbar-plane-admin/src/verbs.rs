@@ -1,12 +1,15 @@
-//! The closed 66+17+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
+//! The closed 66+18+5 kernel-verb table, and the pure `(method, path) -> verb` match this plane runs.
 //!
 //! The 66 come from `generated::verb_table_1_5_5` — mechanically extracted from the pinned
-//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. The 17 are the
-//! 1.6.0-additive money-governance verbs the design names by name only (`verify`, `plane_facts`,
-//! `plane_record_write`, `set_operator_key`, `set_escrow`, `chain_break`, `store_restore`,
-//! `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`, `set_dispute_max_age`,
-//! `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`, `export_keyset`, `approve`) with
-//! no HTTP method or path of their own — they are new admin-API surface, not part of the 1.5.5 tag.
+//! `openapi-1.5.5.json` fixture, treated as ground truth and never regenerated here. Seventeen of
+//! the eighteen are the 1.6.0-additive money-governance verbs the design names by name only
+//! (`verify`, `plane_facts`, `plane_record_write`, `set_operator_key`, `set_escrow`, `chain_break`,
+//! `store_restore`, `reseal_epoch_floor`, `set_dual_control`, `set_overdraft_ceiling`,
+//! `set_dispute_max_age`, `commit_upgrade`, `resolve_dispute`, `resolve_slice`, `adjust`,
+//! `export_keyset`, `approve`) with no HTTP method or path of their own — they are new admin-API
+//! surface, not part of the 1.5.5 tag. The eighteenth, `amend_rate_history`, is the exception: the
+//! rate-card-history design names its method AND its path, so its row below is transcribed rather
+//! than chosen.
 //!
 //! **Judgment call, flagged for review**: the design does not state an HTTP binding for the 17. This
 //! module assigns each one a `POST /api/v1/admin/<kebab-case-verb>` binding — the same shape every
@@ -29,7 +32,9 @@ pub(crate) struct VerbEntry {
     pub(crate) read_only: bool,
 }
 
-/// The 17 1.6.0-additive verbs, with their synthetic HTTP binding (see the module doc comment).
+/// The 18 1.6.0-additive verbs, with their synthetic HTTP binding (see the module doc comment).
+/// The eighteenth, `amend_rate_history`, is the exception the module doc's judgment call does not
+/// cover: its path IS named by the design.
 const NEW_VERBS_1_6_0: &[VerbEntry] = &[
     VerbEntry {
         method: "POST",
@@ -133,6 +138,19 @@ const NEW_VERBS_1_6_0: &[VerbEntry] = &[
         verb: "approve",
         read_only: false,
     },
+    // The eighteenth, and the ONE row in this list whose path is not a judgment call: the design
+    // names `POST /api/v1/admin/ledger/amend-rate-history` outright, under the same `/ledger/`
+    // sub-prefix its reads are mounted at, because an amendment is a write to what the ledger
+    // reports and belongs beside the figures it moves. It is the only non-read this plane decodes
+    // under that prefix, which is exactly why the method matters here more than anywhere else in
+    // the table: bound as a `GET`, a route that reprices an already-invoiced window would carry a
+    // read's scope and a read's rate class, and a read-only credential would reach it.
+    VerbEntry {
+        method: "POST",
+        path: "/api/v1/admin/ledger/amend-rate-history",
+        verb: "amend_rate_history",
+        read_only: false,
+    },
 ];
 
 /// The five 1.6.0 ledger views, mounted under one sub-prefix of the admin surface.
@@ -178,9 +196,16 @@ const LEDGER_VERBS_1_6_0: &[VerbEntry] = &[
     },
 ];
 
-/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 17 1.6.0
+/// How many rows the closed table declares: 66 from the pinned 1.5.5 tag, the 18 1.6.0
 /// money-governance verbs, and the 5 1.6.0 ledger views.
-pub(crate) const VERB_COUNT: usize = 66 + 17 + 5;
+///
+/// The 66 is the number that must never move — it is the pinned tag's own count, proved against the
+/// fixture below. The other two are the additive surface, and the first of them moved once: the
+/// dated rate-card history added the signed `amend_rate_history` write. The two reads that history
+/// also owes (`rate-history`, `repricings`) are not rows yet, for the reason the verbs unit's own
+/// list gives — a row that decodes to an operation with no body to render is a surface that exists
+/// and does not answer.
+pub(crate) const VERB_COUNT: usize = 66 + 18 + 5;
 
 /// The verb the `openapi.json` blob is served under, where `encode_response` applies the one
 /// documented exception (an `info.version` substitution over an otherwise verbatim body).
