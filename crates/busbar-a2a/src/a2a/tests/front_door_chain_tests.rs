@@ -22,30 +22,13 @@
 //!
 //! `busbar_api::Store`'s task methods are DEFAULTED to accept-and-keep-nothing, so a write's
 //! `Ok(())` is worthless as evidence and the shipped memory store answers every read with an empty
-//! list. The pre-existing chain assertion in `relay_tests.rs` therefore has to RETURN EARLY when the
-//! store kept nothing — correct for what that test is, and it means an empty answer reads as a pass.
-//! This battery attaches `EventLedger` as the registry's sink for the duration, so an empty read-back
-//! is a FAILURE and is asserted as one. There is no arm here that can be silently satisfied by
-//! nothing having happened.
+//! list. Every chain battery therefore attaches `EventLedger` as the registry's sink for the
+//! duration (`relay_harness::with_ledger`), so an empty read-back is a FAILURE and is asserted as
+//! one. There is no arm here that can be silently satisfied by nothing having happened.
 
 use super::relay_harness::*;
-use crate::taskstore::{event_ledger::EventLedger, TASKS, TASKS_SINK_LOCK};
+use crate::taskstore::TASKS;
 use busbar_substrate::audit::vocab as provenance;
-use std::sync::Arc;
-
-/// Attach a fresh ledger to the process-wide registry, hand it back, and hold the lock that keeps
-/// two of these from interleaving. The caller drops the guard when it is done.
-async fn with_ledger() -> (Arc<EventLedger>, tokio::sync::MutexGuard<'static, ()>) {
-    let guard = TASKS_SINK_LOCK.lock().await;
-    let ledger = Arc::new(EventLedger::new());
-    // Aim the process-wide `task_event` stream (which the front door writes through) at THIS ledger
-    // for the duration of the lock — a sink swap, not a re-register, so positions stay intact — and
-    // attach the row-upsert sink.
-    TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
-        ledger.clone(),
-    ));
-    (ledger, guard)
-}
 
 /// THE FRONT DOOR CHAINS THE TASK IT OPENED, and the chain RECOMPUTES from the persisted rows.
 ///

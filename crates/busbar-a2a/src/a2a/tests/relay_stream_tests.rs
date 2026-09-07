@@ -19,7 +19,6 @@
 use super::relay_harness::*;
 use crate::a2a::relay::{read_event, SseReader};
 use crate::a2a::task::TaskState;
-use crate::taskstore::TaskStoreTestExt;
 
 /// A streaming envelope: `message/stream`, which is what makes `TaskShape::requires_streaming` true
 /// and therefore what makes the ingress take the streaming hop.
@@ -392,6 +391,7 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
         "result": { "id": "B1", "contextId": "BC", "status": { "state": "auth-required" } }
     })
     .to_string();
+    let (ledger, _guard) = with_ledger().await;
     let h = harness(Outcome::Answers(200, interrupt), false).await;
 
     let ctx = format!("ctx-resume-{}", std::process::id());
@@ -430,18 +430,23 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
         "both the initial submission and the resume reach the backend"
     );
 
-    // A `task.resumed` event is on the chain where the store keeps one. With the RAM default there
-    // are no persisted events, which is the documented product contract rather than a defect.
-    let events = h.gov.store().list_task_events(&first).unwrap_or_default();
-    if !events.is_empty() {
-        crate::taskstore::verify_chain(&events).expect("the chain verifies across a resume");
-        assert!(
-            events
-                .iter()
-                .any(|e| e.kind == busbar_substrate::audit::vocab::EV_RESUMED),
-            "a resume must be a chained event, not a silent state change: {events:?}"
-        );
-    }
+    // A `task.resumed` event is on the chain, read back out of the durable sink attached above. This
+    // used to read `h.gov.store()` — the shipped memory store, whose task methods keep nothing — so
+    // the answer was empty on every run and the `if !events.is_empty()` arm never ran: a regression
+    // that stopped chaining `task.resumed` entirely would have shipped green.
+    let events = ledger.events_for(&first);
+    crate::taskstore::TASKS.clear_sink_for_test();
+    assert!(
+        !events.is_empty(),
+        "the resume left NO chained event behind"
+    );
+    crate::taskstore::verify_chain(&events).expect("the chain verifies across a resume");
+    assert!(
+        events
+            .iter()
+            .any(|e| e.kind == busbar_substrate::audit::vocab::EV_RESUMED),
+        "a resume must be a chained event, not a silent state change: {events:?}"
+    );
 }
 
 /// A CALLER MAY NOT RESUME SOMEBODY ELSE'S TASK by guessing a `contextId`. The resume lookup is
@@ -680,11 +685,10 @@ async fn loop_until(h: &Harness, url: &str) -> Option<Recorded> {
 
 // ══ RESTART AND RESUBSCRIBE ══════════════════════════════════════════════════════════════════════
 
-/// AN INTERRUPTED TASK SURVIVES A RESTART WHERE THE BACKEND IS DURABLE, AND IS HONESTLY REPORTED
-/// LOST WHERE IT IS NOT.
+/// AN INTERRUPTED TASK SURVIVES A RESTART WHERE THE BACKEND IS DURABLE.
 ///
 /// Durability is a property of the CONFIGURED BACKEND, and the only honest way to know whether a
-/// deployment has it is to READ A TASK BACK. Both directions are asserted here from the RELAY's own
+/// deployment has it is to READ A TASK BACK. This is asserted here from the RELAY's own
 /// output — a paused task the relay produced, put through a fresh registry the way boot does.
 #[tokio::test]
 async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_durable() {
@@ -694,6 +698,7 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         "result": { "id": "B1", "contextId": "BC", "status": { "state": "input-required" } }
     })
     .to_string();
+    let (ledger, _guard) = with_ledger().await;
     let h = harness(Outcome::Answers(200, interrupt), false).await;
     let ctx = format!("ctx-restart-{}", std::process::id());
     let mut env = envelope();
@@ -706,27 +711,33 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         .unwrap_or_default()
         .to_string();
 
-    // A FRESH REGISTRY, the way a restart gets one, rehydrated from the SAME store the running
-    // deployment wrote through to.
+    // THE CONTEXT ID BUSBAR RECORDED BEFORE THE RESTART. Captured here so the rehydrated row can be
+    // compared against a value that came from BEFORE the restart — the line below used to compare
+    // `back.context_id` with itself, which no lost or rewritten resume key could ever fail.
+    let live_context = crate::a2a::task::Task::from_row(
+        &crate::taskstore::TASKS
+            .get_unscoped(&id)
+            .expect("the live registry holds the task the relay just paused"),
+    )
+    .expect("the live row reads back")
+    .context_id;
+
+    // A FRESH REGISTRY, the way a restart gets one, rehydrated from the durable sink the running
+    // deployment wrote through to. This used to rehydrate from `h.gov.store()` — the shipped memory
+    // store, whose task methods keep nothing — so `rehydrated.active` was 0 on every run and every
+    // assertion below returned early unexecuted.
     let fresh = crate::taskstore::TaskRegistry::new();
-    let store = h.gov.store();
     let rehydrated = fresh
         .restore_from_store(
-            busbar_substrate::plane::store::PlaneStoreView::narrow(store.clone()).as_ref(),
+            busbar_substrate::plane::store::PlaneStoreView::narrow(ledger.clone()).as_ref(),
             crate::a2a::task::readable_row,
         )
         .expect("the rehydrate completes");
-
-    if rehydrated.active == 0 {
-        // THE RAM DEFAULT. Nothing survives, and saying so is the truth being reported rather than
-        // a bug. This arm is PERMANENT and paired on purpose: deleting it would let a silent
-        // regression to the RAM default read as a pass.
-        assert!(
-            fresh.get_unscoped(&id).is_none(),
-            "the RAM default keeps nothing, so nothing may be readable back"
-        );
-        return;
-    }
+    crate::taskstore::TASKS.clear_sink_for_test();
+    assert_ne!(
+        rehydrated.active, 0,
+        "a durable backend must restore the paused task; nothing came back"
+    );
     let back = crate::a2a::task::Task::from_row(
         &fresh
             .get_unscoped(&id)
@@ -738,7 +749,11 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         TaskState::InputRequired,
         "a rehydrated interrupt must come back PAUSED, so the caller's answer can still resume it"
     );
-    assert_eq!(back.context_id, back.context_id, "the resume key survives");
+    assert_eq!(
+        back.context_id, live_context,
+        "the resume key survives the restart: a caller's follow-up is routed by it, so a rehydrate \
+         that invented a fresh context id would strand the paused task"
+    );
     assert_eq!(
         rehydrated.chain_breaks.len(),
         0,

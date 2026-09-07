@@ -28,7 +28,6 @@
 //! is the confused-deputy section at the bottom, and it would be satisfied by a relay that violates
 //! rule one and vice versa. Both hold; neither implies the other.
 
-use crate::taskstore::TaskStoreTestExt;
 use crate::testkit::engine_boot::engine;
 use busbar_substrate::testkit::engine_kit_plus::metric_sum;
 use std::net::{IpAddr, Ipv4Addr};
@@ -330,6 +329,11 @@ async fn a_failed_hop_ends_the_task_as_failed_rather_than_leaving_it_submitted()
 #[tokio::test]
 async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
     crate::testkit::install_test_seams();
+    // A DURABLE SINK, because `h.gov.store()` is the shipped memory store and its task methods keep
+    // NOTHING: read through it and the answer is empty on every run, so the `verify_chain` and
+    // `task.delegated` assertions below never executed at all. An empty read-back must be a failure
+    // here, not a skip — it is indistinguishable from a plane that chains nothing.
+    let (ledger, _guard) = with_ledger().await;
     let h = harness(Outcome::Answers(200, backend_ok()), false).await;
     let (status, body) = call(&h).await;
     assert_eq!(status, 200, "{body}");
@@ -339,14 +343,12 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
         .unwrap_or_default()
         .to_string();
 
-    let store = h.gov.store();
-    let events = store.list_task_events(&id).expect("events read back");
-    // With the RAM default nothing is persisted, and that is the documented product contract rather
-    // than a defect — so the assertion is on the CHAIN and is skipped, loudly, where the configured
-    // backend implements none of the task methods.
-    if events.is_empty() {
-        return;
-    }
+    let events = ledger.events_for(&id);
+    crate::taskstore::TASKS.clear_sink_for_test();
+    assert!(
+        !events.is_empty(),
+        "the relay served a task and left NO chained event behind"
+    );
     crate::taskstore::verify_chain(&events).expect("the per-task chain verifies");
     assert!(
         events

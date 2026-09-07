@@ -473,6 +473,29 @@ pub(super) fn agent_cfg(url: &str, with_credential: bool) -> crate::a2a::config:
     }
 }
 
+/// ATTACH A DURABLE TASK-EVENT SINK FOR THE DURATION OF ONE TEST, and hold the lock that keeps two
+/// of these from interleaving on the process-wide registry. The caller drops the guard when done.
+///
+/// Every chain claim in this suite has to read the events BACK, and `busbar_api::Store`'s task
+/// methods are defaulted to accept-and-keep-nothing — the shipped memory store this harness
+/// configures answers every read with an empty list. A test that read `h.gov.store()` therefore got
+/// an empty answer on every run, and any `if events.is_empty() { return; }` around the assertion
+/// made "the plane chained nothing" indistinguishable from a pass. Reading THIS ledger back makes an
+/// empty answer a failure, so the assertions actually execute.
+pub(super) async fn with_ledger() -> (
+    Arc<crate::taskstore::event_ledger::EventLedger>,
+    tokio::sync::MutexGuard<'static, ()>,
+) {
+    let guard = crate::taskstore::TASKS_SINK_LOCK.lock().await;
+    let ledger = Arc::new(crate::taskstore::event_ledger::EventLedger::new());
+    // A sink SWAP, not a re-register, so the working-set tests' shared registration and every
+    // position stay intact.
+    crate::taskstore::TASKS.set_sink(busbar_substrate::plane::store::PlaneStoreView::narrow(
+        ledger.clone(),
+    ));
+    (ledger, guard)
+}
+
 /// Everything one relayed call needs, standing up.
 pub(super) struct Harness {
     pub(super) addr: std::net::SocketAddr,
