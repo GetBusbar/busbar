@@ -20,6 +20,7 @@
 
 pub mod denylist_gate;
 pub mod kernel_token_wire_purity;
+pub mod no_self_filed_issues;
 pub mod segregation;
 pub mod tracing_lint;
 
@@ -310,6 +311,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(tracing_lint::TracingGate),
         summary: "every #[instrument] span is bound to an explicit Level, set in one place",
+    },
+    Registration {
+        name: "no-self-filed-issues",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(no_self_filed_issues::NoSelfFiledIssuesGate),
+        summary: "the repository does not open issues against itself, nor ask for the scope to",
     },
 ];
 
