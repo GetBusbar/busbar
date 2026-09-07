@@ -343,6 +343,11 @@ impl Checkpoint {
 /// length-framed name, and only when the checkpoint has one — a body with no snapshot is the byte
 /// sequence it always was, and a body with one cannot be read as a body without one, because the
 /// name and the number are framed rather than run on.
+#[allow(clippy::too_many_arguments)]
+// Eight, and every one of them is a distinct fact the digest covers. A struct here would only move
+// the same eight names one line away, and a body assembled from a struct a caller could build
+// incrementally could be digested with a field nobody set — which is the one thing a signature over
+// these bytes must never be able to happen quietly.
 fn encode_body(
     checkpoint_seq: u64,
     node: u64,
