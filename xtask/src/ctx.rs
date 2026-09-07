@@ -11,6 +11,13 @@
 //! missing root is [`WalkError::MissingRoot`] and a result under [`WalkSpec::min_files`] is
 //! [`WalkError::BelowFloor`]. The floor is not optional decoration; it is the single most repeated
 //! fix in the shell gates it replaces.
+//!
+//! It also gets one thing `find` never knew: the walk HONOURS THE TREE'S OWN IGNORE RULES
+//! ([`Ctx::drop_ignored`]). A scan set that includes whatever a build, a cache or an editor left
+//! behind is a gate that goes red on a byte nobody wrote — `testing/shadow-oracle/__pycache__` is
+//! the case that proved it — and a gate that reds for a reason unrelated to its rule is how a
+//! runner earns a `|| true`. The two refusals are unaffected: they are evaluated around the filter,
+//! not through it, so an ignore rule that swallowed a scan set trips the floor.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -387,7 +394,7 @@ impl Ctx {
             }
         }
 
-        let mut out = Vec::new();
+        let mut kept: Vec<PathBuf> = Vec::new();
         for rel in rels {
             let s = rel.to_string_lossy().replace('\\', "/");
             if let Some(ext) = &spec.ext {
@@ -403,6 +410,12 @@ impl Ctx {
             {
                 continue;
             }
+            kept.push(rel);
+        }
+        let kept = self.drop_ignored(kept);
+
+        let mut out = Vec::new();
+        for rel in kept {
             let text = self.read(&rel).map_err(|message| WalkError::Io {
                 path: rel.clone(),
                 message,
@@ -423,6 +436,45 @@ impl Ctx {
             });
         }
         Ok(out)
+    }
+
+    /// Drop the paths the working tree's own ignore rules exclude.
+    ///
+    /// `find` has no idea what `.gitignore` says, so a walk that reproduced it exactly read
+    /// whatever a build, a cache or an editor happened to leave in the tree — and a gate whose scan
+    /// set includes `__pycache__/*.pyc` fails on a byte nobody wrote and nobody can fix by editing
+    /// source. That is not a stricter gate; it is a gate that goes red for a reason unrelated to the
+    /// rule, which is how a runner earns a `|| true`.
+    ///
+    /// Two refusals stay exactly where they were: a MISSING ROOT and a set BELOW ITS FLOOR are
+    /// still errors, and the floor is applied AFTER this filter, so an ignore rule that swallowed
+    /// the scan set is caught by the floor rather than reported as a clean tree.
+    ///
+    /// AN UNUSABLE IGNORE ORACLE FILTERS NOTHING. Over a throwaway fixture tree there is no
+    /// repository to ask, and a `git` that cannot answer must leave the walk WIDER rather than
+    /// narrower: the failure direction of this helper is "a ban scanned a file it need not have",
+    /// never "a ban stopped scanning".
+    ///
+    /// AN OVERLAY PLANT IS FILTERED ON THE SAME TERMS as a file on disk, and that is not an
+    /// oversight. The overlay exists to show a gate the tree a real commit would show it; a plant
+    /// into an ignored path is a file CI would never see, so a gate that went red on one would be
+    /// proven by a fixture the rule cannot encounter. It is also what makes this filter provable
+    /// at all — the self-test plants an ignored file and requires the gate to stay green.
+    fn drop_ignored(&self, rels: Vec<PathBuf>) -> Vec<PathBuf> {
+        let asked: Vec<String> = rels
+            .iter()
+            .map(|r| r.to_string_lossy().replace('\\', "/"))
+            .collect();
+        let Ok(ignored) = gitp::check_ignore(&self.root, &asked) else {
+            return rels;
+        };
+        if ignored.is_empty() {
+            return rels;
+        }
+        let ignored: std::collections::BTreeSet<String> = ignored.into_iter().collect();
+        rels.into_iter()
+            .filter(|r| !ignored.contains(&r.to_string_lossy().replace('\\', "/")))
+            .collect()
     }
 
     /// Write the overlaid view of `paths` into `dest`, for the gates not yet converted that must
