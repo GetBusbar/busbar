@@ -263,7 +263,7 @@ def verdict_plane_neutrality(root, hits_dir):
     })
 
     # plane-abi-neutrality: 0 banned nouns on success.
-    code, text = run(["bash", "scripts/plane-abi-neutrality.sh"], cwd=root, timeout=120)
+    code, text = run(["cargo", "xtask", "gate", "plane-abi-neutrality"], cwd=root, timeout=120)
     sources.append({
         "id": "plane-abi-neutrality",
         "evidence": "scripts/plane-abi-neutrality.sh",

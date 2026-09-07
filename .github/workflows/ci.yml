@@ -400,8 +400,14 @@ jobs:
       # taxonomy, not ENUMERATED from one protocol. This greps the busbar-plugin HOT lane for the banned
       # protocol/role nouns and asserts ZERO (with a ban-list self-check of its own). It PASSES today;
       # wired here as a BLOCKING gate so "derived, not enumerated" stays a machine fact, not a claim.
+      # Its self-test runs FIRST, like every sibling here. It was the one gate in this job without
+      # that step, and it is the gate whose ban list is checked against a DOCUMENT — the arm most
+      # worth proving before its verdict is trusted, because a mandate that silently stopped being
+      # read would leave the witness checking its own answer.
+      - name: Plane-ABI neutrality self-test (the ban list is checked against the design, not itself)
+        run: cargo xtask gate plane-abi-neutrality --selftest
       - name: Plane-ABI neutrality witness (BLOCKING — no protocol/role noun in the plane ABI hot lane)
-        run: scripts/plane-abi-neutrality.sh
+        run: cargo xtask gate plane-abi-neutrality
       - name: Plane deletion test (each plane crate is strong-form removable)
         run: scripts/plane-delete-test.sh --all
 
