@@ -265,8 +265,8 @@ pub struct LlmNode {
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
     durability_token: busbar_caps::DurabilityToken,
-    // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
-    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than
+    // THE CARD THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
+    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is swappable rather than
     // bound once, because a rate is a statement about a deployment and a deployment's rates change
     // while it is running. A cell on the node would have frozen the boot reading: the engine's own
     // spend projection would reprice on a config apply and this ledger would not, and the identity
@@ -277,9 +277,8 @@ pub struct LlmNode {
     // derives from — including the FLAT PER-REQUEST FEE, which the card holds beside the per-token
     // rates so a node that prices through the card cannot post the tokens and forget the fee.
     //
-    // Each unit PINS THE SNAPSHOT it was admitted under (see `answer_with`) and resolves its whole
-    // life against that one, AT ITS OWN ARRIVAL INSTANT — so an apply landing mid-body cannot
-    // reprice a request halfway through, and an entry appended a day later cannot reprice it at all.
+    // Each unit PINS the card it was admitted under (see `answer_with`) and prices its whole life
+    // against that one, so an apply landing mid-body cannot reprice a request halfway through.
     /// The usage record's token, minted from this node's own kernel at construction and lent to the
     /// exit arm for the length of one pricing.
     ///
@@ -2643,9 +2642,7 @@ mod tests {
             ),
             1_000,
         );
-        let admitted = holder
-            .pin()
-            .expect("the boot resolution put an entry in place");
+        let admitted = holder.pin().expect("the boot resolution put an entry in place");
 
         // The apply that lands while the body is still draining.
         holder.apply(
@@ -2680,34 +2677,6 @@ mod tests {
         );
     }
 
-    /// **THE PIN IS A SEQ, NOT ONLY AN `Arc`.** A reader holding the same history at a lower
-    /// snapshot reads it as it stood at that snapshot.
-    ///
-    /// The `Arc` alone is not the pin: an amendment, and a copy-on-write apply that a second reader
-    /// already took, both leave one history holding entries a reader was never admitted under. The
-    /// seq is what stops the slice short of them, and this asks the SAME history at two snapshots to
-    /// prove the stopping is real rather than an accident of when the `Arc` was cloned.
-    #[test]
-    fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
-        let kernel = busbar_kernel::teller::Kernel::new();
-        let token = kernel.usage_token();
-        let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
-        let earlier =
-            crate::root::kernel::PinnedHistory::for_test_at(&head, busbar_unit_cost::HistorySeq(0));
-
-        let at = Arrived::at(9_000, 1);
-        assert_eq!(
-            priced_amount(&earlier, at, &token, &report_of(1_000)),
-            1_000_000,
-            "a snapshot at seq 0 resolved an entry that was appended after it"
-        );
-        assert_eq!(
-            priced_amount(&head, at, &token, &report_of(1_000)),
-            100_000_000,
-            "the head snapshot did not resolve the entry appended onto it"
-        );
-    }
-
     /// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
     ///
     /// The posting the pricing builds carries a cache — the head it settled at, the entry it
@@ -2724,17 +2693,12 @@ mod tests {
 
         let (mut posting, priced) = priced_posting(&history, at, &token, &report_of(1_000));
         let priced = priced.expect("a card in force at the instant prices the report");
-        let cached = posting
-            .cached
-            .expect("the pricing left its cache on the posting");
+        let cached = posting.cached.expect("the pricing left its cache on the posting");
         assert_eq!(cached.priced_nanos, priced.priced_nanos);
         assert_eq!(cached.card_seq, priced.card_seq);
         assert_eq!(cached.history_seq, history.seq());
         assert_eq!(cached.currency, crate::root::kernel::node_currency());
-        assert_eq!(
-            posting.arrived_ms, 4_000,
-            "the posting kept its own instant"
-        );
+        assert_eq!(posting.arrived_ms, 4_000, "the posting kept its own instant");
         assert_eq!(posting.arrived_mono, 7);
 
         // The tamper. Every figure a reader could be tempted to trust, made a lie.

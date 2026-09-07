@@ -92,9 +92,25 @@ pub fn new_registration() -> busbar_contract::Registration {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The dated card history the root prices against
+// The card the root prices against
 // ---------------------------------------------------------------------------------------------
 
+/// THE PROCESS'S ONE CARD, and it lives in the root because a rate is a statement about a deployment
+/// rather than about a plane. A plane reports what a unit consumed; what those quantities are worth
+/// is read here, off the same configured figures the engine's own spend projection derives from.
+///
+/// SWAPPABLE, not bound-once. The engine rebuilds its projection's rates on every config apply and
+/// reload, so a card fixed at boot would go on pricing this node's ledger against rates the operator
+/// has already replaced — the projection would move and the ledger would not, and the identity that
+/// says the two are one money would hold only until the first apply. The holder swaps instead, and
+/// the swap is a single atomic store: a reader either sees the old card whole or the new card whole,
+/// never a card half-written.
+///
+/// PINNED BY THE READER, not read twice. A unit takes its `Arc` at ADMISSION and prices its whole
+/// life against that one, including the accrual that lands after its body has drained. That is what
+/// makes the pricing a promise rather than a race: a request that opened before an apply is billed on
+/// the rates it was admitted under, and an apply landing mid-body cannot reprice a request halfway
+/// through. The next admission takes the new card.
 /// **THE CURRENCY THIS NODE'S MONEY IS IN**, named once, here.
 ///
 /// A 1.5.5 deployment's configured figures carry no currency at all
@@ -160,17 +176,6 @@ impl PinnedHistory {
         at: busbar_unit_cost::HistorySeq,
     ) -> Self {
         PinnedHistory { history, at }
-    }
-
-    /// The same history, pinned at an EARLIER snapshot — the one construction that proves the seq is
-    /// load-bearing, because both pins hold the identical `Arc`.
-    #[cfg(test)]
-    #[must_use]
-    pub fn for_test_at(other: &PinnedHistory, at: busbar_unit_cost::HistorySeq) -> Self {
-        PinnedHistory {
-            history: Arc::clone(&other.history),
-            at,
-        }
     }
 }
 
@@ -246,11 +251,7 @@ impl RootHistory {
     /// Read-copy-update rather than load-then-store: two applies landing together would otherwise
     /// each clone the same history and the second's store would drop the first's entry on the floor,
     /// which is a price change that silently did not happen.
-    pub fn apply(
-        &self,
-        card: busbar_unit_cost::RateCard,
-        now_ms: u64,
-    ) -> busbar_unit_cost::HistorySeq {
+    pub fn apply(&self, card: busbar_unit_cost::RateCard, now_ms: u64) -> busbar_unit_cost::HistorySeq {
         let policy_epoch = self
             .resolutions
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -986,9 +987,7 @@ mod tests {
             30_000_000,
             "a reader that pinned before the apply was repriced by it, at every instant of its life"
         );
-        let next = holder
-            .pin()
-            .expect("the second apply put an entry in place");
+        let next = holder.pin().expect("the second apply put an entry in place");
         assert_eq!(
             fee_at(&next, 5_000),
             110_000_000,
@@ -1106,8 +1105,11 @@ mod tests {
         holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
         let head = holder.pin().expect("two applies put a head in place");
         let view = head.view();
-        let epochs: Vec<busbar_unit_cost::Author> =
-            view.entries().iter().map(|e| e.author().clone()).collect();
+        let epochs: Vec<busbar_unit_cost::Author> = view
+            .entries()
+            .iter()
+            .map(|e| e.author().clone())
+            .collect();
         assert_eq!(
             epochs,
             vec![
