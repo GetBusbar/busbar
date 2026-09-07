@@ -130,9 +130,18 @@ DB2="$DB"; cfg2_groups="$GROUPS_ORACLE"; cfg2_chain="keys"; expect_boot=refuse
 case "$MODE" in
   governance-init|budget-hydration)
     table=keys; [ "$MODE" = budget-hydration ] && table=usage_windows
-    rootpage="$(sqlite3 "$DB" "SELECT rootpage FROM sqlite_master WHERE name='${table}';" 2>/dev/null)"
+    # The store is read through python's bundled sqlite3 module, never the `sqlite3` CLI: the CLI is
+    # not on every recording host (a linux golden host lacked it), and a missing tool must not read
+    # as "the store has no such table" — that was a named gap on two boot refusals for one run.
+    rootpage="$(python3 - "$DB" "$table" <<'PY'
+import sqlite3, sys
+con = sqlite3.connect(sys.argv[1])
+row = con.execute("SELECT rootpage FROM sqlite_master WHERE name=?", (sys.argv[2],)).fetchone()
+print(row[0] if row else "")
+PY
+)"
     [ -n "$rootpage" ] || fail "could not find ${table}'s rootpage in the durable store"
-    pagesize="$(sqlite3 "$DB" "PRAGMA page_size;" 2>/dev/null)"
+    pagesize="$(python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("PRAGMA page_size").fetchone()[0])' "$DB")"
     DB2="$W/gov-corrupt.db"; cp "$DB" "$DB2"
     offset=$(( (rootpage - 1) * pagesize ))
     python3 - "$DB2" "$offset" <<'PY'
