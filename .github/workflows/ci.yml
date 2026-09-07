@@ -339,9 +339,9 @@ jobs:
       # still resolves to a docs/design inventory file that exists, so a renamed or deleted inventory
       # cannot leave a binding pointing at nothing while still reading as mapped.
       - name: Inventory-ref lint self-test
-        run: python3 scripts/inventory-ref-lint.py --selftest
+        run: cargo xtask gate inventory-ref --selftest
       - name: Inventory-ref lint (BLOCKING — every binding's inventory column resolves)
-        run: python3 scripts/inventory-ref-lint.py --check
+        run: cargo xtask gate inventory-ref
       # CHANGELOG REGISTER: the second half of the shadow-oracle register's money rule. diff-cells.py
       # refuses at LOAD time to let an `improvement` entry forgive a status or a billing figure — only
       # a `kind: breaking` entry carrying a changelog line may. This proves that changelog line is not
