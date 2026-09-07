@@ -461,8 +461,21 @@ run_gate "anthropic" "proto-llm" "plane-mcp" \
 # had no feature-gated registration line for it.
 [ ! -e crates/busbar-core/src/handlers/mcp.rs ] \
   || die "crates/busbar-core/src/handlers/mcp.rs still exists: MCP the protocol has not left core"
-grep -q 'name: "mcp"' crates/busbar-mcp/src/codec/mod.rs \
-  || die "crates/busbar-mcp/src/codec must declare the mcp protocol (name: \"mcp\")"
+# The declaration is asserted BY CONTENT over the MCP protocol crates rather than at one fixed
+# path. The codec split moved it — `busbar-mcp-codec` now holds the `ProtocolDecl` and `busbar-mcp`
+# re-exports it as its `PROTO_DECL` — and a path-pinned `grep -q` over a file that no longer exists
+# does not read as "the protocol left the crate", it reads as a gate erroring on a missing file.
+# What the leg actually claims is that a crate OUTSIDE core names this protocol, so that is what is
+# read: the protocol's own key, and a `ProtocolDecl` built with it.
+MCP_DECL_SRC=$(ls -d crates/busbar-mcp/src crates/busbar-mcp-codec/src 2>/dev/null || true)
+[ -n "$MCP_DECL_SRC" ] \
+  || die "no busbar-mcp / busbar-mcp-codec source tree: MCP the protocol has no crate to live in"
+# shellcheck disable=SC2086
+grep -rq 'PLANE_KEY: &str = "mcp"' $MCP_DECL_SRC \
+  || die "the MCP protocol crates must declare the mcp protocol key (PLANE_KEY = \"mcp\")"
+# shellcheck disable=SC2086
+grep -rq 'name: crate::PLANE_KEY' $MCP_DECL_SRC \
+  || die "the MCP protocol crates must build their ProtocolDecl over that key (name: crate::PLANE_KEY)"
 grep -q 'feature = "plane-mcp"' crates/busbar/src/main.rs \
   || die "the composition root must register busbar_mcp::PROTO_DECL behind the plane-mcp feature"
 note "mcp-a static: mcp declared by the crate, absent from core, registered by the composition root"
