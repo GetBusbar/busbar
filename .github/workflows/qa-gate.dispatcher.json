@@ -15,17 +15,17 @@
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "uses": "actions/checkout@v7",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
           "with": {
             "path": "busbarAI",
             "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
           }
         },
         {
-          "uses": "dtolnay/rust-toolchain@1.98.0"
+          "uses": "dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1"
         },
         {
-          "uses": "Swatinem/rust-cache@v2",
+          "uses": "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6",
           "with": {
             "workspaces": "busbarAI"
           }
@@ -36,7 +36,7 @@
           "working-directory": "busbarAI"
         },
         {
-          "uses": "actions/upload-artifact@v4",
+          "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
           "with": {
             "compression-level": 0,
             "name": "${{ env.BUILD_ARTIFACT }}",
@@ -59,7 +59,7 @@
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "uses": "actions/checkout@v7",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
           "with": {
             "path": "busbarAI",
             "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
@@ -72,10 +72,10 @@
           "working-directory": "busbarAI"
         },
         {
-          "uses": "dtolnay/rust-toolchain@1.98.0"
+          "uses": "dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1"
         },
         {
-          "uses": "actions/download-artifact@v4",
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
           "with": {
             "name": "${{ env.BUILD_ARTIFACT }}",
             "path": "/tmp"
@@ -103,17 +103,17 @@
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "uses": "actions/checkout@v7",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
           "with": {
             "path": "busbarAI",
             "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
           }
         },
         {
-          "uses": "dtolnay/rust-toolchain@1.98.0"
+          "uses": "dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1"
         },
         {
-          "uses": "actions/download-artifact@v4",
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
           "with": {
             "name": "${{ env.BUILD_ARTIFACT }}",
             "path": "/tmp"
@@ -149,17 +149,17 @@
       "runs-on": "ubuntu-latest",
       "steps": [
         {
-          "uses": "actions/checkout@v7",
+          "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
           "with": {
             "path": "busbarAI",
             "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
           }
         },
         {
-          "uses": "dtolnay/rust-toolchain@1.98.0"
+          "uses": "dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1"
         },
         {
-          "uses": "actions/download-artifact@v4",
+          "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
           "with": {
             "name": "${{ env.BUILD_ARTIFACT }}",
             "path": "/tmp"
