@@ -42,6 +42,16 @@ named next.
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.**
+  `GET /api/v1/admin/ledger/rate-history` and `/ledger/repricings` are new reads, and
+  `POST /api/v1/admin/ledger/amend-rate-history` is a new operator-signed write that back-dates a
+  card over a window you name and journals what it moved. Every ledger read takes an optional
+  `?as_of=<history_seq>` and `?currency=<CCY>` and echoes the snapshot it answered at, so a figure
+  you read once can be read again and come back the same. A rate card may price a lane in its own
+  currency natively — no pivot currency, no conversion, and the minor unit is the currency's own.
+  Nothing on the 1.5.5 admin API moved to make room for this: `openapi.json` is unchanged and the
+  new operations are described separately at `GET /api/v1/admin/ledger/openapi.json`. A deployment
+  that never calls them sees no new endpoint and no changed answer.
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
@@ -233,12 +243,13 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly six entries of kind `breaking`:
+The accepted-differences register for this release has exactly seven entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
 both), one confined to Cohere backends that report `usage.billed_units`, one field removed
 from the hook view, one refusal that now comes out of the resolver rather than the validator,
-and one refusal status on `POST /keys/{id}/rotate` — an improvement in substance, registered
-here because the register lets only a `breaking` entry accept a status change.
+one refusal status on `POST /keys/{id}/rotate` — an improvement in substance, registered
+here because the register lets only a `breaking` entry accept a status change — and one
+confined to a window in which somebody edited the rate card while it was open.
 Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
@@ -280,6 +291,17 @@ identically, and every 1.5.5 key and minted secret carries over.
   fields; every other backend's ledgered counts are byte-identical to 1.5.5. **Migration:** if a
   Cohere lane's `billed_units` exceed its raw `tokens`, expect that key's recorded spend and
   token-limit consumption to rise to the figure Cohere itself invoices; no config change is needed.
+- **1.6.0 Changed: a rate-card edit prices what happens after it, not what happened before it.**
+  Token counts are still the stored truth and busbar still derives `spend_micros` at read time —
+  but it derives it against the rate card that was in force when the tokens were spent, read from
+  an append-only dated history, instead of against whatever card is configured at the moment you
+  read. A window in which nobody changed prices answers exactly as 1.5.5 did. A window in which
+  somebody did now answers with what each request actually cost, rather than re-pricing the whole
+  day at the newest card. **Migration:** if you relied on editing `rate_card` to correct figures
+  that had already accrued, that correction is now an explicit, operator-signed admin verb —
+  `POST /api/v1/admin/ledger/amend-rate-history` — which back-dates the card over a window you name
+  and records what it moved; the config `PUT` you use today keeps working and takes effect from the
+  moment you make it. No config change is needed.
 - 1.6.0 Changed: the always-null `at` field on the hook view gives way to `fires_at` (rewritten for
   you by --migrate-config). Every hook object served by `GET /api/v1/admin/hooks[/{name}]`, and the
   follow-up read of a hook write, gains `fires_at` (the resolved stage set), `groups` and `phase`
