@@ -225,3 +225,102 @@ fn config_class_verb_is_limited_at_10_not_60() {
         "a blast-radius CONFIG verb must be capped at 10/min, not 60/min"
     );
 }
+
+/// A REQUEST CARRYING AN OLDER CLOCK MUST NOT REFILL A SPENT BUDGET.
+///
+/// `now` reaches this limiter from the arrival timestamp the composition root pins with
+/// `SystemTime::now()` — a WALL clock, which steps backwards on an NTP correction and which the
+/// root's own error arm reads as `0` when the clock is before the epoch. So an older `now` is not a
+/// hypothetical: it is the ordinary consequence of a time source that is not monotonic, and this
+/// limiter is what stands between that and an unbounded config blast radius.
+///
+/// The failure the sweep had: any request at all, from any principal, in any class, carrying an
+/// older `now` recomputed an older window and cleared the WHOLE map — so Alice, having spent her ten
+/// CONFIG mutations, got a fresh ten. That is the limiter being bypassable by anything that can
+/// nudge the clock.
+#[test]
+fn an_out_of_order_now_cannot_refill_a_spent_budget() {
+    let limiter = MutationLimiter::new();
+    for i in 0..10 {
+        assert!(
+            limiter
+                .check("alice", MutationClass::Config, 120)
+                .admitted(),
+            "attempt {i} inside the budget"
+        );
+    }
+    assert!(!limiter
+        .check("alice", MutationClass::Config, 120)
+        .admitted());
+    // Some other principal, some other class, an EARLIER window. This is the whole exploit.
+    let _ = limiter.check("mallory", MutationClass::Crud, 60);
+    assert!(
+        !limiter
+            .check("alice", MutationClass::Config, 120)
+            .admitted(),
+        "a request from an earlier window wiped alice's live counter and handed her a fresh budget"
+    );
+    // And again from a clock all the way back at the epoch, which is exactly what the root's
+    // `map_or(0, ..)` arm supplies when the wall clock is unreadable.
+    let _ = limiter.check("mallory", MutationClass::Crud, 0);
+    assert!(
+        !limiter
+            .check("alice", MutationClass::Config, 120)
+            .admitted(),
+        "an unreadable wall clock read as 0 wiped alice's live counter"
+    );
+}
+
+/// The CLOCK-REGRESSION POSTURE, stated: a regressed `now` is CLAMPED into the newest window this
+/// limiter has judged, so the attempt spends from the live budget. Never refused outright (a wall
+/// clock that slipped is the operator's problem, and refusing every mutation until it catches up is
+/// a self-inflicted outage on the one surface an operator would use to fix it), and never allowed to
+/// open a second, older window — which is the refill above by another name.
+#[test]
+fn a_regressing_clock_is_clamped_into_the_live_window_rather_than_opening_an_older_one() {
+    let limiter = MutationLimiter::new();
+    for _ in 0..10 {
+        assert!(limiter
+            .check("alice", MutationClass::Config, 600)
+            .admitted());
+    }
+    // Alice's own retry, with a clock that slipped back ten minutes.
+    assert!(
+        !limiter.check("alice", MutationClass::Config, 0).admitted(),
+        "a regressed clock must be clamped into the live window, not open a fresh older one"
+    );
+    // The clamp is not a permanent refusal either: once the clock advances past the window, the
+    // budget releases exactly as it always did.
+    assert!(limiter
+        .check("alice", MutationClass::Config, 660)
+        .admitted());
+}
+
+/// THE SWEEP DROPS ONLY WINDOWS OLDER THAN THE CURRENT ONE — and does drop those, so the map does
+/// not grow one entry per principal per class forever.
+#[test]
+fn the_sweep_drops_only_windows_older_than_the_current_one() {
+    let limiter = MutationLimiter::new();
+    for _ in 0..10 {
+        assert!(limiter.check("alice", MutationClass::Config, 60).admitted());
+    }
+    // Still the same fixed window at 119 (60..120), so the budget is still spent — which is what
+    // makes the reset below a WINDOW crossing rather than a per-second reset.
+    assert!(!limiter
+        .check("alice", MutationClass::Config, 119)
+        .admitted());
+    // Crossing into 120 drops the stale entry and opens a fresh budget.
+    assert!(limiter
+        .check("alice", MutationClass::Config, 120)
+        .admitted());
+    // And the drop was real: alice's window-60 counter is gone, so the WHOLE budget is back, not
+    // just the one attempt that crossed.
+    for _ in 0..9 {
+        assert!(limiter
+            .check("alice", MutationClass::Config, 120)
+            .admitted());
+    }
+    assert!(!limiter
+        .check("alice", MutationClass::Config, 120)
+        .admitted());
+}

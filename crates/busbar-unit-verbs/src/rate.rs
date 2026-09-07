@@ -192,25 +192,75 @@ impl RateCheck {
 /// Fixed-window counters keyed by (principal, class) — moved verbatim from
 /// `busbar-core::admin::rate::MutationLimiter`.
 pub struct MutationLimiter {
-    windows: Mutex<HashMap<(String, MutationClass), Window>>,
+    state: Mutex<LimiterState>,
+}
+
+/// The counters and the newest window they belong to, under ONE lock.
+///
+/// The high-water mark has to be read and written in the same critical section as the sweep, or two
+/// concurrent checks could each decide they are the newest and one could still rewind the map.
+struct LimiterState {
+    /// The newest window start this limiter has ever judged against — never decreases. See
+    /// [`MutationLimiter::check`] for why a limiter fed a wall clock needs one.
+    latest_window: u64,
+    /// Fixed-window counters keyed by (principal, class).
+    windows: HashMap<(String, MutationClass), Window>,
 }
 
 impl MutationLimiter {
     /// A fresh limiter with no recorded windows.
     pub fn new() -> Self {
         Self {
-            windows: Mutex::new(HashMap::new()),
+            state: Mutex::new(LimiterState {
+                latest_window: 0,
+                windows: HashMap::new(),
+            }),
         }
     }
 
     /// Spend one attempt from `principal`'s budget for `class` at time `now` (unix seconds).
     /// Returns `Denied` when the budget for the current window is exhausted. Never panics (a
     /// poisoned lock is recovered, matching the source).
+    ///
+    /// # A clock that goes backwards
+    ///
+    /// `now` is a WALL clock — the composition root pins it per request with `SystemTime::now()`,
+    /// and reads an unreadable clock as `0`. Wall clocks are not monotonic: an NTP correction steps
+    /// them backwards, and so does a container starting before its host's time syncs. The limiter
+    /// therefore has to say what it does when `now` regresses, and the only unacceptable answer is
+    /// the one it used to give.
+    ///
+    /// It used to sweep with `*w == window`, which reads as "drop every entry from a PAST window"
+    /// but also drops entries from a FUTURE one. So a single request — any principal, any class —
+    /// carrying an older `now` recomputed an older window and cleared EVERY live counter in the map.
+    /// A principal who had just spent their ten CONFIG-class mutations got a fresh ten, and the
+    /// config blast-radius limit became bypassable by anything that could nudge the clock back.
+    ///
+    /// The posture now is CLAMP, not refuse and not wipe:
+    ///
+    /// * **Clamp.** A regressed `now` is judged against `latest_window` — the newest window this
+    ///   limiter has seen — so the attempt spends from the LIVE budget instead of opening a second,
+    ///   older one. A caller cannot buy budget by arriving with an older timestamp; the worst a
+    ///   backwards step can do is make the current window last longer, which errs toward refusing.
+    /// * **Not refuse.** Turning a slipped clock into a hard refusal would take the admin surface
+    ///   down until the clock caught up — including the surface an operator would use to fix it.
+    ///   A rate limiter is not the right place to fail an operator closed over an infrastructure
+    ///   fault it merely observed.
+    /// * **Never wipe.** The sweep drops entries STRICTLY OLDER than the window being judged and
+    ///   nothing else, so no arrival can clear a counter that is still live.
     pub fn check(&self, principal: &str, class: MutationClass, now: u64) -> RateCheck {
-        let window = now - (now % MUTATION_RATE_WINDOW_SECS);
-        let mut map = self.windows.lock().unwrap_or_else(|e| e.into_inner());
-        // Opportunistic sweep: drop every entry from a PAST window.
-        map.retain(|_, (w, _, _)| *w == window);
+        let arrived_in = now - (now % MUTATION_RATE_WINDOW_SECS);
+        let mut state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        // The clamp. `max` (rather than an assignment) is what makes `latest_window` monotone: time
+        // moving forward advances it, time moving backwards leaves it exactly where it was.
+        let window = arrived_in.max(state.latest_window);
+        state.latest_window = window;
+        let map = &mut state.windows;
+        // Opportunistic sweep: drop every entry from a window STRICTLY OLDER than this one, and
+        // only those. Written as `>=` rather than `==` so the sweep is safe on its own terms — it
+        // could not wipe a live counter even if a future edit reached it with a window the clamp
+        // above had not raised.
+        map.retain(|_, (w, _, _)| *w >= window);
         let entry = map
             .entry((principal.to_string(), class))
             .or_insert((window, 0, 0));
