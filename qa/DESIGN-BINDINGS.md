@@ -112,7 +112,7 @@ The three words are not interchangeable:
 | PB-83 | breaker scope | mapped | PASS |  | oracle-cell: `route.failover\|fb\|member-401`<br>test: `test_pool_breaker_isolation`<br>test: `test_record_hard_down_all_cells_trips_default_and_every_pool`<br>test: `test_budget_is_lane_global_across_pools`<br>test: `test_unbounded_lane_skips_the_semaphore_bounded_still_enforces` |
 | PB-84 | response-stage taps | mapped | PASS |  | test: `completion_tap_reports_ok_outcome`<br>test: `completion_tap_fires_synthetic_rejected_by_gate`<br>test: `completion_tap_fires_synthetic_rejected_by_auth`<br>oracle-cell: `hooks\|hooked-pool\|unauth` |
 | PB-85 | `max_tokens` injection | mapped | PASS |  | test: `per_model_then_global_then_4096`<br>test: `test_requires_max_tokens_per_protocol`<br>test: `test_openai_explicit_max_tokens_preserved_over_lane_default`<br>test: `test_openai_omits_max_tokens_injects_fallback_for_anthropic` |
-| PB-86 | usage locators are plane-normalized | mapped | PASS |  | lint: `scripts/kernel-token-wire-purity-lint.sh`<br>gate: `scripts/construction-gate.sh` |
+| PB-86 | usage locators are plane-normalized | mapped | PASS |  | lint: `xtask/src/gates/kernel_token_wire_purity.rs`<br>gate: `scripts/construction-gate.sh` |
 | PB-87 | non-chat billing classes | mapped | PASS |  | test: `rerank_resp_billing_is_flat`<br>test: `rerank_resp_billing_flat_regardless_of_search_units` |
 | PB-88 | dialect pairs never refuse | mapped | PASS |  | test: `bad_request_reject_keeps_the_unchanged_generic_400`<br>test: `req_bedrock_to_cohere`<br>test: `resp_responses_to_gemini` |
 | PB-89 | migrated hook `on_error` | mapped | PASS |  | test: `the_serde_default_is_nothing`<br>test: `nothing_resolves_to_the_same_terminal_as_weighted` |

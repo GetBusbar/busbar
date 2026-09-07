@@ -4031,7 +4031,7 @@
    "checks": [
     {
      "kind": "lint",
-     "ref": "scripts/kernel-token-wire-purity-lint.sh",
+     "ref": "xtask/src/gates/kernel_token_wire_purity.rs",
      "status": "mapped",
      "source": "hand"
     },
@@ -4044,7 +4044,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "lint:scripts/kernel-token-wire-purity-lint.sh, gate:scripts/construction-gate.sh"
+   "verdict_detail": "lint:xtask/src/gates/kernel_token_wire_purity.rs, gate:scripts/construction-gate.sh"
   },
   {
    "id": "PB-87",

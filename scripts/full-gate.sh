@@ -121,6 +121,16 @@ declare -a CARGO_LOCAL=(
   "cargo test -p busbar-voice --features runtime,test-support -p busbar-voice-codec --features runtime --locked"
   "cargo test -p busbar-llm --features teller-waist --locked --lib unit::"
   "cargo test -p busbar-timing --features timing --locked"
+  # ── THE CONVERTED GATES ─────────────────────────────────────────────────────────────────────────
+  # `cargo xtask gate <name>` is how a gate is invoked once its shell has been deleted. Discovery
+  # finds these because the capture pattern names `xtask` alongside the cargo verbs; without that a
+  # converted gate would leave ci.yml's scripts/ set AND never enter the cargo set, and this runner
+  # -- whose whole job is to fail closed on a gate it cannot classify -- would go quiet about it
+  # instead. Every conversion adds its two lines here in the same commit that switches the ci.yml
+  # call site, so a gate cannot be moved into Rust and out of the local run at once.
+  "cargo build -p xtask --locked"
+  "cargo xtask gate kernel-token-wire-purity --selftest"
+  "cargo xtask gate kernel-token-wire-purity"
 )
 
 declare -a CARGO_CI_ONLY=(
@@ -291,7 +301,7 @@ mapfile -t CARGO_DISCOVERED < <(
   ci_logical_lines \
     | sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' \
     | grep -v "^[[:space:]]*echo " \
-    | grep -oE 'cargo (fmt|clippy|build|test|run)[^|)]*' \
+    | grep -oE 'cargo (fmt|clippy|build|test|run|xtask)[^|)]*' \
     | while IFS= read -r c; do cargo_norm "$c"; done \
     | grep -v '^$' | sort -u
 )

@@ -381,14 +381,14 @@ run    = "scripts/design-bindings.sh --selftest && scripts/design-bindings.sh --
 id     = "kernel-token-wire-purity"
 status = "active"
 tier   = "fast"
-# THE KERNEL TOKEN-WIRE PURITY LINT (scripts/kernel-token-wire-purity-lint.sh) — the kernel never
+# THE KERNEL TOKEN-WIRE PURITY GATE (cargo xtask gate kernel-token-wire-purity) — the kernel never
 # re-derives a usage token class from a raw provider wire field; it reads the plane-normalized
 # locator. A gate that carried a --selftest and a --check but was invoked by nothing: not by a
 # workflow, not by this manifest, not by verify-1.6.0-done.sh. A gate nobody runs measures nothing,
 # and this one is GREEN on the tree today, so wiring it here is what keeps it green. The --selftest
 # (a planted raw wire field flagged exactly once, plane-normalized reads and comment-only mentions
 # left clean, a /tests/ hit excluded) runs FIRST, as everywhere else in this file.
-run    = "scripts/kernel-token-wire-purity-lint.sh --selftest && scripts/kernel-token-wire-purity-lint.sh --check"
+run    = "cargo xtask gate kernel-token-wire-purity --selftest && cargo xtask gate kernel-token-wire-purity"
 
 [[segment]]
 id     = "no-deferral"
