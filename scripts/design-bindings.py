@@ -1160,6 +1160,11 @@ _COMMENT_LINE = re.compile(r"^[ \t]*#.*$", re.M)
 _STEP_LABEL = re.compile(r"^[ \t]*-?[ \t]*name:.*$", re.M)
 _PATH_TOKEN = re.compile(r"(?:scripts|testing|qa|xtask)/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+")
 SEGMENT_RUNNER = "scripts/qa-gate-run.sh"
+RUNNABLE_SUFFIXES = (".sh", ".py", ".mjs", ".js", ".ts", ".rb")
+# THIS FILE IS NEVER AN INVOKER. Its SEED table names every gate the ledger cites, so following it
+# would let the ledger vouch for its own citations: every ref would be "invoked" because the ledger
+# mentions it. A check whose evidence is its own claim has checked nothing.
+NOT_AN_INVOKER = {"scripts/design-bindings.py"}
 
 
 def _runnable_text(p: Path) -> str:
@@ -1172,14 +1177,37 @@ def _runnable_text(p: Path) -> str:
 
 
 def ci_invoked_refs(root: Path) -> set[str]:
-    """Every script-shaped path CI actually invokes."""
+    """Every script-shaped path CI actually invokes.
+
+    Closed TRANSITIVELY: a gate a workflow reaches through a script the workflow runs is run by CI
+    just as surely as one named in the workflow itself, and stopping at depth one would report a
+    gate that reds every qa push as one nothing runs. scripts/release-check-1.5.2.sh is exactly that
+    shape -- no workflow names it outside a comment, and scripts/release-check.sh runs it, which the
+    qa segment manifest runs, which qa-gate.yml runs. The frontier only ever grows, so the loop
+    terminates on the finite set of paths in the tree; comments are stripped from each file first,
+    for the same reason they are stripped from the workflows.
+    """
     wf_dir = root / ".github" / "workflows"
     workflows = "\n".join(_runnable_text(p) for p in sorted(wf_dir.glob("*.y*ml"))) if wf_dir.is_dir() else ""
     invoked = set(_PATH_TOKEN.findall(workflows))
     segments = root / "qa" / "segments.toml"
     if SEGMENT_RUNNER in invoked and segments.is_file():
         invoked |= set(_PATH_TOKEN.findall(_runnable_text(segments)))
-    return invoked
+    frontier = set(invoked)
+    while frontier:
+        nxt: set[str] = set()
+        for ref in frontier:
+            if ref in NOT_AN_INVOKER:
+                continue
+            p = root / ref
+            if p.is_file() and p.suffix in RUNNABLE_SUFFIXES:
+                nxt |= set(_PATH_TOKEN.findall(_runnable_text(p)))
+        frontier = nxt - invoked
+        invoked |= frontier
+    # A path that is not executable is not invoked by anyone, however often it is named. A data file
+    # READ by a script that CI runs is an input to a gate, not a gate: it compares nothing itself,
+    # and citing one as a `gate` is the defect, not the scan missing an invocation.
+    return {r for r in invoked if r.endswith(RUNNABLE_SUFFIXES)}
 
 
 def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> dict:

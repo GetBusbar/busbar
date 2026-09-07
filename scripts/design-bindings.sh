@@ -352,16 +352,28 @@ with tempfile.TemporaryDirectory() as td:
     root = pathlib.Path(td)
     (root / ".github" / "workflows").mkdir(parents=True)
     (root / "scripts").mkdir()
-    for name in ("ran.sh", "talked-about.sh", "titled.sh", "orphan.sh"):
+    for name in ("ran.sh", "talked-about.sh", "titled.sh", "orphan.sh", "nested.sh"):
         (root / "scripts" / name).write_text("#!/bin/sh\n")
+    # ran.sh runs nested.sh, and mentions a data file it merely READS.
+    (root / "scripts" / "ran.sh").write_text(
+        "#!/bin/sh\n# scripts/talked-about.sh used to run here\n"
+        "bash scripts/nested.sh --check\ncat qa/data.json\n")
+    (root / "qa").mkdir()
+    (root / "qa" / "data.json").write_text("{}\n")
     (root / ".github" / "workflows" / "ci.yml").write_text(
         "jobs:\n  a:\n    steps:\n"
         "      - name: run scripts/titled.sh one day\n"
         "        run: scripts/ran.sh --check\n"
         "      # scripts/talked-about.sh documents the phase this replaces\n")
     ctx = m.check_context({"cells": []}, root / "crates", root, root / "no-ledger.tsv")
-    want = {"scripts/ran.sh": True, "scripts/talked-about.sh": False,
-            "scripts/titled.sh": False, "scripts/orphan.sh": False}
+    want = {"scripts/ran.sh": True,
+            # reached only through a script the workflow runs -- still run by CI
+            "scripts/nested.sh": True,
+            "scripts/talked-about.sh": False,
+            "scripts/titled.sh": False,
+            "scripts/orphan.sh": False,
+            # a data file an invoked script reads is an input to a gate, never a gate
+            "qa/data.json": False}
     bad = []
     for ref, expected in want.items():
         got, why = m.check_verdict({"kind": "gate", "ref": ref, "status": "mapped"}, ctx)
