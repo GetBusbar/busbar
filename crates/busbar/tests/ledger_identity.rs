@@ -584,10 +584,14 @@ impl Rig {
 
         // The oracle's own multi-dialect mock: a byte-deterministic upstream with fixed usage, and
         // a control file the rig flips to take it down without busbar ever seeing a control header.
-        let mock_py = repo_root().join("testing/shadow-oracle/mock-upstream.py");
+        // `mock-upstream.py` used to live in-tree; it now ships inside the pinned oracle tool that
+        // `bin/oracle` installs, so this resolves it the same way the shim does rather than
+        // assuming a path that moved.
+        let mock_py = oracle_tool_dir().join("mock-upstream.py");
         assert!(
             mock_py.exists(),
-            "the oracle's mock upstream is missing at {mock_py:?}"
+            "the oracle's mock upstream is missing at {mock_py:?} (resolved from the pinned \
+             oracle tool's directory)"
         );
         let mock_log = std::fs::File::create(dir.join("mock.log")).unwrap();
         let mock = Command::new("python3")
@@ -798,6 +802,86 @@ fn repo_root() -> PathBuf {
         .and_then(Path::parent)
         .expect("the manifest lives two levels below the workspace root")
         .to_path_buf()
+}
+
+/// The installed package directory of the pinned oracle tool, resolved the same way `bin/oracle`
+/// resolves `BUSBAR_ORACLE_TOOL_DIR` for its own drivers: prefer the environment variable if the
+/// caller already ran the shim and exported it, otherwise run the shim once (installing the
+/// pinned tool if it is not there yet) and read the directory back out of its own venv. This is
+/// never allowed to fall back to skipping — an oracle tool that cannot be resolved or installed is
+/// a test failure that names the missing tool, not a quietly-skipped assertion.
+fn oracle_tool_dir() -> PathBuf {
+    if let Ok(dir) = std::env::var("BUSBAR_ORACLE_TOOL_DIR") {
+        let dir = PathBuf::from(dir);
+        assert!(
+            dir.is_dir(),
+            "BUSBAR_ORACLE_TOOL_DIR={dir:?} is set but is not a directory"
+        );
+        return dir;
+    }
+
+    let root = repo_root();
+    let shim = root.join("bin/oracle");
+    assert!(
+        shim.exists(),
+        "the oracle shim is missing at {shim:?}; it is what installs and locates the pinned \
+         mock upstream, and there is no other supported way to find it"
+    );
+
+    // `--help` is enough to make the shim install (or verify) the pinned tool into
+    // `target/oracle/tool/<tag>` before exiting; it never runs the mock or anything stateful.
+    let help = Command::new("bash")
+        .arg(&shim)
+        .arg("--help")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!("could not run {shim:?} --help to install the pinned oracle tool: {e}")
+        });
+    assert!(
+        help.status.success(),
+        "{shim:?} --help failed while installing/verifying the pinned oracle tool \
+         (status {:?}); stdout:\n{}\nstderr:\n{}",
+        help.status.code(),
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+
+    let tool_root = root.join("target/oracle/tool");
+    let pin = std::fs::read_to_string(root.join("testing/shadow-oracle/oracle.pin"))
+        .expect("testing/shadow-oracle/oracle.pin should exist and be readable");
+    let tag = pin
+        .lines()
+        .find_map(|l| l.strip_prefix("tag="))
+        .unwrap_or_else(|| panic!("testing/shadow-oracle/oracle.pin has no `tag=` line"));
+    let venv_python = tool_root.join(tag).join(".venv/bin/python");
+    assert!(
+        venv_python.exists(),
+        "the pinned oracle tool's venv python is missing at {venv_python:?} after running \
+         {shim:?} --help; the pinned oracle tool did not install where bin/oracle says it \
+         should"
+    );
+
+    let out = Command::new(&venv_python)
+        .arg("-c")
+        .arg("import busbar_oracle, os; print(os.path.dirname(busbar_oracle.__file__))")
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "could not run {venv_python:?} to locate the installed busbar_oracle package: {e}"
+            )
+        });
+    assert!(
+        out.status.success(),
+        "{venv_python:?} -c 'import busbar_oracle' failed (status {:?}); stderr:\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let dir = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    assert!(
+        !dir.is_empty(),
+        "{venv_python:?} printed no busbar_oracle package directory"
+    );
+    PathBuf::from(dir)
 }
 
 /// The oracle's configuration, narrowed to the one dialect this cell needs: the same auth chain,
