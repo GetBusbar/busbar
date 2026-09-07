@@ -23,7 +23,87 @@ set -euo pipefail
 # The directory this script lives in is `scripts/`; the crate is a sibling under `crates/`.
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "$here/.." && pwd)"
-crate_src="$repo/crates/busbar-plugin/src/hot"
+crate_src="${PLANE_ABI_SRC:-$repo/crates/busbar-plugin/src/hot}"
+
+# ── SELF-TEST ─────────────────────────────────────────────────────────────────────────────────────
+# Every check below is driven for real by re-invoking THIS script with one input changed, so what is
+# proven is the script that runs in CI and not a re-implementation of it. The four env hooks exist
+# only for that: nothing in the repo sets them.
+if [ "${1:-}" = "--selftest" ]; then
+  st_tmp="$(mktemp -d)"; trap 'rm -rf "$st_tmp"' EXIT
+  st_cases=0; st_fails=0
+  st_say() { printf '%s  %s\n' "$1" "$2"; st_cases=$((st_cases + 1)); [ "$1" = PASS ] || st_fails=$((st_fails + 1)); }
+  echo "== plane-abi-neutrality SELF-TEST =="
+
+  # 1. THE MANDATE IS NOT A COPY OF THE ANSWER. Drop a token the design mandates from the ban list;
+  #    the self-check must name it. This is the case the old `mandated=(…)` byte-copy could not fail.
+  if PLANE_ABI_BANNED="llm mcp a2a tool agent sampling task card round prompt voice realtime audio" \
+       bash "$0" >/dev/null 2>&1; then
+    st_say FAIL "a ban list missing a design-mandated token (\`server\`) was accepted"
+  else
+    st_say PASS "a ban list missing a design-mandated token is refused"
+  fi
+
+  # 2. And the real ban list still satisfies the mandate, so case 1 is not a check that refuses
+  #    everything.
+  if bash "$0" >/dev/null 2>&1; then
+    st_say PASS "the checked-in ban list satisfies the design's mandate"
+  else
+    st_say FAIL "the checked-in ban list does not satisfy its own mandate"
+  fi
+
+  # 3. A mandate document that is not there must be RED, never a silent fallback to the ban list
+  #    itself — which is the tautology in a different coat.
+  if PLANE_ABI_TAXONOMY_DOC="$st_tmp/no-such-doc.md" bash "$0" >/dev/null 2>&1; then
+    st_say FAIL "a missing mandate document was accepted"
+  else
+    st_say PASS "a missing mandate document is refused, not defaulted to the ban list"
+  fi
+
+  # 4. A banned noun in an EXPORTED declaration is caught, and 5. a clean tree is not.
+  mkdir -p "$st_tmp/dirty" "$st_tmp/clean" "$st_tmp/testpath/tests"
+  printf 'pub struct McpTransport;\n' >"$st_tmp/dirty/lib.rs"
+  printf 'pub struct CarrierScope;\n' >"$st_tmp/clean/lib.rs"
+  if PLANE_ABI_SRC="$st_tmp/dirty" bash "$0" >/dev/null 2>&1; then
+    st_say FAIL "a banned noun in an exported declaration was accepted"
+  else
+    st_say PASS "a banned noun in an exported declaration is refused"
+  fi
+  if PLANE_ABI_SRC="$st_tmp/clean" PLANE_ABI_TEST_RATCHET=0 bash "$0" >/dev/null 2>&1; then
+    st_say PASS "a taxonomy-named declaration is not a finding"
+  else
+    st_say FAIL "a clean declaration was refused — the witness refuses everything"
+  fi
+
+  # 6. THE TEST-PATH RATCHET. A test-path declaration is reported and ratcheted, never dropped from
+  #    the scan: one more than the ratchet is RED.
+  printf 'fn round_trips_a_task() {}\n' >"$st_tmp/testpath/tests/a_tests.rs"
+  printf 'fn prompt_helper() {}\n' >"$st_tmp/testpath/tests/b_tests.rs"
+  if PLANE_ABI_SRC="$st_tmp/testpath" PLANE_ABI_TEST_RATCHET=1 bash "$0" >/dev/null 2>&1; then
+    st_say FAIL "two test-path declarations passed a ratchet of one"
+  else
+    st_say PASS "a test-path declaration above the ratchet is RED (reported, not dropped from the scan)"
+  fi
+  if PLANE_ABI_SRC="$st_tmp/testpath" PLANE_ABI_TEST_RATCHET=2 bash "$0" >/dev/null 2>&1; then
+    st_say PASS "and at the ratchet it passes while still printing both sites"
+  else
+    st_say FAIL "the ratchet refused the count it is set to"
+  fi
+
+  # 7. THE ZERO-FILE CASE. Cases 4/5 prove what the witness SEES; this proves what it does when handed
+  #    nothing to look at. A hot lane that EXISTS but has been drained is the one way this gate reads
+  #    its own passing answer — 0 banned nouns — off a tree it never opened.
+  mkdir -p "$st_tmp/emptylane"
+  if PLANE_ABI_SRC="$st_tmp/emptylane" bash "$0" >/dev/null 2>&1; then
+    st_say FAIL "a hot lane holding no .rs was scanned as zero files and reported ok"
+  else
+    st_say PASS "a hot lane holding no .rs is refused (zero files scanned is RED, not a clean ABI)"
+  fi
+
+  echo
+  [ "$st_fails" -eq 0 ] && { echo "plane-abi-neutrality selftest: GREEN (${st_cases} cases)"; exit 0; }
+  echo "plane-abi-neutrality selftest: RED (${st_fails}/${st_cases} cases failed)"; exit 1
+fi
 
 # The banned protocol/role nouns (DESIGN-v5 §neutrality-witness). Matched case-insensitively as
 # substrings of IDENTIFIERS on declaration lines (see the grep below).
@@ -68,6 +148,23 @@ fi
 
 if [ ! -d "$crate_src" ]; then
   echo "FAIL plane-abi-neutrality: crate source not found at $crate_src" >&2
+  exit 1
+fi
+
+# ── THE ZERO-FILE GUARD ───────────────────────────────────────────────────────────────────────────
+# The check above proves the hot lane is THERE; this proves it still holds the ABI this witness is
+# about. A directory that exists but carries no Rust greps clean, and 0 banned nouns over 0 files is
+# the passing answer to the only ban here — indistinguishable from a genuinely derived capability
+# surface. That is not hypothetical: point PLANE_ABI_SRC at an empty directory and the old code
+# printed `ok … 0 banned noun(s) in exported declarations` and exited 0. Every sibling gate
+# (plane-grep-gate, plane-noun-gate, plane-transport-neutrality, plane-config-noun-gate) separates the
+# missing-root case from the zero-file case for exactly this reason; this one now does too.
+n_files="$(find "$crate_src" -name '*.rs' | grep -c . || true)"
+if [ "$n_files" -eq 0 ]; then
+  echo "FAIL plane-abi-neutrality: $crate_src holds $n_files .rs file(s); zero is RED." >&2
+  echo "  A scan of zero files reports zero banned nouns, which reads exactly like a neutral ABI." >&2
+  echo "  If the hot lane moved, point this script at its new home in a reviewed diff that says so —" >&2
+  echo "  do not let the witness go quiet by scanning a drained directory." >&2
   exit 1
 fi
 
