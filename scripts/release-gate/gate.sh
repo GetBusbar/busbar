@@ -103,17 +103,26 @@ report="${RUNNER_TEMP:-/tmp}/release-gate-report.txt"
 
 while IFS=$'\t' read -r id desc; do
   [ -n "$id" ] || continue
-  # Deliberately the FIRST row for an id: a leg that reported and then a retry that reported
-  # differently is itself a fact worth not papering over, and duplicates are flagged below.
-  row="$(awk -F'\t' -v i="$id" '$1==i{print; exit}' "$ALL")"
-  if [ -z "$row" ]; then
+  # EVERY row for the id, not the first one. The old `$1==i{print; exit}` meant a PASS written
+  # before a later FAIL was the only row the gate ever read — and the ledger is appended to, never
+  # truncated, so a re-run or a retrying leg produces exactly that pair. ledger_status_for (lib.sh)
+  # resolves the id across all of its rows and says CONFLICT when they disagree.
+  status="$(ledger_status_for "$ALL" "$id")"
+  if [ -z "$status" ]; then
     missing_ids="${missing_ids}${id} "
     printf '%-12s %-46s %s\n' "DID NOT RUN" "$id" "$desc" >> "$report"
     continue
   fi
-  status="$(printf '%s' "$row" | cut -f2)"
-  detail="$(printf '%s' "$row" | cut -f4)"
+  # The detail comes from the WORST row present, so a conflicted or failed id shows the reason
+  # rather than whichever row happened to be written first.
+  detail="$(awk -F'\t' -v i="$id" '$1==i && $2!="PASS" {print $4; exit}' "$ALL")"
+  [ -n "$detail" ] || detail="$(awk -F'\t' -v i="$id" '$1==i{print $4; exit}' "$ALL")"
   case "$status" in
+    CONFLICT)
+      fail_ids="${fail_ids}${id} "
+      printf '%-12s %-46s %s\n' "CONFLICT" "$id" \
+        "this id was reported more than once with DIFFERENT verdicts ($(ledger_rows_for "$ALL" "$id")) — the ledger does not say what happened, which is not a pass. ${detail}" >> "$report"
+      ;;
     PASS)
       pass_n=$((pass_n + 1))
       printf '%-12s %-46s %s\n' "PASS" "$id" "$desc" >> "$report"
@@ -199,5 +208,8 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 echo
-echo "RELEASE GATE: GREEN. Every one of the ${rows} contracted checks for ${VERSION} ran and passed."
+# `pass_n`, not `rows`. `rows` is the raw ledger LINE count — it includes duplicate rows for one id
+# and rows for ids the contract never asked about, so the one sentence a human reads was overstating
+# how much was verified by exactly the amount the ledger had been polluted.
+echo "RELEASE GATE: GREEN. Every one of the ${pass_n} contracted checks for ${VERSION} ran and passed."
 { echo; echo "### GREEN — all ${pass_n} contracted checks passed."; } >> "$SUMMARY"
