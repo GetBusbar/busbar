@@ -1,0 +1,57 @@
+# testing/voice-conformance/fixtures/scenario-census.tsv
+#
+# THE REQUIRED SCENARIO SET, DECLARED. The spec leg's own header has said for as long as it has
+# existed that each slice "holds it to the dialect's own required scenario set (set equality, never
+# a floor -- see the sibling MCP `assert_covered`)". There was no such set. `voice-conform spec`
+# enumerates whatever `.json` files it finds in the dialect directory and asserts only that the
+# list is not EMPTY, so the battery's subject was whatever happened to be on disk. Planted: thirteen
+# of the fourteen openai fixtures deleted. The leg reported
+#
+#     RESULT openai PASS session.update.json -- IR-fixpoint stable (1 IR event(s))
+#
+# and exited 0. Thirteen scenarios stopped being exercised and not one row said so; the leg went on
+# printing the same green it prints for the full set.
+#
+# This file is that set. It is SET EQUALITY in both directions, checked by legs/spec-per-dialect.sh
+# before the harness runs: a scenario named here with no file is a scenario that silently stopped
+# being tested, and a file here with no line is a scenario nobody decided to test -- adding a
+# fixture is a two-line edit on purpose, exactly like adding a plugin-kind crate to the
+# construction gate's census.
+#
+# <dialect><TAB><fixture file>
+openai	conversation.item.create.function_call_output.json
+openai	conversation.item.create.message.json
+openai	conversation.item.truncate.json
+openai	error.json
+openai	input_audio_buffer.append.json
+openai	input_audio_buffer.clear.json
+openai	input_audio_buffer.commit.json
+openai	input_audio_buffer.speech_started.json
+openai	input_audio_buffer.speech_stopped.json
+openai	response.audio.delta.json
+openai	response.audio.done.json
+openai	response.cancel.json
+openai	response.create.json
+openai	response.done.json
+openai	response.function_call_arguments.delta.json
+openai	response.function_call_arguments.done.json
+openai	session.created.json
+openai	session.update.ga_nested.json
+openai	session.update.json
+openai	session.update.semantic_vad.json
+gemini	clientContent.json
+gemini	goAway.json
+gemini	realtimeInput.audioStreamEnd.json
+gemini	realtimeInput.json
+gemini	realtimeInput.mediaChunks.json
+gemini	serverContent.inputTranscription.json
+gemini	serverContent.interrupted.json
+gemini	serverContent.modelTurn.json
+gemini	serverContent.outputTranscription.json
+gemini	serverContent.turnComplete.json
+gemini	setup.json
+gemini	setupComplete.json
+gemini	toolCall.json
+gemini	toolCallCancellation.json
+gemini	toolResponse.json
+gemini	usageMetadata.json
