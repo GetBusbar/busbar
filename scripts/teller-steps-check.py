@@ -63,11 +63,36 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 LEDGER = ROOT / "qa" / "teller-steps.json"
+# The manifest the shipped-leg facts are read out of. A module global for the same reason LEDGER is
+# one: the self-test points it at a fixture manifest rather than teaching the rule an override.
+MANIFEST = ROOT / "crates" / "busbar" / "Cargo.toml"
 STATUSES = {"mapped", "new", "none"}
 ROOT_STATES = {"proven", "none"}
 ROOT_DIR = "crates/busbar/src/root/"
 # A root "none" shorter than this is a label; the rule wants a sentence a reviewer could disagree with.
 MIN_ROOT_NOTE = 60
+
+# ── THE FLOOR, AND WHY IT IS NOT IN THE LEDGER ───────────────────────────────────────────────────
+# Everything this checker enforced was a SHAPE rule: every declared step has a `gating` flag, every
+# matrix row covers every declared step, every cell has a status. Not one of them constrains HOW MANY
+# steps or planes are declared, and both lists live in the file being judged. So the ledger could
+# shrink and stay green: delete the `voice` row together with its `root-voice` leg and the matrix is
+# still internally consistent, still "every gating cell names a real scenario" -- about four planes.
+# Delete a step from `steps` and from all five rows and the same holds about nine steps. At the limit,
+# one plane and one non-gating step is a fully valid matrix that asserts nothing at all.
+#
+# Worse, the RED RULE itself is self-declared: the only thing that can turn `--check` red is a "none"
+# cell on a step whose `gating` is true, and `gating` is read straight out of the same file. Flipping
+# seven booleans disarms the gate completely while every structural rule still passes.
+#
+# So the two sets that decide how much this instrument is looking at are pinned OUTSIDE the ledger:
+# the ten Teller steps and the seven gating ones are named here, and the plane set is anchored to
+# crates/busbar/Cargo.toml's `default` line through `default_root_legs()` -- the same manifest fact
+# the root column already treats as authoritative. A row may not leave the matrix without leaving the
+# shipped binary first, and a step may not stop gating because an editor typed `false`.
+TELLER_STEPS = ("arrival", "decode", "authenticate", "verify", "approve",
+                "admit", "route", "meter", "audit", "exit")
+GATING_STEPS = frozenset({"authenticate", "verify", "admit", "route", "meter", "audit", "exit"})
 
 # ── the rig column's owners ──────────────────────────────────────────────────────────────────────
 ORACLE_CELLS = ROOT / "testing/shadow-oracle/cells.json"
@@ -186,9 +211,20 @@ def load():
         raise ValueError("qa/teller-steps.json: no non-empty 'steps' object")
     if not isinstance(matrix, dict) or not matrix:
         raise ValueError("qa/teller-steps.json: no non-empty 'matrix' object")
+    # THE FLOOR, before any row is read (see TELLER_STEPS/GATING_STEPS above). A shorter step list is
+    # a smaller question, and a `gating` flag flipped to false is the RED RULE switched off.
+    if list(steps) != list(TELLER_STEPS):
+        raise ValueError(f"qa/teller-steps.json: steps are {list(steps)}, but the Teller walk is "
+                         f"{list(TELLER_STEPS)} -- a step may not leave this matrix by being deleted "
+                         f"from it")
     for step, meta in steps.items():
         if not isinstance(meta, dict) or "gating" not in meta:
             raise ValueError(f"qa/teller-steps.json: steps.{step} has no 'gating' boolean")
+    declared_gating = {s for s, m in steps.items() if m["gating"]}
+    if declared_gating != set(GATING_STEPS):
+        raise ValueError(f"qa/teller-steps.json: the gating steps are {sorted(declared_gating)}, not "
+                         f"{sorted(GATING_STEPS)} -- `gating` is the only thing that can turn this "
+                         f"gate red, so the ledger does not get to choose it")
     for plane, row in matrix.items():
         if not isinstance(row, dict):
             raise ValueError(f"qa/teller-steps.json: matrix.{plane} is not an object")
@@ -227,6 +263,19 @@ def check_root_column(doc, steps, matrix):
                              f"not under {ROOT_DIR} -- a leg's evidence lives in the composition root")
         if not (ROOT / file).is_file():
             raise ValueError(f"qa/teller-steps.json: root leg {leg!r} names {file}, which does not exist")
+    # THE PLANE FLOOR, anchored to the manifest rather than to this file. `unowned` below already
+    # requires every matrix row to have a leg, and the loop above requires every leg to have a row --
+    # but both sets live in qa/teller-steps.json, so deleting a row AND its leg satisfies both and
+    # the matrix simply becomes smaller. The shipped `default = [...]` line is the outside fact: a
+    # root leg the binary is BUILT with is a loop that is running in production, and a loop that is
+    # running is owed a row here. Dropping a plane from this matrix now requires dropping it from the
+    # shipped binary first, in a diff that says so.
+    shipped = {leg for leg in default_root_legs(MANIFEST) if leg.startswith("root-")}
+    missing_legs = sorted(leg for leg in shipped if leg not in legs)
+    if missing_legs:
+        raise ValueError(f"qa/teller-steps.json: root leg(s) {missing_legs} ship in "
+                         f"crates/busbar/Cargo.toml's `default` and have no entry here -- a loop the "
+                         f"binary is built with is a loop this matrix owes a row")
     leg_of_plane = {m["plane"]: leg for leg, m in legs.items()}
     unowned = sorted(p for p in matrix if p not in leg_of_plane)
     if unowned:
@@ -358,7 +407,7 @@ def default_root_legs(manifest=None):
     Deliberately a narrow parse of one line rather than a TOML dependency: this script runs anywhere
     python3 does, and the shape it reads is a single-line array the manifest has always written.
     """
-    p = manifest or (ROOT / "crates" / "busbar" / "Cargo.toml")
+    p = manifest or MANIFEST
     text = Path(p).read_text()
     in_features = False
     for line in text.splitlines():
@@ -475,22 +524,52 @@ def selftest() -> int:
 
     failures = 0
 
-    def expect_raises(doc, why):
+    # The fixtures below are DELIBERATELY small -- one or two invented steps, one invented plane --
+    # because each is about a single rule and a full ten-step matrix would bury it. The floor
+    # (TELLER_STEPS/GATING_STEPS) is a module constant precisely so it is not ledger data, and the
+    # self-test pins it to the fixture's own shape for the same reason it points LEDGER at a temp
+    # file: the rule under test is the OTHER one, and a fixture refused by the floor would print
+    # "ok" for a rule it never reached. The floor gets its own dedicated cases further down, driven
+    # against the REAL ledger, where shrinking it is the whole point.
+    fixture_manifest = tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False)
+    fixture_manifest.write("[features]\ndefault = [\"root-llm\"]\n")
+    fixture_manifest.close()
+
+    def pin_floor(doc):
+        """Context: the floor accepts this fixture's step list, so the rule under test is reached."""
+        global TELLER_STEPS, GATING_STEPS
+        TELLER_STEPS = tuple(doc.get("steps") or ())
+        GATING_STEPS = frozenset(s for s, m in (doc.get("steps") or {}).items()
+                                 if isinstance(m, dict) and m.get("gating"))
+
+    def expect_raises(doc, why, must_say=None):
         nonlocal failures
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump(doc, f)
             path = f.name
-        global LEDGER
-        saved = LEDGER
+        global LEDGER, TELLER_STEPS, GATING_STEPS, MANIFEST
+        saved, saved_steps, saved_gating, saved_manifest = LEDGER, TELLER_STEPS, GATING_STEPS, MANIFEST
         try:
             LEDGER = Path(path)
+            MANIFEST = Path(fixture_manifest.name)
+            pin_floor(doc)
             load()
             print(f"  MISS: expected a refusal for {why}, got none")
             failures += 1
-        except ValueError:
-            print(f"  ok: refused a matrix with {why}")
+        except ValueError as e:
+            # A refusal is only evidence for the rule it names. `expect_raises` used to catch bare
+            # ValueError, so a fixture that tripped an EARLIER rule printed "ok" for a rule the run
+            # never reached -- which is how the "a plane no root leg answers to" case came to assert
+            # the leg/matrix cross-check instead.
+            if must_say is not None and must_say not in str(e):
+                print(f"  MISS: {why} was refused, but for another rule: {e}")
+                failures += 1
+            else:
+                print(f"  ok: refused a matrix with {why}")
         finally:
-            LEDGER = saved
+            LEDGER, TELLER_STEPS, GATING_STEPS = saved, saved_steps, saved_gating
+            MANIFEST = saved_manifest
+            Path(path).unlink(missing_ok=True)
 
     # A REAL rig cell id, because the rig column resolves what it is handed: a planted id would test
     # the fixture rather than the reach into the rigs.
@@ -554,17 +633,21 @@ def selftest() -> int:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
             json.dump(doc, f)
             path = f.name
-        global LEDGER
-        saved = LEDGER
+        global LEDGER, TELLER_STEPS, GATING_STEPS, MANIFEST
+        saved, saved_steps, saved_gating, saved_manifest = LEDGER, TELLER_STEPS, GATING_STEPS, MANIFEST
         try:
             LEDGER = Path(path)
+            MANIFEST = Path(fixture_manifest.name)
+            pin_floor(doc)
             load()
             print(f"  ok: accepted {why}")
         except ValueError as e:
             print(f"  MISS: {why} was refused ({e})")
             failures += 1
         finally:
-            LEDGER = saved
+            LEDGER, TELLER_STEPS, GATING_STEPS = saved, saved_steps, saved_gating
+            MANIFEST = saved_manifest
+            Path(path).unlink(missing_ok=True)
 
     expect_ok(root_doc(), "a well-formed root column")
 
@@ -624,6 +707,78 @@ def selftest() -> int:
     d["matrix"]["llm"]["gate"]["root"] = {"state": "none", "leg": "root-llm", "note": note}
     expect_raises(d, "a leg that proves zero steps over the loop")
 
+    # ── THE FLOOR ITSELF, driven against the REAL ledger ────────────────────────────────────────
+    # Every case above shrinks a fixture; these three shrink the thing this instrument is looking
+    # at. They are run WITHOUT pin_floor (the module constants stay as shipped), because the floor
+    # is exactly the rule under test: a step deleted from the walk, a gating flag switched off, and
+    # a plane row deleted along with its leg -- the three edits that each leave a perfectly
+    # well-formed, perfectly consistent, perfectly green matrix that asserts less than it did.
+    def expect_real_ledger_refusal(mutate, why, must_say):
+        nonlocal failures
+        global LEDGER
+        doc = json.loads(LEDGER.read_text())
+        mutate(doc)
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            json.dump(doc, f)
+            path = f.name
+        saved = LEDGER
+        try:
+            LEDGER = Path(path)
+            load()
+            print(f"  MISS: expected a refusal for {why}, got none")
+            failures += 1
+        except ValueError as e:
+            if must_say not in str(e):
+                print(f"  MISS: {why} was refused, but for another rule: {e}")
+                failures += 1
+            else:
+                print(f"  ok: refused {why}")
+        finally:
+            LEDGER = saved
+            Path(path).unlink(missing_ok=True)
+
+    def drop_step(doc):
+        doc["steps"].pop("audit")
+        for row in doc["matrix"].values():
+            row.pop("audit", None)
+
+    def disarm_gating(doc):
+        for meta in doc["steps"].values():
+            meta["gating"] = False
+
+    def drop_plane(doc):
+        doc["matrix"].pop("voice")
+        doc["root_legs"].pop("root-voice")
+
+    expect_real_ledger_refusal(drop_step, "a step deleted from the walk and from every row",
+                               "a step may not leave this matrix")
+    expect_real_ledger_refusal(disarm_gating, "every gating flag switched off",
+                               "the ledger does not get to choose it")
+    expect_real_ledger_refusal(drop_plane, "a plane row deleted together with its root leg",
+                               "is a loop this matrix owes a row")
+
+    # And the GREEN end of the same rule: the ledger as it stands must LOAD. Nothing above asserted
+    # that, so a floor set too high would have shown up only in CI.
+    try:
+        load()
+        print("  ok: accepted the real qa/teller-steps.json as it stands")
+    except ValueError as e:
+        print(f"  MISS: the real ledger no longer loads ({e})")
+        failures += 1
+
+    # An unrecognised flag is a usage error, not the cheapest mode (see KNOWN_FLAGS).
+    saved_argv = sys.argv
+    try:
+        sys.argv = ["teller-steps-check.py", "--root-leg"]
+        rc = main()
+    finally:
+        sys.argv = saved_argv
+    if rc == 2:
+        print("  ok: an unknown flag exits 2 instead of quietly running --check")
+    else:
+        print(f"  MISS: `--root-leg` (a typo for --root-legs) returned {rc}, not 2")
+        failures += 1
+
     # And the root line itself must COUNT what it prints: one proven cell, no gap.
     text = root_line(root_doc()["matrix"])
     if "0 of 1" in text and "root-llm 1 proven / 0 none" in text:
@@ -679,7 +834,21 @@ def selftest() -> int:
     return 0
 
 
+KNOWN_FLAGS = ("--selftest", "--check", "--root-legs", "--root-legs-gating", "--rig-legs")
+
+
 def main() -> int:
+    # AN UNRECOGNISED FLAG IS NOT A REQUEST FOR THE CHEAPEST MODE. Every unmatched argument used to
+    # fall through to `--check`, exit 0 included: `--root-leg` (singular) ran the paper check and
+    # printed a green line, and the CI chain is three invocations joined by `&&`, so a typo in the
+    # expensive step turns it into a second copy of the cheap one with a tick beside it. The comment
+    # in qa/segments.toml warning that this script "silently ignores anything else" is the shape of
+    # somebody having already been bitten. Anything not on the list is a usage error, not a mode.
+    unknown = [a for a in sys.argv[1:] if a not in KNOWN_FLAGS]
+    if unknown:
+        print(f"teller-steps-check: unknown argument(s) {unknown}; "
+              f"expected any of {list(KNOWN_FLAGS)}", file=sys.stderr)
+        return 2
     if "--selftest" in sys.argv:
         return selftest()
     # The two root flags compose: `--root-legs --root-legs-gating` executes every named cell AND
