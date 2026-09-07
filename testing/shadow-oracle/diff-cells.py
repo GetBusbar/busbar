@@ -117,7 +117,7 @@ CONTENT_RULES = {"hdr.date", "hdr.retry-after", "hdr.etag", "hdr.length", "id.wi
                  "metrics.timing", "metrics.cooldown", "metrics.shape", "metrics.absolute",
                  "body.keep-lines", "keep.header", "keep.header-min", "keep.json_key",
                  "keep.text_regex", "egress.cred", "egress.host", "egress.body", "text.port",
-                 "stderr.platform-capability", "egress.elapsed"}
+                 "stderr.platform-capability", "egress.elapsed", "metrics.concurrent-attempts"}
 assert not (ORDER_RULES & CONTENT_RULES), \
     ("a rule that drops/blanks/rewrites content may never be exempted from norm.rules: "
      f"{sorted(ORDER_RULES & CONTENT_RULES)}")
@@ -147,10 +147,16 @@ assert not (HOST_RULES & ORDER_RULES), \
     f"a host rule is not a re-sort and may not take the norm.rules exemption: {sorted(HOST_RULES & ORDER_RULES)}"
 
 
-def host_rule_skew(g: dict, c: dict) -> dict | None:
+def host_rule_skew(g, c) -> dict | None:
     """Which HOST_RULES fired on one side only. Reported on the row whether or not the cell diverges,
     so "this cell is green because a host-capability line was dropped from the golden" is a sentence
-    the ledger actually contains rather than one a reader has to infer."""
+    the ledger actually contains rather than one a reader has to infer.
+
+    Either side may be None: a cell missing from the golden or the candidate has its own class, and
+    asking which host rules it applied is not a question. Say nothing rather than raising — this is a
+    reporting nicety, and it must never be the reason the differ cannot render a row."""
+    if not isinstance(g, dict) or not isinstance(c, dict):
+        return None
     ga = {r for r in g.get("applied", [])} & HOST_RULES
     ca = {r for r in c.get("applied", [])} & HOST_RULES
     if ga == ca:

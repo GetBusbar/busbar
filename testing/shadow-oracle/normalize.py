@@ -85,6 +85,15 @@ What is normalized (each rule is a named entry in `applied`):
                       them. The patterns are ANCHORED and match a whole line; a keyword or a
                       severity match would also swallow a refusal, which is the one thing in stderr
                       the oracle exists to compare. stderr ONLY — a body is busbar's answer.
+  metrics.concurrent-attempts
+                      on a `concurrent` cell ONLY (--driver concurrent), the VALUE of every
+                      busbar_upstream_attempts_total series -> "<ATTEMPTS>". The recorder fires N
+                      requests at once and the closing scrape does not see N workers' increments at
+                      one instant: the published 1.5.5 binary records 3, 1, 1, 1 for the same cell
+                      across four runs. The KEY stays (a series that stops being published is a real
+                      regression), and every other series in the delta — busbar_requests_total, the
+                      per-key and per-bucket series — plus the usage row are compared byte for byte.
+                      On every other driver the attempts value is single-threaded and IS compared.
   egress.elapsed      effects.egress[].response.elapsed_ms (how long the upstream took to answer that
                       one attempt) -> `elapsed`, one of "<1s" / "1-5s" / ">5s". The raw millisecond
                       count is a measurement of the recording host; the BUCKET is the contract, and
@@ -365,6 +374,37 @@ def elapsed_bucket(ms: int) -> str:
     return ">5s"
 
 
+# ── A PER-THREAD COUNTER READ FROM N THREADS IS AN OBSERVATION, NOT A BEHAVIOUR ──────────────────
+# On a `concurrent` cell the recorder fires N requests at once and diffs /metrics before and after.
+# `busbar_upstream_attempts_total` is incremented per upstream attempt by whichever worker made it,
+# and the scrape that closes the window does not see the workers' increments at one instant: the
+# published 1.5.5 binary records 3, 1, 1, 1 for the SAME cell across four runs. Nothing about busbar
+# changed between those runs; the number is a fact about when the scrape landed relative to N
+# threads.
+#
+# Only the VALUE is masked, and only on this driver. The KEY still has to be there — an attempts
+# series that stops being published is a real regression and stays visible — and every other series
+# in the delta is compared byte for byte: busbar_requests_total (one per request, incremented on the
+# request path the client is waiting on, so it is stable at N), the per-key and per-bucket series,
+# and the usage row, which is the money. This is deliberately NOT a rule about metric names in
+# general: on every other driver the attempts value is a single-threaded count and is compared.
+CONCURRENT_MASKED_METRICS = ("busbar_upstream_attempts_total",)
+
+
+def mask_concurrent_metrics(metrics, applied: set):
+    if not isinstance(metrics, dict):
+        return metrics
+    out = {}
+    for k, v in metrics.items():
+        name = k.split("{", 1)[0]
+        if name in CONCURRENT_MASKED_METRICS:
+            applied.add("metrics.concurrent-attempts")
+            out[k] = "<ATTEMPTS>"
+        else:
+            out[k] = v
+    return out
+
+
 def norm_egress_response(resp, applied: set):
     """The upstream's own answer to one attempt. `status` and `retry_after` stay byte-exact -- a
     dropped Retry-After or a changed status is the divergence these cells exist to catch -- and only
@@ -613,7 +653,8 @@ def norm_body(body: str, applied: set, key_id: str | None, keep_json_keys: set |
     return {"text": norm_text("\n".join(lines), applied, keep_regex)}
 
 
-def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep: dict | None = None) -> dict:
+def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep: dict | None = None,
+              driver: str | None = None) -> dict:
     keep = keep or {}
     keep_headers = {h.lower() for h in keep.get("headers", [])}
     headers_min = {h.lower(): n for h, n in (keep.get("headers_min") or {}).items()}
@@ -643,6 +684,8 @@ def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep
     effects = norm_json(effects_in, applied, key_id)
     if egress_in is not None:
         effects["egress"] = norm_egress(egress_in, applied)
+    if driver == "concurrent" and "metrics" in effects:
+        effects["metrics"] = mask_concurrent_metrics(effects["metrics"], applied)
     out = {
         "status": cap.get("status"),
         "headers": headers,
@@ -670,8 +713,11 @@ def main() -> int:
         i = args.index("--keep-body-lines"); keep_lines = args[i + 1]; del args[i:i + 2]
     if "--keep" in args:
         i = args.index("--keep"); keep = json.loads(args[i + 1]); del args[i:i + 2]
+    driver = None
+    if "--driver" in args:
+        i = args.index("--driver"); driver = args[i + 1]; del args[i:i + 2]
     cap = json.load(open(args[0])) if args else json.load(sys.stdin)
-    print(json.dumps(normalize(cap, key_id, keep_lines, keep), separators=(",", ":"), sort_keys=True))
+    print(json.dumps(normalize(cap, key_id, keep_lines, keep, driver), separators=(",", ":"), sort_keys=True))
     return 0
 
 
