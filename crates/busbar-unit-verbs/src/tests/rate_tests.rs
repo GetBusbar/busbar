@@ -248,3 +248,7 @@ fn config_class_verb_is_limited_at_10_not_60() {
         "a blast-radius CONFIG verb must be capped at 10/min, not 60/min"
     );
 }
+
+/// The window arithmetic and the audit labels, in their own file.
+#[path = "rate_window_tests.rs"]
+mod rate_window_tests;

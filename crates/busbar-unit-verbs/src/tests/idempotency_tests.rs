@@ -162,3 +162,7 @@ fn create_and_rotate_scoped_keys_never_replay_each_other() {
         _ => panic!("a rotate's scoped key must not see the create's committed slot"),
     };
 }
+
+/// The sentinel's own bound -- what the replay window is, and is not, a bound on.
+#[path = "sentinel_tests.rs"]
+mod sentinel_tests;

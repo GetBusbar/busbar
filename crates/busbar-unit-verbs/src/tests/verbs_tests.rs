@@ -1777,3 +1777,7 @@ fn a_recovery_verb_waits_for_its_approval_under_required_dual_control() {
     .expect("an approved chain break lands");
     assert_eq!(v.store_for_test().reached(), vec!["chain_break"]);
 }
+
+/// The group-lookup adapter and the length-framed rotate slot, in their own file.
+#[path = "mint_wiring_tests.rs"]
+mod mint_wiring_tests;
