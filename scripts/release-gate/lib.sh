@@ -200,15 +200,67 @@ staged_asset_sha256() {
   printf '%s' "$want"
 }
 
+# ── THE STAGED IMAGE, FOR THE SAME REASON ──────────────────────────────────────────────────────
+#
+# The container rows had the same shape as the archive rows and one worse property. They resolved
+# `:<version>` on Docker Hub, then compared every other name — `:latest`, ghcr's `:<version>`,
+# ghcr's `:latest` — to THAT digest, fetched seconds earlier in the same run. So the whole family
+# proved the four names AGREE WITH EACH OTHER. Four names all pointing at bytes qa never staged is
+# a perfect pass: a promote that rebuilt instead of retagging pushes one image under every name and
+# every row is green. The one thing the rows never asked was whether the digest they all agree on
+# is the digest that was recorded.
+#
+# The staged record answers it — release-stage.yml refuses to write the record at all unless the
+# registry already serves the digest its build reported — so the anchor is the record, and the
+# same-run lookups become what they should always have been: observations compared to a fixed
+# expectation, not to each other.
+#
+# `sha256:<64 hex>`, normalised, because a docker digest is written with the algorithm prefix and a
+# bare hex string would silently never match one.
+_digest_from() {  # _digest_from <value> -> normalised sha256:<hex>, or non-zero
+  local d="${1:-}"
+  d="$(printf '%s' "$d" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  case "$d" in sha256:*) ;; *) return 1 ;; esac
+  printf '%s' "${d#sha256:}" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  printf '%s' "$d"
+}
+
+# The env var wins over the record so a caller can hand the digest straight across from the job
+# that staged it; the record is the durable form. Either way it is a RECORDED value, never one this
+# run resolved for itself.
+staged_image_digest() {
+  if [ -n "${STAGED_IMAGE_DIGEST:-}" ]; then _digest_from "$STAGED_IMAGE_DIGEST"; return $?; fi
+  local rec; rec="$(staged_record_path)"
+  [ -n "$rec" ] && [ -f "$rec" ] || return 1
+  _digest_from "$(jq -r '.digest // empty' "$rec" 2>/dev/null)"
+}
+
+# The armv8.0-compat arm64 image is a first-class release artifact on its own digest, so it gets its
+# own recorded anchor. A record that lost it would let the compat name be checked against the
+# default image, which boots everywhere EXCEPT the boards the name exists for.
+staged_compat_digest() {
+  if [ -n "${STAGED_COMPAT_DIGEST:-}" ]; then _digest_from "$STAGED_COMPAT_DIGEST"; return $?; fi
+  local rec; rec="$(staged_record_path)"
+  [ -n "$rec" ] && [ -f "$rec" ] || return 1
+  _digest_from "$(jq -r '.compat_digest // empty' "$rec" 2>/dev/null)"
+}
+
 # digest_matches <observed> <expected> -> 0 only when both are real 64-hex digests AND equal.
 # Written as a named function for the same reason probe_row_matches is: the comparison it replaces
 # was the kind that says "equal" when both sides are empty, and the case that proves it is one no
 # release can stage.
+# The optional `sha256:` prefix is accepted on either side and stripped before comparing, because
+# the two producers spell the same fact differently: a file hash comes back bare, a registry's
+# Docker-Content-Digest comes back prefixed. Only sha256 is ever in play here, so normalising is
+# the whole of it — and it is done in ONE place so a caller cannot get a third answer by trimming
+# the prefix off one side and not the other.
 digest_matches() {
   local got="${1:-}" want="${2:-}"
-  printf '%s' "$got"  | grep -Eq '^[0-9a-fA-F]{64}$' || return 1
-  printf '%s' "$want" | grep -Eq '^[0-9a-fA-F]{64}$' || return 1
-  [ "$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
+  printf '%s' "$got"  | grep -Eq '^(sha256:)?[0-9a-fA-F]{64}$' || return 1
+  printf '%s' "$want" | grep -Eq '^(sha256:)?[0-9a-fA-F]{64}$' || return 1
+  got="$(printf '%s'  "$got"  | tr '[:upper:]' '[:lower:]')";  got="${got#sha256:}"
+  want="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')"; want="${want#sha256:}"
+  [ "$got" = "$want" ]
 }
 
 # ── Version matching ────────────────────────────────────────────────────────────────────────────

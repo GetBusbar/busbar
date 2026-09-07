@@ -56,59 +56,80 @@ digest_of() {  # digest_of <auth-host> <registry-host> <repo> <tag> -> digest on
   | tr -d '\r' | grep -i '^docker-content-digest:' | awk '{print $2}'
 }
 
+# ── THE ANCHOR: WHAT WAS STAGED, NOT WHAT THIS RUN FOUND FIRST ─────────────────────────────────
+#
+# Every equality below used to be measured against `hub_ver` — the digest this same run had just
+# resolved for `:<version>` on Docker Hub. So the family proved the four names AGREE WITH EACH
+# OTHER, and four names all pointing at bytes qa never staged pass every one of them. The anchor is
+# now the digest release-stage.yml RECORDED, so each name is compared to a fixed expectation.
+#
+# NO ANCHOR IS A FAILURE, NOT A SKIP, for the same reason the per-target sha256 row is: "we could
+# not check whether these are the staged bytes" must never read as "they are". It is stated once,
+# here, and every row that needs it says so in its own words.
+STAGED="$(staged_image_digest || true)"
+STAGED_V8="$(staged_compat_digest || true)"
+NO_ANCHOR="the staged record named no image digest (STAGED_RECORD='${STAGED_RECORD:-<unset>}', STAGED_IMAGE_DIGEST='${STAGED_IMAGE_DIGEST:-<unset>}'). Without it this row can only compare registry names to each other, and four names agreeing about bytes nobody staged is a perfect pass. Fix: the caller must pass the digest release-stage.yml recorded for this release."
+NO_V8_ANCHOR="the staged record named no armv8.0-compat image digest (STAGED_RECORD='${STAGED_RECORD:-<unset>}', STAGED_COMPAT_DIGEST='${STAGED_COMPAT_DIGEST:-<unset>}'). The compat arm64 image is a first-class release artifact on its own digest; without its recorded value this row cannot tell the baseline build from the default one, and the default boots everywhere EXCEPT the boards the compat name exists for."
+
 # ── docker:hub-version ──────────────────────────────────────────────────────────────────────────
 hub_ver=""
 resolve_hub_ver() { hub_ver="$(digest_of auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" "$V")"; [ -n "$hub_ver" ]; }
-if retry 6 15 resolve_hub_ver; then
-  record "docker:hub-version" PASS "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V} resolves" "$hub_ver"
-else
+retry 6 15 resolve_hub_ver
+if [ -z "$STAGED" ]; then
+  record "docker:hub-version" FAIL "cannot bind ${DOCKERHUB_IMAGE}:${V} to the staged image" "$NO_ANCHOR"
+elif [ -z "$hub_ver" ]; then
   record "docker:hub-version" FAIL "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V} does not resolve" \
     "the version-pinned image was never pushed (checked against the OCI Distribution API, not hub.docker.com's index, which can lag hours). Fix: re-run docker.yml for v${V}."
+elif digest_matches "$hub_ver" "$STAGED"; then
+  record "docker:hub-version" PASS "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V} is the STAGED image" "$hub_ver"
+else
+  record "docker:hub-version" FAIL "${DOCKERHUB_IMAGE}:${V} is not the image qa staged" \
+    "the staged record names ${STAGED}; the tag resolves to ${hub_ver}. main promotes a recorded digest and touches no compiler, so a difference here means the version tag was pushed by something other than that promote — a rebuild, a manual push, a re-run of the build. Everything that soaked on qa was about the other image. Fix: re-run the promote against the staged record."
 fi
 
 # ── docker:hub-latest ───────────────────────────────────────────────────────────────────────────
 hub_latest=""
 resolve_hub_latest() {
   hub_latest="$(digest_of auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" latest)"
-  [ -n "$hub_latest" ] && [ "$hub_latest" = "$hub_ver" ]
+  digest_matches "$hub_latest" "$STAGED"
 }
-if [ -z "$hub_ver" ]; then
-  record "docker:hub-latest" FAIL "cannot compare :latest — :${V} did not resolve" "see docker:hub-version."
+if [ -z "$STAGED" ]; then
+  record "docker:hub-latest" FAIL "cannot bind ${DOCKERHUB_IMAGE}:latest to the staged image" "$NO_ANCHOR"
 elif retry 6 15 resolve_hub_latest; then
-  record "docker:hub-latest" PASS "${DOCKERHUB_IMAGE}:latest is the SAME digest as :${V}" "$hub_latest"
+  record "docker:hub-latest" PASS "${DOCKERHUB_IMAGE}:latest is the STAGED digest" "$hub_latest"
 else
   record "docker:hub-latest" FAIL "${DOCKERHUB_IMAGE}:latest is NOT the ${V} image" \
-    "expected ${hub_ver}, observed ${hub_latest:-<nothing>}. \`docker pull ${DOCKERHUB_IMAGE}\` — the command in the README, the docs and on the site — is serving a DIFFERENT release. docker/metadata-action does not imply \`latest\` from \`type=semver,pattern={{version}}\`. Fix: confirm docker.yml's tags: block emits an explicit \`type=raw,value=latest\` gated on a real release, then re-run it for v${V}."
+    "expected the staged ${STAGED}, observed ${hub_latest:-<nothing>}. \`docker pull ${DOCKERHUB_IMAGE}\` — the command in the README, the docs and on the site — is serving a DIFFERENT release. docker/metadata-action does not imply \`latest\` from \`type=semver,pattern={{version}}\`. Fix: confirm docker.yml's tags: block emits an explicit \`type=raw,value=latest\` gated on a real release, then re-run it for v${V}."
 fi
 
 # ── docker:ghcr-version — byte-for-byte the same image, not merely 'an image with that tag' ─────
 ghcr_ver=""
 resolve_ghcr_ver() {
   ghcr_ver="$(digest_of ghcr.io ghcr.io "$GHCR_REPO" "$V")"
-  [ -n "$ghcr_ver" ] && [ "$ghcr_ver" = "$hub_ver" ]
+  digest_matches "$ghcr_ver" "$STAGED"
 }
-if [ -z "$hub_ver" ]; then
-  record "docker:ghcr-version" FAIL "cannot compare GHCR — the Docker Hub digest is unknown" "see docker:hub-version."
+if [ -z "$STAGED" ]; then
+  record "docker:ghcr-version" FAIL "cannot bind ghcr.io/${GHCR_REPO}:${V} to the staged image" "$NO_ANCHOR"
 elif retry 6 15 resolve_ghcr_ver; then
-  record "docker:ghcr-version" PASS "ghcr.io/${GHCR_REPO}:${V} digest == Docker Hub's" "$ghcr_ver"
+  record "docker:ghcr-version" PASS "ghcr.io/${GHCR_REPO}:${V} is the STAGED digest" "$ghcr_ver"
 else
-  record "docker:ghcr-version" FAIL "ghcr.io/${GHCR_REPO}:${V} is not the same image as Docker Hub's" \
-    "expected ${hub_ver}, observed ${ghcr_ver:-<nothing>}. The same tag resolving to different bytes on the two registries means which code a user runs depends on which registry they happened to pull from. Fix: docker.yml copies the manifest cross-registry; re-run it for v${V}."
+  record "docker:ghcr-version" FAIL "ghcr.io/${GHCR_REPO}:${V} is not the staged image" \
+    "expected the staged ${STAGED}, observed ${ghcr_ver:-<nothing>}. The same tag resolving to different bytes on the two registries means which code a user runs depends on which registry they happened to pull from. Fix: docker.yml copies the manifest cross-registry; re-run it for v${V}."
 fi
 
 # ── docker:ghcr-latest ──────────────────────────────────────────────────────────────────────────
 ghcr_latest=""
 resolve_ghcr_latest() {
   ghcr_latest="$(digest_of ghcr.io ghcr.io "$GHCR_REPO" latest)"
-  [ -n "$ghcr_latest" ] && [ -n "$ghcr_ver" ] && [ "$ghcr_latest" = "$ghcr_ver" ]
+  digest_matches "$ghcr_latest" "$STAGED"
 }
-if [ -z "$ghcr_ver" ]; then
-  record "docker:ghcr-latest" FAIL "cannot compare ghcr :latest — :${V} did not resolve there" "see docker:ghcr-version."
+if [ -z "$STAGED" ]; then
+  record "docker:ghcr-latest" FAIL "cannot bind ghcr.io/${GHCR_REPO}:latest to the staged image" "$NO_ANCHOR"
 elif retry 6 15 resolve_ghcr_latest; then
-  record "docker:ghcr-latest" PASS "ghcr.io/${GHCR_REPO}:latest is the SAME digest as :${V}" "$ghcr_latest"
+  record "docker:ghcr-latest" PASS "ghcr.io/${GHCR_REPO}:latest is the STAGED digest" "$ghcr_latest"
 else
   record "docker:ghcr-latest" FAIL "ghcr.io/${GHCR_REPO}:latest is NOT the ${V} image" \
-    "expected ${ghcr_ver}, observed ${ghcr_latest:-<nothing>}. Users pulling from GHCR without a tag get a different release. Same fix as the Docker Hub case."
+    "expected the staged ${STAGED}, observed ${ghcr_latest:-<nothing>}. Users pulling from GHCR without a tag get a different release. Same fix as the Docker Hub case."
 fi
 
 # ── docker:armv8 — the armv8.0-compatible arm64 variant, four names, its own digest ────────────
@@ -119,75 +140,94 @@ fi
 # name (it boots everywhere EXCEPT the boards the name exists for).
 v8_pin=""
 resolve_v8_pin() { v8_pin="$(digest_of auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" "${V}-armv8.0")"; [ -n "$v8_pin" ]; }
-if retry 6 15 resolve_v8_pin; then
-  if [ -n "$hub_ver" ] && [ "$v8_pin" = "$hub_ver" ]; then
-    record "docker:hub-armv8-pin" FAIL "${DOCKERHUB_IMAGE}:${V}-armv8.0 is the SAME digest as :${V}" \
-      "the compat name must carry the armv8.0 baseline build, not the default (+lse) manifest. Fix: re-run docker.yml's promote for v${V} after confirming the staged -armv8.0 tag holds the baseline image."
-  else
-    record "docker:hub-armv8-pin" PASS "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V}-armv8.0 resolves (own digest)" "$v8_pin"
-  fi
-else
+retry 6 15 resolve_v8_pin
+if [ -z "$STAGED_V8" ]; then
+  record "docker:hub-armv8-pin" FAIL "cannot bind ${DOCKERHUB_IMAGE}:${V}-armv8.0 to the staged compat image" "$NO_V8_ANCHOR"
+elif [ -z "$v8_pin" ]; then
   record "docker:hub-armv8-pin" FAIL "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V}-armv8.0 does not resolve" \
     "the armv8.0-compatible arm64 image (RPi4-class boards) never got its version pin. Fix: re-run docker.yml with promote_to=${V} (idempotent)."
+elif ! digest_matches "$v8_pin" "$STAGED_V8"; then
+  record "docker:hub-armv8-pin" FAIL "${DOCKERHUB_IMAGE}:${V}-armv8.0 is not the compat image qa staged" \
+    "the staged record names ${STAGED_V8}; the tag resolves to ${v8_pin}. Fix: re-run the promote against the staged record rather than re-pushing the compat tag."
+elif [ -n "$STAGED" ] && digest_matches "$v8_pin" "$STAGED"; then
+  # Kept as its own verdict, and now measured between two RECORDED values rather than two names.
+  # The failure worth catching is the default (+lse) manifest shipping under the compat name: it
+  # boots everywhere EXCEPT the boards the name exists for, so it is invisible to every runner.
+  record "docker:hub-armv8-pin" FAIL "${DOCKERHUB_IMAGE}:${V}-armv8.0 is the SAME digest as :${V}" \
+    "the compat name must carry the armv8.0 baseline build, not the default (+lse) manifest, and the staged record names the same digest for both — so the staging itself, not just the tagging, collapsed the two. Fix: re-run docker.yml's promote for v${V} after confirming the staged -armv8.0 tag holds the baseline image."
+else
+  record "docker:hub-armv8-pin" PASS "registry-1.docker.io ${DOCKERHUB_IMAGE}:${V}-armv8.0 is the STAGED compat digest" "$v8_pin"
 fi
 
 v8_float=""
 resolve_v8_float() {
   v8_float="$(digest_of auth.docker.io registry-1.docker.io "$DOCKERHUB_IMAGE" armv8.0)"
-  [ -n "$v8_float" ] && [ "$v8_float" = "$v8_pin" ]
+  digest_matches "$v8_float" "$STAGED_V8"
 }
-if [ -z "$v8_pin" ]; then
-  record "docker:hub-armv8-floating" FAIL "cannot compare :armv8.0 — :${V}-armv8.0 did not resolve" "see docker:hub-armv8-pin."
+if [ -z "$STAGED_V8" ]; then
+  record "docker:hub-armv8-floating" FAIL "cannot bind ${DOCKERHUB_IMAGE}:armv8.0 to the staged compat image" "$NO_V8_ANCHOR"
 elif retry 6 15 resolve_v8_float; then
-  record "docker:hub-armv8-floating" PASS "${DOCKERHUB_IMAGE}:armv8.0 is the SAME digest as :${V}-armv8.0" "$v8_float"
+  record "docker:hub-armv8-floating" PASS "${DOCKERHUB_IMAGE}:armv8.0 is the STAGED compat digest" "$v8_float"
 else
   record "docker:hub-armv8-floating" FAIL "${DOCKERHUB_IMAGE}:armv8.0 is NOT the ${V}-armv8.0 image" \
-    "expected ${v8_pin}, observed ${v8_float:-<nothing>}. \`docker pull ${DOCKERHUB_IMAGE}:armv8.0\` — the documented tag for armv8.0 boards — serves a different release. Fix: re-run docker.yml with promote_to=${V}."
+    "expected the staged ${STAGED_V8}, observed ${v8_float:-<nothing>}. \`docker pull ${DOCKERHUB_IMAGE}:armv8.0\` — the documented tag for armv8.0 boards — serves a different release. Fix: re-run docker.yml with promote_to=${V}."
 fi
 
 ghcr_v8_pin=""
 resolve_ghcr_v8_pin() {
   ghcr_v8_pin="$(digest_of ghcr.io ghcr.io "$GHCR_REPO" "${V}-armv8.0")"
-  [ -n "$ghcr_v8_pin" ] && [ "$ghcr_v8_pin" = "$v8_pin" ]
+  digest_matches "$ghcr_v8_pin" "$STAGED_V8"
 }
-if [ -z "$v8_pin" ]; then
-  record "docker:ghcr-armv8-pin" FAIL "cannot compare GHCR — the Docker Hub compat digest is unknown" "see docker:hub-armv8-pin."
+if [ -z "$STAGED_V8" ]; then
+  record "docker:ghcr-armv8-pin" FAIL "cannot bind ghcr.io/${GHCR_REPO}:${V}-armv8.0 to the staged compat image" "$NO_V8_ANCHOR"
 elif retry 6 15 resolve_ghcr_v8_pin; then
-  record "docker:ghcr-armv8-pin" PASS "ghcr.io/${GHCR_REPO}:${V}-armv8.0 digest == Docker Hub's" "$ghcr_v8_pin"
+  record "docker:ghcr-armv8-pin" PASS "ghcr.io/${GHCR_REPO}:${V}-armv8.0 is the STAGED compat digest" "$ghcr_v8_pin"
 else
-  record "docker:ghcr-armv8-pin" FAIL "ghcr.io/${GHCR_REPO}:${V}-armv8.0 is not the same image as Docker Hub's" \
-    "expected ${v8_pin}, observed ${ghcr_v8_pin:-<nothing>}. Same cross-registry rule as docker:ghcr-version."
+  record "docker:ghcr-armv8-pin" FAIL "ghcr.io/${GHCR_REPO}:${V}-armv8.0 is not the staged compat image" \
+    "expected the staged ${STAGED_V8}, observed ${ghcr_v8_pin:-<nothing>}. Same cross-registry rule as docker:ghcr-version: the same name resolving to different bytes on the two registries means which code a user runs depends on where they pulled from."
 fi
 
 ghcr_v8_float=""
 resolve_ghcr_v8_float() {
   ghcr_v8_float="$(digest_of ghcr.io ghcr.io "$GHCR_REPO" armv8.0)"
-  [ -n "$ghcr_v8_float" ] && [ -n "$ghcr_v8_pin" ] && [ "$ghcr_v8_float" = "$ghcr_v8_pin" ]
+  digest_matches "$ghcr_v8_float" "$STAGED_V8"
 }
-if [ -z "$ghcr_v8_pin" ]; then
-  record "docker:ghcr-armv8-floating" FAIL "cannot compare ghcr :armv8.0 — :${V}-armv8.0 did not resolve there" "see docker:ghcr-armv8-pin."
+if [ -z "$STAGED_V8" ]; then
+  record "docker:ghcr-armv8-floating" FAIL "cannot bind ghcr.io/${GHCR_REPO}:armv8.0 to the staged compat image" "$NO_V8_ANCHOR"
 elif retry 6 15 resolve_ghcr_v8_float; then
-  record "docker:ghcr-armv8-floating" PASS "ghcr.io/${GHCR_REPO}:armv8.0 is the SAME digest as :${V}-armv8.0" "$ghcr_v8_float"
+  record "docker:ghcr-armv8-floating" PASS "ghcr.io/${GHCR_REPO}:armv8.0 is the STAGED compat digest" "$ghcr_v8_float"
 else
   record "docker:ghcr-armv8-floating" FAIL "ghcr.io/${GHCR_REPO}:armv8.0 is NOT the ${V}-armv8.0 image" \
-    "expected ${ghcr_v8_pin}, observed ${ghcr_v8_float:-<nothing>}. Same fix as the Docker Hub case."
+    "expected the staged ${STAGED_V8}, observed ${ghcr_v8_float:-<nothing>}. Same fix as the Docker Hub case."
 fi
 
-# ── docker:label — the image's own claim about which version it is ─────────────────────────────
-# Pulled fresh, by DIGEST-backed tag, with any local copy removed first: a cached layer set for the
-# same tag name would let a stale image answer for a fresh one.
-docker rmi -f "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1
-if retry 3 20 docker pull "${DOCKERHUB_IMAGE}:${V}" >/dev/null 2>&1; then
-  label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "${DOCKERHUB_IMAGE}:${V}" 2>/dev/null)"
+# ── THE IMAGE UNDER TEST IS THE STAGED DIGEST, ADDRESSED AS ONE ────────────────────────────────
+#
+# The label row and both boot rows named the image `${DOCKERHUB_IMAGE}:${V}` — a TAG. "Pulled fresh
+# by DIGEST-BACKED tag" is not a digest: it says the daemon resolves the tag through the registry
+# rather than a stale local copy, which is a statement about caching and none at all about which
+# bytes the tag points to. So a promote that rebuilt instead of retagging leaves `:<version>` on
+# bytes qa never staged, and these three rows pull them, boot them, read their label and pass.
+#
+# The reference is now `<repo>@sha256:<digest>` from the staged record, which is the one form that
+# cannot be repointed. And the label row's expectation goes with it: an image whose label disagrees
+# with the version was already the failure it looked for; an image that is not the staged one is a
+# failure the tag form could not see at all.
+REF="${DOCKERHUB_IMAGE}@${STAGED}"
+docker rmi -f "$REF" >/dev/null 2>&1
+if [ -z "$STAGED" ]; then
+  record "docker:label" FAIL "cannot read the staged image's label: no staged digest" "$NO_ANCHOR"
+elif retry 3 20 docker pull "$REF" >/dev/null 2>&1; then
+  label="$(docker inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$REF" 2>/dev/null)"
   if [ "$label" = "$V" ]; then
-    record "docker:label" PASS "image label org.opencontainers.image.version == ${V}" ""
+    record "docker:label" PASS "the staged image's org.opencontainers.image.version == ${V}" "$REF"
   else
     record "docker:label" FAIL "image label org.opencontainers.image.version is wrong" \
-      "expected '${V}', observed '${label:-<unset>}'. The tag says one version and the image says another, so anything reading the label (SBOM tooling, admission controllers, artifacthub) reports the wrong release. Fix: check docker/metadata-action's version resolution in docker.yml."
+      "expected '${V}', observed '${label:-<unset>}' on ${REF}. The release says one version and the staged image says another, so anything reading the label (SBOM tooling, admission controllers, artifacthub) reports the wrong release. Fix: check docker/metadata-action's version resolution in docker.yml."
   fi
 else
-  record "docker:label" FAIL "could not pull ${DOCKERHUB_IMAGE}:${V}" \
-    "\`docker pull\` failed after retries. Fix: see docker:hub-version."
+  record "docker:label" FAIL "could not pull ${REF}" \
+    "\`docker pull\` of the STAGED DIGEST failed after retries — the registry does not serve the bytes the record names. Fix: see docker:hub-version."
 fi
 
 # ── The two BOOT checks (#50) ───────────────────────────────────────────────────────────────────
@@ -239,8 +279,10 @@ is_running() {  # is_running <name>
 
 # --- form 1: the bare `docker run` from the Dockerfile header / README, on the image's own baked
 # --- /etc/busbar/config.yaml. This is the exact form that exited 1 on 1.5.3.
-if ! start_container busbar-gate-bare 18080 "${DOCKERHUB_IMAGE}:${V}"; then
-  record "docker:boot-bare" FAIL "\`docker run ${DOCKERHUB_IMAGE}:${V}\` did not START on this runner" \
+if [ -z "$STAGED" ]; then
+  record "docker:boot-bare" FAIL "cannot boot the staged image: no staged digest" "$NO_ANCHOR"
+elif ! start_container busbar-gate-bare 18080 "$REF"; then
+  record "docker:boot-bare" FAIL "\`docker run ${REF}\` did not START on this runner" \
     "docker said: $(printf '%s' "$START_ERR" | tr '\n' '|' | tail -c 400). NOT a pass and NOT a skip: the image under test was never launched, so nothing about it was verified. If this says 'port is already allocated', something else holds 18080 -- and the old code went on to curl that port and PASSED on whatever answered. Fix: free port 18080 on the runner, or remove a container leaked by an earlier leg."
 elif probe_healthz 18080 && is_running busbar-gate-bare; then
   record "docker:boot-bare" PASS "the bare documented \`docker run\` boots and answers ok on /healthz" ""
@@ -251,7 +293,7 @@ else
     exited*) why="the container EXITED (${st}) instead of serving — this is the #50 signature exactly" ;;
     *)       why="the container is ${st} but never answered ok on /healthz" ;;
   esac
-  record "docker:boot-bare" FAIL "\`docker run ${DOCKERHUB_IMAGE}:${V}\` does NOT work (#50)" \
+  record "docker:boot-bare" FAIL "\`docker run ${REF}\` does NOT work (#50)" \
     "${why}. Container log: ${logs}. A new user's first command fails. This shipped as v1.5.3 and was \`latest\` in production for six days. Fix: see the log above — 1.5.3's was the FROM-scratch/USER 65532 image being unable to write /etc/busbar while refusing to boot without a writable config overlay."
 fi
 docker rm -f busbar-gate-bare >/dev/null 2>&1
@@ -275,8 +317,10 @@ pools:
     members:
       - model: claude-sonnet
 YAML
-if ! start_container busbar-gate-ro 18081 \
-     -v "${work}/config.yaml:/etc/busbar/config.yaml:ro" "${DOCKERHUB_IMAGE}:${V}"; then
+if [ -z "$STAGED" ]; then
+  record "docker:boot-ro-mount" FAIL "cannot boot the staged image: no staged digest" "$NO_ANCHOR"
+elif ! start_container busbar-gate-ro 18081 \
+     -v "${work}/config.yaml:/etc/busbar/config.yaml:ro" "$REF"; then
   record "docker:boot-ro-mount" FAIL "the documented read-only-mount \`docker run\` did not START on this runner" \
     "docker said: $(printf '%s' "$START_ERR" | tr '\n' '|' | tail -c 400). The image under test was never launched, so this row verified nothing. See docker:boot-bare for the port-collision case."
 elif probe_healthz 18081 && is_running busbar-gate-ro; then
