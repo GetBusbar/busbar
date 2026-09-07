@@ -93,10 +93,7 @@ fn fixture() -> serde_json::Value {
 }
 
 /// Follow a document-local `$ref` chain to the schema it names.
-fn deref<'d>(
-    doc: &'d serde_json::Value,
-    mut node: &'d serde_json::Value,
-) -> &'d serde_json::Value {
+fn deref<'d>(doc: &'d serde_json::Value, mut node: &'d serde_json::Value) -> &'d serde_json::Value {
     while let Some(pointer) = node.get("$ref").and_then(serde_json::Value::as_str) {
         node = doc
             .pointer(pointer.trim_start_matches('#'))

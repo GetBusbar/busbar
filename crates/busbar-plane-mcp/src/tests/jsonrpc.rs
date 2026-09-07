@@ -3,8 +3,7 @@
 //! super::*` reaches the private items it always did.
 
 use super::{
-    error, id_shape, id_value, read, success, IdShape, CODES, RESULT_TYPE_COMPLETE,
-    RETIRED_CODES,
+    error, id_shape, id_value, read, success, IdShape, CODES, RESULT_TYPE_COMPLETE, RETIRED_CODES,
 };
 use busbar_contract::wire::Decode;
 
@@ -147,8 +146,8 @@ fn a_run_of_bytes_that_only_starts_like_a_number_is_not_one() {
 #[test]
 fn a_successful_answer_carries_the_discriminator() {
     let id = id_value(b"1").expect("a number is a value");
-    let bytes = success(Some(&id), br#"{"tools":[]}"#, RESULT_TYPE_COMPLETE)
-        .expect("the result writes");
+    let bytes =
+        success(Some(&id), br#"{"tools":[]}"#, RESULT_TYPE_COMPLETE).expect("the result writes");
     assert_eq!(
         core::str::from_utf8(&bytes).unwrap(),
         r#"{"id":1,"jsonrpc":"2.0","result":{"resultType":"complete","tools":[]}}"#

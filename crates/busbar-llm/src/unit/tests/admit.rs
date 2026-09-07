@@ -79,11 +79,7 @@ fn governed(
 }
 
 /// Read one bucket's three figures off the same surfaces the enforcer and the dashboards read.
-fn ledger(
-    app: &std::sync::Arc<crate::test_support::BuiltApp>,
-    bucket: &str,
-    now: u64,
-) -> Ledger {
+fn ledger(app: &std::sync::Arc<crate::test_support::BuiltApp>, bucket: &str, now: u64) -> Ledger {
     let gov = app.governance.clone().expect("governance is configured");
     let derived = gov
         .derived_bucket_usage(&app.cost, bucket, "total", true, now)

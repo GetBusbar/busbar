@@ -3,8 +3,8 @@
 //! super::*` reaches the private items it always did.
 
 use super::{
-    CLAIMS, DEFAULT_METADATA, DEFAULT_MOUNT, SCHEME, SCHEME_ALTS, TRANSPORT_HTTP,
-    TRANSPORT_SSE, TRANSPORT_STDIO,
+    CLAIMS, DEFAULT_METADATA, DEFAULT_MOUNT, SCHEME, SCHEME_ALTS, TRANSPORT_HTTP, TRANSPORT_SSE,
+    TRANSPORT_STDIO,
 };
 use busbar_contract::grammar::Selector;
 

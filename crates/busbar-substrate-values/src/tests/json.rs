@@ -36,9 +36,7 @@ fn no_direct_serde_json_body_calls_outside_this_seam() {
                 if line.trim_start().starts_with("//") {
                     continue; // prose about the seam is not a call
                 }
-                if line.contains("serde_json::to_vec")
-                    || line.contains("serde_json::from_slice")
-                {
+                if line.contains("serde_json::to_vec") || line.contains("serde_json::from_slice") {
                     offenders.push(format!("{}:{}: {}", path.display(), i + 1, line.trim()));
                 }
             }

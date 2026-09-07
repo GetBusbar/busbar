@@ -56,8 +56,7 @@ fn the_door_answers_the_published_releases_own_bytes() {
     );
     // Serialised out of the cell's OWN recorded body: two keys, in the order the wire has them.
     // Nothing in this comparison is a value this file chose.
-    let recorded =
-        serde_json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
+    let recorded = serde_json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
     assert_eq!(
         answer.body, recorded,
         "the door's bytes are the recorded answer's bytes"
@@ -311,8 +310,8 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
 
         let audit_token: UnitToken<Audit> = UnitToken::mint(&seal);
         if completed {
-            let _ = audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed)
-                .into_result(&seal);
+            let _ =
+                audit(&binding, &log, &audit_token, &ctx, &Outcome::Completed).into_result(&seal);
         } else {
             let _ = audit_refused(
                 &binding,
@@ -358,11 +357,7 @@ fn a_recorded_mutation_names_the_principal_and_not_the_credential() {
 fn a_money_governance_verb_is_checked_against_the_posture_the_fleet_sealed() {
     struct Sealed(Option<(PostureCtx, ApprovalState)>);
     impl PostureView for Sealed {
-        fn resolve(
-            &self,
-            _verb: KernelVerb,
-            _actor: &str,
-        ) -> Option<(PostureCtx, ApprovalState)> {
+        fn resolve(&self, _verb: KernelVerb, _actor: &str) -> Option<(PostureCtx, ApprovalState)> {
             self.0
         }
     }
@@ -539,8 +534,7 @@ fn the_rate_class_is_the_shipped_table_and_not_the_default() {
     );
     assert_eq!(MutationClass::Forbidden.limit(), 0);
     assert!(
-        busbar_unit_scope::admin_required_scope("GET", "/api/v1/admin/audit")
-            == Scope::ReadOnly
+        busbar_unit_scope::admin_required_scope("GET", "/api/v1/admin/audit") == Scope::ReadOnly
     );
 }
 
@@ -1684,8 +1678,7 @@ fn a_ledger_request(path: &str) -> AdminRequest {
 /// Walk one request through the whole loop against a node whose ledger holds the fixture.
 #[cfg(feature = "root-admin")]
 fn answer_over_seeded_ledger(request: AdminRequest) -> AdminAnswer {
-    let mut units =
-        crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
+    let mut units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch));
     units.admin =
         AdminBinding::new(Arc::new(AnsweringDispatch)).with_ledger_view(Arc::new(SeededLedger));
     AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
@@ -1918,8 +1911,7 @@ fn a_panicking_step_leaves_both_tables_empty() {
 
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(|_| {}));
-    let ended =
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.answer(a_request())));
+    let ended = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| node.answer(a_request())));
     std::panic::set_hook(previous);
     assert!(ended.is_err(), "the fixture's dispatch panics");
 
@@ -1984,8 +1976,7 @@ fn the_reconciliation_served_is_the_identitys_own_answer() {
     );
 
     let served: serde_json::Value = serde_json::from_slice(
-        &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation"))
-            .body,
+        &answer_over_seeded_ledger(a_ledger_request("/api/v1/admin/ledger/reconciliation")).body,
     )
     .expect("valid JSON");
 
@@ -2329,11 +2320,10 @@ fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_r
     let under = |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
         let mut request = a_ledger_request(path);
         request.credential = credential.map(ToString::to_string);
-        let units =
-            crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
-                .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
-                    Denylist(revoked),
-                )));
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                Denylist(revoked),
+            )));
         AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
     };
 

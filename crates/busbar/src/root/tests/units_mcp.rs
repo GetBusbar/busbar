@@ -20,8 +20,7 @@ impl Resolver for FixedResolver {
 /// registrations the fixtures use, and an empty denylist.
 fn seam() -> NetSeam<'static> {
     static RESOLVER: FixedResolver = FixedResolver;
-    static DENYLIST: std::sync::LazyLock<Denylist> =
-        std::sync::LazyLock::new(Denylist::default);
+    static DENYLIST: std::sync::LazyLock<Denylist> = std::sync::LazyLock::new(Denylist::default);
     NetSeam {
         resolver: &RESOLVER,
         policy: GuardPolicy {
@@ -78,10 +77,7 @@ impl AbiStore for SilentStore {
         Ok(())
     }
 
-    fn list_metering(
-        &self,
-        _bucket: u64,
-    ) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
+    fn list_metering(&self, _bucket: u64) -> busbar_api::StoreResult<Vec<busbar_api::MeteringRow>> {
         Ok(Vec::new())
     }
 }
@@ -414,12 +410,12 @@ fn the_bound_form_authenticates_through_the_nodes_own_seams() {
             expected_aud: Option<&str>,
         ) -> Option<KeyFacts> {
             // The audience is the plane boundary, and the verifier is where it is enforced.
-            (credential == "tok" && expected_aud == Some(<McpPlane as PlaneMeta>::KEY)).then(
-                || KeyFacts {
+            (credential == "tok" && expected_aud == Some(<McpPlane as PlaneMeta>::KEY)).then(|| {
+                KeyFacts {
                     id: "key-mcp-1".to_string(),
                     name: "an approved key".to_string(),
-                },
-            )
+                }
+            })
         }
 
         fn revoked(&self, _credential: &str) -> bool {
@@ -572,8 +568,7 @@ fn a_registered_hop_answering_with_the_metadata_address_does_not_pass_the_guard(
     let plane = McpPlane::new(SERVERS);
 
     static RESOLVER: Metadata = Metadata;
-    static DENYLIST: std::sync::LazyLock<Denylist> =
-        std::sync::LazyLock::new(Denylist::default);
+    static DENYLIST: std::sync::LazyLock<Denylist> = std::sync::LazyLock::new(Denylist::default);
     let hostile = Catalogue::upstream_only(
         plane,
         NetSeam {

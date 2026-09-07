@@ -1021,10 +1021,7 @@ macro_rules! no_governance_rows {
         fn put_key(&self, _key: &busbar_api::VirtualKey) -> busbar_api::StoreResult<()> {
             Ok(())
         }
-        fn get_key(
-            &self,
-            _id: &str,
-        ) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
+        fn get_key(&self, _id: &str) -> busbar_api::StoreResult<Option<busbar_api::VirtualKey>> {
             Ok(None)
         }
         fn list_keys(&self) -> busbar_api::StoreResult<Vec<busbar_api::VirtualKey>> {
@@ -1048,10 +1045,7 @@ macro_rules! no_governance_rows {
         ) -> busbar_api::StoreResult<()> {
             Ok(())
         }
-        fn add_metering(
-            &self,
-            _delta: &busbar_api::MeteringDelta,
-        ) -> busbar_api::StoreResult<()> {
+        fn add_metering(&self, _delta: &busbar_api::MeteringDelta) -> busbar_api::StoreResult<()> {
             Ok(())
         }
         fn list_metering(
@@ -1092,27 +1086,17 @@ impl RecordingStore {
 impl busbar_api::Store for RecordingStore {
     no_governance_rows!();
 
-    fn upsert_plane_record(
-        &self,
-        record: &busbar_api::PlaneRecord,
-    ) -> busbar_api::StoreResult<()> {
+    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         self.note("put", &record.kind);
         Ok(())
     }
 
-    fn get_plane_record(
-        &self,
-        kind: &str,
-        _id: &str,
-    ) -> busbar_api::StoreResult<Option<Vec<u8>>> {
+    fn get_plane_record(&self, kind: &str, _id: &str) -> busbar_api::StoreResult<Option<Vec<u8>>> {
         self.note("get", kind);
         Ok(None)
     }
 
-    fn append_plane_record(
-        &self,
-        record: &busbar_api::PlaneRecord,
-    ) -> busbar_api::StoreResult<()> {
+    fn append_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
         self.note("append", &record.kind);
         Ok(())
     }
@@ -1337,9 +1321,7 @@ fn deployment_priced(groups: busbar_unit_admission::GroupTable, pricer: Pricer) 
         groups,
         pricer,
         records: RecordLegs::new(Arc::new(RecordingStore::default())),
-        meter_policy: crate::root::policy::build(
-            &crate::root::policy::MeterPolicyConfig::default(),
-        ),
+        meter_policy: crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
         scope: scope_policy(crate::root::policy::ScopePolicy::new()),
         durability: Mutex::new(durability),
         origin: busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),

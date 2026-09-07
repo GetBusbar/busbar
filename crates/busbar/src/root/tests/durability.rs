@@ -865,8 +865,8 @@ fn a_settlement_and_its_carry_reach_the_journal_in_one_batch() {
 #[test]
 fn a_posting_the_exit_path_built_settles_exactly_as_a_hold_does() {
     use busbar_caps::{
-        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, Posted,
-        PrincipalId, QuantitySource, Usage, UsageLine, UsageToken,
+        step::Admit, AdmitToken, Hold, KernelSeal, LedgerToken, MeterClassId, Posted, PrincipalId,
+        QuantitySource, Usage, UsageLine, UsageToken,
     };
     let seal = KernelSeal::acquire_for_kernel();
     let admit = AdmitToken::<Admit>::mint(&seal);

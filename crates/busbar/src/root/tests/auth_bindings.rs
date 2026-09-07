@@ -15,12 +15,7 @@ struct Directory {
 }
 
 impl VirtualKeyDirectory for Directory {
-    fn verify(
-        &self,
-        credential: &str,
-        _now: u64,
-        _expected_aud: Option<&str>,
-    ) -> Option<KeyFacts> {
+    fn verify(&self, credential: &str, _now: u64, _expected_aud: Option<&str>) -> Option<KeyFacts> {
         self.asked
             .lock()
             .unwrap_or_else(|p| p.into_inner())

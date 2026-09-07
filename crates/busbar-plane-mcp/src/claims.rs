@@ -122,6 +122,18 @@ pub const CLAIMS: &[Claim] = &[
     claim(TRANSPORT_STDIO, Selector::StreamName(STDIO_STREAM)),
 ];
 
+/// Whether this plane makes any claim at all against the claim key `key`.
+///
+/// The same NAMED QUESTION as [`is_stdio`] above, and for the same reason. A composition root that
+/// wants to know "is this a surface I claim?" was writing `CLAIMS.iter().any(|c| c.transport == k)`
+/// — a walk over this crate's claim vocabulary, spelled with the axis's noun in it, in a file the
+/// axis lint reads as the agnostic core forking on the wire carrier. The question belongs to the
+/// crate that owns the vocabulary; the answer is a `bool`, and a `bool` names no axis.
+#[must_use]
+pub fn claims_any(key: &str) -> bool {
+    CLAIMS.iter().any(|claim| claim.transport == key)
+}
+
 #[cfg(test)]
 #[path = "tests/claims.rs"]
 mod tests;

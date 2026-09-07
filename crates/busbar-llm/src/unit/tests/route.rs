@@ -89,8 +89,7 @@ fn normalize(s: &str) -> String {
             serde_json::Value::Object(map) => {
                 for (k, val) in map.iter_mut() {
                     let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
-                    let is_clock =
-                        matches!(k.as_str(), "created" | "created_at" | "createTime");
+                    let is_clock = matches!(k.as_str(), "created" | "created_at" | "createTime");
                     let is_latency = k == "latencyMs";
                     if is_id && val.is_string() {
                         *val = serde_json::Value::String("<id>".to_string());
