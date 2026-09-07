@@ -64,17 +64,109 @@
 # A separate CARGO_TARGET_DIR keeps the deleted-feature build from thrashing the default target
 # dir's artifacts (feature flips would otherwise rebuild the workspace twice per developer loop).
 set -uo pipefail
-cd "$(dirname "$0")/.."
 
 note() { printf '  %s\n' "$1"; }
 die()  { printf 'proto-deletion-gate: FAIL — %s\n' "$1"; exit 1; }
 
+# There is no `set -e` here, so a failed `cd` would leave every relative path below — the core
+# source root, the crate globs, the cargo invocations — resolving against the caller's directory.
+cd "$(dirname "$0")/.." || die "cannot cd to the repository root"
+
 # ── level 1: static (once, for the whole tree) ──────────────────────────────────────────────────
-if git grep -q "busbar_proto" -- crates/busbar-core/src; then
-  git grep -n "busbar_proto" -- crates/busbar-core/src
+# THE NEEDLE IS DERIVED FROM THE TREE, NEVER SPELLED. This level used to grep core for the single
+# literal `busbar_proto`. There is no `crates/busbar-proto` any more and no Rust anywhere names that
+# symbol: the only surviving occurrence in the workspace is a doc comment in busbar-llm-codec quoting
+# this very grep. So level 1 — the gate's headline assertion, "core's sources never name a protocol
+# crate" — could not fire. Planting `use busbar_mcp_codec::Frame;` in a copy of core left it printing
+# `grep count 0`. A needle that names a crate the split has already renamed is a rule nobody can
+# violate, and the whole seam is measured by this level.
+#
+# The needles are now the protocol and plane crates as they exist on disk, in underscore form, so a
+# crate added or renamed by the next split is covered without an edit here. Comments are stripped
+# first: core's own `proto/registry.rs` documents the rule in prose that names `busbar_mcp::PROTO_DECL`
+# and `busbar_llm::DECLS`, and prose explaining a ban is not a violation of it. `tests/` trees are out
+# for the same reason the neutral-purity lint excludes them — a test may name what production cannot.
+CORE_SRC="crates/busbar-core/src"
+
+proto_crate_names() { # underscore crate names of every protocol / plane crate on disk
+  local d b
+  for d in crates/busbar-llm crates/busbar-mcp crates/busbar-a2a crates/busbar-voice \
+           crates/busbar-*-codec crates/busbar-plane-*; do
+    [ -d "$d" ] || continue
+    b="$(basename "$d")"
+    printf '%s\n' "${b//-/_}"
+  done | sort -u
+}
+
+core_prod_files() { # core's PRODUCTION sources: no tests/ tree, no *_test(s).rs
+  find "${1:-$CORE_SRC}" -name '*.rs' -not -path '*/tests/*' 2>/dev/null \
+    | grep -Ev '_tests?\.rs$' | sort
+}
+
+level1_scan() { # $1 = a core src root, $2 = newline-separated needles; echoes one line per hit
+  core_prod_files "$1" | while IFS= read -r f; do
+    awk -v file="$f" '{ line = $0; sub(/\/\/.*$/, "", line); if (line ~ /^[[:space:]]*$/) next; print file ":" FNR ":" line }' "$f"
+  done | grep -F -f <(printf '%s\n' "$2") || true
+}
+
+# ── SELF-TEST — the STATIC legs, which are the ones that rot silently ────────────────────────────
+# Levels 2/3 boot a real binary and cannot be self-tested without the build they exist to make. The
+# static legs can, and they are the ones that go stale: level 1's needle was a crate name the split
+# had already retired, so it matched nothing and reported the seam intact for as long as nobody
+# looked. This proves the scanner still catches a real protocol-crate reference, still ignores the
+# prose that documents the ban, and still refuses a root it cannot read.
+if [ "${1:-}" = "--selftest" ]; then
+  st_tmp="$(mktemp -d)"; trap 'rm -rf "$st_tmp"' EXIT
+  st_fail=0
+  mkdir -p "$st_tmp/core/tests"
+  needles="$(proto_crate_names)"
+  [ -n "$needles" ] || { die "self-test: no protocol/plane crate on disk, so there is no needle to prove"; }
+
+  printf 'pub fn ok() {}\n' > "$st_tmp/core/clean.rs"
+  printf '/// prose naming busbar_mcp::PROTO_DECL, which documents the ban\npub fn documented() {}\n' > "$st_tmp/core/prose.rs"
+  printf 'use busbar_mcp::PROTO_DECL;\n' > "$st_tmp/core/tests/allowed.rs"
+  if [ -n "$(level1_scan "$st_tmp/core" "$needles")" ]; then
+    st_fail=1; note "SELF-TEST GREEN case FAILED: prose and a tests/ reference were flagged as violations"
+  else
+    note "self-test GREEN: a doc comment naming a protocol crate, and a tests/ file naming one, are not violations"
+  fi
+
+  printf 'use busbar_mcp_codec::Frame;\npub fn leak(f: Frame) -> Frame { f }\n' > "$st_tmp/core/leak.rs"
+  if [ -n "$(level1_scan "$st_tmp/core" "$needles")" ]; then
+    note "self-test RED: a production core file naming a protocol crate is flagged"
+  else
+    st_fail=1; note "SELF-TEST RED case FAILED: core naming a protocol crate was not flagged"
+  fi
+
+  if [ -n "$(core_prod_files "$st_tmp/no-such-root" | grep -c . || true)" ] \
+     && [ "$(core_prod_files "$st_tmp/no-such-root" | grep -c . || true)" -eq 0 ]; then
+    note "self-test ROOT: a core root that is not on disk yields zero files, which the guard above refuses"
+  else
+    st_fail=1; note "SELF-TEST ROOT case FAILED"
+  fi
+
+  if [ "$st_fail" -ne 0 ]; then
+    die "proto-deletion-gate self-test FAILED — the static scanner would let a protocol-crate reference through"
+  fi
+  echo "proto-deletion-gate self-test: static legs GREEN (RED on a real reference, silent on prose and tests)"
+  exit 0
+fi
+
+# A missing root and a needle-less scan are each RED before the count means anything: `find` on a
+# renamed root prints its complaint and returns an empty list, and an empty list has no protocol
+# crate in it — the same clean answer a compliant core gives.
+[ -d "$CORE_SRC" ] || die "$CORE_SRC is not on disk; a scan of zero files names no protocol crate, which is not the same as core not naming one"
+PROTO_NEEDLES="$(proto_crate_names)"
+[ -n "$PROTO_NEEDLES" ] || die "no protocol or plane crate found under crates/; with no needle this level asserts nothing"
+CORE_NFILES="$(core_prod_files | grep -c . || true)"
+[ "$CORE_NFILES" -gt 0 ] || die "$CORE_SRC holds no production .rs; zero files name no protocol crate, which is not a pass"
+
+PROTO_HITS="$(level1_scan "$CORE_SRC" "$PROTO_NEEDLES")"
+if [ -n "$PROTO_HITS" ]; then
+  printf '%s\n' "$PROTO_HITS"
   die "crates/busbar-core/src names a protocol crate; the seam only means something if core cannot"
 fi
-note "level 1 static: core names no protocol crate (grep count 0)"
+note "level 1 static: core names no protocol crate (0 hits over $CORE_NFILES production file(s), needles: $(printf '%s' "$PROTO_NEEDLES" | tr '\n' ' '))"
 
 # ── level 1b: structural — the IrReq/IrResp hub enums (G6 step A4a scaffolding) ──────────────────
 # The `g6-freeze-witness.sh` count DELIBERATELY excludes `IrReq`/`IrResp`: they do not relocate as a
