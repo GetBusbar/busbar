@@ -146,8 +146,13 @@ pub struct LegResult {
     pub body: Option<Vec<u8>>,
     /// The bodies a scan returned, oldest first for an append-only kind.
     pub bodies: Vec<Vec<u8>>,
-    /// Whether a redemption was the first one. A spent token answers `false`.
-    pub redeemed: bool,
+    /// Whether the callback token the leg checked is STILL LIVE. A token whose task has finished, or
+    /// whose deadline has passed, answers `false`.
+    ///
+    /// It is a liveness reading and not a redemption, so asking twice answers the same twice: one
+    /// task legitimately receives several callbacks, and a reading that changed under the question
+    /// would refuse every one after the first.
+    pub live: bool,
 }
 
 /// Everything one record write carries besides its body.
@@ -164,8 +169,23 @@ pub struct LegKey<'a> {
     /// Monotonic sequence within the parent, for the append-only kinds.
     pub seq: u64,
     /// The record's timestamp, which is the axis retention compares against.
+    ///
+    /// It is also the NOW a liveness check is judged at, and it is the arrival epoch the root pinned
+    /// rather than a fresh clock read — the same reading every other step of this unit is judged
+    /// against, so a token cannot be live for one leg of a plan and lapsed for the next.
     pub ts: u64,
+    /// The instant past which a capability carried by this key is dead, whatever else is true.
+    ///
+    /// Separate from [`LegKey::ts`] and that separation is the fix: passing the same value as both
+    /// the deadline and the clock asks "is now past now", which is false for every token ever
+    /// presented, so every token verified. A deadline has to be a different number from the clock it
+    /// is compared against or it is not a deadline.
+    pub expires_at: u64,
     /// Whether retention may drop the row once it is older than a cutoff.
+    ///
+    /// Also what makes the revocation leg bite: a push callback that moved its task to an ending is
+    /// the callback after which the task's token must stop working, and this is the plan's one
+    /// reading of whether that happened.
     pub terminal: bool,
 }
 
@@ -265,16 +285,37 @@ impl RecordLegs {
                 self.store.delete_plane_record(kind, key.id).map_err(fail)?;
                 Ok(LegResult::default())
             }
-            records::OP_REDEEM => Ok(LegResult {
-                // The token is spent exactly once and the answer is which call spent it. A second
-                // redemption answers false rather than failing: two agents racing one callback is
-                // an ordinary event, and only one of them is the first.
-                redeemed: self
+            records::OP_VERIFY_LIVE => Ok(LegResult {
+                // THE DEADLINE AND THE CLOCK ARE TWO DIFFERENT NUMBERS. This leg used to redeem, and
+                // it passed `key.ts` as BOTH the expiry and the now — which asks the store whether
+                // now is past now. It never is, so the answer was yes for every token ever presented,
+                // and a callback token captured off the wire kept working for as long as the process
+                // lived. The deadline is the task's, carried on the key; the now is the arrival epoch
+                // the root pinned.
+                //
+                // Nothing is spent. One task draws several callbacks — `working`, `input-required`,
+                // `completed` — and all of them are the same capability being used for what it is
+                // for. What ends the token is the task ending, which `OP_REVOKE` below records.
+                live: self
                     .store
-                    .redeem_plane_token(kind, key.id, key.ts, key.ts)
+                    .plane_token_live(kind, key.id, key.expires_at, key.ts)
                     .map_err(fail)?,
                 ..LegResult::default()
             }),
+            records::OP_REVOKE => {
+                // ONLY on the update that made the task terminal, and inert on every other. A task
+                // that moved to `working` has more to report and must keep its token; a task that
+                // moved to `completed` has nothing left to say, so the capability that spoke for it
+                // is retired here and the next callback carrying it fails the check above.
+                //
+                // A no-op is a successful leg, not a skipped one: the plan is fixed and every leg in
+                // it runs, so "there was nothing to revoke yet" has to be an ordinary answer rather
+                // than an absence the caller has to interpret.
+                if key.terminal {
+                    self.store.delete_plane_record(kind, key.id).map_err(fail)?;
+                }
+                Ok(LegResult::default())
+            }
             other => Err(LegError::UndeclaredOp {
                 schema: kind,
                 op: other,
@@ -497,6 +538,17 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pool: &'r str,
     /// The arrival epoch, pinned. Never a fresh clock read on the request path.
     pub now: u64,
+    /// HOW LONG A TASK'S CAPABILITIES MAY OUTLIVE ITS LAST MOVE, in seconds.
+    ///
+    /// The bound on the push callback token, and the answer to "what if the task never reaches an
+    /// ending". Terminal revocation retires a token the moment its task finishes, but a backend that
+    /// accepts a task and then goes silent forever would otherwise leave one live indefinitely — so
+    /// there is a deadline as well, and the token is dead at whichever comes first.
+    ///
+    /// Read off the deployment rather than hard-coded at the leg, because it is the same question a
+    /// deployment already answers about how long it keeps a task at all: a capability that outlives
+    /// the row it names is a capability for nothing.
+    pub task_ttl_secs: u64,
     /// THE SECOND CLOCK the audit record carries, pinned at the same arrival — a MONOTONIC reading,
     /// which is a different measurement from `now` above and not a second spelling of it.
     ///
@@ -1091,6 +1143,12 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             parent: None,
             seq: 0,
             ts: self.bindings.now,
+            // The deadline is measured from THIS unit's arrival, so a task that keeps reporting keeps
+            // its token alive and one that goes silent loses it a TTL after its last word. Saturating
+            // because a deployment configuring an enormous TTL should get "effectively never" rather
+            // than a wrapped instant already in the past — which would be a deadline that refuses
+            // everything, the failure mode this whole change exists to avoid the mirror image of.
+            expires_at: self.bindings.now.saturating_add(self.bindings.task_ttl_secs),
             terminal: matches!(
                 self.draft.finish,
                 FinishClass::Complete | FinishClass::Error
@@ -1421,3 +1479,4 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
 #[cfg(test)]
 #[path = "tests/units_a2a.rs"]
 mod tests;
+

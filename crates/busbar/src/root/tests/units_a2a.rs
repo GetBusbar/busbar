@@ -468,6 +468,7 @@ fn an_undeclared_operation_is_refused() {
         parent: None,
         seq: 0,
         ts: 0,
+        expires_at: 0,
         terminal: false,
     };
     // The event chain is hash-linked, so it is append-and-read and never overwritten. Asking it
@@ -497,6 +498,9 @@ fn every_declared_operation_reaches_the_store() {
         parent: Some("p-1"),
         seq: 1,
         ts: 7,
+        // Ahead of `ts`, so a liveness leg in this sweep is asked a question whose answer is not
+        // decided by the deadline having already passed.
+        expires_at: 70,
         terminal: false,
     };
     for schema in records::RECORD_SCHEMAS {
@@ -550,6 +554,7 @@ fn a_plan_runs_its_record_legs_in_order_and_skips_the_hop() {
         parent: Some("t-1"),
         seq: 1,
         ts: 3,
+        expires_at: 30,
         terminal: true,
     };
     let results = legs.run_plan(&plan, &key, b"{}").expect("the legs run");
@@ -602,6 +607,7 @@ fn a_refusing_store_stops_the_plan() {
         parent: None,
         seq: 0,
         ts: 0,
+        expires_at: 0,
         terminal: false,
     };
     assert!(matches!(
@@ -1389,6 +1395,10 @@ impl Deployment {
                 durability: &self.durability,
                 pool: "agents",
                 now,
+                // An hour, which is long enough that no fixture here trips the deadline by
+                // accident and short enough that a test meaning to trip it can just step the
+                // wall clock past it.
+                task_ttl_secs: 3_600,
                 // One reading per unit, off the node's own counter, exactly as the root would
                 // take it at arrival.
                 mono: self.mono.fetch_add(1, Ordering::AcqRel),
