@@ -365,6 +365,22 @@ tier   = "fast"
 run    = "scripts/construction-gate.sh --selftest && scripts/construction-gate.sh --summary"
 
 [[segment]]
+id     = "documented-claims"
+status = "active"
+tier   = "fast"
+# THE DOCUMENTED-BEHAVIOUR CLAIM GATE (scripts/documented-claims-check.sh) — qa/documented-claims.json
+# records every README and CHANGELOG behaviour claim the ops inventory cross-checks, each pinned by a
+# shadow-oracle cell or excused in writing as untestable prose, plus the two rows the design calls
+# CONTRADICTED, which carry the CODE's behaviour as the parity target. The register was cited as a gate
+# by the design-bindings ledger while NOTHING in the tree opened it, and its own header claimed a
+# sibling gate verified its cell ids — neither was so. A data file compares nothing; it is an INPUT to
+# a gate, never a gate. `--check` asserts the shape, a complete and contiguous claim run for each
+# document, a `counts` block re-derived rather than trusted, every cited cell present in cells.json AND
+# recorded PASS by the pinned golden, and both CONTRADICTED rows still flagged and still pinned. The
+# --selftest (one planted defect per arm, and the committed register asserted green) runs FIRST.
+run    = "scripts/documented-claims-check.sh --selftest && scripts/documented-claims-check.sh --check"
+
+[[segment]]
 id     = "design-bindings"
 status = "active"
 tier   = "fast"
