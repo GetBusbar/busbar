@@ -188,6 +188,27 @@ pub const OPENAI_FAMILY_MAX_OPEN_TOOLS: usize = 128;
 /// emitting unbounded unique indices. Matches OpenAI's documented parallel-tool-call limit (128).
 const MAX_OPEN_TOOLS: usize = OPENAI_FAMILY_MAX_OPEN_TOOLS;
 
+/// `usage.prompt_tokens_details.cache_write_tokens` off a Chat Completions usage object.
+///
+/// The pinned schema declares it on `CompletionUsage.prompt_tokens_details` — "The unadjusted
+/// number of prompt tokens written to cache" — making it a SLICE of `prompt_tokens`, exactly as
+/// `cached_tokens` is. Cache-WRITE prices at its own tier, distinct from both the plain input rate
+/// and the cache-READ rate, so leaving those tokens inside the plain input total charges the whole
+/// cache-writing turn at the wrong rate. Mapping it onto the IR's additive `cache_creation` bucket —
+/// the same bucket Anthropic's `cache_creation_input_tokens`, Bedrock's `cacheWriteInputTokens` and
+/// this provider's own `/v1/responses` `input_tokens_details.cache_write_tokens` populate — is what
+/// prices it at that tier and what carries the count across a cross-protocol hop.
+///
+/// Read through the double-tolerant token reader for the same reason every count here is: an
+/// OpenAI-COMPATIBLE backend is free to serialize a count as `8000.0`, which `as_u64` answers `None`
+/// for, silently ledgering a real billed count as zero.
+fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
+    usage_val
+        .get("prompt_tokens_details")
+        .and_then(|d| d.get("cache_write_tokens"))
+        .and_then(crate::usage_tail::token_count)
+}
+
 /// Fallback `model` string stamped onto a cross-protocol OpenAI response when the egress backend
 /// supplied none. The native OpenAI `chat.completion` / `chat.completion.chunk` schemas define
 /// `model` as a REQUIRED non-nullable string, and the official `openai-python` (>=1.0) Pydantic

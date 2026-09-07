@@ -440,6 +440,87 @@ fn openai_carry_response_usage_sub_buckets() {
     );
 }
 
+/// Backs: `usage.prompt_tokens_details.cache_write_tokens`. The pinned OpenAI schema declares it on
+/// `CompletionUsage.prompt_tokens_details` — "The unadjusted number of prompt tokens written to
+/// cache" — a SLICE of `prompt_tokens`, exactly as `cached_tokens` is. Cache-write tokens price at
+/// their own tier, above the plain input rate and above the cache-read rate, so leaving them inside
+/// the plain input total charges them at the wrong tier on every cache-writing turn. The sibling
+/// `/v1/responses` dialect already maps `input_tokens_details.cache_write_tokens` to the same
+/// additive cache-creation bucket Anthropic's `cache_creation_input_tokens` and Bedrock's
+/// `cacheWriteInputTokens` populate; this pins the Chat Completions twin to it, on the buffered
+/// path, the streamed terminal and the truncated-body recovery alike.
+#[test]
+fn openai_carry_response_cache_write_tokens() {
+    let body = json!({
+        "id": "chatcmpl-cw", "object": "chat.completion", "created": 1, "model": "gpt-4o",
+        "choices": [{"index": 0, "finish_reason": "stop",
+            "message": {"role": "assistant", "content": "hi"}}],
+        "usage": {
+            "prompt_tokens": 10000, "completion_tokens": 50, "total_tokens": 10050,
+            "prompt_tokens_details": {"cached_tokens": 500, "cache_write_tokens": 8000}
+        }
+    });
+    let ir = OpenAiReader.read_response(&body).expect("read");
+    assert_eq!(
+        ir.usage.cache_creation_input_tokens,
+        Some(8000),
+        "cache_write_tokens must price at the cache-write tier, not the input tier"
+    );
+    assert_eq!(ir.usage.cache_read_input_tokens, Some(500));
+    assert_eq!(
+        ir.usage.input_tokens, 1500,
+        "both cache slices come out of prompt_tokens, leaving only the uncached input"
+    );
+
+    // The wire shape round-trips: `prompt_tokens` is the total again and the member is re-emitted.
+    let out = openai_writer().write_response(&ir);
+    assert_eq!(out["usage"]["prompt_tokens"], json!(10000));
+    assert_eq!(
+        out["usage"]["prompt_tokens_details"]["cache_write_tokens"],
+        json!(8000),
+        "usage.prompt_tokens_details.cache_write_tokens"
+    );
+
+    // The STREAMED terminal chunk carries the identical usage object, so it must read identically.
+    let mut state = crate::ir::StreamDecodeState::default();
+    let evs = OpenAiReader.read_response_events(
+        "",
+        &json!({"id": "chatcmpl-cw", "object": "chat.completion.chunk", "created": 1,
+        "model": "gpt-4o",
+        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 10000, "completion_tokens": 50, "total_tokens": 10050,
+            "prompt_tokens_details": {"cached_tokens": 500, "cache_write_tokens": 8000}
+        }}),
+        &mut state,
+    );
+    let streamed = evs
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage.clone()),
+            _ => None,
+        })
+        .expect("the terminal chunk carries usage");
+    assert_eq!(
+        streamed.cache_creation_input_tokens,
+        Some(8000),
+        "the streamed terminal must tier cache-write tokens as the buffered path does"
+    );
+    assert_eq!(streamed.input_tokens, 1500);
+
+    // And the HEAD-truncated recovery, whose isolated tail carries the same self-contained object.
+    let tail = br#"...head cut"}],"usage":{"prompt_tokens":10000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":500,"cache_write_tokens":8000}}}"#;
+    let recovered = OpenAiReader
+        .recover_truncated_usage(tail)
+        .expect("usage tail must be recoverable");
+    assert_eq!(
+        recovered.cache_creation,
+        Some(8000),
+        "a truncated body must tier cache-write tokens like an untruncated one"
+    );
+    assert_eq!(recovered.input, 1500);
+}
+
 // ── streaming delta fields ───────────────────────────────────────────────────────────────────────
 
 /// Backs: `stream:choices[].delta.role`, `stream:choices[].delta.content`,
