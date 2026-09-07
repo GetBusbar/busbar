@@ -4121,6 +4121,63 @@ fn test_writer_logprob_accum_is_bounded_on_both_axes() {
     );
 }
 
+/// `record_output_item` is the writer's LAST unbounded accumulator, and the one that RETAINS the
+/// most: every sibling holds fragments that are drained at the matching `BlockStop`, while this map
+/// holds each FINALIZED `output[]` item — the whole assembled message, text and all — from its
+/// `BlockStop` until the terminal event drains it. It had no ceiling on either axis: an entry per
+/// distinct `output_index` and no limit on what one entry weighs. A backend streaming items at
+/// unbounded cardinality, or one enormous assembled item, grows the writer's memory without limit on
+/// the request path — the exposure the byte cap and `MAX_OPEN_TOOLS` exist to close everywhere else.
+#[test]
+fn test_writer_output_items_accum_is_bounded_on_both_axes() {
+    // CARDINALITY: a new index past the cap is refused, exactly as every sibling refuses one.
+    let writer = ResponsesWriter;
+    for i in 0..(MAX_OPEN_TOOLS + 200) {
+        writer.record_output_item(i, serde_json::json!({"type": "message", "id": "m"}));
+    }
+    let indices = writer
+        .output_items
+        .lock()
+        .map(|m| m.len())
+        .expect("lock held only by this test");
+    assert!(
+        indices <= MAX_OPEN_TOOLS,
+        "output_items must track at most MAX_OPEN_TOOLS indices, got {indices}"
+    );
+
+    // WEIGHT: the map as a whole stops growing at the translate-body cap, so one colossal item (or
+    // a run of large ones) cannot exhaust memory under the cardinality ceiling.
+    let writer = ResponsesWriter;
+    let big = serde_json::json!({"type": "message", "content": [{"type": "output_text",
+        "text": "t".repeat(4 * 1024 * 1024)}]});
+    for i in 0..64 {
+        writer.record_output_item(i, big.clone());
+    }
+    let held: usize = writer
+        .output_items
+        .lock()
+        .map(|m| m.values().map(output_item_bytes).sum())
+        .expect("lock held only by this test");
+    assert!(
+        held <= accum_byte_cap(),
+        "the retained output items must stop growing at accum_byte_cap, held {held}"
+    );
+
+    // ... and the ordinary stream is untouched: a handful of normal items all survive to the drain.
+    let writer = ResponsesWriter;
+    for i in 0..4 {
+        writer.record_output_item(
+            i,
+            serde_json::json!({"type": "message", "id": format!("m{i}")}),
+        );
+    }
+    assert_eq!(
+        writer.drain_output_items().len(),
+        4,
+        "a normal stream's assembled output must reach the terminal event intact"
+    );
+}
+
 /// Production `extract_error` must synthesize the
 /// canonical `context_length_exceeded` code when an oversized-context error carries the
 /// condition only in its MESSAGE (null/generic `code`). Without this the breaker pipeline never

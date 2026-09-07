@@ -222,6 +222,22 @@ fn logprob_bytes(l: &crate::ir::IrTokenLogprob) -> usize {
     one(&l.token, &l.bytes) + l.top.iter().map(|t| one(&t.token, &t.bytes)).sum::<usize>()
 }
 
+/// The carried WEIGHT of one finalized `output[]` item, for the same bounding the fragment
+/// accumulators apply to their strings and logprob vectors.
+///
+/// A structural walk rather than a serialize-to-measure: the item is retained, not re-encoded, and
+/// this runs once per `BlockStop`. Strings are counted by their bytes, keys included; the small
+/// fixed cost of the non-string scalars is not modelled (they cannot grow), and nesting is bounded
+/// by the shapes this writer itself assembles.
+fn output_item_bytes(v: &serde_json::Value) -> usize {
+    match v {
+        serde_json::Value::String(s) => s.len(),
+        serde_json::Value::Array(a) => a.iter().map(output_item_bytes).sum(),
+        serde_json::Value::Object(o) => o.iter().map(|(k, x)| k.len() + output_item_bytes(x)).sum(),
+        _ => 0,
+    }
+}
+
 /// Key offset under which the streaming reader tracks OPEN TEXT output indices inside the shared
 /// `StreamDecodeState::open_tools` set. A native /v1/responses stream can carry MULTIPLE message
 /// (text) output items, each at its OWN `output_index`, so a single index-blind `text_block_open`
@@ -1940,8 +1956,34 @@ impl ResponsesWriter {
     /// assembles it, so the terminal `response.completed`/`response.incomplete` event can emit the
     /// fully assembled `output` array (keyed by index for stable order). Lock poisoning degrades to
     /// a no-op (that item is omitted from the terminal `output`) rather than panicking.
+    ///
+    /// Bounded on BOTH axes, like every sibling accumulator on this writer (`append_text`,
+    /// `append_tool_args`, `append_citations`, `append_logprobs`): a NEW index is refused once
+    /// `MAX_OPEN_TOOLS` are tracked, and nothing is recorded once the retained items' weight would
+    /// cross [`accum_byte_cap`]. This map RETAINS more than any of them — a fragment accumulator is
+    /// drained at its own `BlockStop`, while a finalized item lives here from that `BlockStop` until
+    /// the terminal event — and it had no ceiling on either axis, so a backend streaming items at
+    /// unbounded cardinality, or one colossal assembled item, grew this writer's memory without
+    /// limit on the request path. Refused whole, never sliced, so a partial item is never emitted in
+    /// the terminal `output` — the policy the sibling accumulators established.
     fn record_output_item(&self, index: usize, item: serde_json::Value) {
         if let Ok(mut map) = self.output_items.lock() {
+            if !map.contains_key(&index) && map.len() >= MAX_OPEN_TOOLS {
+                return;
+            }
+            let cap = accum_byte_cap();
+            let added = output_item_bytes(&item);
+            if added > cap {
+                return;
+            }
+            let held: usize = map
+                .iter()
+                .filter(|(k, _)| **k != index)
+                .map(|(_, v)| output_item_bytes(v))
+                .sum();
+            if held.saturating_add(added) > cap {
+                return;
+            }
             map.insert(index, item);
         }
     }
