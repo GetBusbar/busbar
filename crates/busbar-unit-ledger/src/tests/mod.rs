@@ -7,6 +7,7 @@ mod checkpoint_tests;
 mod fixtures;
 mod identity_tests;
 mod migration_tests;
+mod money_invariants_tests;
 mod recompute_tests;
 mod settle_tests;
 mod totals_tests;
