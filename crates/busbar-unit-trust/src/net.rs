@@ -1466,11 +1466,14 @@ impl std::fmt::Display for NetworkRefusal {
 /// Run once per destination, before any dial, for every carrier. The order is the design's:
 ///
 /// 1. The denylist, over the destination's own authority AND over that authority joined with each
-///    declared path. The RE-CHECK is not belt and braces — the host a connecting stack reads is the
-///    one it finds after WHATWG normalization, and a path fragment can move that boundary (a
-///    backslash that terminates the authority early, a tab inside the literal, a percent-encoded
-///    dot). A guard that only ever looked at the configured base read a different host than the
-///    socket did.
+///    declared path. The host a connecting stack reads is the one it finds after WHATWG
+///    normalization, and the AUTHORITY is where a spelling that moves the boundary lives — a
+///    backslash that terminates it early, a tab inside the literal, a percent-encoded dot. The
+///    joined candidates are judged for completeness rather than because a path can smuggle a host
+///    past the base: [`join_path`] always separates the two, so a joined candidate's authority ends
+///    exactly where the base's does and its verdict is the base's. That is a property of the join
+///    and is pinned as one — a join that stopped separating them would make the re-check
+///    load-bearing, and it is the re-check that would then catch it.
 /// 2. The structural refusals, so a hostile name never reaches a resolver.
 /// 3. EXACTLY ONE resolution, through the caller's own seam.
 /// 4. Every answered address, judged; a mixed answer refused whole.
@@ -1562,8 +1565,12 @@ pub fn check_destination_facts(
 
 /// Join a configured base with a declared path, the way a caller building a request would.
 ///
-/// Deliberately naive about the slash and nothing else: what is being re-checked is where the HOST
-/// boundary ends up, and a fragment that moves it does so whether or not the join was tidy.
+/// The SEPARATOR is the security-relevant part, and it is unconditional: exactly one `/` sits
+/// between the authority and the fragment however the fragment was written. That is what makes a
+/// declared path unable to name a host — a fragment opening with `@`, `//` or a `\` the WHATWG fold
+/// turns into a terminator lands after a delimiter that has already closed the authority. Dropping
+/// the separator to be tidy about a path that "already has one" would hand the fragment the
+/// boundary; the join is naive about the slash on purpose.
 fn join_path(base: &str, path: &str) -> String {
     let base = base.trim_end_matches('/');
     if path.starts_with('/') {

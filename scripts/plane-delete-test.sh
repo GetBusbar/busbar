@@ -488,19 +488,83 @@ run_check() {
   CARGO_TARGET_DIR="$CACHE_TARGET" cargo check --manifest-path "$s/Cargo.toml" "$@" >"$log" 2>&1
 }
 
+# remove_and_assert <scratch> <plane> → 0 / 1. Performs `apply_removal` and PROVES it happened.
+#
+# ── THE REMOVAL IS ASSERTED, NOT NOTED ────────────────────────────────────────────────────────────
+# This block used to PRINT its evidence ("all must read GONE/0") and check none of it, which made
+# the whole gate unfalsifiable in one specific and entirely reachable way: `rm -rf` on a path that
+# does not exist succeeds silently, and every manifest stripper is a `grep`/`awk` filter that
+# rewrites a file containing no matches into an identical file, also silently. So the moment a
+# plane crate is RENAMED — the ordinary outcome of an extraction, which is precisely the work this
+# gate exists to police — `apply_removal` removes NOTHING, the neutral crates compile because
+# nothing was taken away from them, and the gate reports PASS on a deletion that never happened.
+# A green would then mean "busbar-<P> is removable" while `crates/busbar-<P>` sat untouched in the
+# scratch. That is the worst verdict a gate can produce, because it is indistinguishable from the
+# real one.
+#
+# Three facts are therefore recorded BEFORE the mutation and asserted AFTER it: the crate directory
+# EXISTED and is now gone, no manifest still names it, and the manifests were actually REWRITTEN
+# (a byte-identical root manifest means `drop_member` matched nothing). All three are hard
+# failures that return before a single `cargo check` runs — a compile result taken on a tree that
+# was never mutated says nothing at all, so it must not be printed as if it did.
+remove_and_assert() {
+  local s="$1" p="$2"
+  local pre_dir pre_root pre_bin pre_dep
+  pre_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo ABSENT)"
+  pre_root="$s/.plane-delete-pre-root.toml"
+  pre_bin="$s/.plane-delete-pre-bin.toml"
+  cp "$s/Cargo.toml" "$pre_root" 2>/dev/null || { red "  cannot read the scratch's root manifest"; return 1; }
+  cp "$s/crates/busbar/Cargo.toml" "$pre_bin" 2>/dev/null || { red "  cannot read the scratch's bin manifest"; return 1; }
+  pre_dep="$(grep -c "^busbar-$p = " "$pre_bin" 2>/dev/null)"; pre_dep="${pre_dep:-0}"
+
+  apply_removal "$s" "$p"
+
+  local ev_dir ev_mem ev_dep
+  ev_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo GONE)"
+  ev_mem="$(grep -c "\"crates/busbar-$p\"" "$s/Cargo.toml" 2>/dev/null)"; ev_mem="${ev_mem:-0}"
+  ev_dep="$(grep -c "^busbar-$p = " "$s/crates/busbar/Cargo.toml" 2>/dev/null)"; ev_dep="${ev_dep:-0}"
+  note "removed: crate dir=$pre_dir->$ev_dir  members-refs=$ev_mem  bin-dep-lines=$pre_dep->$ev_dep"
+
+  if [ "$pre_dir" != "PRESENT" ]; then
+    red "  crates/busbar-$p DID NOT EXIST before the removal — there was nothing to delete."
+    note "    \`rm -rf\` on an absent path succeeds, so this run would have compiled an UNMUTATED tree"
+    note "    and reported it as proof that busbar-$p is removable. Renamed crate? Fix the plane key"
+    note "    in scripts/plane-keys.sh; do not read this as a pass."
+    return 1
+  fi
+  if [ "$ev_dir" != "GONE" ]; then
+    red "  crates/busbar-$p is STILL PRESENT after apply_removal — the mutation did not take"
+    return 1
+  fi
+  if [ "$ev_mem" -ne 0 ] || [ "$ev_dep" -ne 0 ]; then
+    red "  a manifest still names busbar-$p after removal (members-refs=$ev_mem bin-dep-lines=$ev_dep)"
+    return 1
+  fi
+  if cmp -s "$pre_root" "$s/Cargo.toml"; then
+    red "  the root workspace manifest is BYTE-IDENTICAL after the removal — nothing was stripped."
+    note "    \`drop_member\` rewrites the file whether or not it matched, so an unchanged manifest is"
+    note "    the signature of a member entry that is not spelled \"crates/busbar-$p\"."
+    return 1
+  fi
+  if [ "$pre_dep" -gt 0 ] && cmp -s "$pre_bin" "$s/crates/busbar/Cargo.toml"; then
+    red "  the bin manifest declared busbar-$p and is BYTE-IDENTICAL after the removal — nothing was stripped."
+    return 1
+  fi
+  note "  removal ASSERTED: the crate existed, is gone, is named by no manifest, and the manifests changed"
+  rm -f "$pre_root" "$pre_bin"
+  return 0
+}
+
 # strong_form <plane>  → 0 (PASS) / 1 (FAIL). Prints the two legs (neutral crates, bin) with evidence.
 strong_form() {
   local p="$1" s keep log rc fail=0
   keep="$(neutral_keep "$p")"
   s="$(make_scratch)" || { red "  scratch copy failed"; return 1; }
-  apply_removal "$s" "$p"
 
-  # Evidence that the removal is REAL, printed before the compile so a green is never taken on faith.
-  local ev_dir ev_mem ev_dep
-  ev_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo GONE)"
-  ev_mem="$(grep -c "\"crates/busbar-$p\"" "$s/Cargo.toml" 2>/dev/null)"; ev_mem="${ev_mem:-0}"
-  ev_dep="$(grep -c "^busbar-$p = " "$s/crates/busbar/Cargo.toml" 2>/dev/null)"; ev_dep="${ev_dep:-0}"
-  note "removed: crate dir=$ev_dir  members-refs=$ev_mem  bin-dep-lines=$ev_dep  (all must read GONE/0)"
+  # A compile verdict on a tree that was never mutated is not a verdict. Nothing below this line
+  # runs unless the removal is proven to have happened.
+  remove_and_assert "$s" "$p" || return 1
+
   if [ -n "$EDGE_CRATES" ]; then
     ylw "  residual manifest back-edge: neutral/other crate(s) declared a path-dep on busbar-$p —${EDGE_CRATES}"
     note "    (stripped as part of the removal; a bare \`git rm -r\` would dangle it)"
@@ -598,18 +662,68 @@ run_selftest() {
   local fail=0 p s core_toml
 
   # (1) REMOVAL EVIDENCE for EVERY plane (fast, no compile): the mutation really removes the crate dir,
-  #     the members entry, and the bin dependency line. This is the unfakeable mechanism proof.
+  #     the members entry, and the bin dependency line. This is the unfakeable mechanism proof, and it
+  #     now runs through `remove_and_assert` — the same function `strong_form` uses — rather than a
+  #     second, parallel copy of the checks, so the thing proven here is the thing the gate runs.
   for p in $PLANES; do
     s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
-    apply_removal "$s" "$p"
-    local ok=1
-    [ -d "$s/crates/busbar-$p" ] && { ok=0; note "REMOVAL FAILED ($p): crate dir still present"; }
-    [ "$(grep -c "\"crates/busbar-$p\"" "$s/Cargo.toml")" -eq 0 ] || { ok=0; note "REMOVAL FAILED ($p): members entry survives"; }
-    [ "$(grep -c "^busbar-$p = " "$s/crates/busbar/Cargo.toml")" -eq 0 ] || { ok=0; note "REMOVAL FAILED ($p): bin dep line survives"; }
-    [ "$(grep -c "\"dep:busbar-$p\"" "$s/crates/busbar/Cargo.toml")" -eq 0 ] || { ok=0; note "REMOVAL FAILED ($p): \"dep:busbar-$p\" token survives in a feature"; }
-    if [ "$ok" -eq 1 ]; then note "PASS  removal($p): crate dir + members entry + bin dep + dep: token all gone"; else fail=1; fi
+    if remove_and_assert "$s" "$p" \
+       && [ "$(grep -c "\"dep:busbar-$p\"" "$s/crates/busbar/Cargo.toml")" -eq 0 ]; then
+      note "PASS  removal($p): crate dir + members entry + bin dep + dep: token all gone, and asserted"
+    else
+      fail=1; note "FAIL  removal($p): the removal did not take, or was not proven"
+    fi
     rm -rf "$s"
   done
+
+  # (1b) THE RED CONTROL FOR THE REMOVAL ITSELF — a REAL crate planted under a name the harness does
+  #      not know, which is exactly what a renamed plane crate looks like from here.
+  #
+  #      This is the case the old evidence block could not catch, because it PRINTED its evidence and
+  #      asserted none of it. `rm -rf crates/busbar-<gone>` on an absent path succeeds; `drop_member`
+  #      and `neutralise_bin` rewrite manifests that contain no matches into identical manifests. So
+  #      the whole mutation became a no-op, the neutral crates compiled (nothing had been taken from
+  #      them), and the gate printed PASS for a deletion that never happened.
+  #
+  #      The plant is a real, compilable crate directory with a real members entry and a real bin
+  #      dependency, registered under `busbar-plantedplane`, and the harness is then asked to remove
+  #      `busbar-renamedplane` — the same crate under the name it USED to have. Every stripper
+  #      no-ops, and `remove_and_assert` must REFUSE rather than report a clean removal.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  mkdir -p "$s/crates/busbar-plantedplane/src"
+  printf '[package]\nname = "busbar-plantedplane"\nversion = "0.0.0"\nedition = "2021"\n\n[dependencies]\n' \
+    >"$s/crates/busbar-plantedplane/Cargo.toml"
+  printf 'pub fn planted() -> u8 { 7 }\n' >"$s/crates/busbar-plantedplane/src/lib.rs"
+  awk '
+    { print }
+    /^members = \[/ && !done { print "  \"crates/busbar-plantedplane\","; done = 1 }
+  ' "$s/Cargo.toml" >"$s/Cargo.toml.plant" && mv "$s/Cargo.toml.plant" "$s/Cargo.toml"
+  printf 'busbar-plantedplane = { path = "../busbar-plantedplane", optional = true }\n' \
+    >>"$s/crates/busbar/Cargo.toml"
+
+  # (1b-i) the plant is REAL: removing it by its real name must succeed and be asserted.
+  if remove_and_assert "$s" "plantedplane" >/dev/null 2>&1; then
+    note "PASS  planted crate: a REAL crate dir + member + bin dep is removed, and the removal is asserted"
+  else
+    fail=1; note "FAIL  planted crate: the harness could not remove a crate it genuinely planted — the control is broken"
+  fi
+  rm -rf "$s"
+
+  # (1b-ii) THE RED CONTROL: the same plant, removed under a name nothing in the tree carries.
+  s="$(make_scratch)" || { red "scratch copy failed"; return 1; }
+  mkdir -p "$s/crates/busbar-plantedplane/src"
+  printf '[package]\nname = "busbar-plantedplane"\nversion = "0.0.0"\nedition = "2021"\n' \
+    >"$s/crates/busbar-plantedplane/Cargo.toml"
+  printf 'pub fn planted() -> u8 { 7 }\n' >"$s/crates/busbar-plantedplane/src/lib.rs"
+  if remove_and_assert "$s" "renamedplane" >/dev/null 2>&1; then
+    fail=1
+    note "FAIL  renamed-crate control: removing an ABSENT crate reported a clean removal."
+    note "      Every stripper no-ops on a name the tree does not carry, so the gate would then"
+    note "      compile an UNMUTATED tree and report PASS for a deletion that never happened."
+  else
+    note "PASS  renamed-crate control: a removal with nothing to remove is REFUSED, not reported clean"
+  fi
+  rm -rf "$s"
 
   # A representative plane for the compile controls (bounded self-test time; the mechanism is identical
   # for all three, proven above). `mcp` keeps the other two planes' shape intact around it.

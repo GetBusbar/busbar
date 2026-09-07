@@ -19,6 +19,18 @@ use busbar_contract_transport::wire::TransportError;
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
 
+/// How the HTTP/2 connection under a dial ended.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ConnectionEnd {
+    /// The driver finished with nothing left to carry.
+    Clean,
+    /// The driver failed: a protocol error, or the socket beneath it going away.
+    Failed,
+}
+
+/// The leg that fires when the connection itself is over, carrying HOW it ended.
+pub(crate) type ConnectionOver = tokio::sync::oneshot::Receiver<ConnectionEnd>;
+
 /// The dial-side HTTP/2 sender. `Clone`-able (it is a cheap handle onto the connection's dispatch
 /// channel), so every RPC this connection opens gets its own owned handle rather than sharing a
 /// lock.
@@ -59,16 +71,24 @@ impl tower::Service<http::Request<tonic::body::Body>> for Dialer {
 pub(crate) async fn handshake_h2(
     stream: crate::conn::Cuttable,
     authority: &str,
-) -> Result<(Dialer, http::Uri, tokio::sync::oneshot::Receiver<()>), TransportError> {
+) -> Result<(Dialer, http::Uri, ConnectionOver), TransportError> {
     let io = TokioIo::new(stream);
     let (send_request, connection) = hyper::client::conn::http2::Builder::new(TokioExecutor::new())
         .handshake::<_, tonic::body::Body>(io)
         .await
         .map_err(|_| TransportError::HandshakeFailed)?;
-    let (over_tx, over_rx) = tokio::sync::oneshot::channel::<()>();
+    let (over_tx, over_rx) = tokio::sync::oneshot::channel::<ConnectionEnd>();
     tokio::spawn(async move {
-        let _ = connection.await;
-        let _ = over_tx.send(());
+        // HOW it ended, not merely that it did. A GOAWAY the upstream sent, a protocol error, a
+        // socket that died under the driver — each ends this connection, and each is a fact the
+        // reader on the other side needs. Discarding it turned every one of them into the same
+        // clean end-of-stream, which is what a reader sees when a peer is finished rather than
+        // when it has failed: an aborted answer read as a complete one.
+        let end = match connection.await {
+            Ok(()) => ConnectionEnd::Clean,
+            Err(_) => ConnectionEnd::Failed,
+        };
+        let _ = over_tx.send(end);
     });
     let origin = http::Uri::builder()
         .scheme("http")
@@ -99,10 +119,24 @@ pub(crate) async fn open_stream(
     let mut grpc = tonic::client::Grpc::with_origin(dialer, origin);
     grpc.ready().await.map_err(|_| TransportError::Refused)?;
     let path = PathAndQuery::try_from(method).map_err(|_| TransportError::AddressRefused)?;
-    let response = grpc
+    let response = match grpc
         .streaming(tonic::Request::new(InStream(out_rx)), path, RawCodec)
         .await
-        .map_err(|_| TransportError::Refused)?;
+    {
+        Ok(response) => response,
+        Err(status) => {
+            // A TRAILERS-ONLY answer — one HEADERS frame with END_STREAM carrying a non-zero
+            // `grpc-status`, the standard shape for `UNIMPLEMENTED` or `UNAUTHENTICATED` — arrives
+            // here, before any response stream exists. It is still an ANSWER: the upstream read the
+            // call and said no. This transport declares its status class at the terminal frame, so
+            // that class has to reach the reader as a frame; reporting only the opening failure
+            // left a call the upstream had judged posting no status evidence at all, which is the
+            // difference between "refused" and "nothing answered" on the leg that decides a fee.
+            let frame = crate::server::terminal_frame(stream_id, Some(&status));
+            let _ = state.send_inbound(Ok((stream_id, frame))).await;
+            return Err(TransportError::Refused);
+        }
+    };
     let stream = response.into_inner();
     tokio::spawn(async move {
         crate::server::forward_inbound(state.clone(), stream_id, stream, true).await;

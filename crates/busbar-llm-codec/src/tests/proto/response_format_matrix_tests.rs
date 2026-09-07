@@ -34,7 +34,7 @@ fn every_writer_emits_its_native_shape() {
     });
 
     // OpenAI: {type:"json_schema", json_schema:{name, schema}} — schema NESTED under .schema.
-    let o = OpenAiWriter.write_request(&req);
+    let o = openai_writer().write_request(&req);
     assert_eq!(
         o.pointer("/response_format/type"),
         Some(&serde_json::json!("json_schema"))
@@ -185,7 +185,7 @@ fn tool_choice_without_tools_is_omitted_on_every_writer() {
         (value, cap)
     };
     let (a, cap_a) = run(&|| anthropic_writer().write_request(&req));
-    let (o, cap_o) = run(&|| OpenAiWriter.write_request(&req));
+    let (o, cap_o) = run(&|| openai_writer().write_request(&req));
     let (g, cap_g) = run(&|| gemini_writer.write_request(&req));
     let (b, cap_b) = run(&|| bedrock_writer.write_request(&req));
     let (c, cap_c) = run(&|| cohere_writer.write_request(&req));

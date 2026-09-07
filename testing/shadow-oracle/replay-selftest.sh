@@ -320,22 +320,22 @@ grep -q "recorder bug" "$W/out-t.log" && msg_ok=1 || msg_ok=0
   && say PASS "an entry naming 'missing.golden' -> loader refuses (recorder bug, never acceptable)" \
   || say FAIL "'missing.golden' acceptance was NOT refused (rc=$rc msg_ok=$msg_ok) — a golden that recorded nothing can be waived (see $W/out-t.log)"
 
-# (p) --strict on a filtered subset: the differ is a gate on its own when a caller (land.sh) uses it
+# (u) --strict on a filtered subset: the differ is a gate on its own when a caller (land.sh) uses it
 # that way. A filter that selects the mutated cell must exit 1 …
 DC="python3 ${here}/diff-cells.py"
-$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-p" --cells "$CELLS" --accepted "$W/no-accept.json" \
-  --allow-harness-skew --strict --id-filter '^self\|a\|ok$' >"$W/out-p.log" 2>&1
+$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-u" --cells "$CELLS" --accepted "$W/no-accept.json" \
+  --allow-harness-skew --strict --id-filter '^self\|a\|ok$' >"$W/out-u.log" 2>&1
 rc=$?
-owed_p="$(wc -l <"$W/out-p/owed.txt" | tr -d ' ')"
-[ "$rc" = 1 ] && [ "$owed_p" = 1 ] && grep -q "unaccepted divergence" "$W/out-p.log" && say PASS "--strict with a filter selecting the mutated cell -> exit 1" || say FAIL "strict filtered rc=$rc owed=$owed_p (see $W/out-p.log)"
+owed_u="$(wc -l <"$W/out-u/owed.txt" | tr -d ' ')"
+[ "$rc" = 1 ] && [ "$owed_u" = 1 ] && grep -q "unaccepted divergence" "$W/out-u.log" && say PASS "--strict with a filter selecting the mutated cell -> exit 1" || say FAIL "strict filtered rc=$rc owed=$owed_u (see $W/out-u.log)"
 
-# … and a filter that selects NOTHING is red too: a subset gate that compared zero cells proved
+# (v) … and a filter that selects NOTHING is red too: a subset gate that compared zero cells proved
 # nothing, and must never be mistaken for a clean run.
-$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-q" --cells "$CELLS" --accepted "$W/no-accept.json" \
-  --allow-harness-skew --strict --id-filter 'no-such-cell-anywhere' >"$W/out-q.log" 2>&1
+$DC --golden "$FIX" --candidate "$W/mut" --out "$W/out-v" --cells "$CELLS" --accepted "$W/no-accept.json" \
+  --allow-harness-skew --strict --id-filter 'no-such-cell-anywhere' >"$W/out-v.log" 2>&1
 rc=$?
-grep -q "no owed cells matched" "$W/out-q.log" && msg_ok=1 || msg_ok=0
-[ "$rc" = 1 ] && [ "$msg_ok" = 1 ] && say PASS "--strict with a filter matching nothing -> exit 1 (nothing was compared)" || say FAIL "strict empty filter rc=$rc msg_ok=$msg_ok (see $W/out-q.log)"
+grep -q "no owed cells matched" "$W/out-v.log" && msg_ok=1 || msg_ok=0
+[ "$rc" = 1 ] && [ "$msg_ok" = 1 ] && say PASS "--strict with a filter matching nothing -> exit 1 (nothing was compared)" || say FAIL "strict empty filter rc=$rc msg_ok=$msg_ok (see $W/out-v.log)"
 
 
 echo

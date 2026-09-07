@@ -178,8 +178,6 @@ if [ "$SELFTEST" -eq 1 ]; then
   _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0  0
   _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3  0
   echo
-  [ "$_st_fails" -eq 0 ] && { grn "verify-1.6.0-done selftest: GREEN"; exit 0; }
-  red "verify-1.6.0-done selftest: RED ($_st_fails)"; exit 1
 fi
 
 # A step that is RED simply because an artifact does not exist yet (a not-yet-built sub-gate).
@@ -210,13 +208,70 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 
 # Assert the money-path bless/regen env vars are EMPTY — otherwise a byte-identity "check" silently
 # REGENERATES the golden instead of comparing against it (a green that proves nothing).
+#
+# THE LIST IS "EVERY VARIABLE THAT CAN MAKE A COMPARISON COMPARE NOTHING", not "every variable with
+# BLESS in its name", and three of them were missing:
+#
+#   * SHADOW_ORACLE_GOLDEN repoints the PARITY group's golden recording. Set it to
+#     `$ORACLE_DIR/recordings/candidate` and replay.sh diffs the candidate against ITSELF: zero
+#     divergences, every cell present, a perfect parity report that compared a build to a copy of
+#     itself. It is a stronger bless than any of the four already listed here, because those at
+#     least rewrite a golden a reviewer can then diff, while this one leaves no trace at all.
+#   * SHADOW_ORACLE_DIR does the same thing one level up.
+#   * CONFIG_SCHEMA_BASELINE_REF repoints the config-stability gate's additive-only baseline. That
+#     gate's whole content is the diff against the baseline; pointing it at HEAD, or at any ref
+#     carrying an older snapshot, makes every non-additive change additive.
+#   * CONFIG_SCHEMA_BOOTSTRAP is that gate's declared one-run escape from having no baseline at all.
+#     It exists so a missing baseline announces itself rather than passing silently — which makes it
+#     exactly the kind of thing a DONE run must refuse.
+#
+# A DONE run means "this tree was measured against something outside itself". Any of these set means
+# it was measured against something the operator chose, which is a different claim.
 assert_bless_env_empty() {
   local v bad=0
-  for v in UPDATE_OPENAPI UPDATE_CONFIG_SCHEMA BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN; do
-    if [ -n "${!v:-}" ]; then echo "regen env var $v is SET ('${!v}') — byte-identity would regenerate, not compare"; bad=1; fi
+  for v in UPDATE_OPENAPI UPDATE_CONFIG_SCHEMA BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
+           SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
+    if [ -n "${!v:-}" ]; then echo "regen/repoint env var $v is SET ('${!v}') — the comparison would be against something the operator chose, not the pinned reference"; bad=1; fi
   done
   return "$bad"
 }
+
+# ── --selftest: the DONE gate's own refusals, proven RED before any group runs ────────────────────
+# This script's whole claim is "the tree was measured against something outside itself". Every
+# variable named in assert_bless_env_empty defeats that claim in a different way, and two of them
+# (SHADOW_ORACLE_GOLDEN, CONFIG_SCHEMA_BASELINE_REF) used to be exempt from it — the first can point
+# PARITY at the candidate, the second can point config-stability at a baseline that makes every
+# break additive. So each is planted here in turn and required to go red. Runs in seconds, builds
+# nothing, and is what stops the list quietly shrinking back.
+if [ "$SELFTEST" -eq 1 ]; then
+  printf '== verify-1.6.0-done SELF-TEST (the DONE gate refuses a run that measures itself) ==\n'
+  st_fail=0
+  if assert_bless_env_empty >/dev/null 2>&1; then
+    printf '  [ok]     a clean environment is accepted\n'
+  else
+    printf '  [FAILED] a clean environment was refused — the assertion is reading a variable this shell already carries\n'
+    assert_bless_env_empty 2>&1 | sed 's/^/           /'
+    st_fail=1
+  fi
+  for st_v in UPDATE_OPENAPI UPDATE_CONFIG_SCHEMA BLESS_BACKCOMPAT_CORPUS BUSBAR_BLESS_GOLDEN \
+              SHADOW_ORACLE_GOLDEN SHADOW_ORACLE_DIR CONFIG_SCHEMA_BASELINE_REF CONFIG_SCHEMA_BOOTSTRAP; do
+    # A subshell so the plant cannot leak, driving the REAL assert_bless_env_empty — not a copy of
+    # its rule, which would prove only that the copy agrees with itself.
+    if ( export "$st_v=planted"; assert_bless_env_empty ) >/dev/null 2>&1; then
+      printf '  [FAILED] %s was SET and the DONE gate accepted it\n' "$st_v"
+      st_fail=1
+    else
+      printf '  [ok]     %s set -> the DONE run is REFUSED\n' "$st_v"
+    fi
+  done
+  _st_fails=$((_st_fails + st_fail))
+  if [ "$_st_fails" -eq 0 ]; then
+    printf '\nverify-1.6.0-done selftest: GREEN (verdict proofs + every bless/repoint variable refused)\n'
+    exit 0
+  fi
+  printf '\nverify-1.6.0-done selftest: RED (%s failure(s))\n' "$_st_fails"
+  exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "BUILD — the cargo battery"
@@ -387,8 +442,22 @@ begin_group "PARITY — the shadow oracle: this build vs the published 1.5.5 bin
 # The user-observable contract: every cell recorded from the released 1.5.5 artifact (by digest)
 # is reproduced by the candidate byte for byte. The golden is recorded once per cells/normalizer
 # revision and cached; the candidate is recorded fresh. A cell the golden could not produce is a
-# NAMED gap in the report, never a pass. SHADOW_ORACLE_GOLDEN may point at an existing recording.
-if [ -x testing/shadow-oracle/replay.sh ]; then
+# NAMED gap in the report, never a pass.
+#
+# THE SAME BLESS-ENV ASSERTION THE BYTE-IDENTITY GROUP MAKES, and this group needs it more. It used
+# to say "SHADOW_ORACLE_GOLDEN may point at an existing recording" and was exempt from the check
+# entirely — so the one variable that can make this group diff the candidate against ITSELF was the
+# one variable nobody asserted. `SHADOW_ORACLE_GOLDEN=$ORACLE_DIR/recordings/candidate` produces a
+# flawless parity report (every cell present, zero divergences) about nothing at all, and unlike a
+# regenerated golden it leaves no artifact for a reviewer to notice afterwards.
+if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
+  printf '  \033[31m[RED]\033[0m  bless/repoint env is NOT empty — refusing PARITY (the golden could be the candidate itself)\n'
+  sed 's/^/          /' /tmp/done-parity-env.$$
+  rm -f /tmp/done-parity-env.$$
+  CUR_RED=1; CUR_FIRST_NOTE="bless/repoint env not empty (parity)"
+elif [ -x testing/shadow-oracle/replay.sh ]; then
+  rm -f /tmp/done-parity-env.$$
+  printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
   step "replay-selftest (the differ can see a diff)" bash testing/shadow-oracle/replay-selftest.sh
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran

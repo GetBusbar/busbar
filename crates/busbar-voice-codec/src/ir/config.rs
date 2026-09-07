@@ -17,7 +17,17 @@
 
 use crate::ir::control::IrVad;
 use crate::ir::media::AudioFormat;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
+
+/// Deserialize a PRESENT key into `Some(_)`, so an `Option<Option<T>>` field can tell an absent key
+/// (`None`, supplied by `#[serde(default)]` because this function is never called) from an explicit
+/// `null` (`Some(None)`). Without it serde consumes a wire `null` at the outer `Option` and both
+/// states arrive as `None`.
+fn deserialize_some<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+    d: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(d).map(Some)
+}
 
 /// THE GA `max_output_tokens` FIELD — either an explicit cap or the `"inf"` sentinel (uncapped). A
 /// bespoke (de)serialize keeps the int-or-string wire union without dragging an untagged-enum null
@@ -87,9 +97,8 @@ mod opt_audio_fmt {
 
 /// THE GA `session` CONFIG OBJECT (`plane4-duplex-session.md`). Every field is optional on the wire (a partial
 /// `session.update` patches only what it names), so absent keys decode to `None`/empty and are
-/// omitted on re-encode — keeping a partial patch JSON-stable. `turn_detection` is the ONE field
-/// serialized even when absent: GA distinguishes `null` (VAD disabled) from omitted, so `None` maps
-/// to explicit `null`.
+/// omitted on re-encode — keeping a partial patch JSON-stable. `turn_detection` is the ONE field with
+/// THREE wire states rather than two, because GA gives `null` its own meaning: see the field.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct SessionConfig {
     /// THE UPSTREAM MODEL ID the session targets. OpenAI Realtime carries this SERVER-SIDE (it appears
@@ -123,10 +132,27 @@ pub struct SessionConfig {
         with = "opt_audio_fmt"
     )]
     pub output_audio_format: Option<AudioFormat>,
-    /// Voice-activity-detection config. `None` ⇒ explicit `null` on the wire = VAD disabled (the
-    /// client drives turn boundaries).
-    #[serde(default)]
-    pub turn_detection: Option<IrVad>,
+    /// Voice-activity-detection config — THREE-STATE, because the GA wire gives each state a
+    /// different meaning and a partial `session.update` patches only what it names:
+    ///
+    /// - `None` — the key was ABSENT. The patch says nothing about turn detection, so re-encoding
+    ///   omits the key and whatever the session already had keeps applying.
+    /// - `Some(None)` — the key was an explicit `null`. That is GA's "disable VAD"; the client
+    ///   drives turn boundaries. Re-encoded as `null`.
+    /// - `Some(Some(vad))` — a configured detector, re-encoded verbatim.
+    ///
+    /// Collapsing absent and `null` into one `None` (which is what a plain `Option` does) makes a
+    /// patch that merely renames the voice re-frame upstream with `"turn_detection": null`, which
+    /// silently DISABLES server VAD — the upstream then waits for a client-driven turn that a
+    /// VAD-expecting client never sends, and the model never answers. The `deserialize_some` shim is
+    /// required: serde maps a wire `null` onto the OUTER `Option` by default, which would collapse
+    /// the two states again no matter how the field is typed.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_some"
+    )]
+    pub turn_detection: Option<Option<IrVad>>,
     /// The tool set, carried VERBATIM as opaque JSON (the plane locks the set but never reshapes a
     /// definition — `plane4-duplex-session.md`'s moat normalizes call CORRELATION, not the argument/definition bytes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

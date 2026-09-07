@@ -1655,24 +1655,35 @@ impl ResponsesWriter {
         self.sequence.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Record that a function-call `output_item.added` was emitted at `index`, so the matching
-    /// `BlockStop` knows to emit `output_item.done` for it. Lock poisoning degrades to a no-op
-    /// rather than panicking on the request path.
+    /// Open a function-call item at `index`, so the matching `BlockStop` knows to emit
+    /// `output_item.done` for it. Returns true when the item actually opened; false when the open
+    /// was REFUSED — the index is already open, or the `MAX_OPEN_TOOLS` cap is reached. Lock
+    /// poisoning degrades to `false` (refuse) rather than panicking on the request path.
     ///
-    /// Applies the same cardinality discipline as `open_text_item`: a `contains` guard makes the
-    /// insert idempotent (a re-marked index does not grow the set), and a `MAX_OPEN_TOOLS` cap
-    /// bounds per-stream memory so a pathological backend streaming an unbounded run of distinct
-    /// function-call indices cannot grow `open_tool_indices` without limit (resource exhaustion).
-    fn mark_tool_open(&self, index: usize) {
-        if let Ok(mut set) = self.open_tool_indices.lock() {
-            if set.contains(&index) {
-                return;
-            }
-            if set.len() >= MAX_OPEN_TOOLS {
-                return;
-            }
-            set.insert(index);
-        }
+    /// Applies the same cardinality discipline as `open_text_item`, and reports it the same way: a
+    /// `contains` guard makes the open idempotent (a re-opened index does not grow the set), and
+    /// `MAX_OPEN_TOOLS` bounds per-stream memory so a pathological backend streaming an unbounded
+    /// run of distinct function-call indices cannot grow `open_tool_indices` without limit
+    /// (resource exhaustion).
+    ///
+    /// The boolean is the whole point: a refusal means no item was opened, and `take_tool_open`
+    /// will therefore never emit its `output_item.done`. The caller must not write the
+    /// `output_item.added` frame either, or the wire carries a lifecycle open for an item that
+    /// never existed and is never closed.
+    fn mark_tool_open(&self, index: usize) -> bool {
+        self.open_tool_indices
+            .lock()
+            .map(|mut set| {
+                if set.contains(&index) {
+                    return false;
+                }
+                if set.len() >= MAX_OPEN_TOOLS {
+                    return false;
+                }
+                set.insert(index);
+                true
+            })
+            .unwrap_or(false)
     }
 
     /// Return true and forget `index` if it was a previously-opened function-call item; false if no

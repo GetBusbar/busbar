@@ -16,8 +16,11 @@ against the ingress dialect's specification, and writes ONE ledger row per cell 
                        against the ConverseStreamOutput event union.
 
 Row status: PASS (valid) | FAIL (schema violation: JSON pointer + rule) | SKIP (a NAMED GAP: no
-fetchable schema for that check, or the recording has nothing to check). A SKIP is never a pass; the
-run script keeps SKIP ids out of the owed set and reports them by name. Zero rows is red (run.sh).
+fetchable schema for that check, the recording has nothing to check, or every violation on the row
+is one named-gaps.json names as a place the VENDOR'S schema is the incomplete side). A SKIP is never
+a pass; the run script keeps SKIP ids out of the owed set and reports them by name. Zero rows is red
+(run.sh). Naming a gap never relaxes a check: the violation is still computed, an unnamed violation
+on the same row still fails it, and an entry that forgives nothing is itself red.
 
 Schema sources, all resolved through the digest-pinned cache vendor.sh fills:
   openai/responses  OpenAPI 3.1 (openai-openapi)          $ref within the document
@@ -292,6 +295,113 @@ class Violation:
 
     def __str__(self):
         return f"{self.pointer} {self.rule}: {self.detail}"
+
+
+# ── named conformance gaps ──────────────────────────────────────────────────────────────────────
+# A gap is a violation the owner has READ and ruled the vendor's schema wrong about — the bytes
+# stay, the finding is named, and the row leaves the owed set as the rig's existing named-gap status
+# rather than as a pass. THE VALIDATOR IS NOT WEAKENED BY THIS: it still computes every violation,
+# a violation this file does not name still fails its row, and a row is only downgraded when EVERY
+# violation on it is named.
+#
+# The refusals below are the whole design. Each is a way a "gap" could quietly become a bypass:
+# an entry with no owner or no reason forgives anonymously; an entry with no `cells` list, or a
+# wildcard in one, forgives a rule across every cell that ever produces it; a short or empty
+# `detail_contains` matches violations nobody has looked at. All are load-time errors, not warnings.
+class NamedGaps:
+    def __init__(self, entries):
+        self.entries = entries
+        self.hits = {g["id"]: set() for g in entries}      # gap id -> rows it actually forgave
+        self.judged = set()                                 # every row the validator judged
+
+    @staticmethod
+    def load(path):
+        """-> (NamedGaps, [refusal, ...]). A refusal list that is non-empty means: do not run."""
+        if not path or not os.path.exists(path):
+            return NamedGaps([]), []
+        try:
+            with open(path, encoding="utf-8") as f:
+                doc = json.load(f)
+        except (OSError, ValueError) as e:
+            return NamedGaps([]), [f"{path}: not readable as JSON ({e})"]
+        if not isinstance(doc, dict) or not isinstance(doc.get("gaps"), list):
+            return NamedGaps([]), [f"{path}: must be an object with a `gaps` list"]
+        bad, seen, ok = [], set(), []
+        for i, g in enumerate(doc["gaps"]):
+            where = f"{path}: gaps[{i}]"
+            if not isinstance(g, dict):
+                bad.append(f"{where}: not an object")
+                continue
+            gid = g.get("id")
+            where = f"{path}: gap {gid!r}" if isinstance(gid, str) and gid else where
+            if not isinstance(gid, str) or not gid.strip():
+                bad.append(f"{where}: no `id`")
+                continue
+            if gid in seen:
+                bad.append(f"{where}: duplicate `id` — two entries answering for the same name")
+                continue
+            seen.add(gid)
+            errs = []
+            if not isinstance(g.get("owner"), str) or not g["owner"].strip():
+                errs.append("no `owner` — a gap nobody owns is a bypass")
+            if not isinstance(g.get("why"), str) or len(g.get("why", "").strip()) < 40:
+                errs.append("`why` must say why the vendor's schema is the incomplete side, in a sentence")
+            if not isinstance(g.get("rule"), str) or not g["rule"].strip():
+                errs.append("no `rule` — the gap must name the check it forgives")
+            dc = g.get("detail_contains")
+            if not isinstance(dc, str) or len(dc.strip()) < 8:
+                errs.append("`detail_contains` must be a substring of the violation's own detail, long enough to name it")
+            elif any(ch in dc for ch in "*?"):
+                errs.append("`detail_contains` is matched literally; `*`/`?` would read as a wildcard that is not one")
+            cells = g.get("cells")
+            if not isinstance(cells, list) or not cells:
+                errs.append("no `cells` — a gap must name the rows it covers, one by one")
+            else:
+                for c in cells:
+                    if not isinstance(c, str) or "#" not in c:
+                        errs.append(f"cell {c!r} is not a `<cell id>#<direction>` row")
+                    elif any(ch in c for ch in "*?"):
+                        errs.append(f"cell {c!r} carries a wildcard — a gap that matches a pattern of rows is a bypass")
+            if errs:
+                bad += [f"{where}: {e}" for e in errs]
+            else:
+                ok.append(g)
+        return NamedGaps(ok), bad
+
+    def partition(self, rid, viols):
+        """-> (unnamed violations, [gap, ...] that covered the rest). Records what was judged."""
+        self.judged.add(rid)
+        unnamed, covered = [], []
+        for v in viols:
+            g = next((g for g in self.entries
+                      if rid in g["cells"] and v.rule == g["rule"] and g["detail_contains"] in v.detail), None)
+            if g is None:
+                unnamed.append(v)
+            else:
+                self.hits[g["id"]].add(rid)
+                if g not in covered:
+                    covered.append(g)
+        return unnamed, covered
+
+    def stale(self):
+        """Rows a gap names, that this run JUDGED, and that did NOT produce the named violation.
+
+        A row the run never judged is not stale — the recorder may simply not have made that cell on
+        this pass, and that absence is already a named gap row of its own. A row that WAS judged and
+        came back clean is the real case: the gap is forgiving nothing and must come out of the file.
+        """
+        out = []
+        for g in self.entries:
+            for c in g["cells"]:
+                if c in self.judged and c not in self.hits[g["id"]]:
+                    out.append((g["id"], c))
+        return out
+
+
+def gap_detail(covered):
+    """The ledger detail for a row whose every violation is named. It carries the owner and the
+    reason, so the gap is readable in the run's own output and not only in the file."""
+    return "named gap — " + " | ".join(f"{g['id']} ({g['owner']}): {g['why']}" for g in covered)
 
 
 def esc(tok):
@@ -905,6 +1015,8 @@ def main():
     ap.add_argument("--out")
     ap.add_argument("--cells", default=os.path.join(ORACLE, "cells.json"))
     ap.add_argument("--digests", default=os.path.join(HERE, "spec-digests.tsv"))
+    ap.add_argument("--named-gaps", default=os.path.join(HERE, "named-gaps.json"),
+                    help="violations the owner has ruled the vendor's schema wrong about (see the file's own header)")
     ap.add_argument("--spec-cache", default=os.environ.get("BUSBAR_LLM_SPEC_CACHE") or os.path.expanduser("~/.cache/busbar-llm-specs"))
     ap.add_argument("--ledger", default=None, help="ledger path (default <out>/ledger.tsv, or $LEDGER)")
     ap.add_argument("--owed", action="store_true", help="print the owed ids and exit")
@@ -924,6 +1036,15 @@ def main():
     if args.quiet:
         sys.stdout = open(os.devnull, "w")
     ledger = Ledger(ledger_path)
+    # The gap list is read BEFORE anything is judged, and a malformed entry stops the run rather
+    # than being dropped: a gap file that silently loses an entry turns a named gap back into a FAIL,
+    # and one that silently KEEPS a malformed entry is the bypass this loader exists to refuse.
+    gaps, gap_refusals = NamedGaps.load(args.named_gaps)
+    if gap_refusals:
+        for r in gap_refusals:
+            sys.stderr.write(f"validate: REFUSED named gap — {r}\n")
+        sys.stderr.write("validate: the named-gap list is not loadable; nothing was judged\n")
+        return 2
     rec = Recording(args.recording)
     files = rec.llm_cell_files()
     if not files:
@@ -963,7 +1084,11 @@ def main():
                 src = "build-request.py"
             viols, schema_name = judge.judge_request(dialect, outcome, body)
             rid = f"{cid}#request"
-            if viols:
+            viols, covered = gaps.partition(rid, viols)
+            if not viols and covered:
+                ledger.record(rid, "SKIP", f"{dialect} request vs {schema_name} ({src})", gap_detail(covered))
+                pd["request"]["SKIP"] += 1
+            elif viols:
                 ledger.record(rid, "FAIL", f"{dialect} request vs {schema_name} ({src})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
                 pd["request"]["FAIL"] += 1
                 violations += [(cid, "request", dialect, v) for v in viols]
@@ -973,6 +1098,7 @@ def main():
 
         # response direction
         status = int(cell.get("status") or 0)
+        covered = []
         headers = rec.response_headers(safe, cell)
         body, bsrc = rec.response_bytes(safe, cell)
         rid = f"{cid}#response"
@@ -981,8 +1107,13 @@ def main():
             pd["response"]["SKIP"] += 1
             continue
         viols, desc, skip = judge.judge_response(dialect, outcome, status, headers, body)
+        if not skip:
+            viols, covered = gaps.partition(rid, viols)
         if skip:
             ledger.record(rid, "SKIP", f"{dialect} response {desc}", f"named gap — {skip}")
+            pd["response"]["SKIP"] += 1
+        elif not viols and covered:
+            ledger.record(rid, "SKIP", f"{dialect} response {desc} ({bsrc})", gap_detail(covered))
             pd["response"]["SKIP"] += 1
         elif viols:
             ledger.record(rid, "FAIL", f"{dialect} response {desc} ({bsrc})", f"{len(viols)} violation(s): " + " | ".join(str(v) for v in viols[:4]))
@@ -992,6 +1123,14 @@ def main():
             ledger.record(rid, "PASS", f"{dialect} response {desc} ({bsrc})", "")
             pd["response"]["PASS"] += 1
 
+    # A GAP THAT FORGIVES NOTHING MUST NOT SIT HERE. The file is written out even when empty, so
+    # run.sh can tell "checked, none stale" from "never checked"; run.sh refuses on a non-empty one
+    # before the verdict, because a stale entry is the shape a real future FAIL would hide behind.
+    stale = gaps.stale()
+    with open(os.path.join(args.out, "stale-gaps.txt"), "w", encoding="utf-8") as f:
+        for gid, row in stale:
+            f.write(f"{gid}\t{row}\n")
+            print(f"::error title=llm-spec stale named gap::{gid} names {row}, which this run judged and which did not produce its violation — remove the row from testing/llm-conformance/named-gaps.json")
     write_reports(args.out, rec, violations, per_dialect, cells_seen=len(files))
     return 0
 

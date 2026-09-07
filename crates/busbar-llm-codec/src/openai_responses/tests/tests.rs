@@ -3842,13 +3842,14 @@ fn test_terminal_id_matches_forwarded_created_id() {
     );
 }
 
-/// A fresh stream's `response.created` REPLACES the
-/// carried id, so a reused/cloned writer never leaks the previous stream's id onto a new
-/// stream's terminal event. (`reset_sequence_number` clears the cell; `MessageStart` sets it.)
+/// A stream's id is scoped to ONE writer instance, and a second `MessageStart` on that instance is
+/// a DUPLICATE rather than a new stream — the same fact the `started` latch already uses to keep
+/// `sequence_number` from rewinding. So the first id holds for the whole stream, and a genuinely
+/// new stream (a fresh writer, which is what each use of the value-namespace const inlines) takes
+/// its own id with nothing leaked from the last one.
 #[test]
 fn test_carried_id_resets_per_stream() {
     let writer = ResponsesWriter;
-    // Stream A.
     let (_, a_created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
             role: crate::ir::IrRole::Assistant,
@@ -3859,8 +3860,8 @@ fn test_carried_id_resets_per_stream() {
         })
         .expect("emit");
     assert_eq!(a_created["response"]["id"].as_str(), Some("resp_A"));
-    // Stream B begins on the same writer instance.
-    let (_, b_created) = writer
+    // A duplicate opening event on the SAME instance, naming a different id.
+    let (_, dup_created) = writer
         .write_response_event(&IrStreamEvent::MessageStart {
             role: crate::ir::IrRole::Assistant,
             usage: None,
@@ -3869,8 +3870,12 @@ fn test_carried_id_resets_per_stream() {
             model: None,
         })
         .expect("emit");
-    assert_eq!(b_created["response"]["id"].as_str(), Some("resp_B"));
-    let (_, b_completed) = writer
+    assert_eq!(
+        dup_created["response"]["id"].as_str(),
+        Some("resp_A"),
+        "one stream states one id; the duplicate must not re-mint it"
+    );
+    let (_, completed) = writer
         .write_response_event(&IrStreamEvent::MessageDelta {
             stop_reason: Some(crate::ir::IrStopReason::EndTurn),
             stop_sequence: None,
@@ -3878,9 +3883,26 @@ fn test_carried_id_resets_per_stream() {
         })
         .expect("emit");
     assert_eq!(
-        b_completed["response"]["id"].as_str(),
+        completed["response"]["id"].as_str(),
+        Some("resp_A"),
+        "the terminal event replays the id the stream opened with"
+    );
+
+    // A genuinely NEW stream is a NEW writer, and carries nothing from the last one.
+    let next = ResponsesWriter;
+    let (_, b_created) = next
+        .write_response_event(&IrStreamEvent::MessageStart {
+            role: crate::ir::IrRole::Assistant,
+            usage: None,
+            id: Some("resp_B".to_string()),
+            created: None,
+            model: None,
+        })
+        .expect("emit");
+    assert_eq!(
+        b_created["response"]["id"].as_str(),
         Some("resp_B"),
-        "stream B's terminal id must be B's, not A's leaked id"
+        "a fresh stream's id is its own, not the previous stream's leaked id"
     );
 }
 
@@ -3987,6 +4009,60 @@ fn test_writer_open_tool_indices_capped() {
         len <= MAX_OPEN_TOOLS,
         "open_tool_indices must be capped at MAX_OPEN_TOOLS, got {len}"
     );
+}
+
+/// A function-call open the cap REFUSED must emit no
+/// `response.output_item.added`. The cap is what decides whether the item exists; the frame is the
+/// wire's statement that it does. When they disagree the client is told an item opened that the
+/// writer never tracked, so the matching `BlockStop` finds nothing to close, no
+/// `response.output_item.done` ever follows, and the item is absent from the terminal `output[]`
+/// as well — a lifecycle open for an item that never opened and never ends.
+///
+/// The text arm has always decided both together (`open_text_item` returns the verdict and its
+/// caller honours it); this pins the function-call arm to the same contract: at most
+/// `MAX_OPEN_TOOLS` `output_item.added` frames, and every one of them closed by its `BlockStop`.
+#[test]
+fn test_writer_refused_tool_open_emits_no_output_item_added() {
+    let writer = ResponsesWriter;
+    let _ = writer.write_response_event(&IrStreamEvent::MessageStart {
+        role: crate::ir::IrRole::Assistant,
+        usage: None,
+        id: None,
+        created: None,
+        model: None,
+    });
+    let mut added = Vec::new();
+    for i in 0..(MAX_OPEN_TOOLS + 200) {
+        if writer
+            .write_response_event(&IrStreamEvent::BlockStart {
+                index: i,
+                block: crate::ir::IrBlockMeta::ToolUse {
+                    id: format!("call_{i}"),
+                    name: "f".to_string(),
+                },
+            })
+            .is_some()
+        {
+            added.push(i);
+        }
+    }
+    assert!(
+        added.len() <= MAX_OPEN_TOOLS,
+        "the writer must open at most MAX_OPEN_TOOLS function-call items; it emitted \
+         {} `output_item.added` frames",
+        added.len()
+    );
+    // Every `added` frame is an open the wire must see closed: its BlockStop emits the matching
+    // `output_item.done`. A frame written past the cap would fail here too — `take_tool_open`
+    // cannot close an index that was never inserted.
+    for i in added {
+        assert!(
+            writer
+                .write_response_event(&IrStreamEvent::BlockStop { index: i })
+                .is_some(),
+            "`output_item.added` at index {i} was never closed by its BlockStop"
+        );
+    }
 }
 
 /// Production `extract_error` must synthesize the
@@ -6470,7 +6546,7 @@ fn test_hosted_tools_dropped_cross_protocol() {
     assert_eq!(ir.tools[0].name, "get_weather");
 
     // The OpenAI-chat (non-Responses) writer now emits NO malformed empty-name function tool.
-    let out = super::super::openai_chat::OpenAiWriter.write_request(&ir);
+    let out = super::super::openai_chat::openai_writer().write_request(&ir);
     let tools = out["tools"].as_array().expect("tools array");
     assert_eq!(tools.len(), 1, "only the function tool is written: {out}");
     for t in tools {
@@ -7539,5 +7615,96 @@ fn writer_tool_arguments_stop_growing_at_the_translate_cap() {
             .and_then(|v| v.as_str())
             .is_some(),
         "the finalized item still carries an arguments string: {done}"
+    );
+}
+
+/// A URL citation must SURVIVE a Responses→Responses hop.
+///
+/// The Responses wire shape for an annotation is the published `UrlCitationBody`, which FLATTENS
+/// `url`/`title`/`start_index`/`end_index` onto the entry — unlike Chat, which nests them under a
+/// `url_citation` object. The writer has always emitted the flat shape; the shared reader used to
+/// recognize only the nested one, so it dropped every citation it was handed — including the ones
+/// this very writer had just produced. Assert BOTH halves: the bytes are the flat shape the spec
+/// requires, and reading them back recovers the citation.
+#[test]
+fn responses_url_citation_survives_a_responses_round_trip() {
+    let resp = crate::ir::IrResponse {
+        logprobs: Vec::new(),
+        role: crate::ir::IrRole::Assistant,
+        id: Some("resp_rt".to_string()),
+        model: Some("gpt-4o".to_string()),
+        created: Some(1_700_000_000),
+        content: vec![crate::ir::IrBlock::Text {
+            text: "See the source for details.".to_string(),
+            cache_control: None,
+            citations: vec![crate::ir::IrCitation {
+                kind: Some("web_search_result_location".to_string()),
+                cited_text: None,
+                title: Some("Responses Source".to_string()),
+                url: Some("https://example.com/r".to_string()),
+                document_index: None,
+                start_index: Some(4),
+                end_index: Some(10),
+                encrypted_index: None,
+                raw: None,
+            }],
+        }],
+        stop_reason: Some(crate::ir::IrStopReason::EndTurn),
+        stop_sequence: None,
+        usage: crate::ir::IrUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: None,
+            detail: crate::ir::IrUsageDetail::default(),
+        },
+        system_fingerprint: None,
+        request_echo: None,
+    };
+
+    let writer = ResponsesWriter;
+    let wire = writer.write_response(&resp);
+
+    // The written shape is the spec's flat `UrlCitationBody`, not Chat's nested object.
+    let ann = wire
+        .pointer("/output/0/content/0/annotations/0")
+        .expect("the output text part carries an annotation");
+    assert_eq!(ann["type"], "url_citation");
+    assert_eq!(
+        ann.get("url").and_then(|v| v.as_str()),
+        Some("https://example.com/r"),
+        "url is flattened onto the entry: {ann}"
+    );
+    assert!(
+        ann.get("url_citation").is_none(),
+        "the Responses wire must NOT nest under url_citation: {ann}"
+    );
+
+    // And the reader recovers it rather than dropping it on the floor.
+    let back = ResponsesReader
+        .read_response(&wire)
+        .expect("read_response should succeed");
+    let citations = back
+        .content
+        .iter()
+        .find_map(|b| match b {
+            crate::ir::IrBlock::Text { citations, .. } => Some(citations),
+            _ => None,
+        })
+        .expect("a Text block must be present");
+    assert_eq!(
+        citations.len(),
+        1,
+        "the citation must survive the round-trip, not be dropped: {citations:?}"
+    );
+    assert_eq!(
+        citations[0].url.as_deref(),
+        Some("https://example.com/r"),
+        "{citations:?}"
+    );
+    assert_eq!(
+        citations[0].title.as_deref(),
+        Some("Responses Source"),
+        "{citations:?}"
     );
 }

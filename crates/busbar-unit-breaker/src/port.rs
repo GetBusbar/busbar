@@ -23,21 +23,44 @@
 //! the transport's coarse status-class reading (`busbar_contract::StatusClass`); a caller that has
 //! that reading folds it into [`UpstreamStatus::code`] itself before calling in — exactly the kind
 //! of narrowing an integrator's adapter does, alongside the `DestinationId` width narrowing.
+//!
+//! What that narrowing may NOT drop is the numbering the status was spelled in: [`UpstreamCode`]
+//! restates the transport contract's namespaced status in this crate's own vocabulary, so an
+//! integrator hands over `Grpc(14)` and not the bare `14` an HTTP band-check would fail to place.
 
 use crate::classify::{self, Disposition};
 use crate::Outcome;
 
-/// The upstream answer as this unit classifies it: an HTTP-status-shaped code (`None` when the
-/// transport could not put a number on the failure) and the upstream's own requested wait.
+/// The numbering an upstream status was spelled in, carried WITH the number.
 ///
-/// `status.code`, when present, stands in for BOTH the HTTP status and the provider error code an
-/// `error_map` entry is keyed on — the config grammar accepts a plain HTTP-status string as a key
-/// (`error_map: { "400": client_error }`), which is the one signal a caller that reads no response
-/// body (per `// contract:` in `busbar-unit-egress`'s `ports.rs`) can supply.
+/// This unit takes no dependency on the transport contract, so it cannot name that contract's
+/// `WireStatus` — but the fact the two types carry is the same one, and an integrator's adapter
+/// narrows across (exactly as it already does for the destination's width). What matters is that
+/// neither side can hand a bare number over: a `14` read against HTTP's bands matches no band at
+/// all, and the destination that just said `UNAVAILABLE` would go unrecorded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UpstreamCode {
+    /// An HTTP status. Classified by band, as 1.5.5 classified every upstream.
+    Http(u16),
+    /// A `grpc-status` code. Classified through [`crate::classify::GRPC_STATUS_TABLE`], which is
+    /// gRPC's own numbering and shares nothing with HTTP's but the fact that it is a number.
+    Grpc(u8),
+}
+
+/// The upstream answer as this unit classifies it: the numeric status WITH its namespace (`None`
+/// when the transport could not put a number on the failure) and the upstream's own requested wait.
+///
+/// `status.code`, when it is an [`UpstreamCode::Http`], stands in for BOTH the HTTP status and the
+/// provider error code an `error_map` entry is keyed on — the config grammar accepts a plain
+/// HTTP-status string as a key (`error_map: { "400": client_error }`), which is the one signal a
+/// caller that reads no response body (per `// contract:` in `busbar-unit-egress`'s `ports.rs`) can
+/// supply. A gRPC code is NOT offered to the `error_map` as a provider code: those keys are
+/// HTTP-status strings by the config grammar, and feeding `14` in would let an operator's rule for
+/// HTTP `14` — a status that does not exist — silently claim a gRPC `UNAVAILABLE`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
-    /// The upstream's numeric HTTP-shaped status, where one is known.
-    pub code: Option<u16>,
+    /// The upstream's numeric status and the numbering that spelled it, where one is known.
+    pub code: Option<UpstreamCode>,
     /// The upstream's requested Retry-After, in whole seconds, where it asked for one.
     pub retry_after: Option<u64>,
 }
@@ -112,13 +135,30 @@ pub fn classify_upstream(
     status: UpstreamStatus,
     diagnostics: &dyn classify::Diagnostics,
 ) -> Classified {
-    let raw = classify::RawUpstreamError {
-        http_status: status.code.unwrap_or(0),
-        provider_code: status.code.map(|c| c.to_string()),
-        structured_type: None,
-        retry_after_secs: status.retry_after,
+    // Each namespace through its own table. The gRPC leg never enters the HTTP normalizer at all:
+    // that normalizer's every branch — the 401/403 arm, the 429 arm, the 5xx band — is a statement
+    // about HTTP's numbering, and a gRPC code walking through it lands wherever its digits happen
+    // to fall.
+    let sig = match status.code {
+        Some(UpstreamCode::Grpc(code)) => classify::CanonicalSignal {
+            class: classify::grpc_status_class(code),
+            provider_signal: None,
+            retry_after: status.retry_after,
+        },
+        http => {
+            let http_status = match http {
+                Some(UpstreamCode::Http(code)) => Some(code),
+                _ => None,
+            };
+            let raw = classify::RawUpstreamError {
+                http_status: http_status.unwrap_or(0),
+                provider_code: http_status.map(|c| c.to_string()),
+                structured_type: None,
+                retry_after_secs: status.retry_after,
+            };
+            classify::normalize_raw_error(&raw, error_map, diagnostics)
+        }
     };
-    let sig = classify::normalize_raw_error(&raw, error_map, diagnostics);
     let disposition = classify::classify(&sig);
     let (outcome, label) = outcome_and_label(disposition, sig.retry_after);
     Classified {
@@ -217,7 +257,7 @@ mod tests {
         let out = classify_upstream(
             &map,
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
             &NoopDiagnostics,
@@ -232,7 +272,7 @@ mod tests {
         let out = classify_upstream(
             &map,
             UpstreamStatus {
-                code: Some(500),
+                code: Some(UpstreamCode::Http(500)),
                 retry_after: None,
             },
             &NoopDiagnostics,
@@ -246,7 +286,7 @@ mod tests {
         let out = classify_upstream(
             &HashMap::new(),
             UpstreamStatus {
-                code: Some(429),
+                code: Some(UpstreamCode::Http(429)),
                 retry_after: Some(7),
             },
             &NoopDiagnostics,
@@ -266,7 +306,7 @@ mod tests {
         let out = classify_upstream(
             &HashMap::new(),
             UpstreamStatus {
-                code: Some(401),
+                code: Some(UpstreamCode::Http(401)),
                 retry_after: None,
             },
             &NoopDiagnostics,
@@ -280,7 +320,7 @@ mod tests {
         let out = classify_upstream(
             &HashMap::new(),
             UpstreamStatus {
-                code: Some(422),
+                code: Some(UpstreamCode::Http(422)),
                 retry_after: None,
             },
             &NoopDiagnostics,
@@ -316,7 +356,7 @@ mod tests {
         let out = unit.classify(
             DestinationId::new(7),
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
         );
@@ -327,7 +367,7 @@ mod tests {
         let out2 = unit.classify(
             DestinationId::new(8),
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
         );
@@ -345,7 +385,7 @@ mod tests {
         let out = unit.classify(
             DestinationId::new(7),
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
         );
@@ -384,7 +424,7 @@ mod tests {
         let _ = classify_upstream(
             &map,
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
             &warn_once,
@@ -392,7 +432,7 @@ mod tests {
         let _ = classify_upstream(
             &map,
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
             &warn_once,
@@ -414,7 +454,7 @@ mod tests {
         let out = classify_upstream(
             &map,
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
             &NoopDiagnostics,
@@ -441,14 +481,14 @@ mod tests {
         let _ = unit.classify(
             DestinationId::new(1),
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
         );
         let _ = unit.classify(
             DestinationId::new(1),
             UpstreamStatus {
-                code: Some(1113),
+                code: Some(UpstreamCode::Http(1113)),
                 retry_after: None,
             },
         );
@@ -458,5 +498,199 @@ mod tests {
             vec!["not_a_real_class".to_string()],
             "the sink must be reached exactly once, through BreakerUnit::classify"
         );
+    }
+
+    // ── the two namespaces, each against its own table ──────────────────────────────────────────
+
+    /// Every code gRPC defines, stated as the disposition the walk acts on. Written out rather than
+    /// derived from `GRPC_STATUS_TABLE` on purpose: a table that classified itself would agree with
+    /// any value it happened to hold, and what needs proving is the money decision behind each row —
+    /// which codes penalise the destination, which take it down across every pool, and which are the
+    /// caller's own fault and cost the destination nothing.
+    const GRPC_DISPOSITIONS: &[(u8, Disposition)] = &[
+        (classify::GRPC_OK, Disposition::ClientFault),
+        (classify::GRPC_CANCELLED, Disposition::ClientFault),
+        (classify::GRPC_UNKNOWN, Disposition::TransientUpstream),
+        (classify::GRPC_INVALID_ARGUMENT, Disposition::ClientFault),
+        (
+            classify::GRPC_DEADLINE_EXCEEDED,
+            Disposition::TransientUpstream,
+        ),
+        (classify::GRPC_NOT_FOUND, Disposition::ClientFault),
+        (classify::GRPC_ALREADY_EXISTS, Disposition::ClientFault),
+        (classify::GRPC_PERMISSION_DENIED, Disposition::HardDown),
+        (
+            classify::GRPC_RESOURCE_EXHAUSTED,
+            Disposition::TransientUpstream,
+        ),
+        (classify::GRPC_FAILED_PRECONDITION, Disposition::ClientFault),
+        (classify::GRPC_ABORTED, Disposition::TransientUpstream),
+        (classify::GRPC_OUT_OF_RANGE, Disposition::ClientFault),
+        (classify::GRPC_UNIMPLEMENTED, Disposition::ClientFault),
+        (classify::GRPC_INTERNAL, Disposition::TransientUpstream),
+        (classify::GRPC_UNAVAILABLE, Disposition::TransientUpstream),
+        (classify::GRPC_DATA_LOSS, Disposition::TransientUpstream),
+        (classify::GRPC_UNAUTHENTICATED, Disposition::HardDown),
+    ];
+
+    #[test]
+    fn every_grpc_code_classifies_through_grpcs_own_table() {
+        for (code, expected) in GRPC_DISPOSITIONS {
+            let got = classify_upstream(
+                &HashMap::new(),
+                UpstreamStatus {
+                    code: Some(UpstreamCode::Grpc(*code)),
+                    retry_after: None,
+                },
+                &NoopDiagnostics,
+            );
+            assert_eq!(
+                got.disposition, *expected,
+                "grpc-status {code} must classify as {expected:?}"
+            );
+        }
+    }
+
+    /// The table covers gRPC's whole numbering with no gaps and no repeats, so no code can quietly
+    /// fall through to the unknown-code answer.
+    #[test]
+    fn the_grpc_table_names_every_code_exactly_once() {
+        let mut seen: Vec<u8> = classify::GRPC_STATUS_TABLE
+            .iter()
+            .map(|(c, _)| *c)
+            .collect();
+        seen.sort_unstable();
+        let all: Vec<u8> = (classify::GRPC_OK..=classify::GRPC_UNAUTHENTICATED).collect();
+        assert_eq!(seen, all, "every grpc code has exactly one row");
+        assert_eq!(
+            GRPC_DISPOSITIONS.len(),
+            classify::GRPC_STATUS_TABLE.len(),
+            "the asserted dispositions cover the whole table"
+        );
+    }
+
+    /// A number gRPC has never defined is evidence about nobody: it must not invent an outage and
+    /// trip a live lane.
+    #[test]
+    fn an_undefined_grpc_code_records_nothing() {
+        let got = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: Some(UpstreamCode::Grpc(200)),
+                retry_after: None,
+            },
+            &NoopDiagnostics,
+        );
+        assert_eq!(got.disposition, Disposition::ClientFault);
+        assert_eq!(got.outcome, Outcome::RecordNothing);
+    }
+
+    /// Every HTTP band, at its edges and at the statuses that are read out of their band. Sits
+    /// beside the gRPC table so the two namespaces are visibly separate readings of a number — and
+    /// so a change that folded them back together fails on both.
+    #[test]
+    fn every_http_band_classifies_through_https_own_table() {
+        let bands: &[(u16, Disposition)] = &[
+            (200, Disposition::ClientFault),
+            (301, Disposition::ClientFault),
+            (400, Disposition::ClientFault),
+            (401, Disposition::HardDown),
+            (403, Disposition::HardDown),
+            (404, Disposition::ClientFault),
+            (408, Disposition::TransientUpstream),
+            (422, Disposition::ClientFault),
+            (429, Disposition::TransientUpstream),
+            (499, Disposition::ClientFault),
+            (500, Disposition::TransientUpstream),
+            (503, Disposition::TransientUpstream),
+            (529, Disposition::TransientUpstream),
+            (599, Disposition::TransientUpstream),
+        ];
+        for (status, expected) in bands {
+            let got = classify_upstream(
+                &HashMap::new(),
+                UpstreamStatus {
+                    code: Some(UpstreamCode::Http(*status)),
+                    retry_after: None,
+                },
+                &NoopDiagnostics,
+            );
+            assert_eq!(
+                got.disposition, *expected,
+                "http {status} must classify as {expected:?}"
+            );
+        }
+    }
+
+    /// The defect this pair of tables replaces, stated as the difference the namespace makes. The
+    /// SAME number classifies two ways because it is two different facts, and the gRPC reading is
+    /// the one that penalises the destination.
+    #[test]
+    fn the_same_number_means_different_things_in_the_two_namespaces() {
+        let as_grpc = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: Some(UpstreamCode::Grpc(classify::GRPC_UNAVAILABLE)),
+                retry_after: None,
+            },
+            &NoopDiagnostics,
+        );
+        let as_http = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: Some(UpstreamCode::Http(u16::from(classify::GRPC_UNAVAILABLE))),
+                retry_after: None,
+            },
+            &NoopDiagnostics,
+        );
+        assert_eq!(as_grpc.disposition, Disposition::TransientUpstream);
+        assert_eq!(
+            as_grpc.outcome,
+            Outcome::Transient { retry_after: None },
+            "an UNAVAILABLE upstream is recorded against the destination"
+        );
+        assert_eq!(
+            as_http.disposition,
+            Disposition::ClientFault,
+            "read as an HTTP status the same digits match no band at all — which is exactly the \
+             reading that recorded nothing and never failed over"
+        );
+    }
+
+    /// A gRPC `RESOURCE_EXHAUSTED` carries the upstream's own wait through as the cooldown floor,
+    /// the same way an HTTP 429 does — the wait is a fact about the answer, not about HTTP.
+    #[test]
+    fn a_grpc_resource_exhausted_carries_the_upstreams_wait() {
+        let got = classify_upstream(
+            &HashMap::new(),
+            UpstreamStatus {
+                code: Some(UpstreamCode::Grpc(classify::GRPC_RESOURCE_EXHAUSTED)),
+                retry_after: Some(9),
+            },
+            &NoopDiagnostics,
+        );
+        assert_eq!(
+            got.outcome,
+            Outcome::Transient {
+                retry_after: Some(9)
+            }
+        );
+    }
+
+    /// An operator's `error_map` is keyed on HTTP statuses by the config grammar, so a rule for the
+    /// HTTP status `14` — which does not exist — must not reach across and claim a gRPC
+    /// `UNAVAILABLE`.
+    #[test]
+    fn an_http_keyed_error_map_does_not_claim_a_grpc_code() {
+        let map = err_map(&[("14", "client_error")]);
+        let got = classify_upstream(
+            &map,
+            UpstreamStatus {
+                code: Some(UpstreamCode::Grpc(classify::GRPC_UNAVAILABLE)),
+                retry_after: None,
+            },
+            &NoopDiagnostics,
+        );
+        assert_eq!(got.disposition, Disposition::TransientUpstream);
     }
 }

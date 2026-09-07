@@ -41,6 +41,8 @@ pub use crate::bedrock::{BedrockReader, BedrockWriter};
 pub use crate::cohere::{CohereReader, CohereWriter};
 pub use crate::gemini::{GeminiJsonArrayFramer, GeminiReader, GeminiWriter};
 pub use crate::openai_chat::{OpenAiReader, OpenAiWriter};
+// Same `pub(crate)` fresh-value helper as `anthropic_writer`, for the same lint reason.
+pub(crate) use crate::openai_chat::openai_writer;
 pub use crate::openai_responses::{ResponsesReader, ResponsesWriter};
 
 // The NEUTRAL proto atoms the suites reach bare via `super::*` — named at their canonical
@@ -104,6 +106,8 @@ mod same_proto_fidelity_tests;
 mod stop_reason_matrix_tests;
 #[path = "stream_fanout_tests.rs"]
 mod stream_fanout_tests;
+#[path = "stream_identity_tests.rs"]
+mod stream_identity_tests;
 #[path = "stream_tap_usage_tests.rs"]
 mod stream_tap_usage_tests;
 #[path = "stream_translate_tests.rs"]

@@ -29,6 +29,16 @@
 #          (closed object, no "error" property), so a PASS here is proof the checker judged it
 #          against the dialect's ERROR envelope, not the success schema
 #
+# The named-gap list (named-gaps.json) is the one thing here that can turn a red row green, so its
+# every arm is planted on a REAL violation the validator made:
+#
+#   (i) a gap naming that violation      -> the row leaves the owed set as a gap, never as a PASS,
+#                                           carrying the owner and the reason
+#   (j) a SECOND, unnamed violation on the same row -> still RED (a gap forgives what it names)
+#   (k) the same gap where the row is clean        -> RED as stale, before the verdict
+#   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
+#   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
+#
 # Needs the vendored specs (run.sh vendors them; cached by digest, so this is offline after once).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -137,5 +147,78 @@ else
   say FAIL "(h) malformed array element rc=$rc fails=$(count "$W/h" FAIL): $rows"
 fi
 
+# ── THE NAMED-GAP LIST, PROVEN ON BOTH SIDES ────────────────────────────────────────────────────
+# named-gaps.json turns a violation the owner has ruled the vendor's schema wrong about into the
+# rig's named-gap status instead of a FAIL. That is the one mechanism here that can make a red run
+# green, so every way it could become a bypass is planted and proven refused. The violation used is
+# case (b)'s: the cohere response type error, which is REAL — the gap is proven to forgive a finding
+# the validator genuinely made, not an imaginary one.
+gapfile() { printf '%s' "$2" >"$W/$1.json"; echo "$W/$1.json"; }
+run_gaps() {  # run_gaps <recording> <out> <cells> <gapfile> -> rc
+  bash "${here}/run.sh" --recording "$1" --out "$2" --cells "$3" --named-gaps "$4" >"$2.log" 2>&1; echo $?
+}
+GAP_OK='{"gaps":[{"id":"selftest-cohere-usage","owner":"the selftest","rule":"type",
+  "detail_contains":"expected number, got string",
+  "cells":["llm|cohere|cohere|request|ok#response"],
+  "why":"a planted gap used only by the selftest, to prove a named violation leaves the owed set as a gap and never as a pass"}]}'
+
+# (i) a gap naming the one real violation -> that row is a named gap, the run is GREEN, and the
+#     reason and owner travel with it
+g="$(gapfile ok "$GAP_OK")"
+rc="$(run_gaps "$W/b-rec" "$W/i" "$W/b-rec/cells.json" "$g")"
+if [ "$rc" = 0 ] && [ "$(count "$W/i" FAIL)" = 0 ] && [ "$(count "$W/i" SKIP)" = 1 ] \
+   && grep -q 'selftest-cohere-usage (the selftest)' "$W/i/ledger.tsv" \
+   && grep -qx 'llm|cohere|cohere|request|ok#response' "$W/i/owed-gaps.txt"; then
+  say PASS "(i) a named gap on a real violation -> GREEN, the row is a gap (never a PASS), owner and reason carried"
+else
+  say FAIL "(i) named gap rc=$rc fail=$(count "$W/i" FAIL) skip=$(count "$W/i" SKIP)"; tail -10 "$W/i.log"
+fi
+
+# (j) THE SAME GAP, plus a SECOND violation on the same row it does not name -> still FAIL. A gap
+#     forgives what it names and nothing else, which is the difference between a gap and a mute.
+cp -R "$W/b-rec" "$W/j-rec"
+python3 - "$W/j-rec/raw/llm__cohere__cohere__request__ok/body" <<'EOF'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); d["id"]=12345
+open(p,"w").write(json.dumps(d,separators=(",",":")))
+EOF
+rc="$(run_gaps "$W/j-rec" "$W/j" "$W/j-rec/cells.json" "$g")"
+if [ "$rc" != 0 ] && [ "$(count "$W/j" FAIL)" = 1 ] && grep -q '/id type' "$W/j/ledger.tsv" \
+   && ! grep -q 'input_tokens' "$W/j/ledger.tsv"; then
+  say PASS "(j) an UNNAMED violation on the same row -> still RED; only the named one is forgiven"
+else
+  say FAIL "(j) partial gap rc=$rc fails=$(count "$W/j" FAIL): $(fail_rows "$W/j")"
+fi
+
+# (k) the same gap against the UNMUTATED fixture: the row is judged and comes back clean, so the
+#     entry forgives nothing -> STALE, and stale is RED. This is what stops a fixed gap from sitting
+#     in the file as the place a future real failure would land unseen.
+rc="$(run_gaps "$FIX" "$W/k" "$FIX/cells.json" "$g")"
+if [ "$rc" != 0 ] && grep -q 'selftest-cohere-usage' "$W/k/stale-gaps.txt" && grep -q 'STALE NAMED GAPS' "$W/k.log"; then
+  say PASS "(k) a gap whose named row comes back clean -> RED as stale, before the verdict"
+else
+  say FAIL "(k) stale gap rc=$rc stale=$(cat "$W/k/stale-gaps.txt" 2>/dev/null)"; tail -8 "$W/k.log"
+fi
+
+# (l) an entry with no owner and a one-word reason -> REFUSED at load; nothing is judged.
+g2="$(gapfile anon '{"gaps":[{"id":"anon","rule":"type","detail_contains":"expected number, got string","cells":["llm|cohere|cohere|request|ok#response"],"why":"because"}]}')"
+rc="$(run_gaps "$W/b-rec" "$W/l" "$W/b-rec/cells.json" "$g2")"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap' "$W/l.log" && grep -q 'no .owner.' "$W/l.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/l/ledger.tsv")" = 0 ]; then
+  say PASS "(l) a gap with no owner and no reason -> REFUSED at load, nothing judged"
+else
+  say FAIL "(l) anonymous gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/l/ledger.tsv")"; tail -8 "$W/l.log"
+fi
+
+# (m) a WILDCARD cell -> REFUSED. A gap that matches a pattern of rows forgives rows nobody read.
+g3="$(gapfile wild '{"gaps":[{"id":"wild","owner":"nobody","rule":"type","detail_contains":"expected number, got string","cells":["llm|cohere|*#response"],"why":"a wildcard entry, planted to prove the loader refuses a gap that could cover rows nobody has looked at"}]}')"
+rc="$(run_gaps "$W/b-rec" "$W/m" "$W/b-rec/cells.json" "$g3")"
+if [ "$rc" != 0 ] && grep -q 'carries a wildcard' "$W/m.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/m/ledger.tsv")" = 0 ]; then
+  say PASS "(m) a wildcard cell in a gap -> REFUSED at load, nothing judged"
+else
+  say FAIL "(m) wildcard gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m/ledger.tsv")"; tail -8 "$W/m.log"
+fi
+
 echo
-if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (8/8)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (13/13)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi

@@ -559,6 +559,32 @@ fn gemini_speech_response_is_billed() {
     );
 }
 
+// A JSON body is a Gemini RESPONSE, and the only Gemini response shape carrying synthesis is the
+// `inlineData` one. A 200 whose body is an error envelope (or a candidate with no audio part) must
+// be refused here, not handed to the client as an MP3 whose bytes are a JSON object no player can
+// open — with the upstream's own explanation hidden inside it.
+#[test]
+fn a_json_error_shaped_speech_body_is_not_served_as_audio() {
+    for body in [
+        br#"{"error":{"code":400,"message":"invalid voice","status":"INVALID_ARGUMENT"}}"#.to_vec(),
+        br#"{"candidates":[{"finishReason":"SAFETY","content":{"parts":[]}}]}"#.to_vec(),
+        br#"{"candidates":[{"content":{"parts":[{"text":"I cannot do that."}]}}]}"#.to_vec(),
+    ] {
+        let got = super::read_speech_response(&body);
+        assert!(
+            matches!(got, Err(CodecError::Malformed(_))),
+            "a JSON body with no inlineData is not audio: {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+    // And the raw-container arm is untouched: bytes that are not JSON at all really are the audio.
+    let raw = super::read_speech_response(b"\xff\xfbraw-mp3").expect("a raw container still reads");
+    assert_eq!(
+        raw.audio.as_ref().map(|a| a.mime_type.as_str()),
+        Some("audio/mpeg")
+    );
+}
+
 // FIND-3 (money): whisper-1 transcription bills audio DURATION. On an openai->gemini transcription
 // hop the gemini response writer previously surfaced only `Billing::Tokens` and DROPPED a
 // `Billing::Duration`. Assert the seconds survive the hop. Fails pre-fix (usageMetadata absent).

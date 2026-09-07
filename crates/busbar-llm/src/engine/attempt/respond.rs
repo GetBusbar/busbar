@@ -115,7 +115,11 @@ pub(super) fn deliver<'a>(
                 upstream_started,
                 hop.chosen_policy_name,
                 hop.degraded,
-                ingress_request_body.clone(),
+                // MOVED, not cloned: this arm returns below, so nothing downstream can read the
+                // parsed body again — and a clone here is a second full per-node materialization of
+                // a value the CLIENT chose the size of, on every buffered delivery. The live-stream
+                // twin further down is on the other side of that return and still borrows it.
+                ingress_request_body,
                 &tap,
             ))
             .await;

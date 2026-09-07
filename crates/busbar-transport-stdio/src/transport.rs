@@ -37,7 +37,14 @@ use crate::conn::{ConnState, ReaderSlot, StdioConnHandle};
 /// the buffer until memory runs out. The peer here is an operator-launched child rather than a
 /// client, but it is still a process this transport does not control, and nothing above it caps
 /// what a line may be.
-pub(crate) const MAX_LINE_BYTES: usize = 1024 * 1024;
+///
+/// The bound IS the design's per-connection reading budget, not a number of this crate's own: one
+/// line is one frame on this wire, and a frame is what the budget measures. A larger bound here
+/// only bought the right to read a line no reader above would accept — the megabyte this used to
+/// allow was sixteen times a budget the layer above enforces anyway, so the extra was memory spent
+/// to arrive at the same refusal later. The sibling `sse` crate holds its own re-segmentation
+/// buffer to exactly this figure and says the same.
+pub(crate) const MAX_LINE_BYTES: usize = busbar_contract::MAX_CURSOR_BYTES;
 
 /// How a call to [`read_line`] stopped.
 enum LineEnd {
@@ -311,14 +318,19 @@ impl Transport for StdioTransport {
                 if done || state.is_poisoned() || state.is_closed() {
                     return None;
                 }
-                let mut lock = state.reader.lock().await;
-                let Some(taken) = lock.take() else {
-                    // Another `frames()` call already consumed this connection's reader — a
-                    // transport connection is read by exactly one pump, matching every other
-                    // in-tree transport's `frames` contract.
-                    return None;
+                let taken = {
+                    let mut lock = state.reader.lock().await;
+                    lock.take()
                 };
-                drop(lock);
+                let Some(taken) = taken else {
+                    // Another `frames()` call already holds this connection's reader — a transport
+                    // connection is read by exactly one pump, matching every other in-tree
+                    // transport's `frames` contract. Reported, not answered with a bare `None`: on
+                    // a session transport an empty stream is what the PEER CLOSING looks like, so
+                    // handing that back told a second caller its peer had gone when what actually
+                    // happened is that it asked for a reader it may not have.
+                    return Some((Err(TransportError::Closed), (state, true)));
+                };
                 // The reader belongs to the connection, not to this future. Holding it in a guard
                 // is what makes a cancelled read the same non-event a cancelled poll of any other
                 // stream is: the guard's `Drop` runs whether this future completes or is dropped
@@ -330,7 +342,10 @@ impl Transport for StdioTransport {
                 };
                 let slot = held.slot.as_mut().expect("held for the guard's lifetime");
                 let item = loop {
-                    match read_line(&mut slot.reader, &mut slot.partial).await {
+                    let Some(read) = read_line_or_closed(&state, slot).await else {
+                        break None;
+                    };
+                    match read {
                         // A clean end on a line boundary: the session ends. What makes it clean is
                         // an EMPTY carried-over buffer, not a zero-byte read: a pump dropped
                         // mid-line leaves the bytes it consumed on the connection (see
@@ -345,9 +360,14 @@ impl Transport for StdioTransport {
                             break Some(Err(TransportError::Framing))
                         }
                         Ok((_, LineEnd::Terminated)) => {
-                            if slot.partial.iter().all(u8::is_ascii_whitespace) {
-                                slot.partial.clear();
-                                continue; // a blank line carries no frame
+                            // A BLANK line — nothing at all between two delimiters — carries no
+                            // frame. A line of spaces is not blank: it is a payload, and this
+                            // transport declares it decodes none, so which payloads are worth
+                            // delivering is not its judgement to make. Dropping them also broke the
+                            // round trip in one direction only, since `write` puts a line of spaces
+                            // on the wire quite happily.
+                            if slot.partial.is_empty() {
+                                continue;
                             }
                             // Taken, not cloned: the line is finished with, so copying it into a
                             // second buffer only to drop the first is one allocation and one copy
@@ -413,6 +433,17 @@ impl Transport for StdioTransport {
             // The arena slice outlives every await here, so there is nothing to copy it into.
             let payload = bytes.as_slice();
             let n = payload.len();
+            // A newline anywhere in the payload is the byte that ENDS a frame on this wire, and
+            // `write` is what appends it. Writing one through hands the caller the choice of where
+            // this transport's frame ends and what follows it: a payload of
+            // `{"id":1}\n{"method":"admin"}` is not one frame, it is two, and the round trip stops
+            // being injective. A trailing carriage return goes the same way for the narrower
+            // reason that the reader strips one before the newline, so it would come back a byte
+            // short of what was written and of what this call reported. The check is before the
+            // lock and before the first byte, so nothing half-written ever reaches the peer.
+            if payload.contains(&b'\n') || payload.last() == Some(&b'\r') {
+                return Err(TransportError::Framing);
+            }
             // The lock FIRST, and only then the fence. A write still queued behind another writer
             // has put nothing on the wire, so a caller who drops it there has left nothing in
             // doubt — arming before the lock would fence a connection over a write that never
@@ -447,6 +478,12 @@ impl Transport for StdioTransport {
         body: &[u8],
         arena: &'a dyn busbar_contract::Arena,
     ) -> Result<ArenaBytes<'a>, busbar_contract_transport::wire::Encode> {
+        // The same two bytes `write` refuses, refused here too: a body spelling this wire's own
+        // delimiter cannot be expressed as ONE frame, and answering the plane at the point it
+        // builds the frame says so where the plane can still do something about it.
+        if body.contains(&b'\n') || body.last() == Some(&b'\r') {
+            return Err(busbar_contract_transport::wire::Encode::Unrepresentable);
+        }
         arena
             .alloc_bytes(body)
             .map_err(|_| busbar_contract_transport::wire::Encode::ArenaExhausted)
@@ -480,14 +517,30 @@ impl Transport for StdioTransport {
         let id = conn.id();
         if let Some(state) = self.conns.lock().unwrap().remove(&id) {
             // Removing the registry entry is what stops new lookups; it does not reach a `frames()`
-            // pump that already holds its own clone of this state. The flag is what ends that pump,
+            // pump that already holds its own clone of this state. This is what ends that pump —
+            // flag and wake together, since a pump parked on a silent peer never reaches a flag —
             // so the read side goes quiet at the same moment `write` starts answering `Closed`.
-            state.closed.store(true, Ordering::Release);
-            tokio::spawn(async move {
-                if let Some(mut child) = state.child.lock().await.take() {
-                    let _ = child.start_kill();
+            state.begin_close();
+            // The child goes with the connection. On a runtime, asynchronously — the lock the
+            // child sits behind is an async one. Off one, `tokio::spawn` PANICS, so a close from
+            // an operator tool or a shutdown path took the process down instead of killing a
+            // child; there the blocking lock on a detached thread does the same job.
+            match tokio::runtime::Handle::try_current() {
+                Ok(handle) => {
+                    handle.spawn(async move {
+                        if let Some(mut child) = state.child.lock().await.take() {
+                            let _ = child.start_kill();
+                        }
+                    });
                 }
-            });
+                Err(_) => {
+                    std::thread::spawn(move || {
+                        if let Some(mut child) = state.child.blocking_lock().take() {
+                            let _ = child.start_kill();
+                        }
+                    });
+                }
+            }
         }
     }
 
@@ -535,6 +588,35 @@ async fn write_refusal_line(state: &ConnState, payload: &[u8]) -> Result<(), Tra
     drop(w);
     guard.armed = false;
     Ok(())
+}
+
+/// One line, RACED against this connection's close.
+///
+/// `None` means the close won, and the caller ends its pump where it stood. The closed flag on its
+/// own is read only once a read has RETURNED, and the read a pump parks on returns when the peer
+/// sends a line — exactly what a peer that has gone quiet without hanging up never does. So the
+/// close has to be a wake as well as a flag. The wait is armed BEFORE the flag is re-read, so a
+/// close landing between the two is seen as the flag and one landing after it as the notification;
+/// neither order leaves this parked. The sibling `tcp` and `http` crates read the same way.
+///
+/// Dropping the read where it stands loses nothing: the bytes it had already consumed are in
+/// `slot.partial`, which belongs to the connection — the same property [`ReaderGuard`] relies on
+/// for a caller that cancels mid-line.
+async fn read_line_or_closed(
+    state: &ConnState,
+    slot: &mut ReaderSlot,
+) -> Option<std::io::Result<(usize, LineEnd)>> {
+    let mut wait = Box::pin(state.closing.notified());
+    wait.as_mut().enable();
+    if state.is_closed() {
+        return None;
+    }
+    let reading = std::pin::pin!(read_line(&mut slot.reader, &mut slot.partial));
+    match futures::future::select(reading, wait).await {
+        futures::future::Either::Left((line, _)) => Some(line),
+        // The close won: the read is dropped where it stood.
+        futures::future::Either::Right(((), _)) => None,
+    }
 }
 
 /// `read_until('\n', ...)` with the terminator stripped, and any trailing `\r` stripped too so a

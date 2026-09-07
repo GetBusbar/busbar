@@ -217,6 +217,49 @@ fn a_lost_settle_record_retains_the_posting_for_re_appending() {
     assert!(s.flags.contains(&SettleFlag::Unposted));
 }
 
+/// The same row with NO locator: the amount falls back to the kernel's own floor, and a floor says
+/// so. A retained posting is re-appended later exactly as it was retained, so a floor that reached
+/// the ledger unmarked would bill as a figure the destination confirmed and would never reach the
+/// disputes report — the one row of the table where the mark could be lost and nobody would see it.
+#[test]
+fn a_lost_settle_record_falling_back_to_the_floor_still_says_it_is_an_estimate() {
+    let floor = plain(&[(INPUT, 120)]);
+    let s = settle(
+        UnitEndKind::DurabilityLost,
+        &Evidence {
+            located: None,
+            kernel_floor: &floor,
+            ..evidence()
+        },
+    );
+    assert_eq!(pairs(&s.lines), vec![(INPUT, 120)]);
+    assert!(s.flags.contains(&SettleFlag::Unposted));
+    assert!(
+        s.flags.contains(&SettleFlag::Estimated),
+        "the kernel's floor is an estimate on this row too"
+    );
+}
+
+/// And the mark the REPORT itself carries survives the same row: an estimated report retained for
+/// re-appending is still an estimate when it is appended.
+#[test]
+fn a_lost_settle_record_carries_the_reports_own_estimated_mark() {
+    let floored = estimated_usage(&[(OUTPUT, 12)]);
+    let s = settle(
+        UnitEndKind::DurabilityLost,
+        &Evidence {
+            located: Some(&floored),
+            ..evidence()
+        },
+    );
+    assert_eq!(pairs(&s.lines), vec![(OUTPUT, 12)]);
+    assert!(s.flags.contains(&SettleFlag::Unposted));
+    assert!(
+        s.flags.contains(&SettleFlag::Estimated),
+        "the report's mark travels onto every row that bills it"
+    );
+}
+
 /// The estimated mark on a report travels onto the settlement, so a figure the destination never
 /// confirmed is visibly a floor all the way through.
 #[test]

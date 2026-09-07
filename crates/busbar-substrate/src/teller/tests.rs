@@ -46,6 +46,8 @@ impl Trace {
 struct RecordingPlane {
     refuse_at: Option<StepName>,
     charged: bool,
+    /// When set, Route never finishes — the shape a caller who goes away leaves the loop parked in.
+    park_at_route: bool,
     trace: Arc<Trace>,
 }
 
@@ -133,6 +135,9 @@ impl TellerPlane for RecordingPlane {
         if self.refuses(StepName::Route) {
             return token.refuse(resp(503, "route"));
         }
+        if self.park_at_route {
+            std::future::pending::<()>().await;
+        }
         token.proceed(resp(200, "routed"))
     }
     async fn meter(
@@ -184,10 +189,18 @@ fn plane(refuse_at: Option<StepName>, charged: bool) -> (RecordingPlane, Arc<Tra
         RecordingPlane {
             refuse_at,
             charged,
+            park_at_route: false,
             trace: Arc::clone(&trace),
         },
         trace,
     )
+}
+
+/// A plane that passes the door and then never comes back out of Route.
+fn parked_plane() -> (RecordingPlane, Arc<Trace>) {
+    let (mut p, trace) = plane(None, true);
+    p.park_at_route = true;
+    (p, trace)
 }
 
 fn unit(gov: &busbar_api::PlaneRequestCtx) -> Unit<'_> {
@@ -300,6 +313,40 @@ async fn a_refusal_at_meter_reaches_audit_with_the_hold() {
         Some((false, UnitEnd::Refused(StepName::Meter)))
     );
     assert_eq!(trace.posted(), vec![UnitEnd::Refused(StepName::Meter)]);
+}
+
+#[tokio::test]
+async fn a_caller_that_goes_away_under_the_hold_still_reaches_audit_and_posts_once() {
+    let gov = busbar_api::PlaneRequestCtx::default();
+    let (p, trace) = parked_plane();
+    let mut running = Box::pin(run_unit(p, unit(&gov)));
+
+    assert!(
+        futures::poll!(running.as_mut()).is_pending(),
+        "the loop is parked under the hold, inside route"
+    );
+    assert!(trace.saw(StepName::Admit), "the door opened the hold");
+    assert!(trace.saw(StepName::Route));
+    assert!(
+        !trace.saw(StepName::Audit),
+        "a unit still in flight has not been audited"
+    );
+    assert!(trace.posted().is_empty(), "and has not been posted");
+
+    // The caller goes away: the loop's future is dropped where it was parked.
+    drop(running);
+
+    assert_eq!(
+        *trace.audited_with_hold.lock().unwrap(),
+        Some((true, UnitEnd::Abandoned)),
+        "the abandoned unit closed its charged hold through the same audit door"
+    );
+    assert_eq!(*trace.audited_refused_at.lock().unwrap(), None);
+    assert_eq!(
+        trace.posted(),
+        vec![UnitEnd::Abandoned],
+        "posted exactly once, as every admitted unit is"
+    );
 }
 
 #[test]

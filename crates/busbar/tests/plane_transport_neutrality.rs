@@ -17,10 +17,12 @@
 //! run too, not only the lint tier. Both share ONE detection discipline (mirrored, not re-invented):
 //!   * comments and doc-strings are STRIPPED (respecting string literals) — a doc-comment that
 //!     legitimately discusses `audio`/`speech` billing is not a hit; only code tokens are judged;
-//!   * a noun flags as a WORD (identifier-boundary, case-insensitive) or a CamelCase TOKEN
-//!     (`SdpOffer`, `RtpStream`); the identifier boundary treats `_` as part of the identifier —
-//!     EXACTLY as the shell gate's `word_ci` — so the tracked underscore-joined in-core-twin debt
-//!     (`input_audio`) is scoped OUT, not flagged (that is a separate, tracked extraction).
+//!   * a noun flags as a WORD (case-insensitive) or a CamelCase TOKEN (`SdpOffer`, `RtpStream`);
+//!     `_` IS a word boundary, so an underscore-joined identifier is judged SEGMENT BY SEGMENT and
+//!     `sdp_offer` / `rtp_stream` / `input_audio` all flag. Rust spells its compound names in
+//!     snake_case, so a rule that treated `_` as part of the identifier would exempt the ordinary
+//!     spelling of every leak this gate exists to catch — the ban is on the noun, not on one casing
+//!     of it.
 //!
 //! Modelled on the house source-scanning oracle pattern (`plane_isomorphism.rs` /
 //! `capability_equality.rs`): one detector drives both the REAL neutral-crate scan and a planted-hit
@@ -118,19 +120,23 @@ fn capitalized(noun: &str) -> String {
     }
 }
 
-/// Does this stripped code contain a banned noun as a WORD (identifier-boundary, `_` NOT a boundary)
-/// or a CamelCase TOKEN? Returns the offending noun, if any.
+/// Does this stripped code contain a banned noun as a WORD (`_` IS a boundary) or a CamelCase
+/// TOKEN? Returns the offending noun, if any.
 fn hit_in_code(code: &str) -> Option<&'static str> {
-    // WORD rule: tokenize into maximal identifier runs [A-Za-z0-9_] and compare whole-token,
-    // case-insensitively. Splitting on non-identifier chars (NOT on `_`) is exactly the shell gate's
-    // `[^a-z0-9_]` boundary, so `input_audio` is one token and does not equal `audio`.
-    for token in code.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
-        if token.is_empty() {
-            continue;
-        }
-        for noun in NOUNS {
-            if token.eq_ignore_ascii_case(noun) {
-                return Some(noun);
+    // WORD rule: tokenize into maximal identifier runs, then split each run on `_` and compare every
+    // SEGMENT case-insensitively. `_` is a boundary because snake_case is how Rust spells a compound
+    // name: `sdp_offer`, `rtp_stream`, `webrtc_session` and `input_audio` all carry the banned noun
+    // just as plainly as the bare word does. Treating `_` as part of the identifier would let the
+    // entire snake_case half of the language through a gate whose whole subject is Rust source.
+    for run in code.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_')) {
+        for token in run.split('_') {
+            if token.is_empty() {
+                continue;
+            }
+            for noun in NOUNS {
+                if token.eq_ignore_ascii_case(noun) {
+                    return Some(noun);
+                }
             }
         }
     }
@@ -232,8 +238,8 @@ fn neutral_crates_name_no_voice_transport_noun() {
 }
 
 /// SELF-TEST (the detector is not vacuous): the SAME detector must fire on a planted CamelCase
-/// `SdpOffer` and a bare `webrtc` word, must IGNORE a comment/underscore-joined mention, and must
-/// keep string-kept tokens. A green real witness means nothing if the detector cannot see a leak.
+/// `SdpOffer`, a bare `webrtc` word AND an underscore-joined `input_audio`, while still ignoring
+/// comments. A green real witness means nothing if the detector cannot see a leak.
 #[test]
 fn detector_fires_on_planted_transport_nouns_and_ignores_comments() {
     // RED: real code — a CamelCase type, a bare word in a string, a lowercase word.
@@ -252,14 +258,28 @@ fn detector_fires_on_planted_transport_nouns_and_ignores_comments() {
         "detector missed the bare `realtime` word: {red_hits:?}"
     );
 
-    // GREEN: a line comment, a block comment, and the underscore-joined tracked-debt field — none flag.
-    let green = "// a comment naming sdp webrtc audio and SdpOffer\n\
-                 /* block naming rtp and barge */\n\
-                 pub input_audio: Option<u64>,\n\
+    // RED: the snake_case spellings. These are the ordinary way a Rust leak would actually appear,
+    // and the reason `_` is a boundary — each must be seen through its underscore.
+    for (src, want) in [
+        ("pub struct S { pub sdp_offer: u8 }", "sdp"),
+        ("fn f(rtp_stream: u8) {}", "rtp"),
+        ("pub input_audio: Option<u64>,", "audio"),
+        ("let n = webrtc_session_id;", "webrtc"),
+    ] {
+        let hits = scan_source(src);
+        assert!(
+            hits.iter().any(|(_, n, _)| *n == want),
+            "detector missed the underscore-joined `{want}` in {src:?}: {hits:?}"
+        );
+    }
+
+    // GREEN: comments only — a doc-comment that discusses the vocabulary is not a leak.
+    let green = "// a comment naming sdp webrtc audio and SdpOffer and sdp_offer\n\
+                 /* block naming rtp and barge and input_audio */\n\
                  pub struct PlaneRecord;";
     let green_hits = scan_source(green);
     assert!(
         green_hits.is_empty(),
-        "detector wrongly flagged a comment or the underscore-joined `input_audio` debt: {green_hits:?}"
+        "detector wrongly flagged a comment: {green_hits:?}"
     );
 }

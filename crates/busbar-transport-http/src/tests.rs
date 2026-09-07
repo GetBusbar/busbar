@@ -5,6 +5,7 @@
 use super::*;
 use busbar_contract::plugin::KernelSeal;
 use busbar_contract::ConfigView;
+use busbar_contract_transport::wire::WireStatus;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
@@ -118,6 +119,44 @@ async fn the_envelopes_own_method_and_path_are_what_reach_the_upstream() {
     );
 }
 
+/// A second exchange on a connection whose answer can no longer be delivered is an ERROR, not an
+/// `Ok` the caller will read as sent-and-answered.
+///
+/// The response sender lives in the connection and is TAKEN by the first exchange. A second whole
+/// message therefore goes out on the wire — the upstream is asked, and charges for being asked —
+/// and then finds no sender to hand the answer to. Reporting `Ok` there tells the caller its
+/// request was carried when the only observable half of it, the response, has been dropped on the
+/// floor: a write that failed silently, which is the one thing this transport's write path must
+/// never do. The same holds when the receiver has gone: the head frame's send fails, and that is a
+/// closed connection, not a delivery.
+#[tokio::test]
+async fn a_second_egress_exchange_with_nowhere_to_answer_is_reported_not_swallowed() {
+    let uri = request_line_echo_server().await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    let req = b"POST /first HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    transport
+        .write(&conn, StreamId(0), ArenaBytes::new(req))
+        .await
+        .expect("the first exchange has a sender and answers normally");
+
+    // The sender is spent. The second message still reaches the upstream; its answer cannot reach
+    // anyone.
+    let again = b"POST /second HTTP/1.1\r\nHost: x\r\ncontent-length: 0\r\n\r\n";
+    let err = transport
+        .write(&conn, StreamId(0), ArenaBytes::new(again))
+        .await
+        .expect_err("an exchange whose answer is unreachable must not report success");
+    assert_eq!(
+        err,
+        TransportError::Closed,
+        "the connection has no way left to deliver an answer, and that is what it must say"
+    );
+}
+
 #[tokio::test]
 async fn a_status_line_is_not_a_request_this_transport_can_send() {
     let uri = fixed_response_server(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n").await;
@@ -217,7 +256,7 @@ async fn egress_reports_the_exact_upstream_status_on_the_first_frame() {
             .unwrap();
         let mut frames = transport.frames(conn);
         let (_s, head) = frames.next().await.unwrap().unwrap();
-        assert_eq!(head.meta.status_code, Some(status));
+        assert_eq!(head.meta.status_code, Some(WireStatus::Http(status)));
     }
 }
 
@@ -243,7 +282,7 @@ async fn egress_carries_the_upstreams_retry_after_on_the_first_frame() {
         .unwrap();
     let mut frames = transport.frames(conn);
     let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(head.meta.status_code, Some(429));
+    assert_eq!(head.meta.status_code, Some(WireStatus::Http(429)));
     assert_eq!(head.meta.retry_after_secs, Some(7));
 }
 
@@ -265,7 +304,7 @@ async fn egress_reports_no_retry_after_when_the_upstream_asked_for_none() {
         .unwrap();
     let mut frames = transport.frames(conn);
     let (_s, head) = frames.next().await.unwrap().unwrap();
-    assert_eq!(head.meta.status_code, Some(503));
+    assert_eq!(head.meta.status_code, Some(WireStatus::Http(503)));
     assert_eq!(head.meta.retry_after_secs, None);
 }
 
@@ -1579,12 +1618,117 @@ async fn a_close_ends_a_parked_ingress_pump_and_releases_the_socket() {
         tokio::io::AsyncReadExt::read(&mut client, &mut sink),
     )
     .await
+    .expect("the closed socket must be released, which the peer reads as the end of the socket");
+    // Either shape proves the release. The close now WAKES the parked read rather than waiting for
+    // the peer's next bytes, so the socket may already be gone by the time those bytes land — which
+    // the peer reads as a reset rather than as an orderly end. What is being pinned is that the
+    // descriptor went, not which of the two ways the peer found out.
+    assert!(
+        matches!(read, Ok(0) | Err(_)),
+        "the closed connection's socket must close, not stay readable"
+    );
+}
+
+/// The same close, against a peer that says NOTHING more after it.
+///
+/// The cell above only reaches the flag because the peer keeps writing: those bytes are what return
+/// the read the pump is parked on, and the flag is not looked at until it returns. The peer this
+/// close has to work against is the one that half-writes a request and then goes quiet — which is
+/// the case the doc above actually names, and the only one where "parked on a read the peer may
+/// never answer" is literally true. With nothing to return the read, a flag nothing wakes leaves the
+/// pump parked for the life of the process, holding the last clone of the socket: one leaked
+/// descriptor per closed connection, and a drain that never finishes. The close has to WAKE the
+/// read, not merely mark it.
+#[tokio::test]
+async fn a_close_ends_a_parked_ingress_pump_whose_peer_never_writes_again() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    let pump = tokio::spawn({
+        let transport = transport.clone();
+        let conn = conn.clone();
+        async move { transport.frames(conn).next().await.is_none() }
+    });
+    // A header block that never ends, and a body that never starts.
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"POST / HTTP/1.1\r\nHost: x\r\n")
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    transport.close(conn, CloseReason::Drain);
+
+    // The peer holds the socket open and writes nothing further. Nothing but the close itself is
+    // going to return that read.
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+        .await
+        .expect("a close must wake the parked read, not wait for bytes that never come")
+        .unwrap();
+    assert!(ended, "a closed connection yields no further frames");
+
+    let mut sink = [0_u8; 32];
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut client, &mut sink),
+    )
+    .await
     .expect("the closed socket must be released, which the peer reads as end-of-stream");
     assert_eq!(
         read.unwrap(),
         0,
         "the closed connection's socket must close"
     );
+}
+
+/// The same close again, with the pump parked on a BODY read rather than a header one.
+///
+/// A declared length the peer never finishes sending parks the reader in a different loop, and a
+/// wake that only covers the header loop would leave this one holding the socket just as long.
+#[tokio::test]
+async fn a_close_ends_a_pump_parked_on_a_body_the_peer_never_finishes() {
+    let transport = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = transport.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let transport = transport.clone();
+        async move { transport.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    let pump = tokio::spawn({
+        let transport = transport.clone();
+        let conn = conn.clone();
+        async move { transport.frames(conn).next().await.is_none() }
+    });
+    // A whole header block declaring ten bytes, and one byte of them.
+    tokio::io::AsyncWriteExt::write_all(
+        &mut client,
+        b"POST / HTTP/1.1\r\nHost: x\r\nContent-Length: 10\r\n\r\na",
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+    transport.close(conn, CloseReason::Drain);
+
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+        .await
+        .expect("a close must wake a read parked mid-body too")
+        .unwrap();
+    assert!(ended, "a closed connection yields no further frames");
 }
 
 /// One read buffer per ingress connection, not a fresh `READ_CHUNK_BYTES` one per read syscall.
@@ -1848,4 +1992,148 @@ async fn frame_meta_is_honest_on_the_frames_this_transport_emits() {
             );
         }
     }
+}
+
+/// The arrival record names the port the connection actually arrived on.
+///
+/// `Port` is a selector form, and a claim by port reads this field: zero here made every arrival on
+/// every listener look alike, so a node bound to two ports could not tell them apart. The port is
+/// the ACCEPTED SOCKET's local port, which is what the sibling `tcp`, `tls` and `ws` crates report
+/// and the only place the fact exists on an ephemeral (`:0`) bind.
+#[tokio::test]
+async fn an_arrival_names_the_port_it_arrived_on() {
+    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = served.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let bound_port: u16 = addr.rsplit(':').next().unwrap().parse().unwrap();
+    let accept_fut = tokio::spawn({
+        let served = served.clone();
+        async move { served.accept(&listener).await.unwrap() }
+    });
+    let _client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    assert_eq!(
+        served.arrival(&conn).port,
+        bound_port,
+        "an arrival on a listener bound to {bound_port} must say so"
+    );
+}
+
+/// A request carrying `Expect: 100-continue` is ANSWERED before its body is waited for.
+///
+/// This is what a client asks for when it would rather be refused than upload: `curl` sets the
+/// header on its own for any body past about a kibibyte and then WAITS for the interim answer
+/// before sending a byte. A reader that only parks on the body has both sides waiting on each
+/// other until the client's own timeout fires — the request never arrives and the client sees a
+/// hang, not a refusal. `hyper` served this surface in 1.5.5 and answered the header, so answering
+/// it is the parity bar rather than an addition.
+#[tokio::test]
+async fn a_request_expecting_a_continue_is_answered_before_its_body_is_waited_for() {
+    let served = StdArc::new(HttpTransport::new(ClientSettings::default()));
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = served.listen(&cfg, &fixture_key()).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_fut = tokio::spawn({
+        let served = served.clone();
+        async move { served.accept(&listener).await.unwrap() }
+    });
+    let mut client = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let conn = accept_fut.await.unwrap();
+
+    // The head only — the body is deliberately withheld, exactly as a client that is waiting for
+    // the go-ahead withholds it.
+    tokio::io::AsyncWriteExt::write_all(
+        &mut client,
+        b"POST /x HTTP/1.1\r\nHost: h\r\nExpect: 100-continue\r\nContent-Length: 5\r\n\r\n",
+    )
+    .await
+    .unwrap();
+
+    let mut frames = served.frames(conn);
+    let pump = tokio::spawn(async move { frames.next().await });
+
+    let mut interim = [0_u8; 64];
+    let n = tokio::time::timeout(
+        Duration::from_secs(5),
+        tokio::io::AsyncReadExt::read(&mut client, &mut interim),
+    )
+    .await
+    .expect("the interim answer must arrive before the body does")
+    .unwrap();
+    assert_eq!(
+        &interim[..n],
+        b"HTTP/1.1 100 Continue\r\n\r\n",
+        "the answer is the one the client is waiting for, and nothing else"
+    );
+
+    // And the request completes normally once the client, so told, sends its body.
+    tokio::io::AsyncWriteExt::write_all(&mut client, b"hello")
+        .await
+        .unwrap();
+    let (_s, head) = tokio::time::timeout(Duration::from_secs(5), pump)
+        .await
+        .expect("the request arrives")
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert!(head.bytes.as_slice().starts_with(b"POST /x HTTP/1.1"));
+}
+
+/// An upstream's response TRAILERS reach the caller as one final frame, in the same wire form the
+/// ingress reader hands a request's trailers up in — one `name: value` line each.
+///
+/// A trailer is a header that arrived late. Dropping it loses whatever the upstream chose to say
+/// only after it knew the body — a checksum, a token count, a `grpc-status` — which is exactly the
+/// class of fact a byte-blind transport has no business deciding is uninteresting.
+#[tokio::test]
+async fn upstream_response_trailers_reach_the_caller_as_a_final_frame() {
+    let uri = fixed_response_server(
+        b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nTrailer: X-Checksum\r\n\r\n\
+          5\r\nhello\r\n0\r\nX-Checksum: abc123\r\n\r\n",
+    )
+    .await;
+    let transport = HttpTransport::new(ClientSettings::default());
+    let conn = transport
+        .dial(&upstream_dest(&uri), &fixture_key())
+        .await
+        .unwrap();
+    transport
+        .write(
+            &conn,
+            StreamId(0),
+            ArenaBytes::new(b"GET / HTTP/1.1\r\nHost: x\r\n\r\n"),
+        )
+        .await
+        .unwrap();
+    let mut frames = transport.frames(conn);
+
+    let (_s, head) = frames.next().await.unwrap().unwrap();
+    assert!(
+        head.meta.status.is_some(),
+        "the head carries the status leg"
+    );
+    let (_s, body) = frames.next().await.unwrap().unwrap();
+    assert_eq!(body.bytes.as_slice(), b"hello");
+
+    let (_s, trailer) = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("the trailer frame must arrive rather than be dropped")
+        .expect("the stream must still be live")
+        .unwrap();
+    assert_eq!(
+        trailer.bytes.as_slice(),
+        b"x-checksum: abc123\r\n",
+        "the trailer goes up in wire form, as the ingress reader renders one"
+    );
+    assert_eq!(
+        trailer.meta.status, None,
+        "only the HEAD frame carries the status leg, which is how a composed layer tells the two apart"
+    );
+    assert_eq!(trailer.meta.bytes, trailer.bytes.len() as u64);
 }

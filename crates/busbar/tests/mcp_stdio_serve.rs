@@ -69,6 +69,66 @@ fn jwt_with_aud(aud: &str) -> String {
     )
 }
 
+/// RECORD A SKIP, LOUDLY AND DURABLY — never a silent pass.
+///
+/// `libtest` has no "skipped" outcome: a test that returns early reports the same green as a test
+/// that asserted everything it claims to. `eprintln!` does not close that gap, because libtest
+/// captures a passing test's output and never shows it — so the operator sees a green suite and no
+/// indication that four end-to-end coverages did not run.
+///
+/// So a missing prerequisite does two things here. Under CI it PANICS: coverage that CI is supposed
+/// to be providing must not be quietly absent. Everywhere else it appends a row to a skip ledger and
+/// writes the banner to the process's real stderr, bypassing libtest's capture — so the skip is
+/// visible in the moment AND readable afterwards by whatever collates the run.
+///
+/// The ledger path comes from `BUSBAR_TEST_SKIP_LEDGER`, defaulting beside the test binary; a
+/// ledger that cannot be written is itself reported rather than swallowed.
+fn record_skip(reason: &str) {
+    let test = std::thread::current()
+        .name()
+        .unwrap_or("mcp_stdio_serve")
+        .to_string();
+
+    if std::env::var_os("CI").is_some() {
+        panic!(
+            "SKIP REFUSED UNDER CI: {test} cannot run because {reason}. CI is where this coverage \
+             is supposed to exist, so an absent prerequisite is a failure, not a skip."
+        );
+    }
+
+    let ledger = std::env::var_os("BUSBAR_TEST_SKIP_LEDGER")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(Path::to_path_buf))
+                .unwrap_or_else(std::env::temp_dir)
+                .join("busbar-test-skips.ledger")
+        });
+
+    let row = format!("mcp_stdio_serve\t{test}\t{reason}\n");
+    let wrote = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&ledger)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, row.as_bytes()));
+
+    // Straight to the process's stderr, not through libtest's captured `eprintln!`.
+    let mut err = std::io::stderr().lock();
+    let _ = std::io::Write::write_all(
+        &mut err,
+        format!(
+            "\n=== SKIPPED (NOT PASSED): {test} ===\n  reason: {reason}\n  ledger: {}\n{}\n",
+            ledger.display(),
+            match &wrote {
+                Ok(()) => "  this skip is recorded; the assertions below did NOT run".to_string(),
+                Err(e) => format!("  WARNING: the skip ledger could not be written ({e})"),
+            }
+        )
+        .as_bytes(),
+    );
+}
+
 /// Package the REAL `busbar-auth-static-plugin` cdylib (built into this workspace's target dir)
 /// into an unsigned `kind: auth` tarball in the fixture's plugins dir. `false` when the cdylib is
 /// not built — a skip locally, a hard failure under CI, the same posture
@@ -92,14 +152,8 @@ fn install_static_auth_plugin(dir: &Path) -> bool {
             .map(|(p, _)| p)
     })();
     let Some(path) = candidate else {
-        if std::env::var_os("CI").is_some() {
-            panic!(
-                "the static-auth plugin cdylib is not built under CI; refusing to silently skip \
-                 the governed stdio-serve end-to-end coverage"
-            );
-        }
-        eprintln!(
-            "skip: static-auth plugin cdylib not built (cargo build -p busbar-auth-static-plugin)"
+        record_skip(
+            "static-auth plugin cdylib not built (cargo build -p busbar-auth-static-plugin)",
         );
         return false;
     };

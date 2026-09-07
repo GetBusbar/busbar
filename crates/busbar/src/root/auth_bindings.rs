@@ -233,6 +233,96 @@ impl VirtualKeyDirectory for GovernanceDirectory {
     }
 }
 
+/// The fixed id the operator's admin credential identifies as.
+///
+/// The previous release's own literal, and the reason the scope rule can be written as an equality:
+/// the operator credential is the root credential a deployment is born with, so what it identifies
+/// as is a constant of the surface rather than a value a configuration picks.
+pub const ADMIN_PRINCIPAL_ID: &str = "admin";
+
+/// The provider name this module reports as, which is the previous release's.
+pub const ADMIN_TOKENS_MODULE: &str = "admin-tokens";
+
+/// The chain module for the one operator admin token.
+///
+/// The digest is recomputed here through the published `busbar-api` surface rather than reached for
+/// through the module crate the previous release links, because that crate is not a dependency of
+/// this binary and making it one would be a manifest change for one hash. It is the SAME function —
+/// the same one the credential cache digests with, a few lines up — so there is no second spelling
+/// of the digest in this file, only one function named twice.
+pub struct AdminTokens {
+    state: Arc<busbar_core::governance::GovState>,
+}
+
+impl AdminTokens {
+    /// Bind the module to the governance state that holds the configured hash.
+    ///
+    /// The hash is read PER CALL rather than captured at boot, because an operator who rotates the
+    /// admin token expects the next request to be judged against the new one — a copy taken here
+    /// would keep admitting the old credential until the process restarted.
+    #[must_use]
+    pub fn new(state: Arc<busbar_core::governance::GovState>) -> Self {
+        AdminTokens { state }
+    }
+}
+
+impl busbar_unit_auth::module::AuthModule for AdminTokens {
+    fn name(&self) -> &'static str {
+        ADMIN_TOKENS_MODULE
+    }
+
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+        use busbar_unit_auth::module::AuthOutcome;
+        // No token configured is not a refusal and not an admission: this module has nothing to
+        // judge, so it defers. What that means for the node is decided by the chain around it — an
+        // all-pass chain denies — and not by an opinion invented here.
+        let Some(configured) = self.state.admin_token_hash() else {
+            return AuthOutcome::Pass;
+        };
+        // No credential presented is likewise this module's to defer on rather than to refuse: the
+        // request may be carrying somebody else's credential shape entirely.
+        let Some(candidate) = candidate else {
+            return AuthOutcome::Pass;
+        };
+        if busbar_api::constant_time_eq(&busbar_api::sha256_hex(candidate.as_bytes()), &configured)
+        {
+            AuthOutcome::Identify(busbar_unit_auth::principal::Principal::from_id(
+                ADMIN_PRINCIPAL_ID,
+            ))
+        } else {
+            // Recognised and refused. Not `Pass`: a credential presented on the administrative
+            // carriers against a node that HAS an admin token is this module's credential, and
+            // deferring it would let a later module answer for the operator's own door.
+            AuthOutcome::Reject
+        }
+    }
+
+    fn cacheable(&self) -> bool {
+        // A verdict here is a hash comparison against a value that can be rotated under it, and the
+        // cache is what would keep serving the pre-rotation answer. The compare costs one SHA-256.
+        false
+    }
+}
+
+/// The chain a node whose administrative door is its own admin token runs.
+///
+/// One position, because that is what the deployment configured: the operator credential. A node
+/// with no configured token gets a chain whose one module passes, and an all-pass chain denies —
+/// which is the previous release's "the admin API is disabled without a token", reached the same
+/// way rather than restated here.
+#[must_use]
+pub fn admin_chain(state: Arc<busbar_core::governance::GovState>) -> busbar_unit_auth::AuthChain {
+    busbar_unit_auth::AuthChain::new(
+        vec![busbar_unit_auth::chain::ChainEntry {
+            provider: ADMIN_TOKENS_MODULE.to_string(),
+            module: Box::new(AdminTokens::new(state)),
+        }],
+        // The signed-key arm is not in the administrative chain: the previous release's admin door
+        // is the operator token, and naming the arm here would open a second one.
+        false,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -308,6 +308,21 @@ impl Wal {
         }
     }
 
+    /// The lowest number `node` can still take without colliding with something the log already
+    /// holds. One past that node's mark, or one on a node the log has never seen.
+    ///
+    /// A writer that numbered below this would not get an error: [`Wal::append_batch`] deduplicates
+    /// on the identity alone, so a DIFFERENT record offered under a number the log already carries
+    /// is passed over exactly as an honest re-offer is, and the ack says `appended: 0` either way.
+    /// That is the right answer for a re-offer and the wrong one for a fresh record, and the log
+    /// cannot tell them apart — so whoever allocates numbers has to ask where it is safe to start.
+    pub fn next_free_seq(&self, node: u64) -> u64 {
+        match self.high_water.get(&node) {
+            Some(&mark) => mark.saturating_add(1),
+            None => 1,
+        }
+    }
+
     /// Record that `(node, node_seq)` is now in the log: move that node's mark, and remember any
     /// numbers the move skipped over as holes.
     fn mark_written(&mut self, node: u64, node_seq: u64) {

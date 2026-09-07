@@ -186,8 +186,23 @@ pub fn settle(end: UnitEndKind, evidence: &Evidence<'_>) -> Settlement {
         UnitEndKind::DurabilityLost => {
             flags.insert(SettleFlag::Unposted);
             match evidence.located {
-                Some(usage) => usage.lines().to_vec(),
-                None => evidence.kernel_floor.to_vec(),
+                Some(usage) => {
+                    // The report's own mark travels here exactly as it does on every other row that
+                    // bills a located report. A retained posting is re-appended as it was retained,
+                    // so a mark dropped here is dropped for good.
+                    if usage.is_estimated() {
+                        flags.insert(SettleFlag::Estimated);
+                    }
+                    usage.lines().to_vec()
+                }
+                None => {
+                    // Falling back to the kernel's own floor is the same fall-back the live
+                    // non-completed row makes, and it is an estimate for the same reason: nobody
+                    // reported this figure. Unflagged, it would reach the ledger looking like a
+                    // figure the destination stood behind and would never reach the disputes report.
+                    flags.insert(SettleFlag::Estimated);
+                    evidence.kernel_floor.to_vec()
+                }
             }
         }
     };

@@ -596,25 +596,50 @@ fn settle_through_host_matches_direct_record_signal() {
             Some(b"slow_down".as_slice()),
         ),
     ] {
-        // Direct path: normalize + record straight onto a fresh cell.
-        let direct = crate::test_support::TestApp::new().build();
-        let cs = normalize_raw_error(&raw, &no_map);
-        direct.plane_breakers.record_signal(POOL_STR, 0, &cs);
-        let direct_state = direct.plane_breakers.state_at(POOL_STR, 0);
+        // BOTH cells stamp an Open cooldown as `now() + cooldown` off the WALL CLOCK, one recording
+        // after the other, and the clock reads WHOLE SECONDS. So when the second happens to tick
+        // between the two recordings the two deadlines differ by exactly that tick — `until: N` vs
+        // `until: N+1` — over no difference in disposition at all, which is the one thing this proof
+        // is about. Take the reading again when the clock moved under it (bounded, and a clock that
+        // never holds still for one pair of recordings is itself the failure), so the comparison
+        // only ever sees two recordings made inside the same tick. Nothing about what is compared is
+        // relaxed: the states must still be EQUAL, deadline included.
+        let mut sample = None;
+        for _ in 0..16 {
+            let started = busbar_substrate::store::now();
 
-        // Host path: admit + settle the enriched Signal on an identical fresh cell.
-        let hosted = crate::test_support::TestApp::new().build();
-        with_dispatch_scope(&hosted, |host, vt| {
-            let k = key(0);
-            let id = (vt.breaker_admit.unwrap())(host, &k as *const Key);
-            assert!(!id.is_none());
-            let sig = fine_signal(fault, retry, code);
-            assert_eq!(
-                (vt.breaker_settle.unwrap())(host, id, &sig as *const Signal),
-                StatusClass::Ok,
-            );
+            // Direct path: normalize + record straight onto a fresh cell.
+            let direct = crate::test_support::TestApp::new().build();
+            let cs = normalize_raw_error(&raw, &no_map);
+            direct.plane_breakers.record_signal(POOL_STR, 0, &cs);
+            let direct_state = direct.plane_breakers.state_at(POOL_STR, 0);
+
+            // Host path: admit + settle the enriched Signal on an identical fresh cell.
+            let hosted = crate::test_support::TestApp::new().build();
+            with_dispatch_scope(&hosted, |host, vt| {
+                let k = key(0);
+                let id = (vt.breaker_admit.unwrap())(host, &k as *const Key);
+                assert!(!id.is_none());
+                let sig = fine_signal(fault, retry, code);
+                assert_eq!(
+                    (vt.breaker_settle.unwrap())(host, id, &sig as *const Signal),
+                    StatusClass::Ok,
+                );
+            });
+            let hosted_state = hosted.plane_breakers.state_at(POOL_STR, 0);
+
+            if busbar_substrate::store::now() == started {
+                sample = Some((direct_state, hosted_state));
+                break;
+            }
+        }
+        let (direct_state, hosted_state) = sample.unwrap_or_else(|| {
+            panic!(
+                "the wall clock ticked through 16 consecutive attempts at http {}: the two \
+                 recordings can never be compared within one second",
+                raw.http_status
+            )
         });
-        let hosted_state = hosted.plane_breakers.state_at(POOL_STR, 0);
 
         assert_eq!(
             direct_state, hosted_state,

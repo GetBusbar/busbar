@@ -151,6 +151,11 @@ const _: () = assert!(
         <= busbar_caps::MAX_USAGE_LINES
 );
 
+/// Nano-units in a cent, for the one place this file turns the rate card's flat fee into the unit a
+/// reservation is taken in. Spelled here rather than reached for so the root's arithmetic is the
+/// root's; the plane never sees a fee at all.
+const NANOS_PER_CENT: u64 = 10_000_000;
+
 /// The operation class a turn is audited and priced under.
 const OP_DUPLEX_TURN: &str = "duplex_turn";
 /// The operation class a provider-pushed tool call is audited and priced under.
@@ -907,70 +912,102 @@ pub struct TurnUsage {
     pub tool_calls: u64,
 }
 
+/// The declared class this key names, as the PLANE spells it, or `None` if the plane no longer
+/// declares one under that name.
+///
+/// Every class id this file puts on a line, on an estimate or on the exit evidence comes back
+/// through here, so the spelling that reaches the rate card is the declaration's own and never a
+/// second copy of it kept in the root. That is the whole point: a rate card selects a unit price by
+/// class label, so a class the plane renamed and the root did not would be priced at nothing, in
+/// silence, on every turn.
+///
+/// The lookup is by key rather than by position because a declaration is a set and not an order: a
+/// class inserted in the middle of the list must not shift what the one after it is priced as. A key
+/// the plane stopped declaring resolves to `None` here, which is what makes the rename show up as an
+/// absent line and a red assertion in `every_declared_class_carries_a_figure` rather than as a
+/// mispriced turn.
+fn declared_class(key: &str) -> Option<MeterClassId> {
+    <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+        .iter()
+        .find(|decl| decl.key.as_str() == key)
+        .map(|decl| decl.key)
+}
+
 impl TurnUsage {
+    /// The figure this report carries for one class the plane declared, with the evidence it is.
+    ///
+    /// Written as a function OVER THE DECLARATION rather than as a list of names this file keeps:
+    /// the caller walks the plane's own class list and asks this what each entry is worth, so a
+    /// class the plane declares and this file does not recognise produces no line and is caught by
+    /// the assertion below, and a class this file recognises is emitted under the declaration's key.
+    fn figure(
+        &self,
+        decl: &busbar_contract::ids::MeterClassDecl,
+    ) -> Option<(u64, QuantitySource, bool)> {
+        // The four token figures and the cache figure are the upstream's own: reported, not derived,
+        // so nothing here is marked as an estimate.
+        let reported = |quantity| Some((quantity, QuantitySource::Count, false));
+        match decl.key {
+            meta::CLASS_AUDIO_TOKENS_IN => reported(self.audio_tokens_in),
+            meta::CLASS_AUDIO_TOKENS_OUT => reported(self.audio_tokens_out),
+            meta::CLASS_TEXT_TOKENS_IN => reported(self.text_tokens_in),
+            meta::CLASS_TEXT_TOKENS_OUT => reported(self.text_tokens_out),
+            meta::CLASS_CACHED_TOKENS => reported(self.cached_tokens),
+            // The duration this plane counted itself rather than read off the upstream, in SECONDS,
+            // through the plane's own boundary. The counter is milliseconds; the class the plane
+            // declares is denominated in seconds, and a figure that settled in the counter's unit
+            // would settle a turn of audio at a thousand times its duration. Marked an estimate
+            // because that is what it is — a duration derived from a byte count under an assumed
+            // format — and a billing dispute turns on the difference between that and a figure the
+            // destination confirmed.
+            meta::CLASS_AUDIO_SECONDS_IN => Some((
+                meta::audio_seconds_in(self.audio_ms_in),
+                QuantitySource::Count,
+                true,
+            )),
+            // A cardinality the plane surfaced as a declared content fact, named as the fact it was
+            // read from rather than as a bare count: the variance rule needs to know which
+            // declaration a figure came from to find its kernel-derived companion.
+            meta::CLASS_TOOL_CALLS => Some((
+                self.tool_calls,
+                QuantitySource::PlaneCount {
+                    content_fact_key: meta::FACT_TOOL_CALLS.to_string(),
+                },
+                false,
+            )),
+            _ => None,
+        }
+    }
+
     /// The report as usage lines, one per class the plane declares that carried a figure.
     ///
     /// A class with nothing to report produces no line rather than a zero: a line that says zero and
     /// a line that is absent settle the same, but only one of them claims the upstream said so.
     fn lines(&self) -> Vec<UsageLine> {
-        let reported: [(&str, u64, QuantitySource); 5] = [
-            (
-                "audio_tokens_in",
-                self.audio_tokens_in,
-                QuantitySource::Count,
-            ),
-            (
-                meta::CLASS_AUDIO_TOKENS_OUT.as_str(),
-                self.audio_tokens_out,
-                QuantitySource::Count,
-            ),
-            ("text_tokens_in", self.text_tokens_in, QuantitySource::Count),
-            (
-                "text_tokens_out",
-                self.text_tokens_out,
-                QuantitySource::Count,
-            ),
-            ("cached_tokens", self.cached_tokens, QuantitySource::Count),
-        ];
-        let mut lines: Vec<UsageLine> = reported
+        <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
             .iter()
-            .filter(|(_, quantity, _)| *quantity > 0)
-            .map(|(class, quantity, source)| UsageLine {
-                class: MeterClassId::new(class),
-                quantity: *quantity,
-                source: source.clone(),
-                estimated: false,
+            .filter_map(|decl| {
+                let (quantity, source, estimated) = self.figure(decl)?;
+                (quantity > 0).then_some(UsageLine {
+                    class: decl.key,
+                    quantity,
+                    source,
+                    estimated,
+                })
             })
-            .collect();
-        // The two the plane counted itself rather than read off the upstream. They are marked as
-        // estimates because that is what they are: a duration derived from a byte count under an
-        // assumed format, and a count this node kept. A figure the destination confirmed and one the
-        // node derived are not the same evidence, and a billing dispute turns on the difference.
-        if self.audio_ms_in > 0 {
-            lines.push(UsageLine {
-                class: MeterClassId::new("audio_seconds_in"),
-                // Seconds, through the plane's own boundary. The counter is milliseconds; the class
-                // the plane declares is denominated in seconds, and the figure that settles has to
-                // be in the class's unit rather than in the counter's.
-                quantity: meta::audio_seconds_in(self.audio_ms_in),
-                source: QuantitySource::Count,
-                estimated: true,
-            });
-        }
-        if self.tool_calls > 0 {
-            lines.push(UsageLine {
-                class: MeterClassId::new("tool_calls"),
-                quantity: self.tool_calls,
-                // A cardinality the plane surfaced as a declared content fact, named as the fact it
-                // was read from rather than as a bare count: the variance rule needs to know which
-                // declaration a figure came from to find its kernel-derived companion.
-                source: QuantitySource::PlaneCount {
-                    content_fact_key: meta::FACT_TOOL_CALLS.to_string(),
-                },
-                estimated: false,
-            });
-        }
-        lines
+            .collect()
+    }
+
+    /// Everything this turn metered, over every class the plane declares.
+    ///
+    /// One figure, read by the metering step to settle the session's lease and by the exit evidence
+    /// as what the turn located. They are the same number BECAUSE they are one reading: a lease
+    /// drawn down at the whole report and a posting settled at one class of it would charge the
+    /// session for audio and bill the caller for none of the text that went with it.
+    fn total(&self) -> u64 {
+        self.lines()
+            .iter()
+            .fold(0u64, |sum, line| sum.saturating_add(line.quantity))
     }
 }
 
@@ -1062,6 +1099,14 @@ pub struct VoiceUnit<'n> {
     /// verdict rather than a second guess at it: a record that says the turn errored and a posting
     /// that charged for it would be two answers to one question.
     sealed_finish: Mutex<Option<busbar_contract::FinishClass>>,
+    /// WHO THIS UNIT IS FOR, as the auth chain resolved it.
+    ///
+    /// The chain's answer is the chain's: a decision has no reader on it by design, and the only
+    /// thing that opens one is the loop. So the principal is recorded at the first step the loop
+    /// hands it to — verify — and the record reads it back from here. The audit record names a
+    /// subject, and a paid unit whose subject is "an arrival" names nobody at all: a bill nobody
+    /// can be shown, and a revocation nobody can be traced through.
+    principal: Mutex<Option<PrincipalId>>,
 }
 
 impl std::fmt::Debug for VoiceUnit<'_> {
@@ -1109,6 +1154,7 @@ impl<'n> VoiceUnit<'n> {
             accrued: AtomicU64::new(0),
             dialed: Mutex::new(None),
             sealed_finish: Mutex::new(None),
+            principal: Mutex::new(None),
         }
     }
 
@@ -1221,8 +1267,13 @@ impl<'n> VoiceUnit<'n> {
 
     /// What the door is asked to reserve.
     ///
-    /// A handshake unit reserves nothing at all — its whole admission is the zero-priced one — and a
-    /// turn reserves the coarse opening magnitude the session's own budget names, over-estimated on
+    /// A handshake unit reserves nothing at all AT THE DOOR — its whole admission is the zero-priced
+    /// one, drawing no request slot and taking no concurrency lease, which is what lets a node hand
+    /// shake before it has authenticated anybody. The session's opening figure, and the one flat fee
+    /// with it, are taken on the SESSION's lease instead (`session_opening_nanos`); the two are
+    /// different reservations for different things and the distinction is the design.
+    ///
+    /// A turn reserves the coarse opening magnitude the session's own budget names, over-estimated on
     /// purpose. An under-sized hold tops up; an over-sized one costs nothing but headroom the unit
     /// gives straight back at settlement, and the asymmetry is why the estimate is deliberately
     /// generous rather than tight.
@@ -1251,9 +1302,27 @@ impl<'n> VoiceUnit<'n> {
                 max_unit_price_nanos: dearest,
             }],
             // A turn is a frame of a conversation the session already paid to open, not a request of
-            // its own, so it carries no flat fee. Unit zero drew the slot.
+            // its own, so it carries no flat fee. Unit zero drew the slot — and now the settlement
+            // agrees: the fee this line declines to reserve is the fee `fee_evidence` declines to
+            // post, one decision read in two places instead of two decisions disagreeing.
             fee_nanos: 0,
         }
+    }
+
+    /// The flat fee ONE VOICE SESSION pays, in nano-units.
+    ///
+    /// **Once per session, at the open.** A voice session is one billable arrival that then runs for
+    /// minutes: the caller connects once, the node dials one upstream leg once, and everything after
+    /// that is frames of the conversation that leg carries. That is the rule the previous release
+    /// shipped and metered — its lease reserved `estimate + fee` at the open and its settle path was
+    /// explicit that the fee is not re-debited per turn — and it is the rule the rate card's own
+    /// per-request fee means, because a session is the request.
+    ///
+    /// The root reads the figure; the plane never sees it. What the plane says is what it consumed.
+    fn session_fee_nanos(&self) -> u64 {
+        u64::try_from(self.node.pricer.price_per_request_cents().max(0))
+            .unwrap_or(0)
+            .saturating_mul(NANOS_PER_CENT)
     }
 
     /// How far this unit's reservation may still be grown, in nano-units.
@@ -1282,6 +1351,13 @@ impl<'n> VoiceUnit<'n> {
 
     /// The session's coarse opening reservation, in nano-units: what unit zero takes the lease for
     /// and every later frame is allowed against.
+    ///
+    /// **The coarse estimate PLUS the session's one flat fee**, which is where the fee is reserved
+    /// and the only place it is. Unit zero's own admission is still the zero-priced one — it draws
+    /// no request slot and takes no concurrency lease, which is what lets a node hand shake before it
+    /// has authenticated anybody — so the fee cannot ride the door's hold; it rides the session's,
+    /// taken here, once, exactly as the previous release's lease took it. A fee that settled and was
+    /// never reserved is a session billed past a budget that was never asked about it.
     fn session_opening_nanos(&self) -> u64 {
         let rate = self
             .node
@@ -1296,6 +1372,30 @@ impl<'n> VoiceUnit<'n> {
         TURN_OPENING_TOKENS
             .saturating_mul(SESSION_OPENING_TURNS)
             .saturating_mul(dearest)
+            .saturating_add(self.session_fee_nanos())
+    }
+
+    /// The two facts about this unit's upstream leg the flat fee is decided from.
+    ///
+    /// Whether a leg was SELECTED, and whether it ANSWERED. On this plane both are unit zero's: the
+    /// session's one dial is what selects the leg and what opens it, and every later frame relays
+    /// onto a leg that already exists. So a turn's answer to the second question is what the turn
+    /// itself emitted, and its answer to the first is that the session's leg is there.
+    fn upstream_leg(&self) -> (bool, bool) {
+        if self.shape.is_handshake() {
+            (
+                self.target().is_some(),
+                matches!(self.dial_outcome(), Some(Ok(()))),
+            )
+        } else {
+            (true, self.answered())
+        }
+    }
+
+    /// Everything the flat fee is decided from, for this unit.
+    fn fee(&self, ctx: &UnitCtx, finish: Option<busbar_contract::FinishClass>) -> FeeEvidence {
+        let (selected_upstream, relayed) = self.upstream_leg();
+        fee_evidence(self.shape, ctx.origin, selected_upstream, relayed, finish)
     }
 }
 
@@ -1361,8 +1461,13 @@ impl Units for VoiceUnit<'_> {
         token: &UnitToken<Verify>,
         trust: &TrustToken,
         ctx: &UnitCtx,
-        _principal: &PrincipalId,
+        principal: &PrincipalId,
     ) -> Decision<Verify> {
+        // THE FIRST STEP THAT IS HANDED THE PRINCIPAL IS THE FIRST THAT CAN RECORD IT, and the
+        // record is the only reader that needs one. The authenticate step's answer belongs to the
+        // chain and nothing may open it there; here the loop has already opened it and hands over
+        // who it named. Recorded once, on the unit, for the same reason the grants are.
+        *self.principal.lock().unwrap_or_else(|e| e.into_inner()) = Some(principal.clone());
         // **The one frame a wait can be entered in.** A tool call's leg is a client await-reply, and
         // the value it waits on is the identifier this unit's own draft minted, which lives no
         // longer than the frame that decoded it. So the wait is entered HERE, where the leg is
@@ -1573,7 +1678,7 @@ impl Units for VoiceUnit<'_> {
         // The turn's exact figure settles against the session's reservation. An exhausted lease is
         // reported and acted on — the session hard-closes — rather than swallowed: audio already
         // streamed cannot be refunded, so the only enforcement point is the next frame.
-        let total: u64 = lines.iter().map(|line| line.quantity).sum();
+        let total = self.usage.total();
         if !self.shape.is_handshake() && !self.node.io.lease.settle(self.session, total) {
             // Not a refusal of this unit. This unit's value was delivered and is metered; what the
             // exhausted lease decides is whether there is a next one — and it decides no. The
@@ -1633,33 +1738,55 @@ impl Units for VoiceUnit<'_> {
     }
 
     fn evidence(&self, ctx: &UnitCtx) -> Evidence {
+        // The ending the audit step already sealed, read once for the two answers below that turn
+        // on it. Deciding it a second time here is how a record that says a turn errored ends up
+        // beside a posting that charged for it.
+        let finish = *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner());
         Evidence {
-            // What the upstream reported, where it reported anything.
-            located: self
-                .usage
-                .audio_tokens_out
-                .checked_add(0)
-                .filter(|n| *n > 0),
-            // What the kernel counted while the unit ran. The floor is evidence, never a charge.
-            accrued_floor: self.accrued.load(Ordering::Acquire),
+            // WHAT THE TURN METERED, over every class the plane declares — the same figure the
+            // metering step settles the session's lease at, read from the same place. One class of
+            // it is not the turn: a turn that answered in text emitted no audio, and locating only
+            // the emitted audio posted nothing for a completed turn whose lease had already been
+            // drawn down by the whole report. Nothing located is `None` and not a zero, because the
+            // two are different rows of the settlement table.
+            located: Some(self.usage.total()).filter(|total| *total > 0),
+            // What the kernel counted while the unit ran, IN THE UNIT OF THE CLASS IT IS COUNTED
+            // UNDER. The counter is milliseconds of uplink audio; the class the plane declares for
+            // the audio a turn takes in is denominated in seconds, and the label is what says which
+            // rate a figure is read at. Reported verbatim, the one row of the settlement table that
+            // reads the floor settled a turn of audio at a thousand times its duration — the same
+            // mismatch the metered lines already meet at the plane's own boundary, met here too so
+            // the two readings of one quantity are in one unit.
+            //
+            // The floor is evidence, never a charge.
+            accrued_floor: meta::audio_seconds_in(self.accrued.load(Ordering::Acquire)),
             locator_required: false,
-            terminal_error: false,
+            // DERIVED FROM THE ENDING THE PLANE SEALED, as it is on every other plane, rather than
+            // written here as a constant no. This is the row that decides whether a stream that
+            // stopped on an error still bills for what it had located: it must not, and hardcoding
+            // "no error" billed every one of them in full.
+            terminal_error: matches!(finish, Some(busbar_contract::FinishClass::Error)),
             recovered: false,
             dispatched: matches!(self.dial_outcome(), Some(Ok(()))),
             checkpointed: 0,
             variance: None,
             lane_mismatch: None,
             settle_record_lost: false,
-            class: Some(meta::CLASS_AUDIO_TOKENS_OUT),
+            // THE CLASS THE FLOOR ABOVE IS COUNTED UNDER — the plane's one inbound-duration class,
+            // read back off the declaration by the same selector `TurnUsage::figure` uses, so a
+            // rename in the plane leaves this `None` rather than labelling the figure with a class
+            // nobody declares. It used to name the EMITTED-AUDIO class, which was wrong twice over:
+            // wrong direction, because what the kernel counts here is the audio that came IN, and
+            // wrong unit, because that class is tokens and this figure is a duration.
+            //
+            // The located figure beside it spans every class the plane declares, and the exit path
+            // posts it as the settled amount rather than pricing it through this label; what the
+            // label is for is saying what the kernel's own counting was OF.
+            class: declared_class(meta::CLASS_AUDIO_SECONDS_IN.as_str()),
             // A handshake reaches no upstream candidate, which is what makes it draw no request
             // slot. Every other shape of unit on this plane does.
             upstream_candidate: !self.shape.is_handshake(),
-            fee: fee_evidence(
-                self.shape,
-                ctx.origin,
-                self.answered(),
-                *self.sealed_finish.lock().unwrap_or_else(|e| e.into_inner()),
-            ),
+            fee: self.fee(ctx, finish),
         }
     }
 }
@@ -1768,14 +1895,24 @@ impl VoiceUnit<'_> {
     ) -> busbar_unit_audit::record::AuditInputs {
         // The record does not decide the fee a second time: it reads the same evidence the exit
         // path settles from, through the same function.
-        let (fee_count, _) = busbar_kernel::teller::fee_count(&fee_evidence(
-            self.shape,
-            ctx.origin,
-            self.answered(),
-            Some(finish),
-        ));
+        let (fee_count, _) = busbar_kernel::teller::fee_count(&self.fee(ctx, Some(finish)));
         busbar_unit_audit::record::AuditInputs {
-            subject: busbar_unit_audit::record::Subject::Arrival,
+            // WHO THE RECORD IS ABOUT. The principal the auth chain named, where the unit got as far
+            // as being handed one. `Arrival` is the honest answer for a unit that was refused before
+            // any principal existed — a connection that never got past decode is nobody's — and it
+            // was the answer for every unit on this plane, including the paid ones: a settled turn
+            // whose row named no principal cannot be shown to the account it charged.
+            subject: match self
+                .principal
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .as_ref()
+            {
+                Some(principal) => {
+                    busbar_unit_audit::record::Subject::PrincipalId(principal.as_str().to_string())
+                }
+                None => busbar_unit_audit::record::Subject::Arrival,
+            },
             what: busbar_unit_audit::record::What {
                 unit_key: ctx.key,
                 op_class: busbar_unit_audit::record::OpClassId::new(self.shape.op_class().as_str()),
@@ -1822,22 +1959,32 @@ impl VoiceUnit<'_> {
 /// decision — a row that says a fee was charged over a posting that charged none is a discrepancy
 /// nothing downstream can settle.
 ///
-/// A turn is the caller's own transaction and the only shape that pays: the handshake opens the
-/// session and moves no money, and a tool call is the provider pushing through the session's own
-/// upstream, which is not a caller's request. The leg is the session's upstream, which every shape
-/// but the handshake relays onto. This dialect writes no status frame of its own — the answer's
-/// first token is the first thing the caller sees — so the plane's sealed ending is the single
-/// source, and an ending it called an error posts nothing.
+/// **ONE FLAT FEE PER SESSION, AND THE SESSION'S OPENING UNIT IS WHAT PAYS IT.** A voice session is
+/// one billable arrival that then runs for minutes: the caller connects once, the node dials one
+/// upstream leg once, and every frame after that is the conversation that leg carries. Charging the
+/// fee per turn billed a ten-minute call ten, twenty, a hundred times over for one connection — and
+/// it disagreed with the hold, which reserved no fee on a turn at all on the stated grounds that
+/// unit zero had drawn the slot. Both halves now say the same thing, and the previous release's own
+/// metering is what they say: its lease reserved `estimate + fee` at the open and never re-debited
+/// the fee on a settle.
+///
+/// A tool call is the provider pushing through the session's own upstream, which is not a caller's
+/// request and pays nothing; a turn is a frame of a conversation already paid for.
+///
+/// The leg is the session's upstream: unit zero's dial is what SELECTS it and what OPENS it, so for
+/// the unit that pays, those two questions are that dial's two answers. This dialect writes no
+/// status frame of its own — the answer's first token is the first thing the caller sees — so the
+/// plane's sealed ending is the single source, and an ending it called an error posts nothing.
 fn fee_evidence(
     shape: UnitShape,
     origin: busbar_caps::OriginKind,
+    selected_upstream: bool,
     relayed_first_response_frame: bool,
     finish: Option<busbar_contract::FinishClass>,
 ) -> FeeEvidence {
     FeeEvidence {
-        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client
-            && matches!(shape, UnitShape::Turn),
-        selected_upstream: !shape.is_handshake(),
+        client_open_or_one_shot: origin == busbar_caps::OriginKind::Client && shape.is_handshake(),
+        selected_upstream,
         relayed_first_response_frame,
         status_at: None,
         status: None,
@@ -1947,6 +2094,47 @@ mod tests {
         // And the one spelling is still the released one: a shared constant makes a rename cheap,
         // which is exactly why the wire string it carries is pinned here.
         assert_eq!(line.class.as_str(), "audio_tokens_out");
+    }
+
+    /// EVERY class the plane declares is a class the root knows what to put in, and the root emits
+    /// none the plane does not declare.
+    ///
+    /// This is the assertion that turns a rename from a silent mispricing into a red build. The root
+    /// no longer keeps its own list of class names — it walks the plane's declaration and asks what
+    /// each entry is worth — so a class the plane renames stops being recognised, produces no line,
+    /// and is caught here. Without this, that class would simply stop being reported, and a class
+    /// that is not reported settles at nothing on every turn of every session.
+    #[test]
+    fn every_declared_class_carries_a_figure() {
+        // A turn that carried something under all seven, so the only reason a class can be missing
+        // from the report below is that the root did not recognise it.
+        let usage = TurnUsage {
+            audio_tokens_in: 11,
+            audio_tokens_out: 12,
+            text_tokens_in: 13,
+            text_tokens_out: 14,
+            cached_tokens: 15,
+            audio_ms_in: 16_000,
+            tool_calls: 17,
+        };
+        let lines = usage.lines();
+        let declared = <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES;
+        assert_eq!(
+            lines.len(),
+            declared.len(),
+            "one line per declared class, and no line the plane did not declare"
+        );
+        for decl in declared {
+            assert!(
+                lines.iter().any(|line| line.class == decl.key),
+                "the root has a figure for every class the plane declares"
+            );
+        }
+        // And the sum the lease and the exit evidence both read is the sum of exactly those lines.
+        assert_eq!(
+            usage.total(),
+            lines.iter().map(|line| line.quantity).sum::<u64>()
+        );
     }
 
     /// A dial that opens, so a cell can reach the stations past route without an I/O half.
@@ -2273,9 +2461,13 @@ mod tests {
         );
     }
 
-    /// No money moves in a handshake. It is admitted, it is audited, and it draws no request slot —
-    /// which is what lets a node hand shake before it has authenticated anybody without the shaking
-    /// being a billable event.
+    /// A handshake POSTS nothing and draws no request slot — which is what lets a node hand shake
+    /// before it has authenticated anybody without the shaking taking a caller's concurrency. No
+    /// class of usage passes through unit zero, so the amount it settles is zero.
+    ///
+    /// What it DOES draw is the session's one flat fee, which is a count and not a posting: opening
+    /// the session is the billable arrival, and every frame after it is the conversation that
+    /// arrival paid for.
     #[test]
     fn the_handshake_draws_no_request_slot_and_posts_nothing() {
         let kernel = Kernel::new();
@@ -2285,8 +2477,13 @@ mod tests {
             panic!("the exit path settles a handshake like anything else");
         };
         assert_eq!(requests, 0, "a handshake reaches no upstream candidate");
-        assert_eq!(fee, 0, "no flat fee on a unit that moved no money");
+        assert_eq!(fee, 1, "the session's one flat fee is drawn where it opens");
         assert!(matches!(end.outcome(), Outcome::Completed));
+        assert_eq!(
+            end.into_posted().expect("the report fits").settled(),
+            0,
+            "and it meters nothing: no class of usage passes through unit zero"
+        );
     }
 
     /// A node with no I/O half cannot open a session, and says so at the door rather than opening one
@@ -2573,8 +2770,9 @@ mod tests {
         assert_eq!(end.outcome(), Outcome::Completed);
         assert_eq!(
             end.into_posted().expect("the report fits").settled(),
-            120,
-            "the frame that emptied the lease is charged exactly what it delivered"
+            121,
+            "the frame that emptied the lease is charged exactly what it delivered: the 120 emitted \
+             audio tokens plus the one second of audio it took in"
         );
 
         // And the next frame on that session does not get in.
@@ -3123,33 +3321,35 @@ mod tests {
         );
     }
 
-    /// The flat fee is a turn's, and only a turn that answered.
+    /// The flat fee is the SESSION's, drawn on the unit that opens it, and it is drawn once.
     ///
-    /// The handshake moves no money, the provider's tool call is not a caller's request, a turn
-    /// nobody was answered on relayed nothing, and an ending the plane called an error pays nothing.
+    /// A turn is a frame of a conversation already paid for, the provider's tool call is not a
+    /// caller's request, a session whose leg never opened relayed nothing, and an ending the plane
+    /// called an error pays nothing.
     #[test]
-    fn the_flat_fee_is_a_turn_that_answered_and_nothing_else() {
+    fn the_flat_fee_is_the_session_open_and_nothing_else() {
         use busbar_caps::OriginKind;
         use busbar_contract::FinishClass;
         use busbar_kernel::teller::fee_count;
 
-        let turn = |finish| fee_evidence(UnitShape::Turn, OriginKind::Client, true, Some(finish));
-        assert_eq!(fee_count(&turn(FinishClass::TurnComplete)).0, 1);
-        assert_eq!(fee_count(&turn(FinishClass::Error)).0, 0);
-        assert_eq!(
-            fee_count(&fee_evidence(
-                UnitShape::Turn,
+        let open = |finish| {
+            fee_evidence(
+                UnitShape::SessionOpen,
                 OriginKind::Client,
-                false,
-                Some(FinishClass::TurnComplete),
-            ))
-            .0,
-            0
-        );
+                true,
+                true,
+                Some(finish),
+            )
+        };
+        assert_eq!(fee_count(&open(FinishClass::Complete)).0, 1);
+        assert_eq!(fee_count(&open(FinishClass::Error)).0, 0);
+        // A session that named no upstream, and one whose dial never opened: neither reached a leg,
+        // and a fee is for a connection that was actually made.
         assert_eq!(
             fee_count(&fee_evidence(
                 UnitShape::SessionOpen,
-                OriginKind::Handshake,
+                OriginKind::Client,
+                false,
                 true,
                 Some(FinishClass::Complete),
             ))
@@ -3158,14 +3358,276 @@ mod tests {
         );
         assert_eq!(
             fee_count(&fee_evidence(
+                UnitShape::SessionOpen,
+                OriginKind::Client,
+                true,
+                false,
+                Some(FinishClass::Complete),
+            ))
+            .0,
+            0
+        );
+        // A turn of a conversation the session already paid to open pays nothing, however it ended.
+        for finish in [FinishClass::TurnComplete, FinishClass::Error] {
+            assert_eq!(
+                fee_count(&fee_evidence(
+                    UnitShape::Turn,
+                    OriginKind::Client,
+                    true,
+                    true,
+                    Some(finish),
+                ))
+                .0,
+                0
+            );
+        }
+        // The provider's own push through the session's leg is not a caller's request.
+        assert_eq!(
+            fee_count(&fee_evidence(
                 UnitShape::ToolCall,
                 OriginKind::Provider,
+                true,
                 true,
                 Some(FinishClass::TurnComplete),
             ))
             .0,
             0
         );
+    }
+
+    /// **THREE TURNS ON ONE SESSION PAY ONE FLAT FEE.**
+    ///
+    /// The rule the whole finding turns on, measured over the loop rather than over the evidence
+    /// function: a conversation is billed one flat fee for the connection that carried it, no matter
+    /// how many times the caller speaks. Charged per turn, this session paid three — and a real call
+    /// is not three turns, it is hundreds. The hold agrees: the fee is reserved once, on the
+    /// session's opening reservation, and no turn's estimate reserves one.
+    #[test]
+    fn a_three_turn_session_pays_one_flat_fee() {
+        let kernel = Kernel::new();
+        let node = priced_node(VoiceIo {
+            dial: Box::new(OpenDial),
+            lease: Box::new(OpenLease),
+            ..VoiceIo::default()
+        });
+
+        let opening = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
+        let Ended::Settled {
+            fee: opening_fee, ..
+        } = run(&kernel, &opening)
+        else {
+            panic!("the exit path settles the open");
+        };
+        assert_eq!(opening_fee, 1, "the session's one flat fee, at the open");
+
+        let mut turn_fees = 0;
+        for _ in 0..3 {
+            let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+                .charging_through(ungoverned())
+                .reporting(TurnUsage {
+                    audio_tokens_out: 30,
+                    audio_ms_in: 400,
+                    ..TurnUsage::default()
+                });
+            let Ended::Settled { fee, end, .. } = run(&kernel, &turn) else {
+                panic!("the exit path settles a turn");
+            };
+            assert_eq!(end.outcome(), Outcome::Completed, "the turn was served");
+            turn_fees += fee;
+        }
+        assert_eq!(
+            opening_fee + turn_fees,
+            1,
+            "one session, one flat fee, however many turns rode it"
+        );
+
+        // And the reservation side says the same. The turn's estimate reserves no fee; the session's
+        // opening figure carries the one there is.
+        let turn = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        assert_eq!(turn.estimate().fee_nanos, 0, "no turn reserves a fee");
+        let mut fee_bearing = priced_node(serviceable());
+        fee_bearing.pricer = Pricer::flat(25);
+        let open = VoiceUnit::new(&fee_bearing, UnitShape::SessionOpen, 7, 1_700_000_000);
+        assert_eq!(
+            open.session_fee_nanos(),
+            25 * NANOS_PER_CENT,
+            "the card's per-request fee, in nano-units"
+        );
+        assert!(
+            open.session_opening_nanos() >= open.session_fee_nanos(),
+            "and the session's opening reservation is what carries it"
+        );
+    }
+
+    /// A TURN THAT SPOKE ONLY IN TEXT BILLS ITS TEXT.
+    ///
+    /// The exit's located figure is the whole report and not one class of it. A turn that emitted no
+    /// audio at all is an ordinary shape of turn on this plane — a transcript-only exchange, a
+    /// tool-driven turn, a dialect answering in text — and reading only the emitted-audio class made
+    /// every one of them settle a completed turn at nothing while the session's lease had already
+    /// been drawn down by the same report in full. The lease and the posting read ONE number here.
+    #[test]
+    fn a_text_only_turn_settles_the_text_it_metered() {
+        use busbar_kernel::teller::settle_amount;
+
+        let node = priced_node(serviceable());
+        let usage = TurnUsage {
+            text_tokens_in: 40,
+            text_tokens_out: 60,
+            ..TurnUsage::default()
+        };
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(usage);
+        let evidence = unit.evidence(&ctx(1));
+        assert_eq!(
+            evidence.located,
+            Some(100),
+            "the located figure is every class the turn metered"
+        );
+        assert_eq!(
+            settle_amount(&Outcome::Completed, &evidence).0,
+            usage.total(),
+            "a completed turn posts what it metered, not what it drew the lease at"
+        );
+    }
+
+    /// A PAID TURN'S RECORD NAMES THE PRINCIPAL IT CHARGED, and a refusal before anyone was named
+    /// still names an arrival.
+    ///
+    /// The subject is what makes a row belong to an account. Written as `Arrival` on every unit, the
+    /// chain carried a full set of settled turns that no account could be shown, no revocation could
+    /// be traced through and no dispute could be answered from. The principal is the auth chain's,
+    /// recorded at the first step the loop hands it over on, and read back here.
+    #[test]
+    fn a_paid_turns_record_names_its_principal() {
+        use busbar_unit_audit::record::Subject;
+
+        let node = priced_node(serviceable());
+        let kernel = Kernel::new();
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 12,
+                ..TurnUsage::default()
+            });
+        let _ = run(&kernel, &unit);
+        let inputs = unit.audit_inputs(
+            &ctx(1),
+            Outcome::Completed,
+            busbar_contract::FinishClass::TurnComplete,
+        );
+        assert!(
+            matches!(inputs.subject, Subject::PrincipalId(ref who) if !who.is_empty()),
+            "a turn that was authenticated names who it was for"
+        );
+
+        // And the unit that never reached verify — a refusal before any principal existed — is an
+        // arrival, which is the one thing `Arrival` is the honest answer to.
+        let unseen = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000);
+        let refused = unseen.audit_inputs(
+            &ctx(1),
+            Outcome::Refused(busbar_caps::StepName::Decode, ReasonCode::DecodeFailed),
+            busbar_contract::FinishClass::Error,
+        );
+        assert!(matches!(refused.subject, Subject::Arrival));
+    }
+
+    /// THE KERNEL'S OWN FLOOR IS THE AUDIO THAT CAME IN, IN THE UNIT ITS CLASS IS DENOMINATED IN.
+    ///
+    /// The floor is what the one settlement row that reads it posts, so its unit and its label are
+    /// money. It counts uplink milliseconds and the class the plane declares for uplink audio is in
+    /// seconds: reported verbatim it is a thousand times the duration, and reported under the
+    /// emitted-audio token class it is a duration priced at a token rate, in the wrong direction.
+    #[test]
+    fn the_floor_is_inbound_audio_in_the_declared_classs_own_unit() {
+        use busbar_kernel::teller::settle_amount;
+
+        let node = priced_node(serviceable());
+        let kernel = Kernel::new();
+        // Two and a half seconds of uplink audio, and no report from the upstream at all: the shape
+        // that reaches the floor row.
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_ms_in: 2_500,
+                ..TurnUsage::default()
+            });
+        let _ = run(&kernel, &unit);
+        let evidence = unit.evidence(&ctx(1));
+        assert_eq!(
+            evidence.accrued_floor, 3,
+            "2_500 ms is three seconds of billable audio, not 2_500 of anything"
+        );
+        let class = evidence.class.expect("the plane still declares the class");
+        assert_ne!(
+            class,
+            meta::CLASS_AUDIO_TOKENS_OUT,
+            "what the kernel counted is not the audio the turn emitted"
+        );
+        assert!(
+            <VoicePlane as busbar_contract::plane::PlaneMeta>::METER_CLASSES
+                .iter()
+                .any(|decl| decl.key == class
+                    && decl.direction == busbar_contract::ids::ClassDirection::Input),
+            "and the class it is counted under is one the plane declares, on the inbound side"
+        );
+        // The floor row: a live end that is not a completion with nothing located posts the floor.
+        let end = Outcome::Refused(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded);
+        let floor_only = Evidence {
+            located: None,
+            ..evidence
+        };
+        assert_eq!(settle_amount(&end, &floor_only).0, 3);
+    }
+
+    /// A STREAM THAT ENDED ON AN ERROR BILLS NOTHING, even with a figure located.
+    ///
+    /// The settlement table has a row for exactly this — a live end that is not a completion, with
+    /// something located, whose stream carried an error signal — and it posts zero. Reaching that
+    /// row takes the plane saying the stream errored, and this file used to say the opposite
+    /// unconditionally: every dropped session, every upstream failure, every refused frame settled
+    /// in full for audio the caller never got the end of. The ending is the one the audit step
+    /// already sealed, so the record and the posting cannot tell two stories about one turn.
+    #[test]
+    fn an_errored_turn_bills_nothing_though_it_located_a_figure() {
+        use busbar_kernel::teller::settle_amount;
+
+        let node = priced_node(serviceable());
+        let unit = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                ..TurnUsage::default()
+            });
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let token: UnitToken<Audit> = UnitToken::mint(&seal);
+        let refusal = Refusal::new(ReasonCode::DeadlineExceeded);
+        let _ = unit.audit_refused(&token, &ctx(1), &refusal);
+
+        let evidence = unit.evidence(&ctx(1));
+        assert!(
+            evidence.terminal_error,
+            "the plane sealed an error ending and the evidence says so"
+        );
+        assert_eq!(evidence.located, Some(120), "the figure is still located");
+        let end = Outcome::Refused(busbar_caps::StepName::Route, ReasonCode::DeadlineExceeded);
+        assert_eq!(
+            settle_amount(&end, &evidence).0,
+            0,
+            "and an errored stream posts nothing against it"
+        );
+
+        // And the completing turn beside it is untouched: the derivation only ever reads what the
+        // plane sealed, so a turn that finished cleanly still settles what it metered.
+        let clean = VoiceUnit::new(&node, UnitShape::Turn, 7, 1_700_000_000)
+            .charging_through(ungoverned())
+            .reporting(TurnUsage {
+                audio_tokens_out: 120,
+                ..TurnUsage::default()
+            });
+        let _ = clean.audit(&token, &ctx(1), &Outcome::Completed);
+        assert!(!clean.evidence(&ctx(1)).terminal_error);
     }
 
     /// A turn that reported no output relayed no answer; one that emitted tokens did.
@@ -3340,13 +3802,14 @@ mod tests {
             TURN_OPENING_TOKENS * 5_000,
             "what the door reserved"
         );
-        // What the settlement table posts is what the destination REPORTED, not what the kernel's
-        // meter counted; the accrual is the floor beside it, and the hold carries both.
-        assert_eq!(posted.settled(), 120, "what the upstream reported");
+        // What the settlement table posts is the WHOLE report — every class the turn metered, which
+        // here is 120 emitted audio tokens and the one second of audio the turn took in — not what
+        // the kernel's meter counted; the accrual is the floor beside it, and the hold carries both.
+        assert_eq!(posted.settled(), 121, "what the turn metered");
         assert_eq!(posted.overdraft(), 0, "well inside the reservation");
         assert_eq!(
             posted.released(),
-            TURN_OPENING_TOKENS * 5_000 - 120,
+            TURN_OPENING_TOKENS * 5_000 - 121,
             "and the residual the settlement hands back"
         );
 
@@ -3356,7 +3819,7 @@ mod tests {
             .expect("the memory-buffered journal takes it");
         assert_eq!(
             settled.settlement.released,
-            i128::from(TURN_OPENING_TOKENS * 5_000 - 120)
+            i128::from(TURN_OPENING_TOKENS * 5_000 - 121)
         );
         assert!(settled.overdraft.is_none());
 
@@ -3366,7 +3829,7 @@ mod tests {
             busbar_unit_admission::window::WINDOW_DAY,
             1_700_000_000,
         );
-        assert_eq!(durability.ledger.book().get(&key, window).settled, 120);
+        assert_eq!(durability.ledger.book().get(&key, window).settled, 121);
         let replayed = durability
             .journal
             .replay()

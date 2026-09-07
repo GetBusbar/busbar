@@ -34,6 +34,11 @@ Where mappings come from -- and why the list is short:
 A binding with no check is `unmapped` and carries a one-line suggestion of the check that would
 prove it. Many are unmapped; that is the finding, not a defect of this script.
 
+A binding that CITES checks is still only `mapped` when one of them actually compared something.
+Where every citation is a golden SKIP, a ref that has vanished, or a ref that asserts nothing, the
+binding is `unproven`: the citation list is not the proof, and the summary counts must say so. An
+instrument that can print "proven" while nothing was compared is worse than no instrument at all.
+
 Usage:
   design-bindings.py --write          regenerate qa/design-bindings.json + qa/DESIGN-BINDINGS.md
   design-bindings.py --verify         print one TSV row per binding: id, PASS|FAIL|SKIP, title, detail
@@ -109,12 +114,12 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("gate", "scripts/release-check.sh", "reject SLO on the real binary: 503 + Retry-After >= 2; soak-queue phase sees busbar_pool_queued > 0"),
     ],
     "PB-5": [
-        ("test", "sticky_affinity_never_selects_zero_weight_drained_member", "sticky fast path skipped on weight 0"),
+        ("test", "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member", "sticky fast path skipped on weight 0"),
         ("test", "sticky_fall_through_records_reason", "sticky fast path skipped on an excluded lane"),
         ("test", "test_sticky_yields_when_tripped", "sticky yields to the walk when the lane is tripped"),
-        ("test", "order_last_in_chain_wins", "the last ordering gate wins"),
-        ("test", "stale_order_filtered_against_post_restrict_set", "the order is re-validated against the post-restrict set"),
-        ("test", "last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate", "empty order abstains to the base policy"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins", "the last ordering gate wins"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set", "the order is re-validated against the post-restrict set"),
+        ("test", "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate", "empty order abstains to the base policy"),
         ("test", "ordered_walk_falls_through_to_swrr_when_no_preferred_ready", "the ready_in peek then SWRR fall-through"),
         ("test", "ordered_walk_empty_order_is_swrr", "no ordering gate means the SWRR floor"),
     ],
@@ -180,8 +185,8 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
     ],
     "PB-20": [
         ("test", "the_admin_audit_digest_is_unchanged_by_the_unification", "hash = SHA-256 hex over the canonical prev|seq|ts|action|resource|outcome|principal"),
-        ("test", "hash_chain_links_and_verifies", "genesis prev_hash is empty; tamper breaks verify"),
-        ("test", "export_load_roundtrip_resumes_chain", "restore resumes the sequence"),
+        ("test", "crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies", "genesis prev_hash is empty; tamper breaks verify"),
+        ("test", "crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain", "restore resumes the sequence"),
         ("test", "admin_audit_chain_boot_verifies_from_frozen_bytes", "restore_from_store over frozen legacy bytes with zero chain breaks"),
         ("oracle-cell", "admin.ops|GetAudit|ok", "GET /audit diffed against the 1.5.5 binary"),
     ],
@@ -196,12 +201,12 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
     "PB-22": [
         ("test", "test_governance_over_budget_native_envelope_all_ingress", "budget is insufficient_quota, 429 everywhere and 400 on bedrock"),
         ("test", "test_governance_rate_limit_429_native_envelope_all_ingress", "requests is always 429 rate_limit_error, bedrock included"),
-        ("test", "chain_and_parent_blocks_child_and_charges_nothing", "a blocked attempt charges nothing on any chain bucket"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing", "a blocked attempt charges nothing on any chain bucket"),
         ("test", "test_group_blocked_429_names_the_budget_group", "the first blocking bucket names the 429 and charges 0"),
-        ("test", "budget_cap_derives_from_ledger_and_rate_card", "the derived + fee lookahead"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::budget_cap_derives_from_ledger_and_rate_card", "the derived + fee lookahead"),
         ("test", "test_group_token_spend_blocks_chain_admission", "tokens is enforced post-hoc via derived spend"),
-        ("test", "concurrent_gauge_holds_and_releases", "the concurrent gauge"),
-        ("test", "disabled_group_freezes_the_chain", "the FREEZE arm"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::concurrent_gauge_holds_and_releases", "the concurrent gauge"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain", "the FREEZE arm"),
     ],
     "PB-24": [
         ("test", "split_admin_listener_no_double_exposure", "admin claims only on the admin listener"),
@@ -277,17 +282,17 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "secret_ref_wrong_kind_plugin_fails_at_preflight", "a wrong-kind plugin ref fails at preflight"),
     ],
     "PB-35": [
-        ("test", "test_empty_chain_is_open_front_door", "an empty chain is Open with or without a credential"),
-        ("test", "test_nonempty_chain_fails_closed_on_all_pass", "all-Pass without a keys arm is Denied"),
-        ("test", "test_keys_in_chain_sets_flag_not_module", "the keys arm sets keys_in_chain and boxes no module"),
-        ("test", "test_chain_identifies_with_module_and_principal", "the first Identify wins"),
-        ("test", "test_extract_client_token_precedence_is_authorization_first", "carrier precedence: Authorization first"),
-        ("test", "test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
-        ("test", "test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door", "an empty chain is Open with or without a credential"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass", "all-Pass without a keys arm is Denied"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module", "the keys arm sets keys_in_chain and boxes no module"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal", "the first Identify wins"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first", "carrier precedence: Authorization first"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
+        ("test", "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
         ("test", "verdict_rules_and_expiry", "Identify TTL clamp, Pass TTL, Reject never cached"),
         ("test", "bounded_eviction", "the MAX_ENTRIES cap"),
         ("test", "module_partitions_and_flush", "the cache is keyed per module and flush counts"),
-        ("test", "an_unauthenticated_chain_admits_nothing_to_the_cache", "run_chain_cached caches nothing for a denied chain"),
+        ("test", "crates/busbar-core/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache", "run_chain_cached caches nothing for a denied chain"),
         ("test", "test_admin_v1_credential_cache_and_flush_endpoint", "POST /auth/cache/flush returns a real flushed count"),
     ],
     "PB-36": [
@@ -338,8 +343,8 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "local_revoke_rejects_the_very_next_auth_attempt", "revoke is synchronous on the serving node"),
     ],
     "PB-47": [
-        ("test", "pool_scoped_accrual_and_refund_mirror_the_charge", "accrual and refund land on the pool the admission charged"),
-        ("test", "budget_block_carries_downgrade_target", "the block names the downgrade pool"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::pool_scoped_accrual_and_refund_mirror_the_charge", "accrual and refund land on the pool the admission charged"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::budget_block_carries_downgrade_target", "the block names the downgrade pool"),
         ("test", "test_budget_exhaustion_downgrades_pool", "admission lands on the effective post-downgrade pool"),
         ("test", "test_downgrade_cycle_terminates_via_the_revisit_guard", "the visited-set guard prevents a double charge"),
     ],
@@ -386,7 +391,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "redirects_surface_verbatim_and_are_followed_by_neither_stack", "redirect Policy::none"),
     ],
     "PB-57": [
-        ("test", "test_zero_weight_member_is_never_selected", "weight-0 lanes are filtered before selection"),
+        ("test", "crates/busbar-core/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected", "weight-0 lanes are filtered before selection"),
         ("test", "test_swrr_no_open_selection", "an open lane is filtered before the credit walk"),
         ("test", "test_swrr_all_down_returns_none", "all down selects none"),
         ("test", "a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves", "only an at-capacity lane reaches try_admit after selection"),
@@ -403,7 +408,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_reshape_oversized_413_passthrough", "non-413 and already-JSON pass through"),
     ],
     "PB-62": [
-        ("test", "required_scope_matrix", "reads are read-only, mutations full, config/validate and plugins/inspect read-only"),
+        ("test", "crates/busbar-core/src/admin/v1/contract/tests/tests.rs::required_scope_matrix", "reads are read-only, mutations full, config/validate and plugins/inspect read-only"),
         ("test", "required_scope_mutations_are_full", "every mutation requires full"),
         ("test", "openapi_paths_annotate_required_scope", "x-busbar-required-scope equals the enforced scope on every path"),
     ],
@@ -460,7 +465,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_ssrf_allows_private_and_loopback_by_default", "no over-blocking, no runtime DNS check"),
         ("test", "test_validate_rejects_non_https_base_url", "the public-https / private-http scheme rule literals"),
         ("test", "test_validate_token_url_ssrf_and_scheme", "the same rules on token_url"),
-        ("test", "the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
+        ("test", "crates/busbar-substrate/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
     ],
     "PB-73": [
         ("test", "server_timing_header_absent_by_default_present_when_enabled", "Server-Timing absent by default, on every response when enabled"),
@@ -489,10 +494,10 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "test_signing_key_rotate_reports_kid_and_revoke_all", "rotate is report-only with the signing_key.report audit action"),
     ],
     "PB-79": [
-        ("test", "missing_group_fails_closed", "MissingGroup fails closed at admission"),
-        ("test", "disabled_group_freezes_the_chain", "a frozen group blocks the chain"),
-        ("test", "chain_and_parent_blocks_child_and_charges_nothing", "a parent block charges nothing"),
-        ("test", "total_window_blocks_without_retry_after", "a block without Retry-After"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::missing_group_fails_closed", "MissingGroup fails closed at admission"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain", "a frozen group blocks the chain"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing", "a parent block charges nothing"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::total_window_blocks_without_retry_after", "a block without Retry-After"),
         ("test", "test_try_admit_rejects_at_group_cap", "the concurrent refusal carries retry_after None"),
         ("test", "test_chain_enforcement_rejects_naming_the_blocking_group", "the first blocking bucket names the refusal"),
         ("test", "test_governance_rate_limit_429_native_envelope_all_ingress", "requests refusal is 429 rate_limit_error on every ingress"),
@@ -559,7 +564,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("gate", "scripts/config-stability-gate.sh", "a key cannot silently stop landing (additive-only grammar)"),
     ],
     "PB-91": [
-        ("test", "refund_returns_the_fee_but_never_the_requests_limit_slot", "a refund returns the fee but never the requests slot"),
+        ("test", "crates/busbar-core/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot", "a refund returns the fee but never the requests slot"),
         ("test", "test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx", "the fee follows the client-facing status"),
     ],
     "PB-94": [
@@ -658,6 +663,37 @@ NOTES: dict[str, str] = {
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
     "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
     "PB-61": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
+    "PB-17": "The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are "
+             "the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric "
+             "SERIES are absent on a config with no data_dir -- a different surface, and not a count. "
+             "The boot.warning cells assert that individual warnings are PRESENT; none totals them. "
+             "The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 "
+             "corpus config and compare the total against the pinned golden's.",
+}
+
+# ── Bindings the ledger's own note already says nothing proves ───────────────────────────────────
+# A note that says the surface "does not exist in crates/" or that the binding is "vacuously true"
+# is a statement that NOTHING WAS COMPARED. Carrying such a binding as `mapped` because a test fn of
+# some other subsystem happens to bear a matching name is the instrument lying. These are forced to
+# `unproven` and the note is the reason printed in the ledger's detail column.
+UNPROVEN_BY_NOTE: dict[str, str] = {
+    "PB-48": "the note on this row says the stall sweep is not built and the binding is vacuously true. "
+             "The tests it cites (a_slow_unit_is_not_a_lost_one, a_lost_task_is_settled_within_one_tick) "
+             "are unit-crate tests of the drop guard; none of them drives max_unit_duration, because "
+             "max_unit_duration does not exist. Nothing was compared.",
+    "PB-58": "the note on this row says OverBudget, OverdraftCeiling and StaleSlice do not exist in "
+             "crates/ and calls the binding vacuously true and untested. The four tests it cites are "
+             "admission-unit tests of the overdraft rule, which is a different subsystem from the "
+             "sealed-bucket refusal this binding is about. Nothing was compared.",
+    "PB-61": "the note on this row says MAX_NEEDMORE_FRAMES does not exist in crates/ and that no test "
+             "drives a multi-chunk body to the cap. The tests it cites bound a body by BYTES; the "
+             "binding is about the CHUNK-COUNT cap. Nothing was compared.",
+    "PB-17": "this row cites the shared absence tripwire (the ops.scrape no-ledger-series cell and "
+             "no_ledger_series_and_no_keyset_lines_without_data_dir), which asserts that certain metric "
+             "SERIES are absent. The binding is a COUNT of boot warning lines, and no check counts "
+             "them. A cell or test that counts the boot warning lines emitted on the 1.5.5 corpus "
+             "config and compares that count to the golden's would prove it; until one exists, the "
+             "tripwire proves a different thing about a different surface.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────
@@ -966,7 +1002,8 @@ def merge_checks(*lists: list[dict]) -> list[dict]:
     return out
 
 
-def build(arch_text: str, cells_doc: dict, existing: dict | None) -> dict:
+def build(arch_text: str, cells_doc: dict, existing: dict | None,
+          crates: Path = CRATES, root: Path = ROOT, ledger: Path = GOLDEN_LEDGER) -> dict:
     master, rows = parse_appendix_b(arch_text)
     bindings = ([master] if master else []) + rows
     all_cells = cells_doc.get("cells", [])
@@ -998,12 +1035,18 @@ def build(arch_text: str, cells_doc: dict, existing: dict | None) -> dict:
             entry["suggestion"] = sug
             entry["checks"] = [{"kind": suggest_kind(sug), "ref": "", "status": "unmapped", "suggestion": sug}]
         out_b.append(entry)
+    # The status written here is the VERDICT the checks earn, not the fact that checks were listed.
+    classify(out_b, check_context(cells_doc, crates, root, ledger))
     dropped = sorted(set(prior) - {b["id"] for b in bindings})
     return {
         "_comment": [
             "GENERATED by scripts/design-bindings.py --write. Hand-added `checks` entries are preserved across regeneration;",
             "derived entries (source = 'cells.json why' or 'curated') are recomputed each time.",
-            "status: mapped = at least one existing check proves the binding; unmapped = no check today (see `suggestion`).",
+            "status is the VERDICT the cited checks earn, not the fact that checks were cited:",
+            "  mapped   = every cited check exists and compares something (verdict PASS)",
+            "  unproven = checks are cited but nothing they name compares anything today -- a golden SKIP,",
+            "             a vanished ref, or a ref that asserts nothing (verdict FAIL). Never counted as proof.",
+            "  unmapped = no check at all: a NAMED gap, carrying the check that would prove it (verdict SKIP)",
             "Checked by scripts/design-bindings.sh --check (existence only; nothing is executed).",
         ],
         "derived_from": {"architecture": str(ARCH.relative_to(ROOT)), "cells": str(CELLS.relative_to(ROOT))},
@@ -1031,12 +1074,16 @@ def suggest_kind(s: str) -> str:
 
 
 def counts(bindings: list[dict]) -> dict:
-    mapped = [b for b in bindings if b["status"] == "mapped"]
+    """The summary, counted off the VERDICTS. `mapped` here means PASS -- a binding whose checks were
+    listed but proved nothing is counted under `unproven`, never folded into `mapped`."""
+    by_status: Counter = Counter(b.get("status", "unmapped") for b in bindings)
     by_kind: Counter = Counter()
-    for b in mapped:
-        for c in b["checks"]:
-            by_kind[c["kind"]] += 1
-    return {"bindings": len(bindings), "mapped": len(mapped), "unmapped": len(bindings) - len(mapped),
+    for b in bindings:
+        if b.get("status") == "mapped":
+            for c in b.get("checks", []):
+                by_kind[c["kind"]] += 1
+    return {"bindings": len(bindings), "mapped": by_status["mapped"],
+            "unproven": by_status["unproven"], "unmapped": by_status["unmapped"],
             "checks_by_kind": dict(sorted(by_kind.items()))}
 
 
@@ -1091,50 +1138,193 @@ def golden_recorded(ledger: Path) -> set[str]:
     return out
 
 
-def verify(doc: dict, cells_doc: dict, crates: Path, root: Path,
-           ledger: Path = GOLDEN_LEDGER) -> list[tuple[str, str, str, str]]:
-    idx = test_index(crates) if crates.exists() else {}
-    cell_ids = {c["id"] for c in cells_doc.get("cells", [])}
-    recorded = golden_recorded(ledger)
+# ── "Does CI actually RUN it?" ───────────────────────────────────────────────────────────────────
+# A `gate`, `lint` or `script` ref used to be proven by `(root / ref).exists()`. Existence on disk is
+# not a comparison: a gate nobody invokes has the same evidentiary value as a gate nobody wrote, and
+# the citation reads green forever either way. So a script-shaped ref is only proof when some
+# workflow under .github/workflows actually invokes it.
+#
+# WHAT COUNTS AS INVOKED, and why each source is in the set:
+#   * .github/workflows/*.yml -- the direct answer. Comment lines and step `name:` labels are
+#     stripped FIRST, exactly as scripts/full-gate.sh's own discovery strips them, because a script
+#     named in a comment or in a step's human-readable title is being TALKED ABOUT, not run. Three of
+#     the refs this check found were in precisely that position.
+#   * scripts/full-gate.sh's discovered set -- the indirection the owner's rule names. It needs no
+#     separate scan: full-gate.sh derives that set by grepping ci.yml, which is already read above.
+#   * qa/segments.toml -- the qa full tier's manifest, and a real invocation path: qa-gate.yml runs
+#     `scripts/qa-gate-run.sh segment <id>`, which runs the segment's `run =` line. It is admitted
+#     ONLY when a workflow is seen driving that runner, so the manifest cannot vouch for itself.
+#     Leaving it out would make this check lie in the other direction -- naming a gate that demonstrably
+#     runs every qa push as one that does not run at all.
+_COMMENT_LINE = re.compile(r"^[ \t]*#.*$", re.M)
+_STEP_LABEL = re.compile(r"^[ \t]*-?[ \t]*name:.*$", re.M)
+_PATH_TOKEN = re.compile(r"(?:scripts|testing|qa|xtask)/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+")
+SEGMENT_RUNNER = "scripts/qa-gate-run.sh"
+RUNNABLE_SUFFIXES = (".sh", ".py", ".mjs", ".js", ".ts", ".rb")
+# THIS FILE IS NEVER AN INVOKER. Its SEED table names every gate the ledger cites, so following it
+# would let the ledger vouch for its own citations: every ref would be "invoked" because the ledger
+# mentions it. A check whose evidence is its own claim has checked nothing.
+NOT_AN_INVOKER = {"scripts/design-bindings.py"}
+
+
+def _runnable_text(p: Path) -> str:
+    """A file's content with the lines that cannot run anything removed."""
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return _STEP_LABEL.sub("", _COMMENT_LINE.sub("", text))
+
+
+def ci_invoked_refs(root: Path) -> set[str]:
+    """Every script-shaped path CI actually invokes.
+
+    Closed TRANSITIVELY: a gate a workflow reaches through a script the workflow runs is run by CI
+    just as surely as one named in the workflow itself, and stopping at depth one would report a
+    gate that reds every qa push as one nothing runs. scripts/release-check-1.5.2.sh is exactly that
+    shape -- no workflow names it outside a comment, and scripts/release-check.sh runs it, which the
+    qa segment manifest runs, which qa-gate.yml runs. The frontier only ever grows, so the loop
+    terminates on the finite set of paths in the tree; comments are stripped from each file first,
+    for the same reason they are stripped from the workflows.
+    """
+    wf_dir = root / ".github" / "workflows"
+    workflows = "\n".join(_runnable_text(p) for p in sorted(wf_dir.glob("*.y*ml"))) if wf_dir.is_dir() else ""
+    invoked = set(_PATH_TOKEN.findall(workflows))
+    segments = root / "qa" / "segments.toml"
+    if SEGMENT_RUNNER in invoked and segments.is_file():
+        invoked |= set(_PATH_TOKEN.findall(_runnable_text(segments)))
+    frontier = set(invoked)
+    while frontier:
+        nxt: set[str] = set()
+        for ref in frontier:
+            if ref in NOT_AN_INVOKER:
+                continue
+            p = root / ref
+            if p.is_file() and p.suffix in RUNNABLE_SUFFIXES:
+                nxt |= set(_PATH_TOKEN.findall(_runnable_text(p)))
+        frontier = nxt - invoked
+        invoked |= frontier
+    # A path that is not executable is not invoked by anyone, however often it is named. A data file
+    # READ by a script that CI runs is an input to a gate, not a gate: it compares nothing itself,
+    # and citing one as a `gate` is the defect, not the scan missing an invocation.
+    return {r for r in invoked if r.endswith(RUNNABLE_SUFFIXES)}
+
+
+def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> dict:
+    """Everything a per-check verdict needs, gathered once."""
     fam_cells: dict[str, list[str]] = defaultdict(list)
     for c in cells_doc.get("cells", []):
         fam_cells[c.get("family") or c.get("plane") or "?"].append(c["id"])
-    families = Counter((c.get("family") or c.get("plane") or "?") for c in cells_doc.get("cells", []))
+    return {
+        "idx": test_index(crates) if crates.exists() else {},
+        "cell_ids": {c["id"] for c in cells_doc.get("cells", [])},
+        "recorded": golden_recorded(ledger),
+        "fam_cells": fam_cells,
+        "families": Counter((c.get("family") or c.get("plane") or "?") for c in cells_doc.get("cells", [])),
+        "root": root,
+        "ci": ci_invoked_refs(root),
+    }
+
+
+def check_verdict(c: dict, ctx: dict) -> tuple[bool, str]:
+    """Does this one check COMPARE anything today?
+
+    Returns (proves, reason). `proves` is False for a ref that names nothing, for an oracle cell the
+    pinned golden never recorded, and for a check with no ref at all. The reason is written for the
+    ledger's detail column, so it names the ref and why it settles nothing.
+    """
+    k, r = c.get("kind", "?"), c.get("ref", "")
+    if not r:
+        return False, f"{k}: no ref -- a check with nothing to compare against"
+    if k == "test":
+        if "::" in r:
+            path, name = r.rsplit("::", 1)
+            if path in ctx["idx"].get(name, set()):
+                return True, ""
+            return False, f"test:{r} (no test fn by that name is declared in that file)"
+        files = ctx["idx"].get(r, set())
+        if not files:
+            return False, f"test:{r}"
+        if len(files) > 1:
+            # A bare name that two files both declare does not name a test; it names a set. Delete
+            # the one the curation actually read and the citation stays green on its namesake, which
+            # is the failure this ledger exists to catch. Cite it as `path.rs::name`.
+            return False, (f"test:{r} (declared under a test attribute in {len(files)} files -- "
+                           f"{', '.join(sorted(files))} -- so the ref names no particular test; "
+                           f"cite it as path.rs::name)")
+        return True, ""
+    if k == "oracle-cell":
+        if r not in ctx["cell_ids"]:
+            return False, f"oracle-cell:{r}"
+        if r not in ctx["recorded"]:
+            return False, f"oracle-cell:{r} (in cells.json, but the golden never recorded it)"
+        return True, ""
+    if k == "oracle-family":
+        if any(i in ctx["recorded"] for i in ctx["fam_cells"].get(r, [])):
+            return True, ""
+        if ctx["families"].get(r, 0) > 0:
+            return False, f"oracle-family:{r} (cells exist, but the golden recorded none of them)"
+        return False, f"oracle-family:{r}"
+    if k in ("lint", "gate", "script", "conformance"):
+        if not (ctx["root"] / r).exists():
+            return False, f"{k}:{r}"
+        if r not in ctx["ci"]:
+            return False, (f"{k}:{r} (exists on disk, but nothing under .github/workflows invokes it, "
+                           f"directly or through the qa segment manifest -- a gate nobody runs "
+                           f"compares nothing)")
+        return True, ""
+    return False, f"{k}:{r} (unknown check kind)"
+
+
+def binding_verdict(b: dict, ctx: dict) -> tuple[str, str, str]:
+    """One binding's (status, verdict, detail).
+
+    THE RULE THIS FILE EXISTS FOR: a binding is only `mapped` when something it cites actually
+    compared something. A binding every one of whose checks is a golden SKIP, a vanished ref or a
+    ref that asserts nothing is `unproven` -- an instrument that can say "proven" while nothing was
+    compared is worse than no instrument. `unmapped` stays the word for a NAMED gap: no check at all.
+    """
+    pb = b.get("id", "?")
+    mapped = [c for c in b.get("checks", []) if c.get("status") == "mapped" and c.get("ref")]
+    if not mapped:
+        return "unmapped", "SKIP", "unmapped: " + (b.get("suggestion") or "no check proves this binding yet")
+    if pb in UNPROVEN_BY_NOTE:
+        return "unproven", "FAIL", "UNPROVEN, by the ledger's own note: " + NOTES.get(pb, UNPROVEN_BY_NOTE[pb])
+    proving: list[dict] = []
+    broken: list[str] = []
+    for c in mapped:
+        ok, why = check_verdict(c, ctx)
+        if ok:
+            proving.append(c)
+        else:
+            broken.append(why)
+    if not proving:
+        return "unproven", "FAIL", ("UNPROVEN: nothing this binding cites compares anything today -- "
+                                    + ", ".join(broken))
+    if broken:
+        return "unproven", "FAIL", ("partly proven; a referenced check settles nothing: "
+                                    + ", ".join(broken))
+    return "mapped", "PASS", ", ".join(f"{c['kind']}:{c['ref']}" for c in proving)
+
+
+def classify(bindings: list[dict], ctx: dict) -> list[dict]:
+    """Stamp every binding with the verdict its checks actually earn."""
+    for b in bindings:
+        status, verdict, detail = binding_verdict(b, ctx)
+        b["status"] = status
+        b["verdict"] = verdict
+        b["verdict_detail"] = detail
+    return bindings
+
+
+def verify(doc: dict, cells_doc: dict, crates: Path, root: Path,
+           ledger: Path = GOLDEN_LEDGER) -> list[tuple[str, str, str, str]]:
+    ctx = check_context(cells_doc, crates, root, ledger)
     rows: list[tuple[str, str, str, str]] = []
     for b in doc.get("bindings", []):
-        pb, title = b["id"], f"{b['id']} {b['surface']}"[:70]
-        mapped = [c for c in b.get("checks", []) if c.get("status") == "mapped" and c.get("ref")]
-        if not mapped:
-            rows.append((pb, "SKIP", title, "unmapped: " + (b.get("suggestion") or "no check proves this binding yet")))
-            continue
-        missing: list[str] = []
-        for c in mapped:
-            k, r = c["kind"], c["ref"]
-            ok = False
-            if k == "test":
-                if "::" in r:
-                    path, name = r.rsplit("::", 1)
-                    ok = path in idx.get(name, set())
-                else:
-                    ok = r in idx
-            elif k == "oracle-cell":
-                ok = r in cell_ids and r in recorded
-                if r in cell_ids and not ok:
-                    missing.append(f"{k}:{r} (in cells.json, but the golden never recorded it)")
-                    continue
-            elif k == "oracle-family":
-                ok = any(i in recorded for i in fam_cells.get(r, []))
-                if families.get(r, 0) > 0 and not ok:
-                    missing.append(f"{k}:{r} (cells exist, but the golden recorded none of them)")
-                    continue
-            elif k in ("lint", "gate", "conformance"):
-                ok = (root / r).exists()
-            if not ok:
-                missing.append(f"{k}:{r}")
-        if missing:
-            rows.append((pb, "FAIL", title, "referenced check vanished: " + ", ".join(missing)))
-        else:
-            rows.append((pb, "PASS", title, ", ".join(f"{c['kind']}:{c['ref']}" for c in mapped)))
+        title = f"{b['id']} {b['surface']}"[:70]
+        _status, verdict, detail = binding_verdict(b, ctx)
+        rows.append((b["id"], verdict, title, detail))
     return rows
 
 
@@ -1147,24 +1337,43 @@ def render_md(doc: dict) -> str:
     c = doc["counts"]
     out = ["# Design bindings ledger", "",
            "GENERATED by `scripts/design-bindings.py --write` from `docs/design/ARCHITECTURE.md` Appendix B. Do not edit by hand.",
-           "", "One row per parity binding; `checks` lists what proves it TODAY (existence-checked by",
-           "`scripts/design-bindings.sh --check`; nothing is executed). A binding with no check is `unmapped`",
-           "and carries the check that would prove it -- that list is the owner's post-check plan.", "",
+           "", "One row per parity binding; `checks` lists what it CITES, and `verdict` says what those",
+           "citations actually earned (existence-checked by `scripts/design-bindings.sh --check`; nothing",
+           "is executed).", "",
+           "The three words are not interchangeable:", "",
+           "- **mapped** (PASS) -- every cited check exists and compares something.",
+           "- **unproven** (FAIL) -- checks are cited, but nothing they name compares anything today: an",
+           "  oracle cell the pinned golden never recorded, a ref that has vanished, a ref that asserts",
+           "  nothing. This is NOT proof, and it is never counted as `mapped`.",
+           "- **unmapped** (SKIP) -- no check at all: a named gap, carrying the check that would close it.", "",
            "## Summary", "",
            f"- bindings: **{c['bindings']}**  (PB-0 master rule + {c['bindings'] - 1} table rows)",
-           f"- mapped: **{c['mapped']}**", f"- unmapped: **{c['unmapped']}**",
-           "- checks by kind: " + ", ".join(f"{k} {v}" for k, v in c["checks_by_kind"].items()), "",
-           "## Bindings", "", "| # | Surface | Status | Checks |", "|---|---|---|---|"]
+           f"- mapped (proven): **{c['mapped']}**",
+           f"- unproven (cited, but nothing compared): **{c.get('unproven', 0)}**",
+           f"- unmapped (named gap): **{c['unmapped']}**",
+           "- checks by kind (mapped bindings only): " + ", ".join(f"{k} {v}" for k, v in c["checks_by_kind"].items()), "",
+           "## Bindings", "", "| # | Surface | Status | Verdict | Why | Checks |", "|---|---|---|---|---|---|"]
     for b in doc["bindings"]:
-        if b["status"] == "mapped":
+        if b.get("checks") and any(ch.get("ref") for ch in b["checks"]):
             parts = []
             for ch in b["checks"]:
+                if not ch.get("ref"):
+                    continue
                 extra = f" ({ch['cites']}/{ch['family_size']} cells cite it)" if ch["kind"] == "oracle-family" and "cites" in ch else ""
                 parts.append(f"{ch['kind']}: `{ch['ref']}`{extra}")
             checks = "<br>".join(_md(p) for p in parts)
         else:
             checks = "_none_"
-        out.append(f"| {b['id']} | {_md(b['surface'])} | {b['status']} | {checks} |")
+        why = _md(b.get("verdict_detail", "")) if b["status"] != "mapped" else ""
+        out.append(f"| {b['id']} | {_md(b['surface'])} | {b['status']} | {b.get('verdict', '')} | {why} | {checks} |")
+    unproven = [b for b in doc["bindings"] if b["status"] == "unproven"]
+    if unproven:
+        out += ["", "## The unproven bindings: cited, but nothing was compared", "",
+                "Each of these names one or more checks and is still proof of nothing. A binding here is",
+                "red under `scripts/design-bindings.sh --check`; it is fixed by making the citation real,",
+                "or it is demoted to a named gap. It is never waived.", ""]
+        for b in unproven:
+            out.append(f"- **{b['id']}** ({_md(b['surface'])}): {_md(b.get('verdict_detail', ''))}")
     noted = [b for b in doc["bindings"] if b.get("note")]
     if noted:
         out += ["", "## Findings: bindings in conflict with the tree", "",
@@ -1216,13 +1425,15 @@ def main(argv: list[str]) -> int:
             print("\t".join(x.replace("\t", " ") for x in r))
         return 0
 
-    doc = build(Path(a.arch).read_text(), cells_doc, existing)
+    doc = build(Path(a.arch).read_text(), cells_doc, existing,
+                Path(a.crates), ROOT, Path(a.golden_ledger))
     if a.write:
         Path(a.out_json).write_text(json.dumps(doc, indent=1, ensure_ascii=False) + "\n")
         Path(a.out_md).write_text(render_md(doc))
         print(f"wrote {a.out_json} and {a.out_md}")
     c = doc["counts"]
-    print(f"bindings {c['bindings']}  mapped {c['mapped']}  unmapped {c['unmapped']}  by kind {c['checks_by_kind']}")
+    print(f"bindings {c['bindings']}  mapped {c['mapped']}  unproven {c['unproven']}  "
+          f"unmapped {c['unmapped']}  by kind {c['checks_by_kind']}")
     if doc["dropped_since_last_write"]:
         print("dropped (no longer in Appendix B): " + ", ".join(doc["dropped_since_last_write"]))
     return 0

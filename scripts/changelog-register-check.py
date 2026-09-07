@@ -10,8 +10,14 @@
 # whether the CHANGELOG's prose is otherwise truthful: only that every register-declared difference
 # is NAMED, and that the name still exists in the file.
 #
-#   PASS    the entry has a non-empty `changelog` string and that exact string is a substring of
-#           CHANGELOG.md (whitespace-normalized, so a markdown line-wrap still matches)
+# THE SEARCH IS SCOPED TO THE NEWEST `## [x.y.z]` SECTION, not to the whole file. CHANGELOG.md is an
+# append-only history of every release, so an unanchored substring search over it can be satisfied by
+# prose written for 1.5.0 -- and, the other way round, an entry could count as "named in the
+# CHANGELOG" while the section this release actually ships says nothing about it. The rule is that an
+# accepted difference is named in THIS release's notes; an older section cannot discharge it.
+#
+#   PASS    the entry has a non-empty `changelog` string and that exact string is a substring of the
+#           NEWEST release section of CHANGELOG.md (whitespace-normalized, so a line-wrap matches)
 #   WAIVED  the entry carries an EXPLICIT `"changelog": null` together with a non-empty
 #           `changelog_reason` saying why this difference is not user-visible. The waiver is a
 #           written argument a reviewer can disagree with, never an omission -- which is the whole
@@ -45,6 +51,29 @@ def _normalize(text: str) -> str:
     `changelog` line that CHANGELOG.md happens to wrap across two source lines still matches. This
     is whitespace-only normalization: no word is added, removed or reordered."""
     return _WS.sub(" ", text).strip()
+
+
+_SECTION_RE = re.compile(r"^## \[(?P<ver>[0-9]+\.[0-9]+\.[0-9]+)\]", re.MULTILINE)
+
+
+def newest_section(changelog_text: str):
+    """(version, body) for the TOP `## [x.y.z]` section of CHANGELOG.md, or (None, None).
+
+    THE SEARCH IS ANCHORED TO ONE SECTION, and it was not. The check asked whether an accepted
+    difference's `changelog` line appeared ANYWHERE in the whole file, as an unanchored substring
+    over every release that has ever shipped. CHANGELOG.md is an append-only history of a dozen
+    versions, so the register was being satisfied by prose written for 1.5.0 that happens to contain
+    the same words -- and, worse, an entry could be "named in the CHANGELOG" while the section this
+    release actually publishes says nothing about it at all. The rule the owner wrote is that an
+    accepted difference is named in the release notes THIS release ships; nothing about the 1.5.x
+    history can discharge it, and a line deleted from the current section must go red even if an
+    older section still carries the same sentence.
+    """
+    m = _SECTION_RE.search(changelog_text)
+    if not m:
+        return None, None
+    nxt = _SECTION_RE.search(changelog_text, m.end())
+    return m.group("ver"), changelog_text[m.start(): nxt.start() if nxt else len(changelog_text)]
 
 
 def check(register_path: Path, changelog_path: Path):
@@ -83,7 +112,15 @@ def check(register_path: Path, changelog_path: Path):
             f"enumerated from it",
         )], False
     ok = True
-    normalized_changelog = _normalize(changelog_text)
+    section_version, section_text = newest_section(changelog_text)
+    if section_text is None:
+        return [(
+            "<changelog>", "FAIL",
+            f"{changelog_path.name} has no `## [x.y.z]` section heading -- there is no release "
+            f"section to search, and an unanchored search over the whole file would be satisfied "
+            f"by any older release's prose",
+        )], False
+    normalized_changelog = _normalize(section_text)
     for entry in entries:
         entry_id = entry.get("id", "<unnamed>")
         kind = entry.get("kind", "<no kind>")
@@ -131,12 +168,14 @@ def check(register_path: Path, changelog_path: Path):
                 (
                     entry_id,
                     "FAIL",
-                    f"changelog line not found verbatim in {changelog_path.name}: {line!r}",
+                    f"changelog line not found verbatim in the {section_version} section of "
+                    f"{changelog_path.name}: {line!r}",
                 )
             )
             ok = False
         else:
-            rows.append((entry_id, "PASS", "changelog line present verbatim"))
+            rows.append((entry_id, "PASS",
+                         f"changelog line present verbatim in the {section_version} section"))
     return rows, ok
 
 
@@ -178,10 +217,35 @@ def selftest() -> int:
             ok
             and rows
             == [
-                ("X-1", "PASS", "changelog line present verbatim"),
-                ("X-2", "PASS", "changelog line present verbatim"),
+                ("X-1", "PASS", "changelog line present verbatim in the 1.6.0 section"),
+                ("X-2", "PASS", "changelog line present verbatim in the 1.6.0 section"),
             ],
             "improvement AND breaking entries with their lines present -> PASS, run green",
+        )
+
+        # (a2) THE ANCHOR. The same register, against a CHANGELOG whose CURRENT section says nothing
+        # and whose OLD section carries both lines verbatim. Unanchored, this passed: the substring
+        # search ran over the whole append-only history, so an entry accepted for this release could
+        # be discharged by prose shipped a year ago, and deleting a line from the current section
+        # changed nothing. It must be RED.
+        stale_changelog = tmp / "stale.md"
+        stale_changelog.write_text(
+            "## [1.6.0], unreleased\n\n- an unrelated note\n\n"
+            "## [1.5.0], 2026-08-01\n\n- the grass is now greener\n- the sky is now green\n"
+        )
+        rows, ok = check(good_register, stale_changelog)
+        say(
+            (not ok) and [r[1] for r in rows] == ["FAIL", "FAIL"],
+            "lines present ONLY in an older release section -> FAIL (the search is anchored to the newest one)",
+        )
+
+        # (a3) and the anchor must not be a way to pass by having no sections at all.
+        headless = tmp / "headless.md"
+        headless.write_text("- the grass is now greener\n- the sky is now green\n")
+        rows, ok = check(good_register, headless)
+        say(
+            (not ok) and rows[0][0] == "<changelog>",
+            "a CHANGELOG with no `## [x.y.z]` heading -> FAIL, never a vacuous pass",
         )
 
         # (b) a breaking entry whose changelog line is ABSENT -> FAIL, overall not ok
@@ -324,7 +388,10 @@ def selftest() -> int:
         wrapped_changelog = tmp / "wrapped.md"
         wrapped_changelog.write_text("## [1.6.0]\n\n- the sky is now a lovely\n  green\n")
         rows, ok = check(wrapped_register, wrapped_changelog)
-        say(ok and rows == [("X-5", "PASS", "changelog line present verbatim")], "line wrapped across two source lines -> still PASS")
+        say(
+            ok and rows == [("X-5", "PASS", "changelog line present verbatim in the 1.6.0 section")],
+            "line wrapped across two source lines -> still PASS",
+        )
 
     print()
     if fails == 0:

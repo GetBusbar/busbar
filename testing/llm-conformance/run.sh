@@ -5,12 +5,15 @@
 # LLM SPEC CONFORMANCE GATE — vendor the providers' published specs, validate a shadow-oracle
 # recording of busbar's LLM plane against them, and decide through the one shared verdict.
 #
-#   run.sh [--recording <dir>] [--out <dir>] [--cells <cells.json>] [--no-vendor]
+#   run.sh [--recording <dir>] [--out <dir>] [--cells <cells.json>] [--named-gaps <f>] [--no-vendor]
 #
 #   --recording   a testing/shadow-oracle/record.sh output (default target/oracle/recordings/candidate)
 #   --out         where ledger.tsv, report.json, report.md, owed.txt, owed-gaps.txt go
 #                 (default target/llm-conformance/<basename of recording>)
 #   --cells       the cell universe (default testing/shadow-oracle/cells.json)
+#   --named-gaps  the named-gap list (default named-gaps.json; see that file's own header). A
+#                 violation it names becomes a named gap on its row instead of a FAIL, and only
+#                 when it is the ONLY violation on that row. A stale entry is RED.
 #   --no-vendor   trust the cache as-is (vendor.sh --check still runs: an absent spec is red)
 #
 # ONE MECHANISM, THE SAME AS EVERY OTHER GATE HERE: validate.py appends one ledger row per owed
@@ -18,17 +21,20 @@
 # against the ids that were OWED. The owed list is computed HERE from cells.json, independently of
 # the validator's own loop, so a cell the validator silently dropped shows up as DID NOT RUN rather
 # than as green. Ids the validator recorded as SKIP are named gaps: they are printed, counted, and
-# removed from the owed set (a skip is never a pass, and it is never silent either).
+# removed from the owed set (a skip is never a pass, and it is never silent either). A gap arises
+# two ways -- the recorder did not make the cell, or named-gaps.json names the violation as one the
+# owner has ruled the vendor's schema wrong about -- and both read the same way in the ledger.
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 
-RECORDING="${repo}/target/oracle/recordings/candidate" OUT="" CELLS="${repo}/testing/shadow-oracle/cells.json" VENDOR=1
+RECORDING="${repo}/target/oracle/recordings/candidate" OUT="" CELLS="${repo}/testing/shadow-oracle/cells.json" GAPS="${here}/named-gaps.json" VENDOR=1
 while [ $# -gt 0 ]; do
   case "$1" in
     --recording) RECORDING="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --cells) CELLS="$2"; shift 2 ;;
+    --named-gaps) GAPS="$2"; shift 2 ;;
     --no-vendor) VENDOR=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -59,10 +65,28 @@ fi
 echo
 
 # 2. validate: one row per cell x direction. Its exit code is NOT the verdict; the ledger is.
-python3 "${here}/validate.py" --recording "$RECORDING" --out "$OUT" --cells "$CELLS" --ledger "$LEDGER" >"${OUT}/validate.log" 2>&1
+python3 "${here}/validate.py" --recording "$RECORDING" --out "$OUT" --cells "$CELLS" --named-gaps "$GAPS" --ledger "$LEDGER" >"${OUT}/validate.log" 2>&1
 vrc=$?
 grep -v '^::' "${OUT}/validate.log" | grep -E '^(FAIL|SKIP) ' -A1 || true
 [ "$vrc" -eq 0 ] || { echo; echo "validate.py exit ${vrc}:"; tail -5 "${OUT}/validate.log"; }
+# Exit 2 is the named-gap list refusing to load. It is not a finding about busbar and it must not
+# reach the verdict as one: NOTHING was judged, so the ledger is empty and the run stops here saying
+# why, rather than arriving at "vacuous run" with the real reason five lines up the log.
+if [ "$vrc" -eq 2 ]; then
+  grep '^validate: REFUSED' "${OUT}/validate.log" >&2 || true
+  echo "::error title=llm spec conformance::the named-gap list was refused; nothing was validated" >&2
+  exit 1
+fi
+# A NAMED GAP THAT FORGIVES NOTHING IS RED. The entry names a row this run judged and that came back
+# without the violation the entry exists for — so the entry is stale, and a stale entry is exactly
+# where a genuine future failure on that row would land unseen. Refused before the verdict: the
+# verdict answers "did every owed probe pass", and this is a question about the gate's own paperwork.
+if [ -s "${OUT}/stale-gaps.txt" ]; then
+  echo "STALE NAMED GAPS (each names a judged row that did NOT produce its violation):"
+  cat "${OUT}/stale-gaps.txt"
+  echo "::error title=llm spec conformance::testing/llm-conformance/named-gaps.json has stale entries; remove the rows listed above" >&2
+  exit 1
+fi
 echo
 
 # 3. owed = every llm cell x direction (from cells.json, independent of the validator's loop),

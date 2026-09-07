@@ -247,17 +247,29 @@ impl DispatchScope {
     /// Register a settle-capable breaker admission under a CALLER-SUPPLIED raw id rather than a
     /// freshly-minted one — the receiving half of the [`DurableScope`] handoff (see
     /// [`handoff_settling_to`](Self::handoff_settling_to)). The monotonic `next` counter is advanced
-    /// past `raw` so a later mint in this arena cannot collide with the adopted id. Returns the
-    /// [`AdmissionId`] the entry now answers to (== `AdmissionId(raw)`).
+    /// past `raw` so a later mint in this arena cannot collide with the adopted id.
+    ///
+    /// Returns the [`AdmissionId`] the entry now answers to, which is NOT always `AdmissionId(raw)`:
+    /// an id an already-live entry answers to is not adoptable, because every lookup here
+    /// ([`settle_admission`](Self::settle_admission), [`handoff_settling_to`](Self::handoff_settling_to))
+    /// resolves an id to the FIRST entry carrying it. A second entry under the same raw would settle
+    /// the wrong probe and strand the other one until scope drop. A collision therefore mints a fresh
+    /// id instead — callers consume the RETURNED id, so the handle they go on to hold still resolves
+    /// to the guard they adopted.
     pub fn adopt_settling_admission(
         &self,
         raw: u64,
         guard: Box<dyn SettleAdmission>,
     ) -> AdmissionId {
         let mut reg = self.lock();
-        if raw > reg.next {
-            reg.next = raw;
-        }
+        let raw = if reg.entries.iter().any(|e| e.raw == raw) {
+            Self::next_raw(&mut reg)
+        } else {
+            if raw > reg.next {
+                reg.next = raw;
+            }
+            raw
+        };
         reg.entries.push(Entry {
             kind: HandleKind::Admission,
             raw,
@@ -339,6 +351,13 @@ impl DispatchScope {
     /// Reclaim EVERY registered handle NOW, in reverse (LIFO) acquisition order: drop each guard
     /// (running its real `Drop`) and run each closer exactly once. Idempotent — a second call finds an
     /// empty registry. Called by `Drop`; exposed so a test can assert synchronous reclaim on abort.
+    ///
+    /// EVERY ENTRY GETS ITS OWN BOUNDARY. Reclaiming runs code this loop does not own — a closer that
+    /// kills a subprocess, a guard's real `Drop` — and one of those panicking must not cost the
+    /// others. Unbounded, a single panic here skips every remaining entry, leaking exactly what this
+    /// arena exists to reclaim; and because the loop is reached from `Drop`, that panic unwinding out
+    /// of a drop already running during an unwind aborts the process. The boundary contains it to the
+    /// entry that raised it, and the loop carries on.
     pub fn reclaim_all(&self) {
         // Take the entries OUT under the lock, then reclaim with the lock released so a reclaim that
         // re-enters the arena cannot deadlock.
@@ -347,11 +366,23 @@ impl DispatchScope {
             std::mem::take(&mut reg.entries)
         };
         for entry in drained.into_iter().rev() {
-            match entry.res {
-                Resource::Guard(g) => drop(g),
-                Resource::Admission(g) => drop(g), // Drop releases the single-flight probe.
-                Resource::Closer(Some(reclaim)) => reclaim(),
-                Resource::Closer(None) => {}
+            let kind = entry.kind;
+            // `AssertUnwindSafe`: nothing observable survives a panicking reclaim. The entry is
+            // already out of the registry and is consumed here whichever way it ends, so there is no
+            // half-updated state left for a later reader to see.
+            let reclaimed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                match entry.res {
+                    Resource::Guard(g) => drop(g),
+                    Resource::Admission(g) => drop(g), // Drop releases the single-flight probe.
+                    Resource::Closer(Some(reclaim)) => reclaim(),
+                    Resource::Closer(None) => {}
+                }
+            }));
+            if reclaimed.is_err() {
+                tracing::warn!(
+                    handle_kind = ?kind,
+                    "a host-handle reclaim panicked; the remaining handles were reclaimed anyway"
+                );
             }
         }
     }

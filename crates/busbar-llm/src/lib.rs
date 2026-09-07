@@ -192,8 +192,8 @@ pub mod testkit;
 /// declarations core still carries; the resulting sequence is what `known_protocols()` reports (the
 /// "must be one of:" tail an operator reads on a bad `protocol:`) and what `telemetry` banks its
 /// per-protocol metric families against — it finds a family again by POSITION in that list. So this
-/// order reproduces, exactly, the operator-visible list from before the dialects were plugins:
-/// `anthropic, gemini, openai, bedrock, responses, cohere`. A dialect appended here rather than
+/// order reproduces, exactly, the operator-visible list the PUBLISHED 1.5.5 binary prints:
+/// `anthropic, openai, gemini, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
 /// THE LLM PLANE'S VOCABULARY DECLARATION — the plane's statement about ITSELF, relocated here from
 /// `busbar_substrate::proto::PLANE_DECL` so the LLM plane owns its declaration exactly as `busbar-mcp` and

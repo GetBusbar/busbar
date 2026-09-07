@@ -75,6 +75,22 @@ STREAM_UPSTREAM_ERROR_OUTCOME = (
     "stream_upstream_error",
     "the upstream fails PART WAY THROUGH a stream: N good events, then an in-band error event")
 
+# TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT CARRY. `ok` sends a bare `ping` and the mock answers with
+# bare text, so two whole surfaces are unrecorded: an ANSWER that annotates its text with a source,
+# and a REQUEST whose content array mixes a cache marker with a native attachment. Both are ordinary
+# 200s — nothing about them is an error path — which is exactly why a golden built from `ping` never
+# sees them, and why a codec defect in either is invisible to the differ.
+RESPONSES_CITATION_OUTCOME = (
+    "ok_citation",
+    "happy path whose ANSWER carries a URL citation: the Responses annotation the published "
+    "UrlCitationBody FLATTENS onto the annotation object, which the `ok` fixture's bare-text answer "
+    "never exercises")
+BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME = (
+    "ok_cachepoint_document",
+    "happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that "
+    "yields no IR block, ahead of a block the reader parks by wire position — the index-space "
+    "disagreement the `ping` fixture's single text block cannot produce")
+
 
 # Refusals are produced BEFORE Route, so they never depend on the egress dialect: enumerate them
 # same-proto only (ingress == egress). Forwarded outcomes reach Route and exercise the cross-protocol
@@ -155,6 +171,29 @@ def llm_cells(inv: dict) -> list[dict]:
         c = cell(d, d, *STREAM_UPSTREAM_ERROR_OUTCOME)
         c["needs_fixture"] = True
         c["mock_control"] = {"stream-error": True}
+        cells.append(c)
+    # THE TWO SHAPES THE HAPPY-PATH FIXTURES DO NOT COVER. Same SKIP-able posture as the mid-stream
+    # failure above: definitions only, `needs_fixture` until the integrator records them from the
+    # published 1.5.5 binary, so each reads as a NAMED golden gap rather than a silent pass.
+    #
+    # THE CITATION, on the DIAGONAL (responses -> responses). The annotation is a property of the
+    # ANSWER, so the egress dialect is what decides its shape; the diagonal is the striking case
+    # because a same-dialect hop READS BACK bytes it has just written, so a reader that only knows
+    # the nested Chat spelling drops an annotation its own writer produced in the flat one. Driven by
+    # the mock's `citation` verb, which answers with the published flat `UrlCitationBody`.
+    if "responses" in dialects:
+        c = cell("responses", "responses", *RESPONSES_CITATION_OUTCOME)
+        c["needs_fixture"] = True
+        c["mock_control"] = {"citation": True}
+        cells.append(c)
+    # THE cachePoint-BEFORE-A-DOCUMENT REQUEST. Bedrock-shaped both ends: `cachePoint` and the native
+    # `document` block are Converse's own vocabulary, so only the bedrock DOOR can receive one, and
+    # only the bedrock EGRESS can emit one. Nothing about the answer matters here — the whole cell is
+    # what busbar SENDS UPSTREAM, which the recorder captures alongside the response. No mock verb:
+    # the fixture is the request body, built by build-request.py.
+    if "bedrock" in dialects:
+        c = cell("bedrock", "bedrock", *BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME)
+        c["needs_fixture"] = True
         cells.append(c)
     return cells
 
@@ -1227,7 +1266,90 @@ def hazard_cells() -> list[dict]:
     ]
 
 
+def accepted_shrinks(argv) -> set:
+    """`--accept-family-shrink NAME` / `--accept-family-shrink=NAME`, repeatable."""
+    out = {a.split("=", 1)[1] for a in argv if a.startswith("--accept-family-shrink=")}
+    for i, a in enumerate(argv):
+        if a == "--accept-family-shrink" and i + 1 < len(argv):
+            out.add(argv[i + 1])
+    return out
+
+
+def family_floor_problems(was: dict, now: dict, accepted: set) -> list:
+    """Every family whose generated cell count fell below the committed one, unless accepted."""
+    problems = []
+    for fam in sorted(was):
+        if fam in accepted:
+            continue
+        want = was[fam]
+        if not isinstance(want, int):
+            continue
+        got = now.get(fam, 0)
+        if got < want:
+            problems.append(
+                f"family {fam!r}: the generator now yields {got} cell(s), {want} are committed."
+                + (" The family is GONE — its fixture is missing, and every builder here returns []"
+                   " for a missing fixture." if got == 0 else ""))
+    return problems
+
+
+def selftest() -> int:
+    """Prove the per-family floor discriminates, by CONSTRUCTING the loss rather than hoping.
+
+    The case that matters is the real one: point a family's fixture at a path that does not exist,
+    exactly as a rename does, and watch its builder return [] without complaint. Under the old code
+    that loss went straight into cells.json on the next `--write` and nothing anywhere objected;
+    here the floor must refuse it.
+    """
+    bad = 0
+
+    def say(ok, msg):
+        nonlocal bad
+        print(f"  [{'ok' if ok else 'FAILED'}] {msg}")
+        if not ok:
+            bad += 1
+
+    if not OUT.exists():
+        print(f"  [FAILED] {OUT} does not exist — there is no committed floor to prove")
+        return 1
+    was = (json.loads(OUT.read_text()).get("counts") or {}).get("by_family") or {}
+    say(bool(was), f"the committed corpus records {len(was)} family/families as the floor")
+
+    say(not family_floor_problems(was, dict(was), set()),
+        "an unchanged corpus passes the floor")
+
+    # A MISSING FIXTURE, PLANTED. Repoint the admin fixture at a path that cannot exist and call the
+    # REAL builder: it must return [] (that is the hazard), and the floor must refuse the result.
+    global ADMIN_BODIES
+    saved, ADMIN_BODIES = ADMIN_BODIES, ROOT / "testing/shadow-oracle/no-such-fixture-selftest.json"
+    lost = admin_cells()
+    ADMIN_BODIES = saved
+    say(lost == [],
+        "a missing fixture makes its builder return [] silently — the hazard, reproduced")
+
+    fams = {f for f in was if f.startswith("admin.")}
+    say(bool(fams), f"the committed corpus owes {len(fams)} admin family/families: {sorted(fams)}")
+    shrunk = {f: (0 if f in fams else was[f]) for f in was}
+    problems = family_floor_problems(was, shrunk, set())
+    say(len(problems) == len(fams),
+        f"losing every admin family is REFUSED ({len(problems)} problem(s) reported)")
+
+    say(bool(family_floor_problems(was, {f: max(0, v - 1) for f, v in was.items()}, set())),
+        "losing even ONE cell from a family is REFUSED")
+
+    say(not family_floor_problems(was, shrunk, fams),
+        "--accept-family-shrink names the loss and lets it through, one family at a time")
+
+    if bad:
+        print(f"\nSELFTEST FAILED: {bad} check(s) did not hold")
+        return 1
+    print("\nenumerate-cells selftest: the per-family floor holds")
+    return 0
+
+
 def main() -> int:
+    if "--selftest" in sys.argv:
+        return selftest()
     minv = json.loads(METHOD_INV.read_text())
     finv = json.loads(FIELD_INV.read_text())
     cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
@@ -1238,7 +1360,18 @@ def main() -> int:
                    + documented_cells() + hazard_cells(),
                    key=lambda c: c["id"])
     ids = [c["id"] for c in cells]
-    assert len(ids) == len(set(ids)), "cell ids must be unique"
+    # A REAL CHECK, NOT AN `assert`. This ran as a bare `assert`, which `python3 -O` removes
+    # outright — so the one statement standing between a duplicate cell id and a silently
+    # half-recorded corpus was optional at runtime. Duplicate ids are not a programming slip to
+    # catch in development: the recorder and the replayer both key on the id, so a duplicate means
+    # one of the two cells is never recorded and never compared, and the counts still add up.
+    if len(ids) != len(set(ids)):
+        dupes = sorted({i for i in ids if ids.count(i) > 1})
+        sys.stderr.write("enumerate-cells: duplicate cell id(s) — the recorder and the replayer key "
+                         "on the id, so one of each pair would never be recorded or compared:\n")
+        for d in dupes:
+            sys.stderr.write(f"  {d}\n")
+        return 2
     doc = {
         "_comment": [
             "GENERATED by testing/shadow-oracle/enumerate-cells.py. Do not edit by hand.",
@@ -1248,7 +1381,8 @@ def main() -> int:
         "derived_from": {"method_inventory": str(METHOD_INV.relative_to(ROOT)),
                           "field_inventory": str(FIELD_INV.relative_to(ROOT))},
         "outcomes": [{"outcome": o, "why": w} for o, w in OUTCOMES + STREAMING_OUTCOMES
-                     + [ARRAY_STREAM_OUTCOME, STREAM_UPSTREAM_ERROR_OUTCOME]],
+                     + [ARRAY_STREAM_OUTCOME, STREAM_UPSTREAM_ERROR_OUTCOME,
+                        RESPONSES_CITATION_OUTCOME, BEDROCK_CACHEPOINT_DOCUMENT_OUTCOME]],
         "counts": {
             "total": len(cells),
             "by_plane": {p: sum(1 for c in cells if c["plane"] == p) for p in sorted({c["plane"] for c in cells})},
@@ -1258,6 +1392,42 @@ def main() -> int:
         "cells": cells,
     }
     rendered = json.dumps(doc, indent=2) + "\n"
+
+    # ── THE PER-FAMILY FLOOR ──────────────────────────────────────────────────────────────────────
+    # EVERY `*_cells()` builder above opens with `if not <FIXTURE>.exists(): return []`. That is a
+    # sane guard against a crash and a terrible one against a mistake: a fixture that is renamed,
+    # moved, or simply not present in the checkout contributes ZERO cells, the generator exits 0, and
+    # the family vanishes from the corpus. Nothing downstream can notice — cells.json IS the owed
+    # set, so the recorder records one family fewer, the replayer compares one family fewer, and the
+    # parity report says "0 divergences" over a corpus that quietly lost, say, every admin cell.
+    # `--write` then commits the shrunken corpus as the new truth in the same command.
+    #
+    # So the COMMITTED cells.json's own `counts.by_family` is the floor. A family that shrinks, or
+    # disappears, is refused — on `--check` and on `--write` alike, because `--write` is what would
+    # otherwise launder the loss into the baseline the next `--check` measures against. A real,
+    # reviewed shrink is `--accept-family-shrink <family>`, once per family, which puts the loss in
+    # the command line of the commit that makes it.
+    floor_problems = []
+    if OUT.exists():
+        try:
+            committed = json.loads(OUT.read_text())
+        except json.JSONDecodeError:
+            committed = None
+        if committed is not None:
+            floor_problems = family_floor_problems(
+                (committed.get("counts") or {}).get("by_family") or {},
+                doc["counts"]["by_family"],
+                accepted_shrinks(sys.argv),
+            )
+    if floor_problems:
+        sys.stderr.write("enumerate-cells: the generated corpus is SMALLER than the committed one:\n")
+        for p in floor_problems:
+            sys.stderr.write(f"  - {p}\n")
+        sys.stderr.write("  A missing fixture makes a whole family return [] silently, and cells.json IS\n")
+        sys.stderr.write("  the owed set: recorder, replayer and parity report would all agree, over a\n")
+        sys.stderr.write("  corpus that lost the family. Restore the fixture, or accept the shrink by name:\n")
+        sys.stderr.write("    testing/shadow-oracle/enumerate-cells.py --write --accept-family-shrink <family>\n")
+        return 1
     # --check: regenerate to MEMORY and compare against the checked-in cells.json. cells.json is the
     # oracle's owed set — the recorder and the replayer both iterate it — so a tree whose generator
     # and whose committed cell list disagree is a gate measuring a cell set nobody reviewed. A hand

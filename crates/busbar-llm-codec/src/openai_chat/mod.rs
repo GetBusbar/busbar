@@ -1227,21 +1227,20 @@ fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_js
     if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
         return None;
     }
-    // A native include_usage trailer carries usage ONLY on a chunk with no active choice; the
-    // writer folds it onto the FINISH chunk, which has a non-null `finish_reason`. Require both a
-    // present `usage` object and a terminal finish_reason so a non-finish chunk that somehow
-    // carried usage is left alone (defensive — the writer only folds onto the finish chunk).
+    // A native include_usage trailer carries usage ONLY on a chunk with no active choice, so the
+    // presence of a folded top-level `usage` object IS the tell: it is there because the writer put
+    // it there, having no way to emit two events for one IR MessageDelta.
+    //
+    // The test used to be "usage AND a terminal finish_reason", on the assumption that the writer
+    // folds only onto the finish chunk. It does not: it folds whenever the terminal MessageDelta
+    // carries nonzero counts, and a backend that ends a stream without a stop reason — an
+    // `incomplete` Responses stream whose `incomplete_details.reason` the spec does not name —
+    // produces a terminal MessageDelta with `stop_reason: None`, hence `finish_reason: null`. That
+    // chunk carried the whole stream's usage and neither this seam nor its opt-out twin looked at
+    // it, so the usage was lost on the way to a Chat-Completions client. Keying on the fold itself
+    // covers both shapes and matches what the spec actually discriminates on: usage rides its own
+    // chunk, not a chunk with a choice on it.
     if !obj.contains_key("usage") {
-        return None;
-    }
-    let has_finish = obj
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|c0| c0.get("finish_reason"))
-        .map(|fr| !fr.is_null())
-        .unwrap_or(false);
-    if !has_finish {
         return None;
     }
     let usage = obj.remove("usage")?;
@@ -1270,10 +1269,12 @@ fn split_openai_trailing_usage(chunk: &mut serde_json::Value) -> Option<serde_js
 /// Remove a folded top-level `usage` object from a `chat.completion.chunk` in place, WITHOUT emitting
 /// any replacement trailing chunk. This is the opt-OUT twin of `split_openai_trailing_usage`:
 /// a client that did not send `stream_options.include_usage` must see a stream that carries NO usage at
-/// all, exactly like a native OpenAI stream without include_usage. Only strips when both a folded `usage`
-/// and a terminal `finish_reason` are present (the shape the writer folds onto), so a non-finish chunk is
-/// never touched. The removed usage was only ever a client-facing echo — billing sources the IR-side
-/// `last_usage` A-tap, which is captured upstream of this seam and is unaffected.
+/// all, exactly like a native OpenAI stream without include_usage. It strips on the same tell its twin
+/// splits on — a folded top-level `usage` object on a `chat.completion.chunk` — because that object is
+/// only ever there because the writer folded it. Requiring a terminal `finish_reason` beside it let the
+/// one shape the writer folds without a stop reason through, so a client that opted OUT was sent usage
+/// it had not asked for. The removed usage was only ever a client-facing echo — billing sources the
+/// IR-side `last_usage` A-tap, which is captured upstream of this seam and is unaffected.
 fn strip_folded_usage(chunk: &mut serde_json::Value) {
     let Some(obj) = chunk.as_object_mut() else {
         return;
@@ -1281,24 +1282,80 @@ fn strip_folded_usage(chunk: &mut serde_json::Value) {
     if obj.get("object").and_then(|v| v.as_str()) != Some(OBJ_CHUNK) {
         return;
     }
-    if !obj.contains_key("usage") {
-        return;
-    }
-    let has_finish = obj
-        .get("choices")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|c0| c0.get("finish_reason"))
-        .map(|fr| !fr.is_null())
-        .unwrap_or(false);
-    if has_finish {
-        obj.remove("usage");
-    }
+    obj.remove("usage");
 }
 
 /// OpenAI writer implementation.
-#[derive(Clone)]
-pub struct OpenAiWriter;
+pub struct OpenAiWriter {
+    /// THIS STREAM'S chunk `id`, minted ONCE and replayed on every later opening chunk.
+    ///
+    /// A stream is not guaranteed to carry exactly one `MessageStart`: five of the six readers gate
+    /// it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream frame,
+    /// so an openai-egress stream fed from an Anthropic ingress can see two. Without this cell the
+    /// second synthesized a FRESH `chatcmpl-` id, so one completion announced itself twice under
+    /// two different ids — and the official SDKs latch `id` from the first chunk that supplies it,
+    /// leaving the client correlating against an id the rest of the stream never mentions. A native
+    /// OpenAI stream repeats ONE id on every chunk, so the first one wins.
+    ///
+    /// `Mutex` (not `Cell`) so the writer stays `Sync` as the `ProtocolWriter` trait requires; a
+    /// stream is single-threaded at any instant so contention is nil, and a poisoned lock degrades
+    /// to minting fresh rather than panicking on the request path.
+    chunk_id: std::sync::Mutex<Option<String>>,
+}
+
+/// Value-namespace constructor for [`OpenAiWriter`], mirroring the identically-shaped consts on the
+/// sibling writers (`AnthropicWriter`, `CohereWriter`, `GeminiWriter`, `ResponsesWriter`): a `const`
+/// and a struct may share a name, so every existing site that writes the bare `OpenAiWriter` literal
+/// keeps compiling while the type now carries per-stream state. Each USE inlines a FRESH writer with
+/// an empty id cell, so every `Protocol::openai()` call mints independent per-stream state — exactly
+/// the per-stream scoping a stream-long identity needs. `Mutex::new`/`None` are const, so this is
+/// valid in const context.
+///
+/// `clippy::declare_interior_mutable_const` is suppressed for the same reason it is on the siblings:
+/// the per-use fresh instance is precisely the semantics required, and a `static` would share ONE id
+/// cell across every stream in the process — one stream's id bleeding into another's chunks.
+#[allow(non_upper_case_globals)]
+#[allow(clippy::declare_interior_mutable_const)]
+pub const OpenAiWriter: OpenAiWriter = OpenAiWriter {
+    chunk_id: std::sync::Mutex::new(None),
+};
+
+/// A FRESH writer as a VALUE, for the one-shot `write_request` / `write_response` calls the test
+/// suites make — the exact twin of [`crate::anthropic::anthropic_writer`], and needed for the same
+/// reason. Borrowing the const directly (`OpenAiWriter.write_request(…)`) is
+/// `clippy::borrow_interior_mutable_const`: each borrow inlines its own copy of the interior-mutable
+/// cell, which is harmless for a stateless one-shot call but wrong for a STREAM (whose identity must
+/// be decided by one writer). This returns the value so the temporary is explicit, and a test that
+/// drives a sequence of stream events binds one writer to a local instead of calling this per event.
+#[cfg(test)]
+pub(crate) fn openai_writer() -> OpenAiWriter {
+    OpenAiWriter
+}
+
+impl Clone for OpenAiWriter {
+    fn clone(&self) -> Self {
+        // A mid-stream `Protocol::clone` is still the SAME completion, so the id it already
+        // announced comes with it; a poisoned lock degrades to an empty cell rather than panicking.
+        OpenAiWriter {
+            chunk_id: std::sync::Mutex::new(
+                self.chunk_id.lock().map(|id| id.clone()).unwrap_or(None),
+            ),
+        }
+    }
+}
+
+impl OpenAiWriter {
+    /// THE STREAM'S chunk `id`: the first one wins. Returns the id already captured for this stream
+    /// if there is one, otherwise captures and returns `mint()`, so a duplicate opening chunk
+    /// re-states the identity the client already latched. Lock poisoning degrades to the freshly
+    /// minted id rather than panicking on the request path.
+    fn carried_chunk_id(&self, mint: impl FnOnce() -> String) -> String {
+        match self.chunk_id.lock() {
+            Ok(mut slot) => slot.get_or_insert_with(mint).clone(),
+            Err(_) => mint(),
+        }
+    }
+}
 
 #[cfg(test)]
 #[path = "tests/tests.rs"]

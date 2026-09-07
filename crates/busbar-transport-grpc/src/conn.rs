@@ -72,7 +72,7 @@ impl Cut {
         }
     }
 
-    fn is_cut(&self) -> bool {
+    pub(crate) fn is_cut(&self) -> bool {
         self.cut.load(std::sync::atomic::Ordering::Acquire)
     }
 
@@ -451,9 +451,17 @@ impl ConnState {
         }
         let cut = self.cut.lock().unwrap().take();
         if let Some(cut) = cut {
-            // After the flush window, not during it — see [`CUT_GRACE`]. Where there is no runtime
-            // to wait on, the cut is immediate: a stream that cannot be cut later is one that is
-            // never cut at all.
+            // After the flush window, not during it — see [`CUT_GRACE`]. The window is the whole
+            // point of the seam: closing writes the refusal to every call FIRST and cuts second, so
+            // cutting the moment `close` is called destroys, inside this process, bytes the caller
+            // has just been told were delivered.
+            //
+            // Which clock waits it out is an implementation detail; THAT it is waited out is not.
+            // Cutting immediately off a thread with no runtime — an operator tool, a Drop on a
+            // shutdown path, anything not inside the loop — made the grace an accident of where
+            // `close` happened to be called from, and the caller has no way to know which it got.
+            // So the fallback waits on the one clock a bare thread always has, on a detached thread
+            // of its own so the caller is not held for half a second on a close.
             match tokio::runtime::Handle::try_current() {
                 Ok(handle) => {
                     handle.spawn(async move {
@@ -461,7 +469,12 @@ impl ConnState {
                         cut.cut();
                     });
                 }
-                Err(_) => cut.cut(),
+                Err(_) => {
+                    std::thread::spawn(move || {
+                        std::thread::sleep(CUT_GRACE);
+                        cut.cut();
+                    });
+                }
             }
         }
     }

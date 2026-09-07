@@ -622,7 +622,15 @@ impl Walk {
     /// exit is the one place it comes out again. What the step does here is what it does on the
     /// rehearsal's admitted fixtures — seal the accrual the walk's tap already made, or make it
     /// where the walk held no meter half — and answer with the report the posting is made against.
-    pub fn meter(&self, token: &UnitToken<Meter>, usage: &UsageToken) -> Decision<Meter> {
+    ///
+    /// `worth` is the holder of the card, passed down from the composition root. Nothing on this
+    /// side of it names a rate: the step assembles what the unit consumed and is told a total.
+    pub fn meter(
+        &self,
+        token: &UnitToken<Meter>,
+        usage: &UsageToken,
+        worth: crate::unit::meter::Worth<'_>,
+    ) -> Decision<Meter> {
         let mut carry = self.lock();
         let charged = carry.charged;
         let Some(facts) = carry.facts.as_ref() else {
@@ -664,7 +672,8 @@ impl Walk {
         let tables = crate::engine::EngineTables::new(&self.rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
         let ctx = MeterCtx::bind(&self.host, carry.meter_sink.as_ref(), lane, &facts, charged);
-        let metered = crate::unit::meter::meter(token, usage, &ctx, None, &Outcome::Completed);
+        let metered =
+            crate::unit::meter::meter(token, usage, &ctx, None, &Outcome::Completed, worth);
         // What the ACCRUAL ARM reported about itself. `row` is filled whether this step posted or
         // only sealed, so reading it here called every sealed unit a posting — and this value is
         // what the rehearsal asserts one-posting-per-unit on.

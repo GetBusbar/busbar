@@ -704,6 +704,70 @@ fn an_idle_active_handle_is_abandoned_by_the_next_sweep() {
     );
 }
 
+/// A PANICKING ABANDON CALLBACK BELONGS TO NOBODY THE SWEEP IS RUNNING FOR. The sweep is amortised
+/// over submits, so the plane code that panics runs inside SOME OTHER caller's `submit` — one that
+/// has already written its row and its genesis event and has not yet installed its handle. Let the
+/// panic through and that caller unwinds with a durable row no live handle answers for, which the
+/// next boot rehydrates ACTIVE: a handle nobody ever accepted, holding a working-set slot and
+/// answering reads.
+///
+/// So: the submit that triggered the sweep still returns and its handle is installed, the candidate
+/// the callback panicked on is left ACTIVE rather than half-settled, and the sweep is not poisoned —
+/// the next ordinary submit abandons that same handle exactly as it always would have.
+#[test]
+fn a_panicking_abandon_installs_no_handle_and_does_not_poison_the_sweep() {
+    let engine = DurableHandleEngine::new();
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "idle".into(),
+            owner: "o".into(),
+            updated_at: 0,
+            terminal: false,
+            cursor: 0,
+        },
+        0,
+    );
+    // This submit's own sweep is the one that hands "idle" to the plane, and the plane goes down.
+    submit_demo_bounded(
+        &engine,
+        DemoRow {
+            id: "fresh".into(),
+            owner: "o".into(),
+            updated_at: 1000,
+            terminal: false,
+            cursor: 0,
+        },
+        1000,
+        bounds(),
+        |_id, _row, _pos, _now| panic!("the plane's abandon callback went down"),
+    );
+    assert!(
+        engine.meta("fresh").is_some(),
+        "the submit whose sweep hit the panic still installed its own handle"
+    );
+    assert!(
+        !engine.meta("idle").unwrap().terminal,
+        "the candidate the callback panicked on was left active, not half-settled"
+    );
+    // The sweep still works: a later submit abandons the same handle the ordinary way.
+    submit_demo(
+        &engine,
+        DemoRow {
+            id: "later".into(),
+            owner: "o".into(),
+            updated_at: 2000,
+            terminal: false,
+            cursor: 0,
+        },
+        2000,
+    );
+    assert!(
+        engine.meta("idle").unwrap().terminal,
+        "the sweep was not poisoned by the panic it caught"
+    );
+}
+
 #[test]
 fn a_boot_rehydrate_counts_active_terminal_and_unreadable() {
     let store = Arc::new(MemStore::default());

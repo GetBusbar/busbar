@@ -28,6 +28,21 @@ fn nano_rate_clamps_a_non_finite_positive_rate_to_zero_not_the_maximum() {
     assert_eq!(nano_rate(-1.0), 0, "a negative rate is not a discount");
 }
 
+/// A finite value can still be too large for a `u64` to hold — a config typo with too many zeros,
+/// not an infinity. The bare cast saturates just as it would for an infinite input: a garbage
+/// billing rate at the top of the range rather than the zero the doc promises for a value nobody
+/// can price. Finite-but-overflowing must clamp to zero exactly like the non-finite case, not slip
+/// through because `is_finite()` alone said yes.
+#[test]
+fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
+    // 1e18 micro-units per unit, times a thousand, is 1e21 — finite, and far past `u64::MAX`
+    // (~1.8e19).
+    assert_eq!(nano_rate(1e18), 0);
+    // Comfortably inside range still converts normally: the clamp must not swallow legitimate
+    // large-but-representable rates.
+    assert_eq!(nano_rate(1e12), 1_000_000_000_000_000);
+}
+
 /// The card carries the integer rates straight through, per class, with no swapping between them.
 #[test]
 fn card_carries_integer_rates_per_class() {

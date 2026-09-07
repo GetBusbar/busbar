@@ -24,6 +24,10 @@ import os
 import sys
 
 PING = "ping"
+# The ask a SOURCED answer belongs to. `ok_citation` is still a happy path — the only thing that
+# makes it different from `ok` is that the answer cites where it came from — so the request is an
+# ordinary one, worded as a question rather than the bare ping the other cells send.
+CITATION_ASK = "what does the published spec say?"
 
 # qa/field-inventory.json names the OpenAI dialects `openai` / `responses`; the oracle config
 # (oracle-config.sh ORACLE_DIALECTS) and this builder use the fuller `openai-chat` / `openai-responses`.
@@ -60,6 +64,11 @@ def request_for(cell: dict) -> dict:
     elif ing == "openai-responses":
         path = "/v1/responses"
         body = {"model": model, "input": PING}
+        if oc == "ok_citation":
+            # The ANSWER carries the citation, not the ask — but the ask has to be one a sourced
+            # answer belongs to, so it names the question instead of the bare ping. The mock's
+            # `citation` verb supplies the annotated answer.
+            body["input"] = CITATION_ASK
         if stream:
             body["stream"] = True
     elif ing == "gemini":
@@ -72,6 +81,18 @@ def request_for(cell: dict) -> dict:
     elif ing == "bedrock":
         path = f"/model/{model}/{'converse-stream' if stream else 'converse'}"
         body = {"messages": [{"role": "user", "content": [{"text": PING}]}]}
+        if oc == "ok_cachepoint_document":
+            # A `cachePoint` occupying a wire slot BEFORE a native `document`. The cachePoint yields
+            # no IR block, so past it the wire index and the IR index disagree — which is the whole
+            # point of the cell: the reader parks the document by WIRE position and the writer has to
+            # find it there to suppress its own modelled copy. The leading text keeps the message a
+            # normal one (Converse requires content), and the document is the smallest legal one.
+            body = {"messages": [{"role": "user", "content": [
+                {"text": PING},
+                {"cachePoint": {"type": "default"}},
+                {"document": {"format": "txt", "name": "oracle-doc",
+                              "source": {"bytes": "b3JhY2xl"}}},
+            ]}]}
         auth = "sigv4"
         note = "bedrock ingress is SigV4-authenticated: signed with the cell principal's AWS credential (issue_aws_credential)"
     elif ing == "cohere":

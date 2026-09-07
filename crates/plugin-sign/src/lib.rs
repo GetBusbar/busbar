@@ -48,7 +48,9 @@
 //! [`evaluate`]'s signature check; the manifest shape and posture are primitive-independent.
 
 // `SigningKey`/`VerifyingKey` are re-exported so external signing tooling can name them via this crate.
-use ed25519_dalek::{Signature, Signer, Verifier};
+// No `Verifier` import: verification goes through the inherent `VerifyingKey::verify_strict`, not
+// the permissive trait method — see `signature_ok`.
+use ed25519_dalek::{Signature, Signer};
 pub use ed25519_dalek::{SigningKey, VerifyingKey};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -432,13 +434,29 @@ pub fn sign(key: &SigningKey, mut manifest: Manifest, artifact: &[u8]) -> Manife
 }
 
 /// Parse a hex-encoded 32-byte ed25519 public key (as configured in `plugins.trust.publishers`).
+///
+/// A WEAK (small-order / identity) key is REFUSED here rather than admitted to the allowlist.
+/// `VerifyingKey::from_bytes` only checks that the point decompresses, and the identity point
+/// decompresses fine — but a signature made against it satisfies the permissive cofactored
+/// verification equation for EVERY message. An allowlist entry naming such a key (a placeholder, a
+/// truncated or zero-filled paste, a key an attacker supplied in a vendor document) would therefore
+/// mark ANY artifact as `Trusted`. The refusal is at parse time so the bad entry never becomes a
+/// trust anchor; the strict verification below is the second half of the same guard.
 pub fn public_key_from_hex(s: &str) -> Result<VerifyingKey, String> {
     let bytes = hex::decode(s.trim()).map_err(|e| format!("public key not valid hex: {e}"))?;
     let arr: [u8; 32] = bytes
         .as_slice()
         .try_into()
         .map_err(|_| format!("public key must be 32 bytes, got {}", bytes.len()))?;
-    VerifyingKey::from_bytes(&arr).map_err(|e| format!("invalid ed25519 public key: {e}"))
+    let key =
+        VerifyingKey::from_bytes(&arr).map_err(|e| format!("invalid ed25519 public key: {e}"))?;
+    if key.is_weak() {
+        return Err(
+            "weak ed25519 public key (small-order point): it would verify any signature"
+                .to_string(),
+        );
+    }
+    Ok(key)
 }
 
 /// Whether a manifest's signature verifies against `bytes` using `key`: the library hash must match
@@ -459,7 +477,13 @@ fn signature_ok(manifest: &Manifest, bytes: &[u8], key: &VerifyingKey) -> Result
         .try_into()
         .map_err(|_| "signature must be 64 bytes".to_string())?;
     let sig = Signature::from_bytes(&sig_arr);
-    key.verify(&canonical_manifest_bytes(manifest), &sig)
+    // STRICT verification, not the permissive cofactored `verify`. `verify_strict` refuses a weak
+    // (small-order) public key and a non-canonically-encoded `R`, both of which the permissive
+    // check accepts — and a weak key accepts a forged signature over ANY message, which is a
+    // universal forgery against a trust anchor. Every honestly-generated key and every signature
+    // this crate's `sign` produces verify identically under both, so no published artifact changes
+    // verdict: the strictness only closes the forgery shapes.
+    key.verify_strict(&canonical_manifest_bytes(manifest), &sig)
         .map_err(|_| "signature does not verify".to_string())
 }
 

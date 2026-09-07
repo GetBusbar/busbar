@@ -36,6 +36,17 @@ use crate::net_guard::{self, GuardPolicy, GuardRefusal};
 /// the upstream's transport. Deep enough that ordinary jitter in a media relay never reaches it.
 const MAX_QUEUED_UPSTREAM_FRAMES: usize = 64;
 
+/// How many frames the PLANE may have in flight ahead of the socket that has to write them. The
+/// inbound bound above holds a fast upstream off this node's heap; this one holds a fast PLANE off it
+/// when the upstream is the slow side — a wedged provider, a peer that stopped reading, a socket a
+/// middlebox is holding open. Unbounded, the writer task's backlog grows for as long as the stall
+/// lasts and one session's memory cost is set by the producer alone; bounded, the producer's own
+/// `send` waits for capacity, so the stall is charged back to whoever is causing it. A relay has two
+/// legs and two directions, and a bound on three of the four is not a bound. Sourced from the same
+/// constants table every other operational cap on this node comes from, so an operator reads one page.
+const MAX_QUEUED_OUTBOUND_FRAMES: usize =
+    crate::config::limits::DEFAULT_DUPLEX_OUTBOUND_QUEUE_FRAMES;
+
 /// Why an outbound duplex dial failed — the FACT, kept separate so a caller renders its own sentence
 /// (mirroring how [`GuardRefusal`] callers convert into their own vocabulary).
 #[derive(Debug)]
@@ -95,9 +106,11 @@ fn split_ws_url(url: &str) -> Result<(bool, String, u16, String), DialError> {
         return Err(DialError::Url(url.to_string()));
     }
     let (host, port) = match authority.rsplit_once(':') {
-        // An IPv6 literal carries colons; only a trailing `:port` after a `]` (or on a bare host) is a
-        // port. A colon inside `[...]` is part of the address.
-        Some((h, p)) if !h.ends_with(']') && !p.contains(']') => {
+        // An IPv6 literal carries colons; only a trailing `:port` after a `]` (or on a bare host that
+        // carries no colon of its own) is a port. A colon inside `[...]` is part of the address, which
+        // is what the `]` tests read: a left side ENDING in `]` is a bracketed literal followed by a
+        // real port, and a right side CONTAINING one is the tail of the literal itself, not a port.
+        Some((h, p)) if (h.ends_with(']') || !h.contains(':')) && !p.contains(']') => {
             let port: u16 = p.parse().map_err(|_| DialError::Url(url.to_string()))?;
             (h.to_string(), port)
         }
@@ -199,7 +212,7 @@ pub async fn dial(
 fn split_messages<S>(
     ws: tokio_tungstenite::WebSocketStream<S>,
 ) -> (
-    futures::channel::mpsc::UnboundedSender<Vec<u8>>,
+    futures::channel::mpsc::Sender<Vec<u8>>,
     futures::channel::mpsc::Receiver<Vec<u8>>,
 )
 where
@@ -207,7 +220,8 @@ where
 {
     let (mut ws_tx, mut ws_rx) = ws.split();
     let (mut in_tx, in_rx) = futures::channel::mpsc::channel::<Vec<u8>>(MAX_QUEUED_UPSTREAM_FRAMES);
-    let (out_tx, mut out_rx) = futures::channel::mpsc::unbounded::<Vec<u8>>();
+    let (out_tx, mut out_rx) =
+        futures::channel::mpsc::channel::<Vec<u8>>(MAX_QUEUED_OUTBOUND_FRAMES);
 
     // Reader task: inbound WS messages → `Vec<u8>` frames onto `in_tx`. Ends on close/error; dropping
     // `in_tx` ends the pump's inbound stream (the message-duplex analogue of EOF). `send` awaits
@@ -234,6 +248,8 @@ where
 
     // Writer task: `Vec<u8>` frames from the pump → one binary WS message each. Ends when the pump
     // drops the sink (session over); a close is sent best-effort so the peer sees a clean shutdown.
+    // A `send` that cannot complete because the upstream has stopped accepting bytes leaves the queue
+    // full, and the bound above then makes the PRODUCER wait — the backpressure the plane feels.
     tokio::spawn(async move {
         while let Some(frame) = out_rx.next().await {
             if ws_tx.send(Message::Binary(frame.into())).await.is_err() {
@@ -259,9 +275,11 @@ impl Stream for BoxedStream {
     }
 }
 
-/// The concrete frame-sink the dial returns — an mpsc sender of outbound `Vec<u8>` frames, whose
-/// `Error` is [`std::convert::Infallible`]-free `SendError` (a closed channel means the session ended).
-struct BoxedSink(futures::channel::mpsc::UnboundedSender<Vec<u8>>);
+/// The concrete frame-sink the dial returns — a BOUNDED mpsc sender of outbound `Vec<u8>` frames,
+/// whose `Error` is `SendError` (a closed channel means the session ended). Bounded at
+/// [`MAX_QUEUED_OUTBOUND_FRAMES`], so `poll_ready` is where a caller writing faster than the upstream
+/// drains waits, rather than a place where the backlog silently accumulates.
+struct BoxedSink(futures::channel::mpsc::Sender<Vec<u8>>);
 
 impl Sink<Vec<u8>> for BoxedSink {
     type Error = futures::channel::mpsc::SendError;

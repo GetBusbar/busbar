@@ -638,7 +638,7 @@ fn test_cross_protocol_gemini_stop_sequences_to_openai_stop() {
     let mut ir = GeminiReader.read_request(&body).expect("gemini parses");
     assert_eq!(ir.stop, vec!["STOP".to_string(), "END".to_string()]);
     ir.extra.clear(); // simulate the cross-protocol seam
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert_eq!(
         out.get("stop"),
         Some(&serde_json::json!(["STOP", "END"])),
@@ -682,7 +682,7 @@ fn test_cross_protocol_top_k_dropped_for_openai_target() {
         .read_request(&body)
         .expect("anthropic parses");
     ir.extra.clear();
-    let out = OpenAiWriter.write_request(&ir);
+    let out = openai_writer().write_request(&ir);
     assert!(
         out.get("top_k").is_none() && out.get("k").is_none(),
         "OpenAI has no top_k knob; the writer must not synthesize one; got {out}"

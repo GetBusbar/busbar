@@ -534,18 +534,37 @@ fn examine(path: &Path, policy: &TrustPolicy) -> FileOutcome {
     }
 }
 
+/// ONE phase-3 conflict: the operator-facing message, and — STRUCTURED, beside it — the tarballs it
+/// is about.
+///
+/// The files are carried rather than left to be recovered from the message, because every identifier
+/// the message names (`name`, `alias`) is bytes a plugin AUTHOR chose. Asking "is this row one of the
+/// ones this conflict is about?" by looking for the row's quoted name inside the prose answers yes for
+/// any row whose name happens to appear in a message about two OTHER plugins — a plugin named
+/// `remove one`, or one whose name is a substring the message spells for a different reason. The
+/// files are the loader's own facts, so the join is exact.
+pub struct Conflict {
+    /// The operator-facing text, unchanged from what the loader has always printed.
+    pub message: String,
+    /// The tarball filenames this conflict is about (the `file` an [`InventoryEntry`] carries).
+    pub files: Vec<String>,
+}
+
 /// Phase 3: cross-plugin conflict detection over the LOADABLE set. Any name/alias collision is a
 /// hard error naming BOTH plugins and the colliding identifier.
-fn conflicts(loadable: &[LoadablePlugin]) -> Vec<String> {
+fn conflicts(loadable: &[LoadablePlugin]) -> Vec<Conflict> {
     let mut errors = Vec::new();
     let mut name_owner: HashMap<&str, &LoadablePlugin> = HashMap::new();
     for p in loadable {
         if let Some(prev) = name_owner.get(p.manifest.name.as_str()) {
-            errors.push(format!(
-                "plugin name conflict: '{}' is claimed by both {} and {} - remove one \
-                 (\"you can't use valkey and a third-party valkey\")",
-                p.manifest.name, prev.file, p.file
-            ));
+            errors.push(Conflict {
+                message: format!(
+                    "plugin name conflict: '{}' is claimed by both {} and {} - remove one \
+                     (\"you can't use valkey and a third-party valkey\")",
+                    p.manifest.name, prev.file, p.file
+                ),
+                files: vec![prev.file.clone(), p.file.clone()],
+            });
         } else {
             name_owner.insert(&p.manifest.name, p);
         }
@@ -553,21 +572,27 @@ fn conflicts(loadable: &[LoadablePlugin]) -> Vec<String> {
     let mut alias_owner: HashMap<&str, &LoadablePlugin> = HashMap::new();
     for p in loadable {
         if let Some(prev) = alias_owner.get(p.manifest.alias.as_str()) {
-            errors.push(format!(
-                "plugin alias conflict: '{}' is claimed by both {} ({}) and {} ({}) - remove one",
-                p.manifest.alias, prev.file, prev.manifest.name, p.file, p.manifest.name
-            ));
+            errors.push(Conflict {
+                message: format!(
+                    "plugin alias conflict: '{}' is claimed by both {} ({}) and {} ({}) - remove one",
+                    p.manifest.alias, prev.file, prev.manifest.name, p.file, p.manifest.name
+                ),
+                files: vec![prev.file.clone(), p.file.clone()],
+            });
         } else {
             alias_owner.insert(&p.manifest.alias, p);
         }
         // An alias colliding with ANOTHER plugin's canonical name is equally ambiguous.
         if let Some(other) = name_owner.get(p.manifest.alias.as_str()) {
             if other.manifest.name != p.manifest.name {
-                errors.push(format!(
-                    "plugin alias/name conflict: alias '{}' of {} ({}) collides with the canonical \
-                     name of {} ({}) - remove one",
-                    p.manifest.alias, p.file, p.manifest.name, other.file, other.manifest.name
-                ));
+                errors.push(Conflict {
+                    message: format!(
+                        "plugin alias/name conflict: alias '{}' of {} ({}) collides with the \
+                         canonical name of {} ({}) - remove one",
+                        p.manifest.alias, p.file, p.manifest.name, other.file, other.manifest.name
+                    ),
+                    files: vec![p.file.clone(), other.file.clone()],
+                });
             }
         }
     }
@@ -594,7 +619,7 @@ pub fn scan_and_validate(dir: &Path, policy: &TrustPolicy) -> Result<PluginRegis
             )),
         }
     }
-    errors.extend(conflicts(&loadable));
+    errors.extend(conflicts(&loadable).into_iter().map(|c| c.message));
     if !errors.is_empty() {
         return Err(errors);
     }
@@ -702,15 +727,14 @@ pub fn inventory(dir: &Path, policy: &TrustPolicy) -> Vec<InventoryEntry> {
             }),
         }
     }
-    // Surface phase-3 conflicts on the affected loadable rows.
+    // Surface phase-3 conflicts on the affected loadable rows. The join is on the tarball the
+    // conflict NAMES, never on finding the row's identifier somewhere inside the message — the
+    // identifiers in that prose are plugin-author bytes, and a row that merely shares them with a
+    // conflict about two other plugins is not a row in conflict.
     for conflict in conflicts(&loadable) {
         for row in rows.iter_mut() {
-            if let Some(m) = &row.manifest {
-                if conflict.contains(&format!("'{}'", m.name))
-                    || conflict.contains(&format!("'{}'", m.alias))
-                {
-                    row.status = format!("CONFLICT: {conflict}");
-                }
+            if conflict.files.contains(&row.file) {
+                row.status = format!("CONFLICT: {}", conflict.message);
             }
         }
     }

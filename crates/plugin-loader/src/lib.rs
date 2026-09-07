@@ -170,6 +170,31 @@ fn free_guarded(free: busbar_plugin::cold::FreeFn, path: &str, ptr: *mut u8, len
     }
 }
 
+/// Reclaim the instance a FAILING `busbar_open` nevertheless published, by closing it through the
+/// same guarded worker call `Drop` closes through. Returns whether a close was issued (`false` when
+/// there was no instance to reclaim, the well-behaved case).
+///
+/// A null handle is left alone: there is nothing to close, and handing `close` a null is asking a
+/// plugin to free something it never allocated.
+fn reclaim_failed_open(
+    close: busbar_plugin::cold::CloseFn,
+    path: &str,
+    handle: *mut c_void,
+) -> bool {
+    if handle.is_null() {
+        return false;
+    }
+    let closing = handle;
+    if ffi_guard_confined(path, "close", move || unsafe { close(closing) }).is_err() {
+        // Same trade as `free_guarded`: a leaked handle beats aborting the gateway over a bad plugin.
+        tracing::warn!(
+            plugin = %path,
+            "plugin busbar_close panicked while reclaiming a failed open; leaking the handle to keep the engine alive"
+        );
+    }
+    true
+}
+
 /// The resolved core C fn pointers + the opaque handle + the mapped library + staging backing, shared
 /// by every kind's typed wrapper. The KIND is bound at construction (cross-checked against the signed
 /// manifest) and then carried by the typed `DynStore`/`DynSecret`/`DynAuth`.
@@ -561,6 +586,16 @@ fn wire_up_raw(
         }
     };
     if status != STATUS_OK || handle.is_null() {
+        // A FAILING open that still PUBLISHED a handle has constructed an instance — the SDK's own
+        // macro never does this, but the ABI is spoken by plugins this tree does not compile, and
+        // nothing in it says a non-`OK` status leaves `*handle` untouched. The load fails closed
+        // either way; what must not also happen is the instance living on with nobody holding it,
+        // its connection pool, its threads and its file handles owned by a `RawPlugin` that is never
+        // built. Close it here, on a worker and under the same panic guard `Drop` closes through,
+        // BEFORE the message is composed — the message is only bytes, and the instance is a
+        // resource. (The caught-panic path above is deliberately NOT this: a plugin that panicked
+        // inside its own constructor has no instance a `close` could validly be handed.)
+        reclaim_failed_open(close, &display, handle);
         let msg = if err.is_null() {
             format!("status {status}")
         } else if err_len == 0 {

@@ -17,10 +17,11 @@
 //! failure the rule is actually about, and it is a failure of ordering, not of duplication.
 //!
 //! [`Vocabulary`] adds the ordering. It interns during boot, is sealed once configuration has been
-//! read, and refuses afterwards. The refusal is a debug assertion rather than a runtime error
-//! because a `key()` call after the seal is a programming mistake in the root — there is no
-//! operator input that can cause one and no recovery that would make sense — so it should stop a
-//! test and a debug binary loudly, and cost a release binary nothing.
+//! read, and refuses afterwards — in EVERY build. A `key()` call after the seal is a programming
+//! mistake in the root: no operator input can cause one and there is no recovery that would make
+//! sense, so the answer is to stop rather than to continue leaking. Enforcing it only where
+//! `debug_assertions` are on would have made the seal a property of how the binary was compiled,
+//! and would have left it unenforced in the one build whose resident memory anybody budgets.
 //!
 //! ## What goes through it
 //!
@@ -108,6 +109,15 @@ impl ConfigKeys {
     }
 }
 
+/// What a caller sees when it interns after the seal.
+///
+/// A named constant rather than a message written at the panic site, so the refusal has one spelling
+/// an operator can search for, a test can assert on, and a later reader can find every producer of
+/// a later reader can find its one producer by. There is exactly one, which is what makes the name
+/// worth having.
+pub const SEALED_VOCABULARY: &str =
+    "root vocabulary sealed: a key was interned after boot, which is a per-call leak";
+
 /// The node's vocabulary: one interner, filled at boot, sealed, and read-only after.
 ///
 /// There is one of these per process. It is not `Clone` and it is not `Copy`, which is deliberate:
@@ -139,14 +149,17 @@ impl Vocabulary {
     ///
     /// # Panics
     ///
-    /// In a debug build, if the vocabulary has been sealed. A key that is only discovered after
-    /// configuration has been read is a key that will be discovered again on the next connection,
-    /// and that is the per-dial leak the rule exists to forbid.
+    /// If the vocabulary has been sealed. A key that is only discovered after configuration has been
+    /// read is a key that will be discovered again on the next connection, and that is the per-dial
+    /// leak the rule exists to forbid.
+    ///
+    /// The refusal is the same in every build, which is the correction: a debug-only assertion made
+    /// the seal a property of how the binary was compiled rather than of the type, so the shipped
+    /// binary — the only one whose resident memory anybody budgets — was the one build where the
+    /// rule was not enforced. A leak that grows with connections is not a fault that gets smaller
+    /// for being unobserved, and this module's own header says the vocabulary REFUSES afterwards.
     pub fn key(&mut self, value: &str) -> &'static str {
-        debug_assert!(
-            !self.sealed,
-            "vocabulary sealed: `{value}` was interned after boot, which is a per-call leak"
-        );
+        assert!(!self.sealed, "{SEALED_VOCABULARY}: `{value}`");
         self.registration.key(value).unwrap_or_else(|| {
             panic!(
                 "vocabulary: `{value}` could not be interned — the node's key set is past the \
@@ -298,11 +311,12 @@ mod tests {
         assert_eq!(vocabulary.len(), 0);
     }
 
-    /// The seal is the whole point of the wrapper: after it, a key is a defect, and a debug build
-    /// says so rather than quietly leaking.
+    /// The seal is the whole point of the wrapper: after it, a key is a defect, and EVERY build says
+    /// so rather than quietly leaking. No `cfg(debug_assertions)` on this test, because the refusal
+    /// it pins no longer has one — a release build that reached this line would leak per call, and a
+    /// test that only ran in debug would never have noticed.
     #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "vocabulary sealed")]
+    #[should_panic(expected = "root vocabulary sealed")]
     fn interning_after_the_seal_is_a_defect() {
         let mut vocabulary = Vocabulary::new();
         vocabulary.intern_all(&a_configured_deployment());

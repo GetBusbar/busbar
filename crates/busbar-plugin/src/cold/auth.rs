@@ -133,7 +133,11 @@ pub struct BeginLoginRequest {
 /// [`AuthResponse::TokenExchange`] hop — the resulting `token_response` fed back so the module can
 /// verify it and produce an [`Identity`].
 // NO `#[serde(deny_unknown_fields)]`: engine→plugin request, wire-additive (see `BeginLoginRequest`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+//
+// NO derived `Debug` either — see the hand-written impl below. Every credential-bearing field is
+// redacted there, so this type crossing the ONE documented plaintext boundary does not also re-open
+// the LOG channel `busbar_api::Redacted` closes on the engine side.
+#[derive(Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CompleteLoginRequest {
     /// OAuth authorization code returned to the callback.
     #[serde(default)]
@@ -156,6 +160,60 @@ pub struct CompleteLoginRequest {
     /// can verify it. Absent on the first call.
     #[serde(default)]
     pub token_response: Option<HttpResponse>,
+}
+
+/// `Debug` REDACTS every credential this request carries, and only those.
+///
+/// `submitted` is the one documented plaintext credential boundary: the values must reach the
+/// plugin that verifies them, so they cross as plain `String`. Crossing that boundary must not also
+/// re-open the log channel — a plugin author's `tracing::debug!(?req)` reaches the SDK's tracing
+/// bridge, which renders every field with `{:?}`, and a derived `Debug` would print the submitted
+/// password, the OAuth authorization `code`, the PKCE `code_verifier`, and the token endpoint's
+/// response body (the access/id tokens) verbatim into the operator's log. The engine side holds all
+/// of these in [`busbar_api::Redacted`] for exactly this reason; this impl keeps the guarantee on
+/// the wire side of the seam.
+///
+/// What SURVIVES is the non-secret context a failed login is diagnosed from: the `redirect_uri`,
+/// the submitted field NAMES (the keys the plugin declared in its [`LoginForm`]), which credential
+/// slots are present at all, and the token hop's HTTP status. Redacting the whole struct would
+/// trade one defect for another.
+impl std::fmt::Debug for CompleteLoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        /// Renders as `Some([REDACTED])` / `None`, so PRESENCE (which login shape this is) stays
+        /// readable while the value never does.
+        struct Presence<'a, T>(&'a Option<T>);
+        impl<T> std::fmt::Debug for Presence<'_, T> {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self.0 {
+                    Some(_) => f.write_str("Some([REDACTED])"),
+                    None => f.write_str("None"),
+                }
+            }
+        }
+        f.debug_struct("CompleteLoginRequest")
+            .field("code", &Presence(&self.code))
+            .field("redirect_uri", &self.redirect_uri)
+            .field("code_verifier", &Presence(&self.code_verifier))
+            .field(
+                "submitted",
+                // The KEYS are the plugin's own declared field names (`username`, `password`) —
+                // operator-facing vocabulary, never the credential. Only the values are withheld.
+                &self
+                    .submitted
+                    .iter()
+                    .map(|(k, _)| (k.as_str(), "[REDACTED]"))
+                    .collect::<Vec<_>>(),
+            )
+            .field(
+                "token_response",
+                // The hop STATUS is the diagnostic ("the IdP said 401"); the body is the tokens.
+                &self
+                    .token_response
+                    .as_ref()
+                    .map(|r| (r.status, "[REDACTED]")),
+            )
+            .finish()
+    }
 }
 
 /// A single outbound HTTP hop the module DESCRIBES and the CORE EXECUTES (the plugin never opens a

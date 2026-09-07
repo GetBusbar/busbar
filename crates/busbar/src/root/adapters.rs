@@ -47,6 +47,7 @@
 
 use busbar_caps::{Route, UnitToken};
 use busbar_contract::StatusClass;
+use busbar_contract::WireStatus;
 use busbar_unit_breaker::cfg::BreakerCfg;
 use busbar_unit_breaker::classify::Diagnostics;
 use busbar_unit_breaker::journal::NoopJournal;
@@ -202,6 +203,28 @@ impl BreakerAdapter {
             Some(StatusClass::Success | StatusClass::Other) | None => None,
         }
     }
+
+    /// Narrow the transport contract's namespaced status to the breaker unit's own, carrying the
+    /// NAMESPACE across rather than the digits alone.
+    ///
+    /// Each numbering keeps its own table on the far side: an HTTP number is read against HTTP's
+    /// bands, a `grpc-status` against gRPC's codes. Flattening the two into one integer here is
+    /// precisely the defect this replaces — a gRPC `UNAVAILABLE` arrived as the number `14`, matched
+    /// no HTTP band, and was read as the caller's fault, so the destination that had just declared
+    /// itself down got no breaker record and the walk never failed over.
+    ///
+    /// The class fold is the fallback and only the fallback: it exists for a transport that read a
+    /// class but no number at all, and a frame that HAS a number never reaches it. The folded
+    /// stand-in is an HTTP one because the coarse class is protocol-neutral and HTTP's bands are the
+    /// table the breaker has always read a classless answer through.
+    fn narrow_code(status: UpstreamStatus) -> Option<busbar_unit_breaker::port::UpstreamCode> {
+        use busbar_unit_breaker::port::UpstreamCode;
+        match status.code {
+            Some(WireStatus::Http(code)) => Some(UpstreamCode::Http(code)),
+            Some(WireStatus::Grpc(code)) => Some(UpstreamCode::Grpc(code)),
+            None => Self::fold_class(status.class).map(UpstreamCode::Http),
+        }
+    }
 }
 
 fn to_breaker_outcome(outcome: Outcome) -> busbar_unit_breaker::Outcome {
@@ -297,7 +320,7 @@ impl Breaker for BreakerAdapter {
     }
 
     fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified {
-        let code = status.code.or_else(|| Self::fold_class(status.class));
+        let code = Self::narrow_code(status);
         let classified = self.unit.classify(
             destination,
             busbar_unit_breaker::port::UpstreamStatus {
@@ -513,7 +536,7 @@ mod tests {
         let classified = breaker.classify(
             dest,
             UpstreamStatus {
-                code: Some(503),
+                code: Some(WireStatus::Http(503)),
                 class: None,
                 retry_after: None,
             },
@@ -528,6 +551,83 @@ mod tests {
             classified.disposition,
             Disposition::TransientUpstream,
             "the mapping is still ignored: a 503 classifies from its HTTP status"
+        );
+    }
+
+    /// A gRPC upstream's trailers-only `UNAVAILABLE`, at the production adapter's own width: the
+    /// status leg the egress unit reads off that frame (the transport's coarse `ServerError` plus
+    /// gRPC's own `14`), classified, recorded, and the lane suppressed as a result.
+    ///
+    /// This is the money defect. The number used to cross bare, get matched against HTTP's bands,
+    /// match none of them, and come back `ClientFault` — so nothing was recorded, the lane stayed
+    /// open, and the walk relayed a dead upstream's refusal instead of failing over. The coarse
+    /// class had said `ServerError` the whole time.
+    #[test]
+    fn a_grpc_unavailable_is_recorded_against_the_destination_and_suppresses_the_lane() {
+        let breaker = adapter_for("pool");
+        let dest = DestinationId::new(14);
+
+        let classified = breaker.classify(
+            dest,
+            UpstreamStatus {
+                class: Some(StatusClass::ServerError),
+                code: Some(WireStatus::Grpc(14)),
+                retry_after: None,
+            },
+        );
+
+        assert_eq!(
+            classified.disposition,
+            Disposition::TransientUpstream,
+            "the walk fails over rather than relaying the refusal"
+        );
+        assert_eq!(
+            classified.outcome,
+            Outcome::Transient { retry_after: None },
+            "and the destination is held responsible"
+        );
+        assert!(
+            breaker.observe("pool", dest, classified.outcome, 0, &route_token()),
+            "the outcome was recorded"
+        );
+        assert!(
+            !breaker.ready("pool", dest, 0, &route_token()),
+            "one UNAVAILABLE on this ladder takes the lane down"
+        );
+    }
+
+    /// The same digits under HTTP's numbering are not a status at all, and the adapter must keep
+    /// the two readings apart rather than letting either stand in for the other.
+    #[test]
+    fn the_adapter_carries_the_numbering_across_rather_than_the_digits() {
+        use busbar_unit_breaker::port::UpstreamCode;
+        let grpc = UpstreamStatus {
+            class: Some(StatusClass::ServerError),
+            code: Some(WireStatus::Grpc(14)),
+            retry_after: None,
+        };
+        let http = UpstreamStatus {
+            class: Some(StatusClass::ServerError),
+            code: Some(WireStatus::Http(14)),
+            retry_after: None,
+        };
+        let classless = UpstreamStatus {
+            class: Some(StatusClass::ServerError),
+            code: None,
+            retry_after: None,
+        };
+        assert_eq!(
+            BreakerAdapter::narrow_code(grpc),
+            Some(UpstreamCode::Grpc(14))
+        );
+        assert_eq!(
+            BreakerAdapter::narrow_code(http),
+            Some(UpstreamCode::Http(14))
+        );
+        assert_eq!(
+            BreakerAdapter::narrow_code(classless),
+            Some(UpstreamCode::Http(500)),
+            "the class fold is the fallback, and only for an answer that carried no number"
         );
     }
 
@@ -677,7 +777,7 @@ mod tests {
             dest,
             UpstreamStatus {
                 class: None,
-                code: Some(1113),
+                code: Some(WireStatus::Http(1113)),
                 retry_after: None,
             },
         );

@@ -391,14 +391,26 @@ def build_gaps(ids, coverage, cells):
 
     gaps = []
     for row_id, info in ids.items():
-        if coverage[row_id]["status"] != "none":
+        # PARTIAL IS A GAP TOO. It used to be silently excluded, and "partial" is not a shade of
+        # covered: it means every cell citing this row is SKIP on the golden, or is flagged
+        # needs_fixture. Nothing was executed against it. An id in that state was in neither list —
+        # not counted as covered by anything a reader looks at, and not owed by --check either — so
+        # a covered id could DECAY to partial and no gate anywhere would notice. Both non-covered
+        # statuses are now owed, and the status is carried on the row so the two are still
+        # distinguishable to a reader.
+        status = coverage[row_id]["status"]
+        if status == "covered":
             continue
+        reason = default_gap_reason(row_id, info, fam_needs_fixture_notes)
+        if status == "partial":
+            reason = "every citing cell is SKIP on the golden (or needs_fixture): nothing was executed against this row"
         gaps.append({
             "id": row_id,
             "family": info["family"],
+            "status": status,
             "file": info["file"],
             "line": info["line"],
-            "reason": default_gap_reason(row_id, info, fam_needs_fixture_notes),
+            "reason": reason,
         })
     return gaps
 
@@ -420,8 +432,83 @@ def run_analysis():
     return ids, cells, ledger, coverage, summary, matrix
 
 
-def cmd_write():
+# ── THE FLOOR, READ FROM THE LAST RECORDED RUN ────────────────────────────────────────────────────
+# The owed set is DISCOVERED: a `docs/design/inventory/*.md` glob, and within each file the rows of
+# any table whose header row begins with the literal `| id |`. Both halves fail silently and
+# identically. Rename or move a file out of that directory, retitle a column `| ID |` or `| Id |`,
+# wrap the header differently, or let a table's separator row drift — and that file's rows simply
+# stop existing. Every id in it leaves `ids`, so it is in no family total, has no status, is in
+# `none_ids` for nobody, and `--check`'s only test (`none_ids - named`) is satisfied by the empty
+# set. The gate goes GREEN having stopped measuring an entire inventory file, and
+# `qa/inventory-gaps.json` — regenerated from that same collapsed set — shrinks to agree with it.
+#
+# So the recorded per-family totals in qa/inventory-coverage.json are the floor. That file is
+# already written on every `--write` and already carries exactly the numbers needed. A family whose
+# row count has DROPPED below its recorded total, or that has vanished from the analysis entirely,
+# is RED — the inventory did not get smaller by accident. Deliberate shrinkage is a `--write` (which
+# re-records the totals) in the same commit as the deletion, where a reviewer sees the number move.
+def load_recorded_totals():
+    """{family: total} from the last committed qa/inventory-coverage.json, or None if unreadable."""
+    if not os.path.exists(COVERAGE_JSON):
+        return None
+    try:
+        with open(COVERAGE_JSON, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (ValueError, OSError):
+        return None
+    fam = doc.get("family_summary")
+    if not isinstance(fam, dict):
+        return None
+    out = {}
+    for name, counts in fam.items():
+        if isinstance(counts, dict) and isinstance(counts.get("total"), int):
+            out[name] = counts["total"]
+    return out or None
+
+
+def check_floor(summary):
+    """Every problem with the discovered owed set, measured against the recorded totals."""
+    problems = []
+    recorded = load_recorded_totals()
+    rel = os.path.relpath(COVERAGE_JSON, REPO_ROOT)
+    if recorded is None:
+        problems.append(
+            "%s is missing or carries no family_summary — there is no floor to measure the "
+            "discovered inventory against, so a discovery that collapsed to nothing would read "
+            "as a clean tree. Run --write and commit it." % rel)
+        return problems
+    for fam, want in sorted(recorded.items()):
+        got = summary.get(fam, {}).get("total", 0)
+        if got < want:
+            problems.append(
+                "family %s: the inventory now yields %d row(s), %d were recorded in %s. Rows do "
+                "not disappear on their own — a renamed file, a retitled `| id |` header column, "
+                "or a table whose separator row drifted removes them from the owed set silently, "
+                "and every one of them then counts as neither covered nor owed."
+                % (fam, got, want, rel))
+    total_now = sum(c["total"] for c in summary.values())
+    total_want = sum(recorded.values())
+    if total_now < total_want:
+        problems.append(
+            "the whole inventory yields %d row(s), %d were recorded in %s."
+            % (total_now, total_want, rel))
+    return problems
+
+
+def cmd_write(accepted_gaps=()):
     ids, cells, ledger, coverage, summary, matrix = run_analysis()
+
+    # The floor applies to `--write` too. `--write` REGENERATES the file the floor is read from, so
+    # letting it run under a collapsed discovery would launder the collapse into the new baseline in
+    # a single command and leave nothing for `--check` to find.
+    floor_problems = check_floor(summary)
+    if floor_problems:
+        print("RED: refusing to --write over the recorded totals:")
+        for p in floor_problems:
+            print("  - %s" % p)
+        print("If the shrinkage is real and reviewed, delete the affected family rows from")
+        print("qa/inventory-coverage.json's family_summary by hand in the same commit, and say why.")
+        return 1
 
     coverage_doc = {
         "_comment": [
@@ -446,11 +533,46 @@ def cmd_write():
     write_json(COVERAGE_JSON, coverage_doc)
 
     gaps = build_gaps(ids, coverage, cells)
+
+    # ── A GAPS FILE MAY NOT GROW BY ITSELF ────────────────────────────────────────────────────────
+    # `--check` asks only whether every uncovered id is NAMED in qa/inventory-gaps.json, and
+    # `--write` generates that file from the same set it just measured. The two therefore agree by
+    # construction, always: any new uncovered id — a regression that dropped a row from covered to
+    # none — is written into the gaps file by the very run that discovered it, and `--check` is
+    # green again on the next commit. The ledger records the loss and nothing objects to it.
+    #
+    # So a NEW gap id must be accepted BY NAME, one `--accept-gap ID` per id. Losing coverage is
+    # then a deliberate, itemised act that appears in the command line of the commit that does it,
+    # and cannot happen as a side effect of regenerating a file.
+    previously_named = set()
+    if os.path.exists(GAPS_JSON):
+        try:
+            with open(GAPS_JSON, encoding="utf-8") as fh:
+                previously_named = {g["id"] for g in json.load(fh).get("gaps", [])}
+        except (ValueError, OSError, KeyError, TypeError):
+            previously_named = set()
+    new_gaps = sorted({g["id"] for g in gaps} - previously_named - set(accepted_gaps))
+    if new_gaps:
+        print("RED: --write would add %d id(s) to %s that are not accepted:"
+              % (len(new_gaps), os.path.relpath(GAPS_JSON, REPO_ROOT)))
+        for rid in new_gaps:
+            print("  %s" % rid)
+        print()
+        print("Each of these was covered (or absent) and is now a gap. A gaps file that grows on")
+        print("its own turns a coverage regression into a record of itself: --check then passes,")
+        print("because the id it would have failed on has just been written into the file it")
+        print("checks against. Restore the coverage, or accept each loss by name:")
+        print("  python3 scripts/inventory-coverage.py --write %s"
+              % " ".join("--accept-gap %s" % rid for rid in new_gaps))
+        return 1
+
     gaps_doc = {
         "_comment": [
             "GENERATED by scripts/inventory-coverage.py --write. Do not edit by hand.",
-            "Every inventory id with zero citing oracle cells today, with a one-line reason.",
-            "--check fails if any id with status \"none\" is missing from this file.",
+            "Every inventory id NOT covered by a PASSing oracle cell today, with a one-line reason.",
+            "\"status\" is \"none\" (no cell cites it) or \"partial\" (cited only by SKIP/needs_fixture",
+            "cells, i.e. nothing was executed against it). --check fails if any uncovered id is",
+            "missing from this file, and --write refuses to ADD one without --accept-gap ID.",
         ],
         "generated_at": date.today().isoformat(),
         "gaps": gaps,
@@ -475,7 +597,8 @@ def print_summary(summary, matrix, gaps):
 
 def cmd_check():
     ids, cells, ledger, coverage, summary, matrix = run_analysis()
-    none_ids = {row_id for row_id, c in coverage.items() if c["status"] == "none"}
+    # BOTH non-covered statuses are owed, not just "none" — see build_gaps.
+    owed = {row_id for row_id, c in coverage.items() if c["status"] != "covered"}
 
     if not os.path.exists(GAPS_JSON):
         print("RED: %s does not exist — run --write first" % os.path.relpath(GAPS_JSON, REPO_ROOT))
@@ -485,19 +608,33 @@ def cmd_check():
         gaps_doc = json.load(fh)
     named = {g["id"] for g in gaps_doc.get("gaps", [])}
 
-    unnamed = sorted(none_ids - named)
     print_summary(summary, matrix, gaps_doc.get("gaps", []))
+
+    # THE FLOOR FIRST. `owed - named` is satisfied by an EMPTY owed set, so it can only ever be as
+    # trustworthy as the discovery that produced it; the floor is what makes an empty owed set mean
+    # "nothing is owed" rather than "nothing was read".
+    problems = check_floor(summary)
+    unnamed = sorted(owed - named)
     if unnamed:
+        problems.append(
+            "%d id(s) are not covered by a PASSing oracle cell and are not named in %s: %s"
+            % (len(unnamed), os.path.relpath(GAPS_JSON, REPO_ROOT), ", ".join(unnamed[:20])
+               + (" …" if len(unnamed) > 20 else "")))
+
+    if problems:
         print()
-        print("RED: %d id(s) have no cell and are not named in %s:" % (
-            len(unnamed), os.path.relpath(GAPS_JSON, REPO_ROOT)))
-        for rid in unnamed:
-            print("  %s" % rid)
+        print("RED:")
+        for p in problems:
+            print("  - %s" % p)
         return 1
 
     print()
-    print("GREEN: every uncovered id (%d) is a named gap in %s" % (
-        len(none_ids), os.path.relpath(GAPS_JSON, REPO_ROOT)))
+    print("GREEN: every uncovered id (%d: %d none, %d partial) is a named gap in %s, and every "
+          "family is at or above its recorded row count" % (
+              len(owed),
+              sum(c["none"] for c in summary.values()),
+              sum(c["partial"] for c in summary.values()),
+              os.path.relpath(GAPS_JSON, REPO_ROOT)))
     return 0
 
 
@@ -539,6 +676,47 @@ def cmd_selftest():
         return 1
     print("SELFTEST ok: naming %s as a gap keeps it out of the --check failure list" % gap_target)
 
+    # (c) THE FLOOR BITES. The owed set is discovered by a `*.md` glob plus a `| id |` header
+    # literal, and a discovery that finds nothing satisfies `owed - named` with the empty set: the
+    # gate reports GREEN having read no inventory at all. Simulate exactly that — an entire family
+    # gone from the analysis — and require check_floor to refuse it.
+    summary = family_summary(ids, coverage)
+    if check_floor(summary):
+        print("SELFTEST FAIL: the tree's own family totals are already below the recorded floor")
+        return 1
+    print("SELFTEST ok: the tree's real family totals sit at or above the recorded floor")
+
+    recorded = load_recorded_totals()
+    if not recorded:
+        print("SELFTEST FAIL: qa/inventory-coverage.json carries no recorded totals — there is no floor")
+        return 1
+    victim = sorted(recorded)[0]
+    collapsed = {f: dict(c) for f, c in summary.items() if f != victim}
+    if not check_floor(collapsed):
+        print("SELFTEST FAIL: dropping the whole %s family from the analysis was ACCEPTED — a "
+              "renamed inventory file or a retitled `| id |` column would read as a clean tree" % victim)
+        return 1
+    print("SELFTEST ok: dropping the whole %s family (%d rows) is REFUSED by the floor"
+          % (victim, recorded[victim]))
+
+    shrunk = {f: dict(c) for f, c in summary.items()}
+    shrunk[victim]["total"] -= 1
+    if not check_floor(shrunk):
+        print("SELFTEST FAIL: losing a single %s row was accepted — the floor is not exact" % victim)
+        return 1
+    print("SELFTEST ok: losing even ONE %s row is REFUSED" % victim)
+
+    # (d) PARTIAL IS OWED. An id cited only by SKIP/needs_fixture cells was in neither list; prove
+    # it is now in the owed set that --check measures.
+    partial_ids = [rid for rid, c in coverage.items() if c["status"] == "partial"]
+    owed = {rid for rid, c in coverage.items() if c["status"] != "covered"}
+    if partial_ids and not set(partial_ids) <= owed:
+        print("SELFTEST FAIL: a \"partial\" id is not in the owed set — nothing executed against it, "
+              "and nothing owes it either")
+        return 1
+    print("SELFTEST ok: all %d \"partial\" id(s) are owed by --check, not silently forgiven"
+          % len(partial_ids))
+
     print("SELFTEST PASS")
     return 0
 
@@ -549,10 +727,15 @@ def main(argv):
     group.add_argument("--write", action="store_true")
     group.add_argument("--check", action="store_true")
     group.add_argument("--selftest", action="store_true")
+    parser.add_argument(
+        "--accept-gap", action="append", default=[], metavar="ID",
+        help="accept ONE new uncovered id into qa/inventory-gaps.json. Repeatable, and required "
+             "per id: --write refuses to grow the gaps file on its own, because a gaps file that "
+             "grows by itself turns a coverage regression into the record that excuses it.")
     args = parser.parse_args(argv)
 
     if args.write:
-        return cmd_write()
+        return cmd_write(accepted_gaps=args.accept_gap)
     if args.check:
         return cmd_check()
     if args.selftest:

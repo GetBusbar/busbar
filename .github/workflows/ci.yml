@@ -145,6 +145,29 @@ jobs:
         run: python3 scripts/release-order-lint.py --selftest
       - name: Release-order lint
         run: python3 scripts/release-order-lint.py --root .
+      # DUPLEX-WS DEFAULT-EDGE gate: `tokio-tungstenite` must not be in the DEFAULT money-path
+      # build's dependency closure — the WebSocket edge belongs to `plane-voice` and nowhere else.
+      # It was a fully-written, self-testing gate that NOTHING invoked: it lived in `scripts/`,
+      # named itself a gate in its own header, passed on every commit, and no workflow, no script
+      # and no gate runner ever executed it. A gate nothing runs is not a gate — it is a file that
+      # would have caught the regression. Wired here (it is a `cargo tree` read, seconds, no build),
+      # self-test first as everywhere else.
+      - name: duplex-ws default-edge self-test
+        run: scripts/duplex-ws-default-edge.sh --selftest
+      - name: duplex-ws default-edge gate (no WS in the default money-path closure)
+        run: scripts/duplex-ws-default-edge.sh
+      # CI-UMBRELLA MEMBERSHIP lint: `ci-umbrella` is the ONE required check, and its `needs:` list
+      # is the whole of what "CI is green" means. That list is hand-maintained, and a job added
+      # without its `needs:` line is invisible to it: the job goes red and the required check reports
+      # GREEN. `deletion-test-matrix` -- an enforcement gate on every pull request -- sat outside
+      # `needs` for its whole life, so its red would not have blocked a single merge. This lint makes
+      # omission impossible: every job is in `needs` (and in the RESULTS ledger) unless a
+      # `# non-gating:` / `# report-only:` line names it WITH a reason. Self-test runs FIRST, and its
+      # last case re-plants exactly that historical defect in this very file and requires a red.
+      - name: ci-umbrella membership self-test (the historical omission re-planted, proven RED)
+        run: python3 scripts/ci-umbrella-lint.py --selftest
+      - name: ci-umbrella membership (no job is outside the required check by accident)
+        run: python3 scripts/ci-umbrella-lint.py --root .
       # NO-SELF-FILED-ISSUES lint: this repository must not open issues against itself. It used to —
       # verify-deploy.yml filed #51 when a published release was broken — and that was wrong three
       # ways: a robot's issue is indistinguishable from a user's in the queue a human triages, the
@@ -562,14 +585,29 @@ jobs:
       - name: Voice runtime tests (the `runtime`-gated plane suites `cargo test --workspace` never runs)
         env:
           VOICE_MIN_TESTS: "100"
+        # `set -uo pipefail` + PIPESTATUS[0], matching the workspace / no-default-features / windows
+        # steps. Without it `cargo … | tee` reports TEE's exit status, which is 0 whether cargo
+        # passed or failed, and the only surviving check was a count of PASSING tests — a run with
+        # 150 passes and 3 failures cleared the floor and the step went green. The failure count is
+        # now asserted at zero explicitly rather than inferred from an exit code that had been
+        # laundered through a pipe.
         run: |
+          set -uo pipefail
           cargo test -p busbar-voice --features runtime,test-support \
                      -p busbar-voice-codec --features runtime \
-                     --locked --verbose | tee "$RUNNER_TEMP/voice-test.log"
+                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/voice-test.log"
+          rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/voice-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
-          echo "voice runtime: ${total} tests passed (floor: ${VOICE_MIN_TESTS})"
+          failed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed' "$RUNNER_TEMP/voice-test.log" \
+                  | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "voice runtime: ${total} tests passed, ${failed} failed (floor: ${VOICE_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the voice runtime suite FAILED (cargo exit ${rc}, ${failed} failing test(s))."
+            exit "$((rc == 0 ? 1 : rc))"
+          fi
           if [ "$total" -lt "$VOICE_MIN_TESTS" ]; then
             echo "::error::the voice runtime suite ran ${total} tests, below its floor of ${VOICE_MIN_TESTS}."
             echo "::error::A crate split (like codec/topology moving out of busbar-voice) can strand a"
@@ -587,13 +625,25 @@ jobs:
       - name: Timing implementation tests (the `timing`-gated suite `cargo test --workspace` never runs)
         env:
           TIMING_MIN_TESTS: "5"
+        # Same pipefail + explicit `0 failed` discipline as the voice step above, for the same
+        # reason: a `| tee` without it hands the step tee's exit status, and a passing-test count
+        # alone cannot tell a clean run from a run that also had failures.
         run: |
+          set -uo pipefail
           cargo test -p busbar-timing --features timing \
-                     --locked --verbose | tee "$RUNNER_TEMP/timing-test.log"
+                     --locked --verbose 2>&1 | tee "$RUNNER_TEMP/timing-test.log"
+          rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/timing-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
-          echo "timing implementation: ${total} tests passed (floor: ${TIMING_MIN_TESTS})"
+          failed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed' "$RUNNER_TEMP/timing-test.log" \
+                  | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "timing implementation: ${total} tests passed, ${failed} failed (floor: ${TIMING_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the timing implementation suite FAILED (cargo exit ${rc}, ${failed} failing test(s))."
+            exit "$((rc == 0 ? 1 : rc))"
+          fi
           if [ "$total" -lt "$TIMING_MIN_TESTS" ]; then
             echo "::error::the timing implementation suite ran ${total} tests, below its floor of ${TIMING_MIN_TESTS}."
             exit 1
@@ -610,12 +660,25 @@ jobs:
       - name: LLM teller-step tests (the `teller-waist`-gated step suite `cargo test --workspace` never runs)
         env:
           LLM_UNIT_MIN_TESTS: "70"
+        # Same pipefail + explicit `0 failed` discipline as the voice and timing steps above. This
+        # one is the most exposed of the three: it is a FILTERED run (`--lib unit::`), so its only
+        # other signal is a count, and without pipefail a filtered run with failures in it looked
+        # exactly like a clean one.
         run: |
-          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: | tee "$RUNNER_TEMP/llm-unit-test.log"
+          set -uo pipefail
+          cargo test -p busbar-llm --features teller-waist --locked --lib unit:: 2>&1 | tee "$RUNNER_TEMP/llm-unit-test.log"
+          rc=${PIPESTATUS[0]}
           total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/llm-unit-test.log" \
                   | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
                   | awk '{s+=$1} END {print s+0}')
-          echo "llm teller steps: ${total} tests passed (floor: ${LLM_UNIT_MIN_TESTS})"
+          failed=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed; [0-9]+ failed' "$RUNNER_TEMP/llm-unit-test.log" \
+                  | grep -oE '[0-9]+ failed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          echo "llm teller steps: ${total} tests passed, ${failed} failed (floor: ${LLM_UNIT_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the llm teller-step suite FAILED (cargo exit ${rc}, ${failed} failing test(s))."
+            exit "$((rc == 0 ? 1 : rc))"
+          fi
           if [ "$total" -lt "$LLM_UNIT_MIN_TESTS" ]; then
             echo "::error::the llm teller-step suite ran ${total} tests, below its floor of ${LLM_UNIT_MIN_TESTS}."
             echo "::error::A directory-wide cfg gate can erase a whole suite without erasing its green."
@@ -796,7 +859,14 @@ jobs:
       # cell list silently changes what the whole 1.5.5 parity battery even asks. It derives from the
       # two inventories checked immediately above, which is exactly why it can fall behind them.
       - name: shadow-oracle cells drift (committed == fresh derivation)
-        run: python3 testing/shadow-oracle/enumerate-cells.py --check
+        run: |
+          set -euo pipefail
+          # Self-test FIRST, as everywhere else here: every `*_cells()` builder returns [] for a
+          # missing fixture, so a renamed fixture deletes a whole family from the owed corpus
+          # without a word. The self-test plants exactly that and requires the per-family floor to
+          # refuse it, before the floor's verdict on this tree is trusted.
+          python3 testing/shadow-oracle/enumerate-cells.py --selftest
+          python3 testing/shadow-oracle/enumerate-cells.py --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
@@ -1283,7 +1353,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: llvm-tools-preview
       - name: Cache cargo
@@ -1301,8 +1371,15 @@ jobs:
         # fail this job and no coverage would ever upload. The report is still generated from every
         # test that ran. A real regression is caught by `check`, not here.
         run: cargo llvm-cov --workspace --locked --ignore-run-fail --lcov --output-path lcov.info
+      # PINNED BY COMMIT SHA, not by the mutable `v5` tag. This step is handed CODECOV_TOKEN, an
+      # org-level secret, and a third-party action referenced by a tag is whatever the tag points at
+      # on the morning it runs — the owner can move `v5` to any commit at any time, and the moved
+      # code executes here with that secret and the job's `GITHUB_TOKEN` in its environment. A sha is
+      # immutable, so the code that gets the token is the code that was reviewed. Bump deliberately:
+      # look up the tag's commit (`gh api repos/codecov/codecov-action/git/ref/tags/v5.x.y`) and
+      # replace both the sha and the version comment together.
       - name: Upload to Codecov (never fails the build)
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@0fb7174895f61a3b6b78fc075e0cd60383518dac  # v5.5.5
         with:
           # Codecov rejects tokenless uploads on protected branches (dev/qa/main) with
           # "Token required because branch is protected". This org-level secret authenticates
@@ -1367,8 +1444,44 @@ jobs:
           scripts/build-provenance-gate.sh target/release/busbar release false
 
       # THE DETERMINISTIC ALLOCATION-COUNT PERF GATE, by name (also covered by the workspace test run).
+      #
+      # IT WAS POINTED AT THE WRONG CRATE, AND SAID NOTHING. This step read
+      # `-p busbar-core --lib alloc_gate` long after the money-path move relocated the gate to
+      # `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs`. A libtest filter that matches ZERO
+      # tests is not an error: the binary prints `test result: ok. 0 passed; 0 failed; N filtered
+      # out` and exits 0. So the named perf gate had been running nothing, greenly, and a real
+      # allocation regression would have reddened nothing here.
+      #
+      # Hence the FLOOR, the same instrument the voice/timing/llm-unit suites carry: the count of
+      # tests the filter actually collected is what proves the gate ran, and `0 passed` is the
+      # failure this step exists to make impossible. Two tests are expected (the surgical
+      # translate-write one and the whole-path openai>openai forward); the floor names both.
       - name: Allocation-count perf gate (openai>openai forward path)
-        run: cargo test -p busbar-core --lib alloc_gate -- --nocapture
+        env:
+          # `alloc_gate_translate_write_stable` + `alloc_gate_openai_passthrough_forward`. RAISE
+          # this when a case is added; a filter matching fewer than this has stopped selecting the
+          # gate, which is exactly the silence above.
+          ALLOC_GATE_MIN_TESTS: "2"
+        run: |
+          set -uo pipefail
+          cargo test -p busbar-llm --lib alloc_gate -- --nocapture 2>&1 | tee "$RUNNER_TEMP/alloc-gate.log"
+          rc=${PIPESTATUS[0]}
+          total=$(grep -oE 'test result: (ok|FAILED)\. [0-9]+ passed' "$RUNNER_TEMP/alloc-gate.log" \
+                  | grep -oE '[0-9]+ passed' | grep -oE '[0-9]+' \
+                  | awk '{s+=$1} END {print s+0}')
+          failed=$(grep -oE '[0-9]+ failed' "$RUNNER_TEMP/alloc-gate.log" \
+                  | grep -oE '[0-9]+' | awk '{s+=$1} END {print s+0}')
+          echo "alloc gate: ${total} test(s) passed, ${failed} failed (floor: ${ALLOC_GATE_MIN_TESTS})"
+          if [ "$rc" -ne 0 ] || [ "$failed" -ne 0 ]; then
+            echo "::error::the allocation-count perf gate FAILED (exit ${rc}, ${failed} failing test(s))."
+            exit "${rc:-1}"
+          fi
+          if [ "$total" -lt "$ALLOC_GATE_MIN_TESTS" ]; then
+            echo "::error::the alloc-gate filter collected ${total} test(s), below its floor of ${ALLOC_GATE_MIN_TESTS}."
+            echo "::error::A libtest filter that matches NOTHING prints 'test result: ok' and exits 0."
+            echo "::error::The gate has been renamed or moved crates again — repoint this step, do not lower the floor."
+            exit 1
+          fi
 
   # ── proof-manifest: PRODUCE + TRANSPORT for the Build Proof Dashboard ──────────────────────────────
   # (docs/design/1.6.0-proof-dashboard.md). Runs ONLY on the three stage-mirrored promotion branches
@@ -1415,7 +1528,7 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
@@ -1551,22 +1664,45 @@ jobs:
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-      - name: Oracle revision (keys the golden cache)
+      # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. The oracle binds a fixed band
+      # (48781 mock, 48811/48812 data+admin, 48821/48822 the boot probe, 48851+ the selftest), and on
+      # Linux that band sits INSIDE the default ephemeral range, `net.ipv4.ip_local_port_range`
+      # 32768-60999. So any outbound connection this job makes — curl to the mock, busbar to an
+      # upstream, the cargo build's own network — can be assigned 48812 as its SOURCE port, and the
+      # next `busbar` then dies with `cannot bind listen address '127.0.0.1:48812': Address already
+      # in use`. That is exactly what turned 234 of 897 golden cells into FAIL: the recorder's own
+      # bindability probe asks "is anything ACCEPTING here" (a TCP connect), which an ephemeral
+      # OUTBOUND socket correctly answers "no" to right up until the bind fails.
+      #
+      # macOS never sees it — its ephemeral range starts at 49152, above the whole band — which is
+      # why every local recording is green and only the runner is red.
+      #
+      # The fix is to tell the kernel the band is spoken for. `ip_local_reserved_ports` removes those
+      # ports from EPHEMERAL allocation while leaving an explicit bind to them legal, which is the
+      # exact asymmetry the recorder needs. Range chosen to cover the whole 487xx/488xx band the
+      # oracle and the fleet fixtures agree on. It is applied, then READ BACK: a silently-failed
+      # sysctl would leave the flake in place under a step that printed nothing.
+      - name: Reserve the oracle port band from the kernel's ephemeral pool
+        run: |
+          set -euo pipefail
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=48700-48900
+          got="$(sysctl -n net.ipv4.ip_local_reserved_ports)"
+          echo "ip_local_reserved_ports=${got}"
+          case "$got" in *48700-48900*) ;; *) echo "::error::the oracle port band was not reserved (got '${got}'); a recorder bind would race the kernel's ephemeral allocator"; exit 1 ;; esac
+      - name: Oracle revision (keys the 1.5.5 artifact cache)
         id: rev
         run: |
           set -euo pipefail
           digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' testing/shadow-oracle/golden-digests.tsv)
-          # Same file list, same hash, as record.sh/diff-cells.py's harness_rev provenance field —
-          # computed by the one shared function so the cache key and the recorded provenance can
-          # never quietly disagree about what "the harness changed" means.
-          rev=$(bash testing/shadow-oracle/harness-rev.sh | awk '{print $2}' | cut -c1-16)
-          echo "key=oracle-golden-${digest:0:12}-${rev}" >> "$GITHUB_OUTPUT"
-      - name: Cache the golden recording and the 1.5.5 artifacts
+          # The key names the ARTIFACTS this cache holds — the pinned 1.5.5 release binary and the
+          # pinned plugins — and nothing else. It used to carry harness_rev too, because the cache
+          # also held a re-recorded golden; the golden is now read from the tree, so hashing the
+          # harness into this key would only throw away a correct download on every harness edit.
+          echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
+      - name: Cache the pinned 1.5.5 artifacts
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/busbar-oracle
-            target/oracle/recordings/golden
+          path: ~/.cache/busbar-oracle
           key: ${{ steps.rev.outputs.key }}
       - name: The differ can see a diff (replay selftest)
         run: bash testing/shadow-oracle/replay-selftest.sh
@@ -1589,12 +1725,30 @@ jobs:
           cargo build -p busbar --release --locked
       - name: Both binaries accept the oracle config
         run: bash testing/shadow-oracle/selftest.sh target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
-      - name: Record the golden (once per oracle revision; cached)
+      # THE GOLDEN IS COMMITTED, NOT RE-DERIVED. `testing/shadow-oracle/golden/1.5.5/` is the signed-off
+      # 1.5.5 recording, reviewed cell by cell, and it is the thing this job is supposed to diff
+      # against. Re-recording it here made the gate's own reference an OUTPUT of the runner: 234 of
+      # 897 cells failed to record on one run and the report read "the golden no longer owes this id"
+      # — the tree's answer to "what did 1.5.5 do" changed because a runner had a bad afternoon.
+      # A reference that is re-derived on the machine under test is not a reference.
+      #
+      # So the golden is COPIED IN, and the copy is checked: the ledger must carry the same number of
+      # PASS rows as meta.json says were recorded, and that number must be non-zero. A truncated or
+      # half-checked-out golden owes fewer cells, and owing fewer cells is how this gate goes quietly
+      # green — owed-baseline.txt in replay.sh is the second half of that guard and catches an id that
+      # stops being owed at all.
+      - name: The golden is the committed 1.5.5 recording (never re-recorded here)
         run: |
           set -euo pipefail
-          if [ -s target/oracle/recordings/golden/ledger.tsv ]; then echo "golden cached"; exit 0; fi
-          mkdir -p target/oracle/recordings/golden
-          bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out target/oracle/recordings/golden
+          src=testing/shadow-oracle/golden/1.5.5
+          rm -rf target/oracle/recordings/golden
+          mkdir -p target/oracle/recordings
+          cp -R "$src" target/oracle/recordings/golden
+          pass=$(awk -F'\t' '$2=="PASS"' target/oracle/recordings/golden/ledger.tsv | wc -l | tr -d ' ')
+          want=$(python3 -c 'import json;print(json.load(open("target/oracle/recordings/golden/meta.json"))["recorded"])')
+          echo "committed golden: ${pass} PASS rows, meta.json records ${want}"
+          [ "$pass" -gt 0 ] || { echo "::error::the committed golden carries no PASS rows — the replay below would be vacuously green"; exit 1; }
+          [ "$pass" = "$want" ] || { echo "::error::the committed golden's ledger has ${pass} PASS rows but meta.json records ${want}; the checked-in recording is not whole"; exit 1; }
       - name: Record the candidate
         run: |
           set -euo pipefail
@@ -1855,6 +2009,7 @@ jobs:
       - service-image-pins
       - executable-config-lint
       - no-default-features
+      - deletion-test-matrix
       - no-plugins-gate
       - txn-guards
       - timing
@@ -1866,7 +2021,21 @@ jobs:
       - teller-steps
       # In `needs` so the umbrella waits for it and can print its verdict, but NOT in RESULTS below:
       # the job is report-only (continue-on-error) until its check is green on HEAD. See the job.
+      # report-only: construction-gate -- RED BY DESIGN on HEAD while the construction work it
+      #   measures is in flight; waited for and PRINTED by this job, deliberately not counted, until
+      #   the job is flipped off continue-on-error. Delete this line and add a RESULTS row then.
       - construction-gate
+    # ── THE JOBS DELIBERATELY OUTSIDE THIS LIST ───────────────────────────────────────────────────
+    # scripts/ci-umbrella-lint.py reads these two lines and requires that EVERY job in this file is
+    # either in `needs` above or named here with a reason. `deletion-test-matrix` -- an enforcement
+    # gate running on every pull request -- was missing from `needs` for its whole life, which meant
+    # a red there reported GREEN on the one required check. Omission is now impossible; deliberate
+    # exclusion is possible, in writing.
+    # non-gating: coverage -- a REPORTING job (it uploads to Codecov and asserts no threshold here);
+    #   coverage policy is enforced by codecov.yml on the PR, not by this workflow's required check.
+    # non-gating: proof-manifest -- publishes the Build Proof Dashboard on dev/qa/main only. By its
+    #   own contract it CHANGES NO GATE, it records verdicts other jobs produced; a manifest refresh
+    #   must never be able to gate a promotion.
     runs-on: ubuntu-latest
     timeout-minutes: 5
     env:
@@ -1893,6 +2062,7 @@ jobs:
         migration-corpus|full|${{ needs.migration-corpus.result }}
         executable-config-lint|full|${{ needs.executable-config-lint.result }}
         no-default-features|full|${{ needs.no-default-features.result }}
+        deletion-test-matrix|full|${{ needs.deletion-test-matrix.result }}
         no-plugins-gate|full|${{ needs.no-plugins-gate.result }}
         txn-guards|full|${{ needs.txn-guards.result }}
         timing|full|${{ needs.timing.result }}

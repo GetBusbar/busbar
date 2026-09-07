@@ -324,10 +324,15 @@ impl ProtocolWriter for BedrockWriter {
                 // that is what keeps a Bedrock->Bedrock round-trip byte-identical (every document
                 // sub-field, `citations`/`context` included, survives) while a CROSS-protocol IR,
                 // whose `extra` the seam cleared, has no stash and so takes the modelled path.
+                // Matched on `b`, the IR block index the reader recorded, NOT on `i`, which is the
+                // WIRE slot the raw block is spliced back at. The two differ by however many
+                // wire-only blocks (`cachePoint` / `guardContent`) came first in this message, so
+                // comparing the wire index against `block_idx` here missed the match and emitted the
+                // attachment twice — modelled AND spliced. `i` remains the splice position below.
                 let raw_doc_video_stashed =
                     message_doc_video.iter().flat_map(|v| v.iter()).any(|e| {
                         e.get("m").and_then(|v| v.as_u64()) == Some(msg_idx as u64)
-                            && e.get("i").and_then(|v| v.as_u64()) == Some(block_idx as u64)
+                            && e.get("b").and_then(|v| v.as_u64()) == Some(block_idx as u64)
                     });
                 // The prompt-cache boundary carried on this block, if any. Emitted as a
                 // `cachePoint` block IMMEDIATELY AFTER the block below (the position Bedrock expects).

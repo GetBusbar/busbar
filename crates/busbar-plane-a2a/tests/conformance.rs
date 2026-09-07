@@ -495,6 +495,18 @@ fn the_metering_step_reports_what_it_read() {
     assert_eq!(lines[0].quantity, Some(answer.len() as u64));
     // A plane names no lane and no price.
     assert!(lines[0].lane.is_none());
+    // Which SIDE the class says it is sized from is the side the quantity was taken from. The
+    // quantity above is the ANSWER's own length, and the request this unit carries is a different
+    // length, so a declaration naming the request would be a rate card pricing a caller's request
+    // at the size of an agent's answer to it.
+    let declared = <A2aPlane as PlaneMeta>::METER_CLASSES
+        .iter()
+        .find(|c| c.key == lines[0].class)
+        .expect("the class the meter reports is one the plane declares");
+    assert_eq!(
+        declared.direction,
+        busbar_contract::ids::ClassDirection::Response
+    );
 }
 
 /// The introspection verb answers, and an undeclared verb does not.
@@ -594,6 +606,47 @@ fn the_session_halves_open_fresh() {
     }
 }
 
+/// A request bigger than the per-unit arena is still relayed, byte for byte.
+///
+/// The bytes the hop carries are the bytes that arrived, and they already live for the unit that
+/// carries them. Copying them into the arena first spent the whole bounded budget on a second copy
+/// of what the unit was already holding, so a request larger than that budget could not be relayed
+/// at all — a size limit nobody configured, imposed by an allocation with no purpose.
+#[test]
+fn a_request_larger_than_the_arena_is_relayed() {
+    let plane = A2aPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let seal = common::TestSeal;
+    let text = "x".repeat(busbar_contract::bounded::ARENA_BYTES * 2);
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"message/send","params":{{"message":{{"role":"user","text":"{text}"}}}}}}"#
+    );
+    let body = body.into_bytes();
+    assert!(body.len() > busbar_contract::bounded::ARENA_BYTES);
+    let unit = busbar_contract::unit::Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        ops::OP_MESSAGE_SEND,
+        busbar_contract::bounded::Ir::new(&body, &[]),
+        busbar_contract::bounded::Facts::new(),
+        None,
+    );
+    let egress = plane
+        .encode_egress(&unit, &sealed_destination(), None, &ctx)
+        .expect("a request larger than the arena is still a request this plane can relay");
+    assert_eq!(
+        egress.body.as_slice(),
+        body.as_slice(),
+        "the agent is sent the caller's own bytes, whole"
+    );
+}
+
 /// A sealed destination, for the calls that take one.
 fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
     let seal = common::TestSeal;
@@ -616,6 +669,82 @@ fn sealed_destination() -> busbar_contract::dest::VerifiedDestination {
 // name, and the callback an agent posts a bare task document back to. Decode used to demand a
 // JSON-RPC envelope of every one of them, so the plane claimed surfaces it then refused everything
 // on — a caller fetching the agent card got a decode refusal from the plane that publishes it.
+
+/// Every bodyless route the codec mounts decodes to a unit rather than to "nothing has arrived".
+///
+/// A claim with no arm in the surface table falls through to the document binding, which asks for a
+/// JSON-RPC envelope — and a request with no body at all is answered "wait for more", on a surface
+/// where nothing more is ever coming. That is a claimed route the plane holds open until the caller
+/// gives up, which is indistinguishable from a hang and is not a refusal anyone can read. Four of
+/// the codec's routes were in exactly that state.
+#[test]
+fn every_bodyless_route_the_codec_mounts_decodes() {
+    let plane = A2aPlane::EMPTY;
+    for (verb, target, expected) in [
+        ("GET", "/a2a/tasks", ops::OP_TASK_LIST),
+        ("GET", "/a2a/tasks/t-1", ops::OP_TASK_GET),
+        ("GET", "/a2a/extendedAgentCard", ops::OP_AGENT_CARD),
+        (
+            "GET",
+            "/a2a/tasks/t-1/pushNotificationConfigs",
+            ops::OP_PUSH_CONFIG_LIST,
+        ),
+        (
+            "POST",
+            "/a2a/tasks/t-1/pushNotificationConfigs",
+            ops::OP_PUSH_CONFIG_CREATE,
+        ),
+        (
+            "GET",
+            "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
+            ops::OP_PUSH_CONFIG_GET,
+        ),
+        (
+            "DELETE",
+            "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
+            ops::OP_PUSH_CONFIG_DELETE,
+        ),
+    ] {
+        let scaffold = Scaffold::new("http").on_path(target).with_method(verb);
+        let ctx = scaffold.ctx();
+        let frames = vec![frame(b"")];
+        let mut cursor = FrameCursor::new(&frames);
+        let ingress = plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .unwrap_or_else(|e| panic!("{verb} {target} decodes: {e:?}"));
+        let Ingress::OneShot(draft) = ingress else {
+            panic!("{verb} {target} is one whole unit, got {ingress:?}");
+        };
+        assert_eq!(draft.op, expected, "{verb} {target} named the wrong class");
+    }
+}
+
+/// Every surface below the task collection says which task it is about.
+#[test]
+fn a_configuration_of_a_task_names_that_task() {
+    let plane = A2aPlane::EMPTY;
+    for target in [
+        "/a2a/tasks/t-1",
+        "/a2a/tasks/t-1/pushNotificationConfigs",
+        "/a2a/tasks/t-1/pushNotificationConfigs/c-9",
+    ] {
+        let scaffold = Scaffold::new("http").on_path(target).with_method("GET");
+        let ctx = scaffold.ctx();
+        let frames = vec![frame(b"")];
+        let mut cursor = FrameCursor::new(&frames);
+        let Ingress::OneShot(draft) = plane
+            .decode_ingress(&mut cursor, None, &ctx)
+            .unwrap_or_else(|e| panic!("{target} decodes: {e:?}"))
+        else {
+            panic!("{target} is one whole unit");
+        };
+        assert_eq!(
+            draft.facts.get(facts::FACT_TASK_ID),
+            Some(busbar_contract::bounded::FactValue::Str("t-1")),
+            "{target} does not say which task it is about"
+        );
+    }
+}
 
 /// A discovery document is fetched with no body, and it is a whole unit.
 #[test]

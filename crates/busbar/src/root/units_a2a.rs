@@ -497,6 +497,21 @@ pub struct A2aBindings<'r, S: CellStore> {
     pub pool: &'r str,
     /// The arrival epoch, pinned. Never a fresh clock read on the request path.
     pub now: u64,
+    /// THE SECOND CLOCK the audit record carries, pinned at the same arrival — a MONOTONIC reading,
+    /// which is a different measurement from `now` above and not a second spelling of it.
+    ///
+    /// The record has two clocks because one of them can lie: a wall clock that is stepped by an
+    /// operator, by NTP or by a leap second can hand two events of one unit timestamps that run
+    /// backwards, and a reader cannot tell that from a unit whose steps genuinely ran out of order.
+    /// The monotonic reading cannot go backwards, so it is what ORDERS the record and the wall
+    /// reading is what DATES it. Fill this from the wall clock and the record has one clock written
+    /// in two fields: it still dates correctly and it orders nothing at all, which is exactly the
+    /// property the second field exists to provide.
+    ///
+    /// Supplied by the composition root from the node's own monotonic source and pinned once at
+    /// arrival, the same shape the voice plane's node gives its units — a unit does not read clocks,
+    /// and one that read this one here would be reading it per step rather than per unit.
+    pub mono: u64,
     /// The sealed origin the audit record is written under.
     ///
     /// Sealed by the kernel and carried here for the same reason the trust token is: `Origin::seal`
@@ -621,10 +636,13 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
             // The loop has no exit step of its own; the figure this posting is OF is the metering
             // step's, and that is the step a durability loss here is attributed to.
             step: busbar_caps::StepName::Meter,
+            // The posting's own two clocks, the same pair the audit record carries and read the same
+            // way: the wall epoch dates it, the monotonic reading orders it. A posting stamped twice
+            // off the wall clock is a posting a stepped clock can reorder against its own record.
             stamp: crate::root::durability::PostingStamp {
                 rate_card_version: 0,
                 wall: self.bindings.now,
-                mono: self.bindings.now,
+                mono: self.bindings.mono,
             },
         };
         let mut durability = read_through_poison(self.bindings.durability);
@@ -743,16 +761,17 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
     ///
     /// One class, because this plane declares one. The priced input is the whole request document,
     /// which is what the plane's admit facts point at, and the flat fee applies only where the
-    /// verified set contains an agent — a push the agent sent draws no client's slot and posts no
-    /// fee.
-    fn estimate(&self) -> Estimate {
+    /// verified set contains an agent AND the unit is a caller's — a push the agent sent draws no
+    /// client's slot and posts no fee, so the hold does not size for one. The rule is
+    /// [`fee_could_land`], which reads the same evidence the settlement reads.
+    fn estimate(&self, origin: busbar_caps::OriginKind) -> Estimate {
         Estimate {
             per_class: vec![busbar_unit_admission::ClassEstimate {
                 class: CLASS_BYTES.as_str().to_string(),
                 quantity: self.draft.request_bytes,
                 max_unit_price_nanos: self.bindings.bytes_nanos,
             }],
-            fee_nanos: if self.draft.has_upstream() {
+            fee_nanos: if fee_could_land(&self.draft, origin) {
                 u64::try_from(self.bindings.pricer.price_per_request_cents().max(0))
                     .unwrap_or(0)
                     .saturating_mul(NANOS_PER_CENT)
@@ -796,8 +815,12 @@ impl<'r, S: CellStore> A2aUnits<'r, S> {
                 pre_hook_head: None,
                 post_hook_head: None,
             },
+            // The two clocks, and they are two READINGS: the wall epoch dates the record and the
+            // monotonic reading orders it. Both pinned at arrival, so a unit is stamped once.
+            // The two clocks, and they are two READINGS: the wall epoch dates the record and the
+            // monotonic reading orders it. Both pinned at arrival, so a unit is stamped once.
             wall: self.bindings.now,
-            mono: self.bindings.now,
+            mono: self.bindings.mono,
             origin: self.bindings.origin,
             outcome: busbar_unit_audit::OutcomeFacts {
                 unit_end: outcome,
@@ -1001,7 +1024,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         &self,
         token: &UnitToken<Admit>,
         admit: &AdmitToken<Admit>,
-        _ctx: &UnitCtx,
+        ctx: &UnitCtx,
         principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
         leases: &GroupLeaseSlip,
@@ -1025,7 +1048,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             self.bindings.pool,
             self.bindings.now,
         );
-        let decision = unit.admit(&self.estimate(), principal, chain, admit, token);
+        let decision = unit.admit(&self.estimate(ctx.origin), principal, chain, admit, token);
         // What the door counted, said out loud. The names are the interned ones the root handed the
         // chain's groups at registration; the loop records one lease per name on this unit's slot,
         // where its end and the node's sweep can both give them back. Empty on a refusal, and empty
@@ -1139,19 +1162,7 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
         _ctx: &UnitCtx,
         _provisional: &Outcome,
     ) -> Decision<Meter> {
-        // One class, one line, and the quantity is one the plane already had in front of it: the
-        // size of the document it read. There is no pointer to walk, so the locator carried the
-        // value and this step folds it.
-        let retained = RetainedLocatorValues::new(vec![LocatedValue {
-            class: CLASS_BYTES,
-            quantity: self.draft.response_bytes,
-            source: busbar_caps::QuantitySource::Locator {
-                direction: busbar_contract::ids::ClassDirection::Input,
-                // The quantity was not at a pointer: it is the size of the document the plane just
-                // read, which the locator carried by value precisely for this case.
-                ptr: busbar_caps::LocatorPtr::new(""),
-            },
-        }]);
+        let retained = RetainedLocatorValues::new(vec![bytes_located(&self.draft)]);
         // The kernel's own floor for this unit is what it moved on the way in. It is the tripwire
         // beside the located figure, never the charge.
         let kernel = KernelCounts::new(vec![busbar_unit_usage::KernelLine {
@@ -1311,6 +1322,47 @@ fn fee_evidence(
     }
 }
 
+/// This plane's one metered line: how many bytes, and which side of the exchange they came off.
+///
+/// One class, one line, and the quantity is one the plane already had in front of it: the size of
+/// the document it read. There is no pointer to walk, so the locator carries the value.
+///
+/// The DIRECTION is the side that quantity was measured on, and here that is the response — the
+/// answer document, not the request. It is not a label: a direction is what a class cap, a rate-card
+/// entry and a usage projection all partition on, so a line metered against one side while the
+/// deployment configured the other is a line silently exempt from its own limit. Written out here,
+/// beside the field it describes, so the two cannot be changed apart.
+fn bytes_located(draft: &A2aDraft) -> LocatedValue {
+    LocatedValue {
+        class: CLASS_BYTES,
+        quantity: draft.response_bytes,
+        source: busbar_caps::QuantitySource::Locator {
+            direction: busbar_contract::ids::ClassDirection::Response,
+            // The quantity was not at a pointer: it is the size of the document the plane just
+            // read, which the locator carried by value precisely for this case.
+            ptr: busbar_caps::LocatorPtr::new(""),
+        },
+    }
+}
+
+/// Whether the flat fee could land on this unit AT ALL — the question the hold has to size for.
+///
+/// The hold is a promise that the settlement will fit, so what it reserves has to be decided by the
+/// same rule the settlement is. The kernel's fee needs three things true together; two of them —
+/// the client origin and the selected upstream — are already known at the door, and the third, the
+/// relayed frame, cannot be and only ever makes the charge SMALLER. So the door sizes for the two it
+/// knows, which is the largest fee this unit could ever be asked for.
+///
+/// Read off the evidence rather than restated beside it, and that is the point of the function: a
+/// hold that spelled the origin rule a second time is a second rule, and the one that drifts is the
+/// one nobody re-derived. Spelled twice, a provider push on a thin bucket was refused `OverBudget`
+/// for a fee its own settlement would never have posted.
+fn fee_could_land(draft: &A2aDraft, origin: busbar_caps::OriginKind) -> bool {
+    // `false` for the relay: it is not knowable at the door and it is not part of this question.
+    let evidence = fee_evidence(draft, origin, false);
+    evidence.client_open_or_one_shot && evidence.selected_upstream
+}
+
 /// Judge one destination's address, before any dial.
 ///
 /// This is the trust unit's own check, reached through the entry that takes the facts a destination
@@ -1369,6 +1421,130 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    /// **The metered line's direction is the side its quantity was measured on.**
+    ///
+    /// The quantity is the RESPONSE document's size — the draft's `response_bytes`, not its
+    /// `request_bytes` — so the locator that carries it says `Response`. A direction is not a label
+    /// on a line: it is the axis a class cap, a rate-card entry and the usage projection all
+    /// partition on, so a line metered as ingress while the deployment capped egress is a line that
+    /// is silently exempt from its own limit and still shows up on the bill.
+    ///
+    /// The two fields are asserted against ONE draft whose two byte counts differ, so a line that
+    /// took its quantity from the other side would show up here as a quantity mismatch rather than
+    /// pass by coincidence.
+    #[test]
+    fn the_metered_lines_direction_is_the_side_its_quantity_came_from() {
+        let draft = draft(ops::OP_MESSAGE_SEND);
+        assert_ne!(
+            draft.request_bytes, draft.response_bytes,
+            "the fixture's two sides differ, so the quantity below names one of them"
+        );
+
+        let located = bytes_located(&draft);
+        assert_eq!(located.class, CLASS_BYTES, "the plane's one class");
+        assert_eq!(
+            located.quantity, draft.response_bytes,
+            "the quantity is measured off the answer document"
+        );
+        match located.source {
+            busbar_caps::QuantitySource::Locator { direction, .. } => assert_eq!(
+                direction,
+                busbar_contract::ids::ClassDirection::Response,
+                "and the direction says so, rather than naming the side it did not come from"
+            ),
+            other => panic!("this plane carries its quantity by locator, not {other:?}"),
+        }
+    }
+
+    /// **The record's two clocks are two readings, and the monotonic one cannot be walked back.**
+    ///
+    /// A wall clock is steppable — an operator sets it, NTP corrects it, a leap second repeats it —
+    /// and the audit record carries a second clock for exactly that reason: the wall reading DATES
+    /// the record and the monotonic reading ORDERS it. Filled from the wall clock, the second field
+    /// is a copy rather than a reading and the record orders nothing.
+    ///
+    /// So: two units, and between them the wall clock goes BACKWARDS. Each record dates itself at
+    /// the epoch its own unit arrived at, which is the wall clock telling the truth about a
+    /// deployment whose clock moved. And the monotonic readings still run forwards, which is the
+    /// property that makes the pair of records readable in the order they happened.
+    #[test]
+    fn a_wall_clock_that_steps_backwards_does_not_reorder_the_audit_records() {
+        const EARLIER: u64 = 1_700_000_040;
+        // The correction: the operator's clock was forty seconds fast, so the SECOND unit to arrive
+        // dates itself before the first.
+        const LATER: u64 = 1_700_000_000;
+
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some("a2a-team"));
+        let record = |now| {
+            deployment.calling_at(chain.as_ref(), now).audit_inputs(
+                &a2a_ctx(),
+                Outcome::Completed,
+                Some(&who),
+            )
+        };
+
+        let first = record(EARLIER);
+        let second = record(LATER);
+
+        assert_eq!(
+            first.wall, EARLIER,
+            "the record dates itself at its arrival"
+        );
+        assert_eq!(second.wall, LATER, "and so does the one that followed it");
+        assert!(
+            first.wall > second.wall,
+            "the wall clock went backwards between the two, which is the whole point"
+        );
+        assert!(
+            second.mono > first.mono,
+            "and the reading that ORDERS them did not: {} then {}",
+            first.mono,
+            second.mono
+        );
+        assert_ne!(
+            first.mono, first.wall,
+            "the two clocks are two readings, not one written twice"
+        );
+    }
+
+    /// **Two units of one second are ordered by the monotonic stamp, not by the wall clock.**
+    ///
+    /// The companion of the straddle above, from the other side: there the wall clock moved and the
+    /// ordering held; here the wall clock does not move at all — two units arriving inside one
+    /// second are indistinguishable by it — and the ordering still holds, because the reading that
+    /// orders them is not the one that dates them. Filled from the wall clock, both records carry
+    /// the same number twice and there is no order to read.
+    #[test]
+    fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
+        const ONE_SECOND: u64 = 1_700_000_000;
+
+        let deployment = deployment(one_call_at_a_time("a2a-team"));
+        let who = PrincipalId::new("vk_agent");
+        let chain = deployment.resolve(&who, Some("a2a-team"));
+        let record = || {
+            deployment
+                .calling_at(chain.as_ref(), ONE_SECOND)
+                .audit_inputs(&a2a_ctx(), Outcome::Completed, Some(&who))
+        };
+
+        let first = record();
+        let second = record();
+
+        assert_eq!(
+            first.wall, second.wall,
+            "the wall clock cannot tell these two apart, which is the point"
+        );
+        assert!(
+            second.mono > first.mono,
+            "and the reading that orders them can: {} then {}",
+            first.mono,
+            second.mono
+        );
+    }
 
     /// A panic somewhere else does not stop this plane from sealing and settling.
     ///
@@ -1474,8 +1650,8 @@ mod tests {
     /// A unit the table has no room for is refused AT arrival, and one it admits keeps the chain the
     /// transport recorded.
     ///
-    /// THE arrival STEP, over the loop. §2.2 gives the step two things to decide and this drives
-    /// both, because either one alone is half the door:
+    /// THE arrival STEP, over the loop. The step has two things to decide and this drives both,
+    /// because either one alone is half the door:
     ///
     /// - THE GATE, which is the kernel's and which this plane is UNDER. A2A arrives on the data
     ///   listener, so `admin_listener` is false and the exemption the admin leg gets does not reach
@@ -1592,10 +1768,22 @@ mod tests {
                 expected_aud: Option<&str>,
             ) -> Option<KeyFacts> {
                 // The audience is the plane boundary, and the verifier is where it is enforced.
-                (credential == "tok" && expected_aud == Some(AUD)).then(|| KeyFacts {
-                    id: "key-a2a-1".to_string(),
-                    name: "an approved key".to_string(),
-                })
+                // The burned credential is one this directory DID mint: a revocation withdraws an
+                // identification, so the string it withdraws has to identify first.
+                if expected_aud != Some(AUD) {
+                    return None;
+                }
+                match credential {
+                    "tok" => Some(KeyFacts {
+                        id: "key-a2a-1".to_string(),
+                        name: "an approved key".to_string(),
+                    }),
+                    "burned" => Some(KeyFacts {
+                        id: "key-a2a-burned".to_string(),
+                        name: "a key that was minted and then burned".to_string(),
+                    }),
+                    _ => None,
+                }
             }
 
             fn revoked(&self, credential: &str) -> bool {
@@ -2551,9 +2739,16 @@ mod tests {
         scope: crate::root::policy::ScopePolicy,
         durability: Mutex<crate::root::durability::Durability>,
         origin: busbar_caps::Origin,
+        /// The node's monotonic source, as the composition root holds it: a counter that only ever
+        /// goes up, whatever the wall clock does.
+        mono: AtomicU64,
     }
 
     fn deployment(groups: busbar_unit_admission::GroupTable) -> Deployment {
+        deployment_priced(groups, Pricer::flat(0))
+    }
+
+    fn deployment_priced(groups: busbar_unit_admission::GroupTable, pricer: Pricer) -> Deployment {
         let durability = crate::root::durability::build(
             &crate::root::durability::DurabilityConfig { data_dir: None },
             Box::new(busbar_unit_wal::NullShipper::new()),
@@ -2570,7 +2765,7 @@ mod tests {
             denylist: busbar_unit_trust::Denylist::default(),
             door: Door::new(busbar_unit_admission::InMemoryCells::new()),
             groups,
-            pricer: Pricer::flat(0),
+            pricer,
             records: RecordLegs::new(Arc::new(RecordingStore::default())),
             meter_policy: crate::root::policy::build(
                 &crate::root::policy::MeterPolicyConfig::default(),
@@ -2578,6 +2773,7 @@ mod tests {
             scope: scope_policy(crate::root::policy::ScopePolicy::new()),
             durability: Mutex::new(durability),
             origin: busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
+            mono: AtomicU64::new(0),
         }
     }
 
@@ -2596,6 +2792,16 @@ mod tests {
         fn calling<'r>(
             &'r self,
             chain: Option<&'r busbar_unit_admission::BucketChain>,
+        ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
+            self.calling_at(chain, 1_700_000_000)
+        }
+
+        /// The same unit, arriving at a named wall epoch — so a test can step the wall clock the
+        /// way an operator or an NTP correction steps it and watch what the record does.
+        fn calling_at<'r>(
+            &'r self,
+            chain: Option<&'r busbar_unit_admission::BucketChain>,
+            now: u64,
         ) -> A2aUnits<'r, busbar_unit_admission::InMemoryCells> {
             A2aUnits::new(
                 A2aBindings {
@@ -2618,7 +2824,10 @@ mod tests {
                     scope_policy: &self.scope,
                     durability: &self.durability,
                     pool: "agents",
-                    now: 1_700_000_000,
+                    now,
+                    // One reading per unit, off the node's own counter, exactly as the root would
+                    // take it at arrival.
+                    mono: self.mono.fetch_add(1, Ordering::AcqRel),
                     origin: self.origin,
                 },
                 draft(ops::OP_MESSAGE_SEND),
@@ -2628,9 +2837,13 @@ mod tests {
     }
 
     fn a2a_ctx() -> UnitCtx {
+        a2a_ctx_from(busbar_caps::OriginKind::Client)
+    }
+
+    fn a2a_ctx_from(origin: busbar_caps::OriginKind) -> UnitCtx {
         UnitCtx {
             key: busbar_caps::UnitKey::new(1),
-            origin: busbar_caps::OriginKind::Client,
+            origin,
             session: None,
             generation: busbar_kernel::registry::Generation::FIRST,
             admin_listener: false,
@@ -2646,13 +2859,25 @@ mod tests {
         Result<busbar_caps::Admission, busbar_caps::Refusal>,
         GroupLeaseSlip,
     ) {
+        ask_the_door_as(unit, who, busbar_caps::OriginKind::Client)
+    }
+
+    /// The same call, under a named origin — the one fact that decides whether a fee is coming.
+    fn ask_the_door_as(
+        unit: &A2aUnits<'_, busbar_unit_admission::InMemoryCells>,
+        who: &PrincipalId,
+        origin: busbar_caps::OriginKind,
+    ) -> (
+        Result<busbar_caps::Admission, busbar_caps::Refusal>,
+        GroupLeaseSlip,
+    ) {
         let seal = busbar_caps::KernelSeal::acquire_for_kernel();
         let slip = GroupLeaseSlip::new();
         let decision = Units::admit(
             unit,
             &busbar_caps::UnitToken::mint(&seal),
             &busbar_caps::AdmitToken::mint(&seal),
-            &a2a_ctx(),
+            &a2a_ctx_from(origin),
             who,
             &[],
             &slip,
@@ -2704,6 +2929,55 @@ mod tests {
         assert!(
             after.is_ok(),
             "the cap is instantaneous — it gates what is running, never what has run"
+        );
+    }
+
+    /// **The hold reserves the fee the settlement could post, and nothing where it could post
+    /// none.**
+    ///
+    /// One deployment, one flat fee, and two units differing in NOTHING but the origin the kernel
+    /// sealed them under. The caller's unit reserves the fee: it is coming, and a hold that did not
+    /// cover it would be a promise the settlement could break. The push the agent sent reserves
+    /// nothing at all, because the evidence that unit will settle from posts no fee — and the draw
+    /// against a hold is all-or-nothing, so a reservation for money nobody would ever take is a
+    /// caller refused over quota for a charge that was never going to land.
+    ///
+    /// Sized by ONE rule, [`fee_could_land`], which reads the same evidence the audit row and the
+    /// settlement read. Spelled a second time at the door, the two answers drift and the one that
+    /// drifts is the one nobody re-derived.
+    #[test]
+    fn the_hold_reserves_a_fee_only_where_the_settlement_could_post_one() {
+        const GROUP: &str = "a2a-team";
+        // Five cents a request, and bytes priced at nothing: the fee is the whole of the hold, so
+        // what is reserved IS the answer to whether one was sized for.
+        const FEE_CENTS: i64 = 5;
+        let who = PrincipalId::new("vk_agent");
+        let reserved = |origin| {
+            let deployment = deployment_priced(one_call_at_a_time(GROUP), Pricer::flat(FEE_CENTS));
+            let chain = deployment.resolve(&who, Some(GROUP));
+            let unit = deployment.calling(chain.as_ref());
+            match ask_the_door_as(&unit, &who, origin)
+                .0
+                .expect("the group is uncapped on spend, so the door says yes to both")
+            {
+                busbar_caps::Admission::Own(hold) => hold.reserved(),
+                // Nothing held is nothing reserved, which is exactly the answer for a unit priced
+                // at zero.
+                busbar_caps::Admission::ZeroHold => 0,
+                busbar_caps::Admission::Accrual(_) => panic!("this unit has no parent"),
+            }
+        };
+
+        let fee_nanos = u64::try_from(FEE_CENTS).expect("a positive fee") * NANOS_PER_CENT;
+        assert_eq!(
+            reserved(busbar_caps::OriginKind::Client),
+            fee_nanos,
+            "a caller's request is charged the flat fee, so the hold covers it"
+        );
+        assert_eq!(
+            reserved(busbar_caps::OriginKind::Provider),
+            0,
+            "a push the agent sent posts no fee, so there is nothing for the hold to reserve"
         );
     }
 

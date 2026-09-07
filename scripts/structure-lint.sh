@@ -1108,6 +1108,23 @@ is_grandfathered() { printf '%s\n' "$2" | grep -qx "$1"; }
 # not belong in a bench.
 CANDIDATES=()
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find crates -name '*.rs' -not -path '*/tests/*' -not -path '*/benches/*' | sort)
+# ── THE DENOMINATOR FLOOR ─────────────────────────────────────────────────────────────────────────
+# Every invariant below is a BAN over this list, and a ban over an EMPTY list matches nothing, prints
+# nothing, and reads exactly like a clean tree. `find crates …` returns an empty list whenever the
+# lint is run from the wrong directory, after a layout move, or in a checkout where `crates/` has not
+# been fetched — all of which are silent. `set -e` is not on here, so `find`'s own failure would not
+# stop the run either. The floor is deliberately far below the real count (~1500 files): it is a
+# guard against ZERO and near-zero, not a census.
+CANDIDATE_FLOOR="${STRUCTURE_LINT_CANDIDATE_FLOOR:-200}"
+if [ "${#CANDIDATES[@]}" -lt "$CANDIDATE_FLOOR" ]; then
+  hdr "denominator"
+  note "FAIL: the file list this lint scans holds ${#CANDIDATES[@]} file(s), below the floor of ${CANDIDATE_FLOOR}."
+  note "  Every invariant below is a BAN, and a ban over an empty (or nearly empty) file list matches"
+  note "  nothing and prints 'ok'. A clean tree and an unread tree produce the IDENTICAL output, so"
+  note "  the count is the only thing that can tell them apart. Run this from the repository root."
+  note "  cwd: $(pwd)"
+  exit 1
+fi
 
 # ── Invariant 2: no monster impl files — split by area. Test files (under a tests/ dir) are exempt. ─
 hdr "no impl .rs file over ${MAX_LINES_IMPL} lines (test files exempt)"
@@ -1136,7 +1153,9 @@ if [ -n "$inline_hits" ]; then
   note "$(printf '%s\n' "$inline_hits" | wc -l | tr -d ' ') inline test body/bodies — see docs/code-layout.md § 2"
   fail=1; loc=1
 fi
-[ "$loc" -eq 0 ] && note "ok"
+# The denominator is NAMED, not implied: "ok" over zero files is the same word as "ok" over the
+# whole tree, and only one of them means anything.
+[ "$loc" -eq 0 ] && note "ok (${#CANDIDATES[@]} production file(s) scanned)"
 
 # ══ Invariant 4: THE CHOKE-POINT REGISTRY ════════════════════════════════════════════════════════
 #
@@ -1378,7 +1397,17 @@ for row in "${CHOKE_POINTS[@]}"; do
       case ",${rule_allow}," in *",${f},"*) continue ;; esac   # the owner / definer files
       files+=("$f")
     done
-    [ ${#files[@]} -eq 0 ] && continue
+    # A RULE WITH NOTHING LEFT TO SCAN IS NOT A RULE THAT PASSED. `rule_allow` subtracts the
+    # owner/definer files; if it subtracts EVERY candidate (an allow-list that grew, a `find` that
+    # returned little, a crate layout move), the rule is skipped in silence and the registry still
+    # prints "ok (N choke points registered … no bypass)". Zero files scanned is red here, exactly
+    # as it is for the tree-wide denominator above.
+    if [ ${#files[@]} -eq 0 ]; then
+      note "ZERO-SCAN: choke point ${cp_id} had NO file left to scan after its allow-list — the rule"
+      note "  did not run, and a rule that did not run is not a rule that passed."
+      fail=1; ck=1
+      continue
+    fi
     hits=$(scan_rule "${files[@]}")
     if [ -n "$hits" ]; then
       while IFS= read -r h; do note "${cp_tag}: $h — ${cp_remedy}"; done <<<"$hits"
@@ -1886,11 +1915,21 @@ for row in "${AXIS_BRANCH[@]}"; do
     fail=1; ax=1
     continue
   fi
+  AX_SCANNED_TOTAL=$(( ${AX_SCANNED_TOTAL:-0} + ${#ax_files[@]} ))
   IFS=';' read -r -a ax_rulelist <<<"$ax_rules"
   for rule in "${ax_rulelist[@]}"; do
     IFS='>' read -r LINT_PAT LINT_WHAT LINT_UNLESS <<<"${rule//>>/>}"
     export LINT_PAT LINT_WHAT LINT_UNLESS
-    hits=$(scan_rule "${ax_files[@]}" || true)
+    # NO `|| true`. It was the one `scan_rule` call in this file that swallowed the scanner's exit
+    # status, and the failure it hid is the worst kind: awk exits non-zero on a fatal (a bad regex
+    # compiled from LINT_PAT, an unreadable file), `hits` comes back EMPTY, and an empty hit list is
+    # this rule's PASS. So a scanner that never ran and a clean axis were the same result.
+    if ! hits=$(scan_rule "${ax_files[@]}"); then
+      note "SCAN FAILED on the ${ax_axis} axis (awk exited non-zero over ${#ax_files[@]} file(s))."
+      note "  An aborted scan returns no hits, and no hits is this rule's pass — so this must be RED."
+      fail=1; ax=1
+      continue
+    fi
     [ -z "$hits" ] && continue
     while IFS= read -r h; do
       [ -z "$h" ] && continue
@@ -1928,7 +1967,12 @@ while IFS='|' read -r e_axis e_file e_why extra; do
 done <<<"$AXIS_EXCEPTIONS"
 rm -rf "$AX_TMP"
 if [ "$ax" -eq 0 ]; then
-  note "ok (${#AXIS_BRANCH[@]} axis/axes enforced over ${#ax_files[@]} production file(s))"
+  # THE DENOMINATOR IS THE TOTAL, NOT THE LAST AXIS'S. `ax_files` is rebuilt per axis inside the loop
+  # above and this line runs AFTER the loop, so it reported whatever the FINAL axis happened to scan
+  # and presented it as the figure for all of them. With three axes covering 900, 40 and 900 files,
+  # the summary read "3 axes enforced over 40 production files" — a number that is true of no axis
+  # but the last and false of the invariant as a whole. Accumulated across the loop instead.
+  note "ok (${#AXIS_BRANCH[@]} axis/axes enforced over ${AX_SCANNED_TOTAL:-0} production file-scan(s))"
 fi
 
 # ══ Invariant 9: THE DECLARATION CENSUS ═════════════════════════════════════════════════════════

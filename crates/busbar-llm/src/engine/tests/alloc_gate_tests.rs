@@ -164,6 +164,91 @@ fn alloc_gate_translate_write_stable() {
     );
 }
 
+/// GATE 1b — the SEAM itself, for ALL SIX dialects, not just the one the surgical gate routes.
+///
+/// The surgical gate above measures an openai lane, so it only catches a resolution allocation in
+/// the OPENAI dialect. The allocation it caught was not openai's, though: it was the neutral
+/// forwarder's, which resolved a whole `Protocol` (two `Box`es) to ask one writer one stateless
+/// question — and it went unseen for as long as the openai writer happened to be zero-sized. Every
+/// writer now carries per-stream state, so the same question asked of any of the six would have cost
+/// the same allocation. This asserts the seam is allocation-free for each dialect BY NAME, so a
+/// future field on any writer cannot re-open the hole in a dialect the routed gate never exercises.
+#[test]
+fn alloc_gate_dialect_seam_resolution_is_free_for_every_dialect() {
+    use crate::proto_codec::ProtocolWriter;
+
+    /// Ask ONE dialect the SAME stateless question twice — once through the neutral seam
+    /// (`decl_for(name).dialect()`), once on the writer directly — and require the two to allocate
+    /// the SAME number of times. Comparing the two isolates the SEAM's cost from the QUESTION's
+    /// (some writers answer this one by walking a JSON pointer, which allocates in `serde_json`
+    /// itself); the difference is exactly what resolving the dialect costs, and it must be nothing.
+    fn seam_costs_what_the_writer_costs<W: ProtocolWriter>(
+        name: &'static str,
+        mint: impl Fn() -> W,
+        body: &serde_json::Value,
+    ) {
+        let dialect = busbar_substrate::proto::decl_for(name)
+            .and_then(|d| d.dialect())
+            .unwrap_or_else(|| panic!("{name} declares a codec"));
+        // WARM both sides outside the measured windows: a first touch of the registry or of a lazy
+        // static a writer reads is a per-process cost, not a per-request one.
+        let _ = dialect.requested_candidate_count(body);
+        let _ = mint().requested_candidate_count(body);
+
+        let _ = CountingJemalloc::reset();
+        let _ = mint().requested_candidate_count(body);
+        let direct = CountingJemalloc::count();
+
+        let _ = CountingJemalloc::reset();
+        let _ = dialect.requested_candidate_count(body);
+        let seam = CountingJemalloc::count();
+
+        eprintln!("[alloc-gate] {name} seam allocations = {seam}, direct = {direct}");
+        assert_eq!(
+            seam, direct,
+            "ASKING THE `{name}` DIALECT ONE STATELESS QUESTION COST {seam} ALLOCATION(S) THROUGH \
+             THE NEUTRAL SEAM BUT {direct} ON THE WRITER ITSELF. The difference is the seam's own \
+             per-call cost, and the seam contract is that it has none: `decl_for(..).dialect()` is a \
+             pure-memory `&'static dyn` borrow and the forwarder builds its writer on the STACK. A \
+             difference here means something behind the seam went back to boxing a codec per call — \
+             which the request hot path then pays on EVERY request, for this dialect."
+        );
+    }
+
+    crate::testkit::install_test_seams();
+    let body = json!({ "model": "m", "messages": [] });
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_ANTHROPIC,
+        || crate::anthropic::AnthropicWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_BEDROCK,
+        || crate::bedrock::BedrockWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_COHERE,
+        || crate::cohere::CohereWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_GEMINI,
+        || crate::gemini::GeminiWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_OPENAI,
+        || crate::openai_chat::OpenAiWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_RESPONSES,
+        || crate::openai_responses::ResponsesWriter,
+        &body,
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // GATE 2 (coarse / whole-path): one openai>openai request end-to-end through forward_with_pool.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -243,6 +328,128 @@ async fn alloc_gate_openai_passthrough_forward() {
          bound {FORWARD_PASSTHROUGH_MAX_ALLOCS}. A new per-request allocation on the forward path \
          (or a scaling one) pushed it over. If intentional, update FORWARD_PASSTHROUGH_MAX_ALLOCS \
          in this commit."
+    );
+
+    server.shutdown().await;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// GATE 3 (scaling / delivery arm): the request body must be materialized ONCE, not twice.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// How many `messages` entries the large body carries. Sized so the per-node cost of ONE extra
+/// materialization of the parsed request body is far larger than the run-to-run jitter of the
+/// surrounding tokio/reqwest/mock machinery — the gate below measures a difference, so the signal
+/// has to clear the noise by a wide margin rather than by a few allocations.
+const ECHO_SCALING_MESSAGES: usize = 4_000;
+
+/// COMMITTED BOUND — the maximum number of heap allocations by which a request carrying
+/// [`ECHO_SCALING_MESSAGES`] messages may exceed the SAME request carrying one message, on the
+/// buffered delivery arm (`attempt/respond.rs`, taken here because the client asked to stream and
+/// the upstream answered one JSON body).
+///
+/// WHAT THIS PINS, and it is a SCALING ceiling rather than a fixed cost: the client chooses the node
+/// count of the body, so every per-node wave this arm performs is work an unauthenticated-size input
+/// multiplies. The arm legitimately performs several — the parse that builds the request-echo
+/// context, the translate, the re-serialize — and this gate does not claim to count them. What it
+/// catches is a wave being ADDED.
+///
+/// MEASURED, both sides, on this tree at 4_000 messages: 84_005 (21 per message) with the parsed
+/// body handed to the buffered translate by MOVE; 104_000 (26 per message) with the deep clone that
+/// preceded it. The bound sits between them with jitter headroom, so re-introducing that clone — or
+/// any other whole-body materialization of the same class — fails RED. It is a DIFFERENCE, not a
+/// total, so it does not move when unrelated FIXED per-request costs change.
+const ECHO_BODY_SCALING_MAX_ALLOCS: u64 = 92_000;
+
+/// A well-formed OpenAI chat-completions request with `n` messages, asking to STREAM.
+///
+/// `stream: true` is what puts this on the buffered delivery arm even though ingress and egress
+/// speak the same dialect: the client asked for a stream and the upstream answered one JSON body,
+/// so the answer is buffered, translated and re-framed rather than relayed.
+fn openai_stream_body(n: usize) -> bytes::Bytes {
+    let messages: Vec<serde_json::Value> = (0..n)
+        .map(|i| json!({ "role": "user", "content": format!("message {i}") }))
+        .collect();
+    serde_json::to_vec(&json!({
+        "model": "gpt-4o",
+        "messages": messages,
+        "max_tokens": 16,
+        "stream": true,
+    }))
+    .unwrap()
+    .into()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn alloc_gate_request_echo_body_materialized_once() {
+    crate::testkit::install_test_seams();
+    let state = Arc::new(MockServerState::new());
+    // One canned response per request below: 2 warm-ups + 2 measured.
+    for _ in 0..4 {
+        state.push(openai_ok());
+    }
+    let server = MockServer::new(state.clone()).await;
+
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "gpt-4o",
+            crate::proto_codec::PROTO_OPENAI,
+            &server.base_url(),
+        ))
+        .pool("", &[(0, 1)])
+        .build();
+
+    async fn one_request<A: busbar_substrate::testkit::BuiltAppSeam + ?Sized>(
+        app: &Arc<A>,
+        body: bytes::Bytes,
+    ) {
+        let resp = crate::engine::forward_with_pool(
+            app,
+            vec![member(0)],
+            body,
+            None,
+            "",
+            None,
+            "openai",
+            crate::test_support::CHAT,
+            None,
+        )
+        .await;
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "the arm under test must be 200"
+        );
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+    }
+
+    // WARM both shapes outside the measured window: the first request opens the upstream connection
+    // and primes lazy statics, none of it per-request steady-state cost.
+    one_request(&app, openai_stream_body(1)).await;
+    one_request(&app, openai_stream_body(ECHO_SCALING_MESSAGES)).await;
+
+    let _ = CountingJemalloc::reset();
+    one_request(&app, openai_stream_body(1)).await;
+    let small = CountingJemalloc::count();
+
+    let _ = CountingJemalloc::reset();
+    one_request(&app, openai_stream_body(ECHO_SCALING_MESSAGES)).await;
+    let large = CountingJemalloc::count();
+
+    let delta = large.saturating_sub(small);
+    eprintln!(
+        "[alloc-gate] buffered delivery arm: small={small} large={large} \
+         delta={delta} over {ECHO_SCALING_MESSAGES} messages"
+    );
+
+    assert!(
+        delta <= ECHO_BODY_SCALING_MAX_ALLOCS,
+        "THE BUFFERED DELIVERY ARM GAINED A PER-NODE ALLOCATION WAVE: a body with \
+         {ECHO_SCALING_MESSAGES} messages cost {delta} allocations more than a one-message body, \
+         over the committed bound {ECHO_BODY_SCALING_MAX_ALLOCS}. The client chooses that node \
+         count, so a wave added here is work an attacker-sized body multiplies — the last one to be \
+         removed was a deep clone of the whole parsed request body. If a new wave is genuinely \
+         required, say why and re-measure this bound in the same commit."
     );
 
     server.shutdown().await;

@@ -93,14 +93,46 @@ def strip_comments(line, state):
     return "".join(out)
 
 
-_STR_RE = re.compile(r'"(?:\\.|[^"\\])*"')
+# EVERY Rust string literal form, RAW FIRST. `br#"…"#` read by a `"(?:\\.|[^"\\])*"` regex is not
+# one literal but a plain string starting at the raw literal's OPENING quote and ending at the first
+# inner quote -- so the braces after that inner quote are never blanked. They land in the
+# `#[cfg(test)]` brace-depth counter in scan_file, close the cfg(test) block early, and every line
+# after it in the module is silently reclassified from test code to production code (or, with the
+# imbalance the other way, production code is swallowed as test code and its violations go
+# unreported). A gate that mis-attributes the code it reads is worse than one that does not read it.
+#
+# Alternation order is load-bearing: the longer prefixes must be tried first, so `b?r` (which covers
+# `r`, `br`) precedes `b?` (which covers `b`, and the bare form). A raw literal takes no escapes and
+# is closed only by a quote followed by the SAME run of hashes it opened with -- expressed here as a
+# backreference to the captured hash run, which is why `r#"a "quoted" b"#` stays one literal.
+# The lookbehind keeps the `b`/`r` from being the tail of a longer identifier.
+_STR_RE = re.compile(
+    r'(?<![A-Za-z0-9_])b?r(?P<hashes>#*)"(?P<rawbody>(?:[^"]|"(?!(?P=hashes)))*)"(?P=hashes)'
+    r'|(?<![A-Za-z0-9_])b?"(?P<body>(?:\\.|[^"\\])*)"'
+)
 _CHAR_RE = re.compile(r"'(?:\\.|[^'\\])'")
+
+
+def _blank_one_string(m):
+    """The literal with its BODY spaced out and its delimiters (`b`/`r`/hashes/quotes) intact.
+    Length is preserved exactly: line offsets computed from `Line.blank` (see `_trait_span` and
+    friends, which sum `len(l.blank) + 1`) must keep pointing at the same columns."""
+    start = m.start()
+    body_start, body_end = m.span("rawbody") if m.group("rawbody") is not None else m.span("body")
+    text = m.group(0)
+    return (text[:body_start - start] + " " * (body_end - body_start) + text[body_end - start:])
+
+
+def _string_body(m):
+    """The contents of a literal matched by `_STR_RE`, without its delimiters."""
+    raw = m.group("rawbody")
+    return m.group("body") if raw is None else raw
 
 
 def blank_literals(code):
     """Replace string and char literal contents with spaces so braces/parens inside them do not
     disturb structure matching. Lifetimes (`'a`) are not char literals and are left alone."""
-    code = _STR_RE.sub(lambda m: '"' + " " * (len(m.group(0)) - 2) + '"', code)
+    code = _STR_RE.sub(_blank_one_string, code)
     return _CHAR_RE.sub("' '", code)
 
 
@@ -1207,7 +1239,7 @@ def rule_lean_core(tree, cfg):
                 if l.intest:
                     continue
                 for m in _STR_RE.finditer(l.code):
-                    content = m.group(0)[1:-1]
+                    content = _string_body(m)
                     if word_rx.search(content):
                         offenders.append(f'"{content}" at {rel}:{l.no}')
     current = len(offenders)
@@ -1924,26 +1956,103 @@ def _named_symbols(tree, files, prefix, exclude):
 def rule_legacy_reach(tree, cfg):
     """How many distinct symbols of the retiring crates the composition root still names.
 
-    A ratchet, one row per crate prefix: the number may only go DOWN. Every red row lists the
-    symbols, so the deletion work has a worklist rather than a number."""
+    ONE RATCHET OVER THE TOTAL, and per-crate figures that inform rather than gate. The work this
+    measures moves a symbol off one retiring crate and, for a while, onto another: a core seam the
+    kernel takes over is spelled through the substrate on the way, which is one fewer `busbar_core::`
+    name and one more `busbar_substrate::` one. Per-crate ceilings call that step backwards and turn
+    a cut into a red row, so the direction that mattered — how much of the retiring surface the root
+    still names AT ALL — went unmeasured while the gate argued about which crate it was named
+    through. The total cannot be gamed by moving a name sideways, which is the only thing the
+    per-crate figures were ever asked to prove.
+
+    The per-crate rows stay, as WARN sub-rows: they carry the worklist, and a crate whose figure
+    climbs while the total falls is exactly the intermediate step above, visible and not fatal."""
     c = cfg["rules"]["legacy-reach"]
     files = _scoped_files(tree, c["scope_globs"])
-    rows = []
+    rows, total_offenders, total = [], [], 0
     for key, spec in c["prefixes"].items():
         seen = _named_symbols(tree, files, spec["prefix"], spec.get("exclude", []))
         current = len(seen)
+        total += current
         offenders = [f"{s} ({len(seen[s])} site(s), first {seen[s][0]})" for s in sorted(seen)]
+        total_offenders += offenders
         if not files:
             detail = VACUOUS + "no composition-root source is present in this tree"
         else:
-            detail = (f"the root names {current} distinct `{spec['prefix']}` symbol(s) "
-                      f"(ratchet {spec['ceiling']}, may only go down): "
+            detail = (f"informational: the root names {current} distinct `{spec['prefix']}` "
+                      f"symbol(s) (last calibrated at {spec['figure']}; this row does not gate — "
+                      f"the total does): "
                       + (", ".join(sorted(seen)[:6]) + (" …" if current > 6 else "")
                          if seen else "none"))
-        rows.append(row(f"legacy-reach:{key}", current <= spec["ceiling"],
-                        f"the root's reach into `{spec['prefix']}` only shrinks",
-                        detail, current, spec["ceiling"], c["why"], offenders))
+        rows.append(row(f"legacy-reach:{key}", current <= spec["figure"],
+                        f"the root's reach into `{spec['prefix']}`",
+                        detail, current, spec["figure"], c["why"], offenders,
+                        informational=True))
+    prefixes = ", ".join(f"`{s['prefix']}`" for s in c["prefixes"].values())
+    if not files:
+        detail = VACUOUS + "no composition-root source is present in this tree"
+    else:
+        detail = (f"the root names {total} distinct symbol(s) across the retiring crates "
+                  f"({prefixes}) (ratchet {c['ceiling']}, may only go down); per-crate figures are "
+                  "in the WARN sub-rows above")
+    rows.append(row("legacy-reach", total <= c["ceiling"],
+                    "the root's total reach into the retiring crates only shrinks",
+                    detail, total, c["ceiling"], c["why"], total_offenders))
     return rows
+
+
+# ── 31. no-test-doubles-in-production ────────────────────────────────────────────────────────────
+
+
+def rule_no_test_doubles_in_production(tree, cfg):
+    """Every stand-in value the shipped binary constructs is one somebody reviewed.
+
+    Two rows out of one scan. The first is the ratchet nobody may add to without saying why: a
+    forbidden spelling on a production line of the composition root that no `known_sites` entry
+    names. The second is the WORKLIST: of the entries that ARE named, how many were reviewed and
+    found to be a test double in the shipped binary rather than the shipped node's real value.
+
+    Enumerated by file and spelling rather than by line, because a line number moves under an edit
+    that changes nothing about what is constructed, and a reason attached to a moving number is a
+    reason nobody can check."""
+    c = cfg["rules"]["no-test-doubles-in-production"]
+    files = _scoped_files(tree, c["scope_globs"])
+    known = {}
+    for entry in c["known_sites"].values():
+        known[(entry["file"].replace("/", os.sep), entry["symbol"])] = entry
+
+    unlisted, doubles = [], []
+    for rel in files:
+        for l in tree.files[rel]:
+            if l.intest:
+                continue
+            for symbol in c["forbidden"]:
+                if symbol not in l.code:
+                    continue
+                entry = known.get((rel, symbol))
+                if entry is None:
+                    unlisted.append(f"`{symbol}` at {rel}:{l.no}")
+                elif entry["verdict"] == "double":
+                    doubles.append(f"`{symbol}` at {rel}:{l.no} — {entry['because']}")
+
+    if not files:
+        detail = VACUOUS + "no composition-root source is present in this tree"
+        listed_detail = detail
+    else:
+        detail = (f"{len(unlisted)} stand-in construction(s) on a production line of the "
+                  f"composition root that no reviewed site names (ceiling {c['max_unlisted']}): "
+                  + ("; ".join(unlisted) if unlisted else "none"))
+        listed_detail = (f"{len(doubles)} reviewed site(s) that are a test double in the shipped "
+                         f"binary (ratchet {c['max_doubles']}, may only go down): "
+                         + ("; ".join(doubles) if doubles else "none"))
+    return [
+        row("no-test-doubles-in-production", len(unlisted) <= c["max_unlisted"],
+            "a stand-in the shipped binary constructs is one somebody reviewed",
+            detail, len(unlisted), c["max_unlisted"], c["why"], unlisted),
+        row("no-test-doubles-in-production:doubles", len(doubles) <= c["max_doubles"],
+            "the reviewed stand-ins that are doubles rather than real values only shrink",
+            listed_detail, len(doubles), c["max_doubles"], c["why"], doubles),
+    ]
 
 
 def evaluate(tree, cfg, hits_path):
@@ -1979,6 +2088,7 @@ def evaluate(tree, cfg, hits_path):
     rows += rule_plane_no_money(tree, cfg)
     rows += rule_one_pricing_site(tree, cfg)
     rows += rule_legacy_reach(tree, cfg)
+    rows += rule_no_test_doubles_in_production(tree, cfg)
     return rows
 
 
@@ -2092,8 +2202,13 @@ def calibrate(rows, cfg, path):
     rules["plane-no-money"]["max_hits"] = by_id["plane-no-money"]["current"]
     rules["one-pricing-site"]["max_extra_sites"] = by_id["one-pricing-site"]["current"]
     rules["one-pricing-site"]["max_fee_readers"] = by_id["one-pricing-site:fee-fields"]["current"]
+    rules["legacy-reach"]["ceiling"] = by_id["legacy-reach"]["current"]
     for key in rules["legacy-reach"]["prefixes"]:
-        rules["legacy-reach"]["prefixes"][key]["ceiling"] = by_id[f"legacy-reach:{key}"]["current"]
+        rules["legacy-reach"]["prefixes"][key]["figure"] = by_id[f"legacy-reach:{key}"]["current"]
+    rules["no-test-doubles-in-production"]["max_unlisted"] = \
+        by_id["no-test-doubles-in-production"]["current"]
+    rules["no-test-doubles-in-production"]["max_doubles"] = \
+        by_id["no-test-doubles-in-production:doubles"]["current"]
     for rid in ("forbid-unsafe", "forbid-unsafe-deny"):
         missing_field = "known_missing_forbid" if rid == "forbid-unsafe" else "known_missing_deny"
         rules["forbid-unsafe"][missing_field] = sorted(

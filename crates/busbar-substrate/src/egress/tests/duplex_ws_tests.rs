@@ -209,6 +209,83 @@ async fn the_acceptor_queues_no_more_inbound_frames_than_its_bound() {
     );
 }
 
+/// AN OVERSIZED INBOUND MESSAGE IS REFUSED, NOT REASSEMBLED. The frame bound and the queue bound
+/// above defend against different things and neither covers the other: the queue caps how MANY frames
+/// may wait, and a peer that sends ONE enormous message never reaches it — the message is still being
+/// assembled, so the counted-frames bound has nothing to count while the socket's reassembly buffer
+/// grows to whatever the peer asked for. The acceptor therefore carries the deployment's request-body
+/// ceiling onto the upgrade, and a message past it closes the connection instead of being buffered.
+/// The small frame first proves the session is live, so the refusal is a refusal and not a dead socket.
+#[tokio::test]
+async fn the_acceptor_refuses_an_inbound_message_past_the_body_ceiling() {
+    // The cap is read from the installed limits per upgrade, so the posture must be live for the dial
+    // — and installing a process-global is what the shared lock serializes.
+    let _limits_lock = crate::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let cap = crate::config::limits::REQUEST_BODY_MAX_BYTES_FLOOR;
+    let posture = crate::config::limits::LimitsResolved::with_request_body_max_bytes(cap);
+    // Uncommitted, so the previous posture is restored when this test ends whichever way it ends.
+    let _installed = crate::config::limits::InstallGuard::install(&posture);
+
+    type Seen = tokio::sync::mpsc::UnboundedSender<Vec<u8>>;
+
+    // The route reports every frame the pump side actually receives, so "refused" is proven by the
+    // oversized frame never arriving rather than by the absence of a crash.
+    async fn ws_route(
+        axum::extract::State(seen): axum::extract::State<Seen>,
+        upgrade: axum::extract::ws::WebSocketUpgrade,
+    ) -> axum::response::Response {
+        ws_ingress::accept(upgrade, move |mut stream, sink| async move {
+            let _write_side = sink; // held so the socket stays up for as long as the peer does
+            while let Some(frame) = stream.next().await {
+                if seen.send(frame).is_err() {
+                    break;
+                }
+            }
+        })
+    }
+
+    let (seen_tx, mut seen_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let app = axum::Router::new()
+        .route("/", axum::routing::get(ws_route))
+        .with_state(seen_tx);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+    let url = format!("ws://{addr}/");
+    let (mut stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+        .await
+        .expect("dial the size-capped acceptor");
+
+    // UNDER the ceiling: the session is live and the frame lands, so the refusal below is about size.
+    sink.send(vec![b'a'; 1024]).await.ok();
+    let under = tokio::time::timeout(std::time::Duration::from_secs(5), seen_rx.recv())
+        .await
+        .expect("an under-cap frame arrives")
+        .expect("the session delivered it");
+    assert_eq!(under.len(), 1024, "an under-cap frame crosses verbatim");
+
+    // OVER the ceiling: the WS layer refuses it and closes, which the dialing side sees as the session
+    // ending rather than as an answer.
+    sink.send(vec![b'b'; cap * 4]).await.ok();
+    let ended = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next()).await;
+    assert!(
+        matches!(ended, Ok(None)),
+        "an over-cap message must close the connection, not be buffered and served"
+    );
+
+    // …and the payload never reached the pump: the session ended with the oversized message unread.
+    let delivered = seen_rx.try_recv();
+    assert!(
+        matches!(
+            delivered,
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+        ),
+        "an over-cap message must never be delivered to the pump, got {:?}",
+        delivered.map(|f| f.len())
+    );
+}
+
 /// THE SAME BOUND ON THE UPSTREAM LEG. An upstream that emits faster than the leg consumes is the
 /// mirror image of a flooding client, and the dialer's inbound queue is the same single thing between
 /// that socket and the heap. A relay has two legs; a bound on only one of them is not a bound.
@@ -256,6 +333,129 @@ async fn the_dialer_queues_no_more_upstream_frames_than_its_bound() {
         queued <= crate::egress::duplex_ws::MAX_QUEUED_UPSTREAM_FRAMES + 1,
         "a flood of {flood} upstream frames left {queued} queued on an unread leg"
     );
+}
+
+/// AN UPSTREAM THAT HAS STOPPED ACCEPTING BYTES: every write pends forever, which is what a wedged
+/// provider, a peer that stopped reading, or a socket a middlebox is holding open looks like from this
+/// side. Reads pend too, so the session stays up — the stall is the whole point, not a disconnect.
+struct StalledUpstreamIo;
+
+impl tokio::io::AsyncRead for StalledUpstreamIo {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+}
+
+impl tokio::io::AsyncWrite for StalledUpstreamIo {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        _buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        std::task::Poll::Pending
+    }
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Pending
+    }
+}
+
+/// THE OTHER DIRECTION IS BOUND TOO. The inbound bounds above hold a fast peer off this node's heap;
+/// this holds a fast PLANE off it when the SOCKET is the slow side. With the outbound queue unbounded,
+/// a leg whose upstream has wedged goes on accepting frames at whatever rate the producer can write
+/// them and the memory one session costs is decided by the producer alone — the stall is invisible to
+/// it and paid for here. Bounded, the producer's own `send` stops completing once the queue is full,
+/// which is the backpressure that charges the stall back to the side that is causing it. A relay has
+/// two legs and two directions; a bound on three of the four is not a bound.
+#[tokio::test]
+async fn the_dialer_accepts_no_more_outbound_frames_than_its_bound_when_the_upstream_stalls() {
+    let bound = crate::egress::duplex_ws::MAX_QUEUED_OUTBOUND_FRAMES;
+
+    // A live client-role WS session over an upstream whose every write pends: the writer task takes
+    // the first frame and never completes it, so from there on the queue is the only thing absorbing
+    // what the producer writes — exactly the shape the bound exists for.
+    let ws = tokio_tungstenite::WebSocketStream::from_raw_socket(
+        StalledUpstreamIo,
+        tokio_tungstenite::tungstenite::protocol::Role::Client,
+        None,
+    )
+    .await;
+    let (mut sink, _stream) = crate::egress::duplex_ws::split_messages(ws);
+
+    // Write far past the bound, counting only the frames the sink actually TOOK. A send that does not
+    // complete promptly is backpressure — the sink refusing to grow — and ends the count.
+    let flood = bound * 8;
+    let mut accepted = 0usize;
+    for _ in 0..flood {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            sink.send(b"outbound".to_vec()),
+        )
+        .await
+        {
+            Ok(Ok(())) => accepted += 1,
+            // Either the sink pushed back (timeout) or the session ended — neither is unbounded growth.
+            _ => break,
+        }
+    }
+
+    assert!(
+        accepted < flood,
+        "a stalled upstream must not let the sink take all {flood} frames — that is unbounded growth"
+    );
+    // The channel's own guaranteed per-sender slot, plus the one frame the writer task pulled before
+    // stalling, sit on top of the configured depth; the point is that the total is the BOUND and not
+    // the flood.
+    assert!(
+        accepted <= bound + 4,
+        "a stalled upstream left the sink taking {accepted} frames against a bound of {bound}"
+    );
+}
+
+/// A BRACKETED IPv6 UPSTREAM IS A DIALLABLE TARGET. The authority split has to tell a literal's own
+/// colons from a port separator, and the `]` tests are how: a left side ENDING in `]` is a bracketed
+/// address followed by a real port, a right side CONTAINING one is the tail of the address itself.
+/// Read the other way round, a bracketed host with a port can never be recognised at all — its host
+/// comes back with the port still glued to it, which no resolver and no certificate name will match,
+/// so the target is unreachable by construction rather than by policy.
+#[test]
+fn a_bracketed_ipv6_authority_splits_into_host_and_port() {
+    // Bracketed literal WITH a port: the port is the port, and the host unbrackets to the address the
+    // guard resolves and rustls offers for SNI.
+    let (secure, host, port, _url) = super::split_ws_url("wss://[2001:db8::1]:443/x")
+        .expect("a bracketed IPv6 host is a target");
+    assert!(secure, "wss:// is the TLS scheme");
+    assert_eq!(
+        host, "2001:db8::1",
+        "the host is the literal, without brackets"
+    );
+    assert_eq!(port, 443, "the trailing :443 after the `]` is the port");
+
+    // Bracketed literal with NO port: every colon belongs to the address, and the scheme's default
+    // port stands.
+    let (_secure, host, port, _url) = super::split_ws_url("wss://[2001:db8::1]/x")
+        .expect("a portless bracketed host is a target");
+    assert_eq!(host, "2001:db8::1");
+    assert_eq!(port, 443, "an absent port defaults by scheme");
+
+    // The ordinary named host is unchanged by the same test — the split still reads a bare host's
+    // trailing `:port` as a port.
+    let (_secure, host, port, _url) =
+        super::split_ws_url("wss://example.com:8443/x").expect("a named host is a target");
+    assert_eq!(host, "example.com");
+    assert_eq!(port, 8443);
 }
 
 /// `Transport::WebSocket` IS ARMED: a real caller selects it, resolves the axis to

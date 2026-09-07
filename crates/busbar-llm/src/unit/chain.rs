@@ -932,12 +932,18 @@ mod rehearsal {
         let tables = crate::engine::EngineTables::new(rt);
         let lane = facts.lane.and_then(|i| tables.lanes().get(i));
         let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
+        // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
+        // question it cannot answer: it holds no card, and inventing one here would be this crate
+        // deciding what a lane's rates are. It answers nothing, and the hold below reaches no exit
+        // path anyway. What the money actually comes to is the composition root's, and it is proven
+        // where the card is.
         let metered = meter::meter(
             &UnitToken::mint(seal),
             &UsageToken::mint(seal),
             &ctx,
             hold,
             &Outcome::Completed,
+            &|_| 0,
         );
         metering.reached = true;
         // The accrual arm's own report of itself. `row` is filled whether the step posted or only

@@ -248,7 +248,13 @@ impl Transport for GrpcTransport {
             // on it: end the inbound side so a reader sees end-of-stream instead of waiting out its
             // deadline for a frame the upstream can no longer send.
             tokio::spawn(async move {
-                let _ = over.await;
+                // A driver that FAILED is not a peer that finished. The reader is told which it
+                // was — a failure goes up as the terminal error on this connection's frame stream,
+                // ahead of the end, rather than being flattened into the clean end-of-stream a
+                // finished peer produces.
+                if matches!(over.await, Ok(client::ConnectionEnd::Failed)) {
+                    let _ = state.send_inbound(Err(TransportError::Reset)).await;
+                }
                 state.end_inbound();
             });
             Ok(Conn::new(Arc::new(GrpcConnHandle {

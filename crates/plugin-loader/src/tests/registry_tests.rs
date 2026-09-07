@@ -505,6 +505,46 @@ fn open_hook_refuses_non_hook_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The inventory marks the rows a conflict is ABOUT, and only those. The conflict message spells
+/// plugin-author-controlled identifiers into prose, so a row is joined to it by the tarball the
+/// conflict names — not by finding the row's own quoted identifier somewhere inside the sentence,
+/// which a third plugin can arrange to be true of a conflict it has nothing to do with.
+#[test]
+fn a_conflict_marks_only_the_rows_it_names() {
+    let release = key(1);
+    let dir = tmpdir("conflictjoin");
+    let a = sign(&release, manifest("dup", "alias-a", "busbar"), b"a");
+    let b = sign(&release, manifest("dup", "alias-b", "busbar"), b"b");
+    // A bystander that claims no identifier either conflicting plugin claims, so it is `ready`.
+    let c = sign(&release, manifest("innocent", "vk", "busbar"), b"c");
+    write_tarball(&dir, "a.tar.gz", &a, b"a");
+    // The message spells the tarball's own name, and a tarball's name is whoever shipped it to
+    // choose — so the prose can be made to contain any quoted identifier at all.
+    write_tarball(&dir, "spells-'vk'-in-its-name.tar.gz", &b, b"b");
+    write_tarball(&dir, "c.tar.gz", &c, b"c");
+
+    let rows = inventory(&dir, &policy(&release));
+    let by_file = |f: &str| rows.iter().find(|r| r.file == f).unwrap();
+    assert!(
+        by_file("a.tar.gz").status.starts_with("CONFLICT:"),
+        "got {}",
+        by_file("a.tar.gz").status
+    );
+    assert!(
+        by_file("spells-'vk'-in-its-name.tar.gz")
+            .status
+            .starts_with("CONFLICT:"),
+        "got {}",
+        by_file("spells-'vk'-in-its-name.tar.gz").status
+    );
+    assert_eq!(
+        by_file("c.tar.gz").status,
+        "ready",
+        "a bystander the message merely spells is not in conflict"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// The inventory is MANIFEST-ONLY and covers every row class: ready, skipped (unknown
 /// publisher), and invalid - with the exact reason.
 #[test]

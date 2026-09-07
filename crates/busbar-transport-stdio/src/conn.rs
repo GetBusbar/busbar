@@ -61,6 +61,14 @@ pub(crate) struct ConnState {
     /// is the flag that pump checks, so a closed connection stops delivering inbound frames at the
     /// same moment its writes start answering `Closed`.
     pub(crate) closed: AtomicBool,
+    /// What WAKES that pump. The flag above is only ever read once a read has RETURNED, and the
+    /// read a pump parks on returns when the peer sends a line — which is precisely what a peer
+    /// that has gone quiet without hanging up never does. Against that peer the flag alone leaves
+    /// the pump parked for the life of the process, holding the connection's reader, while every
+    /// write on the same connection already answers `Closed`. The close notifies this, every read
+    /// is raced against it, and the pump ends where it was parked. The sibling `tcp` and `http`
+    /// crates close the same way.
+    pub(crate) closing: tokio::sync::Notify,
 }
 
 impl ConnState {
@@ -78,6 +86,7 @@ impl ConnState {
             child: AsyncMutex::new(child),
             poisoned: AtomicBool::new(false),
             closed: AtomicBool::new(false),
+            closing: tokio::sync::Notify::new(),
         })
     }
 
@@ -87,6 +96,14 @@ impl ConnState {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Acquire)
+    }
+
+    /// Close the connection: the flag FIRST, then the wake. A pump that arms its wait and then
+    /// re-reads the flag can never miss both, whichever order the two tasks interleave in.
+    /// Reversed, a pump between the two would see neither and stay parked.
+    pub(crate) fn begin_close(&self) {
+        self.closed.store(true, Ordering::Release);
+        self.closing.notify_waiters();
     }
 }
 

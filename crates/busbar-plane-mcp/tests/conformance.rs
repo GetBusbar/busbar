@@ -639,7 +639,22 @@ fn the_metering_step_reports_what_it_read() {
         for line in locators.lines.as_slice() {
             // A plane names no lane and no price.
             assert!(line.lane.is_none());
-            assert!(McpPlane::METER_CLASSES.iter().any(|c| c.key == line.class));
+            let declared = McpPlane::METER_CLASSES
+                .iter()
+                .find(|c| c.key == line.class)
+                .unwrap_or_else(|| panic!("{op} meters the undeclared class {}", line.class));
+            // Which SIDE the class says it is sized from is the side the quantity was taken from.
+            // Both quantities here come off the answer — the call is counted once it has been
+            // answered, and the byte count is the answer's own length — so both classes declare
+            // themselves sized from the answer. A class that declared the request and reported the
+            // answer would have a rate card pricing one side of the exchange at the size of the
+            // other.
+            assert_eq!(
+                declared.direction,
+                busbar_contract::ids::ClassDirection::Response,
+                "{} is metered off the answer and declares another side",
+                line.class
+            );
         }
     }
 }
@@ -821,6 +836,86 @@ fn every_narrowing_is_declared() {
                 "{op} on {transport} narrows to {narrowing}, which no claim declares"
             );
         }
+    }
+}
+
+/// A request bigger than the per-unit arena is still relayed, byte for byte.
+///
+/// The bytes the hop carries are the bytes that arrived, and they already live for the unit that
+/// carries them. Copying them into the arena first spent the whole bounded budget on a second copy
+/// of what the unit was already holding, so a request larger than that budget could not be relayed
+/// at all — a size limit nobody configured, imposed by an allocation with no purpose.
+#[test]
+fn a_request_larger_than_the_arena_is_relayed() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let seal = common::TestSeal;
+    let argument = "x".repeat(busbar_contract::bounded::ARENA_BYTES * 2);
+    let body = format!(
+        r#"{{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{{"name":"search","arguments":{{"q":"{argument}"}}}}}}"#
+    );
+    let body = body.into_bytes();
+    assert!(body.len() > busbar_contract::bounded::ARENA_BYTES);
+    let unit = busbar_contract::unit::Unit::new(
+        &seal,
+        busbar_contract::UnitKey::new(1),
+        busbar_contract::unit::Origin::Client,
+        None,
+        None,
+        busbar_contract::wire::Direction::Inbound,
+        Some(common::principal()),
+        ops::OP_TOOL_CALL,
+        busbar_contract::bounded::Ir::new(&body, &[]),
+        busbar_contract::bounded::Facts::new(),
+        None,
+    );
+    let egress = plane
+        .encode_egress(&unit, &sealed_destination(), None, &ctx)
+        .expect("a request larger than the arena is still a request this plane can relay");
+    assert_eq!(
+        egress.body.as_slice(),
+        body.as_slice(),
+        "the server is sent the caller's own bytes, whole"
+    );
+}
+
+/// What every operation SEALS is somewhere its own plan then goes.
+///
+/// The verify step seals one destination and the route step lists the legs the unit dials. A class
+/// that seals an upstream and then plans no leg to it has had an upstream admitted, checked against
+/// the allow-list and counted against this node's admission for a hop that never happens; a class
+/// that plans a leg it was not verified for is the other half of the same seam. Asserted over the
+/// whole declared vocabulary, so a class added later cannot quietly acquire either shape.
+#[test]
+fn every_operation_is_verified_for_a_destination_its_plan_reaches() {
+    let plane = McpPlane::EMPTY;
+    let scaffold = Scaffold::new("http");
+    let ctx = scaffold.ctx();
+    let seal = common::TestSeal;
+    for op in <McpPlane as PlaneMeta>::OP_CLASSES {
+        let unit = busbar_contract::unit::Unit::new(
+            &seal,
+            busbar_contract::UnitKey::new(1),
+            busbar_contract::unit::Origin::Client,
+            None,
+            None,
+            busbar_contract::wire::Direction::Inbound,
+            Some(common::principal()),
+            *op,
+            busbar_contract::bounded::Ir::new(b"{}", &[]),
+            busbar_contract::bounded::Facts::new(),
+            None,
+        );
+        let verified = plane.verify(&unit, &ctx);
+        let plan = plane.route(&unit, &ctx);
+        assert!(
+            plan.legs
+                .as_slice()
+                .iter()
+                .any(|l| l.destination == verified),
+            "{op} is verified for {verified:?}, which none of its legs reach"
+        );
     }
 }
 

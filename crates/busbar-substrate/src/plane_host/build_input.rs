@@ -22,8 +22,10 @@
 //!
 //! ## What it does NOT carry
 //!
-//! Pre-RESOLVED plaintext secrets and the rate-card-derived costs ARE carried (fidelity: the plane
-//! cannot re-resolve a secret ref — it has no `SecretResolver` — nor re-price without the rate card).
+//! Pre-RESOLVED secrets and the rate-card-derived costs ARE carried (fidelity: the plane cannot
+//! re-resolve a secret ref — it has no `SecretResolver` — nor re-price without the rate card). A
+//! resolved secret is carried in `busbar_api::Redacted`, never as a bare `String`: this carrier is
+//! formatted on the build path, so the wrapper is what keeps the credential out of a trace line.
 //! Pool-hook ROUTING POLICIES are NOT: their resolved value is the core-owned
 //! `busbar_core::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
 //! cannot be named here and must not cross the downcast — so, exactly as the container-plane gate
@@ -77,7 +79,7 @@ pub struct HealthInput {
 /// `build_runtime` needs to reconstruct a `Lane` — including its provider's egress + auth inputs, so
 /// the plane owns the `build_egress_targets` / `egress_auth` calls (the allowed plane→core edge)
 /// WITHOUT the carrier naming an `EgressTarget` / `CredentialProvider`.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct LaneInput {
     /// The model name (config key) — the lane's stable identity and `by_model` key.
     pub model: String,
@@ -94,10 +96,14 @@ pub struct LaneInput {
     pub path_base: Option<String>,
     /// Optional upstream model-name override (the wire model), else the config key.
     pub upstream_model: Option<String>,
-    /// The PRE-RESOLVED provider credential PLAINTEXT — the resolved secret, carried because the plane
-    /// cannot re-resolve a secret ref. Held here in the clear only for the duration of the build; the
-    /// plane wraps it in `busbar_api::Redacted` the instant it lands in the `Lane`.
-    pub api_key_plaintext: String,
+    /// The PRE-RESOLVED provider credential — the resolved secret, carried because the plane cannot
+    /// re-resolve a secret ref (it has no `SecretResolver`). Held in the SAME `busbar_api::Redacted`
+    /// wrapper the `Lane` it feeds holds it in, for the whole of its life here rather than only after
+    /// it lands: a bare `String` on a carrier that a build trace, a panic message or an error `{:?}`
+    /// can reach is the plaintext in a log, and the wrapper is what makes that structurally impossible
+    /// (it prints `[REDACTED]`, does not serialize, and zeroizes on drop). Read through
+    /// `expose_secret` at the one place the credential is actually built.
+    pub api_key: busbar_api::Redacted<String>,
     /// The provider's auth-style override (neutral).
     pub auth_style: AuthStyleInput,
     /// OAuth scope (`auth: oauth-client-credentials` / an override for `jwt-bearer`).
@@ -130,6 +136,25 @@ pub struct LaneInput {
     pub limited: bool,
     /// The request budget when `limited`, else `-1`.
     pub budget: i64,
+}
+
+/// HAND-ROLLED, never derived. This carrier holds a resolved provider credential, and a type that
+/// does is one the construction gate names as a secret carrier and holds to writing this impl —
+/// belt and braces over the `Redacted` field, so neither the wrapper nor the derive is the single
+/// thing standing between the credential and a log line. What a reader of a build trace needs is
+/// which lane this is and where it points; nothing else printed here is a secret.
+impl std::fmt::Debug for LaneInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LaneInput")
+            .field("model", &self.model)
+            .field("provider", &self.provider)
+            .field("protocol", &self.protocol)
+            .field("base_url", &self.base_url)
+            .field("upstream_model", &self.upstream_model)
+            .field("api_key", &self.api_key)
+            .field("auth_style", &self.auth_style)
+            .finish_non_exhaustive()
+    }
 }
 
 /// ONE pool member, flattened to neutral scalars — a `WeightedLane` plus its `MemberMeta`.
@@ -308,3 +333,7 @@ pub struct PlaneBuildInput {
     /// plane's own fixed default.
     pub default_failover: Option<FailoverInput>,
 }
+
+#[cfg(test)]
+#[path = "tests/build_input_tests.rs"]
+mod tests;

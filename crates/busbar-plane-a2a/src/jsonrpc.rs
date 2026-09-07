@@ -217,21 +217,62 @@ pub fn read(body: &[u8]) -> Result<Envelope, Decode> {
 fn id_shape(raw: &[u8]) -> Option<IdShape> {
     match raw.first()? {
         b'"' if raw.len() >= 2 && raw.ends_with(b"\"") => Some(IdShape::Str),
-        b'-' | b'0'..=b'9' => {
-            // A number is digits with at most one point and at most one exponent. Anything else
-            // reaching here is a scalar that merely starts like a number.
-            let rest = &raw[1..];
-            if rest
-                .iter()
-                .all(|b| b.is_ascii_digit() || matches!(b, b'.' | b'e' | b'E' | b'+' | b'-'))
-            {
-                Some(IdShape::Number)
-            } else {
-                None
-            }
-        }
+        b'-' | b'0'..=b'9' if is_number(raw) => Some(IdShape::Number),
         _ => None,
     }
+}
+
+/// Whether a run of bytes is a NUMBER, by the one grammar a document has for writing one.
+///
+/// The test used to be "starts like a number, and every byte after that is a digit or one of the
+/// punctuation marks a number can contain" — which the comment beside it described as at most one
+/// point and at most one exponent, a thing it did not check. It admits `1.2.3`, `007`, `1e`, `--1`
+/// and `1e+`: none of them is a number, and none of them can be written back, because the answer
+/// echoes the identifier by parsing these same bytes into a value. So the reader admitted a request
+/// whose every possible reply, success or refusal, failed to encode: the caller was told nothing at
+/// all, which is the one outcome this protocol has no spelling for. Reading it the way it will be
+/// written is what keeps the two ends agreeing.
+fn is_number(raw: &[u8]) -> bool {
+    let mut i = 0;
+    if raw.first() == Some(&b'-') {
+        i += 1;
+    }
+    // A leading zero stands alone: `0` is a number and `007` is not one.
+    match raw.get(i) {
+        Some(b'0') => i += 1,
+        Some(b'1'..=b'9') => {
+            while matches!(raw.get(i), Some(b'0'..=b'9')) {
+                i += 1;
+            }
+        }
+        _ => return false,
+    }
+    // A point, if present, is followed by at least one digit.
+    if raw.get(i) == Some(&b'.') {
+        i += 1;
+        let digits = i;
+        while matches!(raw.get(i), Some(b'0'..=b'9')) {
+            i += 1;
+        }
+        if i == digits {
+            return false;
+        }
+    }
+    // An exponent, if present, is a sign at most and then at least one digit.
+    if matches!(raw.get(i), Some(b'e' | b'E')) {
+        i += 1;
+        if matches!(raw.get(i), Some(b'+' | b'-')) {
+            i += 1;
+        }
+        let digits = i;
+        while matches!(raw.get(i), Some(b'0'..=b'9')) {
+            i += 1;
+        }
+        if i == digits {
+            return false;
+        }
+    }
+    i == raw.len()
 }
 
 /// The identifier as a document value, for building an answer that echoes it.
@@ -380,6 +421,71 @@ mod tests {
         assert_eq!(id_shape(b"null"), None);
         assert_eq!(id_shape(b"true"), None);
         assert_eq!(id_shape(b""), None);
+    }
+
+    /// Every identifier the reader ADMITS is one an answer can echo.
+    ///
+    /// The two ends read the same bytes: the reader decides whether a request is admissible, and the
+    /// answer writes the identifier back by parsing those same bytes into a value. A request the
+    /// reader admits and the writer cannot echo is a caller who is told nothing at all — not an
+    /// answer, not a refusal — because both replies encode through the same step. The rows below are
+    /// the ones the old reader admitted: each merely STARTS like a number.
+    #[test]
+    fn every_admitted_identifier_can_be_echoed() {
+        for raw in [
+            &b"1"[..],
+            &b"0"[..],
+            &b"-1"[..],
+            &b"1.5"[..],
+            &b"1e3"[..],
+            &b"1E+3"[..],
+            &b"1.2.3"[..],
+            &b"007"[..],
+            &b"1e"[..],
+            &b"1e+"[..],
+            &b"--1"[..],
+            &b"-"[..],
+            &b"1-2"[..],
+            &br#""a""#[..],
+        ] {
+            if id_shape(raw).is_some() {
+                assert!(
+                    id_value(raw).is_ok(),
+                    "{raw:?} is admitted as an identifier and cannot be written back"
+                );
+            }
+        }
+    }
+
+    /// The identifiers that merely START like a number are refused as identifiers.
+    #[test]
+    fn a_run_of_bytes_that_only_starts_like_a_number_is_not_one() {
+        for raw in [
+            &b"1.2.3"[..],
+            &b"007"[..],
+            &b"1e"[..],
+            &b"1e+"[..],
+            &b"--1"[..],
+            &b"-"[..],
+            &b"1-2"[..],
+            &b"1."[..],
+        ] {
+            assert_eq!(id_shape(raw), None, "{raw:?} was read as a number");
+        }
+        // And the shapes that ARE numbers stay admitted.
+        for raw in [
+            &b"0"[..],
+            &b"-0"[..],
+            &b"42"[..],
+            &b"1.5"[..],
+            &b"-1e-3"[..],
+        ] {
+            assert_eq!(
+                id_shape(raw),
+                Some(IdShape::Number),
+                "{raw:?} is a number and was refused"
+            );
+        }
     }
 
     /// A successful answer is the envelope the codec writes, byte for byte.

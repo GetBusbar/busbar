@@ -679,7 +679,7 @@ impl LaneSpec {
             path: self.path.clone(),
             path_base: self.path_base.clone(),
             upstream_model: self.upstream_model.clone(),
-            api_key_plaintext: self.api_key.clone(),
+            api_key: busbar_api::Redacted::new(self.api_key.clone()),
             auth_style,
             scope: None,
             token_url: None,

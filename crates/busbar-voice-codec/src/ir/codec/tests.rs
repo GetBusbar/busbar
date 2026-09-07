@@ -111,13 +111,13 @@ fn session_update_server_vad_roundtrips_and_types() {
         Some("auto")
     );
     match &config.turn_detection {
-        Some(IrVad::ServerVad {
+        Some(Some(IrVad::ServerVad {
             threshold,
             prefix_padding_ms,
             silence_duration_ms,
             create_response,
             interrupt_response,
-        }) => {
+        })) => {
             assert!((threshold - 0.5).abs() < f32::EPSILON);
             assert_eq!(*prefix_padding_ms, 300);
             assert_eq!(*silence_duration_ms, 200);
@@ -144,9 +144,9 @@ fn session_update_semantic_vad_roundtrips() {
     };
     assert_eq!(
         config.turn_detection,
-        Some(IrVad::SemanticVad {
+        Some(Some(IrVad::SemanticVad {
             eagerness: Eagerness::High
-        })
+        }))
     );
     assert_eq!(config.max_output_tokens, Some(MaxOutputTokens::Inf));
 }
@@ -221,6 +221,8 @@ fn an_unknown_turn_detection_type_drops_that_field_only() {
     }));
     assert_eq!(config.instructions.as_deref(), Some("still mine"));
     assert_eq!(config.tools.len(), 1);
+    // Dropped as unmodelled ⇒ ABSENT, not an explicit `null`: the patch is re-framed without the key
+    // rather than with one that would disable VAD nobody asked to disable.
     assert_eq!(config.turn_detection, None);
     assert!(st.dropped_fields().contains(&"turn_detection"));
 }
@@ -250,7 +252,44 @@ fn session_update_null_turn_detection_disables_vad() {
     let IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) = &ir[0] else {
         panic!();
     };
-    assert_eq!(config.turn_detection, None);
+    assert_eq!(config.turn_detection, Some(None));
+}
+
+/// THE THREE STATES, both directions. A partial `session.update` that never names `turn_detection`
+/// must not be re-framed upstream with `"turn_detection": null` — that is GA's "disable VAD", so the
+/// upstream would stop detecting end-of-turn and the model would never answer a client that expects
+/// server VAD to close its turns. Absent stays absent, `null` stays `null`, a value stays itself.
+#[test]
+fn turn_detection_keeps_absent_null_and_value_apart_in_both_directions() {
+    let cases: [(Value, Option<Option<IrVad>>); 3] = [
+        // Absent — the patch names only `instructions`.
+        (json!({ "instructions": "x" }), None),
+        // Explicit null — disable VAD.
+        (
+            json!({ "instructions": "x", "turn_detection": null }),
+            Some(None),
+        ),
+        (
+            json!({ "instructions": "x", "turn_detection": { "type": "semantic_vad", "eagerness": "high" } }),
+            Some(Some(IrVad::SemanticVad {
+                eagerness: Eagerness::High,
+            })),
+        ),
+    ];
+    for (session, want) in cases {
+        // DECODE: the wire state arrives as its own IR state.
+        let (config, _) = session_update_of(session.clone());
+        assert_eq!(config.turn_detection, want, "decode of {session}");
+
+        // RE-ENCODE: and goes back out as the same wire state — absent stays a MISSING key, which is
+        // the direction the collapse used to break.
+        let re = serde_json::to_value(&config).expect("config re-encodes");
+        assert_eq!(
+            re.get("turn_detection"),
+            session.get("turn_detection"),
+            "re-encode of {session}"
+        );
+    }
 }
 
 #[test]

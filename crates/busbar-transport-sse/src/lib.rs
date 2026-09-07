@@ -170,7 +170,7 @@ impl Transport for SseTransport {
         #[derive(Clone, Copy, Default)]
         struct StatusLeg {
             class: Option<busbar_contract_transport::wire::StatusClass>,
-            code: Option<u16>,
+            code: Option<busbar_contract_transport::wire::WireStatus>,
             retry_after_secs: Option<u64>,
         }
         struct State {
@@ -235,10 +235,12 @@ impl Transport for SseTransport {
                         st.buf.extend_from_slice(http_frame.bytes.as_slice());
                         let (carved, _moved) = carve_complete_frames(&mut st.buf, st.scanned);
                         for raw in carved {
-                            // Whether this frame carries a payload at all is the only question here;
-                            // the payload itself travels on untouched, so a full parse would build
-                            // one only to drop it.
-                            if proto::frame_carries_data(&raw) {
+                            // Whether this frame carries an SSE field at all is the only question
+                            // here; the payload itself travels on untouched, so a full parse would
+                            // build one only to drop it. A comment frame — the ordinary `: ping`
+                            // keepalive — carries none and is the one thing there is nothing to
+                            // hand up for.
+                            if proto::frame_carries_a_field(&raw) {
                                 let status = if st.status_attached {
                                     StatusLeg::default()
                                 } else {
@@ -301,9 +303,25 @@ impl Transport for SseTransport {
                             st.pending.push_back((raw, st.status));
                             continue;
                         }
-                        // A trailing frame with no terminator (a stream that ends mid-frame) is
-                        // otherwise dropped rather than guessed complete — the design's own rule
-                        // that a stream dying before its trailer posts the lower evidence.
+                        // A stream that ends MID-FRAME. What is left in the buffer is one event's
+                        // prefix: the upstream began an event and the body ended before it did.
+                        //
+                        // Guessing it complete is out — this transport does not invent a terminator
+                        // the upstream never wrote. Ending clean is out too, and that is what 1.5.5
+                        // decides: a body that failed part-way through was surfaced to the caller
+                        // as an error, never delivered as a shorter answer that arrived
+                        // (`docs/design/inventory/1.5.5-proxy-hooks.md:406-407` — the mid-stream and
+                        // pre-first-byte rows, both of which end the body stream with an error). So
+                        // it is a framing error, which is also the reading the sibling `stdio` crate
+                        // gives a line the peer never finished.
+                        //
+                        // Only when the leftover is actually an event. The layer below hands up a
+                        // trailer section as a frame of its own, and a header block is not a
+                        // half-written event — it carries no SSE field, so it ends the stream
+                        // cleanly, as it did before.
+                        if proto::frame_carries_a_field(&st.buf) {
+                            return Some((Err(TransportError::Framing), st));
+                        }
                         return None;
                     }
                 }

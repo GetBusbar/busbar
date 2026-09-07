@@ -242,9 +242,22 @@ impl AuthChain {
             }
         }
         // The built-in signed-key arm — a sibling to the boxed modules above, run after them.
-        // Cache-exempt by construction: it neither reads nor writes the cache.
+        // Cache-exempt by construction: it neither reads nor writes a row for ITS OWN verdict. But
+        // the buffered Pass rule above is keyed on the chain's `Identified` return, not on which
+        // member produced it — an earlier boxed module's buffered Pass is real work already done,
+        // and the keys arm identifying is as much an `Identified` return as a boxed module's. Never
+        // flushing it here would mean a chain ending in the keys arm re-runs every passing module on
+        // every request, cache or not.
         if self.keys_in_chain {
-            return keys_arm_verdict(keys, candidate, now, expected_aud);
+            let verdict = keys_arm_verdict(keys, candidate, now, expected_aud);
+            if matches!(verdict, ChainVerdict::Identified { .. }) {
+                if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
+                    for name in &pending_pass {
+                        c.put(name, cred, &AuthOutcome::Pass, now, g);
+                    }
+                }
+            }
+            return verdict;
         }
         ChainVerdict::Denied
     }

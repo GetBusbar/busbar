@@ -925,3 +925,46 @@ fn manifest_with_no_host_matches_any_caller_identity() {
     validate_structure(&m, artifact, &abi, "some-third-product")
         .expect("absent host must match ANY caller's identity, not just known ones");
 }
+
+/// The ed25519 IDENTITY point, hex-encoded — the canonical small-order (weak) public key. Under the
+/// permissive cofactored check `Verifier::verify` performs, a signature made against it verifies for
+/// EVERY message, so an allowlist entry naming it would trust every artifact handed to the loader.
+const WEAK_PUBLIC_KEY_HEX: &str =
+    "0100000000000000000000000000000000000000000000000000000000000000";
+
+/// A weak (small-order / identity) publisher key must be REFUSED where it is parsed, not admitted
+/// into the allowlist. An operator who pastes a placeholder, a truncated key, or a key an attacker
+/// supplied in a vendor document otherwise arms a trust entry that verifies anything.
+#[test]
+fn weak_publisher_key_is_refused_at_parse() {
+    let err = public_key_from_hex(WEAK_PUBLIC_KEY_HEX)
+        .expect_err("the ed25519 identity point must not be accepted as a publisher key");
+    assert!(
+        err.contains("weak"),
+        "the refusal must name WHY the key is unusable, got: {err}"
+    );
+}
+
+/// Even if a weak key reaches the verifier some other way, verification must REFUSE it rather than
+/// accept the universal forgery the permissive check admits. The parse-time refusal above and this
+/// verify-time strictness are the two halves of one guard.
+#[test]
+fn signature_does_not_verify_under_a_weak_key() {
+    let mut weak = [0u8; 32];
+    weak[0] = 1;
+    // `VerifyingKey::from_bytes` decompresses the identity point happily — that IS the hazard.
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&weak)
+        .expect("the identity point decompresses; only a weakness check refuses it");
+    let artifact = b"attacker-supplied library bytes";
+    let mut m = manifest("acme-p", "p", "acme");
+    m.sha256 = sha256_hex(artifact);
+    // The forgery the permissive cofactored check accepts for any message under the identity key:
+    // R = the identity point, s = 0.
+    let mut forged = [0u8; 64];
+    forged[0] = 1;
+    m.signature = hex::encode(forged);
+    assert!(
+        signature_ok(&m, artifact, &key).is_err(),
+        "a weak-key universal forgery must not verify"
+    );
+}

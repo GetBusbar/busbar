@@ -200,6 +200,30 @@ union headroom: the arithmetic says the residue is **deleted, not relocated**. `
 unit that already exists (`busbar-unit-cost` 579 lines against core's cost body is the shape of the
 whole wave). **Not in this session.**
 
+**Wave 6 — the codec fold: one crate per plane (owner decision, 2026-09-06).** Once wave 5 has
+retired `busbar-core` and every plane crate's legacy caller is gone, each `*-codec` crate folds
+into the plane crate it was split out of for the strangler: `busbar-plane-llm` absorbs
+`busbar-llm-codec`, and likewise `busbar-plane-mcp`/`busbar-mcp-codec`,
+`busbar-plane-a2a`/`busbar-a2a-codec`, `busbar-plane-voice`/`busbar-voice-codec`. The separate
+codec crates existed only so the legacy engine and the new plane could share one codec during the
+strangler; with the legacy caller deleted there is nothing left to share it with. Preconditions,
+all required before a fold cut lands:
+- the legacy caller of that plane's codec is gone (wave 3/4/5 has retired the engine twin that
+  named it);
+- `scripts/plane-purity-lint.sh --strict` and the source-denylist gate are green on the folded
+  crate exactly as they were on the codec crate today — folding changes the crate boundary, not the
+  rule;
+- `scripts/plane-delete-test.sh --all` is green on the folded crate (the deletion test proves the
+  plane, codec included, is still cleanly removable);
+- the plugin summary (`docs/design/ARCHITECTURE.md` §1.1's crate list, `--validate`'s plugin
+  listing) reads **five planes and no separate codec crates** — admin, llm, mcp, a2a, voice, each
+  one crate.
+
+Planes carry no §1.1 line ceiling (§1's first escape hatch), so the gate allows the fold outright;
+nothing in this wave asks for a ceiling exception. This is the explicit last wave of D33: the plan
+is not "done" until the fold has landed on all four non-admin planes and the tracker's D34 row (see
+`docs/design/1.6.0-TRACKER.md`) is checked.
+
 Two standing carve-outs, in every wave: the 1.5.5 config structs
 (`busbar_substrate::config::{groups, limits}`, every `deny_unknown_fields` type) are **KEEP as a
 leaf, verbatim, for byte-identity** — 1.6.0 config is 1.5.5 config plus plane sections and nothing

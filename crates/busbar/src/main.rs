@@ -790,13 +790,23 @@ fn register_ws_arrivals() {
 fn mount_root_voice(limits: &busbar_substrate::config::limits::LimitsResolved) {
     match root::registry::seal(root::policy::client_settings(limits)) {
         Ok(sealed) => {
-            debug_assert!(
-                sealed
-                    .registry
-                    .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
-                    .is_some(),
-                "the voice plane is registered or the seal is not the composition it claims to be"
-            );
+            // A BOOT REFUSAL for the same reason the seal's own `Err` arm is one, and it was a
+            // `debug_assert!`: a seal that reported success without the plane this function exists
+            // to mount is a composition that did not do what it says, and the shipped build was the
+            // one that never looked. Serving on it would bind a listener for a plane no registry can
+            // resolve — every voice session refused at the first frame, from a node that booted
+            // clean.
+            if sealed
+                .registry
+                .resolve(busbar_kernel::registry::PluginKind::Plane, "voice")
+                .is_none()
+            {
+                eprintln!(
+                    "busbar: the composition root did not seal: it reported success without the \
+                     voice plane, so the seal is not the composition it claims to be"
+                );
+                std::process::exit(2);
+            }
         }
         Err(refusal) => {
             eprintln!("busbar: the composition root did not seal: {refusal}");
@@ -936,11 +946,22 @@ fn main() {
     #[cfg(feature = "root-a2a")]
     {
         let policy = root::units_a2a::scope_policy(root::policy::ScopePolicy::new());
-        debug_assert_eq!(
-            policy.len(),
-            busbar_plane_a2a::ops::OP_CLASSES.len(),
-            "every A2A operation class needs a scope entry before the plane is switched over"
-        );
+        // A BOOT REFUSAL, not a debug assertion. The scope unit reads silence as a denial, so a
+        // policy that is short by an entry is a plane whose remaining operations answer 403 for the
+        // life of the process — and a `debug_assert_eq!` compiled the check out of the only build
+        // that ever serves anybody. The MCP seal a few lines above already answers this way, and
+        // this is the same class of fact: a composition that disagrees with itself must not bind a
+        // listener, because the alternative is finding out from a customer.
+        if policy.len() != busbar_plane_a2a::ops::OP_CLASSES.len() {
+            eprintln!(
+                "busbar: the composition root did not seal: the A2A scope policy declares {} of the \
+                 plane's {} operation classes, and the scope unit reads an undeclared class as a \
+                 refusal",
+                policy.len(),
+                busbar_plane_a2a::ops::OP_CLASSES.len()
+            );
+            std::process::exit(2);
+        }
     }
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
@@ -1269,14 +1290,12 @@ async fn run(data_workers: usize) {
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH, captured here — before `cfg` moves into the
-    // router builder below — for the same reason the voice credential a few lines down is. These two
-    // are the whole of what a card is: the per-model rates and the flat per-request fee, exactly the
-    // pair the usage projection derives a row's spend from.
-    #[cfg(feature = "root-llm")]
-    let llm_rate_card = cfg.rate_card.clone();
-    #[cfg(feature = "root-llm")]
-    let llm_per_request_fee = cfg.per_request_fee;
+    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH is not captured here and handed over once. It
+    // arrives through the engine's rate-apply seam, installed a few lines down and raised by the ONE
+    // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
+    // reading taken here instead would be the boot's rates forever: the usage projection would
+    // reprice on an apply and this node's ledger would not, and the identity that says the two are
+    // one money would hold only until the operator changed a fee.
     // THE COMPOSITION ROOT'S OWN SEAL, in the first slot where the values it composes exist: the
     // limits are resolved (and the overlay merged onto them) one screen up, and no listener is bound
     // for another few hundred lines. The transports it composes are built from THESE limits — the
@@ -1299,6 +1318,14 @@ async fn run(data_workers: usize) {
         .and_then(|model| cfg.models.get(&model).map(|m| m.provider.clone()))
         .and_then(|provider| cfg.providers.get(&provider))
         .map(|p| (p.base_url.clone(), p.api_key.clone()));
+
+    // THE RELOAD HOOK, installed BEFORE the first app build below so the boot's own rate resolution
+    // is the card's first apply and nothing has to read the configuration twice. From here on the
+    // root's card is whatever the last resolution said, and each unit prices against the one it
+    // pinned at admission. Off, no holder is installed and the seam is silent, which is the honest
+    // answer for a binary with no root ledger in it.
+    #[cfg(feature = "root-llm")]
+    root::kernel::install_card_repricer();
 
     // The secret resolver the listeners resolve TLS cert/key/CA references through - the SAME seam
     // (built-in env/file + kind:secret plugins) that resolved provider keys at build time.
@@ -1435,19 +1462,11 @@ async fn run(data_workers: usize) {
     #[cfg(feature = "root-llm")]
     root::units_llm::bind_book(std::sync::Arc::clone(&book.durability));
 
-    // AND TO THE CARD IT PRICES AGAINST. The plane reports what a unit consumed; what that is worth
-    // is read here, off the same configured `rate_card:` and `per_request_fee:` the usage projection
-    // derives its spend from. One configuration, two readings — which is what makes the node's books
-    // and the previous release's rows the same money rather than two numbers that agree by habit.
-    #[cfg(feature = "root-llm")]
-    root::units_llm::bind_card(
-        llm_rate_card
-            .iter()
-            .flat_map(|c| c.iter())
-            .map(|(lane, entry)| (lane.as_str(), entry.raw_tier_rates())),
-        llm_per_request_fee,
-        llm_rate_card.is_some(),
-    );
+    // THE CARD IT PRICES AGAINST is already in place: the app build above resolved this deployment's
+    // rates and raised the rate-apply seam the hook installed before it, so the root's card holds the
+    // same configured `rate_card:` and `per_request_fee:` the usage projection derives its spend
+    // from. One configuration, two readings — and the next apply moves both, which is what makes the
+    // node's books and the projection's rows the same money rather than two numbers that agreed once.
 
     #[cfg(feature = "root-admin")]
     let admin_router = root::units_admin::mount(
@@ -1457,12 +1476,34 @@ async fn run(data_workers: usize) {
         // body before that router's own limit can.
         req_body_max,
         |dispatch| {
-            root::kernel::ProductionUnits::admin_only_sharing(
+            let units = root::kernel::ProductionUnits::admin_only_sharing(
                 dispatch,
                 std::sync::Arc::clone(&book.durability),
                 std::sync::Arc::clone(&book.rows)
                     as std::sync::Arc<dyn root::units_admin::LegacyRowsRead>,
-            )
+            );
+            // THE DEPLOYMENT'S OWN DOOR, in front of the authenticate step. Without these two lines
+            // the assembly's open posture shipped: the step admitted every caller anonymously and
+            // the only thing deciding was the surface mounted underneath — so a credential this node
+            // had REVOKED was admitted at Authenticate, and the revocation the governance state
+            // holds was consulted by nothing on the request path. The chain is the operator's admin
+            // token and the bindings are the same governance state's directory, which is what makes
+            // the revocation set the one this node actually keeps.
+            match app_handle.load().governance.clone() {
+                Some(gov) => units
+                    .with_auth_chain(root::kernel::auth_bindings::admin_chain(
+                        std::sync::Arc::clone(&gov),
+                    ))
+                    .with_auth_bindings(root::kernel::auth_bindings::AuthBindings::new(
+                        std::sync::Arc::new(root::kernel::auth_bindings::GovernanceDirectory::new(
+                            gov,
+                        )),
+                    )),
+                // No governance state is no directory and no configured token, which is the open
+                // administrative posture the previous release also has. Left as the assembly built
+                // it rather than wired to an authority that does not exist.
+                None => units,
+            }
         },
     );
 

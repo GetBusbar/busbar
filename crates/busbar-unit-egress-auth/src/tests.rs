@@ -156,6 +156,65 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
     assert!(auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
 }
 
+/// The two `x-amz-*` fields `decorate` adds are SET on the header set it signs, not appended to it.
+///
+/// Signing is re-run per attempt, and the envelope handed to a re-sign may already carry the fields
+/// a previous decoration wrote — a retried leg, a plane that timestamps its own request. Appending
+/// then signs the field twice while `substitute` writes it once, so the bytes on the wire are not
+/// the bytes that were signed and the upstream 403s every time.
+#[test]
+fn sigv4_re_signing_an_already_decorated_envelope_signs_the_fields_once() {
+    let t = token();
+    let scheme = Scheme::SigV4 {
+        access_key_id: "AKIDEXAMPLE",
+        region: "us-east-1",
+        service: "iam",
+    };
+    let secret = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    let host = ("host".to_string(), "iam.amazonaws.com".to_string());
+
+    fn body(envelope: &[(String, String)]) -> EgressBody<'_> {
+        EgressBody {
+            method: "POST",
+            canonical_uri: "/",
+            canonical_querystring: "",
+            envelope,
+            body: b"{}",
+            timestamp_epoch: 1_440_938_160,
+        }
+    }
+    let authorization = |decoration: &AuthDecoration| match decoration {
+        AuthDecoration::Decorate { fields, .. } => fields
+            .iter()
+            .find(|(k, _)| k == "authorization")
+            .map(|(_, v)| v.clone())
+            .expect("authorization field present"),
+        AuthDecoration::Handshake { .. } => panic!("SigV4 decorates in place"),
+    };
+
+    let clean = vec![host.clone()];
+    let first = decorate(&t, &scheme, secret, &body(&clean));
+
+    // The envelope a second decoration is handed: the one the first decoration produced, minus the
+    // authorization header a re-encode would not carry forward.
+    let already: Vec<(String, String)> = substitute(&first, secret, clean.clone())
+        .into_iter()
+        .filter(|(k, _)| !k.eq_ignore_ascii_case("authorization"))
+        .collect();
+    let second = decorate(&t, &scheme, secret, &body(&already));
+
+    assert!(
+        authorization(&second).contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date,"),
+        "each field is signed once on a re-sign: {}",
+        authorization(&second)
+    );
+    assert_eq!(
+        authorization(&second),
+        authorization(&first),
+        "re-signing the same request over its own decorated envelope must be idempotent"
+    );
+}
+
 /// `continue_handshake` fails closed (a zero-budget handshake) for the placeholder shape: no
 /// shipped scheme reaches it, and a caller that does must not be handed an unbounded round.
 #[test]

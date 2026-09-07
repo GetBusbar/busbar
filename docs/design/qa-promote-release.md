@@ -126,6 +126,7 @@ contract visible at push time instead of at workflow time; recommended, but it i
 {
   "version":     "1.6.0",
   "tag":         "v1.6.0",
+  "rc_tag":      "v1.6.0-rc.1",
   "qa_sha":      "<full sha>",
   "staging_tag": "staging-<sha12>",
   "digest":      "sha256:…",
@@ -164,6 +165,82 @@ Both options were weighed:
 The tie-breaker is the repository's own precedent: receipts over claims (`verify-artifact`'s
 receipt artifacts, `verify-set-equality` reading receipts rather than job conclusions). The
 artifact **is** a receipt; a committed file is a claim.
+
+## Release candidates: one record, two names
+
+The first 1.6.0 ships as `v1.6.0-rc.1`, soaks, and then ships as `v1.6.0` — **the same bytes both
+times.** That is a naming decision, so it lives entirely on the naming side of the split; nothing
+about the build, the verification or the record's provenance changes.
+
+### Where the rc name comes from
+
+**From `crates/busbar/Cargo.toml`'s version plus an rc counter, supplied as a `release_tag` input
+on the staging dispatch.** Both halves matter:
+
+* The **version** is still Cargo.toml's, and only Cargo.toml's. `plan` refuses any `release_tag`
+  that is not exactly `v<that version>-rc.<N>`. There is no second place a version can come from,
+  which is why a free-text `RELEASE_TAG` was rejected: it would let a dispatch stage bytes under a
+  name that the OCI version label, the CHANGELOG section and the committed OpenAPI document on that
+  sha all contradict — and every downstream check reads those, not the input.
+* The **counter** is typed by a human, once, and recorded — it is not derived from "how many rc
+  tags exist" at run time. The record is read up to 90 days later by a different workflow, so a
+  name computed from the tag namespace at staging time would be a claim about a different instant
+  than the one it is used in. `prepare-release.yml` already models the version as an explicit
+  dispatch input for exactly this reason: naming a release is a decision, recorded, not recomputed.
+
+An ordinary push to `qa` supplies no input, so `rc_tag` is `""` and the staging path is
+bit-for-bit what it has always been.
+
+### How one record names both tags
+
+`staged.json` carries two name fields, and says which is which:
+
+| field | value | what minting it does |
+| --- | --- | --- |
+| `tag` | `v1.6.0` — always present | the RELEASE. Publishes the draft, moves `latest` and `armv8.0`, pushes the git tag, fans out, announces, runs the public consumer sweep. |
+| `rc_tag` | `v1.6.0-rc.1`, or `""` | the CANDIDATE. Pushes the git tag and the immutable image pins `1.6.0-rc.1` / `1.6.0-rc.1-armv8.0` — and nothing else. The draft stays a draft, `latest` does not move, no repo is told, nothing is announced. |
+
+They describe the **same** `digest`, `compat_digest` and `assets`, because there is only one build.
+The record is keyed by `qa_sha`, and a sha may wear more than one name over its life; what the
+record adds is that the set of names it may ever wear is **closed at two, and written down on qa**.
+`resolve-staged` refuses any `release_tag` that is not one of those two strings, so "two tags, one
+record" can never widen into "any tag, one record".
+
+### Who mints which, and when
+
+* **Push to `main`** — mints `rc_tag` if the record offers one and that rc tag does not exist yet;
+  otherwise mints `tag`. For a record with no rc this is exactly the pre-existing behaviour.
+* **`workflow_dispatch` of `Release` with `release_tag: v1.6.0`** — the second promotion of the
+  same record, after the soak. No rebuild, same digest, same draft.
+* **`workflow_dispatch` with `release_tag: v1.6.0-rc.2`** — only if the record names it.
+
+The irreversible name is therefore never a side effect of a push while a candidate is pending: a
+Docker Hub `1.6.0` cannot be un-published, so it is minted by an explicit human act once the soak
+has said something. The candidate, which moves no floating pointer and publishes nothing, is what
+the push mints.
+
+`docker.yml`'s promote gains one input for this, `promote_latest` (default `true`): a candidate
+mints the immutable pins and leaves the floating pointers alone, and the job's landing assertion
+asserts exactly the names it was asked to move — asserting `latest == 1.6.0-rc.1` would be
+asserting a falsehood about a correct run, and asserting nothing would drop the 1.5.3 guard.
+
+## The marketing site is observed, never depended on
+
+The site deploy is **not** part of the release path (owner, 2026-09-06). `GetBusbar/marketing` was
+on `.github/release-notify-targets.txt`, so every release dispatched `upstream-release` to it —
+which is what triggers its deploy, and `notify-downstream` fails outright if any single dispatch
+fails, with `consumer-verification` hanging off it. A marketing-side token, rename or outage could
+therefore turn an already-published, perfectly good busbar release red. It has been removed from
+that list. The site keeps its own trigger (its push-to-main deploy plus its daily poll of busbar's
+`/releases/latest`), which is what makes it self-healing without being wired into this path.
+Nothing in this repository triggers, `needs:` or waits on the site deploy, and nothing under the
+site's content directory (which lives in that other repo) is touched.
+
+The site's state is still **observed**: verify-deploy's checks (g)/P6/(k)/(n) read `getbusbar.com`
+after publication, from `consumer-verification`, which by construction runs only once the release
+is already public. They can report; they cannot gate. (They are also skipped entirely after a
+candidate promote, where nothing public moved and a "the site does not advertise 1.6.0-rc.1" red
+would be a fabrication.)
 
 ## Benchmarking prices the QA binary — literally
 
@@ -209,6 +286,102 @@ digest is unreachable by construction. Two consequences named rather than discov
 All repo lints pass on this branch: `release-order-lint.py` (check, `--selftest`, `--prove`),
 `ci-images.py` (`--list`, `--selftest`), `structure-lint.sh`, `release-script-lint.sh`,
 `no-self-filed-issues-lint.sh`, `qa-gate-dispatch-lint.py`.
+
+## The PR era
+
+Everything above describes what happens *after* a commit is on `dev`. This section describes how it
+gets there, and it replaces the local-proof landing path entirely.
+
+The old shape was `scripts/land.sh`: cherry-pick onto the integration branch, run a hand-picked
+subset of the gate on the integrator's laptop, read its `GREEN` as the verdict, push. That verdict
+was always a claim about one machine — one toolchain, one set of services, one cache — and branch
+protection never read it. **CI is the judge now.** The three commands below move commits and report
+what CI said; not one of them renders a verdict of its own.
+
+### The three commands
+
+| command | what it does | what it never does |
+| --- | --- | --- |
+| `scripts/pr-land.sh <hash>… [--title T] [--base dev] [--wait]` | cuts `land/<date>-<first-hash>` from `origin/<base>`, cherry-picks with `-x`, pushes, opens a PR whose body lists every picked commit and its trailer, and arms **auto-merge with the rebase strategy**. `--wait` polls the required contexts and prints the verdict with run URLs. | resolve a conflict; squash; merge by hand; call anything green. |
+| `scripts/pr-queue.sh [--parallel N]` | consumes `land-queue.txt` in the same line grammar as before, one PR at a time by default, and writes the done ledger to `land-queue.done`. | honour the local proof flags — `--tests`/`--families`/`--gate` are accepted and **ignored, out loud, per line**. |
+| `scripts/promote.sh <from> --to <qa\|main>` | fast-forwards the **exact SHA** onto the destination: `git push origin <sha>:refs/heads/<to>`. | promote a SHA whose required contexts are not all `success`; read those contexts from anywhere but the destination branch's protection. |
+
+Three properties are worth stating rather than discovering:
+
+* **Rebase, never squash.** Each picked commit is a reviewed unit with its own message and its own
+  `(cherry picked from commit …)` trailer, and that trailer is the only durable link between what an
+  agent wrote on a worktree and what CI judged. A squash fuses N of them into one synthetic commit
+  and throws the trailers away.
+* **Fail closed on the tooling.** Unauthenticated `gh`, a repository with auto-merge disabled, a
+  conflicting pick, unreadable branch protection — each is a refusal with a named reason. Under
+  `--dry-run` the refusal is *printed as part of the plan* and carried in the exit code, so a dry run
+  that would refuse never reads as a rehearsal that would work.
+* **`--parallel N` batches only disjoint pick sets.** Overlap is computed from
+  `git diff-tree --name-only` over the hashes. Correctness never depends on this — GitHub's merge
+  queue serialises the merges and re-tests each on the updated base — but two PRs that touch the same
+  file will predictably conflict on rebase after the first merges, which is more human work than a
+  serial batch, not less. Queue order is preserved; a line never overtakes the line above it.
+
+### What CI judges on each branch
+
+| branch | how a commit arrives | what judges it | what a green means |
+| --- | --- | --- | --- |
+| `land/*` | `pr-land.sh` pushes it | ci.yml's full tier (a PR always gets the full tier) plus the three conformance workflows | the change is healthy on CI's machines, not on yours |
+| `dev` | GitHub's auto-merge rebases the PR once the required contexts are green | the same required contexts, re-run on the merge result | the integration branch is healthy |
+| `qa` | `promote.sh dev --to qa` | ci.yml + qa-gate.yml + release-stage.yml (§ *Push to `qa`*) | everything is built, verified and recorded; the release exists, unnamed |
+| `main` | `promote.sh qa --to main` | release.yml, promote-only (§ *Push to `main`*) | the qa-built bytes now have their names |
+
+The required contexts today are `ci umbrella` and the three conformance verdicts
+(`A2A conformance verdict`, `MCP conformance verdict`, `Voice conformance verdict`) on the PR, and
+whatever `qa`/`main` protection lists at promote time. `pr-land.sh` names its four in one place
+(`PR_LAND_CHECKS`, overridable); `promote.sh` **reads the destination's contexts from branch
+protection by name, every run, never from a list in the script**. If protection is renamed or
+tightened, the promote follows it in the same breath — and if protection cannot be read at all, that
+is a refusal, not an empty loop that passes.
+
+A context that is *missing* is a refusal exactly like a red one. A required name that nothing can
+report is the `windows build · test` trap — protection required a context that `dev` had already
+renamed, so every PR hung forever on a check that could no longer exist. "Not red" is not green.
+
+### When it goes red
+
+1. **A pick conflicts.** `pr-land.sh` aborts the cherry-pick, deletes the branch, pushes nothing and
+   opens nothing, and names the conflicting paths. It never resolves silently: a resolution invents
+   bytes that no commit message describes and no reviewer asked for, and CI would then be judging a
+   merge nobody wrote. Rebase the source commit onto `origin/<base>` and hand back a clean hash.
+2. **A required check fails on the PR.** The PR is **left open** and auto-merge stays armed.
+   `pr-land.sh --wait` exits non-zero with the failing job names, each one's run URL, and the first
+   failing line from `gh run view --log-failed`. Push a fix onto the same `land/*` branch; CI
+   re-judges and auto-merge fires on its own. Nothing is closed, nothing is force-pushed, nothing is
+   merged by hand.
+3. **A queue line goes red.** `pr-queue.sh` stops there. Its PR stays open, a `RED` row goes to the
+   ledger, and every line below it stays queued — the queue is resumable, not restartable.
+4. **A promote refuses.** The refusal names the context and its conclusion. The remedy is always on
+   the source branch: get the context green on that SHA, or (for `qa → main`) re-run the stage on the
+   same SHA — idempotent — and promote again. Never force-push, never promote a different SHA.
+
+### `full-gate.sh` is a pre-check, never the verdict
+
+`scripts/full-gate.sh` runs the same commands CI runs. That is exactly what makes it useful before
+opening a PR and exactly what makes it worthless as a verdict: it runs them on your machine, with
+your toolchain, your services and your cache, and branch protection does not read its exit code. Run
+it to find the cheap failures early. Then open the PR and let CI say so.
+
+The rule, stated once so it is not re-litigated per landing: **a local green is a prediction; the
+required contexts on the SHA are the fact.** No script in this repository may print a landing verdict
+derived from a local run, and `pr-queue.sh` therefore ignores `--tests`, `--families` and `--gate`
+rather than honouring them — *and says it is ignoring them on every line*, because silently dropping
+a flag would leave the operator believing a proof happened that did not.
+
+### Proving the tools themselves
+
+Each of the three carries a `--selftest` that runs against a throwaway repository with `gh` stubbed
+by a recording shim on `PATH`, so the refusals are proven rather than asserted: `pr-land.sh`
+(conflict aborts, the body lists the hashes and trailers, red leaves the PR open, green reports, the
+dry run touches nothing), `pr-queue.sh` (flags ignored aloud, `STOP` honoured, disjoint-file
+batching, the ledger), `promote.sh` (exact-SHA fast-forward, red/missing/blind/non-fast-forward/
+local-drift/disallowed-pair all refuse). These are cheap, and `land.sh`'s gate-tree leg runs the
+self-test of every gate script a landing touches — so a change to these files is judged by them.
 
 ## Open questions for the owner
 

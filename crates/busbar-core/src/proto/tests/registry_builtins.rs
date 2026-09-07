@@ -22,11 +22,11 @@
 use busbar_core::proto::registry::ProtocolDecl;
 
 /// The shipped protocol set for core's test binary: the six LLM dialects in `busbar_llm::DECLS`' order
-/// (anthropic, gemini, openai, bedrock, responses, cohere), then the codec-less MCP protocol.
+/// (anthropic, openai, gemini, bedrock, responses, cohere), then the codec-less MCP protocol.
 pub static TEST_BUILTIN_DECLS: &[&ProtocolDecl] = &[
     &busbar_llm::anthropic::DECL,
-    &busbar_llm::gemini::DECL,
     &busbar_llm::openai_chat::DECL,
+    &busbar_llm::gemini::DECL,
     &busbar_llm::bedrock::DECL,
     &busbar_llm::openai_responses::DECL,
     &busbar_llm::cohere::DECL,

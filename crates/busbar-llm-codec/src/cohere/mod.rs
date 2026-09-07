@@ -714,6 +714,15 @@ pub struct CohereWriter {
     /// no-frame-for-untracked-index behavior. Same `Mutex` / poison-degrades-to-no-op discipline as
     /// `open_tool_indices`.
     open_text_indices: std::sync::Mutex<std::collections::BTreeSet<usize>>,
+    /// THIS STREAM'S `id`, minted ONCE and replayed on every later `message-start`.
+    ///
+    /// A stream is not guaranteed to carry exactly one `MessageStart`: the Anthropic reader emits
+    /// it 1:1 with the upstream frame rather than gating it, so a cohere-egress stream fed from an
+    /// Anthropic ingress can see two. Without this cell the second synthesized a FRESH id, so one
+    /// message announced itself twice under two different identities. A native Cohere stream's id
+    /// is fixed for the message, so the first one wins. Same `Mutex` / poison-degrades discipline
+    /// as the sets above.
+    stream_id: std::sync::Mutex<Option<String>>,
 }
 
 /// Value-namespace constructor for [`CohereWriter`]. A `const` and a struct may share a name (they
@@ -733,6 +742,7 @@ pub struct CohereWriter {
 pub const CohereWriter: CohereWriter = CohereWriter {
     open_tool_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
     open_text_indices: std::sync::Mutex::new(std::collections::BTreeSet::new()),
+    stream_id: std::sync::Mutex::new(None),
 };
 
 impl Clone for CohereWriter {
@@ -753,11 +763,26 @@ impl Clone for CohereWriter {
                     .map(|set| set.clone())
                     .unwrap_or_default(),
             ),
+            // A mid-stream clone is still the SAME message, so it keeps the id already announced.
+            stream_id: std::sync::Mutex::new(
+                self.stream_id.lock().map(|id| id.clone()).unwrap_or(None),
+            ),
         }
     }
 }
 
 impl CohereWriter {
+    /// THE STREAM'S `id`: the first one wins. Returns the id already captured for this stream if
+    /// there is one, otherwise captures and returns `mint()`, so a duplicate `message-start`
+    /// re-states the identity the client already has. Lock poisoning degrades to the freshly minted
+    /// id rather than panicking on the request path.
+    fn carried_stream_id(&self, mint: impl FnOnce() -> String) -> String {
+        match self.stream_id.lock() {
+            Ok(mut slot) => slot.get_or_insert_with(mint).clone(),
+            Err(_) => mint(),
+        }
+    }
+
     /// Record that a `tool-call-start` frame was emitted at IR block `index`, so the matching
     /// `BlockStop` closes it with `tool-call-end` rather than `content-end`. Lock poisoning degrades
     /// to a no-op rather than panicking on the request path.

@@ -2187,6 +2187,96 @@ fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
     );
 }
 
+// ── A failing open that still published a handle ────────────────────────────────────────────────
+
+/// What the stub `busbar_close` below saw. A process-global because a `CloseFn` is a bare `extern`
+/// fn pointer with no captured state, exactly like the real ABI's.
+mod failed_open_reclaim {
+    use std::os::raw::c_void;
+    use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+
+    pub static CLOSED_WITH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
+    pub static CLOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// A plugin `busbar_close` that records the handle it was handed.
+    pub unsafe extern "C-unwind" fn record(handle: *mut c_void) {
+        CLOSED_WITH.store(handle, Ordering::SeqCst);
+        CLOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// A plugin `busbar_close` that panics — a bad destructor across the ABI.
+    pub unsafe extern "C-unwind" fn explode(_handle: *mut c_void) {
+        CLOSE_CALLS.fetch_add(1, Ordering::SeqCst);
+        panic!("a plugin destructor went wrong");
+    }
+
+    pub fn reset() {
+        CLOSED_WITH.store(std::ptr::null_mut(), Ordering::SeqCst);
+        CLOSE_CALLS.store(0, Ordering::SeqCst);
+    }
+}
+
+/// A non-SDK plugin may publish a handle AND answer a failure status — nothing in the ABI forbids
+/// it. The load still fails closed, but the instance it constructed must be reclaimed rather than
+/// left running with nobody holding it.
+#[test]
+fn a_failed_open_that_published_a_handle_still_closes_the_instance() {
+    use failed_open_reclaim as stub;
+    stub::reset();
+    let handle = &mut 7u8 as *mut u8 as *mut std::os::raw::c_void;
+
+    assert!(
+        reclaim_failed_open(stub::record, "acme-store-plugin", handle),
+        "a published handle is reclaimed"
+    );
+    assert_eq!(
+        stub::CLOSE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "closed exactly once"
+    );
+    assert_eq!(
+        stub::CLOSED_WITH.load(std::sync::atomic::Ordering::SeqCst),
+        handle,
+        "closed the handle the plugin published, not some other pointer"
+    );
+}
+
+/// The well-behaved failure — no handle published — hands `close` nothing. Asking a plugin to free
+/// what it never allocated is its own bug.
+#[test]
+fn a_failed_open_with_no_handle_closes_nothing() {
+    use failed_open_reclaim as stub;
+    stub::reset();
+    assert!(!reclaim_failed_open(
+        stub::record,
+        "acme-store-plugin",
+        std::ptr::null_mut()
+    ));
+    assert_eq!(
+        stub::CLOSE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
+}
+
+/// A `close` that panics while reclaiming is contained the same way every other crossing is: the
+/// handle leaks, the engine lives, and the load still returns its own error.
+#[test]
+fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
+    use failed_open_reclaim as stub;
+    stub::reset();
+    let handle = &mut 9u8 as *mut u8 as *mut std::os::raw::c_void;
+    assert!(reclaim_failed_open(
+        stub::explode,
+        "acme-store-plugin",
+        handle
+    ));
+    assert_eq!(
+        stub::CLOSE_CALLS.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "it was attempted"
+    );
+}
+
 #[path = "abi2_store_ops_tests.rs"]
 mod abi2_store_ops_tests;
 #[path = "legacy_default_tests.rs"]

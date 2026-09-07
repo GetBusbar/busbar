@@ -97,6 +97,53 @@ fn sign_v4_does_not_fold_nbsp_or_tab_in_header_value() {
     );
 }
 
+/// Per the SigV4 canonicalisation rule, a header name that appears twice is not two lines in the
+/// canonical headers block and not two entries in `SignedHeaders` — it is ONE entry whose value is
+/// the comma-joined, individually-trimmed values, in their original order. Proven by comparing
+/// against the header handed over pre-merged: if the signer folds them the same way itself, the two
+/// signatures and `SignedHeaders` strings must match exactly.
+#[test]
+fn sign_v4_merges_a_duplicate_header_name_by_comma_joining_its_values() {
+    let payload_hash = sha256_hex(b"");
+    let common = [
+        ("host".to_string(), "iam.amazonaws.com".to_string()),
+        ("x-amz-date".to_string(), "20150830T123600Z".to_string()),
+    ];
+    let sign = |headers: &[(String, String)]| {
+        sign_v4(
+            "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+            "us-east-1",
+            "iam",
+            "GET",
+            "/",
+            "",
+            headers,
+            &payload_hash,
+            "20150830T123600Z",
+            "20150830",
+        )
+    };
+
+    let mut duplicated = common.to_vec();
+    duplicated.push(("x-custom".to_string(), "  foo  ".to_string()));
+    duplicated.push(("x-custom".to_string(), "bar".to_string()));
+    let (sig_duplicated, signed_duplicated) = sign(&duplicated);
+
+    let mut premerged = common.to_vec();
+    premerged.push(("x-custom".to_string(), "foo,bar".to_string()));
+    let (sig_premerged, signed_premerged) = sign(&premerged);
+
+    assert_eq!(
+        signed_duplicated, "host;x-amz-date;x-custom",
+        "the duplicate name appears once in SignedHeaders, not twice"
+    );
+    assert_eq!(signed_duplicated, signed_premerged);
+    assert_eq!(
+        sig_duplicated, sig_premerged,
+        "a duplicated header must sign identically to its comma-joined, pre-trimmed equivalent"
+    );
+}
+
 /// AWS published worked example — GET iam ListUsers, 2015-08-30. If our canonical-request ->
 /// string-to-sign -> signature chain reproduces AWS's documented signature, the algorithm is
 /// correct.

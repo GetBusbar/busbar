@@ -31,6 +31,7 @@ use busbar_contract::{SlabBytes, StreamId};
 use busbar_contract_transport::wire::Direction;
 use busbar_contract_transport::wire::FrameMeta;
 use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::WireStatus;
 
 use crate::codec::RawCodec;
 use crate::conn::ConnState;
@@ -59,12 +60,20 @@ pub(crate) fn serve_connection(stream: crate::conn::LowerIo, state: Arc<ConnStat
         let conn = hyper::server::conn::http2::Builder::new(TokioExecutor::new())
             .serve_connection(io, svc);
         tokio::pin!(conn);
-        tokio::select! {
-            _ = conn.as_mut() => {}
+        let served = tokio::select! {
+            served = conn.as_mut() => served,
             _ = stop_rx => {
                 conn.as_mut().graceful_shutdown();
-                let _ = conn.await;
+                conn.await
             }
+        };
+        // HOW the connection ended, not merely that it did. A peer that spoke a framing this
+        // server could not read, or a socket that died mid-call, is not a peer that finished, and
+        // a reader handed the clean end-of-stream for either would read an aborted conversation as
+        // a complete one. The failure goes up as this connection's terminal error, ahead of the
+        // end.
+        if served.is_err() {
+            let _ = ending.send_inbound(Err(TransportError::Reset)).await;
         }
         // The connection is over, so nothing will ever arrive on it again: end the inbound side so
         // a reader on `frames()` finishes rather than waiting out a deadline for a frame that
@@ -84,15 +93,16 @@ async fn handle_one_rpc(
     state.record_served_path(req.uri().path().to_string());
     let local = state.next_local_stream.fetch_add(1, Ordering::Relaxed);
     let stream_id = StreamId(local);
-    let (out_tx, out_rx) = crate::conn::outbound_channel();
-    let serial = state.register(local, crate::conn::opened(out_tx));
-
     let mut grpc = tonic::server::Grpc::new(RawCodec);
+    // The call is registered by the handler, not here. `Grpc::streaming` can answer entirely on
+    // its own — a request naming a `grpc-encoding` this server has not enabled is refused while
+    // its headers are still being read — and then the handler below, whose response stream being
+    // dropped is the ONLY thing that prunes the map, never runs at all. An entry made before this
+    // await is one nothing drains and nothing removes, and a connection-wide refusal walks that
+    // map, so it would report a failure for a call that never opened.
     let handler = RpcHandler {
         state: state.clone(),
         stream_id,
-        serial,
-        out_rx: Some(out_rx),
     };
     grpc.streaming(handler, req).await
 }
@@ -103,9 +113,6 @@ async fn handle_one_rpc(
 struct RpcHandler {
     state: Arc<ConnState>,
     stream_id: StreamId,
-    /// Which call this is, told apart from the next one to carry the same `StreamId`.
-    serial: u64,
-    out_rx: Option<crate::conn::OutboundRx>,
 }
 
 impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
@@ -120,9 +127,12 @@ impl tower::Service<Request<tonic::Streaming<bytes::Bytes>>> for RpcHandler {
     fn call(&mut self, request: Request<tonic::Streaming<bytes::Bytes>>) -> Self::Future {
         let state = self.state.clone();
         let stream_id = self.stream_id;
-        let serial = self.serial;
-        let out_rx = self.out_rx.take().expect("called at most once per RPC");
         Box::pin(async move {
+            // The call becomes real HERE, at the first moment anything can be written to it: the
+            // response stream below is what drains this channel, and dropping that stream is what
+            // removes the entry again. See `handle_one_rpc` on why registering any earlier leaks.
+            let (out_tx, out_rx) = crate::conn::outbound_channel();
+            let serial = state.register(stream_id.0, crate::conn::opened(out_tx));
             // `is_response = false`: this is the REQUEST body, which carries no `grpc-status`
             // trailer — only a gRPC response does. See `forward_inbound`'s own note.
             tokio::spawn(forward_inbound(
@@ -183,26 +193,46 @@ pub(crate) async fn forward_inbound(
         }
     };
     if is_response {
-        let status = final_status.as_ref().map_or(
-            busbar_contract_transport::wire::StatusClass::Success,
-            map_status,
-        );
-        let meta = FrameMeta {
-            bytes: 0,
-            transport_units: None,
-            status: Some(status),
-            status_code: None,
-            retry_after_secs: None,
-        };
-        let frame = Frame {
-            direction: Direction::Inbound,
-            stream: stream_id,
-            bytes: SlabBytes::new(Arc::from([])),
-            meta,
-        };
+        let frame = terminal_frame(stream_id, final_status.as_ref());
         let _ = state.send_inbound(Ok((stream_id, frame))).await;
     } else if final_status.is_some() {
         let _ = state.send_inbound(Err(TransportError::Reset)).await;
+    }
+}
+
+/// The zero-length, status-bearing frame that ends one call — the transport's honest reading of
+/// the `grpc-status` the upstream put on its answer, whether that answer ended a body with a
+/// trailer or was the whole answer (a trailers-only refusal, which never opens a body at all).
+///
+/// `None` means the stream ended with no failure, which on the gRPC wire is `grpc-status: 0`, so
+/// the number goes on the frame too: gRPC always puts a number on an answer, and a reader that has
+/// to tell a withdrawn credential from a bad argument cannot do it from the class alone.
+pub(crate) fn terminal_frame(stream_id: StreamId, status: Option<&Status>) -> Frame {
+    let code = status.map_or(tonic::Code::Ok, Status::code);
+    let meta = FrameMeta {
+        bytes: 0,
+        transport_units: None,
+        status: Some(status.map_or(
+            busbar_contract_transport::wire::StatusClass::Success,
+            map_status,
+        )),
+        // `as i32` is `grpc-status`'s own wire spelling, and every code it names is small and
+        // non-negative, so the narrowing below loses nothing.
+        //
+        // Named as gRPC's number, not left bare. The HTTP exchange under a gRPC answer succeeded
+        // (a trailers-only refusal is still a `200` on the HEADERS frame), so the HTTP status says
+        // nothing about what happened and the trailer says everything — but only a reader told
+        // WHICH numbering this is can read it. Handing `14` up unnamed had it matched against
+        // HTTP's bands, where it falls in none, so an `UNAVAILABLE` upstream was read as the
+        // caller's fault: no breaker record, no failover.
+        status_code: u8::try_from(code as i32).ok().map(WireStatus::Grpc),
+        retry_after_secs: None,
+    };
+    Frame {
+        direction: Direction::Inbound,
+        stream: stream_id,
+        bytes: SlabBytes::new(Arc::from([])),
+        meta,
     }
 }
 
@@ -213,6 +243,8 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::St
     use tonic::Code;
     match status.code() {
         Code::Ok => StatusClass::Success,
+        // The upstream blamed the request: the argument, the name, the credential, the state the
+        // caller asked against, or a quota the caller has spent.
         Code::InvalidArgument
         | Code::NotFound
         | Code::AlreadyExists
@@ -221,10 +253,30 @@ pub(crate) fn map_status(status: &Status) -> busbar_contract_transport::wire::St
         | Code::FailedPrecondition
         | Code::OutOfRange
         | Code::ResourceExhausted => StatusClass::ClientError,
-        Code::Internal | Code::Unavailable | Code::DataLoss | Code::Unimplemented => {
-            StatusClass::ServerError
-        }
-        _ => StatusClass::Other,
+        // The upstream blamed ITSELF. The four that were falling to the catch-all belong here and
+        // are named rather than left to it, because the two classes part company on money: only a
+        // server-side failure is one this node retries elsewhere and holds the destination
+        // responsible for. `Unknown` is gRPC's own word for a server-side failure it could not
+        // attribute; `DeadlineExceeded` is an upstream that did not answer in time; `Aborted` is
+        // an upstream aborting the call over its own concurrency; `Unavailable` and `Internal` say
+        // so outright. Reading any of them as "outside the three classes" said the upstream was
+        // fine and the caller was at fault, which is neither true nor free.
+        //
+        // An HTTP 5xx carrying NO `grpc-status` at all lands here too, by the same reading: there
+        // is no code to read off such an answer, so it arrives as `Unknown`, and an upstream that
+        // answered 5xx without finishing the gRPC framing has blamed itself twice over.
+        Code::Internal
+        | Code::Unavailable
+        | Code::DataLoss
+        | Code::Unimplemented
+        | Code::Unknown
+        | Code::DeadlineExceeded
+        | Code::Aborted => StatusClass::ServerError,
+        // Cancelled is the one code where NEITHER side is blamed: the call was called off, usually
+        // by the caller itself, so `Other` is the honest reading. Named, with no catch-all behind
+        // it: every code gRPC defines has a row here, so one added later stops this compiling
+        // rather than quietly acquiring a class nobody chose.
+        Code::Cancelled => StatusClass::Other,
     }
 }
 

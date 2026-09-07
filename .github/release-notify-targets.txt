@@ -2,6 +2,20 @@
 # {tag, version, sha} to on a busbar release. Each repo has its own release-on-upstream
 # workflow (plus a daily-cron fallback) that re-pins to `sha`, bumps its own version, and
 # publishes. One line per downstream repo.
+#
+# GetBusbar/marketing IS DELIBERATELY ABSENT, AND ITS ABSENCE IS THE DECISION, NOT AN OVERSIGHT.
+# The marketing site's deploy must not be a dependency of the release (owner, 2026-09-06). It was
+# on this list, so every release RAN the site deploy: `notify-downstream` fails outright if any
+# single dispatch fails, and `consumer-verification` hangs off it -- so a marketing-side token,
+# rename or outage could turn a perfectly good, already-published busbar release red, and a
+# release could be held up by a site that ships nothing users execute. The site keeps its OWN
+# trigger (its push-to-main deploy plus its daily poll of busbar's /releases/latest), which is
+# what makes it self-healing without being wired into this path. Nothing in this repository
+# triggers, waits on, or `needs:` the site deploy.
+#
+# The site's state is still OBSERVED, never depended on: verify-deploy.yml's checks (g)/P6/(k)/(n)
+# read getbusbar.com AFTER publication, and cannot gate it -- they run in `consumer-verification`,
+# which is downstream of an already-public release by construction.
 
 GetBusbar/store-mysql
 GetBusbar/store-postgres
@@ -13,7 +27,6 @@ GetBusbar/webrequest-hook
 GetBusbar/headroom-hook
 GetBusbar/helm-charts
 GetBusbar/homebrew-busbar
-GetBusbar/marketing
 GetBusbar/terraform-provider-busbar
 GetBusbar/provider-busbar
 GetBusbar/pulumi-busbar

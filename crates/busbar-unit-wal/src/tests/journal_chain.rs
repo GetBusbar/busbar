@@ -404,6 +404,44 @@ fn a_full_buffer_seals_a_chain_break_rather_than_dropping_silently() {
     assert_eq!(breaks[0].node_seq, overflows[0].chain_break_seq);
 }
 
+/// A single batch bigger than the whole capacity has nothing already buffered to evict, but the
+/// bound was still reached and still has to seal a break — not silently accept a buffer left over
+/// the bound for as long as the outage lasts.
+#[test]
+fn a_batch_bigger_than_the_capacity_still_seals_a_chain_break() {
+    let mut journal = Journal::memory_buffered_to(4, Box::new(RefusingShipper)).with_capacity(4);
+    let token = durability_token();
+
+    journal
+        .append(
+            &token,
+            StepName::Meter,
+            &entries(RecordClass::Transaction, 6, 9),
+        )
+        .expect_err("the store refuses");
+
+    let overflows = journal.overflows();
+    assert_eq!(
+        overflows.len(),
+        1,
+        "an oversized batch reaches the bound on its own"
+    );
+    assert_eq!(overflows[0].dropped, 0, "nothing was buffered yet to evict");
+
+    let on_the_medium =
+        decode_run(&journal.log().read_back().expect("readable").records).expect("journal records");
+    let breaks: Vec<&JournalRecord> = on_the_medium
+        .iter()
+        .filter(|r| r.class == RecordClass::ChainBreak)
+        .collect();
+    assert_eq!(
+        breaks.len(),
+        1,
+        "the oversized batch still seals a break, not none"
+    );
+    assert_eq!(breaks[0].body, overflows[0].body());
+}
+
 /// The overflow history is a window plus a running total, not one entry per overflowing append.
 ///
 /// Once the buffer is full EVERY append overflows, so an unbounded history is a per-request memory
@@ -470,6 +508,89 @@ fn overflow_history_is_a_window_while_the_dropped_total_keeps_rising() {
         breaks.len(),
         journal.overflows_seen(),
         "one sealed ChainBreak per overflow, however few of them the history still names"
+    );
+}
+
+/// A TAIL THIS BUILD CANNOT READ MUST NOT MAKE THE NEXT RECORD VANISH.
+///
+/// The log seeds its idempotence marks from the tail it recovered whether or not the journal could
+/// decode those bytes — a segment written by a layout version this build does not read, or by a
+/// record class it does not know, both of which is what a rollback looks like from underneath. A
+/// chain that then numbered from one would seal records under identities the log already holds, and
+/// the log answers a held identity by passing the record over and reporting success. The settlement
+/// would be on no medium and the append would say `Ok`.
+#[test]
+fn a_tail_this_build_cannot_read_does_not_make_the_next_record_vanish() {
+    use crate::backend::MemoryFactory;
+    use crate::record::{Record, FRAME_BYTES};
+
+    const NODE: u64 = 6;
+    const CEILING: u64 = 64 * FRAME_BYTES as u64;
+    let token = durability_token();
+    let factory = MemoryFactory::retaining();
+    let open = |factory: &MemoryFactory| {
+        Wal::with_parts(
+            Box::new(factory.clone()),
+            Box::new(NullShipper::new()),
+            Mode::OnDisk,
+            CEILING,
+        )
+        .expect("a memory segment cannot fail to open")
+    };
+
+    // A tail the log took and the journal cannot read back as its own records.
+    {
+        let mut log = open(&factory);
+        log.append_batch(
+            &token,
+            StepName::Meter,
+            &[
+                Record::new(
+                    NODE,
+                    1,
+                    b"a record of a layout this build does not read".to_vec(),
+                ),
+                Record::new(NODE, 2, b"and the one after it".to_vec()),
+            ],
+        )
+        .expect("the medium is healthy");
+    }
+
+    let log = open(&factory);
+    assert_eq!(
+        log.recovered().len(),
+        2,
+        "the fixture is only interesting if the log recovered a tail it seeded its marks from"
+    );
+    let mut journal = Journal::over(log, NODE);
+
+    let ack = journal
+        .append(
+            &token,
+            StepName::Meter,
+            &[Entry::new(
+                RecordClass::Transaction,
+                b"a settlement".to_vec(),
+            )],
+        )
+        .expect("a healthy medium takes the append");
+    assert_eq!(
+        ack.batch.appended, 1,
+        "the journal reported a sealed record the log never wrote"
+    );
+
+    let sealed = &ack.sealed[0];
+    let on_the_medium = journal
+        .log()
+        .read_back()
+        .expect("the segment reads back")
+        .records;
+    assert!(
+        on_the_medium
+            .iter()
+            .any(|r| r.identity() == sealed.identity() && r.body == sealed.encode()),
+        "the record the journal sealed is not on the medium: identity {:?} collided with the tail",
+        sealed.identity()
     );
 }
 

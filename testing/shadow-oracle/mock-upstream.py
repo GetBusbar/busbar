@@ -29,6 +29,12 @@ Outcome controls (the recorder sets them per cell):
                                        error at all: here the upstream says WHY, in band, after the
                                        response has already begun — so the door cannot answer with a
                                        status code and has to translate the failure into its own stream
+  header  X-Oracle-Upstream: citation
+                                    -> the BUFFERED Responses answer, ANNOTATED: the same text, plus a
+                                       URL citation written in the FLAT spelling the published
+                                       UrlCitationBody declares (url/title/start_index/end_index on the
+                                       annotation itself, not nested under `url_citation`). Every other
+                                       dialect and every stream builder is byte-identical under it
   body    {"stream": true} (openai/anthropic/cohere) or the *stream* path (gemini/bedrock)
                                     -> a fixed SSE / streamed sequence in that dialect
 
@@ -118,6 +124,26 @@ def openai_responses(model, marker):
               "usage": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK, "total_tokens": IN_TOK + OUT_TOK,
                         "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
                         "output_tokens_details": {"reasoning_tokens": 0}}})
+
+
+def openai_responses_citation(model, marker):
+    """The same answer, ANNOTATED — the one shape the bare-text fixture cannot carry.
+
+    The annotation is written in the FLAT spelling the published `UrlCitationBody` declares: `url`,
+    `title`, `start_index` and `end_index` sit directly on the annotation object, NOT nested under a
+    `url_citation` member (that nesting is Chat Completions' spelling of the same thing). Writing the
+    published shape is the whole point: a reader that knows only the nested one drops the citation,
+    and drops it even on a same-dialect hop, where it is re-reading bytes of its own making.
+    """
+    body = json.loads(openai_responses(model, marker).decode())
+    body["output"][0]["content"][0]["annotations"] = [{
+        "type": "url_citation",
+        "url": "https://example.invalid/spec",
+        "title": "the published spec",
+        "start_index": 0,
+        "end_index": len(marker),
+    }]
+    return j(body)
 
 
 def gemini(model, marker):
@@ -496,6 +522,10 @@ class H(BaseHTTPRequestHandler):
         # fails is already covered by `down`/`5xx`, and answering one with half a stream would be a
         # shape no upstream produces.
         stream_error = (ctl == "stream-error")
+        # `citation` answers the BUFFERED Responses shape with a sourced annotation instead of bare
+        # text. It touches nothing else: every other dialect and every stream builder is byte-
+        # identical under it, so a golden recorded without the verb is unaffected by its existence.
+        citation = (ctl == "citation")
         if p == "/v1/messages":
             if want_stream and stream_error:
                 return self._send(200, anthropic_stream_error(model, marker), "text/event-stream")
@@ -509,6 +539,8 @@ class H(BaseHTTPRequestHandler):
         if p == "/v1/responses":
             if want_stream and stream_error:
                 return self._send(200, responses_stream_error(model, marker), "text/event-stream")
+            if citation:
+                return self._send(200, openai_responses_citation(model, marker))
             return self._send(200, openai_responses(model, marker))
         if p.startswith("/v1beta/models/") and ":streamGenerateContent" in p:
             if stream_error:

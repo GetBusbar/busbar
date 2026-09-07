@@ -113,6 +113,9 @@ pub mod ingress {
     }
 }
 pub use busbar_substrate_values::{billing, breaker};
+// The one notification that a live apply changed the deployment's configured rates, so a holder that
+// prices against them swaps rather than keeping the boot reading forever.
+pub mod rate_apply;
 // The proleptic-Gregorian civil-date split shared by the plane crates that render an epoch timestamp
 // (MCP task `iso8601_ms`, A2A push `status.timestamp`) without pulling a date-time crate into their
 // closure. One copy here, in the substrate both planes depend on, rather than one per plane.

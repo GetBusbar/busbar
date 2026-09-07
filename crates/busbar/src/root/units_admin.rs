@@ -94,6 +94,14 @@ pub struct AdminRequest {
     /// a unit that read the clock twice could be admitted in one window and rate-classed in the
     /// next.
     pub at: u64,
+    /// The key of the unit this request is walked as.
+    ///
+    /// Carried on the request because it has to cross the seam WITH it: the operation's body runs on
+    /// a task the seam spawned, and the one effect a body can ask to outlive its own response — the
+    /// drain — is attributed to the unit that asked for it. Without the key travelling here the
+    /// attribution would have to be re-derived on the far side of a task boundary, which is another
+    /// way of saying it would be guessed.
+    pub unit: u64,
 }
 
 /// One admin answer, exactly as the surface that owns the operation produced it.
@@ -1415,12 +1423,18 @@ pub(crate) fn verify(
 /// a scope refusal at this step rather than a surprise inside the operation.
 pub(crate) fn approve(
     binding: &AdminBinding,
-    granted: VerbScope,
+    granted: Option<VerbScope>,
     token: &UnitToken<Approve>,
     ctx: &UnitCtx,
     _principal: &PrincipalId,
     _destinations: &[VerifiedDestination],
 ) -> Decision<Approve> {
+    // A caller holding no grant at all is refused here, before the operation is reached. An absent
+    // grant is not a narrow one: there is no scope to compare the matrix against, so there is
+    // nothing this step could admit.
+    let Some(granted) = granted else {
+        return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
+    };
     let Some(request) = binding.units.request(ctx.key) else {
         return Decision::refuse(token, Refusal::new(ReasonCode::ScopeDenied));
     };
@@ -1543,6 +1557,52 @@ pub(crate) fn route(
         None => (None, busbar_unit_verbs::ApprovalState::NotYetApproved),
     };
 
+    // THE THREE DISASTER-RECOVERY VERBS REACH THE STORE, not the governance seam. They are new
+    // verbs and are admitted exactly as every other new verb is — scope, rate class, then the
+    // operator ceremony and dual control — but their effect lands on `Store` rather than on a
+    // handler, and the unit gives each of them its own entry point for precisely that reason.
+    // Sending them through `execute` sent them to `execute_new_verb`, which asks the mounted router
+    // for a path that release never had: the ceremony ran, the gates passed, and the caller got a
+    // 404 from the surface underneath. Breaking a journal chain is not an operation that should be
+    // able to look like it happened when it did not, nor to look like it did not when it had.
+    if let Some(recovery) = recovery_verb(verb) {
+        let ran = match recovery {
+            RecoveryVerb::ChainBreak => {
+                verbs.chain_break(admin, &actor, granted, request.at, posture, approval)
+            }
+            RecoveryVerb::StoreRestore => {
+                // The backup the operator named. There is no default and no empty one: restoring
+                // "whatever the store thinks" is the single most destructive thing this surface can
+                // be asked to do by accident, so a request that names none is refused before the
+                // ceremony rather than resolved to something.
+                match backup_ref_of(&request.body) {
+                    Some(backup_ref) => verbs.store_restore(
+                        admin,
+                        &actor,
+                        granted,
+                        request.at,
+                        posture,
+                        approval,
+                        &backup_ref,
+                    ),
+                    None => {
+                        return Decision::refuse(token, Refusal::new(ReasonCode::DecodeFailed));
+                    }
+                }
+            }
+            RecoveryVerb::ResealEpochFloor => {
+                verbs.reseal_epoch_floor(admin, &actor, granted, request.at, posture, approval)
+            }
+        };
+        return match ran {
+            Ok(()) => {
+                binding.units.set_answer(ctx.key, applied_answer());
+                Decision::proceed(token, busbar_contract::RoutePlan::default())
+            }
+            Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
+        };
+    }
+
     match verbs.execute(
         verb,
         admin,
@@ -1564,6 +1624,88 @@ pub(crate) fn route(
         },
         Err(refusal) => Decision::refuse(token, Refusal::new(verbs_reason(refusal.reason))),
     }
+}
+
+/// The three verbs whose effect lands on the store rather than on a handler.
+///
+/// Named as a closed enumeration of its own rather than matched inline, so "these three and no
+/// others" is a fact with a test on it. The verbs unit draws the same line from the other side: it
+/// gives each of them a method, and gives `execute` no arm that could reach one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryVerb {
+    ChainBreak,
+    StoreRestore,
+    ResealEpochFloor,
+}
+
+/// Which recovery verb this is, or `None` for a verb whose effect is the governance seam's.
+fn recovery_verb(verb: KernelVerb) -> Option<RecoveryVerb> {
+    match verb {
+        KernelVerb::ChainBreak => Some(RecoveryVerb::ChainBreak),
+        KernelVerb::StoreRestore => Some(RecoveryVerb::StoreRestore),
+        KernelVerb::ResealEpochFloor => Some(RecoveryVerb::ResealEpochFloor),
+        _ => None,
+    }
+}
+
+/// What an operation that changed something and has nothing to say answers with.
+///
+/// A recovery verb's whole result is its effect: the chain broke, the store restored, the floor
+/// resealed. There is no document to return and none was ever specified, so the answer carries no
+/// body and declares no content type — inventing a document here would put a schema on the wire that
+/// nothing describes and that a client would then be entitled to depend on.
+fn applied_answer() -> AdminAnswer {
+    AdminAnswer {
+        status: 204,
+        headers: Vec::new(),
+        body: Vec::new(),
+    }
+}
+
+/// The backup a `store_restore` request names, or `None` when it names none.
+///
+/// A deliberately small reader for a deliberately small document: one field, whose value is a JSON
+/// string. Written out rather than taken from a serialization crate because this crate carries none
+/// on the request path, and because getting it wrong in the permissive direction is what would let a
+/// malformed body restore something the operator did not ask for. Anything this does not understand
+/// — a missing field, a value that is not a string, an unterminated one — is `None`, and `None` is
+/// a refusal at the call site.
+fn backup_ref_of(body: &[u8]) -> Option<String> {
+    const FIELD: &str = "\"backup_ref\"";
+    let text = std::str::from_utf8(body).ok()?;
+    let after = &text[text.find(FIELD)? + FIELD.len()..];
+    let after = after.trim_start();
+    let after = after.strip_prefix(':')?.trim_start();
+    let mut chars = after.strip_prefix('"')?.chars();
+    let mut value = String::new();
+    loop {
+        match chars.next()? {
+            '"' => break,
+            '\\' => match chars.next()? {
+                '"' => value.push('"'),
+                '\\' => value.push('\\'),
+                '/' => value.push('/'),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                'b' => value.push('\u{08}'),
+                'f' => value.push('\u{0c}'),
+                'u' => {
+                    let mut hex = String::with_capacity(4);
+                    for _ in 0..4 {
+                        hex.push(chars.next()?);
+                    }
+                    value.push(char::from_u32(u32::from_str_radix(&hex, 16).ok()?)?);
+                }
+                // An escape this reader does not know is a document it does not understand, and a
+                // backup reference is the last field to guess at.
+                _ => return None,
+            },
+            c => value.push(c),
+        }
+    }
+    // An empty reference names nothing, which is the same refusal as naming no field at all.
+    (!value.is_empty()).then_some(value)
 }
 
 /// Whether the operation's own surface has already minted the identity this answer carries.
@@ -1591,18 +1733,26 @@ fn mints_its_own_identity(verb: KernelVerb) -> bool {
 /// secret — and it also attributes two callers sharing one token to two different actors while
 /// attributing one caller rotating a token to one actor per rotation.
 ///
-/// The fallback is a literal rather than the credential for the same reason: a unit refused before
-/// the identity was resolved has no actor to name, and saying so is the honest record.
-fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
-    binding
-        .units
-        .principal(key)
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_else(|| UNRESOLVED_ACTOR.to_string())
+/// `None` where no identity was resolved, which is the answer the audit doors act on: a unit refused
+/// at or before Authenticate has no actor, so the previous release's chain takes no row for it. The
+/// literal that used to stand in was the CONFIGURED administrator's name, which made every refused
+/// unauthenticated mutation a row in that operator's own history.
+fn resolved_actor(binding: &AdminBinding, key: UnitKey) -> Option<String> {
+    binding.units.principal(key).map(|p| p.as_str().to_string())
 }
 
-/// What an administrative record names when no identity was resolved for the unit.
+/// What a step that must name somebody uses when the identity did not resolve.
+///
+/// Reached only by Route, and Route is downstream of Authenticate — a unit that reaches it has a
+/// principal, so this is the shape of an impossibility rather than a fallback anything exercises.
+/// It is NOT what the audit doors use: those decline to write at all, because a record naming a
+/// non-participant is a worse answer than no record.
 const UNRESOLVED_ACTOR: &str = "admin";
+
+/// The identity a step that cannot decline is handed. See [`UNRESOLVED_ACTOR`].
+fn actor_of(binding: &AdminBinding, key: UnitKey) -> String {
+    resolved_actor(binding, key).unwrap_or_else(|| UNRESOLVED_ACTOR.to_string())
+}
 
 /// The verbs unit's refusal vocabulary, said in the kernel's.
 ///
@@ -1660,15 +1810,22 @@ pub(crate) fn audit(
     let (Some(request), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
-        return Decision::proceed(token, unresolved_facts(outcome));
+        return Decision::proceed(
+            token,
+            unresolved_facts(
+                binding
+                    .units
+                    .request(ctx.key)
+                    .map(|request| request.method)
+                    .as_deref(),
+                outcome,
+            ),
+        );
     };
     if !resolved.read_only {
-        legacy.record_by(
-            resolved.verb,
-            &request.path,
-            outcome_word(outcome),
-            &actor_of(binding, ctx.key),
-        );
+        if let Some(actor) = resolved_actor(binding, ctx.key) {
+            legacy.record_by(resolved.verb, &request.path, outcome_word(outcome), &actor);
+        }
     }
     Decision::proceed(
         token,
@@ -1686,26 +1843,49 @@ pub(crate) fn audit_refused(
     legacy: &busbar_unit_audit::AuditLog,
     token: &UnitToken<Audit>,
     ctx: &UnitCtx,
-    _refusal: &Refusal,
+    refusal: &Refusal,
 ) -> Decision<Audit> {
     let (Some(request), Some(resolved)) =
         (binding.units.request(ctx.key), binding.units.verb(ctx.key))
     else {
+        // THE REFUSAL THAT HAPPENED, not one composed here. This arm used to seal every unresolved
+        // unit as a decode failure raised at Decode, whatever it had actually been refused for: a
+        // revoked credential, a denied scope and a saturated store all left one record, saying the
+        // bytes did not parse. That is the single thing an audit record exists to state, and it was
+        // the field this door overwrote. The step is the decision's own stamp where it carries one,
+        // and the door itself is the latest step it could have been raised at where it does not.
         return Decision::proceed(
             token,
-            unresolved_facts(&Outcome::Refused(
-                busbar_caps::StepName::Decode,
-                ReasonCode::DecodeFailed,
-            )),
+            unresolved_facts(
+                binding
+                    .units
+                    .request(ctx.key)
+                    .map(|request| request.method)
+                    .as_deref(),
+                &Outcome::Refused(
+                    refusal.step().unwrap_or(busbar_caps::StepName::Audit),
+                    refusal.reason(),
+                ),
+            ),
         );
     };
+    // A REFUSAL BEFORE THE IDENTITY RESOLVED APPENDS NOTHING. The previous release's chain is what
+    // an operator's history page reads, and for an unauthenticated administrative request it holds
+    // no row at all — the credential was never accepted, so no principal ever acted. Writing one
+    // anyway put a mutation in the history under the configured administrator's name for a request
+    // that administrator never made, which is worse than a gap: an anonymous caller could grow that
+    // operator's history one refused `DELETE` at a time. The attempt is still reported — it is the
+    // refusal the caller receives and the sealed facts below — it is simply not attributed to
+    // somebody who was not there.
     if !resolved.read_only {
-        legacy.record_by(
-            resolved.verb,
-            &request.path,
-            busbar_unit_audit::OUTCOME_REJECTED,
-            &actor_of(binding, ctx.key),
-        );
+        if let Some(actor) = resolved_actor(binding, ctx.key) {
+            legacy.record_by(
+                resolved.verb,
+                &request.path,
+                busbar_unit_audit::OUTCOME_REJECTED,
+                &actor,
+            );
+        }
     }
     Decision::proceed(
         token,
@@ -1719,13 +1899,42 @@ pub(crate) fn audit_refused(
 /// What the record says about a unit whose verb never resolved.
 ///
 /// It still ended, and it still has an operation class, because "the table declares no such
-/// operation" IS an admin-read answer: the surface was asked a question and said no. Naming a class
-/// here rather than leaving one unset is what keeps every sealed end comparable.
-pub(crate) fn unresolved_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
+/// operation" IS an answer: the surface was asked a question and said no. Naming a class here
+/// rather than leaving one unset is what keeps every sealed end comparable.
+///
+/// WHICH class is read off the method, not fixed. Every unresolved unit used to seal as
+/// `admin_read`, so an unrouted `DELETE` and an unrouted `GET` came out of the record as the same
+/// event — an operator reading a page. That answer is right for one of them and wrong for the other
+/// in the direction that matters: the record under-reports the attempted blast radius, which is
+/// exactly the column somebody reviewing an administrative history is reading for. A method the
+/// request never carried (there is no request at all, so nothing was asked of any resource) stays
+/// a read, because a unit that never presented a method attempted no mutation.
+pub(crate) fn unresolved_facts(
+    method: Option<&str>,
+    outcome: &Outcome,
+) -> busbar_contract::AuditFacts {
     busbar_contract::AuditFacts {
-        op_class: busbar_contract::OpClassId::new("admin_read"),
+        op_class: busbar_contract::OpClassId::new(match method {
+            Some(method) if !is_read_method(method) => OP_UNRESOLVED_WRITE,
+            _ => OP_UNRESOLVED_READ,
+        }),
         finish: finish_of(outcome),
     }
+}
+
+/// The two operation classes the admin plane seals a resolved unit under, spelt here for the
+/// unresolved ones so that both halves of the record use one vocabulary. Taken from the plane's own
+/// table rather than invented, because a class this file coined would be a third word for a split
+/// the surface already has two.
+const OP_UNRESOLVED_READ: &str = "admin_read";
+/// See [`OP_UNRESOLVED_READ`].
+const OP_UNRESOLVED_WRITE: &str = "admin_write";
+
+/// Whether this method reads. The two the HTTP specification defines as safe, and nothing else —
+/// an unknown method is not one of them, so it seals as a write, which is the conservative
+/// direction for a column an audit review is read for.
+fn is_read_method(method: &str) -> bool {
+    method.eq_ignore_ascii_case("GET") || method.eq_ignore_ascii_case("HEAD")
 }
 
 fn outcome_word(outcome: &Outcome) -> &'static str {
@@ -1963,16 +2172,35 @@ impl AdminNode {
         }
     }
 
+    /// Draw the key of the next unit this node will walk.
+    ///
+    /// Drawn by the caller rather than inside the walk because the key is what names this unit on
+    /// BOTH sides of the walk: the steps read it, and the exit path releases against it whatever the
+    /// unit asked to outlive its response.
+    pub fn next_unit(&self) -> u64 {
+        self.next_key
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// Walk one admin request through the loop and answer with what it produced.
     ///
     /// The whole of the kernel's ten steps, two audit doors and one exit, for a request that used
     /// to reach its handler directly. What comes back is what the operation's own surface answered:
     /// this function chooses the PATH, never the bytes.
     pub fn answer(&self, request: AdminRequest) -> AdminAnswer {
-        let key = UnitKey::new(
-            self.next_key
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        );
+        // The key the caller already drew for this request. It is drawn OUTSIDE this walk because
+        // the caller has to name the same unit on the way out — the exit path releases what this
+        // unit asked to outlive its response, and a key invented in here would be a key the exit
+        // path could not name.
+        let key = UnitKey::new(request.unit);
+        // The arrival clock, read ONCE and read where the request arrived. Every step that asks what
+        // time it is for this unit — the auth unit's expiry and revocation window, the verbs unit's
+        // rate class, the nonce the one-time secrets bind to — is handed this same number, so a
+        // second reading here would put the in-flight table's idea of when the unit arrived after
+        // the one every other step works from. The gap is small and the disagreement is not: a
+        // credential can expire between two readings, and then the unit is authenticated against one
+        // clock and aged against another.
+        let arrived_at = request.at;
         self.units.admin.units.open(key, request);
         // From here the unit occupies two tables, and every way out of this function gives both
         // back — including the way a panicking step takes.
@@ -1995,7 +2223,7 @@ impl AdminNode {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival,
-            now: busbar_substrate::store::now_ms(),
+            now: arrived_at,
         });
 
         let answer = match entered {
@@ -2031,11 +2259,12 @@ impl AdminNode {
                 // The loop ran; the answer is whatever Route put there. A unit refused before Route
                 // has none, and the refusal it ended on is what the surface renders. Read BEFORE
                 // the guard below hands the entry back, because the entry is where the answer is.
-                self.units
-                    .admin
-                    .units
-                    .answer(key)
-                    .unwrap_or_else(|| refused_answer(&ended))
+                self.units.admin.units.answer(key).unwrap_or_else(|| {
+                    // The request is read back for the one refusal whose message names a
+                    // property of the endpoint rather than of the ending. It is still open here:
+                    // the guard below is what closes it.
+                    refused_answer(&ended, self.units.admin.units.request(key).as_ref())
+                })
             }
         };
 
@@ -2044,6 +2273,28 @@ impl AdminNode {
         // is the leak per request this root may not have.
         drop(occupied);
         answer
+    }
+}
+
+/// ONE UNIT'S EXIT PATH, held rather than written.
+///
+/// The release of an effect that outlives the response used to be the last statement of the
+/// answering future, which is the one place it cannot be: a client that disconnects mid-walk drops
+/// that future, and a statement in a dropped future does not run. What was left behind was a drain
+/// asked for and never released — a restart the caller never got its 202 for, whose shutdown then
+/// waited for whichever unrelated request reached a release next.
+///
+/// As a guard the release is on every way out, including the drop. `unit` is what makes it this
+/// unit's release and nobody else's.
+#[cfg(feature = "root-admin")]
+struct ExitPath {
+    unit: u64,
+}
+
+#[cfg(feature = "root-admin")]
+impl Drop for ExitPath {
+    fn drop(&mut self) {
+        busbar_core::admin::restart::UnitDrain::of_unit(self.unit).release();
     }
 }
 
@@ -2080,14 +2331,99 @@ impl Drop for Occupied<'_> {
 /// them and the loop knows which one this unit earned, so the ending is read rather than replaced
 /// by a single word.
 #[cfg(feature = "root-admin")]
-fn refused_answer(ended: &busbar_kernel::teller::Ended) -> AdminAnswer {
+fn refused_answer(
+    ended: &busbar_kernel::teller::Ended,
+    request: Option<&AdminRequest>,
+) -> AdminAnswer {
     match ended {
-        busbar_kernel::teller::Ended::Settled { end, .. } => answer_for(end.outcome()),
+        busbar_kernel::teller::Ended::Settled { end, .. } => {
+            if is_credential_refusal(end.outcome()) {
+                return door_answer();
+            }
+            if let (true, Some(request)) = (is_scope_refusal(end.outcome()), request) {
+                return scope_answer(request);
+            }
+            answer_for(end.outcome())
+        }
         // The node's own sweep took the hold first, which means this unit is not going to produce an
         // answer at all. That is the node being unable to serve the request, not the caller being
         // told no.
         busbar_kernel::teller::Ended::AlreadySettled => unavailable_answer(),
     }
+}
+
+/// Whether this ending is one about WHO is calling.
+///
+/// The two the authenticate step can reach: a credential the chain would not identify, and one it
+/// identified and the revocation set had taken away. Both are the same thing to the caller — the
+/// door — and both are answered with the door's own bytes.
+#[cfg(feature = "root-admin")]
+fn is_credential_refusal(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Refused(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
+            | Outcome::Failed(_, ReasonCode::Unauthenticated | ReasonCode::Revoked)
+    )
+}
+
+/// Whether this ending is the one about what the caller may DO, having been identified.
+#[cfg(feature = "root-admin")]
+fn is_scope_refusal(outcome: Outcome) -> bool {
+    matches!(
+        outcome,
+        Outcome::Refused(_, ReasonCode::ScopeDenied) | Outcome::Failed(_, ReasonCode::ScopeDenied)
+    )
+}
+
+/// What the previous release answers a caller whose grant does not reach the operation.
+///
+/// Its message NAMES the scope that would have sufficed, which is why this cannot be rendered from
+/// the code alone: the scope is a property of the endpoint, read from the same matrix the approve
+/// step compared the grant against. No recorded cell exercises this ending — the published release's
+/// recordings hold no under-scoped call — so the three values are taken from that release's own
+/// admin error contract (`crates/busbar-core/src/admin/v1/contract/mod.rs`, `AdminError::Forbidden`)
+/// rather than from a recording, and the oracle cannot confirm them.
+#[cfg(feature = "root-admin")]
+fn scope_answer(request: &AdminRequest) -> AdminAnswer {
+    let needed = busbar_unit_scope::admin_required_scope(&request.method, &request.path);
+    error_answer_with_message(
+        403,
+        "forbidden",
+        &format!(
+            "insufficient scope: this endpoint requires `{}`",
+            needed.as_str()
+        ),
+    )
+}
+
+/// The status the previous release's administrative door answers an unidentified caller with.
+#[cfg(feature = "root-admin")]
+const DOOR_STATUS: u16 = 401;
+
+/// The frozen `code` that door writes.
+#[cfg(feature = "root-admin")]
+const DOOR_CODE: &str = "unauthorized";
+
+/// The frozen human message that door writes, character for character.
+#[cfg(feature = "root-admin")]
+const DOOR_MESSAGE: &str = "missing or invalid admin credential (Bearer or x-admin-token)";
+
+/// What the deployment's own door answers a caller it will not identify.
+///
+/// THE LOOP DECIDES THE PATH; THE BYTES ARE STILL THE DOOR'S — WRITTEN, NOT RE-RUN. A unit refused at
+/// Authenticate never reaches the operation, which is the whole point of refusing there, and the
+/// caller must not be able to tell that the path changed. The three values above are the previous
+/// release's, and the envelope around them is the plane's one source for the frozen shape, so the
+/// answer is composed from what is written down rather than obtained by asking the surface for it.
+///
+/// It is composed rather than obtained BECAUSE a refusal path may not execute anything. Sending the
+/// request back down to the mounted gate to be refused a second time runs a request on the path
+/// where nothing is supposed to run, and it makes the bytes depend on an invariant — that gate
+/// refusing a credential-less request — which nothing here can hold. A status check afterwards
+/// discards an answer; it cannot discard an execution that already happened.
+#[cfg(feature = "root-admin")]
+fn door_answer() -> AdminAnswer {
+    error_answer_with_message(DOOR_STATUS, DOOR_CODE, DOOR_MESSAGE)
 }
 
 /// The surface's answer for one ending.
@@ -2129,10 +2465,20 @@ fn answer_for(outcome: Outcome) -> AdminAnswer {
 /// place and not the other.
 #[cfg(feature = "root-admin")]
 fn error_answer(status: u16, code: &str) -> AdminAnswer {
+    error_answer_with_message(status, code, code)
+}
+
+/// The same envelope where the previous release writes prose rather than the code again.
+///
+/// Two of its ten errors carry a message this file cannot derive from the code alone — the door's,
+/// and the scope refusal's, which names the scope that would have sufficed. They are the same
+/// envelope from the same source; only the second string differs.
+#[cfg(feature = "root-admin")]
+fn error_answer_with_message(status: u16, code: &str, message: &str) -> AdminAnswer {
     AdminAnswer {
         status,
         headers: vec![("content-type".to_string(), "application/json".to_string())],
-        body: busbar_plane_admin::refusal::envelope_of(code, code).into_bytes(),
+        body: busbar_plane_admin::refusal::envelope_of(code, message).into_bytes(),
     }
 }
 
@@ -2182,7 +2528,15 @@ impl RouterDispatch {
                 // One task per operation, so a slow verb cannot hold up the one behind it — the
                 // surface was concurrent before the switch and stays concurrent through it.
                 tokio::spawn(async move {
-                    let _ = reply.send(call(inner, &request).await);
+                    // THE UNIT'S KEY IS AMBIENT FOR THE LENGTH OF ITS BODY. An operation whose
+                    // effect outlives its own response asks for that effect from inside its own
+                    // handler, which knows nothing about the composition it is answering under —
+                    // so the composition says, here, which unit the handler's ask belongs to.
+                    let unit = request.unit;
+                    let answer = busbar_core::admin::restart::UnitDrain::of_unit(unit)
+                        .scoping(call(inner, &request))
+                        .await;
+                    let _ = reply.send(answer);
                 });
             }
         });
@@ -2238,6 +2592,54 @@ impl AdminDispatch for RouterDispatch {
         }
         answer.recv().unwrap_or_else(|_| unavailable_answer())
     }
+}
+
+/// The name of the second carrier the administrative surface has always accepted.
+///
+/// Not a synonym this root invented: the pinned document advertises it as a security scheme of its
+/// own, and a deployment's tooling is free to have picked either. Spelt as a constant because it is
+/// a wire name, and a wire name written twice is a wire name that can be written two ways.
+#[cfg(feature = "root-admin")]
+const ADMIN_TOKEN_HEADER: &str = "x-admin-token";
+
+/// The credential this request presents, whichever of the two carriers it came in.
+///
+/// TWO CARRIERS, NOT ONE. The previous release folds `Authorization: Bearer …` and `x-admin-token`
+/// together and accepts either; this used to read only the first, which was invisible for exactly as
+/// long as the loop admitted anonymously and the surface underneath did the deciding. The moment a
+/// closed chain runs here, every deployment whose tooling sends the second header would be refused
+/// by a node that had accepted it the day before — and the refusal would look like a revoked
+/// credential rather than like a carrier this root forgot to read.
+///
+/// The scheme prefix is stripped ONCE and case-insensitively. `Bearer` is a case-insensitive token
+/// on the wire, so `bearer <t>` is the same credential as `Bearer <t>`; and a token that itself
+/// began with the word would previously have had it stripped again, turning one caller's valid
+/// secret into a different string. Anything that is not the bearer scheme is handed on as presented,
+/// because deciding what an unrecognised scheme means is the chain's and not this reader's.
+#[cfg(feature = "root-admin")]
+fn presented_credential(headers: &axum::http::HeaderMap) -> Option<String> {
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            let trimmed = value.trim_start();
+            match trimmed.split_once(' ') {
+                Some((scheme, rest)) if scheme.eq_ignore_ascii_case("bearer") => {
+                    rest.trim_start().to_string()
+                }
+                _ => trimmed.to_string(),
+            }
+        })
+        .filter(|credential| !credential.is_empty());
+    // The order is the legacy fold's: both carriers are recognised and either identifies, so a
+    // request that sends only the second is a request that presented a credential.
+    bearer.or_else(|| {
+        headers
+            .get(ADMIN_TOKEN_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string)
+            .filter(|credential| !credential.is_empty())
+    })
 }
 
 /// Header names and values as owned pairs, in emission order.
@@ -2362,23 +2764,30 @@ pub fn mount(
                 let Ok(bytes) = axum::body::to_bytes(body, request_body_max_bytes).await else {
                     return http_response(error_answer(400, "invalid_request"));
                 };
+                // The unit's key, drawn here because both sides of the walk name it: the steps read
+                // it going in, and the exit path releases against it coming out.
+                let unit = node.next_unit();
                 let request = AdminRequest {
                     method: parts.method.as_str().to_string(),
                     path: parts
                         .uri
                         .path_and_query()
                         .map_or_else(|| parts.uri.path().to_string(), ToString::to_string),
-                    credential: parts
-                        .headers
-                        .get(axum::http::header::AUTHORIZATION)
-                        .and_then(|v| v.to_str().ok())
-                        .map(|v| v.trim_start_matches("Bearer ").to_string()),
+                    credential: presented_credential(&parts.headers),
                     headers: header_pairs(&parts.headers),
                     body: bytes.to_vec(),
                     at: std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map_or(0, |d| d.as_secs()),
+                    unit,
                 };
+                // AND THE EXIT PATH RUNS EVEN WHERE THERE IS NO EXIT. A client that hangs up while
+                // the walk is running takes this whole future with it, and the line at the bottom
+                // never executes — so a restart that had already asked for its drain left the ask
+                // standing, owned by a unit whose exit path was never going to come. Held by a
+                // guard instead, the release happens on every way out of here, including the one
+                // that is a drop rather than a return.
+                let exit = ExitPath { unit };
                 let answer = tokio::task::spawn_blocking(move || node.answer(request))
                     .await
                     .unwrap_or_else(|_| unavailable_answer());
@@ -2393,7 +2802,7 @@ pub fn mount(
                 // that now sit between the handler and this line, and they no longer sit between
                 // the drain and the write. Every other unit releases nothing, which costs one
                 // atomic read.
-                busbar_core::admin::restart::release_asked_drain();
+                drop(exit);
                 response
             }
         },
@@ -2413,6 +2822,13 @@ mod tests {
         }
     }
 
+    /// A key no other request in this binary is walking. The unit key names one live unit, so two
+    /// fixtures sharing a literal would be two requests claiming one entry in the units table.
+    fn a_fresh_unit() -> u64 {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
     fn a_request() -> AdminRequest {
         AdminRequest {
             method: "GET".to_string(),
@@ -2421,7 +2837,65 @@ mod tests {
             headers: vec![("accept".to_string(), "application/json".to_string())],
             body: Vec::new(),
             at: 1_700_000_000,
+            unit: a_fresh_unit(),
         }
+    }
+
+    /// THE DOOR'S BYTES, PINNED TO THE PUBLISHED RELEASE'S OWN.
+    ///
+    /// A refusal path may not execute anything, so these bytes are composed from what is written
+    /// down rather than obtained by sending the request back down to be refused a second time.
+    /// Composed bytes are only as good as what they were copied from, which is why the comparison is
+    /// against the recorded cell the oracle replays — the published binary's actual answer, read out
+    /// of the golden tree here — and not against a literal restated in this test.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_door_answers_the_published_releases_own_bytes() {
+        const GOLDEN: &str = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../testing/shadow-oracle/golden/1.5.5/cells/admin.ops__GetConfig__unauth.json"
+        ));
+        let cell: serde_json::Value = serde_json::from_str(GOLDEN).expect("the golden cell parses");
+        let answer = door_answer();
+
+        assert_eq!(
+            u64::from(answer.status),
+            cell["status"].as_u64().expect("the cell records a status"),
+            "the door's status is the recorded one"
+        );
+        // Serialised out of the cell's OWN recorded body: two keys, in the order the wire has them.
+        // Nothing in this comparison is a value this file chose.
+        let recorded =
+            serde_json::to_vec(&cell["body"]["json"]).expect("the recorded body serialises");
+        assert_eq!(
+            answer.body, recorded,
+            "the door's bytes are the recorded answer's bytes"
+        );
+        assert_eq!(
+            answer.body.len().to_string(),
+            cell["headers"]["content-length"]
+                .as_str()
+                .expect("the cell records a content length"),
+            "the length the caller is told is the length the recorded answer had"
+        );
+    }
+
+    /// A GRANT THAT DOES NOT REACH THE ENDPOINT IS THE PREVIOUS RELEASE'S FORBIDDEN, NAMING THE
+    /// SCOPE.
+    ///
+    /// Its message is the one refusal message this file cannot derive from the code, because it
+    /// states a property of the endpoint. No recorded cell holds an under-scoped call, so this is
+    /// pinned to the previous release's own admin error contract and the oracle cannot confirm it —
+    /// which is exactly why it is written down here rather than left to a reader to re-derive.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn a_grant_that_does_not_reach_the_endpoint_is_answered_with_the_scope_it_needed() {
+        let answer = scope_answer(&a_request());
+        assert_eq!(answer.status, 403);
+        assert_eq!(
+            String::from_utf8(answer.body).expect("the envelope is text"),
+            r#"{"error":{"code":"forbidden","message":"insufficient scope: this endpoint requires `read-only`"}}"#
+        );
     }
 
     /// The round trip is the whole reason the answer travels as bytes: a status, a header value and
@@ -2438,6 +2912,37 @@ mod tests {
         };
         let packed = answer.pack();
         assert_eq!(AdminAnswer::unpack(&packed), Some(answer));
+    }
+
+    /// A DISCONNECT IS STILL AN EXIT. The release of an effect that outlives the response used to be
+    /// the last statement of the answering future, and a client that hangs up mid-walk drops that
+    /// future before the statement runs — leaving a drain asked for and owned by a unit whose exit
+    /// path was never coming, for the next unrelated request to release under its own response.
+    ///
+    /// Driven at the guard rather than through a socket, because what is being pinned is the guard's
+    /// own obligation: dropped without ever reaching the write, it still releases, and it still
+    /// releases only what ITS unit asked for.
+    #[cfg(feature = "root-admin")]
+    #[tokio::test]
+    async fn a_walk_dropped_before_its_answer_still_releases_the_drain_it_asked_for() {
+        busbar_core::admin::restart::drain_released_at_exit();
+        let unit = a_fresh_unit();
+        // The operation's body asks, from inside its own unit, exactly as the restart handler does.
+        busbar_core::admin::restart::UnitDrain::of_unit(unit)
+            .scoping(async {
+                busbar_core::admin::restart::begin_drain();
+            })
+            .await;
+
+        // The future carrying the guard is dropped before anything is written back.
+        let exit = ExitPath { unit };
+        drop(exit);
+
+        assert!(
+            !busbar_core::admin::restart::UnitDrain::of_unit(unit).release(),
+            "the drop released the ask, so there is nothing left for a later exit to release — \
+             which is the leak: without the guard this would still be standing"
+        );
     }
 
     /// A body this wrap cannot read is refused, and one too big for the operator's cap is not read
@@ -2728,9 +3233,14 @@ mod tests {
             },
             ApprovalState::NotYetApproved,
         )));
+        // The gate is what this cell is about, so the assertion is that the unit got PAST it. It no
+        // longer ends `Ok`, and that is the point of the verb reaching the store: the fixture's
+        // store refuses everything, so a chain break admitted by the ceremony now ends on the
+        // store's own answer rather than on the gate's. What must not appear here is the gate's
+        // refusal — that would be a fleet that ran the ceremony being told it had not.
         assert_eq!(
             under("/api/v1/admin/chain-break", ceremony_run),
-            Ok(()),
+            Err(ReasonCode::DurabilityUnavailable),
             "a fleet that ran the ceremony was still refused for not having run it"
         );
 
@@ -3111,11 +3621,18 @@ mod tests {
     impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
         fn verify(
             &self,
-            _credential: &str,
+            credential: &str,
             _now: u64,
             _expected_aud: Option<&str>,
         ) -> Option<crate::root::auth_bindings::KeyFacts> {
-            None
+            // A revocation withdraws an IDENTIFICATION: the directory has to know the credential
+            // before its denylist can take it away, or the refusal would be a probe answered for
+            // a string nothing verified. So the one credential these cells present is one this
+            // directory minted.
+            (credential == "admin-token").then(|| crate::root::auth_bindings::KeyFacts {
+                id: "key-admin-1".to_string(),
+                name: "the operator credential these cells present".to_string(),
+            })
         }
 
         fn revoked(&self, _credential: &str) -> bool {
@@ -3123,11 +3640,47 @@ mod tests {
         }
     }
 
-    /// Walk one request through the whole loop against a node whose directory revokes everything, or
-    /// nothing.
+    /// A door that IDENTIFIES the operator credential these cells present, so that a revocation has
+    /// an identification to withdraw. Revocation is a statement about a credential the chain
+    /// resolved to somebody; on an open door nothing is resolved, and a denylist consulted there
+    /// would be a probe answered for a string nothing verified.
+    #[cfg(feature = "root-admin")]
+    struct IdentifiesOperator;
+
+    #[cfg(feature = "root-admin")]
+    impl busbar_unit_auth::module::AuthModule for IdentifiesOperator {
+        fn name(&self) -> &'static str {
+            "identifies-operator"
+        }
+        fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+            match candidate {
+                Some("admin-token") => busbar_unit_auth::module::AuthOutcome::Identify(
+                    busbar_unit_auth::principal::Principal::from_id(
+                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+                    ),
+                ),
+                _ => busbar_unit_auth::module::AuthOutcome::Pass,
+            }
+        }
+    }
+
+    #[cfg(feature = "root-admin")]
+    fn a_door_that_identifies_the_operator() -> busbar_unit_auth::AuthChain {
+        busbar_unit_auth::AuthChain::new(
+            vec![busbar_unit_auth::chain::ChainEntry {
+                provider: "identifies-operator".to_string(),
+                module: Box::new(IdentifiesOperator),
+            }],
+            false,
+        )
+    }
+
+    /// Walk one request through the whole loop against a node whose door identifies the operator
+    /// credential and whose directory then revokes everything, or nothing.
     #[cfg(feature = "root-admin")]
     fn answer_under_denylist(revoked: bool) -> AdminAnswer {
         let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_auth_chain(a_door_that_identifies_the_operator())
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 Denylist(revoked),
             )));
@@ -3136,11 +3689,14 @@ mod tests {
 
     /// A revoked credential is refused on the root leg, and refused BEFORE the operation runs.
     ///
-    /// This is the seam the step was handed three absences for: revocation gates new units, an admin
-    /// unit is always a new unit, and a set nothing supplies revokes nothing — so an unbound step
-    /// would have let a revoked credential through the front door of the administrative surface. The
-    /// control is the same request over a directory that revokes nobody, which reaches the operation
-    /// and comes back with its answer.
+    /// This is the seam the step was handed three absences for: revocation gates a new unit's
+    /// identification, an admin unit is always a new unit, and a set nothing supplies revokes
+    /// nothing — so an unbound step would have let a revoked credential through the front door of
+    /// the administrative surface. The door here identifies the operator credential, so the
+    /// revocation has an identification to withdraw; the control is the same request over a
+    /// directory that revokes nobody, which reaches the operation and comes back with its answer.
+    /// The refusal is the DOOR'S answer: a refusal at the authenticate step is written with the
+    /// door's own bytes, not re-run through the surface to get them.
     #[cfg(feature = "root-admin")]
     #[test]
     fn a_revoked_credential_is_refused_before_the_operation_runs() {
@@ -3150,8 +3706,28 @@ mod tests {
             "a credential on nobody's denylist reaches the operation"
         );
         let refused = answer_under_denylist(true);
-        assert_eq!(refused.status, 403);
-        assert_eq!(refused, error_answer(403, "forbidden"));
+        assert_eq!(
+            refused,
+            door_answer(),
+            "a credential the node took away is the door's answer, written and not re-run"
+        );
+    }
+
+    /// On an OPEN door a denylist withdraws nothing, because nothing was identified: a string on
+    /// the list is admitted anonymously exactly as any other string is. A refusal there would tell
+    /// an unauthenticated caller whether the string they presented was ever a credential.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                Denylist(true),
+            )));
+        let answer = AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request());
+        assert_eq!(
+            answer.status, 200,
+            "the open door admits, and the denylist is not a probe"
+        );
     }
 
     /// A binding holding one open unit, with the decode step run so the verb is resolved exactly as
@@ -3180,8 +3756,8 @@ mod tests {
     /// The administrative listener answers on a table with no room in it at all, and the data
     /// listener does not.
     ///
-    /// THE arrival STEP, over the loop. §2.2 gives this plane's Arrival one decision of its own and
-    /// this is it: units on the administrative listener are EXEMPT from `in_flight_cap`, for the
+    /// THE arrival STEP, over the loop. This plane's Arrival has one decision of its own and this
+    /// is it: units on the administrative listener are EXEMPT from `in_flight_cap`, for the
     /// reason the exemption exists — the surface an operator reaches to find out why the node is
     /// shedding has to answer while it is shedding. This node's table makes that the only thing
     /// keeping it alive: its cap is ZERO, so every unit under the cap is refused and every unit that
@@ -3321,7 +3897,10 @@ mod tests {
     /// - a READ appends none, because the chain is a record of what changed and a listing changed
     ///   nothing. A chain that grew on every GET would bury the mutations an operator came to find;
     /// - a unit refused before Admit still appends one, under the rejected outcome, because the
-    ///   attempt happened and a chain that recorded only successes is the one an attacker wants.
+    ///   attempt happened and a chain that recorded only successes is the one an attacker wants —
+    ///   PROVIDED an identity was resolved for it. A unit refused before that has nobody to
+    ///   attribute to, and the fourth answer below is that it appends nothing rather than
+    ///   attributing an anonymous caller's refused mutation to the configured administrator.
     ///
     /// The chain is verified after each, so the entries are linked rather than merely counted.
     #[cfg(feature = "root-admin")]
@@ -3342,6 +3921,12 @@ mod tests {
             .verb(ctx.key)
             .expect("the operator-key write is a row the table names");
         assert!(!resolved.read_only, "the fixture must be a mutation");
+        // Verify is what keeps the resolved identity, and the fixture stands in for it: a unit that
+        // reaches the audit door having been authenticated has one, and that is what the record is
+        // attributed to.
+        binding
+            .units
+            .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
 
         let before = legacy.len();
         let _ = audit(
@@ -3355,9 +3940,9 @@ mod tests {
         let entry = legacy.list(1).pop().expect("the entry just sealed");
         assert_eq!(entry.action, resolved.verb);
         assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_APPLIED);
-        // The fixture never ran Verify, so the record names the unresolved actor -- never the
-        // credential the request presented, which is a secret and stays out of the chain.
-        assert_eq!(entry.principal, UNRESOLVED_ACTOR);
+        // The record names the identity Verify resolved -- never the credential the request
+        // presented, which is a secret and stays out of the chain.
+        assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
         assert!(!entry.principal.contains("admin-token"));
         assert!(legacy.verify(), "the chain is linked");
 
@@ -3381,11 +3966,14 @@ mod tests {
         );
         assert_eq!(legacy.len(), before, "a read is not a mutation");
 
-        // A refused mutation is recorded as an attempt, not dropped.
+        // A refused mutation by somebody the node identified is recorded as an attempt, not dropped.
         let mut mutating = a_request();
         mutating.method = "POST".to_string();
         mutating.path = "/api/v1/admin/operator-key".to_string();
         let (binding, ctx, seal) = a_bound_unit(mutating);
+        binding
+            .units
+            .set_principal(ctx.key, PrincipalId::new(AN_IDENTIFIED_OPERATOR));
         let before = legacy.len();
         let _ = audit_refused(
             &binding,
@@ -3397,7 +3985,430 @@ mod tests {
         assert_eq!(legacy.len(), before + 1, "the attempt is on the chain");
         let entry = legacy.list(1).pop().expect("the entry just sealed");
         assert_eq!(entry.outcome, busbar_unit_audit::OUTCOME_REJECTED);
+        assert_eq!(entry.principal, AN_IDENTIFIED_OPERATOR);
         assert!(legacy.verify(), "the chain is still linked");
+
+        // AND THE SAME MUTATION BY NOBODY IS NOT. No principal was ever set on this unit, which is
+        // the state of every request refused at or before Authenticate. The previous release's
+        // chain holds no row for one, and neither does this: a record naming the configured
+        // administrator for a request that administrator never made would let an anonymous caller
+        // grow that operator's history one refused write at a time.
+        let mut mutating = a_request();
+        mutating.method = "POST".to_string();
+        mutating.path = "/api/v1/admin/operator-key".to_string();
+        let (binding, ctx, seal) = a_bound_unit(mutating);
+        assert!(
+            binding.units.principal(ctx.key).is_none(),
+            "the fixture must be a unit no identity was resolved for"
+        );
+        let before = legacy.len();
+        let _ = audit_refused(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::Unauthenticated),
+        );
+        assert_eq!(
+            legacy.len(),
+            before,
+            "an unattributable refusal appends nothing"
+        );
+        assert!(legacy.verify(), "the chain is still linked");
+    }
+
+    /// The identity a fixture stands Verify's answer in for. Deliberately NOT the word the
+    /// unresolved fallback uses, so a test that passed by accident because the two agreed would
+    /// stop passing.
+    const AN_IDENTIFIED_OPERATOR: &str = "operator-alice";
+
+    /// Each of the three recovery verbs reaches the STORE, and a refusing store's answer is the
+    /// caller's.
+    ///
+    /// The three used to travel `Verbs::execute`, which sends every new verb to the governance seam
+    /// — and the governance seam is the mounted router, which has no route for any of them. So all
+    /// three passed the scope check, the rate class, the operator ceremony and dual control, and
+    /// then received a 404 from the surface underneath: the gates on the most destructive
+    /// operations this node has were being run in front of nothing.
+    ///
+    /// Two assertions per verb, and both are needed. That the store METHOD was reached — recorded by
+    /// the store itself, so nothing here infers it from a status — and that a store which refuses
+    /// surfaces as the documented refusal rather than as a success or as a decode failure. A test
+    /// that only checked the second would pass against a verb that never touched the store at all.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn each_recovery_verb_reaches_the_store_and_a_refusing_store_is_the_answer() {
+        /// A store that records what reached it and refuses it.
+        #[derive(Debug, Default)]
+        struct RecordingStore(Mutex<Vec<String>>);
+
+        impl busbar_unit_verbs::store::Store for RecordingStore {
+            fn chain_break(
+                &self,
+                _admin: &busbar_caps::AdminToken,
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                self.0.lock().unwrap().push("chain_break".to_string());
+                Err(busbar_unit_verbs::StoreError::Failed)
+            }
+
+            fn store_restore(
+                &self,
+                _admin: &busbar_caps::AdminToken,
+                backup_ref: &str,
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(format!("store_restore:{backup_ref}"));
+                Err(busbar_unit_verbs::StoreError::Failed)
+            }
+
+            fn reseal_epoch_floor(
+                &self,
+                _admin: &busbar_caps::AdminToken,
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push("reseal_epoch_floor".to_string());
+                Err(busbar_unit_verbs::StoreError::Failed)
+            }
+
+            fn replay_new_verb(
+                &self,
+                _key: &(String, String),
+            ) -> Result<Option<Vec<u8>>, busbar_unit_verbs::StoreError> {
+                Ok(None)
+            }
+
+            fn commit_new_verb_replay(
+                &self,
+                _key: &(String, String),
+                _response: &[u8],
+            ) -> Result<(), busbar_unit_verbs::StoreError> {
+                Ok(())
+            }
+        }
+
+        /// A dispatch that must never be asked. If a recovery verb still travelled the governance
+        /// seam this would answer instead of the store, and the store's log would be empty — so the
+        /// two halves of the proof check each other.
+        struct NeverDispatched;
+        impl AdminDispatch for NeverDispatched {
+            fn execute(&self, verb: KernelVerb, _request: &AdminRequest) -> AdminAnswer {
+                panic!("a recovery verb reached the governance seam: {verb:?}");
+            }
+        }
+
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let admin = crate::root::kernel::new_kernel().admin_token();
+
+        // The posture a fleet that has run its ceremony has, so the gates admit and what is left is
+        // the destination. Anything less and the verb would be refused before the store.
+        let ceremony_run = || -> Arc<dyn PostureView> {
+            struct Ran;
+            impl PostureView for Ran {
+                fn resolve(
+                    &self,
+                    _verb: KernelVerb,
+                    _actor: &str,
+                ) -> Option<(PostureCtx, ApprovalState)> {
+                    Some((
+                        PostureCtx {
+                            operator: busbar_unit_verbs::OperatorState::Set,
+                            dual_control: busbar_unit_verbs::DualControl::Single,
+                        },
+                        ApprovalState::NotYetApproved,
+                    ))
+                }
+            }
+            Arc::new(Ran)
+        };
+
+        for (path, body, reached) in [
+            ("/api/v1/admin/chain-break", "{}", "chain_break"),
+            (
+                "/api/v1/admin/store-restore",
+                "{\"backup_ref\":\"nightly-2026-09-05\"}",
+                "store_restore:nightly-2026-09-05",
+            ),
+            (
+                "/api/v1/admin/reseal-epoch-floor",
+                "{}",
+                "reseal_epoch_floor",
+            ),
+        ] {
+            let store = Arc::new(RecordingStore::default());
+            let binding =
+                AdminBinding::new(Arc::new(NeverDispatched)).with_posture_view(ceremony_run());
+            let key = UnitKey::new(1);
+            let mut request = a_request();
+            request.method = "POST".to_string();
+            request.path = path.to_string();
+            request.body = body.as_bytes().to_vec();
+            binding.units.open(key, request);
+            let ctx = UnitCtx {
+                key,
+                origin: busbar_caps::OriginKind::Client,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: true,
+                kernel_verb_only: true,
+            };
+            decode(&binding, &UnitToken::mint(&seal), &ctx)
+                .into_result(&seal)
+                .unwrap_or_else(|_| panic!("{path} is a row the plane's table declares"));
+            binding.units.set_granted(key, VerbScope::Full);
+
+            let token: UnitToken<Route> = UnitToken::mint(&seal);
+            let outcome = route(
+                &binding,
+                Arc::clone(&store) as Arc<dyn busbar_unit_verbs::store::Store + Send + Sync>,
+                &admin,
+                &token,
+                &ctx,
+                &busbar_kernel::teller::AccrualMeter::new(),
+            )
+            .into_result(&seal);
+            binding.units.close(key);
+
+            assert_eq!(
+                store.0.lock().unwrap().as_slice(),
+                [reached.to_string()],
+                "{path} did not reach the store method it names"
+            );
+            assert_eq!(
+                outcome.err().map(|refusal| refusal.reason()),
+                Some(ReasonCode::DurabilityUnavailable),
+                "{path} did not surface the refusing store's refusal"
+            );
+        }
+    }
+
+    /// A `store_restore` that names no backup restores nothing.
+    ///
+    /// The single most destructive request this surface takes, and the one whose argument must not
+    /// be defaulted: a body that names no reference is refused before the ceremony runs, so the
+    /// store is never asked to restore "whatever it thinks". The reader is exercised over the shapes
+    /// a real body has and the shapes a malformed one does, because the refusal is only worth having
+    /// if it survives both.
+    ///
+    /// Every document below is written with ordinary escaped literals rather than raw ones. That is
+    /// not a style choice: the structure lints read this file by blanking string literals and then
+    /// counting braces, and their blanker does not know the raw byte-string form \u2014 so a JSON body
+    /// spelt that way leaks its braces into their depth tracking and silently reclassifies the rest
+    /// of this test module as production source.
+    #[test]
+    fn a_restore_that_names_no_backup_is_refused_rather_than_defaulted() {
+        assert_eq!(
+            backup_ref_of("{\"backup_ref\":\"nightly-2026-09-05\"}".as_bytes()),
+            Some("nightly-2026-09-05".to_string())
+        );
+        assert_eq!(
+            backup_ref_of("{ \"backup_ref\" : \"with \\\"quotes\\\" and \\\\slash\" }".as_bytes()),
+            Some("with \"quotes\" and \\slash".to_string())
+        );
+        // A `\u` escape, which is one of the two ways a JSON document carries a non-ASCII name.
+        assert_eq!(
+            backup_ref_of("{\"backup_ref\":\"\\u00e9t\\u00e9\"}".as_bytes()),
+            Some("\u{e9}t\u{e9}".to_string())
+        );
+        // And the other: the same name spelt as UTF-8 bytes.
+        assert_eq!(
+            backup_ref_of("{\"backup_ref\":\"\u{e9}t\u{e9}\"}".as_bytes()),
+            Some("\u{e9}t\u{e9}".to_string())
+        );
+        for malformed in [
+            "{}",
+            "{\"backup\":\"x\"}",
+            "{\"backup_ref\":\"\"}",
+            "{\"backup_ref\":null}",
+            "{\"backup_ref\":42}",
+            "{\"backup_ref\":\"unterminated",
+            "{\"backup_ref\":\"\\q\"}",
+            "",
+        ] {
+            assert_eq!(
+                backup_ref_of(malformed.as_bytes()),
+                None,
+                "a body naming no usable reference must not resolve to one"
+            );
+        }
+        // And bytes that are not text at all.
+        assert_eq!(backup_ref_of(&[0xff, 0xfe]), None);
+    }
+
+    /// Both carriers the administrative surface accepts reach the loop as one credential.
+    ///
+    /// The reader is what a closed chain here would judge, so every form a deployment's tooling
+    /// actually sends has to arrive as the secret itself and nothing else. Each row below is a
+    /// caller that works against the previous release today: the two carriers, the scheme spelt in
+    /// either case, and a token whose own first word is the scheme's — that last one is why the
+    /// strip is single, because stripping repeatedly hands the chain a different string from the one
+    /// the caller holds.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn either_carrier_reaches_the_loop_as_the_credential_itself() {
+        let presented = |name: &str, value: &str| -> Option<String> {
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert(
+                axum::http::HeaderName::from_bytes(name.as_bytes()).expect("a header name"),
+                axum::http::HeaderValue::from_str(value).expect("a header value"),
+            );
+            presented_credential(&headers)
+        };
+        let secret = "shadow-oracle-admin";
+
+        for value in [
+            format!("Bearer {secret}"),
+            format!("bearer {secret}"),
+            format!("BEARER {secret}"),
+            format!("Bearer  {secret}"),
+            format!("  Bearer {secret}"),
+        ] {
+            assert_eq!(
+                presented("authorization", &value).as_deref(),
+                Some(secret),
+                "{value:?} did not arrive as the secret"
+            );
+        }
+        assert_eq!(
+            presented(ADMIN_TOKEN_HEADER, secret).as_deref(),
+            Some(secret),
+            "the second carrier is a carrier"
+        );
+
+        // A token whose own first word is the scheme. Stripped once it is itself; stripped
+        // repeatedly it becomes somebody else's string, and the chain judges the wrong secret.
+        assert_eq!(
+            presented("authorization", "Bearer Bearer token").as_deref(),
+            Some("Bearer token")
+        );
+        // A scheme this reader does not know is handed on as presented; what it means is the
+        // chain's to decide, not this reader's to guess.
+        assert_eq!(
+            presented("authorization", "Basic abc123").as_deref(),
+            Some("Basic abc123")
+        );
+        // And nothing presented is nothing presented -- an empty carrier is not a credential.
+        assert_eq!(presented("authorization", "Bearer ").as_deref(), None);
+        assert_eq!(presented(ADMIN_TOKEN_HEADER, "").as_deref(), None);
+        assert_eq!(
+            presented_credential(&axum::http::HeaderMap::new()),
+            None,
+            "a request with no carrier at all presents nothing"
+        );
+    }
+
+    /// These three verbs and no others land on the store.
+    ///
+    /// Written from this side as well as the verbs unit's, because the split is a fact two crates
+    /// have to agree about: a verb added to the unit's store methods without a row here would go
+    /// back to the governance seam and its 404, silently.
+    #[test]
+    fn exactly_three_verbs_land_on_the_store() {
+        let landing: Vec<KernelVerb> = NEW_VERBS
+            .iter()
+            .copied()
+            .filter(|verb| recovery_verb(*verb).is_some())
+            .collect();
+        assert_eq!(
+            landing,
+            vec![
+                KernelVerb::ChainBreak,
+                KernelVerb::StoreRestore,
+                KernelVerb::ResealEpochFloor
+            ]
+        );
+        for verb in LEGACY_VERBS
+            .iter()
+            .map(|row| row.verb)
+            .chain(LEDGER_VERBS.iter().chain(NAMED_SURFACES.iter()).copied())
+        {
+            assert!(
+                recovery_verb(verb).is_none(),
+                "{verb:?} is not a recovery verb"
+            );
+        }
+    }
+
+    /// A unit whose verb never resolved is sealed by its METHOD, not as a read whatever it asked.
+    ///
+    /// Written as an inequality against the read class as well as an equality on the write one,
+    /// because what matters is not the spelling that replaced it but that an attempted mutation
+    /// stops leaving the record as somebody browsing a page. The safe methods stay reads, and an
+    /// absent request — a unit that presented no method at all — stays one too, because it
+    /// attempted nothing.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn an_unresolved_unit_is_sealed_by_the_method_it_asked_with() {
+        let refused = &Outcome::Refused(busbar_caps::StepName::Decode, ReasonCode::DecodeFailed);
+        let read = busbar_contract::OpClassId::new(OP_UNRESOLVED_READ);
+        let write = busbar_contract::OpClassId::new(OP_UNRESOLVED_WRITE);
+
+        for method in ["GET", "HEAD", "head"] {
+            assert_eq!(
+                unresolved_facts(Some(method), refused).op_class,
+                read,
+                "{method} reads"
+            );
+        }
+        for method in ["POST", "PUT", "PATCH", "DELETE", "delete", "WHAT"] {
+            let facts = unresolved_facts(Some(method), refused);
+            assert_ne!(facts.op_class, read, "{method} is not a read");
+            assert_eq!(facts.op_class, write, "{method} seals as a write");
+        }
+        assert_eq!(
+            unresolved_facts(None, refused).op_class,
+            read,
+            "a unit that presented no method attempted no mutation"
+        );
+        assert_eq!(
+            unresolved_facts(None, refused).finish,
+            busbar_contract::FinishClass::Error
+        );
+    }
+
+    /// The refused-audit door seals the refusal that HAPPENED, not one it composed.
+    ///
+    /// The door used to answer with a decode failure raised at Decode for every unresolved unit,
+    /// whatever it had actually been refused for — which overwrote the single field an audit record
+    /// exists to state. Two different refusals are asked for here, because one would pass against a
+    /// fixed sentinel that happened to match it.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn the_refused_door_seals_the_refusal_that_happened() {
+        let legacy = busbar_unit_audit::AuditLog::with(
+            Box::new(PinnedClock),
+            Box::new(busbar_unit_audit::NoSeam),
+        );
+        // A path the plane's table does not declare, so the verb never resolves and the door takes
+        // its unresolved arm — the one that used to fabricate.
+        let mut unrouted = a_request();
+        unrouted.method = "DELETE".to_string();
+        unrouted.path = "/api/v1/admin/nothing-declares-this".to_string();
+        let (binding, ctx, seal) = a_bound_unit(unrouted);
+        assert!(
+            binding.units.verb(ctx.key).is_none(),
+            "the fixture must be a unit whose verb never resolved"
+        );
+
+        let facts = audit_refused(
+            &binding,
+            &legacy,
+            &UnitToken::mint(&seal),
+            &ctx,
+            &Refusal::new(ReasonCode::Unauthenticated),
+        )
+        .into_result(&seal)
+        .expect("the door seals a record for an unresolved unit");
+        assert_eq!(
+            facts.op_class,
+            busbar_contract::OpClassId::new(OP_UNRESOLVED_WRITE),
+            "the DELETE it asked with, not the read it used to be sealed as"
+        );
+        assert_eq!(facts.finish, busbar_contract::FinishClass::Error);
+        assert_eq!(legacy.len(), 0, "and nobody was attributed for it");
     }
 
     // ── the five ledger views ───────────────────────────────────────────────────────────────────
@@ -3538,6 +4549,7 @@ mod tests {
             headers: vec![("accept".to_string(), "application/json".to_string())],
             body: Vec::new(),
             at: 1_700_000_000,
+            unit: a_fresh_unit(),
         }
     }
 
@@ -4177,23 +5189,27 @@ mod tests {
     /// the SAME one. A literal would still pass on the day the shared posture changed and the views
     /// were left behind.
     ///
-    /// The refused case is a credential the node's directory has revoked. That is what an
-    /// unauthenticated caller IS on this composition: the admin-only node's chain is open, so a
-    /// request carrying no credential at all is admitted — for the views exactly as for `/usage`,
-    /// which the second half asserts. Choosing the reachable refusal over the unreachable one is
-    /// what keeps this test about the posture the two share rather than about a 401 this node never
-    /// produces.
+    /// The refused case is a credential the door identified and the node's directory has revoked.
+    /// That is what an unauthenticated caller IS on this composition: a request carrying no
+    /// credential at all is admitted by an open door — for the views exactly as for `/usage`, which
+    /// the second half asserts over an open chain. Choosing the reachable refusal over the
+    /// unreachable one is what keeps this test about the posture the two share rather than about a
+    /// 401 this node never produces.
     #[cfg(feature = "root-admin")]
     #[test]
     fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
         let under = |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
             let mut request = a_ledger_request(path);
             request.credential = credential.map(ToString::to_string);
-            let units =
+            let mut units =
                 crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
                     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                         Denylist(revoked),
                     )));
+            if revoked {
+                // The revocation withdraws an identification, so the door must identify first.
+                units = units.with_auth_chain(a_door_that_identifies_the_operator());
+            }
             AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
         };
 
@@ -4251,7 +5267,7 @@ mod tests {
             let token: UnitToken<Approve> = UnitToken::mint(&seal);
             let decision = approve(
                 &binding,
-                granted,
+                Some(granted),
                 &token,
                 &ctx,
                 &PrincipalId::new("admin"),

@@ -220,6 +220,60 @@ fn revocation_gates_a_new_unit_and_not_one_in_flight() {
     );
 }
 
+/// The revocation gate speaks only about a credential the chain ACTUALLY IDENTIFIED.
+///
+/// Applied to the presented string whatever the chain answered, it does two things it was never
+/// asked to do. It tells an unauthenticated caller WHICH of two refusals they earned — a credential
+/// the chain rejects and the revocation set names refuses `Revoked`, one it merely rejects refuses
+/// `Unauthenticated` — which is a probe for "was this credential ever real", answered before
+/// anything has authenticated. And on the open front door, where no chain is authenticating anyone,
+/// it turns the anonymous admit into a refusal on the strength of a string nothing verified.
+///
+/// `AuthChain::run_chain_for_new_unit` collapses both to the one `Denied` it can spell, so the two
+/// spellings of one rule inside this crate answered differently for the same input.
+#[test]
+fn the_revocation_gate_does_not_distinguish_refusals_the_chain_already_made() {
+    struct AllRevoked;
+    impl crate::chain::RevocationView for AllRevoked {
+        fn is_revoked(&self, _credential: &str) -> bool {
+            true
+        }
+    }
+
+    // A chain that denies on its own. The revocation set must not upgrade that to a different,
+    // more informative code.
+    let (seal, token) = seal_and_token();
+    let denies = Auth::new(AuthChain::new(
+        vec![entry("a", Box::new(Canned::new("a", AuthOutcome::Pass)))],
+        false,
+    ));
+    assert_eq!(
+        denies
+            .resolve(&request(), None, None, Some(&AllRevoked), None, &token)
+            .into_result(&seal)
+            .expect_err("an all-pass chain denies")
+            .reason(),
+        ReasonCode::Unauthenticated,
+        "a credential the chain never identified must refuse for the reason the chain gave, not \
+         for one that says whether it was ever a real credential"
+    );
+
+    // The open front door authenticates nobody, so there is no identification for a revocation to
+    // gate: the anonymous admit stands.
+    let (seal, token) = seal_and_token();
+    let open = Auth::new(AuthChain::new(Vec::new(), false));
+    assert_eq!(
+        open.resolve(&request(), None, None, Some(&AllRevoked), None, &token)
+            .into_result(&seal)
+            .expect("the open door admits anonymously")
+            .principal()
+            .expect("and settles on an identity")
+            .as_str(),
+        ANONYMOUS,
+        "the open posture is not authenticating the presented string, so revoking it says nothing"
+    );
+}
+
 #[test]
 fn a_module_may_not_synthesize_a_reserved_identity() {
     for reserved in ["group:admins", "vk_forged"] {

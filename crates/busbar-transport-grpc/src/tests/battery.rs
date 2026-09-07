@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures::StreamExt;
 
 use busbar_contract::{ArenaBytes, StreamId, Transport};
-use busbar_contract_transport::wire::{StatusClass, TransportError};
+use busbar_contract_transport::wire::{StatusClass, TransportError, WireStatus};
 
 use crate::GrpcTransport;
 
@@ -118,8 +118,93 @@ async fn unary_shaped_round_trip() {
     assert_eq!(frame.bytes.as_slice(), b"pong", "byte-exact");
 }
 
+/// A raw HTTP/2 peer that answers every call TRAILERS-ONLY: one HEADERS frame carrying
+/// `:status: 200`, the gRPC content type and a non-zero `grpc-status`, with END_STREAM set and no
+/// DATA at all. This is the standard shape an upstream refuses with — `UNIMPLEMENTED` for a method
+/// it does not serve, `UNAUTHENTICATED` for a credential it will not take — and it is not the same
+/// wire event as a trailer at the end of a body: the answer is over before any stream exists.
+///
+/// Hands back the address it is listening on; the task serves calls until the test drops.
+async fn trailers_only_peer(code: tonic::Code) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        while let Ok((sock, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let svc = hyper::service::service_fn(move |_req| async move {
+                    let mut response =
+                        hyper::Response::new(http_body_util::Empty::<bytes::Bytes>::new());
+                    response.headers_mut().insert(
+                        http::header::CONTENT_TYPE,
+                        http::HeaderValue::from_static("application/grpc"),
+                    );
+                    response.headers_mut().insert(
+                        "grpc-status",
+                        http::HeaderValue::from_str(&(code as i32).to_string()).unwrap(),
+                    );
+                    response.headers_mut().insert(
+                        "grpc-message",
+                        http::HeaderValue::from_static("refused by the fixture"),
+                    );
+                    Ok::<_, std::convert::Infallible>(response)
+                });
+                let _ =
+                    hyper::server::conn::http2::Builder::new(hyper_util::rt::TokioExecutor::new())
+                        .serve_connection(hyper_util::rt::TokioIo::new(sock), svc)
+                        .await;
+            });
+        }
+    });
+    addr
+}
+
+/// A call the upstream refuses trailers-only still reaches the reader as a TERMINAL FRAME carrying
+/// the class the upstream named — the whole point of declaring `STATUS_CLASS` at
+/// `StatusAt::Terminal`. Flattening it to a dial error left a call that WAS answered posting no
+/// status evidence at all, which is the difference between "the upstream said no" and "nothing
+/// answered" on the leg that decides a fee.
 #[tokio::test]
 async fn terminal_status_is_read_from_the_grpc_status_trailer() {
+    let client_t = client_transport();
+    let keys = test_key_handle();
+    let addr = trailers_only_peer(tonic::Code::PermissionDenied).await;
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+
+    let mut client_frames = client_t.frames(client_conn.clone());
+    // The write itself still reports the refusal to its caller.
+    let wrote = client_t
+        .write(&client_conn, StreamId(1), ArenaBytes::new(b"hello"))
+        .await;
+    assert!(wrote.is_err(), "a refused call is not a delivered write");
+
+    let (_s, terminal) = tokio::time::timeout(Duration::from_secs(5), client_frames.next())
+        .await
+        .expect("a trailers-only refusal must produce a terminal frame, not silence")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        terminal.bytes.len(),
+        0,
+        "the terminal frame carries no body"
+    );
+    assert_eq!(
+        terminal.meta.status,
+        Some(StatusClass::ClientError),
+        "PERMISSION_DENIED is the upstream blaming the request"
+    );
+    assert_eq!(
+        terminal.meta.status_code,
+        Some(WireStatus::Grpc(tonic::Code::PermissionDenied as i32 as u8)),
+        "the exact grpc-status number the upstream sent, not just its class"
+    );
+}
+
+/// The other end of the same rule: a call the upstream answers and ends with an OK `grpc-status`
+/// trailer at the end of a real body posts `Success` on its terminal frame.
+#[tokio::test]
+async fn an_ok_grpc_status_trailer_terminates_the_call_as_success() {
     let server_t = std::sync::Arc::new(server_transport());
     let client_t = client_transport();
     let cfg = BindTo("127.0.0.1:0".to_string());
@@ -162,18 +247,45 @@ async fn terminal_status_is_read_from_the_grpc_status_trailer() {
         Some(StatusClass::Success),
         "STATUS_CLASS at Terminal: an OK grpc-status is honestly Success, not merely present"
     );
+    assert_eq!(
+        terminal.meta.status_code,
+        Some(WireStatus::Grpc(tonic::Code::Ok as i32 as u8)),
+        "the number the upstream sent, which for an untroubled call is zero"
+    );
 }
 
-/// [`crate::server::map_status`] directly, one row per `grpc-status` code family: `Ok` is a
-/// success, `PermissionDenied` and `Internal` are the client/server halves of the failure split,
-/// and a code the table names neither of falls to `Other` rather than silently landing in one of
-/// them.
+/// [`crate::server::map_status`] directly, EVERY `grpc-status` code the protocol defines, one row
+/// each.
+///
+/// The rows that matter most are the four that used to fall to a catch-all. The two failure classes
+/// part company on money — a server-side failure is retried elsewhere and held against the
+/// destination, a client-side one is relayed to the caller as its own fault and recorded against
+/// nobody — so a code landing in the wrong one is not a labelling question. Every code is listed so
+/// the table cannot silently grow a member again.
 #[test]
 fn map_status_reads_the_grpc_status_trailer_honestly() {
     for (code, expected) in [
         (tonic::Code::Ok, StatusClass::Success),
+        // The upstream blamed the request.
+        (tonic::Code::InvalidArgument, StatusClass::ClientError),
+        (tonic::Code::NotFound, StatusClass::ClientError),
+        (tonic::Code::AlreadyExists, StatusClass::ClientError),
         (tonic::Code::PermissionDenied, StatusClass::ClientError),
+        (tonic::Code::Unauthenticated, StatusClass::ClientError),
+        (tonic::Code::FailedPrecondition, StatusClass::ClientError),
+        (tonic::Code::OutOfRange, StatusClass::ClientError),
+        (tonic::Code::ResourceExhausted, StatusClass::ClientError),
+        // The upstream blamed itself.
         (tonic::Code::Internal, StatusClass::ServerError),
+        (tonic::Code::Unavailable, StatusClass::ServerError),
+        (tonic::Code::DataLoss, StatusClass::ServerError),
+        (tonic::Code::Unimplemented, StatusClass::ServerError),
+        // gRPC's own word for a server-side failure it could not attribute — and what an HTTP 5xx
+        // with no `grpc-status` at all arrives as.
+        (tonic::Code::Unknown, StatusClass::ServerError),
+        (tonic::Code::DeadlineExceeded, StatusClass::ServerError),
+        (tonic::Code::Aborted, StatusClass::ServerError),
+        // The one code where neither side is blamed.
         (tonic::Code::Cancelled, StatusClass::Other),
     ] {
         let status = tonic::Status::new(code, "fixture");
@@ -183,6 +295,96 @@ fn map_status_reads_the_grpc_status_trailer_honestly() {
             "tonic::Code::{code:?} maps to {expected:?}"
         );
     }
+}
+
+/// The terminal frame names gRPC's NUMBERING alongside gRPC's number, for every code the protocol
+/// defines.
+///
+/// The trailers-only `UNAVAILABLE` row is the one that cost money. Handed up bare, `14` reached the
+/// breaker's classifier as if it were an HTTP status, matched no HTTP band, and came back as the
+/// caller's fault — so a destination that had just declared itself unavailable got no breaker
+/// record and the walk never failed over, even though the class on the very same frame said
+/// `ServerError`.
+#[test]
+fn the_terminal_frame_names_grpcs_numbering_with_grpcs_number() {
+    for code in [
+        tonic::Code::Ok,
+        tonic::Code::Cancelled,
+        tonic::Code::Unknown,
+        tonic::Code::InvalidArgument,
+        tonic::Code::DeadlineExceeded,
+        tonic::Code::NotFound,
+        tonic::Code::AlreadyExists,
+        tonic::Code::PermissionDenied,
+        tonic::Code::ResourceExhausted,
+        tonic::Code::FailedPrecondition,
+        tonic::Code::Aborted,
+        tonic::Code::OutOfRange,
+        tonic::Code::Unimplemented,
+        tonic::Code::Internal,
+        tonic::Code::Unavailable,
+        tonic::Code::DataLoss,
+        tonic::Code::Unauthenticated,
+    ] {
+        let status = tonic::Status::new(code, "fixture");
+        let frame = crate::server::terminal_frame(StreamId(1), Some(&status));
+        assert_eq!(
+            frame.meta.status_code,
+            Some(WireStatus::Grpc(code as i32 as u8)),
+            "tonic::Code::{code:?} rides the frame as gRPC's own number, never as a bare one"
+        );
+    }
+    let unavailable = tonic::Status::new(tonic::Code::Unavailable, "gone");
+    let frame = crate::server::terminal_frame(StreamId(1), Some(&unavailable));
+    assert_eq!(frame.meta.status, Some(StatusClass::ServerError));
+    assert_eq!(frame.meta.status_code, Some(WireStatus::Grpc(14)));
+    assert_eq!(
+        frame.meta.status_code.and_then(WireStatus::http),
+        None,
+        "and nothing can read it as an HTTP status, which is what made 14 mean nothing"
+    );
+}
+
+/// The HTTP/2 driver under a dialled connection FAILING is not the peer finishing.
+///
+/// The driver holds the socket, and its outcome was thrown away: every way a connection can break —
+/// a framing the peer got wrong, a socket that died mid-call — reached the reader as the same clean
+/// end-of-stream a finished peer produces, so an aborted answer read as a complete one. The peer
+/// here commits a protocol error (a PING on a non-zero stream), which is the deterministic way to
+/// make the driver fail rather than finish.
+#[tokio::test]
+async fn a_dialled_connection_whose_driver_fails_ends_with_an_error_not_a_clean_end() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap().to_string();
+    tokio::spawn(async move {
+        let (mut sock, _) = listener.accept().await.unwrap();
+        let mut scratch = [0_u8; 4096];
+        // The client's preface and SETTINGS.
+        let _ = tokio::io::AsyncReadExt::read(&mut sock, &mut scratch).await;
+        // A well-formed SETTINGS of our own, then a PING carrying a stream id — which RFC 9113
+        // makes a connection error, so the peer's driver ends failing rather than finishing.
+        let mut out = vec![0, 0, 0, 4, 0, 0, 0, 0, 0];
+        out.extend_from_slice(&[0, 0, 8, 6, 0, 0, 0, 0, 1]);
+        out.extend_from_slice(&[0; 8]);
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut sock, &out).await;
+        futures::future::pending::<()>().await;
+    });
+
+    let client_t = client_transport();
+    let keys = test_key_handle();
+    let host: &'static str = Box::leak(addr.into_boxed_str());
+    let dest = verified_upstream(host);
+    let client_conn = client_t.dial(&dest, &keys).await.unwrap();
+
+    let mut frames = client_t.frames(client_conn);
+    let item = tokio::time::timeout(Duration::from_secs(5), frames.next())
+        .await
+        .expect("a broken driver must answer, not park")
+        .expect("a driver that FAILED is not a clean end of stream");
+    assert_eq!(
+        item.expect_err("the failure is the stream's last word"),
+        TransportError::Reset
+    );
 }
 
 #[tokio::test]
@@ -789,9 +991,90 @@ async fn served_paths_stays_bounded_across_many_calls() {
         .lock()
         .unwrap()
         .len();
-    assert!(
-        served <= crate::conn::SERVED_PATHS_CAP,
-        "{calls} RPCs over one connection must not grow served_paths past the cap: {served}"
+    assert_eq!(
+        served,
+        crate::conn::SERVED_PATHS_CAP,
+        "{calls} RPCs over one connection fill the record to exactly the cap and no further"
+    );
+    // And it is the LAST handful, not the first: a record that kept the oldest entries and dropped
+    // the newest would be bounded and useless, and `<=` alone could not tell the two apart.
+    let oldest = server_t
+        .state_of(server_conn.id())
+        .unwrap()
+        .served_paths
+        .lock()
+        .unwrap()
+        .front()
+        .cloned();
+    assert_eq!(
+        oldest.as_deref(),
+        Some(crate::server::RPC_PATH),
+        "every call in this fixture is on the same path, so the record's contents are checkable"
+    );
+}
+
+/// A call `tonic` answers on its own, WITHOUT ever entering this crate's per-RPC handler, must
+/// leave nothing behind on the connection.
+///
+/// `grpc-encoding: gzip` against a server with no compression enabled is exactly that: the answer
+/// (UNIMPLEMENTED) is decided while the request headers are being read, so the handler whose drop
+/// is what prunes the connection's outbound map never runs. An entry registered before that point
+/// is one nothing will ever drain and nothing will ever remove — and a connection-wide refusal
+/// walks that map, so it would report a Reset for a call that never existed.
+#[tokio::test]
+async fn a_call_answered_before_the_handler_runs_leaves_no_entry_behind() {
+    use http_body_util::BodyExt;
+
+    let server_t = std::sync::Arc::new(server_transport());
+    let cfg = BindTo("127.0.0.1:0".to_string());
+    let keys = test_key_handle();
+    let listener = server_t.listen(&cfg, &keys).await.unwrap();
+    let addr = listener.local_addr();
+    let accept_task = {
+        let server_t = server_t.clone();
+        tokio::spawn(async move { server_t.accept(&listener).await })
+    };
+
+    let sock = tokio::net::TcpStream::connect(&addr).await.unwrap();
+    let (mut send, driver) =
+        hyper::client::conn::http2::handshake::<_, _, http_body_util::Full<bytes::Bytes>>(
+            hyper_util::rt::TokioExecutor::new(),
+            hyper_util::rt::TokioIo::new(sock),
+        )
+        .await
+        .unwrap();
+    tokio::spawn(async move {
+        let _ = driver.await;
+    });
+    let server_conn = accept_task.await.unwrap().unwrap();
+
+    const CALLS: usize = 20;
+    for _ in 0..CALLS {
+        let req = http::Request::builder()
+            .method(http::Method::POST)
+            .uri(format!("http://{addr}{}", crate::server::RPC_PATH))
+            .header(http::header::CONTENT_TYPE, "application/grpc")
+            .header("te", "trailers")
+            // The compression this server never enabled.
+            .header("grpc-encoding", "gzip")
+            .body(http_body_util::Full::new(bytes::Bytes::from_static(&[
+                0, 0, 0, 0, 1, 7,
+            ])))
+            .unwrap();
+        let response = send.send_request(req).await.unwrap();
+        assert_ne!(
+            response.headers().get("grpc-status").map(|v| v.as_bytes()),
+            Some(b"0".as_slice()),
+            "the fixture's whole point is a call tonic refuses outright"
+        );
+        let _ = response.into_body().collect().await;
+    }
+
+    let state = server_t.state_of(server_conn.id()).unwrap();
+    let held = state.outbound.lock().unwrap().len();
+    assert_eq!(
+        held, 0,
+        "{CALLS} calls refused before the handler must hold no outbound entries, held {held}"
     );
 }
 
@@ -1392,6 +1675,42 @@ async fn a_connection_wide_refusal_is_delivered_before_a_dialled_connection_is_c
     assert!(
         refused,
         "the refusal was reported delivered but the connection was cut before it left this process"
+    );
+}
+
+/// The flush window is a property of CLOSING, not of where `close` happened to be called from.
+///
+/// Closing writes the connection-wide refusal to every call first and cuts the stream second, and
+/// the window between the two is what lets those bytes actually leave this process. Off a thread
+/// with no runtime — an operator tool, a shutdown path, a `Drop` — the fallback cut immediately and
+/// destroyed exactly the bytes the window exists to protect, with the caller already told they were
+/// delivered. Same close, same promise, two different answers depending on the caller's thread.
+///
+/// A plain `#[test]`, deliberately: no `#[tokio::test]` means no ambient runtime, which IS the
+/// condition under test.
+#[test]
+fn a_close_off_the_runtime_holds_the_cut_for_the_same_flush_window() {
+    let (near, far) = tokio::io::duplex(64);
+    // Held so the far end is a live peer rather than a closed one.
+    let _far = far;
+    let (_cuttable, cut) = crate::conn::Cuttable::new(Box::new(near));
+    let state = crate::conn::ConnState::new(None, vec!["grpc"]);
+    state.arm_cut(cut.clone());
+    assert!(
+        tokio::runtime::Handle::try_current().is_err(),
+        "the fixture is only honest with no runtime on this thread"
+    );
+
+    state.stop();
+
+    assert!(
+        !cut.is_cut(),
+        "a close must not cut the stream out from under bytes it has just accepted"
+    );
+    std::thread::sleep(crate::conn::CUT_GRACE + Duration::from_millis(500));
+    assert!(
+        cut.is_cut(),
+        "and the window is a window: past it the stream goes, whatever the peer is doing"
     );
 }
 

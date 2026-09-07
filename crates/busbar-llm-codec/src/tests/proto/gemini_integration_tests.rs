@@ -14,7 +14,7 @@ fn test_gemini_upstream_path_for_embeds_model() {
         "/v1/messages"
     );
     assert_eq!(
-        OpenAiWriter.upstream_path_for("anything"),
+        openai_writer().upstream_path_for("anything"),
         "/v1/chat/completions"
     );
 }

@@ -116,6 +116,58 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   the `response.function_call_arguments.delta` events that follow — as real OpenAI does. 1.5.5
   omitted it, so the opening item failed the item schema and an SDK seeding its accumulator from it
   concatenated onto `undefined`. See [Spec fidelity](#spec-fidelity).
+- **A Responses URL citation survives the hop.** The Responses API's published `UrlCitationBody`
+  flattens `url`, `title`, `start_index` and `end_index` onto the annotation, while Chat nests them
+  under a `url_citation` object. Busbar wrote the flat shape correctly but read only the nested one,
+  so every URL citation on a Responses-shaped upstream response was dropped — including on a
+  Responses→Responses passthrough, where it re-read bytes it had just written. Both published shapes
+  are now read. See [Spec fidelity](#spec-fidelity).
+- **A Bedrock `cachePoint` before a document no longer sends the document twice.** The reader parks a
+  native `document`/`video` block at its wire position and the writer suppresses its own modelled
+  copy; a `cachePoint` or `guardContent` earlier in the same message shifted the two apart, so the
+  suppression missed and the attachment went upstream twice — read twice by the model and billed
+  twice. The two index spaces are now tracked separately. See [Spec fidelity](#spec-fidelity).
+- **A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.** The
+  published `include_usage` contract puts the token counts on an additional final chunk whose
+  `choices` array is empty. Busbar's chat writer folds them onto the chunk it can write and a
+  downstream seam re-homes them onto that trailer — but the seam also insisted on a `finish_reason`
+  beside them, which a backend ending a stream with no stop reason does not provide. The counts
+  were then lost on the way to a Chat Completions client, and a client that opted out of usage was
+  sent it anyway. The seam now keys on the folded object itself. Busbar's own metering reads an
+  earlier tap and is unchanged. See [Spec fidelity](#spec-fidelity).
+- **An Anthropic `redacted_thinking` block closes only if it opened.** The published
+  `content_block_start` carries a redacted block's opaque `data` inline and declares no delta for
+  it, so Busbar defers that start to the event carrying the bytes. 1.5.5 recorded the block as open
+  at the *preceding* event instead — before the frame existed — which defeated the writer's own
+  guard against closing a block the client never saw opened: a stream that ended in between sent a
+  bare `content_block_stop`. The start is now recorded where it is written, so the two are decided
+  by the same fact, and a repeated redacted event no longer writes a second, unpaired start. Every
+  non-truncated redacted stream is unchanged. See [Spec fidelity](#spec-fidelity).
+- **A Responses function-call item the writer refused to open no longer announces itself.** The
+  Responses stream writer bounds how many function-call items may be open at once so a pathological
+  backend cannot grow per-stream state without limit. Past that bound 1.5.5 still wrote
+  `response.output_item.added` — a lifecycle open for an item it had not tracked, so no
+  `response.output_item.done` ever followed and the item was missing from the terminal `output[]`
+  as well. The frame and the open are now decided together, as the text and reasoning items always
+  did. A stream within the bound is unchanged. See [Spec fidelity](#spec-fidelity).
+- **One stream states one id.** A stream is not guaranteed to carry exactly one opening event:
+  five of the six readers gate it, but the Anthropic reader emits one per upstream `message_start`
+  frame, so any egress fed from an Anthropic ingress can see two. 1.5.5 stamped the second with a
+  freshly synthesized id, so a single message announced itself twice under two different identities
+  — and the official SDKs latch the id from the first frame that supplies it, leaving the client
+  correlating against an id nothing else in the stream mentions. The Anthropic, Chat Completions,
+  Gemini, Cohere and Responses writers now all keep the id their stream opened with; the Responses
+  writer's terminal events already replayed it, and now its duplicate `response.created` does too.
+  A stream with one opening event is unchanged. See [Spec fidelity](#spec-fidelity).
+- **A Gemini speech response that carries no audio is no longer served as an MP3.** Gemini returns
+  synthesis as JSON with the audio inline; the mock and a direct passthrough return the raw
+  container instead, so Busbar tries JSON and falls back to the bytes. 1.5.5's fallback also caught
+  every JSON body that parsed but carried no `inlineData` — an error envelope, a safety-blocked
+  candidate, a text-only answer — and handed it to the caller as a 200 labelled `audio/mpeg`, so a
+  player opened a JSON object and the upstream's own explanation was buried inside bytes claiming to
+  be audio. A JSON body without the audio part is now refused, and the error the upstream sent
+  reaches the caller as an error. A raw container still reads exactly as before.
+  See [Spec fidelity](#spec-fidelity).
 - **A Bedrock `Converse` response always carries `metrics`.** The published Converse output shape
   requires the member; 1.5.5's same-dialect passthrough dropped it when the upstream's own response
   did not carry one. 1.6.0 always emits it, with the normalized `latencyMs` for the call.
@@ -181,10 +233,11 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly four entries of kind `breaking`:
+The accepted-differences register for this release has exactly five entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
-both), one confined to Cohere backends that report `usage.billed_units`, and one field removed
-from the hook view. Everything else that touches a 1.5.5 config, request or plugin is named above
+both), one confined to Cohere backends that report `usage.billed_units`, one field removed
+from the hook view, and one refusal that now comes out of the resolver rather than the validator.
+Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
 
@@ -222,6 +275,16 @@ identically, and every 1.5.5 key and minted secret carries over.
   for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
   `at` field off a hook view must read `fires_at` instead. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
+- 1.6.0 Changed: a pool member that nothing defines is refused by the resolver, under the
+  `config errors:` frame, naming `models:`, `tools:` and `agents:`. A pool may now hold tools and
+  agents as well as models, so member resolution belongs to the resolver rather than to semantic
+  validation, and the sentence names the config path and all three maps it looked in
+  (`pools.<pool>: member `x` is not defined in any of the top-level `models:`, `tools:`, or
+  `agents:` maps.`) instead of 1.5.5's `pool '<pool>' references unknown model 'x'`. The refusal
+  itself is unchanged: same exit code 1, same empty stdout, same surrounding lines. **Migration:**
+  a CI job or log alert that matches the `config validation failed:` frame line to catch a bad
+  config must also match `config errors:`, which is the frame every resolver refusal already used;
+  no config change is needed.
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap

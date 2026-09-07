@@ -1739,6 +1739,16 @@ pub struct GeminiWriter {
     /// stream is single-threaded at any instant so contention is nil, and a poisoned lock degrades
     /// to the stateless behavior rather than panicking on the request path.
     open_tools: std::sync::Mutex<Vec<(usize, String, String)>>,
+    /// THIS STREAM'S `responseId`, minted ONCE and replayed on every later identity frame.
+    ///
+    /// A stream is not guaranteed to carry exactly one `MessageStart`: the Anthropic reader emits
+    /// it 1:1 with the upstream frame rather than gating it, so a gemini-egress stream fed from an
+    /// Anthropic ingress can see two. Without this cell the second synthesized a FRESH
+    /// `responseId`, so one response announced itself twice under two different ids and the
+    /// `google-genai` SDK's `chunk.response_id` changed mid-stream. A native Gemini stream's
+    /// `responseId` is fixed for the response, so the first one wins. Same `Mutex` /
+    /// poison-degrades discipline as `open_tools`.
+    response_id: std::sync::Mutex<Option<String>>,
 }
 
 /// Value-namespace constructor for [`GeminiWriter`]. A `const` and a struct may share a name (they
@@ -1758,6 +1768,7 @@ pub struct GeminiWriter {
 #[allow(clippy::declare_interior_mutable_const)]
 pub const GeminiWriter: GeminiWriter = GeminiWriter {
     open_tools: std::sync::Mutex::new(Vec::new()),
+    response_id: std::sync::Mutex::new(None),
 };
 
 impl Clone for GeminiWriter {
@@ -1772,6 +1783,23 @@ impl Clone for GeminiWriter {
                     .map(|t| t.clone())
                     .unwrap_or_default(),
             ),
+            // A mid-stream clone is still the SAME response, so it keeps the id already announced.
+            response_id: std::sync::Mutex::new(
+                self.response_id.lock().map(|id| id.clone()).unwrap_or(None),
+            ),
+        }
+    }
+}
+
+impl GeminiWriter {
+    /// THE STREAM'S `responseId`: the first one wins. Returns the id already captured for this
+    /// stream if there is one, otherwise captures and returns `mint()`, so a duplicate identity
+    /// frame re-states the id the client already has. Lock poisoning degrades to the freshly minted
+    /// id rather than panicking on the request path.
+    fn carried_response_id(&self, mint: impl FnOnce() -> String) -> String {
+        match self.response_id.lock() {
+            Ok(mut slot) => slot.get_or_insert_with(mint).clone(),
+            Err(_) => mint(),
         }
     }
 }

@@ -60,6 +60,49 @@ fn arena_reclaims_every_kind_and_runs_closers() {
     assert_eq!(count.load(Ordering::SeqCst), 4);
 }
 
+/// One closer that panics must not take the rest of the arena with it: the entries around it still
+/// reclaim, and the panic does not escape a call that `Drop` also makes (escaping there, mid-unwind,
+/// aborts the process rather than leaking).
+#[test]
+fn a_panicking_closer_does_not_strand_the_other_handles() {
+    let count = Arc::new(AtomicUsize::new(0));
+    let reclaimed = Arc::new(AtomicUsize::new(0));
+    let scope = DispatchScope::new();
+
+    // Registered first, reclaimed LAST (LIFO) — it is the one a panic ahead of it would strand.
+    scope.register_admission(Box::new(DropCounter(reclaimed.clone())));
+    let c = count.clone();
+    scope.register_egress(Box::new(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    }));
+    scope.register_pipe(Box::new(|| {
+        panic!("a closer that kills a subprocess went wrong")
+    }));
+    let c = count.clone();
+    scope.register_lease(Box::new(move || {
+        c.fetch_add(1, Ordering::SeqCst);
+    }));
+    assert_eq!(scope.registered(), 4);
+
+    // The panic is contained: `reclaim_all` returns rather than unwinding into its caller.
+    let quiet = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    scope.reclaim_all();
+    std::panic::set_hook(quiet);
+
+    assert_eq!(
+        count.load(Ordering::SeqCst),
+        2,
+        "the closers on both sides of the panicking one still ran"
+    );
+    assert_eq!(
+        reclaimed.load(Ordering::SeqCst),
+        1,
+        "the guard behind the panicking closer was not stranded"
+    );
+    assert_eq!(scope.registered(), 0, "the arena is empty either way");
+}
+
 #[test]
 fn durable_scope_reclaims_a_handed_off_guard_on_its_own_drop() {
     let reclaimed = Arc::new(AtomicUsize::new(0));
@@ -230,6 +273,59 @@ fn dispatch_to_durable_handoff_preserves_id_and_relifetimes() {
         "the durable scope's drop released it"
     );
     assert_eq!(settled.load(Ordering::SeqCst), 0);
+}
+
+/// Two dispatch arenas mint from independent counters, so the same raw id can arrive twice at one
+/// durable scope. The second adoption must NOT sit under an id a live entry already answers to:
+/// every lookup resolves an id to the first entry carrying it, so a duplicate would settle the
+/// first probe when the second was named, and strand the other until drop. The adopter mints fresh
+/// and the caller consumes the returned id.
+#[test]
+fn a_second_adoption_under_a_live_id_mints_a_fresh_one_and_settles_its_own_probe() {
+    let first_settled = Arc::new(AtomicUsize::new(0));
+    let second_settled = Arc::new(AtomicUsize::new(0));
+    let released = Arc::new(AtomicUsize::new(0));
+    let sig = ok_signal();
+    let dur = DurableScope::new();
+
+    let disp_a = DispatchScope::new();
+    let a = disp_a.register_settling_admission(Box::new(TestSettling {
+        settled: first_settled.clone(),
+        released: released.clone(),
+        done: false,
+    }));
+    let a = disp_a.handoff_settling_to(a, &dur).expect("first handoff");
+
+    // A SECOND arena, whose counter starts over, mints the very same raw id.
+    let disp_b = DispatchScope::new();
+    let b = disp_b.register_settling_admission(Box::new(TestSettling {
+        settled: second_settled.clone(),
+        released: released.clone(),
+        done: false,
+    }));
+    assert_eq!(b, a, "the two arenas minted the same raw id");
+    let b = disp_b.handoff_settling_to(b, &dur).expect("second handoff");
+
+    assert_ne!(b, a, "the colliding adoption answers to a fresh id");
+    assert_eq!(dur.registered(), 2, "both probes are durably held");
+
+    // Each id settles ITS OWN probe.
+    assert_eq!(dur.settle(b, &sig), Some(StatusClass::Ok));
+    assert_eq!(second_settled.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        first_settled.load(Ordering::SeqCst),
+        0,
+        "settling the second probe did not record against the first"
+    );
+    assert_eq!(dur.settle(a, &sig), Some(StatusClass::Ok));
+    assert_eq!(first_settled.load(Ordering::SeqCst), 1);
+
+    drop(dur);
+    assert_eq!(
+        released.load(Ordering::SeqCst),
+        0,
+        "both probes were settled, so neither released unsettled"
+    );
 }
 
 #[test]

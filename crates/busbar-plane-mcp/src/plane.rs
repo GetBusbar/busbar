@@ -473,10 +473,12 @@ impl Plane for McpPlane {
         // The caller's envelope goes on unchanged. This protocol names its operation in the body,
         // so there is nothing in an outbound request that this node rewrites — and rewriting one
         // would be a byte on the wire that is not there today.
-        let body = ctx
-            .arena()
-            .alloc_bytes(u.body().body())
-            .map_err(|_| Encode::ArenaExhausted)?;
+        //
+        // The relay is a BORROW, not a copy. These bytes already live for the unit that is about to
+        // carry them, so copying them into the arena spent the unit's whole bounded budget on a
+        // second copy of what it was already holding — and a request larger than that budget could
+        // not be relayed at all, however small the hop it was going out on.
+        let body = ArenaBytes::new(u.body().body());
         let mut envelope = TransportEnvelope::default();
         let content_type = ctx
             .arena()
@@ -736,6 +738,15 @@ impl Plane for McpPlane {
             ops::OP_SUBSCRIPTIONS_LISTEN => DestinationFacts::Client {
                 selector: "opener",
                 mode: busbar_contract::dest::ClientMode::Deliver,
+            },
+            // A completion is answered out of the catalogue this node already holds. It is named
+            // here rather than left to fall through to the server, because the routing step gives it
+            // one leg and that leg is the catalogue: a unit VERIFIED for a server it is never routed
+            // to has an upstream sealed, and the admission that seals one is spent whether or not
+            // anything is ever dialled.
+            ops::OP_COMPLETION => DestinationFacts::PlaneRecord {
+                schema: rec::SCHEMA_CATALOGUE,
+                op: rec::OP_GET,
             },
             // The task operations are answered out of this node's own task records.
             ops::OP_TASK_GET => DestinationFacts::PlaneRecord {

@@ -482,8 +482,9 @@ tier   = "fast"
 # unrepresentable). Every docs/design/inventory/*.md row id either has a citing shadow-oracle cell or
 # is a NAMED gap in qa/inventory-gaps.json; an id with neither is red. Its `--selftest` is GREEN
 # (dropping a cell flips its id covered -> none; naming an id as a gap keeps it out of the failure
-# list), but `--check` is RED on the tip: CFG-220, RT-003 and RT-014 have no citing cell and are not
-# named in qa/inventory-gaps.json. That is a real finding, not a broken gate — which is why this slot
-# is reserved and NAMED in the umbrella's scope line rather than armed into a standing red.
-# Arming: cover or name those three ids, confirm `--check` green, flip status to "active".
+# list), but `--check` is RED: one config-inventory row — the one naming the plugin that backs a
+# configured hook — is neither covered by a citing cell nor named in qa/inventory-gaps.json. That is
+# a real finding, not a broken gate — which is why this slot is reserved and NAMED in the umbrella's
+# scope line rather than armed into a standing red.
+# Arming: cover or name that row, confirm `--check` green, flip status to "active".
 run    = "scripts/inventory-coverage.sh --selftest && scripts/inventory-coverage.sh --check"

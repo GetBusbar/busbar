@@ -56,7 +56,10 @@ impl Auth {
     ///    answer computed under a scheme the claim never offered is worth having.
     /// 2. The chain runs. An open door yields the anonymous principal — which is an admission, not a
     ///    refusal, and renders its actor id as the plain word.
-    /// 3. Revocation gates a NEW unit only. A unit already in flight is not asked.
+    /// 3. Revocation gates a NEW unit's IDENTIFICATION only. A unit already in flight is not
+    ///    asked, and neither is a walk that identified nobody — there is no identity for a
+    ///    revocation to withdraw, and answering one anyway would tell an unauthenticated caller
+    ///    whether the string they presented was ever a credential.
     ///
     /// The challenge argument is what the scheme wants to ask; supplying one outside a handshake
     /// unit is not an error the caller can make usefully, so it is ignored there and the chain's own
@@ -93,8 +96,17 @@ impl Auth {
             self.chain
                 .run_chain_cached(req.candidate, cache, keys, req.now, req.expected_aud);
 
-        // 4. Revocation gates NEW units only.
-        if req.new_unit {
+        // 4. Revocation gates NEW units only, and only an identification. A revocation is a
+        //    statement about a credential the chain resolved to somebody; applied to whatever
+        //    string arrived it answers two questions nobody asked. It tells an unauthenticated
+        //    caller which of two refusals they earned — `Revoked` where the set names the string,
+        //    `Unauthenticated` where it does not — which is a probe for "was this ever a real
+        //    credential", answered before anything has authenticated. And on the open front door,
+        //    where no chain is authenticating anyone, it would turn the anonymous admit into a
+        //    refusal on the strength of a string nothing verified. `AuthChain::
+        //    run_chain_for_new_unit` has always collapsed both to its one `Denied`; this is the
+        //    same rule spelled where the reason code exists to be told apart.
+        if req.new_unit && matches!(verdict, ChainVerdict::Identified { .. }) {
             if let (Some(r), Some(cred)) = (revocations, req.candidate) {
                 if r.is_revoked(cred) {
                     return Decision::refuse(token, Refusal::new(ReasonCode::Revoked));

@@ -86,6 +86,17 @@ on:
         required: false
         type: string
         default: ""
+      promote_latest:
+        description: >-
+          Whether this promote also moves the FLOATING pointers (`latest`, and `armv8.0`). True for
+          a real release. FALSE for a release CANDIDATE: `1.6.0-rc.1` must be pullable by name and
+          must NOT become what `docker pull getbusbar/busbar` serves. The immutable pins
+          (`X.Y.Z`, `X.Y.Z-armv8.0`) are minted either way, and the landing assertion below drops
+          the floating names from its set when this is false rather than asserting them absent --
+          `latest` legitimately still points at the PREVIOUS release during an rc soak.
+        required: false
+        type: boolean
+        default: true
     outputs:
       digest:
         description: "Manifest digest of the image this run pushed (staging path only)."
@@ -118,6 +129,11 @@ on:
           onto an already-published immutable version). This is the old `retag_from` input.
         required: false
         default: ""
+      promote_latest:
+        description: "Also move the floating `latest`/`armv8.0` pointers. Set false for an rc."
+        required: false
+        type: boolean
+        default: true
 
 env:
   DOCKERHUB_IMAGE: getbusbar/busbar
@@ -179,10 +195,17 @@ jobs:
           # Empty SRC means "promote from V itself", i.e. the old `retag_from` recovery: V is
           # already published and immutable, and all that is wanted is `latest` pointed at it.
           SRC: ${{ inputs.promote_from }}
+          MOVE_LATEST: ${{ inputs.promote_latest }}
         run: |
           set -euo pipefail
           src="${SRC:-$V}"
-          echo "Promoting ${DOCKERHUB_IMAGE}:${src} -> :${V} and :latest on both registries."
+          if [ "$MOVE_LATEST" = "true" ]; then
+            echo "Promoting ${DOCKERHUB_IMAGE}:${src} -> :${V} and :latest on both registries."
+          else
+            echo "Promoting ${DOCKERHUB_IMAGE}:${src} -> :${V} on both registries. The floating" \
+                 "pointers (latest, armv8.0) are NOT moved: this is a release candidate, and" \
+                 "\`docker pull getbusbar/busbar\` must keep serving the current release."
+          fi
 
           # 1. The IMMUTABLE tag first, on both registries, while nothing else has moved.
           if [ "$src" != "$V" ]; then
@@ -195,8 +218,10 @@ jobs:
 
           # 2. Only then the MUTABLE pointer. Moving `latest` before the pin exists would, for the
           #    window between the two, hand `docker pull getbusbar/busbar` an image no user can pin.
-          docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:latest" "${DOCKERHUB_IMAGE}:${V}"
-          docker buildx imagetools create -t "${GHCR_IMAGE}:latest" "${GHCR_IMAGE}:${V}"
+          if [ "$MOVE_LATEST" = "true" ]; then
+            docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:latest" "${DOCKERHUB_IMAGE}:${V}"
+            docker buildx imagetools create -t "${GHCR_IMAGE}:latest" "${GHCR_IMAGE}:${V}"
+          fi
 
           # 3. The armv8.0 compat variant, SAME order and same rules: immutable pin (X.Y.Z-armv8.0)
           #    first on Docker Hub, GHCR mirror, floating `armv8.0` pointer last. The compat image
@@ -206,8 +231,10 @@ jobs:
           fi
           if docker buildx imagetools inspect "${DOCKERHUB_IMAGE}:${V}-armv8.0" >/dev/null 2>&1; then
             docker buildx imagetools create -t "${GHCR_IMAGE}:${V}-armv8.0" "${DOCKERHUB_IMAGE}:${V}-armv8.0"
-            docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:armv8.0" "${DOCKERHUB_IMAGE}:${V}-armv8.0"
-            docker buildx imagetools create -t "${GHCR_IMAGE}:armv8.0" "${GHCR_IMAGE}:${V}-armv8.0"
+            if [ "$MOVE_LATEST" = "true" ]; then
+              docker buildx imagetools create -t "${DOCKERHUB_IMAGE}:armv8.0" "${DOCKERHUB_IMAGE}:${V}-armv8.0"
+              docker buildx imagetools create -t "${GHCR_IMAGE}:armv8.0" "${GHCR_IMAGE}:${V}-armv8.0"
+            fi
           else
             # Only reachable in the src==V recovery arm (move `latest` onto an already-published
             # version): a version cut before the dual-arm64 split has no compat pin to point at.
@@ -222,6 +249,7 @@ jobs:
       - name: Assert the promote actually landed on all four names
         env:
           V: ${{ inputs.promote_to }}
+          MOVE_LATEST: ${{ inputs.promote_latest }}
         run: |
           set -euo pipefail
           reg_digest() {  # reg_digest <auth-host> <registry-host> <repo> <tag>
@@ -249,7 +277,19 @@ jobs:
           echo "ghcr.io   latest   = ${ghcr_l:-<none>}"
           fail=0
           [ -n "$hub_v" ] || { echo "::error::PARTIAL PROMOTE: docker.io/getbusbar/busbar:${V} does not resolve. The version pin was never created. Nothing downstream should treat ${V} as released."; fail=1; }
-          for pair in "docker.io latest:$hub_l" "ghcr.io ${V}:$ghcr_v" "ghcr.io latest:$ghcr_l"; do
+          # THE ASSERTED SET FOLLOWS THE PROMOTED SET, and that is the only honest way to do it. An
+          # rc promote does not move `latest`, so asserting `latest == ${V}` would be asserting a
+          # falsehood about a correct run, and asserting nothing would drop the 1.5.3 guard for real
+          # releases. So the immutable pins are always asserted and the floating names are asserted
+          # exactly when they were supposed to move.
+          assert_pairs="ghcr.io ${V}:$ghcr_v"
+          if [ "$MOVE_LATEST" = "true" ]; then
+            assert_pairs="docker.io latest:$hub_l|${assert_pairs}|ghcr.io latest:$ghcr_l"
+          else
+            echo "rc promote: \`latest\` is NOT asserted against ${V} -- it still points at the current release, deliberately."
+          fi
+          IFS='|' read -r -a assert_arr <<< "$assert_pairs"
+          for pair in "${assert_arr[@]}"; do
             name="${pair%%:*}"; got="${pair#*:}"
             if [ "$got" != "$hub_v" ] || [ -z "$got" ]; then
               echo "::error::PARTIAL PROMOTE: ${name} resolves to '${got:-<none>}' but docker.io/${V} is '${hub_v}'. Exactly the 1.5.3 shape: one name moved and another did not, and nothing was red. Fix: re-run docker.yml with promote_to=${V} (the promote is idempotent), then re-run this assertion."
@@ -277,7 +317,12 @@ jobs:
               echo "::error::${V}-armv8.0 resolves to the SAME digest as ${V}. The compat name must carry the armv8.0 baseline build, not the default manifest."
               fail=1
             fi
-            for pair in "docker.io armv8.0:$v8_f" "ghcr.io ${V}-armv8.0:$ghcr_v8_v" "ghcr.io armv8.0:$ghcr_v8_f"; do
+            compat_pairs="ghcr.io ${V}-armv8.0:$ghcr_v8_v"
+            if [ "$MOVE_LATEST" = "true" ]; then
+              compat_pairs="docker.io armv8.0:$v8_f|${compat_pairs}|ghcr.io armv8.0:$ghcr_v8_f"
+            fi
+            IFS='|' read -r -a compat_arr <<< "$compat_pairs"
+            for pair in "${compat_arr[@]}"; do
               name="${pair%%:*}"; got="${pair#*:}"
               if [ "$got" != "$v8_v" ] || [ -z "$got" ]; then
                 echo "::error::PARTIAL PROMOTE (compat): ${name} resolves to '${got:-<none>}' but docker.io/${V}-armv8.0 is '${v8_v}'. Re-run docker.yml with promote_to=${V} (idempotent) and re-run this assertion."
@@ -286,8 +331,13 @@ jobs:
             done
           fi
           [ "$fail" = 0 ] || exit 1
-          echo "PASS: docker.io ${V}, docker.io latest, ghcr.io ${V} and ghcr.io latest all resolve to ${hub_v}."
-          [ -z "$v8_v" ] || echo "PASS: docker.io ${V}-armv8.0, docker.io armv8.0, ghcr.io ${V}-armv8.0 and ghcr.io armv8.0 all resolve to ${v8_v}."
+          if [ "$MOVE_LATEST" = "true" ]; then
+            echo "PASS: docker.io ${V}, docker.io latest, ghcr.io ${V} and ghcr.io latest all resolve to ${hub_v}."
+            [ -z "$v8_v" ] || echo "PASS: docker.io ${V}-armv8.0, docker.io armv8.0, ghcr.io ${V}-armv8.0 and ghcr.io armv8.0 all resolve to ${v8_v}."
+          else
+            echo "PASS: docker.io ${V} and ghcr.io ${V} resolve to ${hub_v}; the floating pointers were deliberately left alone (rc)."
+            [ -z "$v8_v" ] || echo "PASS: docker.io ${V}-armv8.0 and ghcr.io ${V}-armv8.0 resolve to ${v8_v}."
+          fi
 
   # Static musl binaries, one per architecture, built on native runners (no QEMU).
   build-binaries:

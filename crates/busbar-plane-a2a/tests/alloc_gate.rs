@@ -59,12 +59,13 @@ const BODY: &[u8] =
 
 /// COMMITTED BASELINE — the exact allocation count of ONE `encode_egress` that rewrites nothing.
 ///
-/// Three: the two arena copies the hop genuinely needs — the body the agent is sent and the
-/// content-type field of the envelope it is sent under — and the envelope's own field list, which
-/// starts empty and takes its buffer on the first push. The FOURTH, which this gate exists to keep
-/// out, was an owned copy of the caller's bytes made only to be copied again into the arena a line
-/// later: a document duplicated so it could be duplicated.
-const RELAY_ALLOCS: u64 = 3;
+/// Two: the one arena copy the hop genuinely needs — the content-type field of the envelope the
+/// body is sent under — and the envelope's own field list, which starts empty and takes its buffer
+/// on the first push. The body itself is BORROWED where it already lives, so it costs nothing at
+/// all; it used to be copied into the arena, which both spent the unit's whole bounded budget on a
+/// second copy of what the unit was already holding and refused outright any request larger than
+/// that budget.
+const RELAY_ALLOCS: u64 = 2;
 
 #[test]
 fn an_unrewritten_envelope_is_copied_once() {

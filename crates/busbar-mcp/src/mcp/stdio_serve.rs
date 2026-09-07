@@ -138,6 +138,19 @@ const MAX_LIVE_ASK_ROUNDS: u32 = 8;
 /// the same cadence `super::subscribe` polls at, for the same reasons.
 const WATCH_INTERVAL: Duration = Duration::from_millis(250);
 
+/// THE CEILING ON ONE SESSION'S RETAINED SUBSCRIPTION SET. `resources/subscribe` is answered above
+/// dispatch and accepted for ANY uri (that acceptance is deliberate — it leaks nothing about what
+/// exists), so the set's size is written entirely by the client. Every entry is re-read and its
+/// fingerprint recomputed against the catalogue on EVERY generation move, so an unbounded set turns
+/// one config reload into work proportional to whatever the client asked for. The ceiling is the
+/// same 256 the relay's own resource-update ring carries.
+pub(crate) const MAX_RESOURCE_SUBS: usize = 256;
+
+/// THE CEILING ON ONE RETAINED SUBSCRIPTION URI, in bytes. The string lives for the session and is
+/// compared on every watcher tick; without this the frame cap alone would let one entry be
+/// megabytes. Same 2 KiB the relay applies to an announced resource uri.
+pub(crate) const MAX_RESOURCE_SUB_URI_BYTES: usize = 2048;
+
 /// THE SESSION IDENTITY, resolved once at boot and frozen. Field-for-field what the HTTP auth
 /// middleware inserts as request extensions.
 pub(crate) struct SessionIdentity {
@@ -360,12 +373,34 @@ impl DuplexPlane for Session {
         match caller_id.as_ref().map(id_key) {
             Some(key) => {
                 let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel::<()>();
-                self.inflight.lock().unwrap().insert(key.clone(), cancel_tx);
+                // THE GATE IS CLAIMED, NEVER DISPLACED. Inserting over a key a request is still
+                // running under would DROP that request's sender, and a dropped sender resolves its
+                // receiver — firing the cancel arm of a request nobody cancelled, dropping its
+                // dispatch mid-flight and leaving its caller waiting on an answer that will never be
+                // written. A client that reuses an id while the first is still open is
+                // non-conformant, and what that costs is the SECOND frame its cancellability, not
+                // the first frame its answer.
+                //
+                // The sender is handed over ONLY on a claim; unclaimed it stays owned by this arm's
+                // own frame and drops when the arm ends — after the `select!`, never before it, or
+                // the duplicate would fire its own cancel arm the instant it was refused the gate.
+                let mut owns_gate = false;
+                {
+                    let mut gates = self.inflight.lock().unwrap();
+                    if !gates.contains_key(&key) {
+                        gates.insert(key.clone(), cancel_tx);
+                        owns_gate = true;
+                    }
+                }
                 tokio::select! {
                     () = self.handle_frame(frame, caller_id) => {}
                     _ = cancel_rx => {} // cancelled: the dispatch future is dropped, its answer suppressed
                 }
-                self.inflight.lock().unwrap().remove(&key);
+                // Only the frame that claimed the gate clears it: a duplicate that removed a key it
+                // never owned would strip the live request of the cancel it is entitled to.
+                if owns_gate {
+                    self.inflight.lock().unwrap().remove(&key);
+                }
             }
             // A notification or an id-less frame cannot be cancelled — nothing names it.
             None => self.handle_frame(frame, caller_id).await,
@@ -453,6 +488,21 @@ struct Session {
     resource_subs: std::sync::Mutex<std::collections::BTreeMap<String, Option<u64>>>,
     /// Watcher tasks aborted at EOF.
     background: std::sync::Mutex<Vec<tokio::task::AbortHandle>>,
+}
+
+/// REMEMBER ONE BACKGROUND TASK, forgetting the ones that already ended.
+///
+/// The set exists for ONE purpose: abort at EOF whatever is still running. A handle whose task has
+/// already returned answers that purpose with nothing, so keeping it is pure accumulation — and two
+/// of the three push sites are per-event, not per-session (one per SSE keepalive line, one per
+/// task-typed result), so a long-lived session that never disconnects grew this vector forever. The
+/// sweep is O(n) on the push path, which is exactly the path that made n grow.
+fn remember_background(
+    slots: &mut Vec<tokio::task::AbortHandle>,
+    handle: tokio::task::AbortHandle,
+) {
+    slots.retain(|h| !h.is_finished());
+    slots.push(handle);
 }
 
 impl Session {
@@ -646,6 +696,36 @@ impl Session {
                     ));
                 };
                 if method.as_str() == "resources/subscribe" {
+                    // THE TWO CEILINGS, checked BEFORE anything is retained. The set is written
+                    // entirely by the client and re-walked on every generation move, so its size
+                    // and its keys' size are the session's, not the client's, to decide. A uri
+                    // ALREADY in the set is always admitted: re-subscribing re-takes the baseline
+                    // and grows nothing, and refusing it would break the one client that renews.
+                    if uri.len() > MAX_RESOURCE_SUB_URI_BYTES {
+                        return Some(envelope::error_response(
+                            axum::http::StatusCode::BAD_REQUEST,
+                            Some(id),
+                            envelope::code::INVALID_PARAMS,
+                            "`params.uri` is longer than this session retains: a subscription uri \
+                             is held for the session and re-read on every catalogue move, so it is \
+                             bounded.",
+                            None,
+                        ));
+                    }
+                    let at_ceiling = {
+                        let subs = self.resource_subs.lock().unwrap();
+                        subs.len() >= MAX_RESOURCE_SUBS && !subs.contains_key(uri)
+                    };
+                    if at_ceiling {
+                        return Some(envelope::error_response(
+                            axum::http::StatusCode::BAD_REQUEST,
+                            Some(id),
+                            envelope::code::INVALID_PARAMS,
+                            "this session already holds as many resource subscriptions as it will \
+                             watch: unsubscribe from one before subscribing to another.",
+                            None,
+                        ));
+                    }
                     // The BASELINE is taken HERE, synchronously, under the caller's grant: the
                     // subscription's meaning is "tell me when it changes FROM WHAT IT IS NOW", and
                     // a baseline first taken by the watcher's next tick would swallow any change
@@ -934,7 +1014,10 @@ impl Session {
                     let handle = tokio::spawn(async move {
                         let _ = session.issue_request("ping", &serde_json::json!({})).await;
                     });
-                    self.background.lock().unwrap().push(handle.abort_handle());
+                    remember_background(
+                        &mut self.background.lock().unwrap(),
+                        handle.abort_handle(),
+                    );
                 }
             }
         }
@@ -1014,7 +1097,7 @@ impl Session {
                 }
             }
         });
-        self.background.lock().unwrap().push(handle.abort_handle());
+        remember_background(&mut self.background.lock().unwrap(), handle.abort_handle());
     }
 
     /// The session's RESOURCE WATCH: the same generation poll `subscriptions/listen` runs, scoped
@@ -1081,7 +1164,7 @@ impl Session {
                 }
             }
         });
-        self.background.lock().unwrap().push(handle.abort_handle());
+        remember_background(&mut self.background.lock().unwrap(), handle.abort_handle());
     }
 
     /// The fingerprint of ONE resource as THIS session's caller can currently see it, or `None`

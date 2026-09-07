@@ -83,7 +83,7 @@ const CALLS_PER_UNIT: u32 = 1;
 /// mispriced turn rather than a cosmetic one.
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
-        key: MeterClassId::new("audio_tokens_in"),
+        key: CLASS_AUDIO_TOKENS_IN,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: BYTES_PER_TOKEN,
@@ -95,36 +95,43 @@ const METER_CLASSES: &[MeterClassDecl] = &[
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("text_tokens_in"),
+        key: CLASS_TEXT_TOKENS_IN,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("text_tokens_out"),
+        key: CLASS_TEXT_TOKENS_OUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("cached_tokens"),
+        key: CLASS_CACHED_TOKENS,
         family: TOKEN_FAMILY,
         direction: ClassDirection::CacheRead,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: MeterClassId::new("audio_seconds_in"),
+        key: CLASS_AUDIO_SECONDS_IN,
         family: DURATION_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: SECONDS_PER_UNIT,
     },
     MeterClassDecl {
-        key: MeterClassId::new("tool_calls"),
+        key: CLASS_TOOL_CALLS,
         family: COUNT_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: CALLS_PER_UNIT,
     },
 ];
+
+/// The class key the audio a turn RECEIVED is counted under.
+///
+/// Exported for the same reason as [`CLASS_AUDIO_TOKENS_OUT`]: the class label is what selects a
+/// unit price, and a root that spelled it out inline would be one more chance for that spelling to
+/// drift from the declaration above.
+pub const CLASS_AUDIO_TOKENS_IN: MeterClassId = MeterClassId::new("audio_tokens_in");
 
 /// The class key the audio a turn EMITTED is counted under.
 ///
@@ -135,6 +142,41 @@ const METER_CLASSES: &[MeterClassDecl] = &[
 /// different rates settles as money. The declaration above is the one spelling; this is how the
 /// root reads it.
 pub const CLASS_AUDIO_TOKENS_OUT: MeterClassId = MeterClassId::new("audio_tokens_out");
+
+/// The class key the text that PROMPTED a turn is counted under.
+///
+/// Exported for the same reason as [`CLASS_AUDIO_TOKENS_OUT`]: the class label is what selects a
+/// unit price, and a root that spelled it out inline would be one more chance for that spelling to
+/// drift from the declaration above.
+pub const CLASS_TEXT_TOKENS_IN: MeterClassId = MeterClassId::new("text_tokens_in");
+
+/// The class key the text a turn EMITTED is counted under.
+///
+/// Exported for the same reason as [`CLASS_AUDIO_TOKENS_OUT`]: the class label is what selects a
+/// unit price, and a root that spelled it out inline would be one more chance for that spelling to
+/// drift from the declaration above.
+pub const CLASS_TEXT_TOKENS_OUT: MeterClassId = MeterClassId::new("text_tokens_out");
+
+/// The class key a cache-read token is counted under.
+///
+/// Exported for the same reason as [`CLASS_AUDIO_TOKENS_OUT`]: the class label is what selects a
+/// unit price, and a root that spelled it out inline would be one more chance for that spelling to
+/// drift from the declaration above.
+pub const CLASS_CACHED_TOKENS: MeterClassId = MeterClassId::new("cached_tokens");
+
+/// The class key the seconds of inbound audio a turn consumed are counted under.
+///
+/// Exported for the same reason as [`CLASS_AUDIO_TOKENS_OUT`]: the class label is what selects a
+/// unit price, and a root that spelled it out inline would be one more chance for that spelling to
+/// drift from the declaration above.
+pub const CLASS_AUDIO_SECONDS_IN: MeterClassId = MeterClassId::new("audio_seconds_in");
+
+/// The class key a tool call is counted under.
+///
+/// Exported for the same reason as [`CLASS_AUDIO_TOKENS_OUT`]: the class label is what selects a
+/// unit price, and a root that spelled it out inline would be one more chance for that spelling to
+/// drift from the declaration above.
+pub const CLASS_TOOL_CALLS: MeterClassId = MeterClassId::new("tool_calls");
 
 /// The name a session's opening unit is audited and priced under.
 ///

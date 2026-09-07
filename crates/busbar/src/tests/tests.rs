@@ -364,3 +364,99 @@ fn build_info_line_format_is_locked() {
         "a plain (non-pgo-build.sh) build must self-report pgo=false; got: {line}"
     );
 }
+
+/// EVERY DIAGNOSTIC CODE IS UNIQUE ACROSS THE WHOLE CATALOG — the neutral half in
+/// `busbar-substrate-values` AND every plane catalogue the composition root installs.
+///
+/// Each half is internally consistent on its own, and neither crate can see the other: a plane
+/// numbers its codes without the neutral registry in scope, and the neutral registry is compiled
+/// long before any plane is linked. THIS binary is the only place both halves exist at once, which
+/// is why the check lives here. A collision is not cosmetic — `by_code` resolves a code to the FIRST
+/// match, so a duplicate makes one diagnostic permanently unreachable and makes `busbar explain
+/// <code>` and a rendered catalog describe the wrong failure.
+///
+/// `slug` is checked too, for the same reason: it is the other stable handle a catalog is keyed by.
+#[test]
+fn every_diagnostic_code_is_unique_across_the_neutral_and_plane_catalogues() {
+    // The composition root's own registration, so `all()` returns the real runtime union rather
+    // than the neutral half alone. This is the only installer in the test binary; a second call
+    // would panic by design.
+    register_diagnostics();
+
+    let all = busbar_substrate::diagnostics::all();
+    assert!(
+        !all.is_empty(),
+        "the catalog must not be empty — the walk would assert nothing"
+    );
+
+    let mut by_code: std::collections::HashMap<u16, Vec<&str>> = std::collections::HashMap::new();
+    let mut by_slug: std::collections::HashMap<&str, Vec<u16>> = std::collections::HashMap::new();
+    for d in &all {
+        by_code.entry(d.code).or_default().push(d.slug);
+        by_slug.entry(d.slug).or_default().push(d.code);
+    }
+
+    let dup_codes: Vec<_> = by_code.iter().filter(|(_, v)| v.len() > 1).collect();
+    assert!(
+        dup_codes.is_empty(),
+        "diagnostic CODES collide across the neutral and plane catalogues: {dup_codes:?}"
+    );
+
+    let dup_slugs: Vec<_> = by_slug.iter().filter(|(_, v)| v.len() > 1).collect();
+    assert!(
+        dup_slugs.is_empty(),
+        "diagnostic SLUGS collide across the neutral and plane catalogues: {dup_slugs:?}"
+    );
+}
+
+/// WHAT THE VOICE NODE COMPOSED AT THIS MOUNT IS ALLOWED TO BE READ FOR.
+///
+/// The node built in `compose_voice_governed_calls` carries values that are not the deployment's:
+/// a flat rate card, a chain of nothing, a journal that ships nowhere, unbound key authorities. It
+/// is shipped anyway because the port installed over it asks the node exactly two questions, and
+/// both are answered out of the open-call table — nothing under that port reads a price, a chain, a
+/// directory or a journal. That is a property of the code and not of the intention, so it is read
+/// off the code: every access the port makes through the node goes to `tool_calls`.
+///
+/// The region scanned is the whole of `NodeCalls` — its field, its `Debug`, its constructor and its
+/// `GovernedCalls` impl — up to the divider that begins the node's long-lived half. A reach added
+/// anywhere in it to a second field of the node fails here, which is the moment the stand-ins stop
+/// being unreachable and this mount owes the deployment's real parts instead.
+#[cfg(all(feature = "root-voice", feature = "plane-voice"))]
+#[test]
+fn the_governed_call_port_reads_only_the_nodes_open_call_table() {
+    const SOURCE: &str = include_str!("../root/units_voice.rs");
+    const DIVIDER: &str = "// The node's long-lived half";
+
+    let from = SOURCE
+        .find("pub struct NodeCalls {")
+        .expect("the port's own type is still in this file");
+    let to = SOURCE[from..]
+        .find(DIVIDER)
+        .expect("the divider that ends the port's region is still there")
+        + from;
+    let region = &SOURCE[from..to];
+
+    let reaches: Vec<&str> = region
+        .match_indices("self.node.")
+        .map(|(at, _)| {
+            let rest = &region[at + "self.node.".len()..];
+            let end = rest
+                .find(|c: char| !c.is_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
+            &rest[..end]
+        })
+        .collect();
+
+    assert!(
+        !reaches.is_empty(),
+        "the port reaches the node somewhere, or this test is reading the wrong region"
+    );
+    for field in &reaches {
+        assert_eq!(
+            *field, "tool_calls",
+            "the port reached `{field}` — the node's stand-in parts are shipped on the \
+             understanding that nothing under this port reads them"
+        );
+    }
+}

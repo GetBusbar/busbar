@@ -909,10 +909,28 @@ fn percent_decode_host(host: &str) -> String {
 }
 
 pub fn extract_normalized_host(url: &str) -> Option<String> {
-    // Strip ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere in the string,
-    // FIRST — before any other normalization, mirroring the WHATWG URL spec's basic parser, which
-    // removes these three bytes from the whole input as its very first step, before scheme/authority
-    // parsing even begins. reqwest's `url` crate implements this removal, so it is not merely a
+    // The WHATWG basic URL parser's very first step has TWO halves, and only one of them was
+    // mirrored here. The other half is the leading/trailing trim: before anything else, the parser
+    // removes any LEADING and TRAILING C0 control characters (U+0000..=U+001F) and SPACE (U+0020)
+    // from the input. Doing only the interior tab/newline deletion below left a whole family of
+    // spellings that this guard reads differently from the stack that will dial them. A `base_url`
+    // of `"http://169.254.169.254 "` — one trailing space, exactly what a copy-paste out of a
+    // console or an unquoted YAML scalar leaves behind — is read here as the host
+    // `169.254.169.254 `, which parses as no `IpAddr` at all and matches no metadata name, so every
+    // range check below says "allowed"; the connecting stack trims the space and dials the real IMDS
+    // address. The leading side is worse still, because the padding hides the SCHEME rather than the
+    // host: `" http://169.254.169.254/"` splits on `://` into the scheme `" http"`, which matches
+    // neither `http` nor `https`, so `strip_scheme` returns `None`, `ssrf_blocked_host` short-
+    // circuits to `None`, and the URL is waved through without any host ever being examined. This
+    // matters most at the token endpoints, which POST the operator's `client_id`/`client_secret` (or
+    // a signed service-account assertion) to the configured URL verbatim — a metadata host the guard
+    // failed to recognize is a metadata host that receives those credentials.
+    let url = url.trim_matches(|c: char| c <= '\u{1f}' || c == ' ');
+    // Then strip ALL ASCII tab (0x09), LF (0x0A), and CR (0x0D) characters from anywhere in the
+    // string — the second half of that same first step, and still before any other normalization,
+    // mirroring the WHATWG URL spec's basic parser, which removes these three bytes from the whole
+    // input immediately after the trim above, before scheme/authority parsing even begins. reqwest's
+    // `url` crate implements both halves, and this removal in particular is not merely a
     // leading/trailing trim: a tab EMBEDDED mid-host is deleted too. Without mirroring it, a
     // `base_url` like `"https://169.254.169\t.254/"` (a tab is a legal byte inside a YAML
     // double-quoted scalar) is seen by this guard as the non-IP, non-metadata-matching host

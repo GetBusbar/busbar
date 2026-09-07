@@ -11,13 +11,17 @@
 # one, and it writes one ledger row per binding through the fleet-fixtures ledger so the verdict is
 # the same single-decision mechanism every other functional gate uses:
 #
-#   PASS   every referenced check exists and the binding has at least one
-#   FAIL   a referenced check vanished (a test renamed away, a cell dropped, a script deleted)
+#   PASS   `mapped`: every referenced check exists AND compares something
+#   FAIL   `unproven`: checks are cited but nothing they name settles anything -- a referenced check
+#          vanished (a test renamed away, a cell dropped, a script deleted), or every citation is an
+#          oracle cell the pinned golden never recorded. A citation list is not a proof: a binding
+#          that can read "proven" while nothing was compared is worse than one that reads unmapped.
 #   SKIP   the binding is unmapped -- a NAMED gap with the suggested check in the detail column
 #
 # Two postures, one verdict.sh:
-#   --check           owes only the MAPPED bindings to verdict.sh, so gaps are reported (SKIP rows,
-#                     a printed gap list) but do not turn the run red. Day-to-day use.
+#   --check           owes only the non-SKIP bindings to verdict.sh, so gaps are reported (SKIP rows,
+#                     a printed gap list) but do not turn the run red. An UNPROVEN binding is a FAIL
+#                     row, and a FAIL is red in both postures. Day-to-day use.
 #   --check --strict  owes EVERY binding, so any SKIP is red -- verdict.sh already refuses a skip on
 #                     an owed id. This is what scripts/verify-1.6.0-done.sh runs: DONE means no gap.
 #   In both, zero rows is red (verdict.sh's vacuous-run guard) and a vanished check is red.
@@ -68,10 +72,68 @@ EOF
     bash "${repo}/testing/fleet-fixtures/verdict.sh"
 }
 
+# regen_clean → 0 if the committed ledger is what a fresh derivation from Appendix B produces.
+#
+# WHAT --strict ACTUALLY VERIFIED, AND WHAT IT DID NOT. Every row it judges comes out of the CACHED
+# qa/design-bindings.json. Appendix B of ARCHITECTURE.md is the SOURCE of that file and was never
+# opened: --strict proved that every binding IN THE CACHE is mapped, which is a statement about the
+# cache. Add a binding to Appendix B and do not re-run --write, and --strict stays green — the new
+# binding is unmapped, unproven, and invisible, because it is not in the file being read. That is the
+# precise inverse of what "DONE requires every binding mapped" is meant to mean.
+#
+# So a strict run re-derives from Appendix B into a temp dir and diffs. The regen is written OUTSIDE
+# the tree and nothing here rewrites the committed ledger: a check that repairs what it is checking
+# has not checked anything.
+regen_clean() {
+  local tmp rc=0
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/design-bindings-regen.XXXXXX")" || return 2
+  if ! python3 "${repo}/scripts/design-bindings.py" --write \
+        --out-json "$tmp/fresh.json" --out-md "$tmp/fresh.md" >"$tmp/regen.log" 2>&1; then
+    echo "design bindings REGEN-CLEAN: the derivation from Appendix B FAILED --" >&2
+    sed 's/^/    /' "$tmp/regen.log" >&2
+    rm -rf "$tmp"; return 2
+  fi
+  diff -u "$BINDINGS" "$tmp/fresh.json" >"$tmp/json.diff" 2>&1 || rc=1
+  diff -u "${repo}/qa/DESIGN-BINDINGS.md" "$tmp/fresh.md" >"$tmp/md.diff" 2>&1 || rc=1
+  if [ "$rc" -ne 0 ]; then
+    echo
+    echo "design bindings REGEN-CLEAN: RED -- the committed ledger is NOT what Appendix B derives."
+    echo "  --strict judges the rows in $BINDINGS. If that file is stale, a binding added to"
+    echo "  ARCHITECTURE.md Appendix B is absent from every row --strict reads, so it is unmapped,"
+    echo "  unproven, and green. Regenerate with 'scripts/design-bindings.sh --write' and commit both"
+    echo "  qa/design-bindings.json and qa/DESIGN-BINDINGS.md."
+    head -40 "$tmp/json.diff" | sed 's/^/    /'
+    head -20 "$tmp/md.diff"   | sed 's/^/    /'
+  else
+    echo "design bindings REGEN-CLEAN: the committed ledger matches a fresh derivation from Appendix B"
+  fi
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 check() {
-  local strict="$1" ledger="$WORK/ledger.tsv" rc
+  local strict="$1" ledger="$WORK/ledger.tsv" rc regen_rc=0
   [ -f "$BINDINGS" ] || { echo "design-bindings: $BINDINGS missing -- run $0 --write first" >&2; return 2; }
+  # REGEN-CLEAN first, and only under --strict: plain --check is the gap REPORT, and a report on a
+  # slightly stale ledger is still a useful report. --strict is the DONE claim, and that claim is
+  # about Appendix B, not about a cache of it.
+  if [ "$strict" = 1 ]; then
+    regen_clean || regen_rc=$?
+  fi
   run_check "$BINDINGS" "$ledger" "$strict"; rc=$?
+  [ "$regen_rc" -ne 0 ] && rc="$regen_rc"
+  # The UNPROVEN list, printed before the gap list because it is the worse condition: a gap is
+  # honest about naming nothing, while an unproven binding names checks and proves nothing by them.
+  # These are FAIL rows, so they are already red in BOTH postures -- plain --check included. A
+  # binding is never demoted to a waiver to clear this list; it is fixed, or it becomes a named gap.
+  local unproven
+  unproven="$(awk -F'\t' '$2=="FAIL"{n++} END{print n+0}' "$ledger")"
+  if [ "$unproven" -gt 0 ]; then
+    echo
+    echo "design bindings: ${unproven} UNPROVEN binding(s) -- checks are cited, but nothing they name compares anything:"
+    awk -F'\t' '$2=="FAIL"{printf "  %-8s %s\n", $1, $4}' "$ledger"
+    echo "design bindings: an unproven binding is RED in every posture. Make the citation real, or record it as a named gap."
+  fi
   # The gap list: every SKIP row names the binding and the check that would prove it.
   local skips
   skips="$(awk -F'\t' '$2=="SKIP"{n++} END{print n+0}' "$ledger")"
@@ -224,6 +286,194 @@ sys.exit(0 if any(c['ref']=='$real_fn' and c['kind']=='test' for c in b['checks'
     say PASS "an owed id with no ledger row -> red, named DID NOT RUN (the PASS row does not carry it)"
   else
     say FAIL "owed id with no row: rc=$rc (expected rc!=0 and a named DID NOT RUN line)"; cat "$tmp/g.log"
+  fi
+
+  # (h) REGEN-CLEAN. --strict judges the rows in the CACHED qa/design-bindings.json and never opened
+  #     Appendix B, so a binding added to ARCHITECTURE.md and not re-derived was simply absent from
+  #     everything --strict reads: unmapped, unproven, and green. Prove both arms of the new check —
+  #     the committed ledger is clean, and a ledger with one binding removed is REFUSED.
+  if ( regen_clean ) >"$tmp/h-clean.log" 2>&1; then
+    say PASS "REGEN-CLEAN: the committed ledger matches a fresh derivation from Appendix B"
+  else
+    say FAIL "REGEN-CLEAN: the committed ledger does not match Appendix B"; cat "$tmp/h-clean.log"
+  fi
+  "$PY" -c "
+import json,sys
+d=json.load(open('${repo}/qa/design-bindings.json'))
+d['bindings']=d['bindings'][1:]
+json.dump(d, open('$tmp/stale.json','w'), indent=1, ensure_ascii=False)
+"
+  if ( BINDINGS="$tmp/stale.json" regen_clean ) >"$tmp/h-stale.log" 2>&1; then
+    say FAIL "REGEN-CLEAN: a ledger missing a binding was ACCEPTED -- a binding added to Appendix B would stay invisible to --strict"
+  else
+    say PASS "REGEN-CLEAN: a ledger missing one binding is REFUSED (a stale cache cannot hide an unmapped binding)"
+  fi
+
+  # (i) THE COUNTS TELL THE TRUTH. The summary used to call a binding `mapped` on the strength of the
+  #     citation list alone, while --verify judged the very same binding FAIL. So a binding whose only
+  #     evidence was an oracle cell the pinned golden never recorded read as PROVEN in
+  #     qa/DESIGN-BINDINGS.md and as broken in the ledger, at the same time, from the same file. This
+  #     case pins the two together: such a binding is `unproven`, verdict FAIL, and counted nowhere
+  #     near `mapped`.
+  if "$PY" - "$skipped_cell" <<'PYEOF'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+cells = json.load(open("testing/shadow-oracle/cells.json"))
+b = {"id": "PB-1", "surface": "its only cell is one the golden never recorded",
+     "checks": [{"kind": "oracle-cell", "ref": sys.argv[1], "status": "mapped"}]}
+ctx = m.check_context(cells, m.CRATES, m.ROOT, m.GOLDEN_LEDGER)
+status, verdict, detail = m.binding_verdict(b, ctx)
+b["status"] = status
+c = m.counts([b])
+ok = (status == "unproven" and verdict == "FAIL"
+      and c["mapped"] == 0 and c["unproven"] == 1 and c["unmapped"] == 0)
+if not ok:
+    print(f"status={status} verdict={verdict} counts={c} detail={detail}", file=sys.stderr)
+sys.exit(0 if ok else 1)
+PYEOF
+  then
+    say PASS "counts() follows the verdict: a binding whose only cell the golden skipped is unproven, not mapped"
+  else
+    say FAIL "counts() called a binding with nothing compared 'mapped'"
+  fi
+
+  # (j) A GATE NOBODY RUNS PROVES NOTHING. `(root/ref).exists()` was the whole test for a gate/lint
+  #     ref, so a script that had stopped being invoked -- or that was only ever NAMED in a workflow
+  #     comment or a step title -- carried a binding as proven for as long as the file stayed on disk.
+  #     Driven against a fixture tree rather than the repo, so the case asserts the RULE and does not
+  #     move the day a real workflow is edited. Both arms, because a check that only ever says no is
+  #     no better than one that only ever says yes.
+  if "$PY" - <<'PYEOF'
+import importlib.util, pathlib, sys, tempfile
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+with tempfile.TemporaryDirectory() as td:
+    root = pathlib.Path(td)
+    (root / ".github" / "workflows").mkdir(parents=True)
+    (root / "scripts").mkdir()
+    for name in ("ran.sh", "talked-about.sh", "titled.sh", "orphan.sh", "nested.sh"):
+        (root / "scripts" / name).write_text("#!/bin/sh\n")
+    # ran.sh runs nested.sh, and mentions a data file it merely READS.
+    (root / "scripts" / "ran.sh").write_text(
+        "#!/bin/sh\n# scripts/talked-about.sh used to run here\n"
+        "bash scripts/nested.sh --check\ncat qa/data.json\n")
+    (root / "qa").mkdir()
+    (root / "qa" / "data.json").write_text("{}\n")
+    (root / ".github" / "workflows" / "ci.yml").write_text(
+        "jobs:\n  a:\n    steps:\n"
+        "      - name: run scripts/titled.sh one day\n"
+        "        run: scripts/ran.sh --check\n"
+        "      # scripts/talked-about.sh documents the phase this replaces\n")
+    ctx = m.check_context({"cells": []}, root / "crates", root, root / "no-ledger.tsv")
+    want = {"scripts/ran.sh": True,
+            # reached only through a script the workflow runs -- still run by CI
+            "scripts/nested.sh": True,
+            "scripts/talked-about.sh": False,
+            "scripts/titled.sh": False,
+            "scripts/orphan.sh": False,
+            # a data file an invoked script reads is an input to a gate, never a gate
+            "qa/data.json": False}
+    bad = []
+    for ref, expected in want.items():
+        got, why = m.check_verdict({"kind": "gate", "ref": ref, "status": "mapped"}, ctx)
+        if got is not expected:
+            bad.append(f"{ref}: got {got}, wanted {expected} ({why})")
+        if not expected and "invokes it" not in why:
+            bad.append(f"{ref}: reason does not name the missing invocation ({why})")
+    if bad:
+        print("; ".join(bad), file=sys.stderr)
+    sys.exit(1 if bad else 0)
+PYEOF
+  then
+    say PASS "a gate/lint ref is proof only when a workflow INVOKES it (a comment or a step title is not an invocation)"
+  else
+    say FAIL "the runs-in-CI check does not separate an invoked gate from one that only exists on disk"
+  fi
+
+  # (k) A NOTE THAT SAYS "UNTESTED" OUTRANKS A GREEN CITATION. Some rows carried a note in the
+  #     ledger's own words -- "does not exist in crates/", "vacuously true", "untested" -- while
+  #     being counted as mapped, because a test fn of some other subsystem happened to match the ref
+  #     by name. A binding whose own record says nothing was compared is unproven, whatever its
+  #     citation list looks like. Driven with an injected table so the case asserts the rule; the
+  #     second arm pins that the four real ids are actually in the shipped table.
+  if "$PY" - <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+shipped = set(m.UNPROVEN_BY_NOTE)
+bad = []
+for want in ("PB-17", "PB-48", "PB-58", "PB-61"):
+    if want not in shipped:
+        bad.append(f"{want} is not carried as unproven-by-note")
+    if not m.UNPROVEN_BY_NOTE[want].strip() if want in shipped else False:
+        bad.append(f"{want} carries no reason")
+# The rule itself: a real, existing test ref does NOT rescue a row the note disqualifies.
+ctx = m.check_context({"cells": []}, m.CRATES, m.ROOT, m.GOLDEN_LEDGER)
+real = sorted(k for k, v in ctx["idx"].items() if len(v) == 1)[0]
+m.UNPROVEN_BY_NOTE = {"PB-SELFTEST": "the surface this binding names does not exist in crates/"}
+b = {"id": "PB-SELFTEST", "surface": "noted untested",
+     "checks": [{"kind": "test", "ref": real, "status": "mapped"}]}
+status, verdict, detail = m.binding_verdict(b, ctx)
+if not (status == "unproven" and verdict == "FAIL" and "does not exist in crates/" in detail):
+    bad.append(f"a noted-untested row with a real test ref came back {status}/{verdict}: {detail}")
+# and the same row is `mapped` once the note is gone, so the table is what decides, not the ref
+m.UNPROVEN_BY_NOTE = {}
+if m.binding_verdict(b, ctx)[0] != "mapped":
+    bad.append("removing the note did not restore the row -- the case proves nothing")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+sys.exit(1 if bad else 0)
+PYEOF
+  then
+    say PASS "a binding whose own note says nothing was compared is unproven, whatever it cites"
+  else
+    say FAIL "a noted-untested binding was still counted as proven"
+  fi
+
+  # (l) A BARE NAME TWO FILES BOTH DECLARE NAMES NO TEST. `ref in idx` asked only whether SOMETHING
+  #     somewhere in the tree bore that name, so a citation survived the deletion of the very test it
+  #     was written against as long as a namesake existed elsewhere -- which is the exact failure this
+  #     ledger is for. Such a ref proves nothing until it is written `path.rs::name`. Both arms, over
+  #     a real ambiguous name found in the tree, so the case cannot pass vacuously.
+  if "$PY" - <<'PYEOF'
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+ctx = m.check_context({"cells": []}, m.CRATES, m.ROOT, m.GOLDEN_LEDGER)
+shared = sorted(k for k, v in ctx["idx"].items() if len(v) > 1)
+if not shared:
+    print("no name is declared in two files -- the case would pass vacuously", file=sys.stderr)
+    sys.exit(1)
+name = shared[0]
+files = sorted(ctx["idx"][name])
+bad = []
+ok, why = m.check_verdict({"kind": "test", "ref": name, "status": "mapped"}, ctx)
+if ok:
+    bad.append(f"the bare ambiguous ref {name} was accepted as proof")
+elif "path.rs::name" not in why:
+    bad.append(f"the reason does not say how to fix it: {why}")
+for f in files:
+    ok, why = m.check_verdict({"kind": "test", "ref": f"{f}::{name}", "status": "mapped"}, ctx)
+    if not ok:
+        bad.append(f"the disambiguated ref {f}::{name} was refused: {why}")
+# and a disambiguator pointing at a file that does not declare it is still refused
+ok, _ = m.check_verdict({"kind": "test", "ref": f"crates/nowhere/src/lib.rs::{name}", "status": "mapped"}, ctx)
+if ok:
+    bad.append("a disambiguator naming the wrong file was accepted")
+# no bare ambiguous ref may survive in the shipped ledger
+for pb, entries in m.SEED.items():
+    for kind, ref, _p in entries:
+        if kind == "test" and "::" not in ref and len(ctx["idx"].get(ref, ())) > 1:
+            bad.append(f"{pb} still cites the ambiguous bare name {ref}")
+if bad:
+    print("; ".join(bad), file=sys.stderr)
+sys.exit(1 if bad else 0)
+PYEOF
+  then
+    say PASS "a bare test name two files declare proves nothing; path.rs::name does, and only for the right file"
+  else
+    say FAIL "an ambiguous bare test ref was accepted as proof"
   fi
 
   echo

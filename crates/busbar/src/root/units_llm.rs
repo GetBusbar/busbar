@@ -88,7 +88,7 @@ use busbar_caps::{
 use busbar_contract::{LaneId, Registration, UnitKey};
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units};
-use busbar_llm::unit::walk::{Tap, Walk, WalkArrival};
+use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
 use busbar_substrate::proxy::POOL_LABEL_UNRESOLVED;
@@ -135,6 +135,64 @@ struct LaneNames {
     interner: Arc<Mutex<Registration>>,
     resolved: HashMap<String, LaneId>,
     consulted: u64,
+}
+
+/// WHEN ONE UNIT ARRIVED — one reading of the wall clock, spelled in both the units this loop asks
+/// for.
+///
+/// The loop needs the arrival instant twice and in two shapes: SECONDS, which is the window every
+/// charge and every refund this unit makes lands in, and MILLISECONDS, which is the stamp the
+/// in-flight table enters it under. Read the clock twice and those are two arrivals, not one in two
+/// shapes — a request that arrives at the very end of a window can have its seconds fall in that
+/// window and its milliseconds in the next, and the books then bill it in a window the table says it
+/// did not arrive in. Nothing downstream can tell which of the two readings was the truth, because
+/// both of them were.
+///
+/// So the clock is read ONCE, here, and every figure is spelled out of that one reading. Being a
+/// value rather than a call is also what lets a test name the instant a unit arrived at, which is
+/// the only way to drive the case that matters — the last millisecond of a window.
+/// It carries the node's MONOTONIC reading beside the wall one, because the audit record and the
+/// posting stamp each want both and they want different things from them. A wall clock is
+/// steppable — an operator sets it, NTP corrects it, a leap second repeats it — so it DATES a record
+/// and cannot order one. The monotonic reading only ever goes up, so it ORDERS the record and
+/// cannot date it. Stamped from the wall clock twice, the second field is a copy rather than a
+/// reading, and two units of one second become unorderable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Arrived {
+    /// Milliseconds since the epoch: the reading, at the finest resolution either caller needs.
+    ms: u64,
+    /// The node's monotonic reading at the same arrival.
+    mono: u64,
+}
+
+impl Arrived {
+    /// A named arrival, for a caller that already holds both readings — the node below, and a test
+    /// that needs to place a unit at an instant of its choosing.
+    #[must_use]
+    pub fn at(ms: u64, mono: u64) -> Self {
+        Self { ms, mono }
+    }
+
+    /// The window every charge and every refund this unit makes lands in.
+    ///
+    /// The same truncation of the same clock `store::now` performs, so the epoch is the one the
+    /// legacy entry point pinned — spelled out of the reading above rather than taken again.
+    #[must_use]
+    pub fn secs(self) -> u64 {
+        self.ms / 1_000
+    }
+
+    /// The stamp the in-flight table takes.
+    #[must_use]
+    pub fn ms(self) -> u64 {
+        self.ms
+    }
+
+    /// The reading that ORDERS this unit against the others the node ran.
+    #[must_use]
+    pub fn mono(self) -> u64 {
+        self.mono
+    }
 }
 
 impl LaneNames {
@@ -186,6 +244,12 @@ pub struct LlmNode {
     /// them through it again.
     lane_names: Mutex<LaneNames>,
     next_key: AtomicU64,
+    /// THE NODE'S MONOTONIC CLOCK, for the second stamp on every audit record and every posting
+    /// this node writes: a counter that only ever goes up, whatever the wall clock does.
+    ///
+    /// It lives on the node rather than in a unit because ordering is a statement about a SET of
+    /// units, and a per-unit source could only ever order a unit against itself.
+    mono: AtomicU64,
     /// THE BOOK THIS NODE SETTLES ONTO, once the composition root has bound one. See [`bind_book`].
     ///
     /// A cell rather than a field, because the node is reached through a `static` — a bare `fn` is
@@ -201,22 +265,20 @@ pub struct LlmNode {
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
     durability_token: busbar_caps::DurabilityToken,
-    /// THE CARD THIS NODE PRICES AGAINST, once the composition root has bound one. See [`bind_card`].
-    ///
-    /// The cost unit's own card, and it belongs HERE rather than on the plane. The plane reports what
-    /// a unit consumed; what those quantities are worth is a question about the deployment's rates,
-    /// and the rates are the root's to hold — so a plane that priced its own traffic would be a second
-    /// place a rate lives, and two places a rate lives is two answers to what one request cost.
-    ///
-    /// It is also what carries the FLAT PER-REQUEST FEE onto the books. The card holds the configured
-    /// fee beside the per-token rates, and the cost unit's pricing puts it on the posting as a line of
-    /// its own — so a node that prices through the card cannot post the tokens and forget the fee.
-    ///
-    /// A cell for the same reason the book is one: the node is reached through a `static`, so it
-    /// exists before the boot that reads the configuration has finished.
-    ///
-    /// [`bind_card`]: LlmNode::bind_card
-    card: std::sync::OnceLock<Arc<busbar_unit_cost::RateCard>>,
+    // THE CARD THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
+    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is swappable rather than
+    // bound once, because a rate is a statement about a deployment and a deployment's rates change
+    // while it is running. A cell on the node would have frozen the boot reading: the engine's own
+    // spend projection would reprice on a config apply and this ledger would not, and the identity
+    // that says the two are one money would hold only until the first apply.
+    //
+    // The plane still never sees a rate. What a unit consumed is the plane's report; what those
+    // quantities are worth is read in the root, off the same configured figures the projection
+    // derives from — including the FLAT PER-REQUEST FEE, which the card holds beside the per-token
+    // rates so a node that prices through the card cannot post the tokens and forget the fee.
+    //
+    // Each unit PINS the card it was admitted under (see `answer_with`) and prices its whole life
+    // against that one, so an apply landing mid-body cannot reprice a request halfway through.
     /// The usage record's token, minted from this node's own kernel at construction and lent to the
     /// exit arm for the length of one pricing.
     ///
@@ -248,7 +310,6 @@ impl LlmNode {
             durability_token: kernel.durability_token(),
             usage_token: kernel.usage_token(),
             book: std::sync::OnceLock::new(),
-            card: std::sync::OnceLock::new(),
             kernel,
             // The data listener already carries the operator-configured inbound-concurrency layer,
             // which is where this deployment's admission-to-the-node decision is made and has always
@@ -269,7 +330,20 @@ impl LlmNode {
                 consulted: 0,
             }),
             next_key: AtomicU64::new(1),
+            mono: AtomicU64::new(0),
         }
+    }
+
+    /// WHEN A UNIT ARRIVED, taken once: this node's two clocks, read together.
+    ///
+    /// The one place on the request path either clock is read. Everything a unit is judged by — the
+    /// window it is charged in, the stamp the in-flight table enters it under, and the pair the
+    /// audit record and the posting are dated and ordered by — is spelled out of this one value.
+    fn arrived(&self) -> Arrived {
+        Arrived::at(
+            busbar_substrate::store::now_ms(),
+            self.mono.fetch_add(1, Ordering::AcqRel),
+        )
     }
 
     /// The interner, as the walk borrows it for the length of one unit.
@@ -292,20 +366,6 @@ impl LlmNode {
         let _ = self.book.set(book);
     }
 
-    /// Bind this node's exit arm to the card the process prices against.
-    ///
-    /// Built by the composition root from the SAME configured figures the previous release's usage
-    /// projection derives its spend from — the per-model rates and the flat per-request fee — so the
-    /// two sides of the reconciliation are two readings of one configuration rather than two
-    /// configurations that happen to agree.
-    ///
-    /// Unbound, a report is not priced and nothing is posted. That is the honest answer for a build
-    /// with no card in it: a node that fell back to a card of its own would post figures no operator
-    /// configured, and they would look exactly like figures somebody did.
-    pub fn bind_card(&self, card: Arc<busbar_unit_cost::RateCard>) {
-        let _ = self.card.set(card);
-    }
-
     /// Put what the loop posted onto the book, if this node has one.
     ///
     /// Three ways this does nothing, and each is a statement rather than a swallow. No book bound:
@@ -319,7 +379,7 @@ impl LlmNode {
     fn settle_end(
         &self,
         principal: &PrincipalId,
-        charged_at: u64,
+        arrived: Arrived,
         ended: busbar_kernel::teller::Ended,
     ) {
         let Some(book) = self.book.get() else {
@@ -335,7 +395,7 @@ impl LlmNode {
         let _settled = settle(
             &mut durability,
             principal,
-            charged_at,
+            arrived,
             &self.durability_token,
             posted,
         );
@@ -369,6 +429,26 @@ impl LlmNode {
         model_hint: Option<String>,
         seats: &[&(dyn approve::VetoSeat + Sync)],
     ) -> Response {
+        self.answer_arriving_at(arrival, model_hint, seats, self.arrived())
+            .await
+    }
+
+    /// The same drive, with the arrival reading HANDED IN rather than taken.
+    ///
+    /// [`answer_with`](Self::answer_with) is this with the node's own clock read once, at the top,
+    /// which is the only place on this path a clock is read. It is split out for the same reason
+    /// the seats are: "what this loop does with the instant it arrived at" is a property of the
+    /// loop, and a drive that reads the clock itself cannot be asked about an instant a test picks —
+    /// least of all the one instant that matters, a unit arriving at the last millisecond of a
+    /// window.
+    #[must_use]
+    pub async fn answer_arriving_at(
+        &self,
+        arrival: WalkArrival,
+        model_hint: Option<String>,
+        seats: &[&(dyn approve::VetoSeat + Sync)],
+        arrived: Arrived,
+    ) -> Response {
         let proto = arrival.proto;
         let op_class = OpClassId::new(arrival.operation.name());
         let key = UnitKey::new(self.next_key.fetch_add(1, Ordering::Relaxed));
@@ -376,8 +456,15 @@ impl LlmNode {
         // ONE METER, on both sides of the loop: the unit accrues onto it at the Meter step and the
         // kernel reads it at the exit. See `LlmUnit::meter`.
         let meter = Arc::new(AccrualMeter::new());
+        // THE CARD THIS UNIT IS ADMITTED UNDER, pinned here for the same reason `charged_at` below
+        // is: a live apply may replace the root's card at any instant, and a request that opened
+        // before one is priced on the rates it agreed to. Pinning at admission rather than reading
+        // at drain time is what makes that true even for the accrual that lands after the body has
+        // finished — the figure arrives late, but the price it is charged at was fixed at the door.
+        let card = crate::root::kernel::ROOT_CARD.pin();
         let unit = LlmUnit {
             node: self,
+            card: card.clone(),
             seats,
             meter: Arc::clone(&meter),
             op_class,
@@ -386,8 +473,10 @@ impl LlmNode {
             // The header-arrival epoch, pinned once and reused for every charge and every refund
             // this unit makes, exactly as the legacy entry point pins it: a request whose response
             // completes in a later window than its headers arrived must not split its charges
-            // across two windows.
-            charged_at: busbar_substrate::store::now(),
+            // across two windows. Spelled out of the ONE arrival reading below rather than read
+            // here, so the epoch this unit is billed in and the stamp the table enters it under
+            // cannot be two different instants.
+            charged_at: arrived.secs(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
             walk: Walk::open(arrival),
@@ -403,7 +492,11 @@ impl LlmNode {
             provider_of_open_session: false,
             zero_hold_tick: false,
             arrival: hold,
-            now: busbar_substrate::store::now_ms(),
+            // THE SAME READING the charge above is pinned from, in the units this table keeps. A
+            // second read here is a second arrival: the table would stamp the unit in one window
+            // and the books would bill it in another, and nothing downstream could say which of the
+            // two the request actually arrived in.
+            now: arrived.ms(),
         });
 
         match entered {
@@ -446,8 +539,7 @@ impl LlmNode {
                 // which has moved no balance and left no record until something settles it — and
                 // until this line nothing did, so a unit ran, ended, posted, and posted into a value
                 // that was dropped on the floor.
-                let charged_at = unit.charged_at;
-                self.settle_end(&principal, charged_at, ended);
+                self.settle_end(&principal, arrived, ended);
                 // The loop ran; the answer is whatever the terminal posted. There is no unit that
                 // reaches an end without passing one of the two audit doors, so the fallback below
                 // is unreachable — and it is an answer rather than an unwrap, because a path that
@@ -461,7 +553,7 @@ impl LlmNode {
                 // plane that is the record a unit ran and ended and nothing else: the money is in a
                 // cell the response's own body fills when it DRAINS, which has not happened yet. So
                 // the body goes out wrapped, and the figure lands when it arrives.
-                self.attach_late_accrual(response, walk, &principal, charged_at)
+                self.attach_late_accrual(response, walk, &principal, arrived, card)
             }
         }
     }
@@ -481,15 +573,16 @@ impl LlmNode {
         response: Response,
         walk: Walk,
         principal: &PrincipalId,
-        charged_at: u64,
+        arrived: Arrived,
+        card: Option<Arc<busbar_unit_cost::RateCard>>,
     ) -> Response {
         let Some(book) = self.book.get() else {
             return response;
         };
-        // No card bound is the third: a report nothing can price is a report nothing can post, and
-        // wrapping the body to discover that when it drains would be a wrapper that only ever drops
-        // empty.
-        let Some(card) = self.card.get() else {
+        // No card pinned at admission is the third: a report nothing can price is a report nothing
+        // can post, and wrapping the body to discover that when it drains would be a wrapper that
+        // only ever drops empty.
+        let Some(card) = card else {
             return response;
         };
         let Some(tap) = Walk::tap_of(&response) else {
@@ -497,7 +590,7 @@ impl LlmNode {
         };
         let arm = LateAccrual {
             book: Arc::clone(book),
-            card: Arc::clone(card),
+            card,
             // MINTED FOR THIS ONE POSTING and dropped with it. A token is neither `Clone` nor `Copy`
             // and the node's own is lent by reference for the length of a call, which is exactly what
             // this is not: the posting outlives every call on this path. So the pair is minted where
@@ -506,11 +599,13 @@ impl LlmNode {
             ledger_token: self.kernel.ledger_token(),
             usage_token: self.kernel.usage_token(),
             principal: principal.clone(),
-            // The unit's PINNED arrival epoch, not a clock read at drain time. The late posting lands
-            // on the same balance and in the same window the terminal settled in, which is the whole
-            // of what makes it the same row: a body that drained past midnight would otherwise open a
-            // second day's row for a request the node admitted, priced and billed in the first.
-            charged_at,
+            // The unit's PINNED ARRIVAL, not a clock read at drain time. The late posting lands on
+            // the same balance and in the same window the terminal settled in, which is the whole of
+            // what makes it the same row: a body that drained past midnight would otherwise open a
+            // second day's row for a request the node admitted, priced and billed in the first. The
+            // monotonic half travels with it for the same reason: the late posting and the terminal's
+            // are two postings OF one unit, and they order beside it rather than beside each other.
+            arrived,
             walk,
             tap,
         };
@@ -570,6 +665,42 @@ fn usage_record(
         .unwrap_or_else(|_| busbar_caps::Usage::report(token, Vec::new()).expect("no lines fit"))
 }
 
+/// **WHAT ONE REPORT IS WORTH**, against one card — the node's single pricing expression.
+///
+/// Both readings of a unit's consumption come through here: the live metering step's, handed over as
+/// the step runs, and the late reading's, taken off the tap once the body has drained. One
+/// expression rather than two, because a second spelling of this arithmetic is how one unit ends up
+/// settling two different amounts on two books.
+///
+/// The plane supplied the report — classes, quantities, the billable count and the two names the row
+/// is keyed by — and nothing in it is money. The card supplies the rest.
+///
+/// **The fee arrives by construction.** The cost unit's pricing puts the flat per-request charge on
+/// the posting as a line of its own, at the card's configured fee times the count the plane reported,
+/// and sums it in with the token lines before the single tier divide. So one call produces the token
+/// lines AND the fee line, and there is no arm anywhere that could post the tokens and forget the
+/// fee. That is what makes the identity exact rather than approximate: the previous release's
+/// projection reprices a row's token counts and adds the same configured fee at read time, so a node
+/// that posted only the tokens was out by the fee on every billable request.
+///
+/// A figure too large for the record narrows at the ceiling rather than wrapping, exactly as the
+/// terminal's own settlement narrows it: a wrap would charge nearly nothing for the most expensive
+/// unit the node has ever run.
+fn priced_amount(
+    card: &busbar_unit_cost::RateCard,
+    token: &busbar_caps::UsageToken,
+    report: &LateReport,
+) -> u64 {
+    let posting = busbar_unit_cost::price(
+        &card.pin(),
+        &report.lane,
+        &usage_record(token, &report.usage),
+        u64::from(report.fee_count),
+        busbar_unit_cost::STANDARD_TIER_BP,
+    );
+    u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX)
+}
+
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
 /// drained.
 ///
@@ -592,7 +723,7 @@ struct LateAccrual {
     ledger_token: busbar_caps::LedgerToken,
     usage_token: busbar_caps::UsageToken,
     principal: PrincipalId,
-    charged_at: u64,
+    arrived: Arrived,
     /// The unit's carry, kept alive for exactly as long as the body is: the reading needs the lane
     /// table the walk resolved and the facts the Route and Meter steps left, and both live here.
     walk: Walk,
@@ -611,7 +742,7 @@ impl LateAccrual {
             ledger_token,
             usage_token,
             principal,
-            charged_at,
+            arrived,
             walk,
             tap,
         } = self;
@@ -620,25 +751,10 @@ impl LateAccrual {
         };
         // THE PRICING, and it happens HERE rather than on the plane. The plane said what the unit
         // consumed — quantities, by class — and how many billable requests it is. What that is worth
-        // is the card's answer, and this is the only side that holds a card.
+        // is the card's answer, and this is the only side that holds a card. It is the same
+        // expression the live metering step is answered through, because one report priced two ways
+        // is two answers to what one request cost.
         //
-        // The FEE comes with it, and it comes for free. The cost unit's pricing puts the flat
-        // per-request charge on the posting as a line of its own, at the card's configured fee times
-        // the count the plane reported, and sums it in with the token lines before the single tier
-        // divide. So one call produces token lines AND a fee line, and there is no arm anywhere that
-        // could post the tokens and forget the fee.
-        //
-        // That is what makes the identity exact rather than approximate. The previous release's
-        // projection reprices a row's token counts and adds the same configured fee at read time; a
-        // node that posted only the tokens was out by the fee on every billable request, and the
-        // identity had to name the difference as its own term instead of checking it.
-        let posting = busbar_unit_cost::price(
-            &card.pin(),
-            &report.lane,
-            &usage_record(&usage_token, &report.usage),
-            u64::from(report.fee_count),
-            busbar_unit_cost::STANDARD_TIER_BP,
-        );
         // THE ROW THIS LANDS ON. `report` names the serving lane and its provider — the two names the
         // legacy row is keyed by — and the balance below is keyed by principal and window. Those are
         // the same row: the node's books retain no lane and no provider, so both the ledger's side and
@@ -654,7 +770,7 @@ impl LateAccrual {
         // A figure too large for the record settles at the ceiling rather than wrapping, exactly as
         // the terminal's own settlement narrows it: there is no amount above the ceiling to post, and
         // a wrap would post nearly nothing for the most expensive unit the node has ever run.
-        let amount = u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX);
+        let amount = priced_amount(&card, &usage_token, &report);
         if amount == 0 {
             return;
         }
@@ -665,7 +781,7 @@ impl LateAccrual {
         let _settled = settle(
             &mut durability,
             &principal,
-            charged_at,
+            arrived,
             &durability_token,
             posted,
         );
@@ -826,6 +942,10 @@ pub struct LlmUnit<'n> {
     started: Instant,
     /// The pinned header-arrival epoch every charge and every refund lands in.
     charged_at: u64,
+    /// THE CARD THIS UNIT WAS ADMITTED UNDER, pinned at the door with `charged_at`: the metering
+    /// step prices what the unit consumed against it, and the late accrual prices against the same
+    /// one, so a live apply mid-flight cannot price one unit two ways.
+    card: Option<Arc<busbar_unit_cost::RateCard>>,
     /// The handler-lookup refusal the arrival arm performed and the decode arm raises. See this
     /// module's header for why the two are apart.
     deferred: Mutex<Option<decode::DecodeRefusal>>,
@@ -1169,7 +1289,19 @@ impl Units for LlmUnit<'_> {
         // handed the client its bytes. At this step the cell is on the response and empty, so a
         // figure read here would be zero on every delivered unit and a meter accruing it would be
         // accruing a zero it could not tell from a free request.
-        self.walk.meter(token, usage)
+        //
+        // WHAT THIS LINE ADDS IS THE PRICING, and it is here because the card is here. The step
+        // assembles what the unit consumed and asks; this closure answers, against the card the node
+        // was bound at boot — the same card the late reading is priced against, through the same one
+        // expression — and the step spends the answer against the hold it was handed. A build with
+        // no card bound answers nothing, which is the honest figure for a node that can price
+        // nothing rather than a rate it invented for itself.
+        self.walk.meter(token, usage, &|report| {
+            self.card
+                .as_deref()
+                .map(|card| priced_amount(card, usage, report))
+                .unwrap_or(0)
+        })
     }
 
     fn audit(
@@ -1223,7 +1355,7 @@ impl Units for LlmUnit<'_> {
         )
     }
 
-    fn evidence(&self, _ctx: &UnitCtx) -> Evidence {
+    fn evidence(&self, ctx: &UnitCtx) -> Evidence {
         let status = self.walk.served_status();
         Evidence {
             // WHAT THIS UNIT SPENT IS NOT LOCATED HERE, and the settlement table therefore posts
@@ -1253,7 +1385,14 @@ impl Units for LlmUnit<'_> {
             // and the slot is drawn at the door and never released.
             upstream_candidate: self.walk.upstream_candidate(),
             fee: FeeEvidence {
-                client_open_or_one_shot: true,
+                // READ OFF THE UNIT'S ORIGIN, never asserted. The flat fee is a CLIENT'S fee: it is
+                // what a caller pays for a request the node carried on its behalf, and a unit the
+                // node runs for any other reason is not a caller's request. Hard-coded true, every
+                // origin this loop could ever carry would post one — a provider push, a tick, a
+                // nested unit — and the sibling planes, which read the same field off the same
+                // context, would price the same traffic differently. The origin the kernel sealed is
+                // the one fact that answers this, so it is the one thing read.
+                client_open_or_one_shot: ctx.origin == OriginKind::Client,
                 selected_upstream: self.walk.upstream_candidate(),
                 relayed_first_response_frame: status.is_some(),
                 // This transport reports no status leg of its own: the response IS the status, and
@@ -1336,7 +1475,7 @@ fn balance(principal: &PrincipalId) -> busbar_unit_ledger::totals::TotalsKey {
 pub fn settle(
     durability: &mut crate::root::durability::Durability,
     principal: &PrincipalId,
-    charged_at: u64,
+    arrived: Arrived,
     token: &busbar_caps::DurabilityToken,
     posted: busbar_caps::Posted,
 ) -> Result<crate::root::durability::Settled, busbar_caps::DurabilityLost> {
@@ -1345,16 +1484,20 @@ pub fn settle(
         key: &key,
         window: busbar_unit_admission::budget_window(
             busbar_unit_admission::window::WINDOW_DAY,
-            charged_at,
+            arrived.secs(),
         ),
         durability: token,
         // The loop has no exit step of its own; the figure this posting is OF is the metering step's,
         // and that is the step a durability loss here is attributed to.
         step: busbar_caps::StepName::Meter,
+        // The posting's two clocks, and they are two READINGS of the one arrival: the wall epoch
+        // DATES the posting, the monotonic reading ORDERS it. Stamped from the wall clock twice, the
+        // second field is a copy — and two postings of one second become unorderable, which is
+        // exactly what the field exists to prevent.
         stamp: crate::root::durability::PostingStamp {
             rate_card_version: 0,
-            wall: charged_at,
-            mono: charged_at,
+            wall: arrived.secs(),
+            mono: arrived.mono(),
         },
     };
     durability.settle_posted(&at, posted)
@@ -1380,55 +1523,47 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     NODE.bind_book(book);
 }
 
-/// Bind the process's one node to the card it prices against, built from the configured rates.
-///
-/// `rates` is the deployment's `rate_card:` as the neutral per-lane raw view, and `fee_cents` is its
-/// flat per-request fee — the SAME two configured figures the previous release's usage projection
-/// derives a row's spend from. Read once at boot, in the composition root, because that is the one
-/// place entitled to hold a configuration; the plane below never sees a rate.
-///
-/// A deployment with no `rate_card:` binds an ABSENT card rather than no card at all, and the
-/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
-/// exactly what the previous release bills for that deployment. Skipping the binding instead would
-/// post nothing for a node that charges a fee.
-pub fn bind_card<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    fee_cents: i64,
-    present: bool,
-) {
-    NODE.bind_card(Arc::new(card_from_config(rates, fee_cents, present)));
-}
-
 /// The configured rates, in the cost unit's own card.
+///
+/// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is this file's
+/// (it is the one place entitled to hold one); turning those figures into a card is the cost unit's,
+/// on [`busbar_unit_cost::RateCard::from_config`] — so the class fan-out, the absent/present branch
+/// and the fee's clamp all happen where the card lives, and there is no arithmetic here to disagree
+/// with it. The plane below never sees a rate at all.
+///
+/// A deployment with no `rate_card:` builds an ABSENT card rather than no card at all, and the
+/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
+/// exactly what the previous release bills for that deployment.
 ///
 /// The version is a constant name rather than a hash of the configuration, and that is a stated
 /// limit rather than an oversight: the postings this card prices are read back at the width the node
 /// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
 /// day the books grow that column, this is the one line that fills it.
-fn card_from_config<'r>(
+pub(crate) fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    fee_cents: i64,
+    per_request_fee: i64,
     present: bool,
 ) -> busbar_unit_cost::RateCard {
-    let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-    if !present {
-        return busbar_unit_cost::RateCard::absent(version, fee_cents);
-    }
-    // One entry per (lane, class), in the neutral reserved-unit spellings the plane's own metering
-    // step reports its lines under — so a line the plane reports and the card entry that prices it
-    // are keyed by the same name, with no translation between them.
-    let mut entries = Vec::new();
-    for (lane, raw) in rates {
-        for (class, micro) in [
-            (busbar_api::UNIT_INPUT, raw.input),
-            (busbar_api::UNIT_OUTPUT, raw.output),
-            (busbar_api::UNIT_CACHE_READ, raw.cache_read),
-            (busbar_api::UNIT_CACHE_WRITE, raw.cache_write),
-        ] {
-            entries.push((busbar_unit_cost::LaneClass::new(lane, class), micro));
-        }
-    }
-    busbar_unit_cost::RateCard::from_micro_rates(version, entries, fee_cents)
+    // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
+    // across a crate boundary, in the same canonical order, with nothing computed on the way.
+    let lanes = present.then(|| {
+        rates.into_iter().map(|(lane, raw)| {
+            (
+                lane,
+                busbar_unit_cost::TierRates {
+                    input: raw.input,
+                    output: raw.output,
+                    cache_read: raw.cache_read,
+                    cache_write: raw.cache_write,
+                },
+            )
+        })
+    });
+    busbar_unit_cost::RateCard::from_config(
+        busbar_unit_cost::RateCardVersion::new("root-llm"),
+        lanes,
+        per_request_fee,
+    )
 }
 
 /// One body-model arrival, driven through the loop.
@@ -2131,6 +2266,186 @@ mod tests {
         node.answer(arrival, None).await
     }
 
+    /// **One arrival is one reading, and both figures come out of it.**
+    ///
+    /// The pure half of the straddle. A unit arriving at the last millisecond of a window has its
+    /// seconds in that window and its milliseconds one tick short of the next: read the clock twice
+    /// there and the second read is already over the line, so the table stamps the unit in one
+    /// window and the books bill it in another. Read once and the two figures are two spellings of
+    /// one instant, which is the property asserted here.
+    #[test]
+    fn one_arrival_reading_spells_both_the_figures_the_loop_asks_for() {
+        const LAST_MILLISECOND: u64 = 1_700_000_000_999;
+        let arrived = Arrived::at(LAST_MILLISECOND, 0);
+        assert_eq!(arrived.ms(), LAST_MILLISECOND, "the reading, unmodified");
+        assert_eq!(
+            arrived.secs(),
+            1_700_000_000,
+            "and the window it lands in, which is the second that has not ended yet"
+        );
+        assert_eq!(
+            arrived.ms() / 1_000,
+            arrived.secs(),
+            "the two figures are one instant: neither can be on the far side of a boundary the \
+             other is on the near side of"
+        );
+    }
+
+    /// **Two units of one second are ordered by the monotonic stamp, not by the wall clock.**
+    ///
+    /// The node's two clocks answer two different questions and the audit record and the posting
+    /// stamp each want both. The wall clock DATES: it says which window a unit belongs to, and it is
+    /// steppable, so an operator, an NTP correction or a leap second can hand two events timestamps
+    /// that run backwards. The monotonic reading ORDERS: it only goes up, whatever the wall clock
+    /// does.
+    ///
+    /// So: units taken from one node inside one second — indistinguishable by the wall reading, and
+    /// on a stepped clock possibly backwards by it — still come out of the monotonic reading in the
+    /// order they were taken. Stamped from the wall clock twice, as this leg's postings were, the
+    /// second field is a copy of the first and this ordering does not exist.
+    #[test]
+    fn two_units_of_one_second_are_ordered_by_the_monotonic_stamp() {
+        let node = LlmNode::new();
+        let taken: Vec<Arrived> = (0..4).map(|_| node.arrived()).collect();
+
+        for pair in taken.windows(2) {
+            let (before, after) = (pair[0], pair[1]);
+            assert!(
+                after.mono() > before.mono(),
+                "the reading that orders them only goes up: {} then {}",
+                before.mono(),
+                after.mono()
+            );
+        }
+        // Four units off one node inside one second is the ordinary case, not a contrived one — and
+        // it is exactly the case a wall clock cannot resolve, whichever direction it was stepped.
+        assert!(
+            taken
+                .iter()
+                .all(|a| a.secs() == taken[0].secs() || a.secs() == taken[0].secs() + 1),
+            "the four were taken within a second of each other"
+        );
+        // Two readings, not one written twice: a monotonic counter is a SEQUENCE and an epoch is a
+        // date, so the day they compare equal is the day one of them stopped being what it is.
+        assert_ne!(taken[0].mono(), taken[0].secs());
+
+        // AND THE STAMP CARRIES IT. Two postings settled at one wall second, taken through the real
+        // settle path onto a real journal, come back off it in the order they were written — which
+        // is the ordering the record is FOR, and which does not exist if the second field is the
+        // first one copied.
+        let seal = busbar_caps::KernelSeal::acquire_for_kernel();
+        let mut durability = crate::root::durability::build(
+            &crate::root::durability::DurabilityConfig { data_dir: None },
+            Box::new(busbar_unit_wal::NullShipper::new()),
+            Box::new(busbar_unit_ledger::legacy::RecordingRows::new()),
+        )
+        .expect("a memory-buffered journal cannot fail to open");
+        let who = PrincipalId::new("acct:llm");
+        for arrived in [Arrived::at(EPOCH * 1_000, 7), Arrived::at(EPOCH * 1_000, 8)] {
+            let ledger_token = busbar_caps::LedgerToken::mint(&seal);
+            let accrual = busbar_caps::HoldAccrual::after_terminal(who.clone(), 0, &ledger_token);
+            let posted = busbar_caps::Posted::settle_late(accrual, &ledger_token);
+            settle(
+                &mut durability,
+                &who,
+                arrived,
+                &busbar_caps::DurabilityToken::mint(&seal),
+                posted,
+            )
+            .expect("the memory-buffered journal takes it");
+        }
+        let replayed = durability
+            .journal
+            .replay()
+            .expect("reads back")
+            .expect("verifies");
+        assert_eq!(replayed.len(), 2, "two postings, two records");
+        assert_eq!(
+            replayed[0].wall, replayed[1].wall,
+            "settled at one wall second, so the date cannot separate them"
+        );
+        assert!(
+            replayed[1].mono > replayed[0].mono,
+            "and the stamp that can does: {} then {}",
+            replayed[0].mono,
+            replayed[1].mono
+        );
+    }
+
+    /// **A unit that arrives in the last millisecond of a window bills in THAT window.**
+    ///
+    /// The driven half. The arrival is placed one millisecond short of a metering-bucket boundary —
+    /// the one instant where two clock reads disagree — and the whole unit is run from it: the
+    /// entry the in-flight table takes, the epoch the charges land in, and the row the flush
+    /// writes. Every figure is then looked for in the bucket the unit arrived in, and the next
+    /// bucket is checked to be empty, because a charge that leaked forward would have to land
+    /// somewhere and that is where it would land.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_unit_arriving_at_a_window_boundary_bills_in_the_window_it_arrived_in() {
+        use busbar_substrate::governance::metering_bucket;
+
+        let rig = rig(Fixture::BufferedOk).await;
+        // The last SECOND of the bucket BEFORE the one the node's own clock is in, and the last
+        // MILLISECOND of that second. Before, so that a figure derived from a fresh clock read
+        // instead of from this arrival lands somewhere visibly different — in the live bucket,
+        // which is the one asserted empty below.
+        let arrival_secs = metering_bucket(rig.charged_at) - 1;
+        let arrived = Arrived::at(arrival_secs * 1_000 + 999, 0);
+        assert_eq!(
+            arrived.secs(),
+            arrival_secs,
+            "the fixture really is on the last second of a bucket"
+        );
+        assert_ne!(
+            metering_bucket(arrived.secs()),
+            metering_bucket(arrived.secs() + 1),
+            "and one second later is a different bucket, which is what makes this a straddle"
+        );
+
+        let node = LlmNode::new();
+        let arrival = WalkArrival {
+            host: rig.host(),
+            gov: rig.gov(),
+            proto: PROTO,
+            operation: busbar_api::operation::Operation::CHAT,
+            caller_token: None,
+            headers: json_headers(),
+            body: Fixture::BufferedOk.body(),
+            path: None,
+        };
+        let resp = node
+            .answer_arriving_at(arrival, None, NATIVE_SEATS, arrived)
+            .await;
+        // Drain the body: this plane's money lands when the tap fills, which is on the drain.
+        let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+        tokio::task::yield_now().await;
+        rig.server.shutdown().await;
+
+        let gov = rig
+            .app
+            .governance
+            .clone()
+            .expect("governance is configured");
+        gov.flush_metering();
+        let rows_in = |bucket| {
+            gov.metering_for(bucket)
+                .expect("metering read")
+                .into_iter()
+                .filter(|r| r.key_id == rig.key.id)
+                .count()
+        };
+        assert_eq!(
+            rows_in(metering_bucket(arrived.secs())),
+            1,
+            "the unit's figures land in the bucket it arrived in"
+        );
+        assert_eq!(
+            rows_in(metering_bucket(arrived.secs() + 1)),
+            0,
+            "and nothing leaked into the bucket the clock was about to roll into"
+        );
+    }
+
     const CASES: [Fixture; 6] = [
         Fixture::BufferedOk,
         Fixture::StreamedOk,
@@ -2182,7 +2497,7 @@ mod tests {
         let settled = settle(
             &mut durability,
             &who,
-            EPOCH,
+            Arrived::at(EPOCH * 1_000, 0),
             &busbar_caps::DurabilityToken::mint(&seal),
             posted,
         )
@@ -2199,6 +2514,45 @@ mod tests {
             .expect("reads back")
             .expect("verifies");
         assert_eq!(replayed.len(), 1, "one posting, one record");
+    }
+
+    /// THE FLAT FEE IS A CLIENT'S FEE, and this plane reads which it has off the sealed origin.
+    ///
+    /// One unit, driven once and then asked the same question under two origins. The delivered
+    /// answer, the selected upstream and the relayed first frame are identical in both readings —
+    /// the ONLY thing that differs is the origin the kernel sealed the unit under — so a difference
+    /// in the count is a difference the origin made and nothing else. A client's request pays one
+    /// fee; a unit the node ran for a provider pays none, which is the same answer the sibling plane
+    /// gives to the same question.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_provider_origin_unit_posts_no_flat_fee() {
+        let rig = rig(Fixture::BufferedOk).await;
+        let node = LlmNode::new();
+        let (unit, _ended) =
+            drive_keeping_the_unit(&rig, &node, Fixture::BufferedOk, rig.gov(), NATIVE_SEATS).await;
+        rig.server.shutdown().await;
+
+        let fee = |origin| {
+            let ctx = UnitCtx {
+                key: UnitKey::new(1),
+                origin,
+                session: None,
+                generation: busbar_kernel::registry::Generation::FIRST,
+                admin_listener: false,
+                kernel_verb_only: false,
+            };
+            busbar_kernel::teller::fee_count(&unit.evidence(&ctx).fee).0
+        };
+        assert_eq!(
+            fee(OriginKind::Client),
+            1,
+            "a client's delivered request pays the flat per-request fee"
+        );
+        assert_eq!(
+            fee(OriginKind::Provider),
+            0,
+            "a unit the node ran for a provider is nobody's request and posts no fee"
+        );
     }
 
     /// One request, driven through the real loop, answering with the END rather than the bytes.
@@ -2218,6 +2572,23 @@ mod tests {
         gov: busbar_api::PlaneRequestCtx,
         seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
     ) -> Ended {
+        drive_keeping_the_unit(rig, node, fixture, gov, seats)
+            .await
+            .1
+    }
+
+    /// The same drive, handing the UNIT back beside the end it sealed.
+    ///
+    /// A unit's evidence is a reading OF the unit, so a test that asks what this plane would settle
+    /// has to hold the thing that ran rather than a copy of its answer. Everything below is the
+    /// drive above; the only difference is what is returned.
+    async fn drive_keeping_the_unit<'n>(
+        rig: &Rig,
+        node: &'n LlmNode,
+        fixture: Fixture,
+        gov: busbar_api::PlaneRequestCtx,
+        seats: &'n [&'n (dyn approve::VetoSeat + Sync)],
+    ) -> (LlmUnit<'n>, Ended) {
         let arrival = WalkArrival {
             host: rig.host(),
             gov,
@@ -2239,6 +2610,7 @@ mod tests {
             model_hint: None,
             started: Instant::now(),
             charged_at: EPOCH,
+            card: crate::root::kernel::ROOT_CARD.pin(),
             deferred: Mutex::new(None),
             model: Mutex::new(String::new()),
             walk: Walk::open(arrival),
@@ -2281,7 +2653,7 @@ mod tests {
         )
         .await;
         node.inflight.remove(key);
-        ended
+        (unit, ended)
     }
 
     /// THE SWITCH. Same fixture in, same bytes and same counters out — through the shipped entry

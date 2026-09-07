@@ -676,10 +676,12 @@ impl ProtocolWriter for ResponsesWriter {
         // sequence starts at 0. Only the FIRST `MessageStart` is that opening event: the writer
         // cannot rely on seeing exactly one, because the Anthropic reader emits `MessageStart` 1:1
         // with the upstream frame rather than gating it. The latch makes the reset idempotent per
-        // stream, so a duplicate continues the stream instead of restarting it.
-        if matches!(ev, IrStreamEvent::MessageStart { .. })
-            && !self.started.swap(true, Ordering::Relaxed)
-        {
+        // stream, so a duplicate continues the stream instead of restarting it — and the same
+        // answer decides the `response.id` below, so the sequence and the identity are opened by
+        // one fact rather than two.
+        let opening = matches!(ev, IrStreamEvent::MessageStart { .. })
+            && !self.started.swap(true, Ordering::Relaxed);
+        if opening {
             self.reset_sequence_number();
         }
 
@@ -703,9 +705,19 @@ impl ProtocolWriter for ResponsesWriter {
                 // protocol-correct `resp_` id and the current unix time (cross-protocol, where
                 // `translate_event` strips these to None) so the event stays SDK-valid.
                 let mut resp_obj = serde_json::Map::new();
-                let id = id.clone().unwrap_or_else(synthesize_response_id);
+                // A native stream never changes its id mid-flight — not between `response.created`
+                // and the terminal event, and not between two `response.created`s either. The
+                // opening-event latch above already knows which `MessageStart` is the first; only
+                // that one decides the id, so a DUPLICATE re-states the id the client already has
+                // instead of minting a fresh one and stranding the SDK's correlation. (The reset
+                // the latch guards deliberately does not clear the id cell, so a genuinely reused
+                // writer still takes its new stream's id from its own opening event.)
+                let id = self
+                    .carried_response_id()
+                    .filter(|_| !opening)
+                    .unwrap_or_else(|| id.clone().unwrap_or_else(synthesize_response_id));
                 // Carry this stream's id forward so the terminal events (and any failure) replay
-                // the SAME `response.id` — a native stream never changes its id mid-flight.
+                // the SAME `response.id`.
                 self.set_response_id(&id);
                 let created_at = created.unwrap_or(self.stamped_created_at);
                 // Carry this stream's `created_at` forward so the terminal events (and any failure)
@@ -820,11 +832,20 @@ impl ProtocolWriter for ResponsesWriter {
                     // carried on the native `output_item.added`/`.done` pair so a client correlates the
                     // item's lifecycle. Synthesize it deterministically from the output index so the
                     // matching `.done` (which sees only the index) reconstructs the same id.
-                    let item_id = self.item_id_for(ITEM_ID_PREFIX_FC, *index);
-                    // Record the open function-call index so the matching `BlockStop` emits
+                    // Open the function-call index so the matching `BlockStop` emits
                     // `output_item.done` for THIS index only — a text block's BlockStop (whose
                     // BlockStart produced no `output_item.added`) must emit no `done`.
-                    self.mark_tool_open(*index);
+                    //
+                    // A refused open (the cap is reached, or the index is already open) emits NO
+                    // frame, exactly as the text and reasoning arms above do. The frame and the
+                    // open have to be decided together: `take_tool_open` closes only indices that
+                    // are in the set, so an `output_item.added` written past the cap would be an
+                    // open the client never sees closed — and the item never lands in the terminal
+                    // `output[]` either, so it simply vanishes.
+                    if !self.mark_tool_open(*index) {
+                        return Vec::new();
+                    }
+                    let item_id = self.item_id_for(ITEM_ID_PREFIX_FC, *index);
                     // Capture call_id/name now so the matching `output_item.done` can emit the
                     // fully finalized item (native `done` carries call_id/name/arguments; the IR
                     // BlockStop carries only the index).

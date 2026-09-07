@@ -90,11 +90,22 @@
       "kind": "improvement",
       "changelog": "Validation messages know the new keys.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09|020|043b)\\|validate$",
+      "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09)\\|validate$",
       "classes": [
         "effects.stderr"
       ],
-      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode / unknown-member sentences rephrased; protocol list reordered. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance."
+      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better — it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, …` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence — its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement."
+    },
+    {
+      "id": "F-013b the unknown pool member is refused by the resolver, not the validator",
+      "kind": "breaking",
+      "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 committed-golden triage",
+      "cells": "^boot\\.refusal\\|BOOT-043b\\|validate$",
+      "classes": [
+        "effects.stderr"
+      ],
+      "rationale": "A pool that names a member nothing defines is refused by BOTH releases, with exit code 1, the same empty stdout and the same preceding BUSBAR_PROVIDERS deprecation warning — but the refusal now comes out of a DIFFERENT STAGE and says so. 1.5.5 collected it in semantic validation and framed it `[error] config validation failed:` with the sentence `pool 'oracle-unused' references unknown model 'nope'`. 1.6.0 resolves pool members against three top-level maps (`models:`, `tools:`, `agents:`) rather than one, so the check belongs to `config::resolve` — which frames its errors `[error] config errors:` — and the sentence names the config path and the three maps: `pools.oracle-unused: member `nope` is not defined in any of the top-level `models:`, `tools:`, or `agents:` maps. Define it there, or remove it from the pool.` The new sentence is strictly more useful, but the FRAME LINE is not additive: an operator or CI job that greps `config validation failed:` to catch a bad config stops matching on this class of refusal, so this is registered as a break with a migration note rather than as an improvement. SPLIT OUT of F-013 (which forgave it as a rephrasing) 2026-09-06. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Scoped to the ONE recorded cell that drives an undefined pool member; a further fixture gets its own row rather than a widened regex.",
+      "changelog": "1.6.0 Changed: a pool member that nothing defines is refused by the resolver, under the `config errors:` frame, naming `models:`, `tools:` and `agents:`."
     },
     {
       "id": "F-015 an inline secret is refused without echoing it",
@@ -104,7 +115,7 @@
       "classes": [
         "effects.stderr"
       ],
-      "rationale": "BOOT-P32 writes an INLINE LITERAL where a secret reference belongs (`providers.gemini.api_key: 7`). 1.5.5 had no scalar visitor on SecretRef, so that value fell through to serde's DEFAULT invalid-type error, which prints the value it was handed: `invalid type: integer `7`, expected a secret reference map: {…}`. The one path this type exists to keep a secret off — stderr and the boot log — is exactly where the rejected secret went, and an unquoted scalar (`api_key: 483920175534`) is the spelling nobody thinks to check. 1.6.0's SecretRef refuses every inline-scalar spelling through one message that states the RULE and never echoes the value: `a secret value must be a REFERENCE, never an inline literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, or { module: <secret-module>, settings: {…} }` (crates/secret-ref/src/lib.rs, RefVisitor::inline_literal). That is the rule the config inventory already documents for every secret-bearing key, so the new sentence tells the operator what to write instead of what serde could not parse. NOT a plane-work side effect: the wording landed in c8780349 (2026-08-08), long before this branch's base, and reverting it would restore a message that prints an operator's pasted API key into the log. SCOPE: the refusal itself is unchanged — exit code 1, empty stdout, the same `config.yaml: invalid YAML: providers.gemini.api_key: … at line 42 column 14` frame around the sentence, and the same preceding BUSBAR_PROVIDERS deprecation warning byte-for-byte. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Narrowed to the ONE recorded cell that drives an inline-literal secret; if a fixture ever adds another, name it here explicitly rather than widening the regex to the boot.refusal family.",
+      "rationale": "BOOT-P32 writes an INLINE LITERAL where a secret reference belongs (`providers.gemini.api_key: 7`). 1.5.5 had no scalar visitor on SecretRef, so that value fell through to serde's DEFAULT invalid-type error, which prints the value it was handed: `invalid type: integer `7`, expected a secret reference map: {…}`. The one path this type exists to keep a secret off — stderr and the boot log — is exactly where the rejected secret went, and an unquoted scalar (`api_key: 483920175534`) is the spelling nobody thinks to check. 1.6.0's SecretRef refuses every inline-scalar spelling through one message that states the RULE and never echoes the value: `a secret value must be a REFERENCE, never an inline literal (the value is not echoed): use { env: <VAR> }, { file: <path> }, or { module: <secret-module>, settings: {…} }` (crates/secret-ref/src/lib.rs, RefVisitor::inline_literal). That is the rule the config inventory already documents for every secret-bearing key, so the new sentence tells the operator what to write instead of what serde could not parse. NOT a plane-work side effect: the wording landed on 2026-08-08, long before this branch's base, and reverting it would restore a message that prints an operator's pasted API key into the log. SCOPE: the refusal itself is unchanged — exit code 1, empty stdout, the same `config.yaml: invalid YAML: providers.gemini.api_key: … at line 42 column 14` frame around the sentence, and the same preceding BUSBAR_PROVIDERS deprecation warning byte-for-byte. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Narrowed to the ONE recorded cell that drives an inline-literal secret; if a fixture ever adds another, name it here explicitly rather than widening the regex to the boot.refusal family.",
       "changelog": "An inline literal where a secret reference belongs is refused without echoing it."
     },
     {
@@ -378,6 +389,90 @@
       ],
       "rationale": "1.5.5 answers the group's own BUDGET-total exhaustion (metric: budget, not the requests-cap `over_budget` arm) with error.type \"insufficient_quota\" — OpenAI's vocabulary, outside the nine types the published Anthropic error envelope declares. 1.6.0 answers the identical 429 with error.type \"billing_error\", the Anthropic-native member for a billing/quota refusal. Status (429), message text, and every other field are byte-identical on both sides; only /error/type differs: \"insufficient_quota\" (1.5.5) -> \"billing_error\" (1.6.0).",
       "changelog": "An Anthropic-dialect error names an Anthropic error type. Busbar's quota and context-overflow refusals reached an Anthropic client as `insufficient_quota` and `context_length_exceeded` — OpenAI's vocabulary, and outside the nine types the published error envelope declares, so the official SDK raised a generic `APIError`. They are now `billing_error` and `invalid_request_error`. The status, message and every other error type are unchanged."
+    },
+    {
+      "id": "S-9 responses url citations survive the hop",
+      "kind": "improvement",
+      "changelog": "**A Responses URL citation survives the hop.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok(_stream)?$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the Responses API's published UrlCitationBody FLATTENS url/title/start_index/end_index onto the annotation, while Chat nests them under a url_citation object. 1.5.5 wrote the flat shape but read only the nested one, so every URL citation on a Responses-shaped upstream response was dropped -- including Responses->Responses, where the reader consumed bytes the writer had just produced. 1.6.0 reads both published shapes, so a citation the upstream sent reaches the client. Additive: a response that carried no citation is byte-identical. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-10 a cachePoint before a bedrock document does not double the document",
+      "kind": "improvement",
+      "changelog": "**A Bedrock `cachePoint` before a document no longer sends the document twice.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|[a-z]+\\|bedrock\\|request\\|ok(_stream)?$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the Converse reader parks a native document/video block at its WIRE index and also pushes a modelled block into the IR; the writer suppresses the modelled copy when it recognizes the parked one. A cachePoint or guardContent occupies a wire slot but yields no IR block, so past it the wire and IR indices disagree and the suppression missed -- the document was emitted twice, once modelled and once spliced. AWS reads the attachment twice and the caller pays its input tokens twice. 1.6.0 records the two index spaces separately so the block is emitted exactly once. Request-body only; no usage or billing class is waived here -- the double charge is the defect being removed, not an accepted difference."
+    },
+    {
+      "id": "S-11 a refused responses function-call open emits no output_item.added",
+      "kind": "improvement",
+      "changelog": "**A Responses function-call item the writer refused to open no longer announces itself.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the Responses stream writer bounds the number of concurrently open function-call items (MAX_OPEN_TOOLS) so a pathological backend cannot grow per-stream state without limit. The cap refused the open but the frame went out anyway: the sibling text and reasoning arms ask their open helper for a verdict and emit nothing when it refuses, while the function-call arm called the helper for its side effect and discarded the answer. Past the cap the wire therefore carried a response.output_item.added for an item that was never tracked -- so its BlockStop found nothing to close, no response.output_item.done ever followed, and the item was absent from the terminal output[] too: a lifecycle open, on the published item union, for an item that never opened and never ends. 1.6.0 decides the frame and the open together. Additive below the cap: a stream with at most MAX_OPEN_TOOLS function-call items is byte-identical. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-12 a deferred anthropic redacted_thinking start no longer orphans its stop",
+      "kind": "improvement",
+      "changelog": "**An Anthropic `redacted_thinking` block closes only if it opened.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: the published ContentBlockStartEvent carries a redacted_thinking block's opaque `data` INLINE on the start and declares no delta member for it, so busbar defers that start to the RedactedReasoningDelta that carries the bytes. 1.5.5 marked the index OPEN at the BlockStart -- before the frame existed -- which is the one thing the writer's own orphan-stop guard must not do: the guard's whole job is to suppress a content_block_stop for a block the client never saw opened, and the deferral made it answer for a frame that had not been written. A stream ending between the BlockStart and its delta (a truncation, an upstream error, or the translator draining its own open set) therefore sent a bare content_block_stop -- exactly the orphan close the guard exists to prevent, and outside the spec's 1:1 start/stop pairing. 1.6.0 marks the index open in the code path that WRITES the start, so start and stop are decided by the same fact; the same boolean stops a second redacted delta from writing a duplicate, unpaired start. Byte-identical whenever the delta arrives, which is every non-truncated redacted stream. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-13 folded chat usage un-folds without a finish_reason beside it",
+      "kind": "improvement",
+      "changelog": "**A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: published include_usage says the token counts ride an ADDITIONAL final chunk whose choices array is always EMPTY. The Chat writer cannot emit two frames for one IR MessageDelta, so it folds the counts onto the chunk it does write and a downstream seam un-folds them into that trailing chunk. The writer folds whenever the terminal counts are nonzero -- NOT only when the delta carries a stop reason -- but both un-fold seams additionally required a non-null finish_reason beside the folded object. A backend that ends a stream with no stop reason (an incomplete Responses stream whose incomplete_details.reason the published spec does not name) produces exactly the chunk neither seam looked at: a client that asked for usage never received it, and a client that opted OUT was sent usage it had not asked for. Both seams now key on the folded object itself, which is only ever present because the writer put it there. Cross-dialect stream bodies only; the same-dialect byte-exact passthrough never reaches these seams, and no usage or billing class is waived -- busbar's own metering reads the IR-side tap upstream of this seam and never moved. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-14 a gemini speech response with no audio part is refused, not served as an mp3",
+      "kind": "improvement",
+      "changelog": "**A Gemini speech response that carries no audio is no longer served as an MP3.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|[a-z]+\\|gemini\\|speech\\|",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: Gemini returns synthesis as JSON with the audio at candidates[0].content.parts[0].inlineData; a mock or a direct passthrough returns the raw audio container instead, so the reader tries JSON and falls back to the bytes. 1.5.5's fallback caught the wrong bodies too: ANY body that parsed as JSON but carried no inlineData -- an error envelope, a SAFETY-blocked candidate, a text-only answer -- was handed back as a 200 whose Content-Type said audio/mpeg and whose bytes were a JSON object. A player could not open it and the upstream's own explanation was unreachable behind an audio label. 1.6.0 refuses a JSON body with no audio part (CodecError::Malformed, which the buffered seam turns into the upstream-shaped error) and leaves the not-JSON-at-all arm exactly as it was, so every real audio container reads byte-identically. This entry matches no cell in today's enumeration -- the llm cells all carry op=chat and no fixture drives the TTS leaf -- and is registered ahead of any speech fixture that would make it visible, the same posture S-8's caveat requires. No status or usage class is waived: the refusal REPLACES a 200 that was already the wrong answer. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "S-15 a duplicate message start keeps the stream id it opened with",
+      "kind": "improvement",
+      "changelog": "**One stream states one id.**",
+      "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
+      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error)$",
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
     }
   ]
 }

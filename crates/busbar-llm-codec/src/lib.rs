@@ -153,13 +153,21 @@ pub fn ensure_test_protocols_registered() {
 /// still carries; the resulting sequence is what `known_protocols()` reports (the "must be one of:"
 /// tail an operator reads on a bad `protocol:`) and what `telemetry` banks its per-protocol metric
 /// families against — it finds a family again by POSITION in that list. So this order reproduces,
-/// exactly, the operator-visible list from before the dialects were plugins:
-/// `anthropic, gemini, openai, bedrock, responses, cohere`. A dialect appended here rather than
+/// exactly, the operator-visible list the PUBLISHED 1.5.5 binary prints:
+/// `anthropic, openai, gemini, bedrock, responses, cohere`. A dialect appended here rather than
 /// inserted keeps every existing family's index; inserting one silently renumbers all of them.
+///
+/// THE ORDER IS PINNED AGAINST THE RELEASED BINARY, NOT AGAINST A BELIEF ABOUT IT. `gemini` sat
+/// ahead of `openai` here for one release cycle of plugin work, on the stated ground that the
+/// pre-plugin shipped order was `anthropic, gemini, openai`. It was not: 1.5.5's
+/// `proto::KNOWN_PROTOCOLS` reads `anthropic, openai, gemini, bedrock, responses, cohere`, and the
+/// published 1.5.5 binary prints that tail on a bad `protocol:` (shadow-oracle
+/// `boot.refusal|BOOT-020|validate`). The swap was therefore an unannounced move of an
+/// operator-visible list and of every metric-family index behind it, and it is undone here.
 pub static DECLS: &[&busbar_substrate_values::proto::ProtocolDecl] = &[
     &anthropic::DECL,
-    &gemini::DECL,
     &openai_chat::DECL,
+    &gemini::DECL,
     &bedrock::DECL,
     &openai_responses::DECL,
     &cohere::DECL,

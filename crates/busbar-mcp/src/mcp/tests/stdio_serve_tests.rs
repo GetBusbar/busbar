@@ -438,6 +438,96 @@ async fn a_cancelled_request_is_aborted_and_never_answered() {
     client.eof().await;
 }
 
+/// A CLIENT THAT REUSES AN ID WHILE THE FIRST REQUEST IS STILL OPEN DOES NOT COST THE FIRST ITS ANSWER.
+///
+/// The cancellation gate is a map keyed by caller id, and a second frame arriving under a live key
+/// is the one input that can end a request nobody cancelled: displacing the gate drops the first
+/// request's sender, and a dropped sender resolves its receiver exactly the way a real cancel does —
+/// so the parked dispatch is abandoned silently, with no answer, no error and no `notifications/
+/// cancelled` to explain it. Duplicate ids are client non-conformance; abandoning the request the
+/// client is actually waiting on is not the answer to it.
+#[tokio::test]
+async fn a_reused_in_flight_id_does_not_cancel_the_request_already_open_under_it() {
+    metrics_init();
+    // The same parked-on-a-live-ask fixture the cancel battery uses: it is the honest way to hold one
+    // request open long enough for a second frame to land on its key.
+    let peer = Peer::start(vec![wire_tool(TOOL, DESCRIPTION, schema())]).await;
+    let mut cfg = server_cfg(
+        &peer,
+        &[(TOOL, Some(approved_hash(TOOL, DESCRIPTION, schema())))],
+    );
+    {
+        let entry = cfg.tools_allow.get_mut(TOOL).unwrap();
+        entry.description = Some(DESCRIPTION.to_string());
+        entry.input_schema = Some(schema());
+        let mut round = crate::mcp::config::AskRoundCfg::new();
+        round.insert(
+            "confirm".to_string(),
+            crate::mcp::config::AskEntryCfg {
+                method: "elicitation/create".to_string(),
+                params: Some(serde_json::json!({
+                    "message": "Proceed?",
+                    "requestedSchema": { "type": "object", "properties": { "ok": { "type": "boolean" } } },
+                })),
+            },
+        );
+        entry.ask_caller = vec![round];
+    }
+    let app = test_app()
+        .mcp(&mcp_cfg())
+        .mcp_server("ws", cfg)
+        .governance(signing_governance())
+        .build();
+    let gov = gov_with_key("vk_dup", &[("mcp_server", "ws"), ("mcp_tool", NAMESPACED)]);
+    let mut client = Client::open(app, gov);
+
+    client
+        .send(&frame(
+            "call-1",
+            "tools/call",
+            serde_json::json!({ "name": NAMESPACED, "arguments": { "path": "src" } }),
+        ))
+        .await;
+    let ask = client.recv().await;
+    assert_eq!(
+        ask.get("method").and_then(|m| m.as_str()),
+        Some("elicitation/create"),
+        "{ask}"
+    );
+
+    // THE SECOND FRAME ON THE SAME ID, while the first is still parked on its ask.
+    client
+        .send(&frame("call-1", "ping", serde_json::json!({})))
+        .await;
+    let pong = client.recv().await;
+    assert_eq!(
+        pong["id"], "call-1",
+        "the duplicate is answered on its own: {pong}"
+    );
+
+    // Redeem the ask the FIRST request is parked on. A request still alive proceeds to the upstream
+    // from here; a request the duplicate silently cancelled proceeds nowhere at all.
+    client
+        .send(&serde_json::json!({
+            "jsonrpc": "2.0", "id": ask["id"],
+            "result": { "action": "accept", "content": { "ok": true } },
+        }))
+        .await;
+    let answer = client.recv().await;
+    assert_eq!(
+        answer["id"], "call-1",
+        "the first request answered after its ask was redeemed: {answer}"
+    );
+    assert_eq!(
+        peer.calls(),
+        1,
+        "the request the client is waiting on reached the upstream; a displaced gate would have \
+         abandoned it mid-dispatch with nothing written back"
+    );
+
+    client.eof().await;
+}
+
 fn signing_governance() -> Arc<dyn GovKit> {
     engine()
         .governance(
@@ -888,6 +978,117 @@ async fn an_out_of_band_elicitation_response_redeems_the_pending_ask() {
     assert!(done.get("result").is_some(), "{done}");
     assert_eq!(peer.calls(), 1);
     client.eof().await;
+}
+
+/// THE SUBSCRIPTION SET IS BOUNDED. `resources/subscribe` is answered above dispatch and for ANY
+/// uri, so the retained set is written entirely by the client — a client that subscribes in a loop
+/// with fresh uris must be REFUSED at the ceiling, not silently grown, because every entry is
+/// re-read (and its fingerprint recomputed against the catalogue) on every generation move.
+#[tokio::test]
+async fn the_resource_subscription_set_is_refused_past_its_ceiling() {
+    let (_peer, app) = plain_deployment().await;
+    let handle = app_handle(app);
+    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    // Fill exactly to the ceiling: every one of these is accepted.
+    for i in 0..crate::mcp::stdio_serve::MAX_RESOURCE_SUBS {
+        client
+            .send(&frame(
+                i as i64 + 1,
+                "resources/subscribe",
+                serde_json::json!({ "uri": format!("ws_{RESOURCE_URI}/{i}") }),
+            ))
+            .await;
+        let ok = client.recv().await;
+        assert!(
+            ok.get("result").is_some(),
+            "entry {i} inside the ceiling: {ok}"
+        );
+    }
+    // One past it is REFUSED, not retained.
+    client
+        .send(&frame(
+            9001,
+            "resources/subscribe",
+            serde_json::json!({ "uri": format!("ws_{RESOURCE_URI}/overflow") }),
+        ))
+        .await;
+    let refused = client.recv().await;
+    assert!(
+        refused.get("error").is_some(),
+        "the subscription past the ceiling must be refused: {refused}"
+    );
+    // A uri already in the set is still accepted at the ceiling — re-subscribing is a baseline
+    // re-take, not growth.
+    client
+        .send(&frame(
+            9002,
+            "resources/subscribe",
+            serde_json::json!({ "uri": format!("ws_{RESOURCE_URI}/0") }),
+        ))
+        .await;
+    let ok = client.recv().await;
+    assert!(
+        ok.get("result").is_some(),
+        "a re-subscribe at the ceiling: {ok}"
+    );
+    client.eof().await;
+}
+
+/// A SUBSCRIPTION URI IS BOUNDED IN LENGTH, for the same reason the relay's announced-uri record is:
+/// the string is retained for the session's life and compared on every watcher tick, and the frame
+/// cap alone would let one entry be megabytes.
+#[tokio::test]
+async fn an_oversized_subscription_uri_is_refused() {
+    let (_peer, app) = plain_deployment().await;
+    let handle = app_handle(app);
+    let mut client = Client::open_on(handle.clone(), busbar_api::PlaneRequestCtx::default());
+    let uri = "u".repeat(crate::mcp::stdio_serve::MAX_RESOURCE_SUB_URI_BYTES + 1);
+    client
+        .send(&frame(
+            1,
+            "resources/subscribe",
+            serde_json::json!({ "uri": uri }),
+        ))
+        .await;
+    let refused = client.recv().await;
+    assert!(
+        refused.get("error").is_some(),
+        "an oversized subscription uri must be refused: {refused}"
+    );
+    client.eof().await;
+}
+
+/// THE BACKGROUND SET HOLDS WHAT IS STILL RUNNING, not everything that ever ran. Two of its three
+/// push sites fire per EVENT (one per SSE keepalive line, one per task-typed result), so a session
+/// that stays up must not pay for the tasks that already returned.
+#[tokio::test]
+async fn the_background_set_forgets_the_tasks_that_already_ended() {
+    let mut slots: Vec<tokio::task::AbortHandle> = Vec::new();
+    for _ in 0..64 {
+        let done = tokio::spawn(async {});
+        let handle = done.abort_handle();
+        // Let it actually finish before it is remembered — this is the per-event push site's shape:
+        // the keepalive ping resolves long before the next keepalive line arrives.
+        done.await.expect("the task ran to completion");
+        crate::mcp::stdio_serve::remember_background(&mut slots, handle);
+    }
+    // The one still-running task must survive: the set's whole purpose is aborting it at EOF.
+    let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+    let live = tokio::spawn(async move {
+        let _ = rx.await;
+    });
+    crate::mcp::stdio_serve::remember_background(&mut slots, live.abort_handle());
+    assert_eq!(
+        slots.len(),
+        1,
+        "64 ended tasks and one live one leaves one handle, not 65"
+    );
+    assert!(
+        !slots[0].is_finished(),
+        "the handle kept is the LIVE one, not an ended one"
+    );
+    drop(tx);
+    let _ = live.await;
 }
 
 /// `resources/unsubscribe` STOPS the updates: after it, the same registration change that fired a

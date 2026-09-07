@@ -139,6 +139,52 @@ fn the_shared_internal_predicate_covers_every_range_any_plane_ever_checked() {
     );
 }
 
+/// WHITESPACE AROUND A URL MUST NOT BUY A METADATA HOP. The WHATWG basic URL parser begins by
+/// trimming leading and trailing C0 controls AND spaces from the input, and by deleting every ASCII
+/// tab / CR / LF from anywhere inside it — so a connecting stack sees `169.254.169.254` for every
+/// spelling below. Any spelling this guard reads differently from the stack that will dial it is a
+/// bypass: a token endpoint POSTs client credentials to the URL verbatim, so a host the guard failed
+/// to recognize as IMDS is a host that receives those credentials.
+#[test]
+fn whitespace_padded_metadata_urls_are_still_refused() {
+    for spelling in [
+        "http://169.254.169.254/latest/meta-data/ ", // trailing space after the path
+        "http://169.254.169.254 ",                   // trailing space directly after the host
+        " http://169.254.169.254/latest/meta-data/", // leading space (would hide the scheme)
+        "\u{1}http://169.254.169.254/",              // leading C0 control
+        "http://169.254.169.254/\u{1f}",             // trailing C0 control
+        "http://169.254.169\t.254/",                 // interior tab, deleted by the parser
+        "http://169.254.169.254\r\n/",               // interior CR/LF
+        "\t http://169.254.169.254/ \r\n",           // mixed padding, both ends
+    ] {
+        assert_eq!(
+            ssrf_blocked_host(spelling, &[], false, &[]).as_deref(),
+            Some("169.254.169.254"),
+            "{spelling:?} is dialled as the IMDS target once the parser trims and deletes the \
+             whitespace the guard must trim and delete the same way"
+        );
+    }
+}
+
+/// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
+/// of the three deleted bytes) is left alone, so a malformed host stays malformed rather than being
+/// silently repaired into something that matches.
+#[test]
+fn interior_spaces_are_not_trimmed_away() {
+    assert_eq!(
+        extract_normalized_host("http://169.254.169 .254/").as_deref(),
+        Some("169.254.169 .254")
+    );
+    assert_eq!(
+        ssrf_blocked_host("http://169.254.169 .254/", &[], false, &[]),
+        None
+    );
+    assert_eq!(
+        extract_normalized_host("  https://api.openai.com/v1  ").as_deref(),
+        Some("api.openai.com")
+    );
+}
+
 /// The CONTROL. Without it a predicate that returned `true` unconditionally would pass the table
 /// above, and every legitimate upstream in the fleet would be refused.
 #[test]

@@ -23,11 +23,12 @@ const BYTE_FAMILY: &str = "byte";
 /// class and calls it bytes, and that is what is declared: a unit of this plane is one exchange with
 /// an agent, and what an exchange costs is what it moved.
 ///
-/// The direction says where the ESTIMATE comes from — the ingress-derived figure, which the
-/// admission step reads off the span the admit facts point at. The SETTLEMENT comes from what the
-/// metering step read off the answer. Estimate from one side, settle from the other, is the same
-/// shape every class in every plane has; it is only unusual here because the class's name mentions
-/// a direction and the class itself does not.
+/// The direction says which side of the exchange the class is sized from, and it says the ANSWER,
+/// because the answer is what the metering step measures: the one quantity this plane reports under
+/// this class is the length of the document it just read back. It used to say the request, described
+/// as an estimate from one side settled from the other — which is not the shape the other planes
+/// have (their input class settles input and their response class settles response) and which left a
+/// rate card reading the declaration pricing a caller's request at the size of an agent's answer.
 ///
 /// One observation worth recording rather than smoothing over: a single byte class cannot separate
 /// what a caller sent from what an agent returned, so a deployment that wanted to price those
@@ -36,7 +37,7 @@ const BYTE_FAMILY: &str = "byte";
 const METER_CLASSES: &[MeterClassDecl] = &[MeterClassDecl {
     key: MeterClassId::new("bytes"),
     family: BYTE_FAMILY,
-    direction: ClassDirection::Input,
+    direction: ClassDirection::Response,
     // A byte is a byte: the class's own quantity is the quantity, so nothing is divided.
     default_divisor: 1,
 }];
@@ -203,13 +204,43 @@ mod tests {
         }
     }
 
-    /// The declarations are the same every time they are read.
+    /// Every declared list is a SET: nothing declared twice, nothing declared empty.
+    ///
+    /// This used to compare each list to itself, which is true of any two reads of anything and so
+    /// could not fail. What is worth asserting is what the registry needs to be true of a list it
+    /// seals at boot: a repeated key would be one declaration silently standing for two, and an
+    /// empty key would be a class, schema or fact nothing can name.
     #[test]
-    fn the_declarations_do_not_vary() {
-        assert_eq!(A2aPlane::CLAIMS.len(), A2aPlane::CLAIMS.len());
-        assert_eq!(A2aPlane::OP_CLASSES, A2aPlane::OP_CLASSES);
-        assert_eq!(A2aPlane::RECORD_SCHEMAS, A2aPlane::RECORD_SCHEMAS);
-        assert_eq!(A2aPlane::SESSION_FACTS, A2aPlane::SESSION_FACTS);
-        assert_eq!(A2aPlane::CONTENT_FACTS, A2aPlane::CONTENT_FACTS);
+    fn every_declared_list_is_a_set() {
+        fn no_repeats<T: PartialEq + core::fmt::Debug>(what: &str, items: &[T]) {
+            for (i, item) in items.iter().enumerate() {
+                assert!(!items[..i].contains(item), "{what} declares {item:?} twice");
+            }
+        }
+        no_repeats("the class list", A2aPlane::OP_CLASSES);
+        no_repeats("the record list", A2aPlane::RECORD_SCHEMAS);
+        no_repeats("the session-fact list", A2aPlane::SESSION_FACTS);
+        no_repeats("the content-fact list", A2aPlane::CONTENT_FACTS);
+        no_repeats("the verb list", A2aPlane::INTROSPECTION_VERBS);
+        no_repeats(
+            "the meter-class list",
+            &METER_CLASSES.iter().map(|c| c.key).collect::<Vec<_>>(),
+        );
+        for key in A2aPlane::SESSION_FACTS
+            .iter()
+            .chain(A2aPlane::CONTENT_FACTS)
+        {
+            assert!(!key.is_empty(), "a fact key is declared as the empty name");
+        }
+        for op in A2aPlane::OP_CLASSES {
+            assert!(
+                !op.as_str().is_empty(),
+                "a class is declared as the empty name"
+            );
+        }
+        assert!(
+            !A2aPlane::CLAIMS.is_empty(),
+            "a plane that claims nothing takes no bytes"
+        );
     }
 }

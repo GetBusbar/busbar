@@ -160,6 +160,82 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# ── PER-LEG FLOORS ────────────────────────────────────────────────────────────────────────────────
+# Every leg below is guarded against a folder that THREW (`_fold_failed`), and against a fold that
+# produced NO OUTPUT AT ALL (`_no_output`). Neither guard covers the third and quietest shape: a fold
+# that SUCCEEDS and enumerates ZERO SCENARIOS. A suite that wrote an empty results directory, an
+# `h2-*.sh` glob that matched nothing after a rename, a TCK report with no requirements in it — each
+# exits 0, prints a META line reading zero, and drives a `while read` loop that iterates zero times.
+# No row is recorded, no owed id is added, and verdict.sh (which measures the ledger against
+# EXPECTED_IDS) has nothing to miss: it cannot fail on a leg nobody claimed. The rig then goes green
+# having judged one plane fewer than it says it did.
+#
+# So each leg declares how many rows it must produce AT MINIMUM, and a leg that comes in under its
+# floor records a FAIL row and an owed id of its own — the leg's absence becomes the leg's failure.
+#
+# Defined HERE, above `--selftest`, so the self-test drives these exact functions rather than a copy
+# of them (the same rule fold_baseline_regressions already follows).
+owed_count() {
+  local prefix="$1" id n=0
+  for id in $owed_ids; do
+    case "$id" in "$prefix"*) n=$((n + 1)) ;; esac
+  done
+  printf '%s' "$n"
+}
+
+run_leg() {
+  local fn="$1" prefix="$2" floor="$3" label="$4" before after got
+  before="$(owed_count "$prefix")"
+  "$fn"
+  after="$(owed_count "$prefix")"
+  got=$((after - before))
+  if [ "$got" -lt "$floor" ]; then
+    record "${prefix}_leg_floor" FAIL "${label}: enumerated ${got} scenario(s), floor ${floor}" \
+      "a leg that enumerates zero scenarios contributes zero rows AND zero owed ids, so the verdict has nothing to miss and the rig reads green having judged this leg not at all. Either the suite produced no scenarios, or the glob that finds them stopped matching."
+    owed_ids="${owed_ids} ${prefix}_leg_floor"
+    say "   FLOOR: ${label} produced ${got} row(s), below its floor of ${floor}"
+    return 0
+  fi
+  say "   ${label}: ${got} row(s) (floor ${floor})"
+}
+
+# ── A RED RUN MAY NOT BE SIGNED OFF ───────────────────────────────────────────────────────────────
+# `--rebaseline` writes THIS run's verdicts into the file every later run is measured against. It
+# used to do that unconditionally, which made the single command that repairs a baseline also the
+# single command that ERASES a real regression: run it on a red tree and every FAIL row becomes the
+# new expected state, so the next run compares red against red and reports no regression. The gate
+# then agrees, permanently and quietly, with whatever was broken on the day somebody reached for the
+# refresh. A baseline is only worth anything if it is the record of a tree that PASSED.
+#
+# Returns 0 if it wrote the baseline, 1 if it refused; the caller exits on the refusal.
+rebaseline_or_refuse() {
+  local run_rc="$1" ledger="$2" baseline="$3"
+  if [ "$run_rc" -ne 0 ]; then
+    say ""
+    say "REFUSING --rebaseline: this run is RED (verdict exit ${run_rc})."
+    say "  A baseline signs off a PASSING tree. Rebaselining a red one records the failures as the"
+    say "  new expected state, and every later run then compares red against red and sees no"
+    say "  regression — the one command that repairs a baseline would be the one that hides a break."
+    say "  Fix the failing rows above, get a green run, and rebaseline that."
+    return 1
+  fi
+  python3 - "$ledger" "$baseline" <<'PY'
+import json, sys
+
+ledger_path, baseline_path = sys.argv[1], sys.argv[2]
+rows = {}
+with open(ledger_path, encoding="utf-8") as f:
+    for line in f:
+        parts = line.rstrip("\n").split("\t")
+        if len(parts) >= 2:
+            rows[parts[0]] = parts[1]
+with open(baseline_path, "w", encoding="utf-8") as f:
+    json.dump({"rows": rows}, f, indent=2, sort_keys=True)
+    f.write("\n")
+print(f"rebaselined {baseline_path}: {len(rows)} row(s)")
+PY
+}
+
 # ── --selftest lives entirely below, before anything real is armed ──────────────────────────────
 if [ "$SELFTEST" = 1 ]; then
   # shellcheck disable=SC2317  # invoked below, not dead code
@@ -216,6 +292,59 @@ if [ "$SELFTEST" = 1 ]; then
       failures=$((failures+1))
     else
       say "  ok: zero rows is red (vacuous run), never a silent pass"
+    fi
+
+    # RED 3: A LEG THAT ENUMERATES ZERO SCENARIOS. The `_fold_failed` and `_no_output` guards catch a
+    # folder that threw and a fold that printed nothing; neither catches a fold that SUCCEEDS with an
+    # empty scenario list. That leg records no row and — the part that makes it invisible — claims no
+    # owed id, so verdict.sh has nothing to miss and the rig goes green having judged it not at all.
+    # Drives the REAL run_leg against a stub leg that produces nothing.
+    local floor_ledger="$tmp/floor.tsv"; : >"$floor_ledger"
+    local floor_owed floor_rc
+    floor_owed="$(LEDGER="$floor_ledger" bash -c '
+      owed_ids=""
+      '"$(declare -f owed_count)"'
+      '"$(declare -f run_leg)"'
+      say() { :; }
+      record() { printf "%s\t%s\t%s\t%s\n" "$1" "$2" "$3" "$4" >>"$LEDGER"; }
+      empty_leg() { :; }
+      run_leg empty_leg "stub.rig|" 1 "a leg that enumerated nothing"
+      printf "%s" "$owed_ids"')"; floor_rc=$?
+    if [ "$floor_rc" -eq 0 ] \
+        && case " $floor_owed " in *" stub.rig|_leg_floor "*) true ;; *) false ;; esac \
+        && awk -F'\t' '$1=="stub.rig|_leg_floor" && $2=="FAIL"{f=1} END{exit !f}' "$floor_ledger"; then
+      say "  ok: a leg that enumerated zero scenarios is a FAIL row AND an owed id, not a silence"
+    else
+      say "  MISS: a leg enumerating zero scenarios produced no row and no owed id -- the rig would read green having judged it not at all"
+      failures=$((failures+1))
+    fi
+
+    # RED 4: `--rebaseline` on a RED run must REFUSE. Rebaselining a red tree records its failures as
+    # the expected state, after which every later run compares red against red and reports no
+    # regression -- the refresh command doubles as the erase command. Drives the REAL
+    # rebaseline_or_refuse() the run path calls, against a signed-off baseline that must survive.
+    local rb_baseline="$tmp/rebase-baseline.json" rb_before rb_after
+    printf '{"rows":{"sentinel|row":"PASS"}}\n' >"$rb_baseline"
+    rb_before="$(cat "$rb_baseline")"
+    if rebaseline_or_refuse 1 "$ledger" "$rb_baseline" >/dev/null 2>&1; then
+      say "  MISS: --rebaseline was accepted on a RED run -- the regression becomes the new expectation"
+      failures=$((failures+1))
+    else
+      rb_after="$(cat "$rb_baseline")"
+      if [ "$rb_before" = "$rb_after" ]; then
+        say "  ok: --rebaseline on a RED run refuses, and leaves the signed-off baseline untouched"
+      else
+        say "  MISS: --rebaseline refused but still rewrote the baseline"
+        failures=$((failures+1))
+      fi
+    fi
+    # And the GREEN arm still works, or the refusal above would just be a broken writer.
+    if rebaseline_or_refuse 0 "$ledger" "$rb_baseline" >/dev/null 2>&1 \
+        && [ "$rb_before" != "$(cat "$rb_baseline")" ]; then
+      say "  ok: --rebaseline on a GREEN run still writes the baseline"
+    else
+      say "  MISS: --rebaseline on a green run did not write the baseline"
+      failures=$((failures+1))
     fi
 
     rm -rf "$tmp"
@@ -585,12 +714,16 @@ PY
   done <<<"$rows"
 }
 
-run_mcp
-run_h2_mcp
-run_a2a_battery
-run_h2_a2a
-run_a2a_tck
-run_voice
+# THE PER-LEG FLOORS (the mechanism is defined above, before --selftest, so the self-test drives it
+# rather than a copy). The h2 floors are the number of `h2-*.sh` scenario scripts that exist today,
+# seven per plane; the fold-driven legs carry 1, the honest minimum — a suite that enumerated NOTHING
+# has not run. RAISE these deliberately as scenarios are added; a drop is the finding, not the fix.
+run_leg run_mcp         "mcp.rig|"        1 "MCP official-subject"
+run_leg run_h2_mcp      "mcp.rig|h2-"     7 "MCP H2 gating scenarios"
+run_leg run_a2a_battery "a2a.battery|"    1 "A2A independent battery"
+run_leg run_h2_a2a      "a2a.battery|h2-" 7 "A2A H2 gating scenarios"
+run_leg run_a2a_tck     "a2a.tck|"        1 "A2A official TCK"
+run_leg run_voice       "voice.rig|"      1 "voice conformance battery"
 
 # ── baseline: rebaseline, or diff against the last sign-off ─────────────────────────────────────
 # Uses fold_baseline_regressions(), defined once above (before --selftest, so --selftest drives the
@@ -617,21 +750,13 @@ GATE_NAME="plane rigs" EXPECTED_IDS="${owed_ids}${baseline_owed}" LEDGER="$LEDGE
 rc=$?
 
 if [ "$REBASELINE" = 1 ]; then
-  python3 - "$LEDGER" "$BASELINE" <<'PY'
-import json, sys
-
-ledger_path, baseline_path = sys.argv[1], sys.argv[2]
-rows = {}
-with open(ledger_path, encoding="utf-8") as f:
-    for line in f:
-        parts = line.rstrip("\n").split("\t")
-        if len(parts) >= 2:
-            rows[parts[0]] = parts[1]
-with open(baseline_path, "w", encoding="utf-8") as f:
-    json.dump({"rows": rows}, f, indent=2, sort_keys=True)
-    f.write("\n")
-print(f"rebaselined {baseline_path}: {len(rows)} row(s)")
-PY
+  # rebaseline_or_refuse() is defined above, before --selftest, so the self-test proves THIS
+  # function rather than a copy of the rule. It refuses on a red run, and that refusal is fatal.
+  if ! rebaseline_or_refuse "$rc" "$LEDGER" "$BASELINE"; then
+    say ""
+    say "ledger: $LEDGER"
+    exit "$rc"
+  fi
 fi
 
 say ""

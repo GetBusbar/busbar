@@ -35,7 +35,14 @@
 //! therefore carries no body. The reader is the mirror of that: it reads a `Content-Length` body or
 //! decodes a chunked one across as many reads as it arrives in, emits one body frame per chunk the
 //! sender wrote, and hands the trailer section up as its own final frame rather than folding it
-//! into the body.
+//! into the body. The answer side does the same with an upstream's response trailers, for the same
+//! reason: a header that arrived late is still a header.
+//!
+//! A request that asks to be told before it uploads is told. `Expect: 100-continue` is what a
+//! client sets when it would rather be refused than send a body — `curl` sets it itself past about
+//! a kibibyte — and it then waits for the interim answer before writing a byte, so a reader that
+//! only parks on the body leaves both sides waiting on each other. The interim answer goes out once
+//! the head has passed its framing checks and before the body is waited for.
 //!
 //! ## The response leaves as it arrives
 //!
@@ -77,6 +84,7 @@ use busbar_contract_transport::wire::Listener;
 use busbar_contract_transport::wire::ListenerHandle;
 use busbar_contract_transport::wire::StatusClass;
 use busbar_contract_transport::wire::TransportError;
+use busbar_contract_transport::wire::WireStatus;
 use bytes::Bytes;
 use futures::Stream;
 use http_body_util::{BodyExt, Full};
@@ -170,6 +178,22 @@ enum Inner {
         /// read the peer may never answer; the registry removal alone would never reach it. This is
         /// the flag it checks, so it ends and the socket halves actually drop.
         closed: AtomicBool,
+        /// What WAKES that pump. The flag is only ever read once a read has returned, and the read
+        /// a half-written request parks on returns when the peer sends more — which is precisely
+        /// what a peer that has gone quiet never does. Against that peer the flag alone leaves the
+        /// pump parked for the life of the process, holding the last clone of the socket: one
+        /// leaked descriptor per closed connection and a drain that never finishes. The close
+        /// notifies this, every read is raced against it, and the stream ends where it was parked.
+        /// The sibling `tcp` crate closes the same way.
+        closing: tokio::sync::Notify,
+        /// The local port this connection was accepted on.
+        ///
+        /// `Port` is one of the selector forms this transport declares, and a claim by port reads
+        /// the arrival record: zero there made every arrival on every listener look alike. It is
+        /// taken off the ACCEPTED SOCKET rather than off the bind string, which is the only place
+        /// the fact exists at all on an ephemeral (`:0`) bind — the sibling `tcp`, `tls` and `ws`
+        /// crates record it the same way.
+        local_port: u16,
     },
     /// A dialled destination: the exchange happens inside `write` once the message it is
     /// accumulating is complete, and pushes the response's frames into this channel for `frames` to
@@ -499,9 +523,15 @@ impl TransportMeta for HttpTransport {
 
 impl Transport for HttpTransport {
     fn arrival(&self, conn: &Conn) -> ArrivalRecord {
+        // The port this connection arrived on, so the `Port` selector form has something to claim
+        // by. Zero on a DIALLED connection, which arrived nowhere.
+        let port = match self.inner(conn.id()).as_deref() {
+            Some(Inner::Ingress { local_port, .. }) => *local_port,
+            _ => 0,
+        };
         ArrivalRecord {
             source: conn.peer(),
-            port: 0,
+            port,
             alpn: None,
             sni: None,
             peer_cert: None,
@@ -546,6 +576,8 @@ impl Transport for HttpTransport {
                 .await
                 .map_err(|_| TransportError::Closed)?;
             stream.set_nodelay(true).ok();
+            // Before the split, which is the last moment the socket itself can be asked.
+            let local_port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
             let (read, write) = stream.into_split();
             let id = self.next_id.fetch_add(1, Ordering::Relaxed);
             let inner = Arc::new(Inner::Ingress {
@@ -556,6 +588,8 @@ impl Transport for HttpTransport {
                 write: AsyncMutex::new(write),
                 leftover: AsyncMutex::new(Vec::new()),
                 closed: AtomicBool::new(false),
+                closing: tokio::sync::Notify::new(),
+                local_port,
             });
             self.conns.lock().expect("poisoned").insert(id, inner);
             Ok(Conn::new(Arc::new(HttpConnHandle {
@@ -763,8 +797,13 @@ impl Transport for HttpTransport {
                     // the one the guard exists to stand in for, so disarm it first.
                     guard.armed = false;
                     let tx = resp_tx.lock().expect("poisoned").take();
+                    // The request is already OUT — the upstream has been asked, and has answered.
+                    // With no sender left there is nowhere to put that answer, and `Ok` here would
+                    // tell the caller its exchange was carried when the only observable half of it
+                    // has been dropped. The connection has no delivery left in it; that is what it
+                    // says.
                     let Some(tx) = tx else {
-                        return Ok(queued);
+                        return Err(TransportError::Closed);
                     };
                     let head_frame = Frame {
                         direction: Direction::Inbound,
@@ -780,12 +819,18 @@ impl Transport for HttpTransport {
                             // with it) from a malformed request (any other 4xx, which is the
                             // caller's own fault), and the wait is the upstream's own floor on
                             // when it is worth asking again.
-                            status_code: Some(status),
+                            // Named as HTTP's number, because that is the numbering this transport
+                            // reads: a reader downstream matches it against HTTP's bands only
+                            // because the frame says so, never because it assumed.
+                            status_code: Some(WireStatus::Http(status)),
                             retry_after_secs: retry_after,
                         },
                     };
                     if tx.send(Ok((StreamId(0), head_frame))).is_err() {
-                        return Ok(queued);
+                        // The receiver has gone: the frame stream this answer belongs to is no
+                        // longer being drained. Same reading as above — the exchange happened and
+                        // its answer reached nobody, so it is not an `Ok`.
+                        return Err(TransportError::Closed);
                     }
                     // The body streams. Collecting it first would mean nothing composes over this
                     // transport: `sse` re-segments the bytes `http` hands it, and a body that only
@@ -998,8 +1043,41 @@ fn request_target(dial: &http::Uri, path: &str) -> Result<http::Uri, TransportEr
 /// clone of its state ends rather than staying parked on a socket nobody is going to write to.
 fn finalise(conns: &Mutex<HashMap<u64, Arc<Inner>>>, id: u64) {
     let removed = conns.lock().expect("poisoned").remove(&id);
-    if let Some(Inner::Ingress { closed, .. }) = removed.as_deref() {
+    if let Some(Inner::Ingress {
+        closed, closing, ..
+    }) = removed.as_deref()
+    {
+        // The flag FIRST, then the wake: a pump that arms its wait and then re-reads the flag can
+        // never miss both the store and the notification, whichever order the two tasks interleave
+        // in. Reversed, a pump between the two sees neither and stays parked.
         closed.store(true, Ordering::Release);
+        closing.notify_waiters();
+    }
+}
+
+/// Read into this connection's own buffer, RACED against this connection's close.
+///
+/// `None` means the close won, and the caller ends its stream where it stood. The flag alone is
+/// read only once a read has RETURNED, and the read a half-written request parks on returns when
+/// the peer sends more — exactly what a peer that has gone quiet never does. So the close has to be
+/// a wake as well as a flag. The wait is armed BEFORE the flag is re-read, so a close landing
+/// between the two is seen as the flag and one landing after it as the notification; neither order
+/// leaves this parked. The sibling `tcp` crate reads the same way.
+async fn read_or_closed(
+    r: &mut ReadSide,
+    closed: &AtomicBool,
+    closing: &tokio::sync::Notify,
+) -> Option<io::Result<usize>> {
+    let mut wait = Box::pin(closing.notified());
+    wait.as_mut().enable();
+    if closed.load(Ordering::Acquire) {
+        return None;
+    }
+    let reading = std::pin::pin!(r.half.read(&mut r.scratch));
+    match futures::future::select(reading, wait).await {
+        futures::future::Either::Left((read, _)) => Some(read),
+        // The close won: the read is dropped where it stood.
+        futures::future::Either::Right(((), _)) => None,
     }
 }
 
@@ -1011,17 +1089,36 @@ fn finalise(conns: &Mutex<HashMap<u64, Arc<Inner>>>, id: u64) {
 /// streamed body declares none, and it is a response, so there is no accumulator one layer up
 /// holding it — the served door's request-body limit does not reach what an upstream answers with.
 /// Nothing past the cap is emitted; the stream ends with `Framing` instead.
+///
+/// The upstream's TRAILERS — whatever it chose to say only once it knew the body: a checksum, a
+/// token count, a `grpc-status` — go up as ONE FINAL FRAME after the last body chunk, in the same
+/// wire form the ingress reader hands a request's trailers up in. That is where they were on the
+/// wire, and a byte-blind transport has no business deciding that a header which arrived late is
+/// the one header not worth carrying.
 async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max_bytes: usize) {
     let mut carried = 0_usize;
+    let mut trailers: Vec<u8> = Vec::new();
     while let Some(next) = body.frame().await {
         let Ok(frame) = next else {
             let _ = tx.send(Err(TransportError::Reset));
             return;
         };
-        // A trailer frame carries no body bytes; this transport's response shape is HEAD plus body
-        // chunks, so there is nothing here to hand up for one.
-        let Ok(data) = frame.into_data() else {
-            continue;
+        let data = match frame.into_data() {
+            Ok(data) => data,
+            // Not a data frame: the only other thing hyper yields here is the trailer section.
+            // Rendered as it arrives and emitted after the loop, so it lands where it belongs —
+            // behind every body chunk rather than in front of the ones still to come.
+            Err(other) => {
+                if let Ok(fields) = other.into_trailers() {
+                    for (name, value) in &fields {
+                        trailers.extend_from_slice(name.as_str().as_bytes());
+                        trailers.extend_from_slice(b": ");
+                        trailers.extend_from_slice(value.as_bytes());
+                        trailers.extend_from_slice(b"\r\n");
+                    }
+                }
+                continue;
+            }
         };
         if data.is_empty() {
             continue;
@@ -1051,6 +1148,24 @@ async fn pump_response_body(mut body: hyper::body::Incoming, tx: RespSender, max
         if tx.send(Ok((StreamId(0), body_frame))).is_err() {
             return;
         }
+    }
+    if !trailers.is_empty() {
+        let len = trailers.len() as u64;
+        let trailer_frame = Frame {
+            direction: Direction::Inbound,
+            stream: StreamId(0),
+            bytes: SlabBytes::new(Arc::from(trailers.into_boxed_slice())),
+            meta: FrameMeta {
+                bytes: len,
+                transport_units: None,
+                // Not the head, so no status leg — the same reading every body frame above gets,
+                // and what a composed layer tells the head from the rest by.
+                status: None,
+                status_code: None,
+                retry_after_secs: None,
+            },
+        };
+        let _ = tx.send(Ok((StreamId(0), trailer_frame)));
     }
 }
 
@@ -1215,14 +1330,19 @@ struct EgressHead {
 /// own framing, kept rather than flattened, so a megabyte body arrives as the chunks it was sent as
 /// however the reads happened to fall. A trailer section becomes one final frame carrying it in
 /// wire form, which is where a reader that folded it into the body would have lost it.
+///
+/// Between the head and the body sits the one thing this reader WRITES: the interim answer a
+/// request carrying `Expect: 100-continue` is waiting for. See the crate doc.
 async fn read_ingress_message(
     inner: &Inner,
     max_body_bytes: usize,
 ) -> Result<Option<Vec<(StreamId, Frame)>>, TransportError> {
     let Inner::Ingress {
         read,
+        write,
         leftover,
         closed,
+        closing,
         ..
     } = inner
     else {
@@ -1242,11 +1362,10 @@ async fn read_ingress_message(
         if buf.len() >= READ_CHUNK_BYTES {
             return Err(TransportError::Framing);
         }
-        let n = r
-            .half
-            .read(&mut r.scratch)
-            .await
-            .map_err(|e| HttpTransport::map_io_err(&e))?;
+        let Some(read) = read_or_closed(r, closed, closing).await else {
+            return Ok(None);
+        };
+        let n = read.map_err(|e| HttpTransport::map_io_err(&e))?;
         if n == 0 {
             if buf.is_empty() {
                 // Nothing was ever begun: the peer opened a connection and closed it. That is the
@@ -1293,6 +1412,20 @@ async fn read_ingress_message(
         }
     }
 
+    // The head passed its framing checks, so this request IS accepted for a body — and a client
+    // that asked to be told so is WAITING to be told before it sends one. `curl` sets the header
+    // itself for any body past about a kibibyte; against a reader that only parks on the body,
+    // both sides then wait on each other until the client's own timeout fires, and what the client
+    // sees is a hang rather than an answer. `hyper` served this surface in 1.5.5 and answered the
+    // header, so the answer is the parity bar. Nothing is written where the client did not ask, and
+    // an interim answer that cannot be written is not fatal on its own: the body may already be in
+    // flight, and the read below is the one that decides.
+    if raw::header(&headers, "expect").is_some_and(|v| v.eq_ignore_ascii_case("100-continue")) {
+        let mut w = write.lock().await;
+        let _ = w.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await;
+        let _ = w.flush().await;
+    }
+
     let (bodies, trailers) = if raw::is_chunked(&headers) {
         let mut decoder = raw::ChunkedDecoder::default();
         // A chunked sender declares no total, so the cap is held against the bytes that have
@@ -1303,15 +1436,11 @@ async fn read_ingress_message(
             if read_so_far > max_body_bytes {
                 return Err(TransportError::Framing);
             }
-            let n = r
-                .half
-                .read(&mut r.scratch)
-                .await
-                .map_err(|e| HttpTransport::map_io_err(&e))?;
-            read_so_far += n;
-            if closed.load(Ordering::Acquire) {
+            let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);
-            }
+            };
+            let n = read.map_err(|e| HttpTransport::map_io_err(&e))?;
+            read_so_far += n;
             if n == 0 {
                 // The peer stopped before the terminal chunk: the declared framing did not happen,
                 // and guessing where the body ended is the one thing a transport must not do.
@@ -1332,14 +1461,10 @@ async fn read_ingress_message(
             return Err(TransportError::Framing);
         }
         while rest.len() < declared {
-            let n = r
-                .half
-                .read(&mut r.scratch)
-                .await
-                .map_err(|e| HttpTransport::map_io_err(&e))?;
-            if closed.load(Ordering::Acquire) {
+            let Some(read) = read_or_closed(r, closed, closing).await else {
                 return Ok(None);
-            }
+            };
+            let n = read.map_err(|e| HttpTransport::map_io_err(&e))?;
             if n == 0 {
                 // The peer stopped before the length it declared: the same answer the chunked
                 // branch gives a peer that stops before the terminal chunk. A body short of its

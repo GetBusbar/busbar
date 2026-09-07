@@ -1,0 +1,43 @@
+{
+  "_doc": [
+    "NAMED CONFORMANCE GAPS. A place where busbar's bytes and a vendor's PUBLISHED schema disagree,",
+    "the disagreement has been read, and the owner has ruled that the bytes are right and the schema",
+    "is the thing that is incomplete. Every entry here turns ONE named violation on ONE named row",
+    "from FAIL into the rig's named-gap status (SKIP): still printed, still counted, still excluded",
+    "from the owed set, never a PASS. The validator is not touched — it still finds the violation, and",
+    "any violation on the same row that this file does not name still fails the row.",
+    "",
+    "An entry is refused at load time unless it names an owner, a reason, the exact rule, a substring",
+    "of the violation's own detail, and the explicit list of ledger rows it covers. There are no",
+    "wildcards: a gap that could match a rule across a whole dialect is a bypass, not a gap.",
+    "",
+    "An entry that names a row the run JUDGED and did not produce its violation on is STALE, and a",
+    "stale entry is RED (run.sh refuses before the verdict). A gap that has been fixed cannot sit here",
+    "quietly forgiving nothing."
+  ],
+  "gaps": [
+    {
+      "id": "anthropic-ping-event",
+      "owner": "llm plane owner",
+      "rule": "discriminator",
+      "detail_contains": "'type': 'ping' is not one of",
+      "cells": [
+        "llm|anthropic|bedrock|request|ok_stream#response",
+        "llm|anthropic|cohere|request|ok_stream#response",
+        "llm|anthropic|openai|request|ok_stream#response",
+        "llm|anthropic|responses|request|ok_stream#response"
+      ],
+      "why": "The Anthropic streaming API DOCUMENTS a `ping` event and tells clients they may see one at any point in a message stream; the published schema's MessageStreamEvent union does not list it. Both statements are Anthropic's. Where the two disagree the wire the vendor's own clients are built to read wins, so busbar's Anthropic writer emits the ping when it composes a stream itself (the four cross-dialect egress lanes here); the same-dialect lane passes the upstream's bytes through and so never reaches this. Dropping the event to satisfy the union would make busbar's stream differ from the one Anthropic describes, which is the opposite of what this rig is for."
+    },
+    {
+      "id": "bedrock-service-quota-exceeded",
+      "owner": "llm plane owner",
+      "rule": "error.declared",
+      "detail_contains": "ServiceQuotaExceededException is not an error Converse/ConverseStream declare",
+      "cells": [
+        "llm|bedrock|bedrock|request|over_budget_total#response"
+      ],
+      "why": "`ServiceQuotaExceededException` is a real, documented Bedrock Runtime error type that the Converse and ConverseStream operation shapes leave out of their own error unions. It is the one that says what happened here: the caller's budget is spent, and no amount of waiting changes that. Every error Converse does declare would say something false — `ThrottlingException` tells an SDK to back off and retry a request that can never succeed, and `ValidationException` blames the request. The refusal keeps the accurate type and the gap is named instead, because a router that lies about WHY it refused costs the caller a retry storm."
+    }
+  ]
+}

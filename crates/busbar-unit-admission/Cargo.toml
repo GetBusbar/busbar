@@ -23,5 +23,18 @@ name = "busbar_unit_admission"
 path = "src/lib.rs"
 
 [dependencies]
-# The capability types and the tokens that seal them. The only workspace dependency, deliberately.
+# The capability types and the tokens that seal them.
 busbar-caps = { path = "../busbar-caps" }
+# THE PRICING LAW, so this crate does not restate it. The door sizes a hold in nano-units, which
+# means it needs the one config-decimal-to-integer-rate conversion — and it used to carry its own
+# copy of those three lines, because this manifest named nothing else. Two copies of a rounding rule
+# that must agree exactly is how a request comes to be JUDGED at one rate and BILLED at another, and
+# they did drift once a clamp landed on one of them. Naming the crate that owns the conversion is
+# what makes them one arithmetic instead of two that a test has to keep in step.
+#
+# The rule this manifest was written for still holds: `busbar-unit-cost` is pure integer arithmetic
+# over the capability types with no store, no config parser, no runtime and no workspace dependency
+# of its own, so nothing entered this closure that could quietly change a comparison. Its dev-only
+# dependency back on this crate keeps the agreement test compiling; Cargo permits that cycle because
+# it is dev-only and neither library links the other twice.
+busbar-unit-cost = { path = "../busbar-unit-cost" }
