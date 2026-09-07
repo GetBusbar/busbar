@@ -19,7 +19,8 @@ usage:
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>]
-  cargo xtask denylist [--selftest] [--format=tsv]";
+  cargo xtask denylist [--selftest] [--format=tsv]
+  cargo xtask teller-steps [--root-legs] [--root-legs-gating] [--rig-legs]";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -32,6 +33,14 @@ pub fn main(args: &[String]) -> i32 {
         // what it always printed, so nothing that reads its output has to move on the same day the
         // registry arrives.
         Some("denylist") => denylist_cmd(&args[1..]),
+        // The Teller matrix's RUNNER arms. `cargo xtask gate teller-steps` is the gate — the rules
+        // as reconciled ledger rows; this is the human render whose `ROOT-STEPS:` prefix
+        // `verify-1.6.0-done.sh` greps, plus the three arms that RUN something (the loop cells, the
+        // shipped-leg bar, the rig suites) and are therefore not gates.
+        Some("teller-steps") => match open_ctx() {
+            Ok(cx) => gates::teller_steps::run_arm(&cx, &args[1..]),
+            Err(code) => code,
+        },
         Some(other) => {
             eprintln!("xtask: unknown subcommand `{other}`");
             eprintln!("{USAGE}");

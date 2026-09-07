@@ -30,12 +30,21 @@ pub const ROW_ORACLE_DATA: &str = "segregation:oracle-data-allow";
 /// The oracle outputs a gate may legitimately read AS DATA: `design-bindings` and
 /// `inventory-coverage` resolve against the golden ledger, `full` reads the golden digests, and
 /// `changelog-register` reads the accepted-differences register — the owner's own sign-off list,
-/// parsed as JSON. Reading a data file the oracle wrote is data; running the oracle's code is not,
-/// and this list is where that distinction is written down rather than assumed.
+/// parsed as JSON — and `teller-steps` asks the two id registers whether anything in the tree still
+/// owns a named rig cell, a lookup in a list rather than an execution.
+///
+/// Reading a data file the oracle wrote is data; running the oracle's code is not, and this list is
+/// where that distinction is written down rather than assumed. The line it draws is the whole rule:
+/// `teller-steps` may ask `rigs-baseline.json` what ids exist, and may NOT run `rigs-ledger.sh` to
+/// find out. The Python it replaces did run it; that arm stayed in `scripts/verify-1.6.0-done.sh`,
+/// where a caller driving the oracle is a caller, rather than moving into the gate runner, where it
+/// would be the runner importing its subject.
 pub const ORACLE_DATA_ALLOW: &[&str] = &[
     "testing/shadow-oracle/golden/1.5.5/ledger.tsv",
     "testing/shadow-oracle/golden/1.5.5/golden-digests.tsv",
     "testing/shadow-oracle/accepted-differences.json",
+    "testing/shadow-oracle/cells.json",
+    "testing/shadow-oracle/rigs-baseline.json",
 ];
 
 /// The `xtask/src/**` walk's denominator floor. An emptied or moved `src/` scans nothing, and zero
