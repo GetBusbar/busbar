@@ -855,6 +855,23 @@ def applies(row: dict, spec: dict) -> bool:
                 "gate on an absent field silently switches the row off for every target."
                 % (row["id"], key)
             )
+        # A field whose TYPE drifted -- a bool that became the string "true" -- compares unequal and
+        # switches the row OFF in the GREEN direction. That is the exact drift the applicable-row
+        # floor in main() names ("a bool that became a string"), and the floor is far too coarse to
+        # catch it: flipping `published` and `pgo` to strings on one target drops first_party_plugin,
+        # attestation and pgo_applied -- the rows that catch the aarch64 key defect and the PGO proof
+        # -- and 6 remaining rows still clear a floor of 2. A type disagreement is a broken
+        # declaration, never a deliberate exemption, so it is fatal rather than a quiet non-match.
+        # `type(...) is not type(...)` rather than isinstance, because bool is a subclass of int.
+        if type(spec[key]) is not type(want):
+            raise SystemExit(
+                "contract row %r gates on %s == %r (%s), but target %r declares %r (%s). A field "
+                "whose type drifted compares unequal and switches the row off silently, in the "
+                "green direction -- the artifact would then be verified against fewer rows than the "
+                "contract promises and still report PASS."
+                % (row["id"], key, want, type(want).__name__,
+                   spec.get("target"), spec[key], type(spec[key]).__name__)
+            )
         if spec[key] != want:
             return False
     return True
@@ -963,6 +980,30 @@ def selftest() -> int:
         else:
             print("  [FAILED] %-38s -> %s" % (label, why))
             failures += 1
+
+    # ── A TYPE THAT DRIFTED IS REFUSED, NOT QUIETLY NON-MATCHED ──────────────────────────────────
+    # The undeclared-FIELD case above is the loud half; this is the silent half. `published: true`
+    # becoming `published: "true"` in release-targets.json is a well-formed file that switches
+    # first_party_plugin, attestation and pgo_applied off for that target -- the rows that catch the
+    # aarch64 embedded-key defect and the PGO proof -- while the run still prints PASS on the rows
+    # that survived. Planted against the real targets file: 9 applicable rows became 6 and nothing
+    # complained. Both directions are proven, because a guard that refuses everything is not a guard.
+    def applies_verdict(want, declared):
+        try:
+            return "matches" if applies({"id": "x", "applies_when": {"published": want}},
+                                        {"target": "t", "published": declared}) else "off"
+        except SystemExit:
+            return "refused"
+
+    check("a bool that became a string is refused",
+          applies_verdict(True, "true") == "refused",
+          "a well-formed type drift must not switch a row off in the green direction")
+    check("a matching bool still matches",
+          applies_verdict(True, True) == "matches",
+          "the guard must not reject the declarations every target actually carries")
+    check("an honestly non-matching bool still gates",
+          applies_verdict(True, False) == "off",
+          "published:false must still switch a published-only row off, as a real exemption")
 
     # ── THE COVERAGE REPORT DISCRIMINATES ────────────────────────────────────────────────────────
     # Set equality is satisfied by the real contract and always has been; five rows still run
