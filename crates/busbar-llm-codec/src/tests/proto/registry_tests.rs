@@ -34,14 +34,14 @@ fn builtins() -> Registry {
 /// list. Spelled as literals on purpose: a golden value derived from the same source it is checking
 /// would be a tautology.
 ///
-/// THE ORDER IS `busbar_llm::DECLS`' ORDER, WHICH IS WHAT PRODUCTION SHIPS. Before the LLM plugin
-/// consolidation this const read `anthropic, openai, gemini, …` — core's own built-in TABLE order —
-/// while the SHIPPED binary installed `anthropic, gemini, openai, …` through the composition root
-/// (register_protocols), because `merged_boot_decls` folds the installed set ahead of the built-ins.
-/// The two silently disagreed, and this pin was guarding the fixture, not the metric surface an
-/// operator actually sees. The consolidation put core's fixture table into `DECLS`' order too, so
-/// this const now states the ONE order both the fixture and the shipped binary use — and it did NOT
-/// move production (the shipped order was `anthropic, gemini, openai` before and after). The
+/// THE ORDER IS `busbar_llm::DECLS`' ORDER, WHICH IS WHAT PRODUCTION SHIPS — AND IT IS THE RELEASED
+/// BINARY'S ORDER. The consolidation reconciled this const with the fixture table by moving BOTH to
+/// `anthropic, gemini, openai, …`, on the stated ground that the shipped order had always been that.
+/// It had not: 1.5.5's `proto::KNOWN_PROTOCOLS` is `anthropic, openai, gemini, bedrock, responses,
+/// cohere`, and the PUBLISHED 1.5.5 binary prints exactly that tail on a bad `protocol:` — recorded,
+/// not reasoned about (shadow-oracle `boot.refusal|BOOT-020|validate`). So the consolidation DID move
+/// an operator-visible list, and every metric-family index behind the moved entry with it. The order
+/// is restored to the released one and this const states it. The
 /// black-box `cli_validate.rs::the_operator_visible_protocol_order_is_exactly_the_shipped_one`
 /// pins the same sequence on the real binary.
 #[test]
@@ -51,8 +51,8 @@ fn the_derived_protocol_list_is_byte_identical_to_the_const_it_replaced() {
         busbar_substrate_values::proto::known_protocols(),
         &[
             "anthropic",
-            "gemini",
             "openai",
+            "gemini",
             "bedrock",
             "responses",
             "cohere"
