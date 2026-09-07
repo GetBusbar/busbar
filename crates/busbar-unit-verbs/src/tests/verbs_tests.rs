@@ -682,6 +682,60 @@ fn create_and_rotate_declare_their_own_distinct_secret_targets() {
     );
 }
 
+/// TWO ROTATES THAT SHARE NO ARGUMENT MUST NOT SHARE A CACHE SLOT.
+///
+/// The rotate cache is keyed by the key id AND the header value, and both are text the caller
+/// chooses. Joined on a character either may contain, the pair `("a:b", "c")` and the pair
+/// `("a", "b:c")` name one slot — so the second rotate replays the first one's response instead of
+/// running. Two things go wrong at once and neither is visible to the caller: the key it named is
+/// never rotated (its old credential goes on authenticating), and what it is handed back is the
+/// credential minted for somebody ELSE'S key.
+#[test]
+fn two_rotates_whose_id_and_header_join_the_same_way_are_still_two_rotates() {
+    let gov = FakeGovernance::new()
+        .with_key("a:b", false)
+        .with_key("a", false);
+    let verbs = make_verbs(gov);
+    let admin = admin();
+    let first = verbs
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_000,
+            UnitKey::new(1),
+            Some("c"),
+            "a:b",
+        )
+        .unwrap();
+    let second = verbs
+        .rotate_key(
+            &admin,
+            "alice",
+            VerbScope::Full,
+            1_001,
+            UnitKey::new(1),
+            Some("b:c"),
+            "a",
+        )
+        .unwrap();
+    assert!(!first.is_replay());
+    assert!(
+        !second.is_replay(),
+        "a rotate of `a` under header `b:c` is not a retry of a rotate of `a:b` under header `c`"
+    );
+    assert_eq!(
+        second.minted_outcome().expect("a fresh rotation").id,
+        "a",
+        "the caller asked to rotate `a` and must be handed `a`'s own credential"
+    );
+    assert_ne!(
+        second.body(),
+        first.body(),
+        "two different keys' credentials are not the same response body"
+    );
+}
+
 #[test]
 fn a_new_verb_refused_by_posture_never_reaches_governance() {
     let verbs = make_verbs(FakeGovernance::new());
