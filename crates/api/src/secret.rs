@@ -129,6 +129,19 @@ use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 /// pipeline) is layered on top of this by the engine's `SecretResolver`, which falls back to these
 /// built-ins by these exact names.
 pub fn resolve_builtin(secret: &SecretRef) -> Result<Vec<u8>, String> {
+    // `none` is a DECLARATION, not a source: it says there is no credential at all. Asking a
+    // resolver for its bytes is a category error, so it is a hard error here rather than "resolves
+    // to empty" — an empty secret is precisely what the fail-closed posture exists to prevent. The
+    // one call site that legitimately accepts an absent credential (a provider `api_key` for a
+    // keyless upstream) tests `SecretRef::is_none()` and never reaches a resolver at all.
+    if secret.is_none() {
+        return Err(
+            "the `none` secret reference declares that there is NO credential, so it has no value \
+             to resolve; it is accepted only where an absent credential is meaningful (a provider \
+             `api_key` for a keyless upstream such as ollama or vLLM)"
+                .to_string(),
+        );
+    }
     if let Some(var) = self_env_var_checked(secret)? {
         return match std::env::var(&var) {
             Ok(v) if !v.is_empty() => Ok(v.into_bytes()),

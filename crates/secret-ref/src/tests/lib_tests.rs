@@ -54,6 +54,46 @@ fn describe_renders_env_file_and_module_forms() {
     assert_eq!(r.describe(), "secret module 'vault'");
 }
 
+/// `none` — the EXPLICIT keyless declaration — parses from the bare scalar and from the canonical
+/// `{ module: none }`, and `describe()` renders it as the word itself, so a diagnostic about a
+/// keyless provider reads naturally while still naming no source.
+///
+/// The near-misses matter as much as the hit: `none` is a reserved WORD, so anything that is not
+/// exactly it must still take the non-echoing inline-literal refusal, and the `{ none: … }` map
+/// form must not exist at all (it would invite settings on a reference that names no source).
+#[test]
+fn none_is_the_one_scalar_a_secret_field_accepts() {
+    let r: SecretRef = serde_yaml::from_str("none").unwrap();
+    assert_eq!(r, SecretRef::none());
+    assert!(r.is_none());
+    assert!(
+        r.settings.is_empty(),
+        "`none` names no source and carries no settings"
+    );
+    assert_eq!(r.describe(), "none");
+    // The canonical spelling, and the JSON (config-overlay) wire form.
+    assert!(serde_yaml::from_str::<SecretRef>("{ module: none }")
+        .unwrap()
+        .is_none());
+    assert!(serde_json::from_str::<SecretRef>("\"none\"").unwrap().is_none());
+
+    for bad in ["None", "NONE", "no", "nones", "{ none: true }"] {
+        assert!(
+            serde_yaml::from_str::<SecretRef>(bad).is_err(),
+            "only the exact scalar `none` declares keyless: {bad}"
+        );
+    }
+
+    // A pasted literal is still refused, and still not echoed.
+    let err = serde_yaml::from_str::<SecretRef>("sk-live-abc123")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("never an inline literal") && !err.contains("sk-live-abc123"),
+        "a non-`none` scalar keeps the non-echoing refusal: {err}"
+    );
+}
+
 /// The `Visitor::expecting` error message actually names the accepted shapes — asserted via a
 /// real deserialize failure on a shape with NO `visit_*` override, so serde falls back to its
 /// default invalid-type error, which is built from `expecting()`. This proves serde actually wires
@@ -77,9 +117,10 @@ fn deserialize_error_message_names_the_accepted_shapes() {
 /// deriving instead of hand-writing).
 #[test]
 fn oneof_schema_accepts_exactly_what_secretref_accepts() {
+    // NO `"type": "object"` of our own: a secret reference is one of three object shapes OR the
+    // bare scalar `none`, so the derived `oneOf` is the whole constraint.
     let full = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
     });
     let mut full = full.as_object().unwrap().clone();
     for (k, v) in oneof_schema().as_object().unwrap() {
@@ -93,6 +134,8 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
         serde_json::json!({"module": "env"}),
         serde_json::json!({"env": "MY_VAR"}),
         serde_json::json!({"file": "/run/secrets/x"}),
+        // The keyless declaration — the one scalar this type accepts.
+        serde_json::json!("none"),
     ];
     for v in &accept {
         assert!(validator.is_valid(v), "should accept {v}");
@@ -130,7 +173,6 @@ fn oneof_schema_accepts_exactly_what_secretref_accepts() {
 fn the_schema_and_the_deserializer_agree_shape_for_shape() {
     let mut full = serde_json::json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
-        "type": "object",
     })
     .as_object()
     .unwrap()
@@ -150,6 +192,13 @@ fn the_schema_and_the_deserializer_agree_shape_for_shape() {
         ),
         (serde_json::json!({"env": "MY_VAR"}), true),
         (serde_json::json!({"file": "/run/secrets/x"}), true),
+        // The keyless declaration, scalar and canonical. `none` is a reserved WORD, so the
+        // near-misses below must land on the same refusal every other bare scalar gets.
+        (serde_json::json!("none"), true),
+        (serde_json::json!({"module": "none"}), true),
+        (serde_json::json!("None"), false),
+        (serde_json::json!("NONE"), false),
+        (serde_json::json!({"none": true}), false),
         // Blank-but-present values: the reason this test exists.
         (serde_json::json!({"env": "   "}), false),
         (serde_json::json!({"file": "\t"}), false),

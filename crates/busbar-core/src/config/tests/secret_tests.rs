@@ -72,6 +72,26 @@ fn file_whitespace_only_path_is_rejected() {
     }
 }
 
+/// `none` declares the ABSENCE of a credential, so every resolver refuses it rather than handing
+/// back an empty secret. A call site that permits a keyless upstream must say so explicitly
+/// (`SecretRef::is_none()`) — it may never learn it from an empty resolution, which is the exact
+/// confusion between "no credential" and "credential I could not read" this change removes.
+#[test]
+fn none_reference_has_no_value_to_resolve() {
+    let r = SecretRef::none();
+    let resolver = SecretResolver::builtins_only();
+    for err in [
+        resolve_builtin(&r).unwrap_err(),
+        resolver.resolve(&r).unwrap_err(),
+        resolver.resolve_string(&r).unwrap_err(),
+    ] {
+        assert!(
+            err.contains("no value to resolve"),
+            "`none` never resolves to a value: {err}"
+        );
+    }
+}
+
 /// An unknown secret module is FAIL-CLOSED at the built-in resolver (the plugin-backed
 /// resolver layers on top; anything it cannot resolve lands here and refuses).
 #[test]

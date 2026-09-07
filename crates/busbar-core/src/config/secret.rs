@@ -26,7 +26,9 @@
 /// `SecretResolver`/`resolve_settings`/the built-in
 /// `env`/`file` resolution, which are genuinely engine-specific (I/O, plugin dispatch) rather than
 /// part of the reference SHAPE.
-pub use busbar_secret_ref::{SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE};
+pub use busbar_secret_ref::{
+    SecretRef, SECRET_MODULE_ENV, SECRET_MODULE_FILE, SECRET_MODULE_NONE,
+};
 
 /// The reserved wrapper key that OPTS A PLUGIN SETTING OUT of secret-reference interpretation:
 /// `{ literal: <value> }` delivers `<value>` to the plugin verbatim. The escape hatch for the
@@ -78,7 +80,10 @@ impl SecretResolver {
     /// the plugin resolver (fail-closed if none is wired or it fails).
     pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
         match secret.module.as_str() {
-            SECRET_MODULE_ENV | SECRET_MODULE_FILE => resolve_builtin(secret),
+            // `none` routes to the built-in resolver too, which refuses it: it declares the
+            // ABSENCE of a credential, so it must never be mistaken for a plugin module name and
+            // dispatched to a `kind: secret` plugin that happens to be called `none`.
+            SECRET_MODULE_ENV | SECRET_MODULE_FILE | SECRET_MODULE_NONE => resolve_builtin(secret),
             module => match &self.plugin {
                 Some(f) => {
                     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
