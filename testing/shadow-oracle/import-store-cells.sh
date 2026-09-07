@@ -28,8 +28,10 @@
 # artifact root or the single `oracle-store-cells-<run-id>/` beneath it is accepted.
 set -euo pipefail
 
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# This file lives at testing/shadow-oracle/, so the repo root is two levels up, not one.
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 data="$here/testing/shadow-oracle"
+[ -x "$here/bin/oracle" ] || { echo "import-store-cells: $here is not a busbar checkout (no bin/oracle)" >&2; exit 1; }
 golden="$data/golden/1.5.5"
 digests="$data/golden-digests.tsv"
 oracle="$here/bin/oracle"
@@ -124,22 +126,35 @@ cp -R "$golden" "$work/golden-part"
 if [ -n "$superseded" ]; then
   keep="$work/golden-part/ledger.tsv.keep"
   cp "$work/golden-part/ledger.tsv" "$keep"
+  dropped_recordings=0
   for id in $superseded; do
     awk -F'\t' -v i="$id" '$1!=i' "$keep" >"$keep.new" && mv "$keep.new" "$keep"
-    # a cell file is its id with every `|` written `__` — the same spelling record.sh writes
+    # a cell file is its id with every `|` written `__` — the same spelling record.sh writes.
+    # A SKIP row has no cell file, and a named gap is the commonest thing this import supersedes,
+    # so an absent file is only a problem when the row claimed a comparison was made.
     f="$(printf '%s' "$id" | sed 's/|/__/g')"
-    [ -f "$work/golden-part/cells/$f.json" ] || die "the golden's ledger names $id but cells/$f.json is not there"
+    was="$(awk -F'\t' -v i="$id" '$1==i{print $2}' "$golden/ledger.tsv")"
+    case "$was" in
+      PASS|FAIL) [ -f "$work/golden-part/cells/$f.json" ] \
+        || die "the golden's ledger records $id as $was but cells/$f.json is not there — a verdict with no cell behind it" ;;
+    esac
+    [ -f "$work/golden-part/cells/$f.json" ] && dropped_recordings=$((dropped_recordings + 1))
     rm -f "$work/golden-part/cells/$f.json"
     rm -rf "$work/golden-part/raw/$f"
   done
   mv "$keep" "$work/golden-part/ledger.tsv"
-  # `recorded` must follow the rows, or the merged count is a number nothing on disk supports.
-  python3 - "$work/golden-part/meta.json" "$work/golden-part/ledger.tsv" <<'PY'
+  # `recorded` counts RECORDINGS, not ledger rows: a SKIP is a named gap with a row and no cell.
+  # So it drops by the number of superseded rows that actually had a cell behind them, and a
+  # superseded gap does not move it at all. Counting rows here instead would have stamped the
+  # merged golden with the size of its ledger, a number nothing on disk supports.
+  python3 - "$work/golden-part/meta.json" "$dropped_recordings" <<'PY'
 import json, sys
-mp, lp = sys.argv[1], sys.argv[2]
+mp, dropped = sys.argv[1], int(sys.argv[2])
 m = json.load(open(mp, encoding="utf-8"))
-m["recorded"] = sum(1 for ln in open(lp, encoding="utf-8") if ln.strip())
+before = m.get("recorded", 0)
+m["recorded"] = before - dropped
 json.dump(m, open(mp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+print(f"import-store-cells: the golden part drops {dropped} superseded recording(s): {before} -> {before - dropped}")
 PY
 fi
 cp -R "$src" "$work/store-cells-part"
