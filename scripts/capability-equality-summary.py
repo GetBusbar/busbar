@@ -210,11 +210,26 @@ def root_cells(doc):
 def libtest_path(file, fn):
     """`crates/busbar/src/root/units_mcp.rs::the_x` -> `root::units_mcp::tests::the_x`, the name the
     binary's own test harness knows it by. Derived rather than pinned, then CHECKED against the
-    harness's own --list below, so a module that moved is a refusal and not a silent miss."""
+    harness's own --list below, so a module that moved is a refusal and not a silent miss.
+
+    A test body may live in a `tests/` child directory rather than inline (structure-lint's
+    <dir>/tests/<stem>.rs convention). Two shapes exist: a SIBLING file's tests
+    (`root/tests/units_mcp.rs`, alongside the still-present `root/units_mcp.rs`) belong to
+    `root::units_mcp::tests`; a DIRECTORY module's own tests (`root/units_admin/tests/units_admin.rs`,
+    the stem repeating the directory's own name) belong to `root::units_admin::tests`. Stripping the
+    `tests` path segment and, only in the repeating-name case, its following stem too, derives either
+    from the path alone."""
     m = re.search(r"src/(.+)\.rs$", file)
     if not m:
         return None
-    return m.group(1).replace("/", "::") + "::tests::" + fn
+    parts = m.group(1).split("/")
+    if "tests" in parts:
+        i = parts.index("tests")
+        if i + 1 >= len(parts):
+            return None
+        prefix, stem = parts[:i], parts[i + 1]
+        parts = prefix if prefix and prefix[-1] == stem else prefix + [stem]
+    return "::".join(parts) + "::tests::" + fn
 
 
 def run_named_root_cells(cells, label):
