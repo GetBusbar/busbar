@@ -91,6 +91,57 @@ fn api_key_header_scheme_substitutes_raw_value() {
     );
 }
 
+/// THE CUSTOM-HEADER SCHEMES REFUSE AN UN-ENCODABLE KEY TOO, and that arm is a separate one.
+///
+/// The bearer arm's guard has a test above it; the `ApiKeyHeader` arm's guard is its own `if` and
+/// had none, so deleting those three lines left the whole crate green. The value is substituted
+/// VERBATIM here — no `Bearer` prefix, no quoting — so an Azure or Gemini key that a config system
+/// resolved to text containing CR/LF is a header-split request smuggled upstream: everything after
+/// the CRLF is read by the destination as a header of its own, or as the start of a second request.
+/// The decoration has to come back empty, exactly as the bearer arm's does, so the upstream answers
+/// 401 rather than receiving an injected envelope.
+#[test]
+fn a_custom_header_scheme_omits_the_header_for_a_key_with_crlf_in_it() {
+    let t = token();
+    for (header, secret) in [
+        ("api-key", "azure-key-\r\nX-Forwarded-For: 10.0.0.1"),
+        ("x-goog-api-key", "gemini-key-\r\ninjected"),
+        // A bare control byte, which is the other spelling of the same defect.
+        ("api-key", "azure-key-\u{0}-nul"),
+    ] {
+        let decoration = decorate(&t, &Scheme::ApiKeyHeader { header }, secret, &empty_body());
+        match &decoration {
+            AuthDecoration::Decorate { slots, fields, .. } => {
+                assert!(
+                    slots.is_empty(),
+                    "{header} declared a slot for an un-encodable key"
+                );
+                assert!(fields.is_empty(), "{header} wrote a field anyway");
+            }
+            AuthDecoration::Handshake { .. } => {
+                panic!("must still be a Decorate, just an empty one")
+            }
+        }
+        assert!(
+            substitute(&decoration, secret, Vec::new()).is_empty(),
+            "{header} put an un-encodable key on the wire"
+        );
+    }
+
+    // The control: the same scheme and the same header name still work for an ordinary key, so the
+    // guard refuses the injection rather than the scheme.
+    let ok = decorate(
+        &t,
+        &Scheme::ApiKeyHeader { header: "api-key" },
+        "azure-key-xyz",
+        &empty_body(),
+    );
+    assert_eq!(
+        substitute(&ok, "azure-key-xyz", Vec::new()),
+        vec![("api-key".to_string(), "azure-key-xyz".to_string())]
+    );
+}
+
 /// `x-goog-api-key` (Gemini): same raw-substitution scheme, different header name — proves the two
 /// custom-header schemes cannot cross-contaminate each other's header name.
 #[test]
@@ -154,6 +205,64 @@ fn sigv4_scheme_matches_aws_worked_example_end_to_end() {
     assert!(auth.contains("Credential=AKIDEXAMPLE/20150830/us-east-1/iam/aws4_request"));
     // SignedHeaders here is host + the two x-amz-* fields decorate() always adds, sorted.
     assert!(auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date"));
+
+    // THE SIGNATURE ITSELF, which this test previously never compared to anything.
+    //
+    // `sign_v4` is pinned to AWS's published answer by `sigv4::tests`; what was unpinned is the
+    // ASSEMBLY around it — that `decorate` threads the region, the service, the method, the URI, the
+    // query string, the payload hash and the timestamp into the right parameters. Transposing
+    // `region` and `service` at the call site is the sharp case: `Credential=` is built separately
+    // from the same two variables so it still reads `us-east-1/iam`, and `SignedHeaders` does not
+    // move, so both assertions above stay green while every Bedrock request 403s. The expectation
+    // is therefore recomputed here from arguments written out in `sign_v4`'s own parameter order,
+    // which is what a transposition inside `decorate` has to disagree with.
+    let payload_hash = sigv4::sha256_hex(b"");
+    assert_eq!(
+        payload_hash, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "the empty-body payload hash is the published SHA-256 of the empty string"
+    );
+    let signed_over = vec![
+        ("host".to_string(), "iam.amazonaws.com".to_string()),
+        ("x-amz-content-sha256".to_string(), payload_hash.clone()),
+        ("x-amz-date".to_string(), "20150830T123600Z".to_string()),
+    ];
+    let (expected_signature, expected_signed_headers) = sigv4::sign_v4(
+        "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY",
+        "us-east-1",
+        "iam",
+        "GET",
+        "/",
+        "Action=ListUsers&Version=2010-05-08",
+        &signed_over,
+        &payload_hash,
+        "20150830T123600Z",
+        "20150830",
+    );
+    assert_eq!(
+        expected_signed_headers,
+        "host;x-amz-content-sha256;x-amz-date"
+    );
+    assert_eq!(
+        auth,
+        format!(
+            "{} Credential=AKIDEXAMPLE/20150830/us-east-1/iam/aws4_request, \
+             SignedHeaders={expected_signed_headers}, Signature={expected_signature}",
+            sigv4::SIGV4_ALGORITHM
+        ),
+        "the whole Authorization header, signature included"
+    );
+
+    // And the two fields the decoration adds are the ones it signed over, so what goes on the wire
+    // is what was signed.
+    let field = |name: &str| {
+        fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| panic!("{name} is present"))
+    };
+    assert_eq!(field("x-amz-date"), "20150830T123600Z");
+    assert_eq!(field("x-amz-content-sha256"), payload_hash);
 }
 
 /// The two `x-amz-*` fields `decorate` adds are SET on the header set it signs, not appended to it.
