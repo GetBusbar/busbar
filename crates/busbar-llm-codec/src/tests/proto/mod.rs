@@ -118,3 +118,5 @@ mod tests;
 mod translate_parity_cross_pairs_tests;
 #[path = "translate_parity_golden_tests.rs"]
 mod translate_parity_golden_tests;
+#[path = "usage_tail_hardening_tests.rs"]
+mod usage_tail_hardening_tests;
