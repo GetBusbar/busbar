@@ -269,43 +269,38 @@ fn the_revocation_set_is_asked_once_per_unit_and_never_without_a_credential() {
     assert!(matches!(verdict, ChainVerdict::Identified { .. }));
 }
 
-/// What the gate is asked about a string NOBODY identified, recorded as it currently stands.
+/// The gate is NOT consulted for a string nobody identified.
 ///
-/// The gate is keyed on the presented credential alone, not on the walk having identified anybody,
-/// so it is consulted for every unit that presented a string — including the two where no
-/// identification exists to withdraw:
+/// What a revocation withdraws is an identification, so the gate is keyed on the walk's verdict
+/// being `Identified` — not on a string having been presented. The two shapes it is therefore never
+/// asked about are exactly the ones where no identification exists to withdraw:
 ///
 /// - the open front door, where the admission is the anonymous principal and the string was never
 ///   looked at by anything;
 /// - a chain that already denied, where the answer cannot change.
 ///
-/// Neither can turn a refusal into an admission, which is why this is written down rather than
-/// worked around here: the gate can only ever subtract, and the walk's own answer for both shapes is
-/// already the safe one. What it does cost is a lookup against the revocation set on behalf of an
-/// arbitrary unauthenticated string, on every such request. That makes the set answerable to a
-/// caller who was never identified — a probe can learn whether a string it chose is in the
-/// revocation set by presenting it against an open door and watching the admission disappear — and
-/// it puts work on the deny path that scales with unauthenticated traffic.
-///
-/// This case pins the behaviour so a change to it is deliberate and shows up as this test failing,
-/// rather than being made silently in either direction.
+/// Neither could ever have turned a refusal into an admission — the gate can only subtract. What
+/// asking there did cost is a lookup against the revocation set on behalf of an arbitrary
+/// unauthenticated string, on every such request. That made the set answerable to a caller who was
+/// never identified — a probe could learn whether a string it chose is in the revocation set by
+/// presenting it against an open door and watching the anonymous admission disappear — and it put
+/// work on the deny path that scales with unauthenticated traffic.
 #[test]
-fn the_gate_is_currently_consulted_even_for_a_string_nobody_identified() {
-    // The open front door: admitted anonymously, and the string is still looked up.
+fn the_gate_is_not_consulted_for_a_string_nobody_identified() {
+    // The open front door: admitted anonymously, and the string is never looked up.
     let open = AuthChain::new(Vec::new(), false);
     let r = Recording::new(&[]);
     assert_eq!(
         open.run_chain_for_new_unit(Some("chosen-by-caller"), None, None, 1000, None, Some(&r)),
         ChainVerdict::Open
     );
-    assert_eq!(
-        r.asked(),
-        ["chosen-by-caller"],
-        "the gate is keyed on the presented string, not on an identification having happened"
+    assert!(
+        r.asked().is_empty(),
+        "the gate is keyed on an identification having happened, not on the presented string"
     );
 
-    // And a revoked string turns the anonymous admission into a refusal, which is the observable
-    // that makes the set answerable to an unidentified caller.
+    // And a revoked string no longer turns the anonymous admission into a refusal — that observable
+    // was what made the set answerable to an unidentified caller.
     let revoked = Recording::new(&["chosen-by-caller"]);
     assert_eq!(
         open.run_chain_for_new_unit(
@@ -316,17 +311,76 @@ fn the_gate_is_currently_consulted_even_for_a_string_nobody_identified() {
             None,
             Some(&revoked)
         ),
-        ChainVerdict::Denied
+        ChainVerdict::Open,
+        "an open door admits anonymously without consulting the denylist for the caller's string"
     );
+    assert!(revoked.asked().is_empty());
 
-    // A chain that already denied: asked too, and the answer cannot change either way.
+    // A chain that already denied: not asked either, and the answer is the walk's own.
     let denying = AuthChain::new(vec![entry("m", answering("m", AuthOutcome::Reject))], false);
     let r2 = Recording::new(&[]);
     assert_eq!(
         denying.run_chain_for_new_unit(Some("chosen-by-caller"), None, None, 1000, None, Some(&r2)),
         ChainVerdict::Denied
     );
-    assert_eq!(r2.asked(), ["chosen-by-caller"]);
+    assert!(r2.asked().is_empty());
+}
+
+/// The positive twin: an identification the set names is still withdrawn, on every arm that can
+/// produce one.
+///
+/// Narrowing the gate to `Identified` must not narrow what it actually withdraws. A boxed module's
+/// identification and the engine's own signed-key arm are the two shapes of `Identified`, and both
+/// stay subject to the set.
+#[test]
+fn a_revoked_identification_is_still_withdrawn_on_every_identifying_arm() {
+    // A boxed module identified.
+    let boxed = AuthChain::new(
+        vec![entry(
+            "idp",
+            answering("idp", AuthOutcome::Identify(Principal::from_id("alice"))),
+        )],
+        false,
+    );
+    let r = Recording::new(&["alice-cred"]);
+    assert_eq!(
+        boxed.run_chain_for_new_unit(Some("alice-cred"), None, None, 1000, None, Some(&r)),
+        ChainVerdict::Denied,
+        "a revoked identification is withdrawn"
+    );
+    assert_eq!(r.asked(), ["alice-cred"], "and the set was consulted");
+
+    // The engine's signed-key arm identified: same gate, same withdrawal.
+    let keys = AuthChain::new(Vec::new(), true);
+    let verifier = OneKey {
+        token: "vk-token",
+        aud: None,
+    };
+    assert!(matches!(
+        keys.run_chain_for_new_unit(
+            Some("vk-token"),
+            None,
+            Some(&verifier),
+            1000,
+            None,
+            Some(&Recording::new(&[]))
+        ),
+        ChainVerdict::Identified { .. }
+    ));
+    let r2 = Recording::new(&["vk-token"]);
+    assert_eq!(
+        keys.run_chain_for_new_unit(
+            Some("vk-token"),
+            None,
+            Some(&verifier),
+            1000,
+            None,
+            Some(&r2)
+        ),
+        ChainVerdict::Denied,
+        "a revoked key identification is withdrawn just as a module's is"
+    );
+    assert_eq!(r2.asked(), ["vk-token"]);
 }
 
 /// A chain that DENIED stays denied through the gate, whatever the revocation set says.

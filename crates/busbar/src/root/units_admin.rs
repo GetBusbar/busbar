@@ -3633,11 +3633,56 @@ mod tests {
         }
     }
 
+    /// A chain arm that identifies the fixture's operator credential.
+    ///
+    /// The denylist withdraws an IDENTIFICATION, so a node that is to be asked about one has to have
+    /// made one first. The assembly's own door is OPEN — no module, no keys arm — and on an open door
+    /// nothing ever looked at the caller's string, so there is nothing there to take away and the
+    /// denylist is not consulted at all.
+    #[cfg(feature = "root-admin")]
+    struct IdentifiesTheOperator;
+
+    #[cfg(feature = "root-admin")]
+    impl busbar_unit_auth::module::AuthModule for IdentifiesTheOperator {
+        fn name(&self) -> &'static str {
+            crate::root::auth_bindings::ADMIN_TOKENS_MODULE
+        }
+
+        fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+            use busbar_unit_auth::module::AuthOutcome;
+            match candidate {
+                Some("admin-token") => {
+                    AuthOutcome::Identify(busbar_unit_auth::principal::Principal::from_id(
+                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+                    ))
+                }
+                _ => AuthOutcome::Pass,
+            }
+        }
+
+        fn cacheable(&self) -> bool {
+            false
+        }
+    }
+
+    /// The operator's own door, as the deployment that configures a token gets it.
+    #[cfg(feature = "root-admin")]
+    fn an_operator_door() -> busbar_unit_auth::AuthChain {
+        busbar_unit_auth::AuthChain::new(
+            vec![busbar_unit_auth::chain::ChainEntry {
+                provider: crate::root::auth_bindings::ADMIN_TOKENS_MODULE.to_string(),
+                module: Box::new(IdentifiesTheOperator),
+            }],
+            false,
+        )
+    }
+
     /// Walk one request through the whole loop against a node whose directory revokes everything, or
     /// nothing.
     #[cfg(feature = "root-admin")]
     fn answer_under_denylist(revoked: bool) -> AdminAnswer {
         let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_auth_chain(an_operator_door())
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 Denylist(revoked),
             )));
@@ -3651,6 +3696,11 @@ mod tests {
     /// would have let a revoked credential through the front door of the administrative surface. The
     /// control is the same request over a directory that revokes nobody, which reaches the operation
     /// and comes back with its answer.
+    ///
+    /// The node runs the operator's door rather than the assembly's open one, because what the
+    /// denylist takes away is an identification: the credential is identified first, and the gate
+    /// then withdraws it. Behind an open door there is no identification to withdraw and the string
+    /// is never looked up.
     #[cfg(feature = "root-admin")]
     #[test]
     fn a_revoked_credential_is_refused_before_the_operation_runs() {
@@ -5126,23 +5176,30 @@ mod tests {
     /// the SAME one. A literal would still pass on the day the shared posture changed and the views
     /// were left behind.
     ///
-    /// The refused case is a credential the node's directory has revoked. That is what an
-    /// unauthenticated caller IS on this composition: the admin-only node's chain is open, so a
-    /// request carrying no credential at all is admitted — for the views exactly as for `/usage`,
-    /// which the second half asserts. Choosing the reachable refusal over the unreachable one is
-    /// what keeps this test about the posture the two share rather than about a 401 this node never
-    /// produces.
+    /// The refused case is a credential the node's directory has revoked, presented at the operator's
+    /// own door so that there is an identification for the denylist to withdraw. The admitted case is
+    /// the assembly's open chain, where a request carrying no credential at all is admitted — for the
+    /// views exactly as for `/usage`, which the second half asserts. Choosing the reachable refusal
+    /// over the unreachable one is what keeps this test about the posture the two share rather than
+    /// about a 401 this node never produces.
     #[cfg(feature = "root-admin")]
     #[test]
     fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
         let under = |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
             let mut request = a_ledger_request(path);
             request.credential = credential.map(ToString::to_string);
-            let units =
+            let mut units =
                 crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
                     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                         Denylist(revoked),
                     )));
+            // The denylist and the door move together, because a revocation is only ever a
+            // withdrawal: the revoked arm needs a door that identifies for there to be anything to
+            // withdraw, and the admitted arm needs the assembly's open one, which is the posture
+            // whose admission the second half is about.
+            if revoked {
+                units = units.with_auth_chain(an_operator_door());
+            }
             AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
         };
 

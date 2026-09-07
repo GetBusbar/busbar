@@ -1768,8 +1768,18 @@ mod tests {
                 expected_aud: Option<&str>,
             ) -> Option<KeyFacts> {
                 // The audience is the plane boundary, and the verifier is where it is enforced.
-                (credential == "tok" && expected_aud == Some(AUD)).then(|| KeyFacts {
-                    id: "key-a2a-1".to_string(),
+                //
+                // Both minted credentials resolve here. The burned one is a key this directory
+                // issued and still recognises — what took it away is the denylist below, and the
+                // gate can only withdraw an identification, so the identification has to exist for
+                // the withdrawal to be the thing under test.
+                let id = match credential {
+                    "tok" => "key-a2a-1",
+                    "burned" => "key-a2a-2",
+                    _ => return None,
+                };
+                (expected_aud == Some(AUD)).then(|| KeyFacts {
+                    id: id.to_string(),
                     name: "an approved key".to_string(),
                 })
             }

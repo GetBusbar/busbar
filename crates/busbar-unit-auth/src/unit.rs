@@ -56,7 +56,9 @@ impl Auth {
     ///    answer computed under a scheme the claim never offered is worth having.
     /// 2. The chain runs. An open door yields the anonymous principal — which is an admission, not a
     ///    refusal, and renders its actor id as the plain word.
-    /// 3. Revocation gates a NEW unit only. A unit already in flight is not asked.
+    /// 3. Revocation gates a NEW unit only, and only one the chain IDENTIFIED. A unit already in
+    ///    flight is not asked, and neither is one whose walk ended at the open door or at a denial —
+    ///    there is no identification there for a revocation to withdraw.
     ///
     /// The challenge argument is what the scheme wants to ask; supplying one outside a handshake
     /// unit is not an error the caller can make usefully, so it is ignored there and the chain's own
@@ -93,8 +95,12 @@ impl Auth {
             self.chain
                 .run_chain_cached(req.candidate, cache, keys, req.now, req.expected_aud);
 
-        // 4. Revocation gates NEW units only.
-        if req.new_unit {
+        // 4. Revocation gates NEW units only, and only an identification — the thing a revocation
+        //    withdraws. An open door admits the anonymous principal without any member having looked
+        //    at the string, and a walk that already denied cannot be changed by the gate; asking
+        //    about either would put the revocation set in reach of a caller nobody identified and a
+        //    denylist lookup on every unauthenticated request.
+        if req.new_unit && matches!(verdict, ChainVerdict::Identified { .. }) {
             if let (Some(r), Some(cred)) = (revocations, req.candidate) {
                 if r.is_revoked(cred) {
                     return Decision::refuse(token, Refusal::new(ReasonCode::Revoked));
