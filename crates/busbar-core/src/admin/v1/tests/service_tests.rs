@@ -1819,7 +1819,7 @@ fn usage_read_store_failure_logs_the_real_error() {
                 Arc::new(GovState::new(Arc::new(FailingMeteringStore::default()), None).unwrap());
             let app = TestApp::new().governance(gov).build();
             let svc = AdminService::new(app);
-            let err = svc.get_usage(None).await.unwrap_err();
+            let err = svc.get_usage(None, None).await.unwrap_err();
             assert!(
                 matches!(err, AdminError::Internal),
                 "wire contract is unchanged: still AdminError::Internal, {err:?}"
@@ -2346,5 +2346,188 @@ plugins:
         "the caller's plugins.dir (holding a garbage tarball) must NOT be scanned — the scan is \
          pinned to the running install dir; got errors: {:?}",
         view.errors
+    );
+}
+
+// ── /usage prices at the card in force when the tokens were spent (tracker M6) ────────────────
+//
+// The four cases below are the whole of the change, stated as arithmetic rather than as prose.
+// Each was watched go red against the previous reading before it was made green: with `/usage`
+// pricing every row at the card configured at the instant of the read, the mid-window case
+// reported BOTH rows at the newest card (the recorded 1.5.5 figure), the row that predates the
+// history reported at the newest card too, and `as_of` above the head came back 200 with a
+// clamped answer instead of a refusal.
+
+/// A history a test can state in full: entry `seq` prices every token at `seq`'s micro-rate.
+///
+/// Deliberately not a mock of the node's history — it is a history, written out. What the read
+/// under test needs from the seam is one answer ("which card prices a row accrued under N, seen
+/// from snapshot S"), and a test that writes that answer down by hand is a test whose expectation
+/// nobody has to re-derive.
+#[derive(Debug)]
+struct StatedHistory {
+    /// Every entry, oldest first: `(seq, micro-units per token)`.
+    entries: Vec<(u64, f64)>,
+}
+
+impl crate::admin::v1::service::UsageCardHistory for StatedHistory {
+    fn head(&self) -> u64 {
+        self.entries.last().map_or(0, |(seq, _)| *seq)
+    }
+
+    fn card_at(&self, card_seq: u64, at: u64) -> Option<std::sync::Arc<crate::cost::CostModel>> {
+        // The resolution rule, in the small: among the entries the snapshot can see, the one the
+        // row was accrued under. A snapshot cut before the row's own entry sees the newest entry it
+        // CAN see, which is what "cut this statement as of then" means.
+        let visible = card_seq.min(at);
+        let (_, utok) = self
+            .entries
+            .iter()
+            .rev()
+            .find(|(seq, _)| *seq <= visible)
+            .copied()?;
+        let card = std::collections::BTreeMap::from([(
+            "m".to_string(),
+            crate::config::RateEntryCfg {
+                input_utok: utok,
+                output_utok: utok,
+                cache_read_utok: 0.0,
+                cache_write_utok: 0.0,
+            },
+        )]);
+        Some(std::sync::Arc::new(crate::cost::CostModel::resolve_parts(
+            Some(&card),
+            0,
+            &Default::default(),
+        )))
+    }
+}
+
+/// Ten thousand input tokens on one row, as the usage read shapes them.
+fn usage_row_of(tokens: u64) -> crate::admin::v1::contract::UsageBreakdown {
+    crate::admin::v1::contract::UsageBreakdown {
+        tokens_input: tokens,
+        requests: 1,
+        ..Default::default()
+    }
+}
+
+/// Two rows either side of one price edit report at the two prices, not both at the newest.
+///
+/// This is the divergence from the previous release, at its smallest. 1.5.5 reads back both rows
+/// at whatever is configured now; the lookup reads back each at the card it was earned under, and
+/// the window total is the sum of those two rather than a re-priced whole. Registered breaking,
+/// and the register's own recorded cells are the proof at the wire.
+#[test]
+fn a_row_prices_at_the_card_it_was_accrued_under_not_at_the_newest() {
+    use crate::admin::v1::service::{card_for_row, derive_spend_micros_row};
+
+    let history: std::sync::Arc<dyn crate::admin::v1::service::UsageCardHistory> =
+        std::sync::Arc::new(StatedHistory {
+            entries: vec![(0, 1.0), (1, 10.0)],
+        });
+    let running = std::sync::Arc::new(usage_cost(&Default::default()));
+    let head = 1;
+    let row = usage_row_of(10_000);
+
+    let spend = |accrued_under: &str, at: u64| {
+        let card = card_for_row(Some(&history), &running, accrued_under, at);
+        derive_spend_micros_row(&card, "m", &row)
+    };
+
+    // The row accrued under the opening entry stays at the opening entry's price, even though the
+    // history head has moved past it. That is the whole point.
+    assert_eq!(
+        spend("0", head),
+        10_000,
+        "a row earned under the opening card prices at the opening card"
+    );
+    assert_eq!(
+        spend("1", head),
+        100_000,
+        "a row earned under the newer card prices at the newer card"
+    );
+    // And the two together are the honest window total, not the re-priced one.
+    assert_eq!(
+        spend("0", head) + spend("1", head),
+        110_000,
+        "the window totals what each row was earned under; re-pricing the whole window at the \
+         newest card would read back 200_000"
+    );
+    // Cut the statement at the older snapshot and the newer row falls back to what that snapshot
+    // could see — the same figures come back forever from the number printed on the statement.
+    assert_eq!(
+        spend("1", 0),
+        10_000,
+        "a statement cut as of the opening snapshot prices at the opening card"
+    );
+}
+
+/// A row that names no entry — every row the previous release wrote — prices at the opening card.
+///
+/// Correct rather than merely safe: the opening entry IS the card those tokens were earned under,
+/// by definition, which is why a deployment that has never edited a price answers exactly as it
+/// did before.
+#[test]
+fn a_row_that_predates_the_history_prices_at_the_opening_entry() {
+    use crate::admin::v1::service::{card_for_row, derive_spend_micros_row};
+
+    let history: std::sync::Arc<dyn crate::admin::v1::service::UsageCardHistory> =
+        std::sync::Arc::new(StatedHistory {
+            entries: vec![(0, 1.0), (1, 10.0)],
+        });
+    let running = std::sync::Arc::new(usage_cost(&Default::default()));
+
+    let card = card_for_row(Some(&history), &running, "", 1);
+    assert_eq!(
+        derive_spend_micros_row(&card, "m", &usage_row_of(10_000)),
+        10_000,
+        "an unversioned row is a row from before the history and prices at entry 0"
+    );
+}
+
+/// With no history bound, every figure is the previous release's, exactly.
+///
+/// A node that has bound nothing is running a single-entry history, and the one entry it holds is
+/// the card the node is running. The fallback and the lookup are therefore the same card — which
+/// is what keeps every recorded billing cell that does not edit a card mid-window byte-identical.
+#[test]
+fn an_unbound_history_prices_at_the_running_card() {
+    use crate::admin::v1::service::{card_for_row, derive_spend_micros_row};
+
+    let running = std::sync::Arc::new(usage_cost(&Default::default()));
+    for version in ["", "0", "7"] {
+        let card = card_for_row(None, &running, version, 0);
+        assert_eq!(
+            derive_spend_micros_row(&card, "m", &usage_row_of(10_000)),
+            100_000,
+            "no history bound: every row prices at the running card, whatever it claims to have \
+             been accrued under ({version:?})"
+        );
+    }
+}
+
+/// A snapshot above the head is refused, and the default is the head.
+///
+/// Refused rather than clamped: a caller asking about a snapshot that does not exist yet is asking
+/// a question this read cannot answer, and answering it with a different snapshot's figures while
+/// echoing a number that contradicts the request is the exact hazard the snapshot exists to close.
+#[test]
+fn a_snapshot_above_the_head_is_refused_and_the_default_is_the_head() {
+    use crate::admin::v1::service::snapshot_for_read;
+
+    assert_eq!(
+        snapshot_for_read(7, None).expect("the default is the head"),
+        7
+    );
+    assert_eq!(snapshot_for_read(7, Some(3)).expect("a past snapshot"), 3);
+    assert_eq!(snapshot_for_read(7, Some(7)).expect("the head itself"), 7);
+    let err = snapshot_for_read(7, Some(8)).expect_err("above the head");
+    let AdminError::Validation(msg) = err else {
+        panic!("a snapshot that does not exist is a caller error, not a 500");
+    };
+    assert!(
+        msg.contains("above the rate-card history head") && msg.contains("head is 7"),
+        "the refusal names the head, so a caller can ask again without guessing: {msg}"
     );
 }

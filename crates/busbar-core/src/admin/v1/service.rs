@@ -163,6 +163,42 @@ fn accrued_under(pricing_version: &str) -> u64 {
 /// never edited a price answer byte-identically to the previous release.
 const OPENING_HISTORY_SEQ: u64 = 0;
 
+/// The snapshot one usage read is cut at.
+///
+/// Resolved ONCE, before the store reads, so every row of one answer is priced against one history:
+/// resolving it per row would let an append landing mid-read put two rows of one statement on two
+/// different histories, and a statement that meant two things at once is not a statement.
+///
+/// A snapshot above the head is refused rather than clamped. Clamping would answer a question about
+/// a snapshot that does not exist with the figures of one that does, and say nothing about having
+/// done so — which is the exact failure this whole design is about.
+pub(crate) fn snapshot_for_read(head: u64, requested: Option<u64>) -> Result<u64, AdminError> {
+    match requested {
+        None => Ok(head),
+        Some(s) if s > head => Err(AdminError::Validation(format!(
+            "as_of is above the rate-card history head; got {s}, head is {head}"
+        ))),
+        Some(s) => Ok(s),
+    }
+}
+
+/// The card one metering row is priced at: the entry it was accrued under, as the snapshot sees it.
+///
+/// The fallback is not a degradation. A node with no history bound, and a row that predates the
+/// history, are both single-entry cases, and the entry a single-entry history holds IS the card the
+/// node is running — so the fallback and the lookup are the same card, and every figure a
+/// never-edited deployment derives is arithmetically the previous release's.
+pub(crate) fn card_for_row(
+    history: Option<&std::sync::Arc<dyn UsageCardHistory>>,
+    running: &std::sync::Arc<crate::cost::CostModel>,
+    pricing_version: &str,
+    at: u64,
+) -> std::sync::Arc<crate::cost::CostModel> {
+    history
+        .and_then(|h| h.card_at(accrued_under(pricing_version), at))
+        .unwrap_or_else(|| running.clone())
+}
+
 /// Derive busbar's spend ESTIMATE (micro-units, abstract cost units) for one PER-MODEL metering
 /// row against ONE card: the row's tier-token split priced at that model's rates, plus the flat
 /// per-request fee x requests. Metering rows attribute by the CONFIGURED model name, so the rate
@@ -172,7 +208,7 @@ const OPENING_HISTORY_SEQ: u64 = 0;
 /// by the caller — not the card the node happens to be running when somebody reads. The arithmetic
 /// is unchanged and is deliberately single-sited: a second copy of it against a second card is how
 /// a request comes to be judged at one rate and billed at another.
-fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
+pub(crate) fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
     // it maps onto the canonical `cache_write` unit key.
@@ -2223,15 +2259,7 @@ impl AdminService {
         // mid-read put two rows of one statement on two different histories.
         let history = usage_card_history();
         let head = history.map_or(OPENING_HISTORY_SEQ, |h| h.head());
-        let as_of = match as_of {
-            None => head,
-            Some(s) if s > head => {
-                return Err(AdminError::Validation(format!(
-                    "as_of is above the rate-card history head; got {s}, head is {head}"
-                )))
-            }
-            Some(s) => s,
-        };
+        let as_of = snapshot_for_read(head, as_of)?;
         let current = crate::governance::metering_bucket(now);
         let bucket = match window {
             None => current,
@@ -2335,9 +2363,7 @@ impl AdminService {
             // history bound, and a row that predates the history, both land on the card the node is
             // running, which for a single-entry history IS the entry those tokens were earned
             // under: same rates, same order, same saturation, same single truncation.
-            let card = history
-                .and_then(|h| h.card_at(accrued_under(&r.pricing_version), as_of))
-                .unwrap_or_else(|| cost.clone());
+            let card = card_for_row(history, &cost, &r.pricing_version, as_of);
             let row_spend = derive_spend_micros_row(&card, &r.model, &row_view);
             for b in [
                 &mut total,
