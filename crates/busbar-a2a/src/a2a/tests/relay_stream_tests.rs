@@ -434,12 +434,9 @@ async fn a_follow_up_on_the_same_context_resumes_the_paused_task_rather_than_ope
     // used to read `h.gov.store()` — the shipped memory store, whose task methods keep nothing — so
     // the answer was empty on every run and the `if !events.is_empty()` arm never ran: a regression
     // that stopped chaining `task.resumed` entirely would have shipped green.
-    let events = ledger.events_for(&first);
+    let events =
+        await_chain_with(&ledger, &first, busbar_substrate::audit::vocab::EV_RESUMED).await;
     crate::taskstore::TASKS.clear_sink_for_test();
-    assert!(
-        !events.is_empty(),
-        "the resume left NO chained event behind"
-    );
     crate::taskstore::verify_chain(&events).expect("the chain verifies across a resume");
     assert!(
         events
@@ -711,6 +708,11 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         .unwrap_or_default()
         .to_string();
 
+    // THE CHAIN SETTLES BEFORE THE RESTART IS MODELLED. The delegation record rides detached work,
+    // so rehydrating the instant the response returns can read the chain mid-write and report a
+    // `SequenceBreak` the plane never produced.
+    await_chain_with(&ledger, &id, busbar_substrate::audit::vocab::EV_DELEGATED).await;
+
     // THE CONTEXT ID BUSBAR RECORDED BEFORE THE RESTART. Captured here so the rehydrated row can be
     // compared against a value that came from BEFORE the restart — the line below used to compare
     // `back.context_id` with itself, which no lost or rewritten resume key could ever fail.
@@ -738,6 +740,20 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         rehydrated.active, 0,
         "a durable backend must restore the paused task; nothing came back"
     );
+    // SCOPED TO THIS TASK. The sink is process-wide, so a test running beside this one writes ITS
+    // task's rows into the same ledger, and a chain that straddles the sink swap lands here as a
+    // `SequenceBreak` belonging to somebody else's task id. Asserting on the aggregate
+    // `chain_breaks` therefore fails on a loaded box for a reason that has nothing to do with the
+    // rehydrate under test.
+    let ours: Vec<_> = rehydrated
+        .chain_breaks
+        .iter()
+        .filter(|b| b.scope == id)
+        .collect();
+    assert!(
+        ours.is_empty(),
+        "the per-task chain the relay wrote must verify on restore: {ours:?}"
+    );
     let back = crate::a2a::task::Task::from_row(
         &fresh
             .get_unscoped(&id)
@@ -753,12 +769,6 @@ async fn an_interrupt_the_relay_produced_rehydrates_only_where_the_store_is_dura
         back.context_id, live_context,
         "the resume key survives the restart: a caller's follow-up is routed by it, so a rehydrate \
          that invented a fresh context id would strand the paused task"
-    );
-    assert_eq!(
-        rehydrated.chain_breaks.len(),
-        0,
-        "the per-task chain the relay wrote must verify on restore: {:?}",
-        rehydrated.chain_breaks
     );
 }
 

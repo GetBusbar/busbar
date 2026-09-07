@@ -343,12 +343,11 @@ async fn every_relayed_task_leaves_a_verifying_hash_chained_delegation_event() {
         .unwrap_or_default()
         .to_string();
 
-    let events = ledger.events_for(&id);
+    let events = await_chain_with(&ledger, &id, busbar_substrate::audit::vocab::EV_DELEGATED).await;
     crate::taskstore::TASKS.clear_sink_for_test();
-    assert!(
-        !events.is_empty(),
-        "the relay served a task and left NO chained event behind"
-    );
+    // `await_chain_with` panics rather than returning when the chain never settles, so reaching here
+    // already proves BOTH halves: the chain recomputes, and `task.delegated` is on it. Re-asserted so
+    // the claim is legible at the assertion site rather than only inside the helper.
     crate::taskstore::verify_chain(&events).expect("the per-task chain verifies");
     assert!(
         events

@@ -496,6 +496,36 @@ pub(super) async fn with_ledger() -> (
     (ledger, guard)
 }
 
+/// WAIT FOR THE TASK'S CHAIN TO SETTLE, then hand it back — or PANIC.
+///
+/// Some of the plane's provenance rides DETACHED work (the delegation record is appended off a
+/// blocking task), so a read taken the instant the caller's response returns can catch the chain
+/// mid-write: on a loaded box the ledger holds seq 1 and seq 3 with seq 2 still in flight, and the
+/// rehydrate then reports a `SequenceBreak` that is an artefact of the test's read rather than
+/// anything the plane did wrong.
+///
+/// So the wait is on the SHAPE the caller is about to assert on — an intact chain carrying `kind` —
+/// it is bounded, and it ends in a `panic!` rather than in a `return`. A chain that never settles is
+/// a failure here, never a quiet pass.
+pub(super) async fn await_chain_with(
+    ledger: &crate::taskstore::event_ledger::EventLedger,
+    task_id: &str,
+    kind: &str,
+) -> Vec<crate::TaskEventRow> {
+    for _ in 0..200 {
+        let events = ledger.events_for(task_id);
+        if events.iter().any(|e| e.kind == kind) && crate::taskstore::verify_chain(&events).is_ok()
+        {
+            return events;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!(
+        "the chain for `{task_id}` never settled into an intact chain carrying `{kind}`: {:?}",
+        ledger.events_for(task_id)
+    );
+}
+
 /// Everything one relayed call needs, standing up.
 pub(super) struct Harness {
     pub(super) addr: std::net::SocketAddr,

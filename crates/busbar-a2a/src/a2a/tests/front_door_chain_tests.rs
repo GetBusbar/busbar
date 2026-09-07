@@ -52,14 +52,11 @@ async fn an_inbound_task_leaves_a_verifying_chain_in_the_store_the_front_door_wr
         .expect("the answer names the task busbar opened")
         .to_string();
 
-    let events = ledger.events_for(&task_id);
+    // The wait is bounded and ends in a panic: an empty (or never-settling) read-back is the answer
+    // this battery exists to FAIL on, because it is indistinguishable from a plane that chains
+    // nothing. The delegation record rides detached work, hence the wait rather than a bare read.
+    let events = await_chain_with(&ledger, &task_id, provenance::EV_DELEGATED).await;
     TASKS.clear_sink_for_test();
-    assert!(
-        !events.is_empty(),
-        "the A2A front door served a task and left NO chained event behind. An empty read-back is \
-         the answer this battery exists to fail on: it is indistinguishable from a plane that \
-         chains nothing."
-    );
 
     crate::taskstore::verify_chain(&events)
         .expect("the per-task chain must recompute from the store");
@@ -110,12 +107,8 @@ async fn editing_a_persisted_event_breaks_the_chain_the_front_door_wrote() {
         .expect("the answer names the task busbar opened")
         .to_string();
 
-    let mut events = ledger.events_for(&task_id);
+    let mut events = await_chain_with(&ledger, &task_id, provenance::EV_DELEGATED).await;
     TASKS.clear_sink_for_test();
-    assert!(
-        !events.is_empty(),
-        "no events were persisted, so there is nothing to tamper with — see the sibling test"
-    );
     crate::taskstore::verify_chain(&events).expect("the untampered rows verify first");
 
     // The agent a task was delegated to is the fact a delegation record exists to carry, and
