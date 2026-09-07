@@ -29,7 +29,7 @@ pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod segregation;
 pub mod service_images;
-pub mod tracing_lint;
+pub mod tracing;
 pub mod workspace_deps;
 
 use std::collections::BTreeSet;
@@ -479,7 +479,7 @@ pub static REGISTRY: &[Registration] = &[
         name: "tracing",
         batch: 1,
         tier: Tier::Fast,
-        build: || Box::new(tracing_lint::TracingGate),
+        build: || Box::new(tracing::TracingGate),
         summary: "every #[instrument] span is bound to an explicit Level, set in one place",
     },
     Registration {

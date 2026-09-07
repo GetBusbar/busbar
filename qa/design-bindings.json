@@ -2644,7 +2644,7 @@
    "checks": [
     {
      "kind": "lint",
-     "ref": "scripts/tracing-lint.sh",
+     "ref": "xtask/src/gates/tracing.rs",
      "proves": "every instrument span declares an explicit level",
      "source": "curated",
      "status": "mapped"
@@ -2658,7 +2658,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "lint:scripts/tracing-lint.sh, oracle-family:cli"
+   "verdict_detail": "lint:xtask/src/gates/tracing.rs, oracle-family:cli"
   },
   {
    "id": "PB-55",
