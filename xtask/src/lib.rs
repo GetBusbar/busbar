@@ -16,7 +16,8 @@
 //! * [`ere`] — a POSIX-ERE subset matcher, so the rule TABLES the shell drove its generic scanners
 //!   with stay tables instead of becoming forty hand-written predicates nobody can diff against the
 //!   row they came from.
-//! * [`scan`], [`planes`], [`yaml_lite`], [`gitp`], [`toml_lite`] — the shared readers, one copy
+//! * [`scan`], [`planes`], [`yaml_lite`], [`json_lite`], [`gitp`], [`toml_lite`] — the shared
+//!   readers, one copy
 //!   each, replacing the idioms the shell re-implemented per script.
 //! * [`parity`] — run the legacy script and the Rust gate over the same tree and require identical
 //!   rows, before any Python or bash is deleted.
@@ -27,6 +28,7 @@ pub mod denylist;
 pub mod ere;
 pub mod gates;
 pub mod gitp;
+pub mod json_lite;
 pub mod ledger;
 pub mod parity;
 pub mod planes;
