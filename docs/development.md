@@ -53,7 +53,7 @@ cargo fmt --all                               # format (rustfmt.toml in repo)
 
 ### The settings-leak lint
 
-`scripts/settings-leak-lint.sh` enforces one rule: **an admin READ may serve an
+`cargo xtask gate settings-leak` enforces one rule: **an admin READ may serve an
 opaque `settings:` bag's KEY NAMES, never its values.** Those bags carry
 `SecretRef`s (an OIDC `client_secret`, a hook `licenseKey`, a store `url` with a
 password), and the same defect has now been found in four independently written
@@ -79,7 +79,7 @@ inbound wire reply):
 // settings-leak-lint: allow [...]
 ```
 
-Run `scripts/settings-leak-lint.sh --selftest` before trusting its verdict; CI
+Run `cargo xtask gate settings-leak --selftest` before trusting its verdict; CI
 runs both.
 
 ### The blocking-FFI lint
