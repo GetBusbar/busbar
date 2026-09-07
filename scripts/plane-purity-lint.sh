@@ -127,7 +127,7 @@
 #   the same distinction instead of assuming a denominator. The self-test proves all three.
 #
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — the same bare-runner posture as the
-# sibling lints (structure-lint.sh, release-script-lint.sh, response-header-lint.sh).
+# sibling lints (release-script-lint.sh, and the converted gates under xtask/src/gates/).
 set -uo pipefail
 # Resolved BEFORE the cd, so the self-test can re-invoke this exact file as a child process no matter
 # how it was called (the two blind-scan cases below need a real subprocess: their guards `exit`).

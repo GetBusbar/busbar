@@ -284,7 +284,7 @@ digest is unreachable by construction. Two consequences named rather than discov
 | `scripts/ci-images.py` | the service-pin agreement check follows the `gate` job: compares ci.yml against release-stage.yml. Selftest re-anchored. |
 
 All repo lints pass on this branch: `release-order-lint.py` (check, `--selftest`, `--prove`),
-`ci-images.py` (`--list`, `--selftest`), `structure-lint.sh`, `release-script-lint.sh`,
+`ci-images.py` (`--list`, `--selftest`), `cargo xtask gate structure-lint`, `release-script-lint.sh`,
 `no-self-filed-issues-lint.sh`, `qa-gate-dispatch-lint.py`.
 
 ## The PR era

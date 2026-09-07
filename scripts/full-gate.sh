@@ -398,7 +398,7 @@ if [ "${1:-}" = "--selftest" ]; then
   # discovery silently dropped: a gate in a language the parser did not know about is not skipped
   # with a reason, it is absent from both lists and from the counts. Keeping a non-shell,
   # non-python gate named here is what stops the extension set narrowing back.
-  # `structure-lint.sh` used to head this list and came off it the day it became
+  # `cargo xtask gate structure-lint` used to head this list and came off it the day it became
   # `cargo xtask gate structure-lint`: a MUST entry naming a script ci.yml no longer runs would fail
   # for the one reason this case is not about. `release-script-lint.sh` takes its place as the shell
   # witness — the list needs one of each LANGUAGE, and it keeps needing one for as long as any gate

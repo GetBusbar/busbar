@@ -895,7 +895,7 @@ pub use busbar_substrate::config::auth::{default_admin_auth, default_admin_auth_
 
 /// THE ONE CHECK BOTH FAILOVER SECTIONS GET, parameterised by which registry a bare name resolves
 /// against rather than written once per plane. `tool_pools:` and `agent_pools:` are the same grammar
-/// over two registries, so a second copy of this would be the shape `structure-lint.sh`'s plane
+/// over two registries, so a second copy of this would be the shape the `structure-lint` gate's plane
 /// ledger calls DEBT: the copy that is hardened and the copy that is not look identical from outside.
 ///
 /// Three refusals, in the order an operator can act on them: a pool with fewer than two members is a

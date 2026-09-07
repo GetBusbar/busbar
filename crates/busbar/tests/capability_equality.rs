@@ -330,8 +330,8 @@ struct Summary {
 }
 
 /// THE ONE VERDICT. Both the real gate and the self-tests below drive this exact function -- a
-/// self-test that exercised a copy would prove the copy (the same reason `structure-lint.sh
-/// --selftest` runs the real `scan_rule`).
+/// self-test that exercised a copy would prove the copy (the same reason the `structure-lint`
+/// gate's self-test reaches its rules only through `Gate::run`).
 ///
 /// `required_planes` / `min_capabilities` are parameters so the self-tests can plant a small
 /// fixture matrix; [`the_gates_own_constants_are_the_doctrines`] pins the real constants.

@@ -568,7 +568,7 @@ battery_subject() {
 }
 
 # --selftest: prove the anti-vacuity assertions BITE, before any verdict from this script is
-# believed. Same discipline as `no-plugins-gate.sh` and `structure-lint.sh`: fixtures the check MUST
+# believed. Same discipline as `no-plugins-gate.sh` and `cargo xtask gate structure-lint`: fixtures the check MUST
 # flag, plus one it must stay silent on. Without this, `assert_covered` could be silently broken and
 # every leg would report a confident green.
 selftest() {
