@@ -291,10 +291,14 @@ run_all() {
   local f id status tier run rc=0
   local -a rows=()
   local covered="" reserved="" tierskipped="" failedset="" plugins_covered=no
-  # HOW MANY SEGMENTS THIS RUN ACTUALLY REACHED. Counted, not inferred from `rc`: `rc` starts at 0
-  # and only a FAILING segment raises it, so a run that reached no segment at all is indistinguishable
-  # from a run in which every segment passed. See the floor after the loop.
-  local attempted=0
+  # HOW MANY SEGMENTS THIS RUN ACTUALLY REACHED, AND HOW MANY OF THEM EXECUTED ANYTHING. Counted,
+  # not inferred from `rc`: `rc` starts at 0 and only a FAILING segment raises it, so a run that
+  # reached no segment at all is indistinguishable from a run in which every segment passed.
+  #
+  # TWO counters, because "reached" is not "verified". A reserved segment is INERT by definition —
+  # it executes nothing and returns 0 — so counting it as reached made the floor below blind to the
+  # case where every segment a filter selected was reserved. See the floor after the loop.
+  local attempted=0 executed=0
   f="$(feed)" || { red "qa-gate umbrella: RED (manifest/registry feed failed)"; return 1; }
   while IFS=$'\t' read -r id status tier run; do
     [ -n "$id" ] || continue
@@ -306,6 +310,7 @@ run_all() {
       continue
     fi
     attempted=$((attempted + 1))
+    [ "$status" = "reserved" ] || executed=$((executed + 1))
     if run_one "$id"; then
       if [ "$status" != "reserved" ]; then
         # COVERED means: active, executed, AND passed. A segment that failed is listed separately —
@@ -345,7 +350,7 @@ run_all() {
     [ "$tier_filter" != "fast" ] || note "                (Expected on --tier fast: plugin segments are live-mock.)"
   fi
 
-  # ── THE FLOOR: A RUN THAT REACHED NO SEGMENT IS NOT A GREEN RUN ─────────────────────────────────
+  # ── THE FLOOR: A RUN THAT EXECUTED NO ACTIVE SEGMENT IS NOT A GREEN RUN ─────────────────────────
   # `--tier` is a free-text filter compared with `!=` against each segment's tier, and it was never
   # checked against the manifest's tier vocabulary. So `--tier fastt` — one keystroke off the `fast`
   # that scripts/qa-gate-run.sh passes — matched no segment, excluded all 34, left `rc` at its initial
@@ -356,10 +361,22 @@ run_all() {
   # The floor is the count of segments this run actually reached, not a re-derivation of the filter:
   # whatever the reason nothing ran — a typo, a renamed tier, a feed that came back short — the
   # answer is the same one this file gives everywhere else, and it is not green.
-  if [ "$attempted" -eq 0 ]; then
+  #
+  # AND REACHING A SEGMENT IS NOT EXECUTING ONE. That first floor counted `attempted`, which every
+  # reserved segment raises: a reserved slot is INERT — `run_one` returns 0 without running its
+  # command and reports SKIP — so a manifest, or a tier's worth of one, in which every segment is
+  # `reserved` sailed straight over the floor with attempted > 0, left `rc` at 0, and printed the
+  # GREEN banner having executed NOTHING. That is the same lie as the mistyped tier reached from the
+  # other side, and a `status` column edited to "reserved" during a refactor is all it takes.
+  # `executed` counts only the segments that were not reserved. Both floors are load-bearing.
+  if [ "$attempted" -eq 0 ] || [ "$executed" -eq 0 ]; then
     rc=1
-    red "qa-gate umbrella: RED — ZERO segments were reached, so nothing was verified."
-    if [ -n "$tier_filter" ]; then
+    red "qa-gate umbrella: RED — ZERO ACTIVE segments were executed, so nothing was verified."
+    if [ "$attempted" -gt 0 ]; then
+      note "  $attempted segment(s) were reached and EVERY one was 'reserved'. A reserved slot is inert:"
+      note "  it executes nothing and makes no claim, so a run consisting only of them verified nothing."
+      note "  Reserved here: ${reserved:-<none>}"
+    elif [ -n "$tier_filter" ]; then
       note "  --tier '$tier_filter' matched no segment in the manifest. Tiers in use: $(printf '%s\n' "$f" | cut -f3 | sort -u | tr '\n' ' ')"
     else
       note "  the manifest feed yielded no segment rows at all."
@@ -640,7 +657,7 @@ TOML
   if QA_SEGMENTS_MANIFEST="$ttmp/segments.toml" "$0" --run --tier fastt >"$ttmp/out" 2>&1; then
     red "  FAIL  --tier with a value matching NO segment exited 0: a filter that selects nothing read as green"
     fails=$((fails+1))
-  elif grep -q 'ZERO segments were reached' "$ttmp/out"; then
+  elif grep -q 'ZERO ACTIVE segments were executed' "$ttmp/out"; then
     note "PASS  a --tier that matches no segment is RED (zero segments reached is never a pass)"
   else
     red "  FAIL  --tier with no matching segment was non-zero, but not for the zero-segments reason"
@@ -655,6 +672,54 @@ TOML
     fails=$((fails+1))
   fi
   rm -rf "$ttmp"
+
+  # (m) A RUN OF NOTHING BUT RESERVED SLOTS IS RED. The sibling of (l), and the one the `attempted`
+  #     floor could not see: reserved segments are inert and return 0, so they raised `attempted`
+  #     without executing anything. A manifest whose every segment is `reserved` — one `status`
+  #     column edited during a refactor — therefore cleared the floor, left `rc` at 0 and printed
+  #     the GREEN banner having run no command at all. Run as a CHILD PROCESS so what is proven is
+  #     the exit code a workflow step reads, not an internal variable.
+  local rtmp
+  rtmp="$(mktemp -d)"
+  cat >"$rtmp/segments.toml" <<'TOML'
+[[segment]]
+id     = "selftest-all-reserved-a"
+status = "reserved"
+tier   = "fast"
+run    = "false"
+
+[[segment]]
+id     = "selftest-all-reserved-b"
+status = "reserved"
+tier   = "fast"
+run    = "false"
+TOML
+  if QA_SEGMENTS_MANIFEST="$rtmp/segments.toml" "$0" --run --tier fast >"$rtmp/out" 2>&1; then
+    red "  FAIL  a run in which EVERY segment was reserved exited 0: an all-inert gate read as green"
+    fails=$((fails+1))
+  elif grep -q 'ZERO ACTIVE segments were executed' "$rtmp/out" && grep -q "EVERY one was 'reserved'" "$rtmp/out"; then
+    note "PASS  a run of nothing but reserved slots is RED and says every segment it reached was inert"
+  else
+    red "  FAIL  the all-reserved run was non-zero, but not for the nothing-executed reason"
+    fails=$((fails+1))
+  fi
+  # Positive control: add ONE active segment to the same manifest and it must be green again, so the
+  # floor is refusing an all-inert run rather than refusing reserved segments.
+  cat >>"$rtmp/segments.toml" <<'TOML'
+
+[[segment]]
+id     = "selftest-all-reserved-live"
+status = "active"
+tier   = "fast"
+run    = "true"
+TOML
+  if QA_SEGMENTS_MANIFEST="$rtmp/segments.toml" "$0" --run --tier fast >"$rtmp/ok" 2>&1; then
+    note "PASS  one active segment alongside the reserved ones is GREEN again (the floor is not refusing reserved)"
+  else
+    red "  FAIL  a manifest with one active segment went red; the nothing-executed floor is over-firing"
+    fails=$((fails+1))
+  fi
+  rm -rf "$rtmp"
 
   if [ "$fails" -eq 0 ]; then
     grn "qa-gate segmentation self-test: ALL GREEN (shape + preserved coverage + inert reserved + registry-exact fan-out + every active segment proven red-then-green)"
