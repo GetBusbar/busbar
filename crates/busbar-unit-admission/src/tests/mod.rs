@@ -21,6 +21,7 @@ use crate::{BucketChain, InMemoryCells};
 
 mod cells;
 mod hardening;
+mod history;
 mod hold;
 mod leases;
 mod ported;
