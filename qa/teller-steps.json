@@ -8,7 +8,7 @@
     "spells out explicitly (a refusal/outcome that must never leak past its step); the other 3",
     "(arrival, decode, approve) are mapped for completeness but do not fail the --check by themselves",
     "when a shared, plane-agnostic kernel cell already covers them for every plane at once.",
-    "Checked by: scripts/teller-steps-check.py --check. Wired into scripts/verify-1.6.0-done.sh",
+    "Checked by: cargo xtask gate teller-steps. Wired into scripts/verify-1.6.0-done.sh",
     "beside the ISOMORPHISM group.",
     "",
     "THE ROOT COLUMN (`root_legs` + every cell's `root`). The `cell` above is the SHIPPED path: the",

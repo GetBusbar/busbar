@@ -1911,9 +1911,11 @@ jobs:
   #      itself it is a spreadsheet.
   # All three were run by scripts/verify-1.6.0-done.sh alone — the release-time DONE claim — so a cell
   # that stopped executing would have stayed invisible until a release was being cut. Wired here so it
-  # is a per-run fact instead. (There is no `--root-legs-gating` flag: the script dispatches on
-  # `--selftest` and `--root-legs` and silently ignores anything else, so spelling one would quietly
-  # run plain `--root-legs` while reading as though it had asked for more.)
+  # is a per-run fact instead. (`cargo xtask teller-steps --root-legs-gating` is a real fourth arm —
+  # the shipped root legs owe every GATING step a cell over the loop — and is not wired here yet
+  # because it is a strictly narrower bar than --root-legs, which already runs. The runner REFUSES
+  # an unknown flag with exit 2; the Python it replaced fell through into its default path, so a
+  # mistyped arm ran a check nobody asked for and reported green for it.)
   teller-steps:
     name: teller steps (one cell per Teller step per plane, and the cells RUN)
     runs-on: ubuntu-latest
@@ -1928,12 +1930,14 @@ jobs:
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
       - name: Teller-steps self-test (a lying matrix is refused)
-        run: python3 scripts/teller-steps-check.py --selftest
+        run: cargo xtask gate teller-steps --selftest
       - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)
-        run: python3 scripts/teller-steps-check.py --check
+        run: cargo xtask gate teller-steps
       - name: Every root-leg step cell RUNS and passes (all five root legs compiled in)
-        run: python3 scripts/teller-steps-check.py --root-legs
+        run: cargo xtask teller-steps --root-legs
 
   construction-gate:
     name: construction gate (how the tree is built vs ARCHITECTURE.md — report-only until green)

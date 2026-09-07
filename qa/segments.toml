@@ -437,7 +437,7 @@ run    = "scripts/changelog-register-check.sh --selftest && scripts/changelog-re
 id     = "teller-steps"
 status = "active"
 tier   = "fast"
-# THE TELLER-STEPS MATRIX (scripts/teller-steps-check.py) — "conformance rigs carry one cell per
+# THE TELLER-STEPS MATRIX (cargo xtask gate teller-steps) — "conformance rigs carry one cell per
 # Teller step per plane" (tracker H2). `--check` proves every GATING plane x step cell in
 # qa/teller-steps.json names a real scenario rather than "none"; `--root-legs` goes further and
 # actually RUNS every root-leg proof cell the matrix names, with all five root legs compiled in, so
@@ -446,12 +446,12 @@ tier   = "fast"
 # would have been invisible until release. `--root-legs` builds the binary crate with
 # root-admin,root-mcp,root-a2a,root-voice,root-llm, which is why it is the slowest row in this
 # manifest; it is worth it, because it is the only one that proves the cells execute.
-# NOTE: there is no `--root-legs-gating` flag — teller-steps-check.py dispatches on `--selftest` and
-# `--root-legs` alone and silently ignores anything else, so spelling one would run plain
-# `--root-legs` while reading as if it had asked for more. The --selftest (a matrix with borrowed
-# root evidence, a labelled root verdict, an unanswered plane, and a leg proving zero steps each
-# REFUSED) runs FIRST.
-run    = "python3 scripts/teller-steps-check.py --selftest && python3 scripts/teller-steps-check.py --check && python3 scripts/teller-steps-check.py --root-legs"
+# NOTE: `--root-legs-gating` IS a real arm (the shipped root legs owe every gating step a cell over
+# the loop) and the runner refuses an unknown flag with exit 2 — the Python fell through into its
+# default path, so a mistyped arm ran a check nobody asked for. The --selftest (a matrix with
+# borrowed root evidence, a labelled root verdict, an unanswered plane, and a leg proving zero steps
+# each REFUSED) runs FIRST.
+run    = "cargo xtask gate teller-steps --selftest && cargo xtask gate teller-steps && cargo xtask teller-steps --root-legs"
 
 # ── RESERVED, and RED on the tip: named here rather than wired, because a segment armed on a gate
 # that cannot pass is a red that teaches people to ignore the manifest. Each names exactly what has

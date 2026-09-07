@@ -147,6 +147,13 @@ declare -a CARGO_LOCAL=(
   "cargo xtask gate plane-abi-neutrality"
   "cargo xtask gate duplex-ws-default-edge --selftest"
   "cargo xtask gate duplex-ws-default-edge"
+  "cargo xtask gate teller-steps --selftest"
+  "cargo xtask gate teller-steps"
+  # Not a gate over text: this COMPILES the binary crate with all five root legs on and EXECUTES
+  # every loop cell the matrix names. It is the slowest row here and it earns it — no other local
+  # invocation builds that feature combination, and a matrix verified against itself is a
+  # spreadsheet.
+  "cargo xtask teller-steps --root-legs"
 )
 
 declare -a CARGO_CI_ONLY=(
