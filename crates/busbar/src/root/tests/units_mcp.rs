@@ -1586,3 +1586,338 @@ fn a_unit_that_outran_its_reservation_carries_the_rest_onto_the_chain() {
         .expect("verifies");
     assert_eq!(replayed.len(), 2, "the posting, then the carry");
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// THE LEG, DRIVEN BY THE REAL LOOP
+//
+// Every cell above asks one part of the leg one question. These two ask the only question that
+// is about the leg AS A LEG: what does the Teller loop do when it is handed this value and told
+// to run a unit? Nothing above can answer it — a parts kit passes every one of those cells
+// while contributing no step at all, because the loop calls methods on what it holds and cannot
+// reach a free function nobody wired. So the driver here is `run_unit` itself, not a
+// re-implementation of it, and what is read back is what the loop decided.
+// ─────────────────────────────────────────────────────────────────────────
+
+/// The registration these two cells run over.
+static ROOT_SERVERS: &[Server] = &[Server {
+    id: "fs",
+    lane: LaneId::new("fs-lane"),
+    host: "127.0.0.1:9",
+    transport: claims::TRANSPORT_HTTP,
+}];
+
+/// A breaker with nothing tripped. These cells are about the loop's money, not about health.
+struct NothingTripped;
+
+impl BreakerView for NothingTripped {
+    fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
+        true
+    }
+
+    fn try_admit(
+        &self,
+        _pool: &str,
+        _lane: usize,
+        _now: u64,
+    ) -> Result<(), busbar_unit_trust::Unavailable> {
+        Ok(())
+    }
+}
+
+/// Everything one node of this plane is, held for the length of one cell.
+///
+/// Owned rather than borrowed because [`McpBindings`] borrows every one of these, and a fixture
+/// that built them inside the call would be handing out references to temporaries.
+struct Node {
+    plane: McpPlane,
+    adapter: StoreAdapter,
+    auth: Auth,
+    auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+    pools: Pools,
+    breaker: NothingTripped,
+    door: Door<InMemoryCells>,
+    pricer: Pricer,
+    chain: BucketChain,
+    scope: crate::root::policy::ScopePolicy,
+    meter_policy: crate::root::policy::MeterPolicyHandle,
+    durability: std::sync::Mutex<crate::root::durability::Durability>,
+    origin: busbar_caps::Origin,
+    record: ArrivalRecord,
+}
+
+/// A node with one registration, an open front door, a flat card and a memory-buffered journal.
+fn node() -> Node {
+    let plane = McpPlane::new(ROOT_SERVERS);
+    Node {
+        plane,
+        adapter: StoreAdapter::native(Arc::new(SilentStore)),
+        // The open door: these cells are about what the loop does with money, and a credential
+        // chain would be a second thing for them to be about.
+        auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+        auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+        // `Pools::new` on this tree takes no configured-pool-key list — that field arrives with the
+        // pool-grouping wave, and these cells are about what the loop does with money, not about
+        // how an operator grouped registrations.
+        pools: Pools::new(plane, None, true, true),
+        breaker: NothingTripped,
+        door: Door::new(InMemoryCells::new()),
+        pricer: Pricer::flat(1),
+        chain: BucketChain::unchecked(Vec::new(), Vec::new()),
+        scope: crate::root::policy::ScopePolicy::new().declaring(
+            claim_key(),
+            ops::OP_TOOL_CALL,
+            Scope::Full,
+        ),
+        meter_policy: crate::root::policy::build(&crate::root::policy::MeterPolicyConfig::default()),
+        durability: std::sync::Mutex::new(memory_durability()),
+        origin: busbar_kernel::teller::Kernel::new().origin(busbar_caps::OriginKind::Client),
+        record: ArrivalRecord {
+            source: "198.51.100.7:52344".to_string(),
+            port: 8443,
+            alpn: Some("h2".to_string()),
+            sni: Some("mcp.example".to_string()),
+            peer_cert: None,
+            transport_chain: vec!["tcp", "tls", "http"],
+        },
+    }
+}
+
+/// One tool call of this plane, as the plane already read it: a record leg that appends the
+/// call, and the hop to the registration that serves it.
+fn a_tool_call() -> McpDraft<'static> {
+    McpDraft {
+        op: ops::OP_TOOL_CALL,
+        tool: Some("read_file"),
+        plan: vec![
+            DestinationFacts::PlaneRecord {
+                schema: records::SCHEMA_CALL,
+                op: records::OP_APPEND,
+            },
+            DestinationFacts::Upstream {
+                transport: claims::TRANSPORT_HTTP,
+                address: busbar_contract::UpstreamAddress::socket("127.0.0.1:9"),
+                lane: LaneId::new("fs-lane"),
+            },
+        ],
+        record: RecordSubject {
+            key: "call-1",
+            parent: Some("task-1"),
+            seq: 0,
+            body: b"{}",
+            terminal: true,
+            expires_at: 0,
+        },
+        request_bytes: 10,
+        response_bytes: 40,
+        finish: busbar_contract::unit::FinishClass::Complete,
+    }
+}
+
+/// The context a client's own call arrives under.
+fn mcp_ctx() -> UnitCtx {
+    UnitCtx {
+        key: busbar_contract::ids::UnitKey::new(1),
+        origin: busbar_caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    }
+}
+
+/// Bind one node to one draft and one caller's grants, and hand back the leg the loop holds.
+fn leg<'r>(
+    node: &'r Node,
+    catalogue: &'r Catalogue<'r>,
+    records: &'r Records,
+    draft: McpDraft<'r>,
+    held: Grants,
+) -> McpUnits<'r> {
+    McpUnits::new(
+        McpBindings {
+            plane: node.plane,
+            record: &node.record,
+            claim_transport: claims::TRANSPORT_HTTP,
+            presented: None,
+            under_scheme: false,
+            auth: &node.auth,
+            auth_bindings: &node.auth_bindings,
+            trust: &Trust,
+            views: Views {
+                pools: &node.pools,
+                facts: catalogue,
+                breaker: &node.breaker,
+            },
+            pool: "fs",
+            scope_policy: &node.scope,
+            door: &node.door,
+            pricer: &node.pricer,
+            chain: Some(&node.chain),
+            prices: ClassPrices {
+                tool_calls: 7,
+                bytes: 2,
+            },
+            records,
+            meter_policy: &node.meter_policy,
+            durability: &node.durability,
+            origin: node.origin,
+            at: Clocks {
+                wall: 1_700_000_000,
+                mono: 0,
+            },
+        },
+        draft,
+        held,
+    )
+}
+
+/// **An MCP call over the root is metered.** One call, driven through the kernel's own loop,
+/// produces exactly ONE posting; the class it settles under is the byte-shaped class the plane
+/// declares; and the flat fee is the count the kernel's own rule produces from the evidence the
+/// leg reports — not a figure this cell decided for itself.
+///
+/// Before the leg existed as a leg the loop could not have run at all: the twelve steps were
+/// free functions in this file, so there was no `Units` value to hand it. What the tree had was
+/// a plane whose every part was proved and whose traffic was priced at nothing.
+#[test]
+fn one_mcp_call_over_the_root_posts_once_under_the_class_the_plane_declares() {
+    use busbar_kernel::teller::{fee_count, Ended as LoopEnd, Kernel};
+
+    let kernel = Kernel::new();
+    let node = node();
+    let catalogue = Catalogue::upstream_only(node.plane, seam());
+    let records = Records::new(&node.adapter);
+    let unit = leg(
+        &node,
+        &catalogue,
+        &records,
+        a_tool_call(),
+        Grants::of(Scope::Full),
+    );
+    let ledger = crate::root::harness::RecordingLedger::new();
+
+    let ended = crate::root::harness::run(&kernel, &unit, &mcp_ctx(), "vk_mcp", &ledger);
+    let LoopEnd::Settled { end, requests, fee } = ended else {
+        panic!("the loop settles a unit it admitted");
+    };
+    assert_eq!(
+        end.outcome(),
+        busbar_caps::Outcome::Completed,
+        "every step the loop calls answered"
+    );
+
+    // THE CLASS. The exit path writes the posting's one usage line under `evidence.class`, so
+    // what the leg reports there IS the class the money lands on. It is the plane's own
+    // byte-shaped class, read back rather than restated.
+    let evidence = Units::evidence(&unit, &mcp_ctx());
+    assert_eq!(
+        evidence.class,
+        Some(CLASS_BYTES),
+        "the class the plane declares is the class the posting settles under"
+    );
+    assert_eq!(
+        evidence.located,
+        Some(40),
+        "and what it located is the answer document the Meter step folded"
+    );
+
+    // THE FEE, by the kernel's rule and not by this cell's opinion of it.
+    assert_eq!(
+        fee,
+        fee_count(&evidence.fee).0,
+        "the loop's fee is the one the kernel's rule produces from the leg's evidence"
+    );
+    assert_eq!(
+        fee, 1,
+        "a client's call that reaches the registration pays one"
+    );
+    assert_eq!(
+        requests, 1,
+        "and draws one request slot, which is never released"
+    );
+
+    // EXACTLY ONE POSTING. The exit arm puts it on the journal; the journal is what says how
+    // many there were.
+    let posted = end.into_posted().expect("the posting was made");
+    unit.settle(
+        &PrincipalId::new("vk_mcp"),
+        posted,
+        &busbar_caps::DurabilityToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
+    )
+    .expect("the memory-buffered journal takes it");
+    let replayed = read_through_poison(&node.durability)
+        .journal
+        .replay()
+        .expect("reads back")
+        .expect("verifies");
+    assert_eq!(replayed.len(), 1, "one call, one posting");
+    assert_eq!(
+        ledger.rows().len(),
+        1,
+        "and the loop settled it exactly once"
+    );
+}
+
+/// **A refused MCP call posts nothing.** The same call, from a caller holding a read-only grant,
+/// is refused at the approve step — and a unit that never passed the door is charged nothing:
+/// no money settles, no fee posts, no request slot is consumed, and the books stay at zero.
+///
+/// The pairing is the point. A leg that posted on every unit would pass the cell above and be
+/// charging refused callers; a leg that posted on none would pass this one and bill nobody.
+#[test]
+fn a_refused_mcp_call_over_the_root_posts_nothing() {
+    use busbar_kernel::teller::{Ended as LoopEnd, Kernel};
+
+    let kernel = Kernel::new();
+    let node = node();
+    let catalogue = Catalogue::upstream_only(node.plane, seam());
+    let records = Records::new(&node.adapter);
+    // A read-only grant against an operation the policy declares `Full`: the scope unit refuses,
+    // and it refuses BEFORE the door, which is what makes the charge zero rather than refunded.
+    let unit = leg(
+        &node,
+        &catalogue,
+        &records,
+        a_tool_call(),
+        Grants::of(Scope::ReadOnly),
+    );
+    let ledger = crate::root::harness::RecordingLedger::new();
+
+    let ended = crate::root::harness::run(&kernel, &unit, &mcp_ctx(), "vk_mcp", &ledger);
+    let LoopEnd::Settled { end, requests, fee } = ended else {
+        panic!("the loop seals the end of a unit it refused");
+    };
+    assert_eq!(
+        end.outcome(),
+        busbar_caps::Outcome::Refused(busbar_caps::StepName::Approve, ReasonCode::ScopeDenied),
+        "the refusal is the scope unit's, at the step that raised it"
+    );
+    assert_eq!(fee, 0, "a unit that never passed the door pays no fee");
+    assert_eq!(requests, 0, "and draws no request slot");
+
+    let posted = end.into_posted().expect("the end is sealed either way");
+    assert_eq!(posted.settled(), 0, "nothing was spent");
+    assert_eq!(posted.overdraft(), 0, "and nothing was carried out");
+    unit.settle(
+        &PrincipalId::new("vk_mcp"),
+        posted,
+        &busbar_caps::DurabilityToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel()),
+    )
+    .expect("the memory-buffered journal takes it");
+    let key = balance(&PrincipalId::new("vk_mcp"));
+    let window = busbar_unit_admission::budget_window(
+        busbar_unit_admission::window::WINDOW_DAY,
+        1_700_000_000,
+    );
+    let figures = read_through_poison(&node.durability)
+        .ledger
+        .book()
+        .get(&key, window);
+    assert_eq!(figures.settled, 0, "a refused call moves no money");
+    assert_eq!(figures.overdraft_carried_out, 0);
+    assert_eq!(
+        ledger.rows().first().map(|row| row.amount),
+        Some(0),
+        "the loop's own record of the run agrees: nothing accrued"
+    );
+}

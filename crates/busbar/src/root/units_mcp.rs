@@ -1755,6 +1755,15 @@ struct Progress {
     lanes: Vec<LaneId>,
     /// Whether any leg of the plan was dispatched.
     dispatched: bool,
+    /// WHAT THE UNIT ACCRUED WHILE IT RAN, which is the kernel's own floor under it.
+    ///
+    /// Written at the routing step, where the accrual is made, and zero until then — because that
+    /// is what a unit that never got there accrued. It is not the request document's size: the
+    /// settlement table's estimated row posts this floor for every end that is not a completion, so
+    /// a leg reporting the document here posts the document's size for a caller who was refused
+    /// before the door and consumed nothing at all. The floor is a reading of what happened, and
+    /// nothing happened.
+    accrued: u64,
     /// What the metering step located. `None` is a unit that never got an answer to hand back.
     metered: Option<u64>,
     /// Whether the metering step disputed its own reading.
@@ -1841,23 +1850,21 @@ impl<'r> McpUnits<'r> {
             shape: self.draft.shape(),
             origin,
             finish: self.draft.finish,
-            request_bytes: self.draft.request_bytes,
+            request_bytes: progress.accrued,
             metered: progress.metered,
             dispatched: progress.dispatched,
             principal: progress.principal.as_ref(),
-            // The record names the finest thing the approve step judged: the tool where a call
-            // named one, and the registration otherwise. The tool's name is the caller's own and
-            // lives as long as the decoded unit, which is why it is carried rather than interned.
-            resource: match self.draft.tool.filter(|t| !t.is_empty()) {
-                Some(tool) if self.draft.op == ops::OP_TOOL_CALL => Some(Resource {
-                    kind: SCOPE_KIND_TOOL,
-                    name: tool,
-                }),
-                _ => self.bindings.plane.servers().first().map(|s| Resource {
-                    kind: SCOPE_KIND_SERVER,
-                    name: s.id,
-                }),
-            },
+            // The record names what the approve step judged: the REGISTRATION. Naming the tool
+            // instead would be finer and is what the record should eventually say, but `Resource`
+            // on this tree carries a `&'static str` — a name interned at registration — and a
+            // caller's tool name is neither static nor interned. Carrying it needs the
+            // lifetime-parameterised `Resource<'n>` and the tool-scoped `approve`/`resources` pair
+            // that go with it, which are a separate wave; until they land, the record says the
+            // coarser true thing rather than a finer one it cannot hold.
+            resource: self.bindings.plane.servers().first().map(|s| Resource {
+                kind: SCOPE_KIND_SERVER,
+                name: s.id,
+            }),
         }
     }
 
@@ -2009,10 +2016,14 @@ impl Units for McpUnits<'_> {
         _principal: &PrincipalId,
         _destinations: &[VerifiedDestination],
     ) -> Decision<busbar_caps::Approve> {
+        // The tree's `approve` scopes by OPERATION CLASS over the registration; the tool-scoped
+        // form the leg was written against (`approve(plane, op, tool, …) -> Vec<Resource<'n>>`)
+        // belongs to the same unlanded wave as `Resource<'n>` above. The step still runs, still
+        // refuses on all three arms, and still judges the same grants — it judges them one level
+        // coarser than the leg's own comment describes.
         match approve(
             &self.bindings.plane,
             self.draft.op,
-            self.draft.tool,
             self.grants,
             self.bindings.scope_policy,
         ) {
@@ -2156,6 +2167,11 @@ impl Units for McpUnits<'_> {
         // metering step. The meter is the kernel's running total and the hold is applied to it at
         // the exit, which is why this is an accrual and not a posting.
         meter.accrue(self.draft.request_bytes);
+        // And the same figure onto the unit's own reading of what it accrued, which is the floor the
+        // settlement table posts for an end that is not a completion. Written HERE and nowhere else:
+        // a unit refused before this step accrued nothing, and a floor read off the draft instead
+        // would charge a refused caller for the document it was refused over.
+        read_through_poison(&self.progress).accrued = self.draft.request_bytes;
         // How far this unit's reservation may still grow, read off the same chain the door was
         // judged against. A caller whose caps could not be read is a headroom of zero: a reservation
         // that does not grow, never a unit that does not run.
