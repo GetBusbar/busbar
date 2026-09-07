@@ -14,10 +14,12 @@
   "accepted": [
     {
       "id": "D-1 diagnostic codes",
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller)\\|",
+      "expected_cells": 461,
       "kind": "improvement",
       "changelog": "Every error and warning line carries a diagnostic code.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): this entry carried no `cells`, so it defaulted to `.` and ran over all 2299 cells -- and a fired transform used to hand the cell's whole raw class list to the accepted column, so any cell where this rewrite happened to fire could have a `status` forgiven by it. The lines it rewrites live in a process's stderr or its stdout, which only the exec- and script-driven cells have; the scope is those families and nothing else. ORIGINAL RATIONALE: 1.6.0 prefixes every [error]/[warn]/warning: stderr line with a diagnostic code (BUSBAR-NNNN:) and every boot log line with diag=BUSBAR-NNNN; the text after the code is byte-identical to 1.5.5.",
       "transform": {
         "candidate": [
           [
@@ -33,10 +35,12 @@
     },
     {
       "id": "D-2 jemalloc line is info",
+      "cells": "^(auth\\.lifecycle|boot\\.refusal|boot\\.warning|cli|config\\.migrate|cooldown|documented|hazard|neutrality|plugins\\.load|plugins\\.store-persist|teller)\\|",
+      "expected_cells": 461,
       "kind": "improvement",
       "changelog": "The jemalloc background-purge line is `[info]` on macOS",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "rationale": "On macOS the jemalloc background-thread line is [info] with an explanation instead of 1.5.5's [warn]; same fallback behaviour.",
+      "rationale": "SCOPE (added 2026-09-06, shadow-oracle round-5): same as D-1 -- no `cells` meant the whole corpus. The jemalloc line is a BOOT LOG line, so it can only appear on a cell that runs the binary: the exec- and script-driven families. ORIGINAL RATIONALE: On macOS the jemalloc background-thread line is [info] with an explanation instead of 1.5.5's [warn]; same fallback behaviour.",
       "transform": {
         "candidate": [
           [
@@ -52,6 +56,7 @@
       "changelog": "One new `/metrics` series on a 1.5.5 config:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^ops\\.scrape\\|metrics\\||^neutrality\\|metrics-series$|^crosscut\\.traps\\|request-duration-quantiles$",
+      "expected_cells": 6,
       "rationale": "One additive /metrics series on a 1.5.5 config: busbar_metering_pending_coalesced_total (write-behind overflow sentinel). No 1.5.5 series changed.",
       "transform": {
         "candidate": [
@@ -68,6 +73,7 @@
       "changelog": "Admin views gained fields; none changed.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|(GetHooksName|GetHooks)\\|ok$|^hooks\\|admin-list$|^hooks\\|register\\|plugin-alias$|^admin\\.ops\\|DeleteOverlaySection\\|not-found$|^admin\\.ops\\|(DeleteHooksName|PatchHooksNameSettings|PutHooksName|PostHooks)\\|ok$|^admin\\.ops\\|PostHooks\\|if-match-stale$",
+      "expected_cells": 10,
       "classes": [
         "body",
         "headers"
@@ -79,6 +85,7 @@
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage; split out 2026-09-05 (round-3 audit)",
       "cells": "^admin\\.ops\\|(PostHooks|PutHooksName|PatchHooksNameSettings|DeleteHooksName)\\|ok$",
+      "expected_cells": 4,
       "classes": [
         "effects.readback"
       ],
@@ -91,10 +98,11 @@
       "changelog": "Validation messages know the new keys.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09)\\|validate$",
+      "expected_cells": 5,
       "classes": [
         "effects.stderr"
       ],
-      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better — it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, …` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence — its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement."
+      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better — it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, …` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence — its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement. COUNT FOLLOWS THE NARROWING: `expected_cells` is 5, one per BOOT-P id this entry still names (P20, P29, P30, P07, P09) — not the 7 it forgave before BOOT-020 and BOOT-043b were removed above. The declared width is derived from the regex it accompanies, so a later widening of one without the other is caught by the differ rather than silently forgiven."
     },
     {
       "id": "F-013b the unknown pool member is refused by the resolver, not the validator",
@@ -113,6 +121,7 @@
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 parity triage",
       "cells": "^boot\\.refusal\\|BOOT-P32\\|validate$",
+      "expected_cells": 1,
       "classes": [
         "effects.stderr"
       ],
@@ -125,6 +134,7 @@
       "changelog": "a plugin download failure quotes the HTTP client's current error text",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^boot\\.(refusal|warning)\\|BOOT-(141|W24)\\|boot$",
+      "expected_cells": 2,
       "classes": [
         "body",
         "effects.stderr"
@@ -137,6 +147,7 @@
       "changelog": "`--help` documents `-c`/`--config` and `--providers`; `--version` prints a second line.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^(cli\\|(--help|-h|--version|-V)|documented\\|readme\\|env-launch)$",
+      "expected_cells": 5,
       "classes": [
         "body"
       ],
@@ -148,6 +159,7 @@
       "changelog": "Bedrock text blocks no longer open with an empty `contentBlockStart`.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^llm\\|bedrock\\|[a-z]+\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -160,6 +172,7 @@
       "changelog": "Responses API streams carry the lifecycle frames the spec declares:",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^llm\\|responses\\|[a-z]+\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -172,6 +185,7 @@
       "changelog": "a non-2xx records the breaker outcome by status class, honouring the upstream `Retry-After` as the cooldown floor, and emits the upstream-failure series",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down$|^route\\.failover\\|fo\\|primary-429$",
+      "expected_cells": 2,
       "classes": [
         "effects.metrics"
       ],
@@ -182,6 +196,7 @@
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-401$",
+      "expected_cells": 1,
       "classes": [
         "status",
         "body",
@@ -197,6 +212,7 @@
       "changelog": "a client-fault 4xx bumps the lane's `client_fault` counter",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-4[0-9][0-9]$",
+      "expected_cells": 1,
       "classes": [
         "effects.metrics"
       ],
@@ -207,6 +223,7 @@
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down-stream-openai$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "effects.egress",
@@ -222,10 +239,11 @@
       "changelog": "a pool member's `attempt_timeout_ms` override is honoured",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-slow$",
+      "expected_cells": 0,
       "classes": [
         "effects.metrics"
       ],
-      "rationale": "The pool-member attempt_timeout_ms override is now honoured on fallback/least-bad hops (the degraded path used only the lane-level value). The cap can only fire earlier where an operator set a tighter member override."
+      "rationale": "NAMED GAP, 2026-09-06 (oracle corpus audit): the `cells` regex above names `route.failover|fb|member-slow`, and THAT CELL DOES NOT EXIST. It has never existed -- `git log -S` over enumerate-cells.py finds no revision that defined it, and failover_cells() today yields sixteen `route.failover|*` ids of which none is `fb|member-slow` (the only `slow` cell is `fo|primary-slow`, which drives the PRIMARY pool's lane-level timeout and says so). So this entry matches zero cells and forgives nothing, and unlike M-1, M-2 and S-14 -- each of which states in its own rationale that it deliberately matches nothing today -- it read as though it were scoped. It is not scoped; it is unwitnessed. THE GAP IS TWO THINGS DEEP, which is why it cannot be closed by fixing a regex: oracle-config.sh's `oracle-fb` pool declares one member (`{ model: m-cohere }`) with NO per-member `attempt_timeout_ms` at all, so there is no tighter member override for a cell to observe being honoured. Closing it means a config change (a member override on the fallback pool), a new cell, and a recording from the published 1.5.5 binary -- an owner change with its own harness-revision consequences, not an audit edit. UNTIL THEN, STATED PLAINLY: the behaviour this entry accepts -- a member `attempt_timeout_ms` override taking effect on a fallback or least-bad hop, where the degraded path previously used only the lane-level value -- is UNTESTED by the oracle in either direction. Nothing proves 1.5.5 ignored the override and nothing would catch 1.6.0 applying it wrongly (firing too early on a hop the operator did not tighten, say). The entry accepts only `effects.metrics`, so no money or status class rides on it. ORIGINAL RATIONALE: The pool-member attempt_timeout_ms override is now honoured on fallback/least-bad hops (the degraded path used only the lane-level value). The cap can only fire earlier where an operator set a tighter member override."
     },
     {
       "id": "PR2-D9 degraded transport-error telemetry",
@@ -233,6 +251,7 @@
       "changelog": "a transport error emits the same upstream-failure and failover series",
       "by": "owner (Matthew Jackson), 2026-09-04 PR-2 attempt-seam D-table decision",
       "cells": "^route\\.failover\\|fb\\|member-down$|^route\\.failover\\|fb\\|all-down$|^route\\.failover\\|lb\\|member-down$",
+      "expected_cells": 3,
       "classes": [
         "effects.metrics"
       ],
@@ -244,6 +263,7 @@
       "changelog": "A Bedrock `Converse` response always carries `metrics`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "headers"
@@ -256,6 +276,7 @@
       "changelog": "An Anthropic response carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|ok(_stream)?$",
+      "expected_cells": 9,
       "classes": [
         "body",
         "headers"
@@ -268,6 +289,7 @@
       "changelog": "A chat completion's `logprobs` object carries `refusal`.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|responses)\\|request\\|ok$|^route\\.failover\\|(fo\\|primary-(429|5xx|down)|fo\\|second-request-after-trip|lb\\|up)$",
+      "expected_cells": 10,
       "classes": [
         "body",
         "headers"
@@ -280,6 +302,7 @@
       "changelog": "A Responses object carries the members its published schema requires.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|responses\\|(anthropic|bedrock|cohere|gemini|openai)\\|request\\|ok$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -292,6 +315,7 @@
       "changelog": "`openapi.json` describes the MCP and A2A endpoints",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
       "cells": "^admin\\.ops\\|GetOpenapiJson\\|ok$|^crosscut\\.traps\\|openapi-info-version$|^neutrality\\|routes\\|admin-openapi-paths$",
+      "expected_cells": 3,
       "classes": [
         "body",
         "headers"
@@ -304,6 +328,7 @@
       "changelog": "A `stream: true` request on the Responses door is answered as a stream.",
       "by": "owner (Matthew Jackson), 2026-09-04 maximum spec compliance",
       "cells": "^llm\\|responses\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "headers",
@@ -317,6 +342,7 @@
       "changelog": "Every door streams when the routed lane is Responses-shaped.",
       "by": "owner (Matthew Jackson), 2026-09-04 E7 conformance-rig triage",
       "cells": "^llm\\|(cohere|gemini|openai)\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 3,
       "classes": [
         "body",
         "headers"
@@ -329,6 +355,7 @@
       "changelog": "A streamed response's `usage` carries the same attribution buckets as a buffered one.",
       "by": "owner (Matthew Jackson), 2026-09-05 llm-codec audit",
       "cells": "^llm\\|[a-z_]+\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body"
       ],
@@ -340,6 +367,7 @@
       "changelog": "A failed request's flat fee is refunded even when its window rolled under it.",
       "by": "owner (Matthew Jackson), 2026-09-05 maximum spec compliance",
       "cells": "^billing\\|key-usage\\|refund-across-window$",
+      "expected_cells": 1,
       "classes": [
         "body",
         "headers"
@@ -352,21 +380,23 @@
       "changelog": "A stream that dies mid-flight is no longer served, and billed, as a completed one.",
       "by": "owner (Matthew Jackson), 2026-09-05 llm-codec audit",
       "cells": "^llm\\|[a-z_]+\\|(openai|cohere)\\|request\\|mid-stream-error(_stream)?$",
+      "expected_cells": 0,
       "classes": [
         "body"
       ],
-      "rationale": "NARROWED 2026-09-05 (round-4 audit): was `^llm\\|`, which forgave a body change on every one of the 127 recorded LLM cells -- any writer regression whose only symptom is a wrong response body would have reported PASS/ACCEPTED under this entry. The entry's own rationale states no recorded cell exercises either shape, so the honest scope is the two future cells that will (an inline `data: {\"error\":...}` chunk on an OpenAI-compatible stream, a terminal `finish_reason: \"ERROR\"` on a Cohere stream); until they are recorded this entry matches nothing. ORIGINAL RATIONALE: Two upstream mid-stream failure shapes were served, and billed, as clean successes. (1) An OpenAI-compatible backend (OpenAI, Azure, vLLM, OpenRouter) that fails AFTER its 200 headers are on the wire delivers the failure inline as a `data: {\"error\":{...}}` SSE chunk carrying no `choices`; the openai_chat stream reader guarded only on the [DONE] sentinel and `choices`, so the chunk decoded to nothing at all -- no IrStreamEvent::Error, so terminal_error() stayed None, the breaker recorded no fault, the partial completion was billed in full, and a cross-protocol client got balanced block-stops plus an ordinary terminator with no hint the answer was truncated. The gemini, bedrock, anthropic and openai_responses readers each already pushed an Error for their equivalent frame. (2) A Cohere stream ending on the generic infra `finish_reason: \"ERROR\"` decoded to IrStopReason::Error but pushed no Error event, and no other dialect's writer has a native token for that reason, so every cross-protocol writer rendered it as a success terminator (stop/end_turn) -- the same outcome by a different route. 1.5.5 had the identical gap (v1.5.5:crates/busbar/src/proto/openai_chat/reader.rs read_response_events carries the same two guards and no error arm), so this is a deliberate divergence from the pin, named in the 1.6.0 CHANGELOG under Improvements. Strictly in the operator's and the client's favour: a failed request stops being charged for, and a failing lane finally trips. ERROR_TOXIC is deliberately untouched -- it maps to IrStopReason::Safety, a content-moderation refusal is a correctly-served response, and faulting a lane for one would trip the breaker on ordinary safety behaviour. No successful stream changes on any dialect. NO RECORDED CELL EXERCISES EITHER SHAPE: the oracle mock has no mock_control verb that injects an inline error chunk or a terminal ERROR finish_reason (the closest, `cut`, severs the body rather than sending an error frame), so the recorded llm family is unchanged. The divergence classes this WOULD produce on such a cell are `status` and `effects.usage`, and this register's own rule reserves both for a kind=breaking entry naming a CHANGELOG line; this entry therefore accepts `body` only, and if a fixture is ever added that drives one of these shapes the entry must be promoted by the owner rather than widened here."
+      "rationale": "SCOPE IS DEAD AND SAYS SO, 2026-09-06 (oracle corpus audit) -- NOT WIDENED HERE, because widening a register entry is the owner's call and never an auditor's. Two facts about the `cells` regex above, both measured: (a) it names the outcome token `mid-stream-error`, which the enumeration has NEVER produced. enumerate-cells.py's mid-stream failure outcome is spelled `stream_upstream_error` (STREAM_UPSTREAM_ERROR_OUTCOME), so this regex has matched ZERO cells from the moment it was written -- not because the cells are unrecorded, but because no cell has ever borne that id. (b) The round-4 note below says the honest scope is 'the two future cells that will' exercise the shapes, and one of those cells is now PRESENT: the six `llm|<d>|<d>|request|stream_upstream_error` cells exist and carry `mock_control: {\"stream-error\": true}`, and mock-upstream.py's `openai_chat_stream_error` emits EXACTLY shape (1) -- one good chunk, then `data: {\"error\":{\"type\":\"server_error\",...}}` carrying no `choices`. So the sentence 'the oracle mock has no mock_control verb that injects an inline error chunk' below is out of date for the OpenAI arm; it remains true for shape (2), since `cohere_stream_error` sends an in-band `{\"type\":\"error\"}` event and not the terminal `finish_reason: \"ERROR\"` this entry names. CONSEQUENCE, stated so it cannot be discovered by surprise: those six cells are golden SKIPs today (`needs_fixture`, named gaps on the ledger), so nothing is owed and nothing is forgiven and the register is not currently laundering anything. On the day the integrator records them from the published 1.5.5 binary, `llm|openai|openai|request|stream_upstream_error` will diverge on exactly the frame this entry is about and this entry will NOT cover it -- an UNACCEPTED divergence, i.e. red. That is the fail-closed direction and it is left standing deliberately: the owner rescopes and re-reviews, rather than an audit quietly turning a zero-match entry into a two-match one. NARROWED 2026-09-05 (round-4 audit): was `^llm\\|`, which forgave a body change on every one of the 127 recorded LLM cells -- any writer regression whose only symptom is a wrong response body would have reported PASS/ACCEPTED under this entry. The entry's own rationale states no recorded cell exercises either shape, so the honest scope is the two future cells that will (an inline `data: {\"error\":...}` chunk on an OpenAI-compatible stream, a terminal `finish_reason: \"ERROR\"` on a Cohere stream); until they are recorded this entry matches nothing. ORIGINAL RATIONALE: Two upstream mid-stream failure shapes were served, and billed, as clean successes. (1) An OpenAI-compatible backend (OpenAI, Azure, vLLM, OpenRouter) that fails AFTER its 200 headers are on the wire delivers the failure inline as a `data: {\"error\":{...}}` SSE chunk carrying no `choices`; the openai_chat stream reader guarded only on the [DONE] sentinel and `choices`, so the chunk decoded to nothing at all -- no IrStreamEvent::Error, so terminal_error() stayed None, the breaker recorded no fault, the partial completion was billed in full, and a cross-protocol client got balanced block-stops plus an ordinary terminator with no hint the answer was truncated. The gemini, bedrock, anthropic and openai_responses readers each already pushed an Error for their equivalent frame. (2) A Cohere stream ending on the generic infra `finish_reason: \"ERROR\"` decoded to IrStopReason::Error but pushed no Error event, and no other dialect's writer has a native token for that reason, so every cross-protocol writer rendered it as a success terminator (stop/end_turn) -- the same outcome by a different route. 1.5.5 had the identical gap (v1.5.5:crates/busbar/src/proto/openai_chat/reader.rs read_response_events carries the same two guards and no error arm), so this is a deliberate divergence from the pin, named in the 1.6.0 CHANGELOG under Improvements. Strictly in the operator's and the client's favour: a failed request stops being charged for, and a failing lane finally trips. ERROR_TOXIC is deliberately untouched -- it maps to IrStopReason::Safety, a content-moderation refusal is a correctly-served response, and faulting a lane for one would trip the breaker on ordinary safety behaviour. No successful stream changes on any dialect. NO RECORDED CELL EXERCISES EITHER SHAPE: the oracle mock has no mock_control verb that injects an inline error chunk or a terminal ERROR finish_reason (the closest, `cut`, severs the body rather than sending an error frame), so the recorded llm family is unchanged. The divergence classes this WOULD produce on such a cell are `status` and `effects.usage`, and this register's own rule reserves both for a kind=breaking entry naming a CHANGELOG line; this entry therefore accepts `body` only, and if a fixture is ever added that drives one of these shapes the entry must be promoted by the owner rather than widened here."
     },
     {
       "id": "M-3 Cohere billed_units bill the same buffered and streamed",
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
-      "cells": "^llm\\|[a-z_]+\\|cohere\\|request\\|ok(_stream)?$|^billing\\|",
+      "cells": "^llm\\|[a-z_]+\\|cohere\\|request\\|ok(_stream)?$",
+      "expected_cells": 12,
       "classes": [
         "effects.usage",
         "body"
       ],
-      "rationale": "Cohere reports usage TWICE -- a raw `usage.tokens` bucket and a separately-metered `usage.billed_units` bucket -- and billed_units is the count Cohere itself invoices the operator on. 1.5.5 read only `tokens` (its cohere reader parsed usage.tokens on both the stream and the non-stream path; billed_units was never read) and billed those. 1.6.0 lets billed_input_tokens/billed_output_tokens win over the raw totals inside IrUsage::to_token_usage, the one projection the ledger reads. This entry covers the BUFFERED arm finally reaching that same projection: chat_usage (the projection behind ChatRespHandle::billing()) had been rebuilding TokenUsage from the RAW IrUsage totals, so a single completion was billed the billed counts when streamed and the raw counts when buffered -- two different invoices for one completion, decided only by the caller's stream flag. Both arms now answer identically. No other dialect populates the billed fields, so every other backend's ledgered counts stay byte-identical to 1.5.5. The oracle's own mock sends billed_units EQUAL to tokens, so no recorded cell moves today; the entry is registered ahead of any fixture that makes them differ, which is exactly what S-8's caveat requires.",
+      "rationale": "NARROWED 2026-09-06 (shadow-oracle round-5): the `cells` regex was `^llm\\|[a-z_]+\\|cohere\\|request\\|ok(_stream)?$|^billing\\|`. That trailing `|^billing\\|` alternation held this entry's `effects.usage` -- a MONEY class -- over all twelve `billing|*` cells (eleven of them owed), a family this entry's id, rationale and changelog line never mention. Those cells are the ledger's own views (key/group/admin usage, the refund window); a change to what busbar CHARGES, or to what it reports having charged, is precisely the divergence the oracle exists to catch, and it would have reported ACCEPTED under a Cohere waiver. Cohere reaches the billing views only through the same `llm|*|cohere|*` cells already named on the left of the alternation, so the honest scope is exactly those twelve and nothing else; `billing|key-usage|refund-across-window` has its own entry (M-1). The register now requires every entry to declare `expected_cells`, so an alternation bolted onto a live scope stops the run. ORIGINAL RATIONALE: Cohere reports usage TWICE -- a raw `usage.tokens` bucket and a separately-metered `usage.billed_units` bucket -- and billed_units is the count Cohere itself invoices the operator on. 1.5.5 read only `tokens` (its cohere reader parsed usage.tokens on both the stream and the non-stream path; billed_units was never read) and billed those. 1.6.0 lets billed_input_tokens/billed_output_tokens win over the raw totals inside IrUsage::to_token_usage, the one projection the ledger reads. This entry covers the BUFFERED arm finally reaching that same projection: chat_usage (the projection behind ChatRespHandle::billing()) had been rebuilding TokenUsage from the RAW IrUsage totals, so a single completion was billed the billed counts when streamed and the raw counts when buffered -- two different invoices for one completion, decided only by the caller's stream flag. Both arms now answer identically. No other dialect populates the billed fields, so every other backend's ledgered counts stay byte-identical to 1.5.5. The oracle's own mock sends billed_units EQUAL to tokens, so no recorded cell moves today; the entry is registered ahead of any fixture that makes them differ, which is exactly what S-8's caveat requires.",
       "changelog": "1.6.0 Improvements: a Cohere backend's `usage.billed_units` is what the key is billed, on both the buffered and the streamed path"
     },
     {
@@ -374,6 +404,7 @@
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 round-3 audit",
       "cells": "^llm\\|bedrock\\|[a-z_]+\\|request\\|ok(_stream)?$",
+      "expected_cells": 11,
       "classes": [
         "body"
       ],
@@ -385,6 +416,7 @@
       "kind": "improvement",
       "by": "owner (Matthew Jackson), 2026-09-05 oracle Phase 0 group-budget-total cell",
       "cells": "^llm\\|anthropic\\|anthropic\\|request\\|over_budget_total$",
+      "expected_cells": 1,
       "classes": [
         "body"
       ],
@@ -397,6 +429,7 @@
       "changelog": "**A Responses URL citation survives the hop.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok(_stream)?$",
+      "expected_cells": 12,
       "classes": [
         "body",
         "headers"
@@ -409,6 +442,7 @@
       "changelog": "**A Bedrock `cachePoint` before a document no longer sends the document twice.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|[a-z]+\\|bedrock\\|request\\|ok(_stream)?$",
+      "expected_cells": 12,
       "classes": [
         "body",
         "headers"
@@ -421,6 +455,7 @@
       "changelog": "**A Responses function-call item the writer refused to open no longer announces itself.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body",
         "headers"
@@ -433,6 +468,7 @@
       "changelog": "**An Anthropic `redacted_thinking` block closes only if it opened.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -445,6 +481,7 @@
       "changelog": "**A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -457,6 +494,7 @@
       "changelog": "**A Gemini speech response that carries no audio is no longer served as an MP3.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|[a-z]+\\|gemini\\|speech\\|",
+      "expected_cells": 0,
       "classes": [
         "body",
         "headers"
@@ -469,11 +507,53 @@
       "changelog": "**One stream states one id.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error)$",
+      "expected_cells": 31,
       "classes": [
         "body",
         "headers"
       ],
       "rationale": "Spec fidelity: a stream is not guaranteed to carry exactly one IR MessageStart. Five of the six readers gate it on their own started flag, but the Anthropic reader emits it 1:1 with the upstream message_start frame, so ANY egress fed from an Anthropic ingress can see two. 1.5.5's Anthropic, OpenAI-Chat, Gemini and Cohere writers each answered the second one by synthesizing a FRESH id, and the Responses writer latched only its sequence_number reset, not response.id -- so one message announced itself twice under two different identities. Every published streaming contract here fixes the id for the life of the message (a native OpenAI stream repeats ONE id on every chunk; a native Gemini stream's responseId is constant; the Responses SDK reads event.response.id on the terminal event to finalize), and the official SDKs latch the id from the FIRST frame that supplies it -- so the client was left correlating against an id nothing else in the stream ever mentions, and the Responses duplicate additionally disagreed with its own response.completed. 1.6.0 gives each of the five writers a per-stream id cell captured on the opening event and replayed thereafter, carried across a mid-stream Protocol::clone for the same reason the sibling open-block state already is. Byte-identical on every stream with a single opening event, which is every stream from the five gating readers. Stream bodies only; no status or usage class is waived. Owner rule: maximum spec compliance wins over 1.5.5 bytes."
+    },
+    {
+      "id": "K-1 rotate refuses an overlong key id like its siblings",
+      "kind": "breaking",
+      "changelog": "1.6.0 Improvements: rotate refuses an overlong key id like its siblings.",
+      "by": "owner (Matthew Jackson), 2026-09-06 oracle overlong-id coverage",
+      "cells": "^admin\\.ops\\|PostKeysIdRotate\\|overlong-id$",
+      "expected_cells": 1,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "`reject_overlong_id` is a per-handler call, and `POST /api/v1/admin/keys/{id}/rotate` was the one `/keys/{id}` handler that never made it: read/patch/delete/usage/revoke all answer 400 `invalid_request` / \"id must be <= 64 characters\", rotate fell through to 404 `not_found` / \"key not found\". Rotate is also the handler where an unbounded id costs the most -- it is the only one that keys a process-global idempotency cache on the caller's bytes (`rotate:{id}:{k}`), retaining an entry sized by the request for the entry's full TTL -- so the guard sits ahead of the idempotency block rather than beside the governance check. 1.5.5's own contract omitted `Validation / Overlong` from this endpoint's declared error set; declaring it regenerates openapi.json purely additively. REGISTERED `breaking`, NOT `improvement`, because the differ permits only a `breaking` entry with a changelog line to accept the `status` class (diff-cells.py MONEY_CLASSES) -- 404 -> 400 is a status change on a refusal path, and the register's own rule is that no `improvement` may forgive one. In substance this is an improvement: a request that was refused is still refused, with the siblings' code and message instead of a misleading not-found. SCOPE: exactly one cell id. Every other `/keys/{id}` overlong-id cell must stay byte-identical to 1.5.5 -- five handlers that already have the bound may not move, and this entry cannot forgive them if they do."
+    },
+    {
+      "id": "D-3 money is a lookup over quantities against a dated rate-card history",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a rate-card edit prices what happens after it, not what happened before it.",
+      "by": "owner (Matthew Jackson), 2026-09-06 rate-card history decision",
+      "cells": "^(billing\\|rate-card\\|(epoch|history)-mid-window|ledger\\|rate-history\\|as-of)$",
+      "expected_cells": 3,
+      "classes": [
+        "effects.usage",
+        "body"
+      ],
+      "rationale": "1.5.5 stores raw token counts and derives spend_micros AT READ TIME from the CURRENT cost model (crates/busbar-core/src/admin/v1/service.rs:2187, :2230; contract/mod.rs:1077-1079 'MUTABLE ESTIMATE'), so a PUT /config/settings rate_card re-prices every past row with no restart and no epoch boundary. 1.6.0 keeps quantities as the stored truth and keeps deriving the amount at read time, but derives it against the card in force AT THE POSTING'S INSTANT, read from an append-only dated rate-card history (design docs/design/rate-card-history.md §2.3, §9; ARCHITECTURE.md PB-103). A window with no mid-window card change answers BYTE-IDENTICALLY -- a single-entry history effective from instant 0 IS that card, same rates, same order, same saturation, same single truncation -- and a window with one answers with the money each request was actually earned under. SCOPE IS THREE CELL IDS, NAMED IN FULL, NOT A FAMILY PREFIX. They are exactly the recorded cells whose money moves, and each is recorded from the published 1.5.5 binary (48e2800c) BEFORE the change, so the divergence has a judge that predates it: (1) billing|rate-card|epoch-mid-window -- one mid-window 100x card; a window totalling 10,000,000 micro-units reads back as 1,000,120,000. (2) billing|rate-card|history-mid-window -- TWO cards in one window with /usage read after each; recorded 25,000,000 / 500,060,000 / 750,090,000, i.e. the first request reported at three different prices over the life of one window. Under the history only the LAST read moves (to 277,530,000): the two earlier reads were already the honest figure at their own instant and stay byte-identical, which is why the entry names `body` and `effects.usage` and nothing else. (3) ledger|rate-history|as-of -- GET /admin/usage?as_of=1. 1.5.5 IGNORES the parameter silently, returns the current-card reprice (1,000,120,000) and reports its own as_of as 0, contradicting the URL; 1.6.0 honours it. That is a different number under unchanged request bytes on the legacy endpoint, so it belongs to this breaking entry and not to the additive one, even though the parameter itself is new. The other nine billing| cells and every hazard|, plugins.store-persist| and admin.ops| cell stay IDENTICAL: none edits a card mid-window, so each runs against a single-entry history. ledger|currency|minor-unit-rounding is deliberately OUTSIDE this scope and may not be forgiven by it: it reads /usage under a single-entry sub-cent card (spend_micros 18 per row, 54 as an exact sum, no minor-unit projection anywhere) and must stay byte-identical, which is the identity test's statement 2 stated as a cell. REGISTERED breaking, NOT improvement, because the differ permits only a breaking entry with a changelog line to accept a money class (diff-cells.py MONEY_CLASSES) and spend_micros moving is one. Back-dating is still available and is now attributable: the signed amend-rate-history verb appends a dated entry and emits one journaled, operator-signed repricing record per affected (window, bucket) carrying the old and new card, the quantities, both amounts and the delta, so the original line and the correction are both visible forever and no booked line is rewritten.",
+      "changelog_reason": null
+    },
+    {
+      "id": "D-4 dated rate-card history, native currencies, and the signed amend verb",
+      "kind": "improvement",
+      "changelog": "The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.",
+      "by": "owner (Matthew Jackson), 2026-09-06 rate-card history decision",
+      "cells": "^(ledger\\|(amend|currency)\\||config\\|rate-card\\|append-not-replace$)",
+      "expected_cells": 5,
+      "classes": [
+        "body",
+        "headers"
+      ],
+      "rationale": "The ADDITIVE half of the rate-card history (design docs/design/rate-card-history.md §11.3): /api/v1/admin/ledger/{rate-history,repricings} are new reads; /api/v1/admin/ledger/amend-rate-history is a new operator-signed write in the irreducible set; the ledger reads gain optional ?as_of=<history_seq> and ?currency=<CCY> and echo history_seq, head, currency and the adjusting entries. A card prices in one or more currencies natively, with no pivot and no conversion. No 1.5.5 path, field or byte is touched: crates/busbar-core/src/admin/v1/json/openapi.json is unchanged and the 1.6.0 operations are described at docs/openapi-1.6.0-additive.json, reached by name at GET /api/v1/admin/ledger/openapi.json. WHAT MAKES THAT CLAIM CHECKABLE RATHER THAN ASSERTED: each cell in scope is recorded from the published 1.5.5 binary (48e2800c) answering the 1.6.0 call, so 'this surface is new' is a diff and not a belief. ledger|amend|adjusting-entries and ledger|amend|refused-unsigned both record 404 not_found / 'resource not found', BYTE-IDENTICAL to each other -- the router's generic miss, not a 405 from a path that exists for another method -- which is the proof the refusal is about the ROUTE and that 1.5.5 knows nothing about operator signatures. ledger|currency|native records 400 invalid_request, 'unknown field `currency`, expected one of `input_utok`, `output_utok`, `cache_read_utok`, `cache_write_utok`': 1.5.5 REFUSES the per-entry currency key rather than accepting and dropping it, so 1.6.0 honouring it cannot change the meaning of any card an operator can write today. config|rate-card|append-not-replace records the 400 that makes §4.1 well-defined ('rate_card is AUTHORITATIVE and COMPLETE'), including its eight-model remediation block, and STAYS a 400. ledger|currency|minor-unit-rounding is in scope for its /usage shape only and must not move at all: it is a single-entry history and its figures (18 per row, 54 total, no minor-unit projection) are the USD baseline §3.3's per-currency exponent has to leave alone. NO MONEY CLASS IS WAIVED HERE, deliberately. classes is `body`/`headers` only, so this entry cannot forgive a status. The four cells that answer 404/400 today will answer differently once the routes exist, and that status move is NOT accepted by this entry: it is M6's to register when it lands, with its own scope and its own line. Naming the gap is the point -- an acceptance whose scope is 'whatever the new endpoints end up doing' is one nobody can audit."
     }
   ]
 }

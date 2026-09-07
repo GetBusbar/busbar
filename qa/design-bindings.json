@@ -15,16 +15,16 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 101,
-  "unproven": 0,
+  "mapped": 102,
+  "unproven": 1,
   "unmapped": 0,
-  "gap": 2,
+  "gap": 0,
   "checks_by_kind": {
    "gate": 13,
-   "lint": 5,
-   "oracle-cell": 50,
+   "lint": 4,
+   "oracle-cell": 58,
    "oracle-family": 5,
-   "test": 448
+   "test": 452
   }
  },
  "owner_decisions": {
@@ -1880,7 +1880,7 @@
    "surface": "ABI-2 store adapter fallback",
    "binding": "`call_with_legacy_default` verbatim: only `TransportErrorKind::Unsupported` opens a default, on `append_audit` / `list_audit` / `list_audit_tail` / `list_denylist`; everything else propagates",
    "inventory": "plugins-stores",
-   "status": "gap",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -1923,8 +1923,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "GAP",
-   "verdict_detail": "DECLARED GAP (qa/design-bindings-gaps.json): proven by oracle-cell:plugins.store-persist|store-sqlite, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:every_other_failure_shape_propagates_on_every_verb; not proven on plugins.store-persist|store-mysql, plugins.store-persist|store-postgres, plugins.store-persist|store-valkey -- oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:every_other_failure_shape_propagates_on_every_verb"
   },
   {
    "id": "PB-38",
@@ -3482,7 +3482,7 @@
    "surface": "inventory precedence for bindings",
    "binding": "where a binding paraphrases an inventory row, the row (and the code at the tag behind it) wins; a binding found to misread its row is corrected, never the row — the round-3 corrections to PB-1, PB-4, PB-22, PB-26, PB-35, PB-38, PB-39, PB-52, PB-57 are the precedent",
    "inventory": "1.5.5-BEHAVIOUR precedence",
-   "status": "mapped",
+   "status": "unproven",
    "checks": [
     {
      "kind": "lint",
@@ -3491,8 +3491,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "PASS",
-   "verdict_detail": "lint:scripts/inventory-ref-lint.py"
+   "verdict": "FAIL",
+   "verdict_detail": "UNPROVEN: nothing this binding cites compares anything today -- lint:scripts/inventory-ref-lint.py"
   },
   {
    "id": "PB-73",
@@ -4304,7 +4304,7 @@
    "surface": "1.6.0-only store ops on an ABI-2 store",
    "binding": "the ABI-2 adapter answers every 1.6.0-only operation (`append_batch`, `record_put/get/scan`, `session_*`, `reserve/release`, `heads`, keyset seal) with a NODE-LOCAL in-memory shim (consistent with PB-13: the keyset is ephemeral and unused on such a deployment) — never an error, never a log line, never a boot refusal — so boot and serving on a 1.5.5 sqlite/postgres/mysql/valkey store are byte-identical; the journal on such a deployment is memory-buffered exactly as PB-13 states for `data_dir` unset; durability = the legacy rows' durability, the 1.5.5 rule",
    "inventory": "plugins-stores; governance",
-   "status": "gap",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -4347,8 +4347,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "GAP",
-   "verdict_detail": "DECLARED GAP (qa/design-bindings-gaps.json): proven by oracle-cell:plugins.store-persist|store-sqlite, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:a_real_answer_passes_through_untouched; not proven on plugins.store-persist|store-mysql, plugins.store-persist|store-postgres, plugins.store-persist|store-valkey -- oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:plugins.store-persist|store-mysql, oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, oracle-cell:plugins.store-persist|store-valkey, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:a_real_answer_passes_through_untouched"
   },
   {
    "id": "PB-94",
@@ -4694,7 +4694,7 @@
      "ref": "admin.ops",
      "status": "mapped",
      "cites": 44,
-     "family_size": 234,
+     "family_size": 240,
      "source": "cells.json why"
     },
     {

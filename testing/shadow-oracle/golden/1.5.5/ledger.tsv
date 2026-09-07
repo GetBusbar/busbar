@@ -490,6 +490,7 @@ admin.ops|DeleteKeysId|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|DeleteKeysId|if-match-stale	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteKeysId|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|DeleteKeysId|ok	PASS	HTTP 204; usage Δ {}	
+admin.ops|DeleteKeysId|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteKeysId|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|DeleteOverlaySection|if-match-malformed	PASS	HTTP 400; usage Δ {}	
 admin.ops|DeleteOverlaySection|if-match-stale	PASS	HTTP 409; usage Δ {}	
@@ -552,9 +553,11 @@ admin.ops|GetInfo|ok	PASS	HTTP 200; usage Δ {}
 admin.ops|GetInfo|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeysIdUsage|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetKeysIdUsage|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetKeysIdUsage|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|GetKeysIdUsage|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeysId|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|GetKeysId|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|GetKeysId|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|GetKeysId|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|GetKeys|ok	PASS	HTTP 200; usage Δ {}	
 admin.ops|GetKeys|unauth	PASS	HTTP 401; usage Δ {}	
@@ -606,6 +609,7 @@ admin.ops|PatchKeysId|if-match-malformed	PASS	HTTP 400; usage Δ {}
 admin.ops|PatchKeysId|if-match-stale	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchKeysId|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PatchKeysId|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|PatchKeysId|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|PatchKeysId|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostAuthCacheFlush|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostAuthCacheFlush|ok	PASS	HTTP 200; usage Δ {}	
@@ -638,10 +642,12 @@ admin.ops|PostHooks|ok	PASS	HTTP 200; usage Δ {}
 admin.ops|PostHooks|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeysIdRevoke|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRevoke|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|PostKeysIdRevoke|overlong-id	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostKeysIdRevoke|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeysIdRotate|idempotent-replay	PASS	HTTP 200; usage Δ {}	
 admin.ops|PostKeysIdRotate|not-found	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRotate|ok	PASS	HTTP 200; usage Δ {}	
+admin.ops|PostKeysIdRotate|overlong-id	PASS	HTTP 404; usage Δ {}	
 admin.ops|PostKeysIdRotate|unauth	PASS	HTTP 401; usage Δ {}	
 admin.ops|PostKeys|bad-body	PASS	HTTP 400; usage Δ {}	
 admin.ops|PostKeys|idempotent-replay	PASS	HTTP 201; usage Δ {}	
@@ -715,6 +721,8 @@ billing|key-usage|broke-after-429	PASS	HTTP 200; usage Δ {}
 billing|key-usage|fresh	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|noscope-after-403	PASS	HTTP 200; usage Δ {}	
 billing|key-usage|refund-across-window	SKIP	UNSUPPORTED: a request that straddles the window roll: its flat per-request fee must be refunded from the SAME cell the charge landed on, so the view rea	named gap: the fixture this cell needs is not in the tree yet
+billing|rate-card|epoch-mid-window	PASS	HTTP 200; usage Δ {}	
+billing|rate-card|history-mid-window	PASS	script rate-card-history.sh: status 0	
 boot.refusal|BOOT-001|validate	PASS	exit 1; 	
 boot.refusal|BOOT-002|validate	PASS	exit 1; 	
 boot.refusal|BOOT-003|validate	PASS	exit 1; 	
@@ -1106,6 +1114,7 @@ config.migrate|v1.5.2_examples_claude-code-bedrock|migrate	PASS	exit 0; listen: 
 config.migrate|v1.5.2_examples_claude-code-bedrock|validate-migrated	PASS	exit 0; ok: config valid — 1 provider(s), 1 model(s), 1 pool(s)   	
 config.migrate|v1.5.2|migrate	PASS	exit 0; listen: 0.0.0.0:8080 pools:   haiku:     members:     - mode	
 config.migrate|v1.5.2|validate-migrated	PASS	exit 0; ok: config valid — 5 provider(s), 7 model(s), 10 pool(s)  	
+config|rate-card|append-not-replace	PASS	HTTP 400; usage Δ {}	
 cooldown|trip-then-serve	PASS	script cooldown-trip.sh: status 200	
 crosscut.traps|exhausted-retry-after-floor	PASS	HTTP 503; usage Δ {"requests":1}	
 crosscut.traps|openapi-info-version	PASS	HTTP 200; usage Δ {}	
@@ -1175,6 +1184,11 @@ http.crosscut|unknown-path|bare	PASS	HTTP 404; usage Δ {}
 http.crosscut|unknown-path|openai-suffix	PASS	HTTP 400; usage Δ {}	
 http.crosscut|wrong-method|GET-messages	PASS	HTTP 405; usage Δ {}	
 http.crosscut|x-api-key-only|bad	PASS	HTTP 401; usage Δ {}	
+ledger|amend|adjusting-entries	PASS	HTTP 404; usage Δ {}	
+ledger|amend|refused-unsigned	PASS	HTTP 404; usage Δ {}	
+ledger|currency|minor-unit-rounding	PASS	HTTP 200; usage Δ {}	
+ledger|currency|native	PASS	HTTP 400; usage Δ {}	
+ledger|rate-history|as-of	PASS	HTTP 200; usage Δ {}	
 llm|anthropic|anthropic|request|malformed	PASS	HTTP 400; usage Δ {}	
 llm|anthropic|anthropic|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|anthropic|anthropic|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
@@ -1203,6 +1217,7 @@ llm|bedrock|anthropic|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"s
 llm|bedrock|anthropic|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|bedrock|bedrock|request|malformed	PASS	HTTP 400; usage Δ {}	
 llm|bedrock|bedrock|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|bedrock|bedrock|request|ok_cachepoint_document	SKIP	UNSUPPORTED: happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the rea	named gap: the fixture this cell needs is not in the tree yet
 llm|bedrock|bedrock|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|bedrock|bedrock|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|bedrock|bedrock|request|over_budget	PASS	HTTP 429; usage Δ {}	
@@ -1307,6 +1322,7 @@ llm|responses|openai|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"sp
 llm|responses|openai|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|responses|responses|request|malformed	PASS	HTTP 400; usage Δ {}	
 llm|responses|responses|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|responses|responses|request|ok_citation	SKIP	UNSUPPORTED: happy path whose ANSWER carries a URL citation: the Responses annotation the published UrlCitationBody FLATTENS onto the annotation object, 	named gap: the fixture this cell needs is not in the tree yet
 llm|responses|responses|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|responses|responses|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|responses|responses|request|over_budget	PASS	HTTP 429; usage Δ {}	
@@ -2254,6 +2270,7 @@ ops.scrape|metrics|none	PASS	HTTP 401; usage Δ {}
 ops.scrape|stats|key	PASS	HTTP 200; usage Δ {}	
 ops.scrape|stats|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1betamodels	PASS	HTTP 200; usage Δ {}	
+ops.scrape|v1modelsid|retrieve	PASS	HTTP 405; usage Δ {}	
 ops.scrape|v1models|anthropic-fp	PASS	HTTP 200; usage Δ {}	
 ops.scrape|v1models|none	PASS	HTTP 401; usage Δ {}	
 ops.scrape|v1models|openai-fp	PASS	HTTP 200; usage Δ {}	
