@@ -9,7 +9,8 @@
 # WHAT "DONE" MEANS HERE — the umbrella asserts, as ONE verdict, that every sub-gate is green:
 #   build            the full-gate cargo battery (shell out to scripts/full-gate.sh; else an explicit
 #                    cargo build/clippy/test-compile battery).
-#   plane-purity     scripts/plane-purity-lint.sh --check  (neutral crates 0 side channels / 0 backwards).
+#   plane-purity     cargo xtask gate plane-purity  (neutral crates 0 side channels / 0 backwards),
+#                    plus the strict ratchet, which nothing invoked while it was a shell flag.
 #   plane-delete     scripts/plane-delete-test.sh --all     (llm/mcp/a2a/voice each deletable).
 #   byte-identity    the MONEY PATH is byte-stable: openapi_json_matches_committed_file,
 #                    resolved_billing_and_limits_config_is_byte_stable, and the 6 busbar-llm-codec
@@ -290,8 +291,9 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "PLANE-PURITY — neutral crates carry no side channel (0/0)"
-step "plane-purity-lint --selftest" bash scripts/plane-purity-lint.sh --selftest
-step "plane-purity-lint --check"    bash scripts/plane-purity-lint.sh --check
+step "plane-purity --selftest" cargo xtask gate plane-purity --selftest
+step "plane-purity gate"       cargo xtask gate plane-purity
+step "plane-purity --strict"   cargo xtask gate plane-purity-strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────

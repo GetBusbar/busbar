@@ -327,7 +327,7 @@ tier   = "fast"
 # concrete plane key/dialect/record-type, or plane→busbar_core:: back-reach fails this gate RED.
 # The self-test (proving the scanner catches the four planted side channels) also runs per-push in
 # ci.yml, so the scanner's own honesty is continuously verified alongside the tree verdict.
-run    = "scripts/plane-purity-lint.sh --selftest && scripts/plane-purity-lint.sh --check"
+run    = "cargo xtask gate plane-purity --selftest && cargo xtask gate plane-purity"
 
 [[segment]]
 id     = "plane-grep"

@@ -1,19 +1,20 @@
-# qa/plane-purity-strict.toml — ceilings for `scripts/plane-purity-lint.sh --strict`.
+# qa/plane-purity-strict.toml — ceilings for `cargo xtask gate plane-purity-strict`.
 #
-# WHY. `--check` only ever looked at PRODUCTION code in the neutral crates and the plane crates.
+# WHY. `cargo xtask gate plane-purity` only ever looks at PRODUCTION code in the neutral crates and the plane crates.
 # Test code was invisible to it on purpose (a plane's own test fixtures legitimately name its own
 # types), but that also means test code can quietly accumulate the very side channels --check bans
 # in production — most visibly a plane crate's tests reaching into `busbar_core::` internals, which
-# pins the plane to core's private shape just as surely as production code would. `--strict` makes
+# pins the plane to core's private shape just as surely as production code would. the strict gate makes
 # that debt visible and ratchets it down, the same ratchet shape as qa/construction.toml.
 #
 # HOW A CEILING WORKS. Every number below is the count MEASURED ON THE TREE the day this file was
-# written (so `--strict` is GREEN today). It is a ceiling, not a target: `--strict` fails RED only
+# written (so the strict gate is GREEN today). It is a ceiling, not a target: it fails RED only
 # when the measured count goes ABOVE it. Lower a number by hand as the debt is paid down — the gate
 # never lowers it for you, and a lowered number that goes stale (measurement now below it) still
 # passes, so tightening is always safe to do eagerly.
 #
-# [categories] — the same six side-channel classes --check already enforces in PRODUCTION scope
+# [categories] — the same six side-channel classes `cargo xtask gate plane-purity` already enforces
+# in PRODUCTION scope
 # (PATH-INCLUDE/SYMBOL/TYPE/KEY/DIALECT/BACKWARDS), now counted across PRODUCTION + TEST scope
 # combined. Production is already 0 for every one of these (that is what makes --check green), so
 # today each ceiling equals the TEST-scope count only.
@@ -26,11 +27,11 @@ DIALECT = 453
 BACKWARDS = 33
 
 # [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching
-# scripts/plane-keys.sh), test scope only: how many lines under crates/busbar-<key>/src's OWN test
+# the plane keys in xtask::planes), test scope only: how many lines under crates/busbar-<key>/src's OWN test
 # code (files under /tests/, *_tests.rs, or a #[cfg(test)] mod block) name `busbar_core::`. This is
 # the same measurement scripts/construction-gate.sh reports per crate as `ports-only-tests:<crate>`
 # (qa/construction.toml carries llm=565, mcp=1, a2a=3, voice=0); this file's llm figure differs by
-# one measured method (awk line-scan here vs. the ported python tree-scanner there) — both agree to
+# one measured method (the xtask line-scan here vs. the python tree-scanner there) — both agree to
 # within a single line and neither claims exactness beyond "test code reaching busbar_core:: is
 # visible and ratchets down", which is the point of both gates.
 [test-reach]

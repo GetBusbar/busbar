@@ -384,9 +384,9 @@ jobs:
       # unwatched again. The deletion test then proves the strong form: each plane crate is physically
       # removable (`git rm -r`) with the neutral crates + bin still compiling — no neutral→plane edge.
       - name: Plane-purity lint self-test (the side-channel scanner cannot be lied to)
-        run: scripts/plane-purity-lint.sh --selftest
+        run: cargo xtask gate plane-purity --selftest
       - name: Plane-purity gate (BLOCKING — no side channel in the neutral crates)
-        run: scripts/plane-purity-lint.sh --check
+        run: cargo xtask gate plane-purity
       # VOICE-TRANSPORT/MEDIA neutrality — the FORWARD-edge companion to plane-purity. plane-purity bans
       # the plane KEYS + LLM dialects; this bans the Plane-4 (busbar-voice) TRANSPORT/MEDIA nouns
       # (rtc/sdp/webrtc/twilio/dtmf/rtp/sideband/realtime/audio/mulaw/g711/barge) that plane-purity does

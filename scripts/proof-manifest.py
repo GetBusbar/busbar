@@ -200,41 +200,49 @@ def verdict_byte_identity(root, run_cargo):
 def verdict_plane_neutrality(root, hits_dir):
     sources = []
 
-    # plane-purity-lint: per-category table + TOTAL.
+    # plane-purity: the gate's own ledger rows, and its hit artefact for the drilldown.
+    # The COUNTS come from the artefact rather than from the printed report: the artefact carries a
+    # #SCAN denominator line, so "clean" and "scanned nothing" stay distinguishable here too.
     pp_out = hits_dir / "plane-purity-hits.tsv"
-    st_code, _ = run(["bash", "scripts/plane-purity-lint.sh", "--selftest"], cwd=root, timeout=300)
+    st_code, _ = run(["cargo", "xtask", "gate", "plane-purity", "--selftest"], cwd=root, timeout=300)
     code, text = run(
-        ["bash", "scripts/plane-purity-lint.sh", "--check"],
+        ["cargo", "xtask", "gate", "plane-purity", "--format=tsv"],
         cwd=root,
         env={"PLANE_PURITY_HITS_OUT": str(pp_out)},
         timeout=300,
     )
-    cats = parse_count_table(text, ["PATH-INCLUDE", "SYMBOL", "TYPE", "KEY", "DIALECT", "BACKWARDS"])
-    total = scrape_total(text)
+    cat_names = ["PATH-INCLUDE", "SYMBOL", "TYPE", "KEY", "DIALECT", "BACKWARDS"]
+    cats = {c: 0 for c in cat_names}
+    total = 0
+    if pp_out.exists():
+        for line in pp_out.read_text().splitlines():
+            cat = line.split("\t", 1)[0]
+            if cat in cats:
+                cats[cat] += 1
+                total += 1
     sources.append({
         "id": "plane-purity-lint",
         "evidence": "scripts/plane-purity-lint.sh",
         "evidence_present": (root / "scripts/plane-purity-lint.sh").is_file(),
         "kind": "gate",
         "status": "pass" if code == 0 else "fail",
-        "count": total if total is not None else -1,
+        "count": total,
         "breakdown": cats,
         "selftest": "pass" if st_code == 0 else "fail",
         "runs_in": ["ci.yml:structure-lint", "qa/segments.toml:plane-purity"],
         "drilldown": {"type": "hit-list", "artifact": "plane-purity-hits.tsv"},
     })
 
-    # g6 freeze witness: scalar count.
-    code, text = run(["bash", "scripts/g6-freeze-witness.sh"], cwd=root, timeout=120)
-    m = re.search(r"references to concrete LLM-family IR types:\s*(\d+)", text)
-    g6 = int(m.group(1)) if m else None
+    # g6 freeze witness: a scalar, now one row of the plane-purity gate above rather than its own
+    # script. Read off the ledger row's detail, which is the counted table the witness printed.
+    m = re.search(r"plane-purity:core-llm-family-freeze\t(\w+)\t[^\t]*\tcount=(\d+)", text)
     sources.append({
         "id": "g6-freeze-witness",
         "evidence": "scripts/g6-freeze-witness.sh",
         "evidence_present": (root / "scripts/g6-freeze-witness.sh").is_file(),
         "kind": "gate",
-        "status": "pass" if code == 0 else "fail",
-        "count": g6 if g6 is not None else -1,
+        "status": "pass" if m and m.group(1) == "PASS" else "fail",
+        "count": int(m.group(2)) if m else -1,
     })
 
     # plane-grep gate: report-only meter, per-needle table + TOTAL.

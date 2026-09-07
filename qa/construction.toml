@@ -147,7 +147,7 @@ max_uninstalled = 0
 # ── 5. neutral-no-dialect ────────────────────────────────────────────────────────────────────────
 [rules.neutral-no-dialect]
 why = """The neutral crates (busbar-core, busbar-substrate, busbar-api) must not know a dialect or \
-a plane by name. This rule is a thin delegation to scripts/plane-purity-lint.sh, which owns the \
+a plane by name. This rule is a thin delegation to `cargo xtask gate plane-purity`, which owns the \
 scanner, the noun list and the frozen-wire allow-list; the construction gate only counts its \
 DIALECT and KEY rows so there is one policy, not two."""
 categories = ["DIALECT", "KEY"]
