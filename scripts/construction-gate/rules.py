@@ -2156,6 +2156,16 @@ SINGLETON_IDS = (
     "hold-discipline:cancellation-before-await", "hold-escapes", "seal-sites", "kernel-seal-impls",
     "secret-carrier-debug", "no-escaped-newline-doc-comment", "unit-no-wall-clock",
     "unit-no-finding-ids", "plane-no-money", "one-pricing-site", "one-pricing-site:fee-fields",
+    # `legacy-reach` is the BARE id: the one gating ratchet of that rule, over the total across
+    # every prefix. The per-prefix `legacy-reach:<key>` rows below it are WARN sub-rows that gate
+    # nothing, and they were the only ones this list derived (from the prefixes table) -- so the
+    # single row that decides the rule was never owed, and the verdict never looked at it. It has
+    # been FAIL on this tree, at 95 distinct symbols against a ratchet of 92, while `--check`
+    # reported six failures and not that one.
+    "legacy-reach",
+    # The same shape, from the other side of the same merge: two ratchets whose ids no subject list
+    # generates, so nothing owed them either.
+    "no-test-doubles-in-production", "no-test-doubles-in-production:doubles",
     "rule-census",
 )
 
