@@ -249,37 +249,32 @@ fn amend(
 
 // ── the table ──────────────────────────────────────────────────────────────────────────────────
 
-/// The verb is one of the eighteen, it is irreducible in both postures, and the two new reads are
-/// ledger views. A verb missing from the irreducible set is one a fleet under `operator: unset`
-/// would admit, which is a full-scope credential repricing a booked window on a node that has never
-/// run the ceremony.
+/// The verb is one of the eighteen and it is irreducible in both postures. A verb missing from the
+/// irreducible set is one a fleet under `operator: unset` would admit, which is a full-scope
+/// credential repricing a booked window on a node that has never run the ceremony. A verb missing
+/// from the new-verb set is worse: it would fall through `required_scope` to `ReadOnly` and reach no
+/// posture gate at all.
 #[test]
 fn the_amend_verb_is_a_new_verb_and_an_irreducible_one() {
     assert!(NEW_VERBS.contains(&KernelVerb::AmendRateHistory));
     assert_eq!(NEW_VERBS.len(), 18);
     assert!(IRREDUCIBLE_VERBS.contains(&KernelVerb::AmendRateHistory));
-    assert!(LEDGER_VERBS.contains(&KernelVerb::GetLedgerRateHistory));
-    assert!(LEDGER_VERBS.contains(&KernelVerb::GetLedgerRepricings));
-    assert_eq!(LEDGER_VERBS.len(), 7);
     assert_eq!(
         crate::verbs::required_scope(KernelVerb::AmendRateHistory),
         VerbScope::Full
     );
-    assert_eq!(
-        crate::verbs::required_scope(KernelVerb::GetLedgerRateHistory),
-        VerbScope::ReadOnly
-    );
+    // The views the amendment sits beside are unchanged in number and in rung: this verb joined
+    // their path prefix, not their list.
+    assert_eq!(LEDGER_VERBS.len(), 5);
+    assert!(!LEDGER_VERBS.contains(&KernelVerb::AmendRateHistory));
 }
 
-/// A read never spends a mutation slot, including the two new ones.
+/// An amendment spends a mutation slot, and the reads it sits beside still do not.
 #[test]
-fn the_two_new_reads_never_spend_a_mutation_budget() {
-    for verb in [
-        KernelVerb::GetLedgerRateHistory,
-        KernelVerb::GetLedgerRepricings,
-    ] {
+fn the_amendment_spends_a_mutation_budget_and_the_views_still_do_not() {
+    for verb in LEDGER_VERBS {
         assert_eq!(
-            crate::rate::MutationClass::for_verb(verb, CONFIG_CLASS_RULES),
+            crate::rate::MutationClass::for_verb(*verb, CONFIG_CLASS_RULES),
             crate::rate::MutationClass::Forbidden
         );
     }

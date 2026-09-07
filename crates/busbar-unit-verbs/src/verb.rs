@@ -10,7 +10,7 @@
 //!   `tests/table_matches_openapi.rs` that fails the build if this list and the committed fixture
 //!   ever disagree, by even one operation or one scope;
 //! - one of the **18 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
-//! - one of the **seven 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
+//! - one of the **five 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
 //!   ledger already holds, so they are the one group of 1.6.0 additions that is `ReadOnly` rather
 //!   than `Full`, and the only group that is never posture-gated: reading a figure changes nothing,
 //!   so there is no mutation for dual control to check. They carry no legacy row because they are
@@ -344,12 +344,6 @@ pub enum KernelVerb {
     /// `GET /api/v1/admin/ledger/openapi.json` — the additive document describing the 1.6.0
     /// operations, served beside the 1.5.5 document rather than inside it.
     GetLedgerOpenapiJson,
-    /// `GET /api/v1/admin/ledger/rate-history` — the dated, append-only card history, entry by
-    /// entry, so a reader can see what a figure was priced against without re-deriving it.
-    GetLedgerRateHistory,
-    /// `GET /api/v1/admin/ledger/repricings` — the adjusting entries an amendment left behind, each
-    /// naming both card entries, both figures and the delta between them.
-    GetLedgerRepricings,
 
     // ---- named non-admin surfaces ----
     /// `POST /auth/token` — the self-serve exchange (exempt from dual control in both postures).
@@ -724,7 +718,14 @@ pub const NEW_VERBS: &[KernelVerb] = &[
 /// does not exist.
 pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[KernelVerb::Verify, KernelVerb::PlaneFacts];
 
-/// The seven 1.6.0 ledger views, in the order the admin surface lists them.
+/// The five 1.6.0 ledger views, in the order the admin surface lists them.
+///
+/// The dated card history adds two more reads to this list — `get_rate_history` and
+/// `get_repricings` — and they are not here yet: a view is only half a verb until the composition
+/// root can render what it reads, and neither has a body to render until the ledger's own read
+/// surface carries the history entries and the adjusting entries. Naming them here first would put
+/// two rows in the closed table that decode to a `NotFound`, which is a surface that exists and
+/// does not answer.
 ///
 /// Kept as their own list rather than folded into [`NEW_VERBS`] because membership of that list is
 /// what makes a verb posture-gated and `Full`-scoped, and neither is true of a read. A view answers
@@ -737,8 +738,6 @@ pub const LEDGER_VERBS: &[KernelVerb] = &[
     KernelVerb::GetLedgerReconciliation,
     KernelVerb::GetLedgerMigration,
     KernelVerb::GetLedgerOpenapiJson,
-    KernelVerb::GetLedgerRateHistory,
-    KernelVerb::GetLedgerRepricings,
 ];
 
 /// The named non-admin surfaces, each pinned by its own handler in 1.5.5, not by this crate's

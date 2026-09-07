@@ -1276,6 +1276,7 @@ fn verb_name(verb: KernelVerb) -> &'static str {
         KernelVerb::Adjust => "adjust",
         KernelVerb::ExportKeyset => "export_keyset",
         KernelVerb::Approve => "approve",
+        KernelVerb::AmendRateHistory => "amend_rate_history",
         KernelVerb::GetLedgerTotals => "get_ledger_totals",
         KernelVerb::GetLedgerCheckpoints => "get_ledger_checkpoints",
         KernelVerb::GetLedgerReconciliation => "get_ledger_reconciliation",
@@ -1768,9 +1769,15 @@ fn verbs_reason(reason: busbar_unit_verbs::ReasonCode) -> ReasonCode {
         V::InsufficientApprovers | V::SelfApproval | V::PayloadMismatch | V::ApprovalPending => {
             ReasonCode::HookVeto
         }
-        V::OperatorUnset => ReasonCode::ScopeDenied,
+        // An operator whose ceremony has not run and an operator whose signature does not verify
+        // are the same event to the kernel: the authority the verb needed was not presented. It is
+        // NOT a hook veto — nothing vetoed anything, and it is not a decode failure — the request
+        // parsed perfectly and said something the node will not do on this credential's word alone.
+        V::OperatorUnset | V::OperatorSignatureInvalid => ReasonCode::ScopeDenied,
         V::IdempotencyInFlight | V::Conflict => ReasonCode::OpenSlotBusy,
-        V::Validation => ReasonCode::DecodeFailed,
+        // The two interval refusals are the amendment's arguments being wrong, which is the same
+        // step `Validation` lands at: the caller named a window the history cannot carry.
+        V::Validation | V::HistoryHole | V::PredatesOpening => ReasonCode::DecodeFailed,
         V::StoreError | V::Internal => ReasonCode::DurabilityUnavailable,
     }
 }
