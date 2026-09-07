@@ -196,6 +196,10 @@ pub struct SecretRefFx {
 }
 
 impl<'de> Deserialize<'de> for SecretRefFx {
+    fn visit_str<E>(self, _v: &str) -> Result<SecretRefFx, E> {
+        Err(Self::inline_literal())
+    }
+
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error> {
         while let Some(key) = map.next_key::<String>()? {
             match key.as_str() {
@@ -213,6 +217,13 @@ RS
     "$tmp/fx/secretref-base.rs" >"$tmp/fx/secretref-retyped.rs"
   sed 's/"env" =>/"environment" =>/' \
     "$tmp/fx/secretref-base.rs" >"$tmp/fx/secretref-sugar-renamed.rs"
+  # HOLE 4 — the REFUSED input forms. Neither of the two mutations above touches them, and neither
+  # does this one touch a wire key or a field type: `visit_str` simply stops refusing, so a bare
+  # inline literal becomes an acceptable secret reference. Before `refused` was recorded this
+  # rendered a BYTE-IDENTICAL fingerprint — the gate reported "no schema delta" while the one
+  # property the type exists for went away.
+  sed 's|        Err(Self::inline_literal())|        Ok(SecretRefFx::from_env(_v))|' \
+    "$tmp/fx/secretref-base.rs" >"$tmp/fx/secretref-inline-ok.rs"
 
   # (2) The upstream-credential grammar, which lives beside the auth middleware.
   cat >"$tmp/fx/creds-base.rs" <<'RS'
@@ -393,7 +404,17 @@ PY
     "$tmp/fx/secretref-base.rs" "$tmp/fx/secretref-retyped.rs"
   gen_case "secret-ref SUGAR spelling renamed is RED"        3 \
     "$tmp/fx/secretref-base.rs" "$tmp/fx/secretref-sugar-renamed.rs"
+  # HOLE 4 — a REFUSED input form stops being refused. The stricter arm: this WIDENS the grammar,
+  # which the additive-only rule everywhere else would wave through, and the widened form is an
+  # inline secret literal. Both directions are red; see refused_forms() in config-schema.py.
+  gen_case "secret-ref REFUSAL dropped (inline literal now accepted) is RED"  3 \
+    "$tmp/fx/secretref-base.rs" "$tmp/fx/secretref-inline-ok.rs"
+  gen_case "secret-ref REFUSAL added (a form that parsed now fails) is RED"   3 \
+    "$tmp/fx/secretref-inline-ok.rs" "$tmp/fx/secretref-base.rs"
   gen_fp "$tmp/fx/secretref-base.rs" "$tmp/fx-secretref.json" || fails=$((fails + 1))
+  py_assert "hand-written Deserialize: refused input forms fingerprinted" \
+    'assert t["manual-de SecretRefFx"]["refused"] == ["str"], t["manual-de SecretRefFx"]' \
+    "$tmp/fx-secretref.json"
   py_assert "hand-written Deserialize: wire keys fingerprinted" \
     'assert set(t["manual-de SecretRefFx"]["wire_keys"]) == {"module", "settings", "env", "file"}, t["manual-de SecretRefFx"]' \
     "$tmp/fx-secretref.json"
@@ -518,6 +539,11 @@ assert f["carried_key"] == {"type": "CarriedCfg", "optional": True}, f["carried_
     'assert "SecretRef" in t and set(t["manual-de SecretRef"]["wire_keys"]) >= {"module", "settings", "env", "file"}, sorted(k for k in t if "Secret" in k)'
   py_assert "coverage: SecretRef member types are fingerprinted" \
     'assert t["manual-de SecretRef"]["fields"]["module"]["type"] == "String", t["manual-de SecretRef"]'
+  # THE REAL TREE's SecretRef, not a fixture: all six inline-scalar spellings must be on record as
+  # refused. `api_key: 483920175534` and `api_key: true` are perfectly ordinary YAML, and unquoted
+  # is the spelling nobody thinks to check — so the assertion names the whole set rather than `str`.
+  py_assert "coverage: SecretRef's inline-literal refusals are fingerprinted" \
+    'assert t["manual-de SecretRef"]["refused"] == ["bool", "bytes", "f64", "i64", "str", "u64"], t["manual-de SecretRef"]'
   py_assert "coverage: UpstreamCreds IS fingerprinted" \
     'assert t["UpstreamCreds"]["variants"] == ["own", "passthrough"], t.get("UpstreamCreds")'
   py_assert "coverage: every derived container records its serde flags" \
@@ -619,7 +645,9 @@ assert t["AuthDeployCfg"]["fields"]["policy"]["type"] == "AuthPolicyCfg", t["Aut
   # is the false green this project has already been burned by three times in one night. Assert the
   # cases actually EXECUTED, and pin the floor to the count at the time of writing so deleting
   # coverage is itself RED.
-  local want_cases=64
+  # 64 before the REFUSED-input-forms arm landed; +4 for it (two gen_case red proofs, one fixture
+  # assertion, one over the real tree). The floor only ever rises.
+  local want_cases=68
   if [ "$cases" -lt "$want_cases" ]; then
     red "  FAIL  self-test executed only $cases case(s); expected at least $want_cases."
     red "        Coverage was deleted, or the suite exited early — either way this is NOT a pass."
