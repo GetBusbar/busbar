@@ -33,7 +33,7 @@ fi
 
 # ── Job 1: fmt · structure · clippy · build · test (default features) ──
 step "fmt --all --check"                 cargo fmt --all -- --check
-[ -x scripts/structure-lint.sh ] && step "structure-lint" ./scripts/structure-lint.sh
+step "structure-lint"                    cargo xtask gate structure-lint
 # The config-mutation compile fence: a transaction body that reaches a store or
 # awaits must NOT type-check. The script inverts the verdict, so a clean build there fails here.
 [ -x scripts/txn-fence.sh ] && step "txn compile fence" ./scripts/txn-fence.sh

@@ -33,7 +33,7 @@ jobs:
 
       # Eight script invocations, because the runner's discovery floor is eight and a fixture that
       # tripped the floor would prove nothing about the joining.
-      - run: bash scripts/structure-lint.sh
+      - run: bash scripts/release-script-lint.sh
       - run: python3 scripts/public-hygiene-lint.py
       - run: python3 scripts/workspace-deps-lint.py
       - run: bash scripts/no-deferral-gate.sh

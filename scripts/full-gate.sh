@@ -147,6 +147,8 @@ declare -a CARGO_LOCAL=(
   "cargo xtask gate plane-abi-neutrality"
   "cargo xtask gate duplex-ws-default-edge --selftest"
   "cargo xtask gate duplex-ws-default-edge"
+  "cargo xtask gate structure-lint --selftest"
+  "cargo xtask gate structure-lint"
 )
 
 declare -a CARGO_CI_ONLY=(
@@ -396,7 +398,12 @@ if [ "${1:-}" = "--selftest" ]; then
   # discovery silently dropped: a gate in a language the parser did not know about is not skipped
   # with a reason, it is absent from both lists and from the counts. Keeping a non-shell,
   # non-python gate named here is what stops the extension set narrowing back.
-  for must in scripts/structure-lint.sh scripts/public-hygiene-lint.py scripts/workspace-deps-lint.py \
+  # `structure-lint.sh` used to head this list and came off it the day it became
+  # `cargo xtask gate structure-lint`: a MUST entry naming a script ci.yml no longer runs would fail
+  # for the one reason this case is not about. `release-script-lint.sh` takes its place as the shell
+  # witness — the list needs one of each LANGUAGE, and it keeps needing one for as long as any gate
+  # is still shell.
+  for must in scripts/release-script-lint.sh scripts/public-hygiene-lint.py scripts/workspace-deps-lint.py \
               scripts/check-proof-manifest-public.mjs; do
     if printf '%s\n' "${DISCOVERED[@]}" | grep -q "$must"; then
       printf '  [ok]     %s is discovered\n' "$must"
