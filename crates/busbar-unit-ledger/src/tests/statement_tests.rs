@@ -298,7 +298,10 @@ fn an_amendment_does_not_move_settled_and_the_residual_stays_zero_through_it() {
     let k = key("b");
     ledger.record_draw(&k, WINDOW, 1_000);
     ledger.book_mut().entry(k.clone(), WINDOW).settled = 600;
-    ledger.book_mut().entry(k.clone(), WINDOW).open_slice_remainders = 400;
+    ledger
+        .book_mut()
+        .entry(k.clone(), WINDOW)
+        .open_slice_remainders = 400;
 
     let since = Totals::zero();
     let was = ledger.book().get(&k, WINDOW);
