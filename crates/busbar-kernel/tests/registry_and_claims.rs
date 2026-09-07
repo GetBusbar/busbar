@@ -64,6 +64,40 @@ fn every_form() -> Vec<Selector> {
     ]
 }
 
+/// The fixture's own totality check: an exhaustive match with no catch-all, so a selector form
+/// added to the grammar stops this file compiling until it has a representative in `every_form`.
+///
+/// Without it the fixture was a hand-kept list, and the walk below is only over the forms the list
+/// happens to name: a new form would have been added to the grammar, evaluated by the boot check,
+/// and never once asked here whether its overlap answer is total, reflexive or symmetric.
+fn form_of(selector: &Selector) -> &'static str {
+    match selector {
+        Selector::ExactPath(_) => "exact-path",
+        Selector::PrefixOneLevel(_) => "prefix-one-level",
+        Selector::PathPattern(_) => "path-pattern",
+        Selector::PathSuffix(_) => "path-suffix",
+        Selector::PathContains(_) => "path-contains",
+        Selector::HeaderExact(..) => "header-exact",
+        Selector::HeaderPresent(_) => "header-present",
+        Selector::HeaderPrefix(..) => "header-prefix",
+        Selector::Sni(_) => "sni",
+        Selector::ClientCertSubject(_) => "client-cert-subject",
+        Selector::StreamName(_) => "stream-name",
+        Selector::Alpn(_) => "alpn",
+        Selector::Port(_) => "port",
+    }
+}
+
+#[test]
+fn the_fixture_carries_one_selector_of_every_form() {
+    let mut named: Vec<&'static str> = every_form().iter().map(form_of).collect();
+    let listed = named.len();
+    named.sort_unstable();
+    named.dedup();
+    assert_eq!(named.len(), listed, "two selectors of one form in the fixture");
+    assert_eq!(listed, 13, "one selector per form, and thirteen forms");
+}
+
 #[test]
 fn overlap_is_total_reflexive_and_symmetric_over_every_form_pair() {
     let forms = every_form();

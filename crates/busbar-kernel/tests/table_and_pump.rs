@@ -39,6 +39,14 @@ fn enter(kernel: &Kernel, key: u64, origin: OriginKind) -> Enter {
 fn the_reserve_is_a_tenth_of_the_table_and_only_where_sessions_exist() {
     assert_eq!(reserve_for(100, true), 10);
     assert_eq!(reserve_for(100, false), 0);
+    // A tenth OF THE TABLE, and not the number ten: one table size cannot tell the two apart, and a
+    // constant reserve on a large node is a reserve of a tenth of a percent.
+    assert_eq!(reserve_for(1_000, true), 100);
+    assert_eq!(reserve_for(40, true), 4);
+    assert_eq!(reserve_for(1_000, false), 0);
+    // Below ten slots a tenth rounds down to nothing, which is the whole table serving arrivals.
+    assert_eq!(reserve_for(5, true), 0);
+    assert_eq!(reserve_for(0, true), 0);
 }
 
 #[test]
@@ -248,13 +256,19 @@ fn a_step_advancing_can_never_undo_the_interrupt() {
         let advance = std::thread::spawn(move || advancing.step().advance_to(StepName::Route));
         let supersede = std::thread::spawn(move || interrupting.step().supersede());
         advance.join().expect("the thread finished");
-        if supersede.join().expect("the thread finished") {
-            assert_eq!(
-                slot.step().get(),
-                Progression::Superseded,
-                "a step advance overwrote the interrupt"
-            );
-        }
+        // The interrupt is asserted to have WON, not merely checked if it happened to. Both racing
+        // steps are before the meter, so the compare-and-set has nothing that can refuse it — and
+        // under the `if` a `supersede` that had become a no-op returning false would skip the only
+        // assertion in the loop and leave a green test over two units relaying one direction.
+        assert!(
+            supersede.join().expect("the thread finished"),
+            "an interrupt raised before the meter lost its compare-and-set"
+        );
+        assert_eq!(
+            slot.step().get(),
+            Progression::Superseded,
+            "a step advance overwrote the interrupt"
+        );
     }
 }
 
