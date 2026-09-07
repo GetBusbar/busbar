@@ -100,10 +100,26 @@ VOICE_LEGS_DIR="${VOICE_LEGS_DIR:-$HERE/legs}"
 
 # A FLOOR on the declared-leg count, for the same reason the python verdict linter has one: every
 # equality below would hold for a battery that had been gutted to a single leg, so the count is
-# checked first. Thirteen legs ship today (spec-per-dialect, replay, cross-parity,
+# checked first. Fourteen legs ship today (spec-per-dialect, replay, cross-parity,
 # provider-credential, metering-lease, session-scope, gemini-live-route, provider-dial,
-# admit-refusal, route-failover, audit-record, exit-terminal, plus governance).
-MIN_LEGS="${VOICE_MIN_LEGS:-3}"
+# admit-refusal, route-failover, audit-record, exit-terminal, tool-reply, plus governance).
+#
+# AND THE FLOOR IS A RATCHET, NOT A TOKEN. It read 3 against a battery of fourteen, which is a floor
+# that can only be reached by deleting eleven twelfths of the rig — so the case it exists for was the
+# case it could not see. Planted: eleven of the fourteen `legs/*.sh` removed from the tree. The
+# battery printed
+#
+#     legs declared: 3 … VOICE verdict: 3 ready leg(s) passed. Conformance holds for the ready legs.
+#
+# and exited 0, in the same sentence it uses for the full battery. The equality below is set
+# equality between DISCOVERED and REPORTED, which is exactly why it cannot help here: a leg that has
+# left the tree is not discovered, so there is nothing for the equality to miss.
+#
+# The number sits just under the shipped count. Adding a leg does not red the battery; REMOVING one
+# does, and lowering this line is the sentence that says a leg was retired on purpose. `--selftest`
+# still points VOICE_MIN_LEGS at its three-leg fixture directories, which is what the override is
+# for: a fixture battery is not this battery.
+MIN_LEGS=13
 
 say()  { printf '%s\n' "$*"; }
 warn() { printf '%s\n' "$*" >&2; }
@@ -242,9 +258,21 @@ _process_leg() {
 # so `--selftest` can watch the coverage check bite.
 emit_verdict() {
   local -a declared covered
+  # THE FLOOR IS READ HERE, NOT AT SOURCE TIME, AND THAT IS A REPAIR. `MIN_LEGS` used to be
+  # `${VOICE_MIN_LEGS:-N}` evaluated once when the script was sourced, so `--selftest`'s
+  #
+  #     ( VOICE_LEGS_DIR="$dir" VOICE_MIN_LEGS="$min" emit_verdict )
+  #
+  # set a variable nothing ever read again: every `check` cell ran against the SHIPPED floor
+  # whatever it passed. That was invisible only because the shipped floor happened to equal the
+  # fixture batteries' three legs — the moment the shipped floor became a real ratchet, four cells
+  # that had "passed" for years flipped, including the accept cells whose whole job is to prove the
+  # emitter does not simply refuse everything. A self-test knob that does not reach the code is the
+  # same false green as a gate that does not run.
+  local floor="${VOICE_MIN_LEGS:-$MIN_LEGS}"
   mapfile -t declared < <(declared_legs)
-  [ "${#declared[@]}" -ge "$MIN_LEGS" ] \
-    || die "FLOOR: the battery declares only ${#declared[@]} leg(s) (minimum $MIN_LEGS). A gutted battery satisfies every equality below, so the count is checked first."
+  [ "${#declared[@]}" -ge "$floor" ] \
+    || die "FLOOR: the battery declares only ${#declared[@]} leg(s) (minimum $floor). A gutted battery satisfies every equality below, so the count is checked first."
 
   say "== VOICE conformance battery — verdict =="
   say "   (pending legs are honest, not passing; a READY leg asserts real conformance or is RED)"
@@ -456,6 +484,34 @@ selftest() {
   _pending "$d7/replay.sh" "default"
   printf 'LEG_STATUS=pending\nLEG_SLICES=(x)\n' >"$d7/broken.sh"
   check "a leg that fails to declare its kind" "$d7" refuse
+
+  # THE SHIPPED FLOOR IS A RATCHET, AND THE RATCHET IS CHECKED AGAINST THE TREE. Every cell above
+  # overrides VOICE_MIN_LEGS, so none of them can see whether the DEFAULT floor is a number that
+  # would notice legs leaving. Two cells: the default floor refuses a battery one leg short of it,
+  # and the default floor is still within one of what actually ships — a ratchet that has drifted
+  # far below the tree is the token this replaced.
+  local d8="$tmp/one-short"; mkdir -p "$d8"; local i=0
+  while [ "$i" -lt $((MIN_LEGS - 1)) ]; do _pending "$d8/leg$i.sh" "x"; i=$((i + 1)); done
+  if ( VOICE_LEGS_DIR="$d8" emit_verdict ) >/dev/null 2>&1; then
+    say "  MISS: the DEFAULT leg floor accepted a battery one leg short of it"; failures=$((failures+1))
+  else
+    say "  ok: the default leg floor ($MIN_LEGS) refuses a battery one leg short of it"
+  fi
+  local d9="$tmp/at-floor"; mkdir -p "$d9"; i=0
+  while [ "$i" -lt "$MIN_LEGS" ]; do _pending "$d9/leg$i.sh" "x"; i=$((i + 1)); done
+  if ( VOICE_LEGS_DIR="$d9" emit_verdict ) >/dev/null 2>&1; then
+    say "  ok: the default leg floor accepts a battery that meets it"
+  else
+    say "  MISS: the default leg floor refused a battery that meets it"; failures=$((failures+1))
+  fi
+  local shipped_n; shipped_n="$(declared_legs | grep -c . || true)"
+  if [ "$MIN_LEGS" -ge $((shipped_n - 1)) ] && [ "$MIN_LEGS" -le "$shipped_n" ]; then
+    say "  ok: the leg floor ($MIN_LEGS) tracks the $shipped_n legs that ship"
+  else
+    say "  MISS: the leg floor is $MIN_LEGS but $shipped_n legs ship — a floor that far below the tree"
+    say "        cannot notice a leg leaving, which is the only thing it is for"
+    failures=$((failures+1))
+  fi
 
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
 
