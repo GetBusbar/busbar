@@ -97,5 +97,17 @@ echo
 echo "================================================================"
 echo "SWAP PROOF: $pass of $((pass+fail)) states produced the correct verdict"
 [ "$fail" -eq 0 ] || { echo "SWAP PROOF FAILED"; exit 1; }
+# SIX, COUNTED. `fail -eq 0` is satisfied by `0 of 0`: comment out, delete, or fail to reach any
+# subset of the six states and this script printed `SWAP PROOF: 2 of 2 states produced the correct
+# verdict` and exited 0, having proven the gate distinguishes two states while claiming six. That
+# is the zero-rows-is-green hole the rest of this tree is built to refuse, sitting in the file
+# whose entire job is to prove the gate can tell states apart. A `check` that never ran is not a
+# state that passed.
+STATES=6
+[ "$((pass+fail))" -eq "$STATES" ] || {
+  echo "SWAP PROOF FAILED: $((pass+fail)) of $STATES states were judged. A state that never ran is"
+  echo "not a state the gate distinguished, and this script's whole claim is the count."
+  exit 1
+}
 echo "The gate distinguishes all six states. Aiming it is one variable."
 echo "================================================================"
