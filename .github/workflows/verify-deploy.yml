@@ -1809,12 +1809,32 @@ jobs:
           docker rm -f busbar-quickstart >/dev/null 2>&1 || true
           [ "$fail" = 0 ]
 
-      # (m) BUILD PROVENANCE ACTUALLY VERIFIES. release.yml records a keyless Sigstore attestation
-      # for every archive, and docs tell users to check it with `gh attestation verify`. Nothing has
-      # ever run that command against a published asset, so "the release is attested" was a claim
-      # about a workflow step succeeding, not about what a user can verify. A user who runs the
-      # documented command and gets a failure concludes the artifact is tampered with; that has to
-      # be tested from the outside, on the real downloaded bytes, like everything else here.
+      # (m) BUILD PROVENANCE ACTUALLY VERIFIES. The staging path records a keyless Sigstore
+      # attestation for every archive, and docs tell users to check it with `gh attestation verify`.
+      # Nothing has ever run that command against a published asset, so "the release is attested"
+      # was a claim about a workflow step succeeding, not about what a user can verify. A user who
+      # runs the documented command and gets a failure concludes the artifact is tampered with; that
+      # has to be tested from the outside, on the real downloaded bytes, like everything else here.
+      #
+      # `--signer-workflow` IS PART OF THE CHECK, NOT DECORATION. `--repo` alone asserts only that
+      # SOME workflow in GetBusbar/busbar signed these bytes, which every workflow in the repository
+      # that can hold `id-token: write` + `attestations: write` satisfies equally -- including one
+      # introduced by a PR on a branch. Pinning the signer makes this "the stager built it", which
+      # is the claim the release actually wants to make.
+      #
+      # THE SIGNER IS THE REUSABLE WORKFLOW, NOT ITS CALLER. `gh attestation verify --help`: "if
+      # your attestation was generated via a reusable workflow then that reusable workflow is the
+      # signer whose identity needs to be validated." The Fulcio SAN is the `job_workflow_ref`, the
+      # file holding the job that requested the OIDC token. `actions/attest-build-provenance` runs
+      # inside `build-artifact.yml`, which release-stage.yml calls per target -- so build-artifact.yml
+      # is the signer, and release-stage.yml (the caller) would never match.
+      #
+      # BOUNDARY, STATED SO IT IS NOT DISCOVERED AT 2AM: archives published BEFORE build-artifact.yml
+      # was split out of release.yml were signed by `release.yml` itself -- the real v1.5.5 asset
+      # attestation decodes to `.../workflows/release.yml@refs/tags/v1.5.5`. Dispatching this
+      # workflow at a tag from that era will therefore fail (m) on the SIGNER, not on the bytes. That
+      # is the correct verdict for a pin: it says the old releases were minted by a path that no
+      # longer exists. Re-point it only if the current staging path's signer changes.
       - name: (m) the documented attestation check passes on the real published assets
         timeout-minutes: 10
         run: |
@@ -1829,10 +1849,11 @@ jobs:
               echo "FAIL: (m) could not download $a to verify its attestation"
               fail=1; continue
             fi
-            if gh attestation verify "$work/$a" --repo GetBusbar/busbar; then
-              echo "PASS: (m) $a verifies against its build provenance"
+            if gh attestation verify "$work/$a" --repo GetBusbar/busbar \
+                 --signer-workflow GetBusbar/busbar/.github/workflows/build-artifact.yml; then
+              echo "PASS: (m) $a verifies against its build provenance, signed by the stager's build-artifact.yml"
             else
-              echo "::error::(m) 'gh attestation verify $a --repo GetBusbar/busbar' FAILED for ${TAG}. This is the exact command the docs tell users to run before trusting a download, so every user who follows that advice sees a tamper warning. Fix: confirm release.yml's attest-build-provenance step ran for this target and that the uploaded bytes are the attested ones (a re-upload after attestation breaks the digest binding)."
+              echo "::error::(m) 'gh attestation verify $a --repo GetBusbar/busbar --signer-workflow GetBusbar/busbar/.github/workflows/build-artifact.yml' FAILED for ${TAG}. This is the exact command the docs tell users to run before trusting a download, so every user who follows that advice sees a tamper warning. Fix: confirm build-artifact.yml's attest-build-provenance step ran for this target and that the uploaded bytes are the attested ones (a re-upload after attestation breaks the digest binding)."
               fail=1
             fi
           done

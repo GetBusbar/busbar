@@ -637,18 +637,42 @@ jobs:
             fi
           done
 
-          # 5. THE ATTESTATION, WITH THE USER'S OWN COMMAND. The staged digest carries a GitHub
-          #    build-provenance attestation recorded at build time; the promote preserves it only
-          #    if it exists and verifies NOW. Bytes that cannot prove their provenance do not get
-          #    a version number.
+          # 5. THE ATTESTATION, WITH THE USER'S OWN COMMAND -- AND WITH THE SIGNER NAMED. The staged
+          #    digest carries a GitHub build-provenance attestation recorded at build time; the
+          #    promote preserves it only if it exists and verifies NOW. Bytes that cannot prove
+          #    their provenance do not get a version number.
+          #
+          #    `--repo` ALONE IS NOT AN IDENTITY CHECK. It asserts only that SOME workflow in
+          #    GetBusbar/busbar signed these bytes. Every workflow in this repository that can be
+          #    given `id-token: write` and `attestations: write` therefore satisfies it equally --
+          #    including one added by a PR, running on a branch, that built an image nothing here
+          #    staged and pushed it under a `staging-<sha>` name. The promote would then find a
+          #    verifying attestation, conclude the bytes are ours, and put a version number on them.
+          #    `--signer-workflow` closes that: the attestation must have been minted by the ONE
+          #    workflow the staging path actually runs, so promotion means "the stager made this",
+          #    not merely "something in this org did".
+          #
+          #    THE SIGNER IS `docker.yml`, NOT `release-stage.yml`, and that is a fact about how
+          #    GitHub issues these certificates rather than a choice. `gh attestation verify --help`
+          #    states it directly: "if your attestation was generated via a reusable workflow then
+          #    that reusable workflow is the signer whose identity needs to be validated." The
+          #    Fulcio certificate's SAN is the `job_workflow_ref` -- the file holding the job that
+          #    requested the OIDC token -- not the `workflow_ref` of whatever called it. Decoded
+          #    from the real published 1.5.5 image attestation, that SAN reads
+          #    `https://github.com/GetBusbar/busbar/.github/workflows/docker.yml@refs/tags/v1.5.5`.
+          #    release-stage.yml is the CALLER; `actions/attest-build-provenance` runs inside
+          #    docker.yml (see its `attest` steps), so docker.yml is what signed. Naming the caller
+          #    here would fail every verify and block every promote.
           gh attestation verify "oci://index.docker.io/getbusbar/busbar:${r_staging}" \
             --repo "$GITHUB_REPOSITORY" \
-            || { echo "::error::the staged image's build-provenance attestation does not verify. Refusing to promote unattestable bytes."; exit 1; }
+            --signer-workflow GetBusbar/busbar/.github/workflows/docker.yml \
+            || { echo "::error::the staged image's build-provenance attestation does not verify as having been signed by .github/workflows/docker.yml, the reusable workflow the staging path runs. Either the attestation is missing/invalid, or these bytes were attested by something other than the stager. Refusing to promote."; exit 1; }
           # The compat image carries its OWN attestation (a different digest is a different
-          # subject); identical treatment, identical refusal.
+          # subject); identical treatment, identical signer, identical refusal.
           gh attestation verify "oci://index.docker.io/getbusbar/busbar:${r_staging}-armv8.0" \
             --repo "$GITHUB_REPOSITORY" \
-            || { echo "::error::the staged armv8.0 compat image's build-provenance attestation does not verify. Refusing to promote unattestable bytes."; exit 1; }
+            --signer-workflow GetBusbar/busbar/.github/workflows/docker.yml \
+            || { echo "::error::the staged armv8.0 compat image's build-provenance attestation does not verify as having been signed by .github/workflows/docker.yml. Refusing to promote unattestable bytes."; exit 1; }
 
           # 6. THE DRAFT. It must exist, still be a DRAFT (published means this version is already
           #    out and plan should have no-opped), be ANCHORED TO THIS SHA (release-stage re-anchors
