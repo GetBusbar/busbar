@@ -469,7 +469,14 @@ impl Wal {
                     return Err(DurabilityLost::observed(token, at));
                 }
                 let carried = std::mem::take(&mut self.lost_batch);
-                self.append_batch(token, at, &carried)
+                // The second pass answers "did this commit replay anything?" by looking at a buffer
+                // THIS pass has just emptied, so on its own it always says no. The fact belongs to
+                // the commit rather than to the attempt, so it is carried across the roll: a caller
+                // counting re-written batches must not lose the count because fitting them needed a
+                // fresh segment.
+                let mut ack = self.append_batch(token, at, &carried)?;
+                ack.replayed_lost_batch |= replaying;
+                Ok(ack)
             }
             Err(_poisoned_or_io) => {
                 // The write or the sync failed. Everything after the last good commit in this
