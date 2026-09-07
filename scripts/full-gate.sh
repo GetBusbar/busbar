@@ -121,6 +121,23 @@ construction_waiver() {
   local ledger="${1:-}"
   if [ -z "$ledger" ]; then
     ledger="${CONSTRUCTION_OUT:-target/construction}/ledger.tsv"
+    # THE PREVIOUS RUN'S ANSWER IS DELETED BEFORE THE QUESTION IS ASKED AGAIN.
+    #
+    # The gate's own exit status is deliberately discarded (`|| true`) — its verdict covers every
+    # rule and this umbrella only judges the ROW SET. What that discards along with it is the
+    # difference between "the gate ran and these are its rows" and "the gate died and these are
+    # somebody else's". `construction-gate.sh` writes its ledger in place, so a run that dies before
+    # it writes — a python that is not there, a ceilings file that stopped parsing, a rule that
+    # raised — leaves the LAST HEALTHY RUN's ledger sitting at exactly this path. Every check below
+    # then reads that file, finds precisely the waived red rows (because the last healthy run found
+    # them), and prints `construction: N row(s), the 9 expected red row(s) and no others.` on a tree
+    # whose construction gate did not execute at all. A stale answer that agrees with the waiver is
+    # indistinguishable here from a fresh one, and it is the more dangerous of the two because it
+    # arrives green.
+    #
+    # Removing it first makes the `-s` guard immediately below into the honest test it reads as: no
+    # ledger means the gate did not write one on THIS run, whatever it wrote on any earlier one.
+    rm -f "$ledger"
     scripts/construction-gate.sh --check >/dev/null 2>&1 || true
   fi
   if [ ! -s "$ledger" ]; then
@@ -595,6 +612,35 @@ if [ "${1:-}" = "--selftest" ]; then
   else
     printf '  [ok]     an empty construction ledger is RED, not a waiver over nothing\n'
   fi
+
+  # A DEAD GATE MUST NOT BE JUDGED BY THE LAST HEALTHY RUN'S LEDGER. Every case above hands the
+  # waiver a ledger directly, which is exactly the path that CANNOT see this: the fault lives in the
+  # branch that RUNS the gate. So this cell drives that branch, in a scratch tree whose
+  # `scripts/construction-gate.sh` dies without writing, over a CONSTRUCTION_OUT that already holds
+  # a ledger agreeing with the waiver row for row. Before the `rm -f` above, this printed
+  # `construction: 10 row(s), the 9 expected red row(s) and no others.` and returned 0.
+  STALE_TMP="$(mktemp -d)"
+  mkdir -p "$STALE_TMP/tree/scripts" "$STALE_TMP/out"
+  printf '#!/bin/sh\nexit 3\n' >"$STALE_TMP/tree/scripts/construction-gate.sh"
+  chmod +x "$STALE_TMP/tree/scripts/construction-gate.sh"
+  waiver_ledger "$STALE_TMP/out/ledger.tsv" "${CONSTRUCTION_EXPECTED_RED[@]}"
+  if ( cd "$STALE_TMP/tree" && CONSTRUCTION_OUT="$STALE_TMP/out" construction_waiver ) >/dev/null 2>&1; then
+    printf '  [FAILED] a construction gate that DIED was judged by the previous run'"'"'s ledger and read GREEN\n'; bad=1
+  else
+    printf '  [ok]     a construction gate that died is RED, not the last healthy run'"'"'s ledger re-read\n'
+  fi
+  # …and the same branch still goes GREEN when the gate DOES write the waived row set, or the
+  # refusal above would only prove that the run-the-gate branch refuses everything.
+  printf '#!/bin/sh\nmkdir -p "$CONSTRUCTION_OUT"\ncat "$STALE_FIXTURE" >"$CONSTRUCTION_OUT/ledger.tsv"\n' \
+    >"$STALE_TMP/tree/scripts/construction-gate.sh"
+  waiver_ledger "$STALE_TMP/fixture.tsv" "${CONSTRUCTION_EXPECTED_RED[@]}"
+  if ( cd "$STALE_TMP/tree" && CONSTRUCTION_OUT="$STALE_TMP/out" STALE_FIXTURE="$STALE_TMP/fixture.tsv" \
+         construction_waiver ) >/dev/null 2>&1; then
+    printf '  [ok]     a construction gate that DOES write its ledger is still judged on what it wrote\n'
+  else
+    printf '  [FAILED] a live construction gate writing the waived row set was refused\n'; bad=1
+  fi
+  rm -rf "$STALE_TMP"
   rm -rf "$WAIVER_TMP"
 
   [ "$bad" = 0 ] && { printf '\nfull-gate selftest: discovery, floors and skip-reasons all hold\n'; exit 0; }
