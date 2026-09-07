@@ -91,10 +91,7 @@ fn a_pattern_earns_a_bonus_for_every_literal_and_pays_for_every_open_segment() {
         5_003
     );
     // A bare tail: the band, no bonus, one segment, one discount.
-    assert_eq!(
-        specificity(&Selector::PathPattern(&[Segment::Tail])),
-        4_951
-    );
+    assert_eq!(specificity(&Selector::PathPattern(&[Segment::Tail])), 4_951);
 }
 
 /// The discount saturates rather than wrapping, and it saturates exactly at nothing.
