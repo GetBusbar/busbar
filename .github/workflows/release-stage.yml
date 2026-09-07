@@ -279,7 +279,7 @@ jobs:
         if: ${{ steps.p.outputs.release == '1' }}
         env:
           V: ${{ steps.p.outputs.version }}
-        run: python3 scripts/changelog-lint.py --require-version "$V" --require-dated-top
+        run: cargo xtask gate changelog --require-version="$V" --require-dated-top
 
   # -- GATE ZERO: NOTHING IS RELEASED FROM A RED BRANCH -------------------------------------------
   #
