@@ -52,7 +52,7 @@ for raw in "$d"/raw/*/; do
   #   driver      record.sh call site           passes
   #   http        record.sh:984                 --key-id, --keep-body-lines, --keep
   #   exec        record.sh:526                 --keep-body-lines, --keep      (no --key-id)
-  #   concurrent  record.sh:740                 --key-id                       (no keep spec)
+  #   concurrent  record.sh:740                 --key-id, --driver concurrent  (no keep spec)
   #   script      record.sh:825                 nothing at all
   #
   # Passing all three uniformly, as this loop did, means a `keep` or `body_lines` on a script or
@@ -66,6 +66,7 @@ for raw in "$d"/raw/*/; do
   # IGNORED is a refusal naming the cell — never silently applied here, and never silently dropped
   # either, because "cells.json says keep this and the recording did not" is a discrepancy the
   # operator has to resolve in cells.json or in record.sh, not one this file may paper over.
+  driver_flag=()
   case "$driver" in
     http) ;;
     exec)
@@ -78,7 +79,7 @@ for raw in "$d"/raw/*/; do
         echo "renormalize: $id is a concurrent cell and cells.json gives it a keep/body_lines spec, but record.sh:740 normalizes concurrent cells with --key-id ALONE; applying the spec here would write a cell the recorder never made" >&2
         failed=$((failed+1)); continue
       fi
-      keep_spec=""; keep_lines="" ;;
+      keep_spec=""; keep_lines=""; driver_flag=(--driver concurrent) ;;
     script)
       if [ -n "$keep_spec" ] || [ -n "$keep_lines" ]; then
         echo "renormalize: $id is a script cell and cells.json gives it a keep/body_lines spec, but record.sh:825 normalizes script cells with NO flags at all; applying the spec here would write a cell the recorder never made" >&2
@@ -91,7 +92,8 @@ for raw in "$d"/raw/*/; do
   esac
   readback="$(jq -c '.effects.readback // empty' "$cell" 2>/dev/null)"
   python3 "${here}/normalize.py" "$raw/captured.json" ${kid:+--key-id "$kid"} \
-    ${keep_lines:+--keep-body-lines "$keep_lines"} ${keep_spec:+--keep "$keep_spec"} >"$raw/renormalized.json" \
+    ${keep_lines:+--keep-body-lines "$keep_lines"} ${keep_spec:+--keep "$keep_spec"} \
+    ${driver_flag[0]+"${driver_flag[@]}"} >"$raw/renormalized.json" \
     || { echo "renormalize: normalize.py failed on $id" >&2; rm -f "$raw/renormalized.json"; failed=$((failed+1)); continue; }
   # NEVER WRITE A TRACKED GOLDEN CELL IN PLACE. `jq … >"$cell"` truncates the cell BEFORE jq runs:
   # a jq failure, a full disk or a Ctrl-C at that instant left a truncated (or empty) file where a
