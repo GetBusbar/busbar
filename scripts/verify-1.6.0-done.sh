@@ -7,7 +7,7 @@
 # green") and the gate designs (gate-no-deferral.md, gate-isomorphism.md).
 #
 # WHAT "DONE" MEANS HERE — the umbrella asserts, as ONE verdict, that every sub-gate is green:
-#   build            the full-gate cargo battery (shell out to scripts/full-gate.sh; else an explicit
+#   build            the full-gate cargo battery (shell out to `cargo xtask full-gate`; else an explicit
 #                    cargo build/clippy/test-compile battery).
 #   plane-purity     scripts/plane-purity-lint.sh --check  (neutral crates 0 side channels / 0 backwards).
 #   plane-delete     scripts/plane-delete-test.sh --all     (llm/mcp/a2a/voice each deletable).
@@ -61,7 +61,7 @@
 # FLAGS:
 #   --fast   substitute `cargo build --workspace` for the heavy full-gate battery in the BUILD group
 #            (for a quick progress read); every other group still runs in full. Without it, BUILD runs
-#            the full scripts/full-gate.sh — the real DONE claim. A --fast run that comes out clean
+#            the full `cargo xtask full-gate` — the real DONE claim. A --fast run that comes out clean
 #            reports PROVISIONAL and exits 3, never the DONE banner and never exit 0: the banner and
 #            the exit code are all a wrapper, a CI step or the proof collator ever sees, so a
 #            provisional answer must not be spendable as the real one.
@@ -278,9 +278,9 @@ begin_group "BUILD — the cargo battery"
 if [ "$FAST" -eq 1 ]; then
   ylw "  --fast: substituting 'cargo build --workspace' for the full ci battery"
   step "cargo build --workspace" cargo build --workspace --quiet
-elif [ -x scripts/full-gate.sh ] || [ -f scripts/full-gate.sh ]; then
-  step "scripts/full-gate.sh --selftest" bash scripts/full-gate.sh --selftest
-  step "scripts/full-gate.sh"            bash scripts/full-gate.sh
+elif [ -f qa/full-gate.toml ]; then
+  step "cargo xtask full-gate --selftest" cargo xtask full-gate --selftest
+  step "cargo xtask full-gate"            cargo xtask full-gate
 else
   step "cargo build --workspace"                 cargo build --workspace --quiet
   step "cargo build -p busbar --no-default-features" cargo build -p busbar --no-default-features --quiet
@@ -307,7 +307,7 @@ if assert_bless_env_empty >/tmp/done-oracle-step.$$ 2>&1; then
   # MUST carry --features openapi-schema AND -p busbar (unifies the feature graph-wide) — the golden
   # tests are cfg-gated on it, so without both the filter selects ZERO tests: a vacuous green. The broad
   # `openapi` filter runs all three goldens (json-matches-committed, served-equals-committed,
-  # error-enum-matches), so the oracle's byte-identity check is real, matching full-gate.sh.
+  # error-enum-matches), so the oracle's byte-identity check is real, matching cargo xtask full-gate.
   step "openapi.json goldens match committed file"  filtered_cargo_test 15 cargo test -p busbar -p busbar-core --features openapi-schema --quiet openapi
   step "resolved billing+limits config byte-stable" filtered_cargo_test 1  cargo test -p busbar-core --quiet resolved_billing_and_limits_config_is_byte_stable
   # The six `*_round_trip_byte_exact` oracles live in busbar-llm-codec
@@ -472,7 +472,7 @@ elif [ -x testing/shadow-oracle/replay.sh ]; then
   fi
   rm -rf "$CAND"
   # BUILD THE THING THE ORACLE IS ABOUT TO DIFF. The candidate recording is taken from
-  # target/release/busbar, and nothing else in this run puts a binary there: full-gate.sh names the
+  # target/release/busbar, and nothing else in this run puts a binary there: cargo xtask full-gate names the
   # release build CI-only on purpose (a release build on a laptop re-measures the laptop), so on a
   # tree that has never been release-built the record step below either dies on a missing path or —
   # worse — records a STALE binary from some earlier checkout and calls the resulting zero

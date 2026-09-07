@@ -1146,11 +1146,11 @@ def golden_recorded(ledger: Path) -> set[str]:
 #
 # WHAT COUNTS AS INVOKED, and why each source is in the set:
 #   * .github/workflows/*.yml -- the direct answer. Comment lines and step `name:` labels are
-#     stripped FIRST, exactly as scripts/full-gate.sh's own discovery strips them, because a script
+#     stripped FIRST, exactly as `cargo xtask full-gate`'s own discovery strips them, because a script
 #     named in a comment or in a step's human-readable title is being TALKED ABOUT, not run. Three of
 #     the refs this check found were in precisely that position.
-#   * scripts/full-gate.sh's discovered set -- the indirection the owner's rule names. It needs no
-#     separate scan: full-gate.sh derives that set by grepping ci.yml, which is already read above.
+#   * `cargo xtask full-gate`'s discovered set -- the indirection the owner's rule names. It needs no
+#     separate scan: full-gate derives that set by grepping ci.yml, which is already read above.
 #   * qa/segments.toml -- the qa full tier's manifest, and a real invocation path: qa-gate.yml runs
 #     `scripts/qa-gate-run.sh segment <id>`, which runs the segment's `run =` line. It is admitted
 #     ONLY when a workflow is seen driving that runner, so the manifest cannot vouch for itself.

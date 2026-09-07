@@ -17,7 +17,7 @@ WHY A PRINTER AND NOT ANOTHER GATE. The RED enforcement for `qa/capability-equal
 `crates/busbar/tests/capability_equality.rs` (proven cells must name tests that exist; the cross
 product is exact; n/a needs an argument) and runs on every `cargo test`. What a cargo test cannot
 do is put the GAP in front of whoever reads a green umbrella run: its output is swallowed on
-success. So `scripts/full-gate.sh` calls this printer in its result section, green or red, and the
+success. So `cargo xtask full-gate` calls this printer in its result section, green or red, and the
 missing cells are NAMED every single time -- the honest-ledger pattern (`qa/method-coverage.missing`,
 the reserved qa segments): green means "the pin matches reality", never "no gap".
 

@@ -29,7 +29,7 @@
 #     and it is how the table starts lying.
 #   * a DISCOVERY FLOOR. A scanner that finds nothing passes everything, so finding fewer than
 #     MIN_IMAGE_LINES image lines is red on its own terms — the same fails-closed shape
-#     scripts/full-gate.sh uses on its own discovery.
+#     cargo xtask full-gate uses on its own discovery.
 #
 # HOW IT DECIDES. Through testing/fleet-fixtures/lib.sh + verdict.sh, the same ledger-and-verdict
 # inversion as every other gate in this tree: each check appends exactly ONE row and NEVER controls
