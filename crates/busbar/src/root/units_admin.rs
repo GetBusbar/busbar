@@ -2661,36 +2661,6 @@ fn header_pairs(headers: &axum::http::HeaderMap) -> Vec<(String, String)> {
         .collect()
 }
 
-/// Whether the unit this verb names is one that can ask for an effect outliving its own response.
-///
-/// Exactly one operation can — the restart — and the whole of the gate is naming it. It is a
-/// function of the RESOLVED VERB rather than of the path, because the path is what the table already
-/// answered and re-reading it here would be a second answer to a question already asked.
-#[cfg(feature = "root-admin")]
-#[must_use]
-fn releases_drain(verb: KernelVerb) -> bool {
-    matches!(verb, KernelVerb::PostRestart)
-}
-
-/// How many times this listener's exit path has reached the drain release.
-///
-/// Test-only, and it is the only way the gate above is observable: the ask itself is a process-wide
-/// flag inside the engine that no test on this side can arm, so what a test can watch is whether
-/// THIS line was reached at all — which is precisely what the gate changes.
-#[cfg(all(test, feature = "root-admin"))]
-static DRAIN_RELEASES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Release a drain the unit that just answered asked for.
-///
-/// One line behind a name so the exit path has somewhere to be counted from; the engine's own
-/// function is what decides whether a drain was actually asked for.
-#[cfg(feature = "root-admin")]
-fn release_drain() {
-    #[cfg(test)]
-    DRAIN_RELEASES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    busbar_core::admin::restart::release_asked_drain();
-}
-
 /// The epoch one arriving administrative request is stamped with, off THE NODE'S ONE CLOCK.
 ///
 /// A function rather than an inline read, and the seam rather than `SystemTime`, because this node
@@ -2782,14 +2752,11 @@ pub fn mount(
                 // the 404 or the 405 that release pinned. Manufacturing a status here for a pair
                 // this plane never claimed would be the root inventing an answer it has no basis
                 // for, and the whole point of the seam is that it never does that.
-                let resolved = busbar_plane_admin::verbs::resolve(req.method().as_str(), &path);
-                let (Some(resolved), true) = (resolved, claimed) else {
+                let declared =
+                    busbar_plane_admin::verbs::resolve(req.method().as_str(), &path).is_some();
+                if !claimed || !declared {
                     return inner.oneshot(req).await.unwrap_or_else(|e| match e {});
-                };
-                // AND WHICH UNIT IT IS DECIDES WHOSE EXIT PATH THIS IS. Resolved here rather than
-                // asked again at the bottom: the table has already been consulted, and consulting it
-                // twice is how the answer at the bottom ends up being about a different request.
-                let asked_to_restart = kernel_verb(&resolved).is_some_and(releases_drain);
+                }
 
                 // A BODY BIGGER THAN THE OPERATOR'S CAP IS NOT THIS WRAP'S TO ANSWER. The mounted
                 // surface carries that cap and the answer release pinned for exceeding it, and
@@ -2842,29 +2809,15 @@ pub fn mount(
 
                 let response = http_response(answer);
 
-                // THE END OF THE EXIT PATH: whatever THIS unit asked to outlive its response is
+                // THE END OF THE EXIT PATH: whatever this unit asked to outlive its response is
                 // released HERE, with the response built and handed back and nothing left that can
                 // change a byte of it. For the one operation that asks — the restart — that is the
                 // graceful drain, which the surface used to begin from inside its own handler. It
                 // still begins at the same point relative to the answer; what moved is the steps
                 // that now sit between the handler and this line, and they no longer sit between
-<<<<<<< HEAD
                 // the drain and the write. Every other unit releases nothing, which costs one
                 // atomic read.
                 drop(exit);
-=======
-                // the drain and the write.
-                //
-                // GATED ON THE UNIT'S OWN VERB, because the ask is process-wide and this line is
-                // per-request. Ungated, any request finishing anywhere on this listener released a
-                // drain some OTHER request had asked for — so a concurrent `GET` landing between the
-                // restart unit's handler and its own exit began the drain while the restart's 200
-                // was still travelling, which is exactly the effect-before-the-answer the exit path
-                // exists to prevent. A unit that cannot ask cannot release.
-                if asked_to_restart {
-                    release_drain();
-                }
->>>>>>> 08ce5e77c (a drain is released by the unit that asked for one, not by whoever finishes next)
                 response
             }
         },
@@ -2995,7 +2948,6 @@ mod tests {
         assert_eq!(AdminAnswer::unpack(&packed), Some(answer));
     }
 
-<<<<<<< HEAD
     /// A DISCONNECT IS STILL AN EXIT. The release of an effect that outlives the response used to be
     /// the last statement of the answering future, and a client that hangs up mid-walk drops that
     /// future before the statement runs — leaving a drain asked for and owned by a unit whose exit
@@ -3027,74 +2979,6 @@ mod tests {
         );
     }
 
-=======
-    /// A drain is released by the unit that asked for one and by no other, with two requests in
-    /// flight at once.
-    ///
-    /// Two concurrently, because one at a time cannot show the defect: the ask is a process-wide
-    /// flag and the release consumes it, so an ungated exit path meant whichever request finished
-    /// first took the drain — and on a busy listener that is routinely NOT the restart. The `GET`
-    /// here is the concurrent request, and it must reach the end of the exit path without touching
-    /// the release at all.
-    ///
-    /// The `POST` is the only row of the whole declared table that may, which the assertion below
-    /// states as a count rather than as a status: what the stub surface answers either request is
-    /// beside the point, and the point is which of them reached the drain.
-    #[cfg(feature = "root-admin")]
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn only_the_restart_unit_releases_the_drain_it_asked_for() {
-        use std::sync::atomic::Ordering;
-        use tower::ServiceExt;
-
-        let inner = axum::Router::new().fallback(axum::routing::any(|| async { "the surface" }));
-        let wrapped = mount(
-            inner,
-            busbar_kernel::teller::Kernel::new(),
-            1024,
-            crate::root::kernel::ProductionUnits::admin_only,
-        );
-
-        let before = DRAIN_RELEASES.load(Ordering::Relaxed);
-        let restart = wrapped.clone().oneshot(
-            axum::http::Request::builder()
-                .method("POST")
-                .uri("/api/v1/admin/restart")
-                .body(axum::body::Body::empty())
-                .expect("the request builds"),
-        );
-        let concurrent = wrapped.clone().oneshot(
-            axum::http::Request::builder()
-                .method("GET")
-                .uri("/api/v1/admin/audit")
-                .body(axum::body::Body::empty())
-                .expect("the request builds"),
-        );
-        let (restart, concurrent) = tokio::join!(restart, concurrent);
-        restart.expect("the router answers the restart");
-        concurrent.expect("the router answers the concurrent read");
-
-        assert_eq!(
-            DRAIN_RELEASES.load(Ordering::Relaxed) - before,
-            1,
-            "two requests finished on this listener and the drain release was reached more than \
-             once; a unit that cannot ask for a drain must not be able to release one"
-        );
-    }
-
-    /// The gate names ONE row of the plane's whole declared table, stated over the table itself
-    /// rather than over the two paths the test above happens to drive.
-    #[cfg(feature = "root-admin")]
-    #[test]
-    fn one_declared_operation_releases_a_drain_and_it_is_the_restart() {
-        let releasing: Vec<_> = busbar_plane_admin::verbs::table()
-            .iter()
-            .filter(|row| kernel_verb(row).is_some_and(releases_drain))
-            .map(|row| (row.method, row.template))
-            .collect();
-        assert_eq!(releasing, vec![("POST", "/api/v1/admin/restart")]);
-    }
-
->>>>>>> 08ce5e77c (a drain is released by the unit that asked for one, not by whoever finishes next)
     /// A body this wrap cannot read is refused, and one too big for the operator's cap is not read
     /// here at all.
     ///
