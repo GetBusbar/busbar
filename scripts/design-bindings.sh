@@ -11,13 +11,17 @@
 # one, and it writes one ledger row per binding through the fleet-fixtures ledger so the verdict is
 # the same single-decision mechanism every other functional gate uses:
 #
-#   PASS   every referenced check exists and the binding has at least one
-#   FAIL   a referenced check vanished (a test renamed away, a cell dropped, a script deleted)
+#   PASS   `mapped`: every referenced check exists AND compares something
+#   FAIL   `unproven`: checks are cited but nothing they name settles anything -- a referenced check
+#          vanished (a test renamed away, a cell dropped, a script deleted), or every citation is an
+#          oracle cell the pinned golden never recorded. A citation list is not a proof: a binding
+#          that can read "proven" while nothing was compared is worse than one that reads unmapped.
 #   SKIP   the binding is unmapped -- a NAMED gap with the suggested check in the detail column
 #
 # Two postures, one verdict.sh:
-#   --check           owes only the MAPPED bindings to verdict.sh, so gaps are reported (SKIP rows,
-#                     a printed gap list) but do not turn the run red. Day-to-day use.
+#   --check           owes only the non-SKIP bindings to verdict.sh, so gaps are reported (SKIP rows,
+#                     a printed gap list) but do not turn the run red. An UNPROVEN binding is a FAIL
+#                     row, and a FAIL is red in both postures. Day-to-day use.
 #   --check --strict  owes EVERY binding, so any SKIP is red -- verdict.sh already refuses a skip on
 #                     an owed id. This is what scripts/verify-1.6.0-done.sh runs: DONE means no gap.
 #   In both, zero rows is red (verdict.sh's vacuous-run guard) and a vanished check is red.
@@ -118,6 +122,18 @@ check() {
   fi
   run_check "$BINDINGS" "$ledger" "$strict"; rc=$?
   [ "$regen_rc" -ne 0 ] && rc="$regen_rc"
+  # The UNPROVEN list, printed before the gap list because it is the worse condition: a gap is
+  # honest about naming nothing, while an unproven binding names checks and proves nothing by them.
+  # These are FAIL rows, so they are already red in BOTH postures -- plain --check included. A
+  # binding is never demoted to a waiver to clear this list; it is fixed, or it becomes a named gap.
+  local unproven
+  unproven="$(awk -F'\t' '$2=="FAIL"{n++} END{print n+0}' "$ledger")"
+  if [ "$unproven" -gt 0 ]; then
+    echo
+    echo "design bindings: ${unproven} UNPROVEN binding(s) -- checks are cited, but nothing they name compares anything:"
+    awk -F'\t' '$2=="FAIL"{printf "  %-8s %s\n", $1, $4}' "$ledger"
+    echo "design bindings: an unproven binding is RED in every posture. Make the citation real, or record it as a named gap."
+  fi
   # The gap list: every SKIP row names the binding and the check that would prove it.
   local skips
   skips="$(awk -F'\t' '$2=="SKIP"{n++} END{print n+0}' "$ledger")"
@@ -291,6 +307,35 @@ json.dump(d, open('$tmp/stale.json','w'), indent=1, ensure_ascii=False)
     say FAIL "REGEN-CLEAN: a ledger missing a binding was ACCEPTED -- a binding added to Appendix B would stay invisible to --strict"
   else
     say PASS "REGEN-CLEAN: a ledger missing one binding is REFUSED (a stale cache cannot hide an unmapped binding)"
+  fi
+
+  # (i) THE COUNTS TELL THE TRUTH. The summary used to call a binding `mapped` on the strength of the
+  #     citation list alone, while --verify judged the very same binding FAIL. So a binding whose only
+  #     evidence was an oracle cell the pinned golden never recorded read as PROVEN in
+  #     qa/DESIGN-BINDINGS.md and as broken in the ledger, at the same time, from the same file. This
+  #     case pins the two together: such a binding is `unproven`, verdict FAIL, and counted nowhere
+  #     near `mapped`.
+  if "$PY" - "$skipped_cell" <<'PYEOF'
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+cells = json.load(open("testing/shadow-oracle/cells.json"))
+b = {"id": "PB-1", "surface": "its only cell is one the golden never recorded",
+     "checks": [{"kind": "oracle-cell", "ref": sys.argv[1], "status": "mapped"}]}
+ctx = m.check_context(cells, m.CRATES, m.ROOT, m.GOLDEN_LEDGER)
+status, verdict, detail = m.binding_verdict(b, ctx)
+b["status"] = status
+c = m.counts([b])
+ok = (status == "unproven" and verdict == "FAIL"
+      and c["mapped"] == 0 and c["unproven"] == 1 and c["unmapped"] == 0)
+if not ok:
+    print(f"status={status} verdict={verdict} counts={c} detail={detail}", file=sys.stderr)
+sys.exit(0 if ok else 1)
+PYEOF
+  then
+    say PASS "counts() follows the verdict: a binding whose only cell the golden skipped is unproven, not mapped"
+  else
+    say FAIL "counts() called a binding with nothing compared 'mapped'"
   fi
 
   echo
