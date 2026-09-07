@@ -747,9 +747,9 @@ def plugin_cells() -> list[dict]:
 # COMPLETE ON PURPOSE, not for tidiness: 1.5.5 refuses a partial card outright — "rate_card is
 # AUTHORITATIVE and COMPLETE: you either price nothing or price everything" — with a 400, and a
 # rate-card cell whose write was refused would record the boot card twice and call that a finding.
-HUNDREDFOLD_RATE_CARD = {m: {"input_utok": 10000000, "output_utok": 20000000} for m in
-                         ["m-anthropic", "m-openai-chat", "m-openai-responses", "m-gemini", "m-bedrock",
-                          "m-cohere", "m-lane-c1", "m-queue-lane", "m-cd-lane"]}
+PRICED_MODELS = ["m-anthropic", "m-openai-chat", "m-openai-responses", "m-gemini", "m-bedrock",
+                 "m-cohere", "m-lane-c1", "m-queue-lane", "m-cd-lane"]
+HUNDREDFOLD_RATE_CARD = {m: {"input_utok": 10000000, "output_utok": 20000000} for m in PRICED_MODELS}
 NEW_PER_REQUEST_FEE = 3
 
 
@@ -860,6 +860,195 @@ def billing_cells() -> list[dict]:
                   "so the refusal was invisible. This card is complete and the write is a 200.)",
                   path="/api/v1/admin/usage", config_variant="rate-card-epoch")
     cells.append(epoch)
+    return cells
+
+
+def rate_card_history_cells() -> list[dict]:
+    """THE RATE-CARD HISTORY (tracker M7; design docs/design/rate-card-history.md §11.2; PB-103).
+
+    Seven cells recorded from the PUBLISHED 1.5.5 BINARY FIRST, so that when M6 lands the divergence
+    has a judge that predates it. Six of the seven name a 1.6.0 surface that DOES NOT EXIST in 1.5.5
+    (`/api/v1/admin/ledger/*`, `?as_of=`, `?currency=`, a card with a native currency, an append-only
+    history) — and that is the point. A cell whose golden is 1.5.5's REFUSAL is the only thing that
+    can later prove the 1.6.0 surface is additive rather than a silent change of an answer somebody
+    already depends on: without the recorded 404/405/400, "this endpoint is new" is an assertion, and
+    afterwards it is a diff. So each of these records what 1.5.5 ACTUALLY answers to the 1.6.0 call,
+    never what the design wishes it answered, and the `why` below states the recorded figure.
+
+    CONFIG_VARIANT ON EVERY CELL THAT CAN WRITE — and, deliberately, on the ones that cannot either.
+    `PUT /config/settings` writes a runtime overlay beside config.yaml, and record.sh clears it only
+    when a cell's variant differs from the one on disk (see oracle-config.sh: an unrecognized variant
+    writes the BASELINE config byte for byte, which is the whole mechanism). The epoch cell learned
+    this the expensive way — its 100x card leaked into the NEXT cell's boot, whose priming request
+    for the 1-cent/day `broke` group was then refused at Admit, and an unrelated cell went red. Every
+    cell here therefore declares its own variant, including the three whose 1.5.5 answer is a refusal
+    that writes nothing: a cell that is a 404 today may be a 200 the day the surface lands, and the
+    isolation must already be in place when that happens rather than be remembered then.
+
+    `billing|rate-card|history-mid-window` IS THE SCRIPT CELL, and it is the one that must be. Its
+    finding is not one response but the RELATION between three `/usage` reads taken at three points
+    of one window, and record.sh's `pre` requests are UNRECORDED by construction (run_pre_request
+    checks only that busbar answered). An http cell could record the last read and would then have
+    to assert the first two in prose. The script driver records all three as bytes. It also gets the
+    isolation (d) asks for in a strictly stronger form than a variant: record.sh stops the recording
+    busbar, restores the baseline config, and hands the script its own empty tree — so the overlay
+    its PUTs write lives and dies inside the cell.
+    """
+    LF, CF = "ledger", "config"
+    chat = lambda: {"method": "POST", "path": "/v1/chat/completions", "listener": "data", "auth": "ok",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": json.dumps({"model": "m-openai-chat", "messages": [{"role": "user", "content": "ping"}]},
+                                       separators=(",", ":"))}
+    put_settings = lambda doc, variant=None: {
+        "method": "PUT", "path": "/api/v1/admin/config/settings", "listener": "admin", "auth": "admin",
+        "headers": {"Content-Type": "application/json"},
+        "body": json.dumps(doc, separators=(",", ":"), sort_keys=True)}
+    j = lambda doc: json.dumps(doc, separators=(",", ":"), sort_keys=True)
+
+    cells = []
+
+    # 1. THE JUDGE. Two complete cards written into ONE window with a request either side of each,
+    #    and `/usage` read after EVERY write. 1.5.5's read-time derivation means each read reprices
+    #    the WHOLE window at whatever card is current at that instant, so the same three requests
+    #    have three different histories depending only on when you looked. Under the history (M6)
+    #    the same sequence answers with each row at the card it was earned under, and only the LAST
+    #    read moves — which is why this cell and the recorded `epoch-mid-window` are the entire
+    #    scope of the PB-103 breaking registration.
+    cells.append({
+        "id": "billing|rate-card|history-mid-window", "plane": "core", "family": "billing",
+        "driver": "script", "script": {"name": "rate-card-history.sh"}, "outcome": "ok",
+        "weight": 10, "bindings": ["PB-103"],
+        "why": "TWO complete rate cards written into ONE window (10x, then 100x + a 3-cent "
+               "per_request_fee), with a chat before the first, between the two and after the "
+               "second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH from the "
+               "published 1.5.5 binary: every read prices the ENTIRE window at the card in force at "
+               "READ time, so the first request is reported at three different prices over the life "
+               "of one window and no row is ever left at what it was earned under. This is the cell "
+               "the 1.6.0 divergence is judged on (PB-103): under the dated history the two "
+               "pre-edit requests keep the boot and 10x cards and only the final read moves. The "
+               "script driver, not `pre`, because a `pre` request's response is never recorded "
+               "(record.sh run_pre_request checks only that busbar ANSWERED) and this cell's "
+               "finding is the relation between the three reads, not any one of them."})
+
+    # 2. `as_of` — the read-time snapshot selector 1.6.0 adds to every ledger read. On 1.5.5 the
+    #    RESPONSE already carries an `as_of` field (it is in the epoch cell's golden), so the
+    #    question the cell settles is what the binary does with `as_of` as a REQUEST parameter:
+    #    honoured, refused, or silently dropped. Recorded, not assumed — "unknown params are
+    #    ignored" is exactly the kind of belief a cell exists to replace.
+    cells.append(http("ledger|rate-history|as-of", LF, "GET",
+                      "/api/v1/admin/usage?as_of=1", auth="admin", listener="admin",
+                      config_variant="rate-card-as-of", bindings=["PB-103"],
+                      why="a mid-window 100x card, then GET /admin/usage?as_of=1 — the snapshot "
+                          "selector 1.6.0 gives every ledger read, sent to the binary that has no "
+                          "history to select from. RECORDED: what 1.5.5 does with an UNKNOWN query "
+                          "parameter on a money endpoint. The response's own `as_of` field already "
+                          "exists in 1.5.5 and is 0; if the request-side parameter is dropped "
+                          "silently, the answer is the CURRENT-card reprice under a name that "
+                          "promises a snapshot — which is the reading this cell pins so that "
+                          "1.6.0's honouring of it is a visible, registered change and not a "
+                          "quietly different number under the same URL."))
+    cells[-1]["request"]["pre"] = [chat(), put_settings({"rate_card": HUNDREDFOLD_RATE_CARD,
+                                                         "per_request_fee": NEW_PER_REQUEST_FEE}), chat()]
+
+    # 3/4. THE AMEND VERB. 1.6.0's back-dating path is an operator-SIGNED admin write; 1.5.5 has no
+    #    such route at all. Both the signed and the unsigned call are recorded, because the pair is
+    #    the evidence that the refusal is about the ROUTE and not about the signature: if 1.5.5
+    #    answered the two differently, the verb would already exist in some form and the 1.6.0
+    #    surface would not be additive.
+    amend_body = j({"effective_from": 1, "rate_card": HUNDREDFOLD_RATE_CARD,
+                    "window": {"day": "2020-01-01"}, "reason": "oracle: back-date the window"})
+    cells.append(http("ledger|amend|adjusting-entries", LF, "POST",
+                      "/api/v1/admin/ledger/amend-rate-history", auth="admin", listener="admin",
+                      headers={"Content-Type": "application/json",
+                               "X-Busbar-Signature": "ed25519:oracle-operator-signature"},
+                      body=amend_body, config_variant="rate-card-amend", bindings=["PB-103"],
+                      why="POST /api/v1/admin/ledger/amend-rate-history, SIGNED, against the binary "
+                          "that has no ledger route table. RECORDED: 1.5.5's refusal, verbatim — "
+                          "which code, which body, and (the distinction that matters) whether it is "
+                          "a 404 `not_found` from the router or a 405 from a path that exists for "
+                          "some other method. That refusal is the proof the 1.6.0 verb is ADDITIVE: "
+                          "no 1.5.5 operator can be relying on an answer here, because there is no "
+                          "answer here. Recorded before the verb is built, so the claim is a diff "
+                          "rather than an assertion."))
+    cells.append(http("ledger|amend|refused-unsigned", LF, "POST",
+                      "/api/v1/admin/ledger/amend-rate-history", auth="admin", listener="admin",
+                      headers={"Content-Type": "application/json"}, body=amend_body,
+                      config_variant="rate-card-amend-unsigned", bindings=["PB-103"],
+                      why="the same amend call with NO operator signature. Its value is the PAIR: "
+                          "1.5.5 must refuse this identically to the signed one, because it is "
+                          "refusing the ROUTE and knows nothing about signatures. If the two "
+                          "goldens ever differ, the premise that this verb is new is false. Under "
+                          "1.6.0 the two separate — signed proceeds, unsigned is refused AND "
+                          "journalled — and this cell is where that separation first becomes "
+                          "visible against a recorded baseline."))
+
+    # 5. NATIVE CURRENCY. §3.1 forbids a pivot: a card prices a lane in the currency it is billed
+    #    in, with no cross-rate anywhere. 1.5.5's `currency` is a fixed LABEL on the response
+    #    ("USD" in every billing golden) and its rate_card entries have no currency at all — so the
+    #    open question is whether an entry carrying one is refused as an unknown field or accepted
+    #    and ignored. "Accepted and ignored" would be the dangerous answer (a card that says BHD
+    #    and bills USD), which is why the cell records the WRITE's own response.
+    cells.append(http("ledger|currency|native", LF, "PUT", "/api/v1/admin/config/settings",
+                      auth="admin", listener="admin",
+                      headers={"Content-Type": "application/json"},
+                      body=j({"rate_card": {m: {"input_utok": 10000000, "output_utok": 20000000,
+                                                "currency": ("JPY" if m == "m-openai-chat" else "USD")}
+                                            for m in PRICED_MODELS}}),
+                      config_variant="rate-card-currency", bindings=["PB-103"],
+                      why="a complete card that prices ONE lane in a second currency natively "
+                          "(m-openai-chat in JPY, the rest USD) — the shape §3.1 requires and the "
+                          "shape 1.5.5 has no field for. RECORDED: whether 1.5.5 REFUSES the "
+                          "unknown per-entry `currency` key or ACCEPTS and silently drops it. The "
+                          "second answer is the one worth having a golden for: a card that says JPY "
+                          "while /usage keeps labelling the money USD is a mislabelled invoice, and "
+                          "the recorded write is what makes 1.6.0's honouring of the field a "
+                          "registered improvement rather than a change of meaning under the same "
+                          "bytes."))
+
+    # 6. MINOR-UNIT ROUNDING. §3.3 divides by 10^(9-exp) ONCE per row, truncating. Before that can
+    #    be a per-currency exponent it has to be true of the currency 1.5.5 already has, so this
+    #    cell drives rates far below USD's minor unit (1 micro-unit per token against the mock's
+    #    11 in / 7 out = 18 micros for a whole request, where one cent is 10,000) and records where
+    #    the truncation actually lands: on the row, on the total, or not at all.
+    cells.append(http("ledger|currency|minor-unit-rounding", LF, "GET", "/api/v1/admin/usage",
+                      auth="admin", listener="admin",
+                      config_variant="rate-card-minor-unit", bindings=["PB-103"],
+                      why="a complete card priced at ONE micro-unit per token — a whole request "
+                          "costs 18 micro-units against a USD minor unit of 10,000 — then "
+                          "GET /admin/usage. RECORDED: 1.5.5's sub-minor-unit arithmetic, exactly. "
+                          "Whether the per-key rows, the per-model rows and the total each truncate "
+                          "independently or the projection happens once decides whether §3.3's "
+                          "'divide by 10^(9-exp) ONCE per row, truncating' is a restatement of "
+                          "today's behaviour (byte-identical, as the identity test's statement 2 "
+                          "requires) or a change to it. Recorded on the currency 1.5.5 already has, "
+                          "so the zero-exponent (JPY) and three-exponent (BHD) arms 1.6.0 adds have "
+                          "a USD baseline to be identical to."))
+    cells[-1]["request"]["pre"] = [put_settings({"rate_card": {m: {"input_utok": 1, "output_utok": 1}
+                                                               for m in PRICED_MODELS}}), chat()]
+
+    # 7. APPEND, NOT REPLACE. §4.1 makes a config PUT append a dated entry to the history instead of
+    #    overwriting the card. The 1.5.5 behaviour it has to be compatible with is the refusal that
+    #    the epoch cell's own history turns on: a PARTIAL card is a 400, "rate_card is AUTHORITATIVE
+    #    and COMPLETE". That refusal is load-bearing for the whole design — it is why "the card" is
+    #    always a complete document and therefore why appending one is well-defined — and until now
+    #    it was quoted from the source rather than recorded from the binary.
+    cells.append(http("config|rate-card|append-not-replace", CF, "PUT",
+                      "/api/v1/admin/config/settings", auth="admin", listener="admin",
+                      headers={"Content-Type": "application/json"},
+                      body=j({"rate_card": {"m-openai-chat": {"input_utok": 10000000,
+                                                              "output_utok": 20000000}}}),
+                      config_variant="rate-card-partial", bindings=["PB-103"],
+                      why="a PARTIAL rate card (one model of the nine) through "
+                          "PUT /config/settings. RECORDED: the 400 that 1.5.5 answers — 'rate_card "
+                          "is AUTHORITATIVE and COMPLETE: you either price nothing or price "
+                          "everything' — as bytes rather than as a quotation from the source. This "
+                          "is the refusal an earlier pass at the epoch cell tripped over WITHOUT "
+                          "seeing it (a `pre` need only be answered, not 2xx, so a refused write "
+                          "was recorded as a pricing epoch), and it is the precondition for §4.1: a "
+                          "config PUT can APPEND a dated entry to the history precisely because the "
+                          "thing it carries is always a whole card. Under 1.6.0 this stays a 400 "
+                          "and the accepted sibling appends instead of overwriting, which "
+                          "/ledger/rate-history is what shows."))
     return cells
 
 
@@ -1513,7 +1702,7 @@ def main() -> int:
     finv = json.loads(FIELD_INV.read_text())
     cells = sorted(llm_cells(finv) + protocol_cells(minv) + cli_cells() + migrate_cells()
                    + scrape_cells() + crosscut_cells() + admin_cells() + boot_cells() + failover_cells()
-                   + plugin_cells() + billing_cells() + hooks_cells()
+                   + plugin_cells() + billing_cells() + rate_card_history_cells() + hooks_cells()
                    + concurrency_cells() + queue_cells() + cooldown_cells()
                    + crosscut_traps_cells() + auth_lifecycle_cells() + teller_cells() + neutrality_cells()
                    + documented_cells() + hazard_cells(),
