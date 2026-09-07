@@ -175,3 +175,10 @@ fn decode<T: serde::de::DeserializeOwned>(body: &[u8]) -> StoreResult<T> {
 #[cfg(test)]
 #[path = "tests/record_tests.rs"]
 mod record_tests;
+
+// THE DIGEST-FRAMING DEFAULT, which the round-trip suite above never takes because every row it
+// builds states its own `digest_version`. Separate file, plain `#[cfg(test)]`: the case is a
+// DESERIALIZED body with the member absent, which no struct literal can express.
+#[cfg(test)]
+#[path = "tests/digest_version_tests.rs"]
+mod digest_version_tests;
