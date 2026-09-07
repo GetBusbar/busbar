@@ -1468,6 +1468,64 @@ async fn run(data_workers: usize) {
     // from. One configuration, two readings — and the next apply moves both, which is what makes the
     // node's books and the projection's rows the same money rather than two numbers that agreed once.
 
+    // THE FIRST BOOT AFTER AN UPGRADE. Everything the previous release accumulated is read once and
+    // sealed as this release's opening figures, under a rate-card history of exactly one entry: the
+    // card just resolved above, effective from instant zero. Without it, a deployment that has been
+    // serving for a year comes up with no point to measure its identity FROM, and every figure the
+    // previous release earned is either invisible to the books or looks like value that appeared out
+    // of nowhere the first time anything is checked.
+    //
+    // HERE, and not a line either side. After the book exists — the opening is a checkpoint the
+    // ledger seals and there is no ledger before it — and before either listener binds, because the
+    // first accepted connection can settle and a settlement posted before the opening was sealed
+    // would be measured from a checkpoint that did not exist when it happened.
+    //
+    // A second boot costs a marker read and nothing else. A boot that cannot READ the previous
+    // release's rows stops here: an opening sealed over rows the store would not answer for is a
+    // ledger that reconciles forever against a figure that was wrong from the first instant, and
+    // nothing on the serving path would ever notice. A store with NOTHING in it is not that, and
+    // boots.
+    #[cfg(any(feature = "root-admin", feature = "root-llm"))]
+    if let Some(gov) = app_handle.load().governance.clone() {
+        let migration = {
+            let token = busbar_caps::DurabilityToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+            let mut durability = book.durability.lock().unwrap_or_else(|e| e.into_inner());
+            let mut records =
+                durability.migration_records(&token, busbar_caps::StepName::Meter);
+            root::migration::run(
+                &busbar_plugin_loader::store_adapter::StoreAdapter::native(gov.store()),
+                &mut records,
+                &root::policy::migration_config(
+                    &root::policy::MigrationPlan {
+                        // The node identity the journal's records carry. One node, numbering from
+                        // its own counter, exactly as the book above was built for.
+                        node: 0,
+                        now: root::policy::wall_now(),
+                        // The card the resolution above put in place. A deployment that configured
+                        // none opens with an ABSENT card — every class prices at nothing and the
+                        // flat fee still posts — which is exactly what such a deployment is billed.
+                        card: root::kernel::ROOT_CARD.pin(),
+                    },
+                ),
+                root::policy::wall_now(),
+                None,
+            )
+        };
+        match migration {
+            Ok(m) if m.sealed_now() => tracing::info!(
+                balances = m.outcome.marker().balances,
+                cells_read = m.outcome.marker().cells_read,
+                "the previous release's figures are this node's opening balances, priced under the \
+                 one rate-card entry the migration sealed"
+            ),
+            Ok(_) => tracing::debug!(
+                "this deployment has already opened its balances; nothing was read and nothing was \
+                 written"
+            ),
+            Err(e) => die(format!("{e}")),
+        }
+    }
+
     #[cfg(feature = "root-admin")]
     let admin_router = root::units_admin::mount(
         admin_router,
