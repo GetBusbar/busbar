@@ -26,6 +26,7 @@ pub mod denylist_gate;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
+pub mod plane_transport_neutrality;
 pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod response_header;
@@ -512,6 +513,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(blocking_ffi::BlockingFfiGate),
         summary: "a synchronous call into a dlopened plugin never runs on a Tokio worker",
+    },
+    Registration {
+        name: "plane-transport-neutrality",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_transport_neutrality::PlaneTransportNeutralityGate),
+        summary: "no voice-transport or media noun reaches the neutral crates",
     },
 ];
 
