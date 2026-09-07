@@ -1,0 +1,47 @@
+{
+ "_doc": [
+  "REAL VENDOR BYTES, judged against the vendor's own published schema.",
+  "",
+  "Every other recording this rig validates is busbar's OUTPUT. These two cells are Google's:",
+  "the response bodies are verbatim Vertex AI bytes (gemini-2.5-flash, us-central1, 2026-09-07),",
+  "copied from crates/busbar-llm-codec/src/tests/proto/golden/vendor/. Pointing the validator at",
+  "them asks a different and sharper question than the rest of the rig does -- not 'does busbar",
+  "match the spec' but 'does GOOGLE match the spec' -- and the answer decides whether a busbar",
+  "violation on the same field is a busbar bug or a spec that is behind its own wire.",
+  "",
+  "Both cells are the GROUNDED turn on purpose: that is the shape that carries",
+  "toolUsePromptTokenCount and toolUsePromptTokensDetails, the fields the usage-identity",
+  "measurement turns on. See docs/design/gemini-usage-metadata-spec-discrepancy.md.",
+  "",
+  "Run: bash testing/llm-conformance/run.sh \\",
+  "       --recording testing/llm-conformance/fixtures/gemini-vertex-recording \\",
+  "       --out target/llm-conformance/gemini-vertex \\",
+  "       --cells testing/llm-conformance/fixtures/gemini-vertex-recording/cells.json"
+ ],
+ "cells": [
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|vertex|ok",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "ok",
+   "plane": "llm",
+   "transport": "http",
+   "why": "real Vertex AI grounded tool turn: the buffered shape that reports toolUsePromptTokenCount (32) against an 18-token prompt"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|vertex|ok_stream",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "ok_stream",
+   "plane": "llm",
+   "transport": "http",
+   "why": "the same grounded turn streamed as SSE: carries groundingMetadata but never reports toolUsePromptTokenCount on any frame"
+  }
+ ]
+}
