@@ -93,7 +93,23 @@ fn expected_fingerprint(der: &[u8]) -> String {
 /// leading zero, so `0a` and `a` were the same byte spelled two ways.
 #[tokio::test]
 async fn a_certificate_fingerprint_is_the_sha256_of_its_der_in_lowercase_hex() {
-    let (server, listener, client) = bound_pair().await;
+    // The pair is built from `self_signed_with_der` rather than `bound_pair` so this cell holds the
+    // leaf DER the server will present. Without it the only checkable facts were the RENDERING —
+    // sixty-four characters, all lowercase hex — which a transport digesting the wrong bytes, or
+    // returning any fixed sixty-four-character constant, satisfies exactly as well as the right one.
+    // The claim in this cell's name is that the string IS the SHA-256 of the certificate's DER, and
+    // that is an equality against a digest computed here, from the DER, by a formatter this crate
+    // does not own.
+    let (server_cfg, client_cfg, leaf_der) = self_signed_with_der();
+    let server = StdArc::new(TlsTransport::new());
+    server.register_server_config(0, server_cfg);
+    let cfg = TestCfg {
+        bind: "127.0.0.1:0".to_string(),
+    };
+    let listener = server.listen(&cfg, &fixture_key(0)).await.unwrap();
+    let client = StdArc::new(TlsTransport::new());
+    client.register_client_config(0, client_cfg);
+
     let addr = listener.local_addr();
     let accept_fut = tokio::spawn({
         let server = server.clone();
@@ -110,6 +126,15 @@ async fn a_certificate_fingerprint_is_the_sha256_of_its_der_in_lowercase_hex() {
         .peer_cert
         .expect("the handshake presented a certificate")
         .fingerprint;
+    assert_eq!(
+        fp,
+        expected_fingerprint(&leaf_der),
+        "the fingerprint the transport reports is the SHA-256 of the leaf the handshake presented, \
+         digested here from the DER rather than read back off the code under test"
+    );
+    // And the RENDERING, which is the operator-facing half: an operator compares this against
+    // `openssl x509 -fingerprint -sha256`, so a debug-formatted slice — brackets, commas, and `a`
+    // where `0a` belongs — is a string they cannot use even when the digest behind it is right.
     assert_eq!(fp.len(), 64, "a SHA-256 is 32 bytes, two characters each");
     assert!(
         fp.bytes()
