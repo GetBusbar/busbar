@@ -1751,7 +1751,7 @@ pub struct McpBindings<'r> {
 struct Progress {
     /// Who the verify step was handed.
     principal: Option<PrincipalId>,
-    /// What the verify step sealed.
+    /// The lanes the verify step was asked over, in the plan's order.
     lanes: Vec<LaneId>,
     /// Whether any leg of the plan was dispatched.
     dispatched: bool,
@@ -1907,9 +1907,9 @@ impl<'r> McpUnits<'r> {
         settle(&mut durability, principal, self.bindings.at, token, posted)
     }
 
-    /// The lanes the verify step sealed, for a caller that wants to read them back.
+    /// The lanes the verify step was asked over, for a caller that wants to read them back.
     #[must_use]
-    pub fn sealed_lanes(&self) -> Vec<LaneId> {
+    pub fn verified_lanes(&self) -> Vec<LaneId> {
         read_through_poison(&self.progress).lanes.clone()
     }
 
@@ -1993,17 +1993,12 @@ impl Units for McpUnits<'_> {
             trust,
             token,
         );
-        // What the trust unit sealed, kept for the readers that cannot ask it again. The lanes are
-        // read off the plan the unit was verified over rather than off the decision, which is the
-        // kernel's to open.
+        // THE LANES THIS UNIT WAS VERIFIED OVER, kept for the readers that cannot ask again — and
+        // named for what they are. They are the plan's, not the trust unit's answer: a `Decision` is
+        // the kernel's to open, so this step cannot read what it sealed, and re-deriving the seal's
+        // own filter here would be a second copy of a judgement that has already been made once.
         read_through_poison(&self.progress).lanes = candidates
             .iter()
-            .filter(|dest| {
-                self.bindings
-                    .views
-                    .facts
-                    .lane_permitted_for_op_class(dest.lane().map_or("", |lane| lane.as_str()))
-            })
             .filter_map(DestinationFacts::lane)
             .collect();
         decision
