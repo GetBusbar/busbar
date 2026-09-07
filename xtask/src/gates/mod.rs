@@ -27,6 +27,7 @@ pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
 pub mod qa_gate_dispatch;
 pub mod release_order;
+pub mod response_header;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
@@ -496,6 +497,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(settings_leak::SettingsLeakGate),
         summary: "an admin READ never serves an operator settings bag's values, only its key names",
+    },
+    Registration {
+        name: "response-header",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(response_header::ResponseHeaderGate),
+        summary: "every busbar-injected response header is emitted from one config-gated site",
     },
 ];
 
