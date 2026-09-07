@@ -1517,15 +1517,21 @@ async fn run(data_workers: usize) {
                 None,
             )
         };
+        // The line is spoken only when the migration actually FOUND something. A node with nothing
+        // behind it still seals an opening — it needs a point to measure from as much as any other
+        // — but it has nothing to tell an operator, and a boot line announcing that zero figures
+        // were carried over is noise on every fresh install forever. It is also the boot-line shape
+        // the previous release has, which is pinned: a deployment that gains nothing from this step
+        // must not be able to tell it ran.
         match migration {
-            Ok(m) if m.sealed_now() => tracing::info!(
+            Ok(m) if m.sealed_now() && m.outcome.marker().cells_read > 0 => tracing::info!(
                 balances = m.outcome.marker().balances,
                 cells_read = m.outcome.marker().cells_read,
                 "the previous release's figures are this node's opening balances, priced under the \
                  one rate-card entry the migration sealed"
             ),
             Ok(_) => tracing::debug!(
-                "this deployment has already opened its balances; nothing was read and nothing was \
+                "the ledger's opening balances are in place; nothing new was read and nothing was \
                  written"
             ),
             Err(e) => die(format!("{e}")),
