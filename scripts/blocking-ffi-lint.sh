@@ -153,6 +153,45 @@ BLOCKING_FFI_SCAN_AWK='
 '
 scan_rule() { awk "$BLOCKING_FFI_SCAN_AWK" "$@"; }
 
+# ── THE SCANNER'S OWN EXIT STATUS ────────────────────────────────────────────────────────────────
+# The scan loop used to read `h=$(scan_rule "$f") || true`, which discarded it. awk exits non-zero
+# for every reason that is NOT "this file is clean": a syntax error in the program above (one stray
+# brace while editing a rule), a file it cannot open, a bad regex. Every one of those produced an
+# EMPTY `h`, which is this lint's no-findings answer — and produced it for EVERY file. Planted, a
+# one-character break in the awk program printed `ok` and `blocking-ffi-lint passed`, exit 0, while
+# awk had refused to run over all 238 files and said so on a stderr nobody was reading.
+#
+# The scan floor below cannot see this: the scan SET was full: it was the scan that never happened.
+# So the status is carried per file. One function, driven by the run and by --selftest alike.
+#   $SCAN_HITS  = the findings, newline-joined
+#   $SCAN_BROKE = one line per file the scanner did not get through, with awk's own complaint
+SCAN_HITS=""
+SCAN_BROKE=""
+scan_set() {
+  local f h rc
+  SCAN_HITS=""; SCAN_BROKE=""
+  for f in "$@"; do
+    rc=0
+    h="$(scan_rule "$f" 2>&1)" || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      SCAN_BROKE="${SCAN_BROKE}${f} (awk exited ${rc}): $(printf '%s' "$h" | head -2 | tr '\n' ' ')"$'\n'
+      continue
+    fi
+    [ -n "$h" ] && SCAN_HITS="${SCAN_HITS}${h}"$'\n'
+  done
+  SCAN_HITS="${SCAN_HITS%$'\n'}"
+  SCAN_BROKE="${SCAN_BROKE%$'\n'}"
+}
+
+# ── SCAN FLOOR — the loop above is "for each file, assert no inline FFI", which is VACUOUSLY TRUE
+# over zero files. Rename `crates/busbar` (a normal refactor), move the engine, or mistype the root,
+# and every rule reports `ok` FOREVER while the tree is unscanned — a green verdict about a
+# property nothing looked at. The floor is not `> 0`: one surviving file is just as vacuous as none.
+# It tracks the real tree (123 files at the time of writing) with room to shrink, so a genuine
+# consolidation still passes and a root that has moved out from under the lint cannot.
+SCAN_FLOOR=100
+scan_floor_ok() { [ "$1" -ge "$SCAN_FLOOR" ]; }
+
 # ── SELF-TEST — prove the scanner still catches a real inline call before trusting its verdict ─────
 run_selftest() {
   hdr "blocking-ffi-lint SELF-TEST (the inline-FFI scanner cannot be lied to)"
@@ -298,7 +337,36 @@ SCOPE
     fail=1; note "SCOPE FAILED: expected 2 hits, got ${n}: $hits"
   fi
 
-  note "self-test: ${pass}/3 fixture groups passed"
+  # ── THE SCANNER DID NOT RUN. The loop used to swallow awk's exit status, so a scanner that
+  # aborted produced empty output — which is this lint's clean answer — for every file at once.
+  # Driven through the REAL `scan_set`, over a path awk cannot open, so the case proves the
+  # accumulator and not a copy of it.
+  scan_set "${tmp}/a-file-that-is-not-there.rs"
+  if [ -n "$SCAN_BROKE" ] && [ -z "$SCAN_HITS" ]; then
+    pass=$((pass+1)); note "UNSCANNED: a file the scanner could not get through is recorded as a REFUSAL, and its (empty) output is not banked as 'no findings'"
+  else
+    fail=1; note "UNSCANNED FAILED: broke=[${SCAN_BROKE}] hits=[${SCAN_HITS}]"
+  fi
+  # ...and the same set WITHOUT the unreadable path still scans and still finds the six, so the
+  # case above is not just "this lint refuses everything".
+  scan_set "${tmp}/red.rs"
+  n=$(printf '%s\n' "$SCAN_HITS" | grep -c ':' || true)
+  if [ -z "$SCAN_BROKE" ] && [ "$n" -eq 6 ]; then
+    pass=$((pass+1)); note "SCANNED: a readable scan set records no refusal and still reports all 6 findings"
+  else
+    fail=1; note "SCANNED FAILED: broke=[${SCAN_BROKE}] hits=${n} (wanted 0 broke, 6 hits)"
+  fi
+
+  # ── THE SCAN FLOOR. A root that moved leaves the loop iterating over almost nothing, and "no
+  # inline FFI in 3 files" is not this lint's claim. The floor is what makes the empty answer red;
+  # nothing proved it could still say no.
+  if ! scan_floor_ok 0 && ! scan_floor_ok $((SCAN_FLOOR - 1)) && scan_floor_ok "$SCAN_FLOOR"; then
+    pass=$((pass+1)); note "FLOOR: a scan set of 0 and of ${SCAN_FLOOR}-1 files are both refused, and exactly ${SCAN_FLOOR} is accepted"
+  else
+    fail=1; note "FLOOR FAILED: the scan floor does not bite at ${SCAN_FLOOR}"
+  fi
+
+  note "self-test: ${pass}/6 fixture groups passed"
   if [ "$fail" -ne 0 ]; then
     note "blocking-ffi-lint SELF-TEST FAILED — the scanner would let an inline plugin call through"
     return 1
@@ -342,14 +410,7 @@ PLANE_ROOTS=("$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a")
 
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "$LLM" "${PLANE_ROOTS[@]}" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
-# ── SCAN FLOOR — the loop below is "for each file, assert no inline FFI", which is VACUOUSLY TRUE
-# over zero files. Rename `crates/busbar` (a normal refactor), move the engine, or mistype the root,
-# and every rule above reports `ok` FOREVER while the tree is unscanned — a green verdict about a
-# property nothing looked at. The floor is not `> 0`: one surviving file is just as vacuous as none.
-# It tracks the real tree (123 files at the time of writing) with room to shrink, so a genuine
-# consolidation still passes and a root that has moved out from under the lint cannot.
-SCAN_FLOOR=100
-if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
+if ! scan_floor_ok "${#CANDIDATES[@]}"; then
   hdr "result"
   note "blocking-ffi-lint FAILED — SCAN ROOT EMPTY OR MOVED"
   note "found ${#CANDIDATES[@]} non-test .rs files under ${CORE}, expected >= ${SCAN_FLOOR}."
@@ -359,12 +420,27 @@ if [ "${#CANDIDATES[@]}" -lt "$SCAN_FLOOR" ]; then
 fi
 note "scan set: ${#CANDIDATES[@]} files under ${CORE} (floor ${SCAN_FLOOR})"
 
-hits=""
-for f in "${CANDIDATES[@]}"; do
-  h=$(scan_rule "$f") || true
-  [ -n "$h" ] && hits="${hits}${h}"$'\n'
-done
-hits="${hits%$'\n'}"
+# ── THE SCANNER'S OWN EXIT STATUS ────────────────────────────────────────────────────────────────
+# `h=$(scan_rule "$f") || true` discarded it. awk exits non-zero for every reason that is NOT "this
+# file is clean": a syntax error in the program above (one stray brace while editing a rule), an
+# unreadable file, a bad regex. Every one of those produced an EMPTY `h`, which is this lint's
+# no-findings answer, on EVERY file — planted, a one-character break in the awk program printed
+# `ok` and `blocking-ffi-lint passed`, exit 0, while awk had refused to run over all 238 files and
+# said so on a stderr nobody was reading.
+#
+# The floor above cannot see this: the scan SET was full, it was the scan that never happened. So
+# the status is carried per file and a scanner that did not run is a refusal, named with its file.
+scan_set "${CANDIDATES[@]}"
+
+if [ -n "$SCAN_BROKE" ]; then
+  hdr "result"
+  note "blocking-ffi-lint FAILED — THE SCANNER DID NOT RUN"
+  while IFS= read -r b; do note "  $b"; done <<<"$SCAN_BROKE"
+  note "awk exited non-zero, so these files were never scanned. An aborted scan finds no inline"
+  note "plugin call, and finding none is this lint's PASS. It is RED instead."
+  exit 1
+fi
+hits="$SCAN_HITS"
 
 fail=0
 if [ -n "$hits" ]; then
