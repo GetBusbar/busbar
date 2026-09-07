@@ -50,7 +50,9 @@ set -uo pipefail
 # Resolved BEFORE the cd, so --selftest can re-invoke this exact file as a child process (the root
 # guard below exits the process, which a `$(…)` subshell would swallow).
 SELF="$(cd "$(dirname "$0")" >/dev/null && pwd)/$(basename "$0")"
-cd "$(dirname "$0")/.."
+# `|| exit 1`: with no `set -e`, a failed cd would leave every relative root below resolving against
+# the CALLER's directory instead of the repo — a whole scan aimed somewhere nobody chose.
+cd "$(dirname "$0")/.." || exit 1
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -169,9 +171,22 @@ run_report() {
   record "Billing::Tokens" "Billing::Tokens" sub
 
   # Bare provider/model ONLY in pricing/metering context (word-bounded noun + a context word).
-  grep -wE -e 'provider' "$CODE" 2>/dev/null | grep -iE "$CTX_RE" \
+  #
+  # MATCH THE CODE, NOT THE PATH. `$CODE` is a `file:line:content` stream, so applying the context
+  # test to the whole line asks it of the FILE PATH as well: every `provider`/`model` line in
+  # `plane/cost.rs`, `billing.rs` or anything else whose path spells a context word was promoted from
+  # homonym to leak on the strength of its directory. Measured on this tree that was 12 of 38
+  # `model@pricing` hits — a third of the reading, invented by the path. The direction is fail-safe
+  # (it over-reports, never under-), but this is a meter whose ZERO is the signal to arm a hard gate,
+  # and a count with a permanent floor of path artifacts can never reach zero however much debt is
+  # evicted. So the `file:line:` prefix is stripped before the context test, exactly as
+  # plane-abi-neutrality.sh strips it before its ban test and for the same reason. The file:line
+  # printed is still taken from the full stream, so a real hit is still reported with its location.
+  grep -wE -e 'provider' "$CODE" 2>/dev/null \
+    | awk -v ctx="$CTX_RE" '{ c = $0; sub(/^[^:]*:[0-9]+:/, "", c); if (tolower(c) ~ ctx) print }' \
     | awk -F: '{print "provider@pricing\t"$1":"$2}' >> "$HITS"
-  grep -wE -e 'model' "$CODE" 2>/dev/null | grep -iE "$CTX_RE" \
+  grep -wE -e 'model' "$CODE" 2>/dev/null \
+    | awk -v ctx="$CTX_RE" '{ c = $0; sub(/^[^:]*:[0-9]+:/, "", c); if (tolower(c) ~ ctx) print }' \
     | awk -F: '{print "model@pricing\t"$1":"$2}' >> "$HITS"
 
   # Per-needle table (raw hit lines).
@@ -229,6 +244,35 @@ GRN
     note "GREEN: the same nouns in comment / doc-comment prose count for nothing"
   else
     fail=1; note "GREEN FAILED: prose-only mentions were counted (hits: $(cat "$hits" 2>/dev/null | tr '\n' ' '))"
+  fi
+
+  # ── THE PATH IS NOT THE CODE. A bare `provider`/`model` counts only in pricing CONTEXT, and the
+  # code stream is `file:line:content` — so the context test used to be answered by the PATH, and every
+  # bare noun in a file called `cost.rs` or `billing.rs` was promoted to a leak by its own directory.
+  # The fixture below is a file whose PATH says cost and whose CODE says nothing of the kind. ──
+  mkdir -p "$tmp/cost_root/billing"
+  cat >"$tmp/cost_root/billing/cost.rs" <<'PATHCTX'
+pub fn pick(model: &str) -> u8 { 0 }
+pub fn dial(provider: &str) -> u8 { 0 }
+PATHCTX
+  hits="$tmp/pathctx.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/cost_root" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/pathctx.log" 2>&1
+  if [ "$(grep -c . "$hits" 2>/dev/null || true)" -eq 0 ]; then
+    note "PATH: a bare provider/model in a file whose PATH says cost/billing is NOT promoted to a leak"
+  else
+    fail=1; note "PATH FAILED: the path answered the pricing-context test (hits: $(tr '\n' ' ' <"$hits"))"
+  fi
+  # …and the CONTROL: the same nouns with a real context word in the CODE still count, so the case
+  # above is the prefix being stripped and not the context rule being switched off.
+  printf 'pub fn rate(model: &str) -> u64 { let price = 1; price }\n' >"$tmp/cost_root/billing/cost.rs"
+  hits="$tmp/pathctx2.hits"
+  PLANE_NOUN_NEUTRAL_ROOTS="$tmp/cost_root" PLANE_NOUN_HITS_OUT="$hits" \
+    bash "$SELF" --report >"$tmp/pathctx2.log" 2>&1
+  if [ "$(grep -c . "$hits" 2>/dev/null || true)" -ge 1 ]; then
+    note "PATH CONTROL: a pricing word in the CODE still promotes the bare noun (the rule still works)"
+  else
+    fail=1; note "PATH CONTROL FAILED: a real pricing-context line stopped counting"
   fi
 
   # ── THE BLIND-SCAN CASES: the meter must not be able to read 0 by scanning NOTHING ──────────────
