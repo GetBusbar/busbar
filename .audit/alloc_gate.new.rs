@@ -83,12 +83,6 @@ const BODY: &str = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"he
 /// unit's arena exactly as it arrived. Before this gate the same call allocated nineteen times — a
 /// full `serde_json::Value` of the request plus two further copies of its bytes — for no difference
 /// at all in what went on the wire.
-///
-/// A SIXTH nearly joined them and is not here: asking the dialect's writer for the request target
-/// used to mean resolving a whole codec first, and a resolved codec boxes a writer that carries
-/// per-stream state this arm never touches. The box was the one allocation on this arm that bought
-/// nothing. The question is now asked of a writer built on the stack, so the count is what the
-/// envelope costs and nothing else.
 const PASSTHROUGH_ALLOCS: u64 = 5;
 
 /// An ANSWER in the same dialect the client speaks, which the plane hands back unchanged.
