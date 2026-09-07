@@ -583,6 +583,55 @@ else
   say FAIL "the ORDER_RULES/CONTENT_RULES guard does not forbid exempting a content-dropping rule: $(tail -2 "$W/order-assert.log")"
 fi
 
+# (ab) THE HARNESS REVISION MUST COVER EVERY FILE THAT DECIDES A VERDICT, not only every file that
+# decides a RECORDING. harness-rev.sh's own header says the set is "the files that decide what gets
+# recorded AND HOW IT IS COMPARED", and it is on that ground that accepted-differences.json and
+# owed-baseline.txt are in it — neither is executed while recording; both change the verdict on
+# identical bytes. By exactly that argument four more belong and were absent:
+#
+#   replay.sh          the comparison DRIVER. It holds the owed-baseline regression check, the
+#                      golden-binary provenance gate and the --allow-harness-skew plumbing; edit it
+#                      and the same two recordings get a different verdict.
+#   fleet-fixtures/verdict.sh
+#                      its own header: "This is the ONLY place the gate decides anything." lib.sh is
+#                      already in the set for writing the ledger ROW; the file that turns those rows
+#                      into red or green was not.
+#   accepted-gaps.json the register that forgives an owed-baseline regression, with an owner and a
+#                      rationale — the exact shape of accepted-differences.json, which is in the set.
+#   harness-rev.sh     the definition of the set. Removing a file from the list moves the hash only
+#                      because that file's bytes leave it; changing how the list is HASHED does not.
+#
+# A file outside the set can change while the rev sits still, and diff-cells' skew guard — whose
+# whole job is to refuse a pair of recordings made under different harnesses — then compares two
+# equal stamps and says nothing. Checked by NAME against `harness-rev.sh --files`, so this is red the
+# day one is dropped rather than the day a verdict is doubted.
+#
+# rigs-baseline.json is deliberately NOT required here: it is the sign-off floor of the SEPARATE
+# plane-rigs gate (rigs-ledger.sh), which has its own verdict and never touches an LLM-plane
+# recording or this replay.
+hr_files="$(bash "${here}/harness-rev.sh" --files)"
+hr_missing=""
+for want in testing/shadow-oracle/replay.sh testing/shadow-oracle/harness-rev.sh \
+            testing/shadow-oracle/accepted-gaps.json testing/fleet-fixtures/verdict.sh; do
+  printf '%s\n' "$hr_files" | grep -Fqx "$want" || hr_missing="${hr_missing} ${want}"
+done
+[ -z "$hr_missing" ] \
+  && say PASS "the harness revision covers the comparison driver, the verdict, the gap register and its own definition" \
+  || say FAIL "file(s) that decide a verdict are OUTSIDE the harness revision, so they can change while the rev sits still and the skew guard stays quiet:${hr_missing}"
+# …and the rev genuinely MOVES when one of them does — a name in the list that is never hashed
+# would pass the check above and prove nothing.
+hr_before="$(bash "${here}/harness-rev.sh" | awk '{print $2}')"
+cp "${here}/replay.sh" "$W/replay.sh.bak"
+printf '\n# harness-rev selftest probe\n' >>"${here}/replay.sh"
+hr_after="$(bash "${here}/harness-rev.sh" | awk '{print $2}')"
+cp "$W/replay.sh.bak" "${here}/replay.sh"
+hr_restored="$(bash "${here}/harness-rev.sh" | awk '{print $2}')"
+if [ "$hr_before" != "$hr_after" ] && [ "$hr_before" = "$hr_restored" ]; then
+  say PASS "editing the comparison driver MOVES the harness revision (and restoring it moves it back)"
+else
+  say FAIL "editing replay.sh did not move the harness revision (before=${hr_before:0:12} after=${hr_after:0:12} restored=${hr_restored:0:12})"
+fi
+
 # (y) THE HARNESS REVISION MUST COVER EVERY FILE THAT DECIDES A RECORDING OR A VERDICT. harness_rev
 # is the ONE fact that lets diff-cells refuse a golden and a candidate made under different rules,
 # and four files that decide exactly that were outside it: testing/fleet-fixtures/lib.sh (record.sh
