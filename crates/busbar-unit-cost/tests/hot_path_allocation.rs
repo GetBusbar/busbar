@@ -83,7 +83,9 @@ fn four_class_card() -> RateCard {
 #[test]
 fn a_rate_lookup_allocates_nothing() {
     let card = four_class_card();
-    let view = card.lane_rates("lane", CurrencyCode::USD).expect("the lane is priced");
+    let view = card
+        .lane_rates("lane", CurrencyCode::USD)
+        .expect("the lane is priced");
     // A warm-up pass, so nothing lazy is counted against the loop.
     assert_eq!(view.nanos_per_unit("input"), 1_000);
     assert!(view.class_priced("output"));
