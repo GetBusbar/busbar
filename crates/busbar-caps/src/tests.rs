@@ -484,6 +484,107 @@ fn an_estimated_usage_report_flags_the_posting() {
     assert!(!posted.flags().is_clean());
 }
 
+/// A report with one floored line among reported ones is a floored report.
+///
+/// The whole-report mark and the per-line mark are the same claim at two widths, and only one of
+/// them reached the posting. A fold that reads one class off the destination's own response and
+/// derives another itself — a duration from a byte count under an assumed format — has to go
+/// through `report`, because `estimate` would say the destination confirmed nothing, and then the
+/// posting came out clean: a node-derived figure billed with nothing on it saying so, and no row on
+/// the disputes report the settlement table puts it on.
+#[test]
+fn a_report_carrying_one_floored_line_is_a_floored_report() {
+    let k = Kernel::new();
+    let mixed = Usage::report(
+        &k.usage_token(),
+        vec![
+            UsageLine {
+                class: MeterClassId::new("audio_tokens_in"),
+                quantity: 900,
+                source: QuantitySource::Count,
+                estimated: false,
+            },
+            UsageLine {
+                class: MeterClassId::new("audio_seconds_in"),
+                quantity: 12,
+                source: QuantitySource::KernelBytes { divisor: 32_000 },
+                estimated: true,
+            },
+        ],
+    )
+    .expect("two lines are within the bound");
+    assert!(
+        mixed.is_estimated(),
+        "a report carrying a line the node floored is not a report the destination confirmed"
+    );
+
+    let posted = Posted::settle(
+        Hold::open(&k.admit_token(), who("acct-1"), 1_000),
+        900,
+        &mixed,
+        &k.ledger_token(),
+    );
+    assert!(
+        posted.flags().contains(PostingFlags::ESTIMATED),
+        "the floor mark has to travel onto the posting, or nothing puts it on the disputes report"
+    );
+
+    // And a report every line of which the destination confirmed still says so.
+    assert!(!usage_of(&k, 42).is_estimated());
+}
+
+/// A priced total wider than the reservation's own width settles at the ceiling, never at zero.
+///
+/// The seam that moves money takes the cost unit's answer as a `u128` and the hold reserves in
+/// `u64`, so there is a width to cross and exactly two directions to fall off it. `settle` says in
+/// prose that it settles at the ceiling "rather than wrapping: there is no amount above it to post,
+/// and a wrap would post nearly nothing for the most expensive unit the node has ever run" — and
+/// nothing in the tree could tell the ceiling from a zero, a wrap, or a truncation to the low
+/// sixty-four bits. All three read as an ordinary settlement; only one of them bills anybody.
+///
+/// The direction is what matters. Falling off the top must land on the largest amount the record
+/// can carry, and it must still read as an overdraft, because a figure that would not fit in the
+/// reservation's width is by definition value delivered with nothing behind it.
+#[test]
+fn a_priced_total_wider_than_the_reservation_settles_at_the_ceiling() {
+    let k = Kernel::new();
+    let hold = Hold::open(&k.admit_token(), who("acct-1"), 1_000);
+    let posted = Posted::settle(
+        hold,
+        u128::from(u64::MAX) + 1,
+        &usage_of(&k, 0),
+        &k.ledger_token(),
+    );
+    assert_eq!(
+        posted.settled(),
+        u64::MAX,
+        "one past the width settles at the ceiling, not at zero and not wrapped to 0"
+    );
+    assert!(
+        posted.flags().contains(PostingFlags::OVERDRAFT),
+        "an amount that will not fit the reservation's width had nothing behind it"
+    );
+    assert_eq!(posted.released(), 0, "and it releases nothing");
+
+    // The two figures either side of the boundary, so the clamp is a ceiling rather than a wall the
+    // whole top of the range is pushed against.
+    let at = Posted::settle(
+        Hold::open(&k.admit_token(), who("acct-1"), 1_000),
+        u128::from(u64::MAX),
+        &usage_of(&k, 0),
+        &k.ledger_token(),
+    );
+    assert_eq!(at.settled(), u64::MAX);
+    let under = Posted::settle(
+        Hold::open(&k.admit_token(), who("acct-1"), 1_000),
+        999,
+        &usage_of(&k, 0),
+        &k.ledger_token(),
+    );
+    assert_eq!(under.settled(), 999);
+    assert!(!under.flags().contains(PostingFlags::OVERDRAFT));
+}
+
 #[test]
 fn a_usage_report_is_bounded_by_the_record_size() {
     let k = Kernel::new();
