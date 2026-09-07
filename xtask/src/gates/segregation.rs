@@ -27,11 +27,20 @@ pub const ROW_REVERSE: &str = "segregation:no-reverse-dep";
 pub const ROW_ORACLE: &str = "segregation:oracle-clean";
 pub const ROW_ORACLE_DATA: &str = "segregation:oracle-data-allow";
 
-/// The three oracle outputs a gate may legitimately read AS DATA: `design-bindings` and
-/// `inventory-coverage` resolve against the golden ledger, and `full` reads the golden digests.
+/// The oracle outputs a gate may legitimately read AS DATA: `design-bindings` and
+/// `inventory-coverage` resolve against the golden ledger, `full` reads the golden digests, and
+/// `teller-steps` asks the two id registers whether anything in the tree still owns a named rig
+/// cell — a lookup in a list, not an execution.
+///
+/// The line this list draws is the whole rule: `teller-steps` may ask `rigs-baseline.json` what ids
+/// exist, and may NOT run `rigs-ledger.sh` to find out. The Python it replaces did run it; that arm
+/// stayed in `scripts/verify-1.6.0-done.sh`, where a caller driving the oracle is a caller, rather
+/// than moving into the gate runner, where it would be the runner importing its subject.
 pub const ORACLE_DATA_ALLOW: &[&str] = &[
     "testing/shadow-oracle/golden/1.5.5/ledger.tsv",
     "testing/shadow-oracle/golden/1.5.5/golden-digests.tsv",
+    "testing/shadow-oracle/cells.json",
+    "testing/shadow-oracle/rigs-baseline.json",
 ];
 
 /// The `xtask/src/**` walk's denominator floor. An emptied or moved `src/` scans nothing, and zero

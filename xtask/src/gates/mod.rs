@@ -28,6 +28,7 @@ pub mod plane_transport_neutrality;
 pub mod response_header;
 pub mod segregation;
 pub mod settings_leak;
+pub mod teller_steps;
 pub mod tracing;
 
 use std::collections::BTreeSet;
@@ -367,6 +368,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(duplex_ws_default_edge::DuplexWsDefaultEdgeGate),
         summary: "no WebSocket crate in the default money-path dependency closure",
+    },
+    Registration {
+        name: "teller-steps",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(teller_steps::TellerStepsGate),
+        summary: "one cell per Teller step per plane, each with a second verdict over the root leg",
     },
 ];
 
