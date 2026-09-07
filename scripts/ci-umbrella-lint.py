@@ -303,13 +303,64 @@ def selftest(root: Path) -> int:
 
     MIN_JOBS, MIN_NEEDS, MIN_RESULTS = saved
 
-    # THE FLOORS BITE. Under the real floors, the tiny synthetic base must be REFUSED.
+    # THE FLOORS BITE, ONE AT A TIME. Refusing the 3-job stub under all three real floors proves
+    # only that AT LEAST ONE of them fired -- and MIN_JOBS alone does that, so MIN_NEEDS and
+    # MIN_RESULTS were carried by it. Planted at MIN_NEEDS=0 the suite stayed green. Each floor is
+    # now driven alone, against the real ci.yml with that one dimension shrunk to just under it, so
+    # a floor that stopped biting is named rather than covered for by its neighbour.
     if check_text(BASE):
         print("  [ok]     under the real floors a 3-job stub is REFUSED (a parser that sees little proves little)")
     else:
         print("  [FAILED] the job/needs/RESULTS floors do not bite")
         failures += 1
 
+    real_text = (root / WORKFLOW).read_text(encoding="utf-8")
+
+    def floor_case(name, want, mutate):
+        """`mutate(doc)` shrinks one dimension of the real ci.yml; the named floor must be the
+        thing that fires. Checked by its own message, so another rule reddening does not count."""
+        nonlocal failures
+        doc = yaml.safe_load(real_text)
+        mutate(doc)
+        # safe_dump drops comments, and the `# non-gating:`/`# report-only:` declarations ARE
+        # comments, so they are carried over verbatim; otherwise every exempted job would also
+        # fire rule 1 and the case could pass on the wrong problem.
+        decls = "\n".join(ln for ln in real_text.splitlines() if DECL_RE.match(ln))
+        problems = check_text(yaml.safe_dump(doc, sort_keys=False) + "\n" + decls + "\n")
+        if any(want in p for p in problems):
+            print(f"  [ok]     {name}")
+        else:
+            print(f"  [FAILED] {name} -- nothing said {want!r}; got {problems[:2] or 'nothing'}")
+            failures += 1
+
+    def shrink_needs(doc):
+        u = doc["jobs"][UMBRELLA]
+        u["needs"] = list(u["needs"])[: MIN_NEEDS - 1]
+
+    def shrink_results(doc):
+        u = doc["jobs"][UMBRELLA]
+        rows = [r for r in str(u["env"]["RESULTS"]).splitlines() if r.strip()]
+        u["env"]["RESULTS"] = "\n".join(rows[: MIN_RESULTS - 1]) + "\n"
+
+    def shrink_jobs(doc):
+        keep = [UMBRELLA] + [j for j in doc["jobs"] if j != UMBRELLA][: MIN_JOBS - 2]
+        doc["jobs"] = {k: doc["jobs"][k] for k in keep}
+
+    floor_case(
+        f"the NEEDS floor bites on its own at {MIN_NEEDS - 1} dependencies "
+        f"(a short needs list is how a required check stops requiring things)",
+        f"job(s) (floor {MIN_NEEDS})", shrink_needs)
+    floor_case(
+        f"the RESULTS floor bites on its own at {MIN_RESULTS - 1} rows "
+        f"(an unread ledger scores nothing and prints GREEN)",
+        f"row(s) (floor {MIN_RESULTS})", shrink_results)
+    floor_case(
+        f"the JOBS floor bites on its own at {MIN_JOBS - 1} jobs "
+        f"(a reader that sees almost no jobs reports almost no omissions)",
+        f"job(s) parsed (floor {MIN_JOBS})", shrink_jobs)
+
+    # RED BEFORE GREEN, ON THE REAL FILE. Re-plant the historical defect (`deletion-test-matrix`
+    # absent from `needs`) in the tree's own ci.yml and require a RED; then require the tree GREEN.
     # ON THE REAL FILE: re-plant the historical defect (`deletion-test-matrix` absent from `needs`)
     # in the tree's own ci.yml and require the lint to refuse it; then require the untouched tree
     # to pass.
