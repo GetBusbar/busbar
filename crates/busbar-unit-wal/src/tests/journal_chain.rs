@@ -604,3 +604,55 @@ fn the_bound_is_pinned() {
         MEMORY_BUFFER_RECORDS
     );
 }
+
+/// A RECORD LIFTED OUT OF A RUN AND THE GAP CLOSED BEHIND IT IS STILL A REMOVED RECORD.
+///
+/// The chain's four checks fail differently on purpose, and this is the one that catches the edit a
+/// careful hand makes. Editing a body breaks the body digest; editing a header breaks the chain
+/// digest; lifting a record out and leaving the links dangling breaks the link check. But a run
+/// re-shipped with a record dropped and its successor RE-LINKED onto its predecessor passes all
+/// three: every record hashes to its own bytes, and every record points at the one before it. The
+/// only thing left that says a record was there is that the numbering skips it — which is exactly
+/// what the sequence check is for, and what nothing had yet asked it to do.
+#[test]
+fn a_record_lifted_out_of_a_run_is_caught_by_its_number_even_when_the_links_are_re_made() {
+    let body = |tag: u8| vec![tag, tag, tag];
+    let chain = |node_seq: u64, prev_hash: [u8; 32], tag: u8| {
+        let mut record = JournalRecord {
+            class: RecordClass::Transaction,
+            node: 7,
+            node_seq,
+            lease_epoch: 1,
+            policy_epoch: 1,
+            wall: 1_700_000_000,
+            mono: node_seq * 11,
+            body_hash: crate::journal::body_digest(&body(tag)),
+            body: body(tag),
+            prev_hash,
+            hash: [0u8; 32],
+        };
+        record.hash = record.digest_of_chain();
+        record
+    };
+
+    let first = chain(1, [0u8; 32], 0xA1);
+    let second = chain(2, first.hash, 0xA2);
+    let third = chain(3, second.hash, 0xA3);
+    verify(&[first.clone(), second.clone(), third.clone()])
+        .expect("an untouched run of three verifies");
+
+    // The middle record is lifted out and the third is re-linked onto the first, so both surviving
+    // records hash to their own bytes and the links are unbroken. Only the numbering remembers.
+    let relinked_third = chain(3, first.hash, 0xA3);
+    let break_found = verify(&[first, relinked_third])
+        .expect_err("a run with a record lifted out of it must not verify");
+    assert_eq!(
+        break_found.kind,
+        JournalBreakKind::SequenceMismatch {
+            expected: 2,
+            found: 3
+        },
+        "the removal has to be named as a removal, not as a broken link"
+    );
+    assert_eq!(break_found.at_index, 2, "at the record that jumped");
+}
