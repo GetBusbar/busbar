@@ -354,3 +354,82 @@ fn a_body_the_reader_cannot_parse_reports_the_ir_parse_signal() {
         );
     }
 }
+
+/// EVERY structurally-invalid RESPONSE shape names the parse signal, not just a non-object body.
+/// A body whose `role` is not the assistant's, and one with no `content` member at all, are both
+/// bodies busbar could not read — and each is reported as such rather than as an anonymous client
+/// error whose cause cannot be answered from the record.
+#[test]
+fn each_unreadable_response_shape_names_the_parse_signal() {
+    let p = protocol_for("anthropic").expect("known proto");
+    let reader = p.reader();
+
+    // A `role` the pinned Anthropic `Message` never carries on a response.
+    let err = reader
+        .read_response(&serde_json::json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "user",
+            "content": [{"type": "text", "text": "hi"}],
+        }))
+        .expect_err("a non-assistant role is not a readable response");
+    assert_eq!(err.class, StatusClass::ClientError);
+    assert_eq!(err.provider_signal.as_deref(), Some(SIGNAL_IR_PARSE));
+
+    // `content` is required by the same schema; absent, the body is unreadable.
+    let err = reader
+        .read_response(&serde_json::json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+        }))
+        .expect_err("a response with no content member is not readable");
+    assert_eq!(err.class, StatusClass::ClientError);
+    assert_eq!(err.provider_signal.as_deref(), Some(SIGNAL_IR_PARSE));
+}
+
+/// A MID-STREAM ERROR CARRIES THE UPSTREAM'S OWN TYPE AND CLASS. The pinned Anthropic document
+/// (digest `d1d189d7…`) declares an `error` event inside `MessageStreamEvent`, carrying the same
+/// `error.type` vocabulary as a non-stream `ErrorResponse`. That type is the breaker's attribution:
+/// an `overloaded_error` or `rate_limit_error` mid-stream is a TRANSIENT UPSTREAM fault, and
+/// flattening it into a generic client fault means the breaker records nothing, never benches the
+/// lane, and keeps routing to an upstream that is failing.
+#[test]
+fn a_mid_stream_error_keeps_the_upstream_type_and_class() {
+    let p = protocol_for("anthropic").expect("known proto");
+    let reader = p.reader();
+    let cases: &[(&str, StatusClass)] = &[
+        ("overloaded_error", StatusClass::Overloaded),
+        ("rate_limit_error", StatusClass::RateLimit),
+        ("api_error", StatusClass::ServerError),
+        ("authentication_error", StatusClass::Auth),
+        ("billing_error", StatusClass::Billing),
+        ("invalid_request_error", StatusClass::ClientError),
+    ];
+    for (error_type, class) in cases {
+        let ev = reader
+            .read_response_event(
+                "error",
+                &serde_json::json!({
+                    "type": "error",
+                    "error": {"type": error_type, "message": "upstream said so"},
+                }),
+            )
+            .expect("a mid-stream error event is an IR error event");
+        match ev {
+            ir::IrStreamEvent::Error(err) => {
+                assert_eq!(
+                    err.class, *class,
+                    "{error_type}: the upstream's own disposition must reach the breaker"
+                );
+                assert_eq!(
+                    err.provider_signal.as_deref(),
+                    Some(*error_type),
+                    "{error_type}: the upstream's type is the attribution and must be carried"
+                );
+                assert_eq!(err.retry_after, None, "{error_type}");
+            }
+            other => panic!("expected an IR error event, got {other:?}"),
+        }
+    }
+}
