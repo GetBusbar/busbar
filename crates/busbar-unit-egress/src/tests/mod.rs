@@ -14,8 +14,12 @@ mod allocation_tests;
 mod deadline_tests;
 mod exhaustion_tests;
 mod pick_order_tests;
+mod pool_tests;
+mod ports_tests;
 mod probe_tests;
+mod select_unit_tests;
 mod walk_tests;
+mod wire_tests;
 
 use std::sync::Arc;
 
