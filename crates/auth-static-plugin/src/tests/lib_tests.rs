@@ -72,6 +72,37 @@ fn credential_is_compared_under_a_digest() {
     assert!(matches!(m.authenticate(None), AuthOutcome::Pass));
 }
 
+/// Mutation-hardening (cargo-mutants): `name()` returning `""` or any other literal instead of
+/// `"static-auth"` survived, because no test asserted the module's runtime name — only its
+/// behavior. The module's identity is what `role_bindings.<module>` / `auth.modules.<module>` key
+/// off, so a wrong name silently breaks policy wiring without changing any auth OUTCOME, which is
+/// why behavior-only tests missed it.
+#[test]
+fn module_name_is_static_auth() {
+    let m = StaticModule {
+        token_hash: busbar_api::sha256_hex(b"sekret"),
+        id: "alice".to_string(),
+        roles: vec![],
+    };
+    assert_eq!(m.name(), "static-auth");
+}
+
+/// Mutation-hardening (cargo-mutants): `c.token.is_empty() || c.id.is_empty()` mutated to `&&`
+/// survived, because no test presented exactly ONE of `token`/`id` empty (only both-present and,
+/// implicitly, both-absent-is-a-parse-error cases existed). With `&&`, a config with an empty
+/// `token` but non-empty `id` (or vice versa) would incorrectly load instead of refusing.
+#[test]
+fn open_refuses_when_only_one_of_token_or_id_is_empty() {
+    match open(r#"{"token":"","id":"alice"}"#) {
+        Err(e) => assert!(e.contains("non-empty"), "empty token must refuse: {e}"),
+        Ok(_) => panic!("empty token with a non-empty id must refuse to load"),
+    }
+    match open(r#"{"token":"sekret","id":""}"#) {
+        Err(e) => assert!(e.contains("non-empty"), "empty id must refuse: {e}"),
+        Ok(_) => panic!("empty id with a non-empty token must refuse to load"),
+    }
+}
+
 /// The check above builds `StaticModule` by hand, which means it proves the COMPARISON is done under
 /// a digest without ever proving `open` puts a digest there. Nothing in this file connected the
 /// config the engine passes to the outcome the chain sees, so a build that stored the raw token in
