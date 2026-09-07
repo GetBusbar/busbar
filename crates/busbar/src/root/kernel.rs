@@ -220,22 +220,6 @@ impl ArrivalDoor for AdmissionDoor {
 /// not the production default — that is the loader's ABI-2 adapter over the configured store, and
 /// the in-tree memory store when a config names none — it is what the composition holds until the
 /// configured one is built.
-///
-/// THE THREE DISASTER-RECOVERY VERBS ANSWER "NOT WIRED HERE", not "the store failed", and the
-/// difference is the whole reason this type is documented at this length. `Failed` is a promise that
-/// a store exists and did not answer, and the administrative surface serves it as 503 unavailability
-/// — retry, and page somebody. Nothing about this node will ever change: there is no store, so there
-/// is nothing to retry and nobody to page, and an operator running a chain-break ceremony against a
-/// healthy node would have followed that advice forever. Before this composition wrapped the surface
-/// those three paths were not routed at all and answered 404, which is the same statement in the
-/// answer an operator was already reading.
-///
-/// The alternative — thread the deployment's own store in — is not a smaller change made here: this
-/// binary builds no verbs-unit store at boot at all (the loader's `StoreAdapter::verb_store` has no
-/// caller on the boot path), so "the configured store" would have to be invented rather than
-/// threaded, and which store an admin composition holds is the integrator's decision to make, not
-/// this constructor's to guess. The day one is wired, `admin_only_sharing` takes it as an argument
-/// and this type goes back to being what its name says.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct RefusingStore;
 
@@ -244,7 +228,7 @@ impl busbar_unit_verbs::store::Store for RefusingStore {
         &self,
         _admin: &busbar_caps::AdminToken,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Unconfigured)
+        Err(busbar_unit_verbs::StoreError::Failed)
     }
 
     fn store_restore(
@@ -252,14 +236,14 @@ impl busbar_unit_verbs::store::Store for RefusingStore {
         _admin: &busbar_caps::AdminToken,
         _backup_ref: &str,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Unconfigured)
+        Err(busbar_unit_verbs::StoreError::Failed)
     }
 
     fn reseal_epoch_floor(
         &self,
         _admin: &busbar_caps::AdminToken,
     ) -> Result<(), busbar_unit_verbs::StoreError> {
-        Err(busbar_unit_verbs::StoreError::Unconfigured)
+        Err(busbar_unit_verbs::StoreError::Failed)
     }
 
     fn replay_new_verb(
