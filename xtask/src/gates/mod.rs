@@ -19,6 +19,7 @@
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
 pub mod denylist_gate;
+pub mod release_order;
 pub mod segregation;
 
 use std::collections::BTreeSet;
@@ -276,6 +277,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(denylist_gate::DenylistGate),
         summary: "the pure plugin kinds carry no banned transitive source (ARCHITECTURE.md 1.2)",
+    },
+    Registration {
+        name: "release-order",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(release_order::ReleaseOrderGate),
+        summary: "nothing may be tagged until it has been verified from the consumer side",
     },
     Registration {
         name: "segregation",
