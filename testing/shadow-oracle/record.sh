@@ -151,6 +151,21 @@ sweep_orphan_staging() {  # remove busbar-plugins-<dead pid>-* under this run's 
   done
 }
 
+# ── THE RECORDING HOST MAY NOT PICK WHICH ARM OF A BRANCH BUSBAR TAKES ──────────────────────────
+# busbar-core's admin/restart.rs decides `supervisor_detected` from SUPERVISOR_MARKERS —
+# INVOCATION_ID and KUBERNETES_SERVICE_HOST — and answers the restart verb differently depending on
+# it, down to the length of the 202 body. Neither variable has anything to do with busbar: systemd
+# sets INVOCATION_ID for every unit it starts, which is every job on a Linux CI runner, and nothing
+# sets it on a developer's mac. So the golden recorded here took the no-supervisor arm and a runner
+# re-recording the same binary took the other one, and the cells differed by which machine ran them
+# rather than by which binary did.
+#
+# Unset at recorder scope, once, so EVERY busbar this script spawns — the boots below, the script
+# drivers, the --validate invocations — sees the same environment on every host. This is not a
+# preference for one arm: it is the recorder refusing to let the host choose. A cell that wants the
+# supervisor arm must set the marker itself, as a fact about that cell, where it can be read.
+unset INVOCATION_ID KUBERNETES_SERVICE_HOST
+
 export BUSBAR_BIN="$BIN"
 declaw "$BIN"
 VER="$("$BIN" --version 2>/dev/null | head -1)"
@@ -834,7 +849,9 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
     record "$id" FAIL "capture-concurrent.py failed" "$(tail -c 300 "$raw/capture.err")"; return
   fi
   printf '%s\n' "$kid" >"$raw/key-id"   # so renormalize.sh can re-run this cell faithfully
-  if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
+  # --driver concurrent: this is the ONLY call site that passes it, and it turns on exactly one rule
+  # (metrics.concurrent-attempts). See normalize.py; renormalize.sh's driver table mirrors this line.
+  if ! python3 "${here}/normalize.py" "$raw/captured.json" --key-id "$kid" --driver concurrent >"$OUT/cells/$safe.json" 2>"$raw/normalize.err"; then
     record "$id" FAIL "normalize.py failed" "$(tail -c 300 "$raw/normalize.err")"; return
   fi
   record "$id" PASS "N=${cn}; statuses ${statuses}" ""

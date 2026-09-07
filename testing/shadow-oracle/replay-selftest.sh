@@ -959,5 +959,256 @@ else
     || say FAIL "eventstream.frames: corrupt stream applied=$bad_rules (wanted undecodable, not frames)"
 fi
 
+# (dd) `stderr.platform-capability` DROPS THE HOST LINE ON BOTH SIDES, AND SAYS SO WHEN IT FIRED ON
+# ONE. The golden is recorded on darwin (jemalloc cannot start its purge thread) and CI's candidate
+# runs on linux, where the same binary never prints the line — so this rule is asymmetric BY
+# CONSTRUCTION and the whole question is what the differ does about that. Two halves:
+#   * normalize.py: two captures identical but for the host line normalize to the SAME stderr, and
+#     the applied sets differ by exactly `stderr.platform-capability` — the asymmetry is recorded,
+#     not erased;
+#   * diff-cells.py: that pair is GREEN (the rule is exempt from norm.rules), AND the row carries a
+#     `platform` field naming the side that fired. A green cell's `detail` is emptied, so a rule
+#     reported only through `detail` would be invisible in exactly this case, which is the one that
+#     matters. If `platform` ever stops being written, this case goes red.
+export HERE="$here"   # the python heredocs below are quoted, so they read the path from the env
+jem='[warn] could not enable jemalloc background purge thread (`name` or `mib` specifies an unknown/invalid value.); enabling busbar'"'"'s idle purge fallback so RSS still returns to idle after a load burst'
+python3 - "$W" "$jem" <<'PY'
+import json, os, subprocess, sys
+w, jem = sys.argv[1], sys.argv[2]
+here = os.environ["HERE"]
+base = ["[info] busbar starting", "[info] listening on 127.0.0.1:8080"]
+def norm(lines):
+    cap = {"status": 200, "headers": {"content-type": "application/json"}, "body": "{}",
+           "effects": {"stderr": "\n".join(lines)}}
+    p = os.path.join(w, "cap.json")
+    json.dump(cap, open(p, "w"))
+    return json.loads(subprocess.run([sys.executable, os.path.join(here, "normalize.py"), p],
+                                     capture_output=True, text=True, check=True).stdout)
+with_host = norm(base[:1] + [jem] + base[1:])
+without    = norm(base)
+json.dump({"same_stderr": with_host["effects"]["stderr"] == without["effects"]["stderr"],
+           "rule_on_golden": "stderr.platform-capability" in with_host["applied"],
+           "rule_on_candidate": "stderr.platform-capability" in without["applied"]},
+          open(os.path.join(w, "dd.json"), "w"))
+PY
+dd_same="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["same_stderr"])' "$W/dd.json")"
+dd_g="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["rule_on_golden"])' "$W/dd.json")"
+dd_c="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["rule_on_candidate"])' "$W/dd.json")"
+[ "$dd_same" = True ] && [ "$dd_g" = True ] && [ "$dd_c" = False ] \
+  && say PASS "stderr.platform-capability: the host line is dropped on both sides, one-sided firing recorded" \
+  || say FAIL "stderr.platform-capability normalize: same=$dd_same golden=$dd_g candidate=$dd_c"
+
+cp -R "$FIX" "$W/plat-g"; cp -R "$FIX" "$W/plat-c"
+python3 - "$W/plat-g/cells/self__a__ok.json" "$W/plat-c/cells/self__a__ok.json" <<'PY'
+import json, sys
+g, c = sys.argv[1], sys.argv[2]
+for p, applied in ((g, True), (c, False)):
+    d = json.load(open(p))
+    # Identical stderr on BOTH sides — the host line is already gone, which is what the rule does.
+    d["effects"]["stderr"] = "[info] busbar starting\n[info] listening"
+    if applied:
+        d["applied"] = sorted(set(d.get("applied", [])) | {"stderr.platform-capability"})
+    json.dump(d, open(p, "w"), separators=(",", ":"), sort_keys=True)
+PY
+rc="$(run "$W/plat-g" "$W/plat-c" "$W/out-dd")"
+plat="$(python3 -c '
+import json,sys
+r=json.load(open(sys.argv[1]))
+row=[x for x in r["cells"] if x["id"]=="self|a|ok"][0]
+print(json.dumps(row.get("platform")))' "$W/out-dd/report.json" 2>/dev/null || echo null)"
+[ "$rc" = 0 ] && [ "$plat" != "null" ] \
+  && say PASS "stderr.platform-capability: one-sided firing is GREEN and REPORTED on the row ($plat)" \
+  || say FAIL "platform skew rc=$rc platform=$plat (green? reported?)"
+
+# (ee) THE RULE MAY NEVER TOUCH A REFUSAL. A refusal message is the single thing in stderr the oracle
+# exists to compare, so the patterns are anchored whole-line and name a specific capability. This
+# case feeds the rule the two shapes that would fall to a lazier pattern — a refusal that MENTIONS
+# jemalloc, and a `[warn]` line that is not the capability line — and proves both survive byte-exact
+# with the rule NOT recorded. Then it proves a cell differing only in such a refusal is still RED: if
+# someone widens the pattern to a keyword or a severity, this goes green and the case fails.
+python3 - "$W" <<'PY'
+import json, os, subprocess, sys
+w = sys.argv[1]; here = os.environ["HERE"]
+decoys = [
+    "[error] refusing to start: jemalloc background purge thread could not be enabled and strict mode is on",
+    "[warn] could not enable the plugin staging sweep; continuing",
+    "[warn] could not enable jemalloc background purge thread",  # no trailing detail: still the line
+]
+out = []
+for text in decoys:
+    p = os.path.join(w, "cap2.json")
+    json.dump({"status": 200, "headers": {}, "body": "{}", "effects": {"stderr": text}}, open(p, "w"))
+    r = json.loads(subprocess.run([sys.executable, os.path.join(here, "normalize.py"), p],
+                                  capture_output=True, text=True, check=True).stdout)
+    out.append({"text": text, "kept": r["effects"]["stderr"] == text,
+                "fired": "stderr.platform-capability" in r["applied"]})
+json.dump(out, open(os.path.join(w, "ee.json"), "w"))
+PY
+ee="$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+# the two decoys must be untouched; the third IS the capability line and must fire
+ok = d[0]["kept"] and not d[0]["fired"] and d[1]["kept"] and not d[1]["fired"] and d[2]["fired"]
+print("OK" if ok else "BAD "+json.dumps(d))' "$W/ee.json")"
+[ "$ee" = OK ] \
+  && say PASS "stderr.platform-capability: a refusal naming jemalloc, and a sibling [warn], are untouched" \
+  || say FAIL "stderr.platform-capability touched something it must not: $ee"
+
+cp -R "$FIX" "$W/refuse"
+python3 - "$W/refuse/cells/self__a__ok.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["effects"]["stderr"] = "[error] refusing to start: jemalloc background purge thread could not be enabled and strict mode is on"
+json.dump(d, open(p, "w"), separators=(",", ":"), sort_keys=True)
+PY
+cp -R "$FIX" "$W/refuse-g"
+python3 - "$W/refuse-g/cells/self__a__ok.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+d["effects"]["stderr"] = "[info] busbar starting"
+json.dump(d, open(p, "w"), separators=(",", ":"), sort_keys=True)
+PY
+rc="$(run "$W/refuse-g" "$W/refuse" "$W/out-ee")"
+cls="$(classes_of 'self|a|ok' "$W/out-ee")"
+[ "$rc" != 0 ] && [ "$cls" = "effects.stderr" ] \
+  && say PASS "a refusal that differs is RED [effects.stderr], not swallowed by the host-line rule" \
+  || say FAIL "refusal difference rc=$rc classes=$cls"
+
+# (ff) A DROPPED Retry-After IS RED. `route.failover|fo|primary-429` is NAMED for a 429 that carries
+# one; before the response half of effects.egress existed, the mock could have served the 429 with no
+# Retry-After at all and every recorded byte would have been identical. effects.egress is a MONEY
+# class (weight 10), so this is not a cosmetic row.
+cp -R "$FIX" "$W/eg-g"; cp -R "$FIX" "$W/eg-c"
+python3 - "$W/eg-g/cells/self__a__ok.json" "$W/eg-c/cells/self__a__ok.json" <<'PY'
+import json, sys
+g, c = sys.argv[1], sys.argv[2]
+def put(p, retry_after):
+    d = json.load(open(p))
+    d["effects"]["egress"] = [{"path": "/v1/chat/completions", "method": "POST",
+                               "headers": {"host": "127.0.0.1:<PORT>"}, "body": {"model": "m"},
+                               "response": {"status": 429, "retry_after": retry_after, "elapsed": "<1s"}}]
+    d["applied"] = sorted(set(d.get("applied", [])) | {"egress.elapsed"})
+    json.dump(d, open(p, "w"), separators=(",", ":"), sort_keys=True)
+put(g, "7")     # the upstream sent one, as the cell's name says
+put(c, None)    # it stopped sending one: the cell keeps its name and loses its meaning
+PY
+rc="$(run "$W/eg-g" "$W/eg-c" "$W/out-ff")"
+cls="$(classes_of 'self|a|ok' "$W/out-ff")"
+[ "$rc" != 0 ] && [ "$cls" = "effects.egress" ] \
+  && say PASS "a dropped upstream Retry-After -> RED [effects.egress]" \
+  || say FAIL "dropped Retry-After rc=$rc classes=$cls"
+
+# (gg) A REMOVED SLEEP IS RED. `route.failover|fo|primary-slow` exists because the attempt ran PAST
+# busbar's cap. `egress.elapsed` buckets the raw millisecond count precisely so that this fact can be
+# compared without pinning a stopwatch: an attempt that stops being slow moves >5s -> <1s and the
+# cell moves with it. If the bucket were dropped from the golden instead of normalized, or the
+# boundaries were widened until everything landed in one bucket, this case goes green.
+cp -R "$FIX" "$W/slow-g"; cp -R "$FIX" "$W/slow-c"
+python3 - "$W/slow-g/cells/self__a__ok.json" "$W/slow-c/cells/self__a__ok.json" <<'PY'
+import json, sys
+def put(p, bucket):
+    d = json.load(open(p))
+    d["effects"]["egress"] = [{"path": "/v1/chat/completions", "method": "POST",
+                               "headers": {"host": "127.0.0.1:<PORT>"}, "body": {"model": "m"},
+                               "response": {"status": 200, "retry_after": None, "elapsed": bucket}}]
+    d["applied"] = sorted(set(d.get("applied", [])) | {"egress.elapsed"})
+    json.dump(d, open(p, "w"), separators=(",", ":"), sort_keys=True)
+put(sys.argv[1], ">5s")   # the mock slept past busbar's attempt cap
+put(sys.argv[2], "<1s")   # the sleep is gone: the cell is still called primary-slow
+PY
+rc="$(run "$W/slow-g" "$W/slow-c" "$W/out-gg")"
+cls="$(classes_of 'self|a|ok' "$W/out-gg")"
+[ "$rc" != 0 ] && [ "$cls" = "effects.egress" ] \
+  && say PASS "a removed upstream sleep (>5s -> <1s) -> RED [effects.egress]" \
+  || say FAIL "removed sleep rc=$rc classes=$cls"
+
+# And the bucket boundaries themselves, since the two cases above depend on them separating the
+# harness's real timings: a healthy mock answer (single-digit ms) and the slow verb's sleep
+# (ORACLE_MOCK_SLOW_SECS, default 8s) must never share a bucket.
+bk="$(python3 -c '
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("n", sys.argv[1])
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(",".join(m.elapsed_bucket(x) for x in (4, 999, 1000, 4999, 5000, 8000)))' "${here}/normalize.py")"
+[ "$bk" = "<1s,<1s,1-5s,1-5s,>5s,>5s" ] \
+  && say PASS "egress.elapsed buckets: healthy ms and an 8s sleep can never share one ($bk)" \
+  || say FAIL "egress.elapsed bucket boundaries moved: $bk"
+
+# (hh) `metrics.concurrent-attempts` MASKS ONE VALUE ON ONE DRIVER, AND NOTHING ELSE. The recorder
+# fires N requests at once; the scrape that closes the window does not see N workers' increments at
+# one instant, and the published 1.5.5 binary records 3, 1, 1, 1 for the same cell across four runs.
+# Three things are proved, and the last two are what stop this becoming a blanket:
+#   * with --driver concurrent the attempts VALUE is masked and the rule is recorded;
+#   * the KEY survives, and busbar_requests_total (and every other series) keeps its real value —
+#     a masked attempts series must not take the request count or the money with it;
+#   * WITHOUT the flag the same capture is untouched, so on the other three drivers the attempts
+#     value is still compared byte for byte.
+python3 - "$W" <<'PY'
+import json, os, subprocess, sys
+w = sys.argv[1]; here = os.environ["HERE"]
+cap = {"status": 200, "headers": {}, "body": "{}", "effects": {"metrics": {
+    'busbar_upstream_attempts_total{lane="1"}': 3,
+    'busbar_requests_total{outcome="ok"}': 4,
+}, "usage": {"requests": 4, "spend_micros": 72}}}
+p = os.path.join(w, "cap3.json"); json.dump(cap, open(p, "w"))
+def run(*flags):
+    return json.loads(subprocess.run([sys.executable, os.path.join(here, "normalize.py"), p, *flags],
+                                     capture_output=True, text=True, check=True).stdout)
+json.dump({"conc": run("--driver", "concurrent"), "plain": run()}, open(os.path.join(w, "hh.json"), "w"))
+PY
+hh="$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1])); conc, plain = d["conc"], d["plain"]
+cm, pm = conc["effects"]["metrics"], plain["effects"]["metrics"]
+ok = (cm["busbar_upstream_attempts_total{lane=\"1\"}"] == "<ATTEMPTS>"
+      and "metrics.concurrent-attempts" in conc["applied"]
+      and cm["busbar_requests_total{outcome=\"ok\"}"] == 4
+      and conc["effects"]["usage"] == {"requests": 4, "spend_micros": 72}
+      and pm["busbar_upstream_attempts_total{lane=\"1\"}"] == 3
+      and "metrics.concurrent-attempts" not in plain["applied"])
+print("OK" if ok else "BAD "+json.dumps(d))' "$W/hh.json")"
+[ "$hh" = OK ] \
+  && say PASS "metrics.concurrent-attempts: the attempts VALUE is masked on the concurrent driver alone" \
+  || say FAIL "metrics.concurrent-attempts: $hh"
+
+# And the mask must not hide a real regression NEXT to it: two concurrent cells whose request count
+# differs are still RED, even though both had their attempts value masked.
+cp -R "$FIX" "$W/conc-g"; cp -R "$FIX" "$W/conc-c"
+python3 - "$W/conc-g/cells/self__a__ok.json" "$W/conc-c/cells/self__a__ok.json" <<'PY'
+import json, sys
+def put(p, requests):
+    d = json.load(open(p))
+    d["effects"]["metrics"] = {'busbar_upstream_attempts_total{lane="1"}': "<ATTEMPTS>",
+                               'busbar_requests_total{outcome="ok"}': requests}
+    d["applied"] = sorted(set(d.get("applied", [])) | {"metrics.concurrent-attempts"})
+    json.dump(d, open(p, "w"), separators=(",", ":"), sort_keys=True)
+put(sys.argv[1], 4)
+put(sys.argv[2], 3)   # one request stopped being counted, on a cell whose attempts are masked
+PY
+rc="$(run "$W/conc-g" "$W/conc-c" "$W/out-hh")"
+cls="$(classes_of 'self|a|ok' "$W/out-hh")"
+[ "$rc" != 0 ] && [ "$cls" = "effects.metrics" ] \
+  && say PASS "a masked attempts value does not hide a changed request count -> RED [effects.metrics]" \
+  || say FAIL "masked attempts hid a metrics regression rc=$rc classes=$cls"
+
+# (ii) THE RECORDER UNSETS THE SUPERVISOR MARKERS. busbar-core decides `supervisor_detected` from
+# INVOCATION_ID / KUBERNETES_SERVICE_HOST and answers the restart verb differently on each arm, down
+# to the 202 body length. systemd sets INVOCATION_ID for every unit it starts — i.e. every job on a
+# Linux runner — and nothing sets it on a mac, so the golden and a re-recording took different arms
+# for a reason that is not busbar. This case reads the marker list out of the RUST SOURCE and holds
+# record.sh to it, so a third marker added to SUPERVISOR_MARKERS tomorrow is red here rather than
+# silently re-opening the hole.
+src="${here}/../../crates/busbar-core/src/admin/restart.rs"
+if [ -f "$src" ]; then
+  want="$(grep -oE 'SUPERVISOR_MARKERS[^=]*= *\[[^]]*\]' "$src" | grep -oE '"[A-Z_]+"' | tr -d '"' | LC_ALL=C sort -u)"
+  got="$(grep -oE '^unset [A-Z_ ]+' "${here}/record.sh" | sed 's/^unset //' | tr ' ' '\n' | grep -v '^$' | LC_ALL=C sort -u)"
+  missing="$(comm -23 <(printf '%s\n' "$want") <(printf '%s\n' "$got"))"
+  [ -n "$want" ] && [ -z "$missing" ] \
+    && say PASS "record.sh unsets every SUPERVISOR_MARKER the binary reads ($(tr '\n' ' ' <<<"$want"))" \
+    || say FAIL "record.sh does not unset: $(tr '\n' ' ' <<<"$missing") (host would pick the restart arm)"
+else
+  say PASS "SUPERVISOR_MARKERS source not in this tree; marker check skipped"
+fi
+
 echo
 [ "$fails" -eq 0 ] && echo "replay selftest: GREEN" || { echo "replay selftest: RED ($fails)"; exit 1; }
