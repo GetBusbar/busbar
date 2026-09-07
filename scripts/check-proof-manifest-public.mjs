@@ -12,9 +12,16 @@
 //
 // Usage: node scripts/check-proof-manifest-public.mjs docs/proof/dev.json [more.json ...]
 //        node scripts/check-proof-manifest-public.mjs            # defaults to all docs/proof/*.json
+//        node scripts/check-proof-manifest-public.mjs --selftest # prove every refusal RED first
+//
+// NOTHING TO CHECK IS NOT NOTHING TO LEAK. A guard that was handed no manifest used to print
+// "no manifest files found to check." and exit 0 -- its PASS, on the one input it never proved it
+// had. docs/proof/ renamed, emptied, or written to a different path by the collator all reach that
+// line, and all of them look exactly like a manifest set that is clean. Zero manifests is now RED.
 
-import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname, basename } from "node:path";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -129,23 +136,106 @@ function checkManifest(file) {
   walk(basename(file), m);
 }
 
-let files = process.argv.slice(2);
-if (files.length === 0) {
-  const dir = join(REPO, "docs/proof");
-  if (existsSync(dir)) {
-    files = readdirSync(dir).filter((f) => f.endsWith(".json") && f !== "index.json").map((f) => join(dir, f));
+// ── SELF-TEST: a guard that has never been watched refuse is not a guard ─────────────────────────
+// Drives the REAL checkManifest/walk over fixtures whose verdict is known, so the PASS line above is
+// only trusted after the refusals below have been seen to happen. Red before green, both ways: each
+// smell is proven to fire AND the clean twin is proven to stay silent, or a guard that rejected
+// everything would look correct.
+function selftest() {
+  const cases = [
+    ["a clean verdicts-only manifest", MIN_GOOD, 0],
+    ["an embedded Rust fn signature", withVerdictNote(MIN_GOOD, "fn resolve_hook(x: &T) {"), 1],
+    ["an embedded multi-line blob", withVerdictNote(MIN_GOOD, "line one\nline two"), 1],
+    ["a leaked bearer token", withVerdictNote(MIN_GOOD, "Bearer abcdefghijklmnopqrstuvwxyz012345"), 1],
+    ["a key that is not on the public whitelist",
+     { ...MIN_GOOD, source_text: "anything at all" }, 1],
+    ["an internal run_url", { ...MIN_GOOD, release: { run_url: "https://10.0.0.4/actions" } }, 1],
+    ["an illegal verdict status",
+     { ...MIN_GOOD, verdicts: [{ class: "c", status: "probably" }] }, 1],
+    ["a manifest with no verdicts at all", { ...MIN_GOOD, verdicts: [] }, 1],
+    ["the wrong schema_version", { ...MIN_GOOD, schema_version: "2" }, 1],
+  ];
+  let bad = 0;
+  const tmp = mkdtempSync(join(tmpdir(), "proof-manifest-selftest-"));
+  try {
+    for (const [name, doc, want] of cases) {
+      errors = [];
+      const p = join(tmp, "case.json");
+      writeFileSync(p, JSON.stringify(doc));
+      checkManifest(p);
+      const got = errors.length ? 1 : 0;
+      if (got === want) {
+        console.error(`  ok       ${want ? "REFUSED" : "accepted"}: ${name}`);
+      } else {
+        console.error(`  FAILED   ${name}: wanted ${want ? "a refusal" : "silence"}, got ${errors.join("; ") || "silence"}`);
+        bad++;
+      }
+    }
+    // THE VACUOUS PASS ITSELF. A guard handed no manifest used to print a message and exit 0 --
+    // the whole check, reduced to a sentence, on the one input it never proved it had.
+    errors = [];
+    const rc = verdict([], "selftest");
+    if (rc === 0) {
+      console.error("  FAILED   an EMPTY manifest set was accepted; the guard passes having read nothing");
+      bad++;
+    } else {
+      console.error("  ok       REFUSED: an empty manifest set is not a public-safe manifest set");
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
+  errors = [];
+  if (bad) {
+    console.error(`\ncheck-proof-manifest-public selftest: RED (${bad} case(s) failed)`);
+    return 1;
+  }
+  console.error(`\ncheck-proof-manifest-public selftest: GREEN (${cases.length + 1} cases)`);
+  return 0;
 }
+
+const MIN_GOOD = {
+  schema_version: "1",
+  release: { version: "1.6.0", run_url: "https://github.com/GetBusbar/busbar/actions/runs/1" },
+  verdicts: [{ class: "gates", title: "gates", status: "pass", count: 3 }],
+};
+
+function withVerdictNote(doc, note) {
+  return { ...doc, verdicts: [{ ...doc.verdicts[0], note }] };
+}
+
+// The one place the run's verdict is decided, so `--selftest` can prove the empty case above rather
+// than restate it.
+function verdict(files, label) {
+  if (files.length === 0) {
+    console.error(
+      `check-proof-manifest-public: FAIL -- no manifest file was checked (${label}).\n` +
+      "  A public-safety guard handed nothing to read has proven nothing about what is published.\n" +
+      "  Zero manifests is how docs/proof/ being renamed, emptied, or written to a different path\n" +
+      "  looks from here, and it is indistinguishable from a manifest set that is clean. If the\n" +
+      "  manifests legitimately moved, point this guard at their new home in a reviewed diff.",
+    );
+    return 1;
+  }
+  if (errors.length) {
+    console.error("check-proof-manifest-public: FAIL -- the manifest is not public-safe:");
+    for (const e of errors) console.error("  - " + e);
+    return 1;
+  }
+  console.error(`check-proof-manifest-public: PASS -- ${files.length} manifest(s) are verdicts-only and public-safe.`);
+  return 0;
+}
+
+let args = process.argv.slice(2);
+if (args.includes("--selftest")) process.exit(selftest());
+
+let files = args;
+let where = "explicit arguments";
 if (files.length === 0) {
-  console.error("check-proof-manifest-public: no manifest files found to check.");
-  process.exit(0);
+  where = join(REPO, "docs/proof");
+  if (existsSync(where)) {
+    files = readdirSync(where).filter((f) => f.endsWith(".json") && f !== "index.json").map((f) => join(where, f));
+  }
 }
 
 for (const f of files) checkManifest(f);
-
-if (errors.length) {
-  console.error("check-proof-manifest-public: FAIL -- the manifest is not public-safe:");
-  for (const e of errors) console.error("  - " + e);
-  process.exit(1);
-}
-console.error(`check-proof-manifest-public: PASS -- ${files.length} manifest(s) are verdicts-only and public-safe.`);
+process.exit(verdict(files, where));
