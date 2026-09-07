@@ -910,13 +910,27 @@ impl ProtocolWriter for GeminiWriter {
                 // degrades to the pre-existing `args: {}` fallback there (established for ANY
                 // unparseable accumulation, cap-truncated or not) — the call is never lost and its name
                 // always survives, so this introduces no new failure mode.
+                //
+                // The cap is on the TOTAL held across every open block, not on each block alone.
+                // Per-block, `MAX_GEMINI_TOOL_FRAMES` (4096) blocks could each reach the cap
+                // (32 MiB by default) and nothing summed them, so one stream could hold their
+                // PRODUCT — 128 GiB — with both single-axis guards satisfied. A translate holds one
+                // response's worth of arguments, so one response's cap is the right line, and
+                // charging it against the sum closes the product. A single-block stream is
+                // unaffected: its own buffer still reaches exactly the same cap it did before.
                 crate::ir::IrDelta::InputJsonDelta(json_str) => {
                     if let Ok(mut guard) = self.open_tools.lock() {
+                        let cap = busbar_substrate_values::proxy::max_translate_body_bytes();
+                        // Both stored strings count: the tool NAME is upstream-controlled too, and
+                        // is retained per entry for the whole stream exactly as the arguments are.
+                        let held: usize = guard
+                            .iter()
+                            .map(|(_, name, args)| name.len().saturating_add(args.len()))
+                            .fold(0usize, usize::saturating_add);
                         if let Some((_, _, args)) =
                             guard.iter_mut().find(|(idx, _, _)| idx == index)
                         {
-                            let cap = busbar_substrate_values::proxy::max_translate_body_bytes();
-                            if args.len().saturating_add(json_str.len()) <= cap {
+                            if held.saturating_add(json_str.len()) <= cap {
                                 args.push_str(json_str);
                             }
                         }
