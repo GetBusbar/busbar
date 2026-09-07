@@ -986,11 +986,21 @@ pub struct IrUsageDetail {
     /// OpenAI `usage.completion_tokens_details.rejected_prediction_tokens` — predicted-outputs tokens
     /// that did not match and were rejected (still billed as output). `None` == not reported.
     pub rejected_prediction_tokens: Option<u64>,
-    /// ADDITIVE (busbar 1.6.x field-coverage carry): Gemini `usageMetadata.toolUsePromptTokenCount`
-    /// — the slice of the PROMPT tokens attributable to the tool/function-calling portion of the
-    /// request. A SUB-BUCKET of the prompt total (like `reasoning_tokens` is of output), never an
-    /// addition, so `billable_tokens` ignores it. Only the Gemini reader populates it and only the
+    /// Gemini `usageMetadata.toolUsePromptTokenCount` — the tokens Google charges for the
+    /// server-side tool-use portion of a turn. Only the Gemini reader populates it and only the
     /// Gemini writer re-emits it; other protocols have no native analog and leave it `None`.
+    ///
+    /// CORRECTED 2026-09-07 — THIS IS NOT A SUB-BUCKET. It was carried here (and described in
+    /// `docs/design/billing-usage-units.md` and `docs/design/billing-unified.md`) as `⊂ prompt`,
+    /// "never an addition". A real Vertex AI recording disproves that: on
+    /// `src/tests/proto/golden/vendor/resp_g2g_vertex_grounding.json` this field is **32** while the
+    /// entire `promptTokenCount` is **18**, and Google's stated `totalTokenCount` reconciles only
+    /// when it is ADDED as a fourth term. See `gemini/mod.rs::GEMINI_USAGE_ADDITIVE_TERMS`.
+    ///
+    /// It is nonetheless STILL excluded from `billable_tokens`, so busbar under-counts a grounded
+    /// Gemini turn by exactly this amount. Correcting that changes a bill and is a registered money
+    /// change; until it is made, `usage_identity_note` reports the shortfall on every affected turn
+    /// rather than letting it reconcile silently.
     pub tool_use_prompt_tokens: Option<u64>,
     // ADDED (cohere field-carry, 2026-08-30): Cohere reports usage TWICE — a raw `tokens` bucket and
     // a separately-metered `billed_units` bucket that ROUNDS/attributes the charge (e.g. a short
@@ -1009,6 +1019,42 @@ pub struct IrUsageDetail {
     /// Cohere `usage.billed_units.classifications` — billed classification units, a SEPARATELY BILLED
     /// unit (like `search_units`) that is not a token count at all.
     pub billed_classifications: Option<u64>,
+    // ── 1.6.0 usage-identity cross-check (gemini vendor recording, 2026-09-07) ───────────────────
+    /// A REPORTED DISAGREEMENT between the total the provider stated and the sum of the per-bucket
+    /// counts busbar decoded from the same `usage` block. `None` is the ordinary case: either the
+    /// provider states no total, or the buckets reconcile against it exactly.
+    ///
+    /// This is the ONLY field on this struct that is not attribution. It exists because a provider's
+    /// own stated total is the one number a customer's invoice is reconciled against, and until now
+    /// no decoder read it — Gemini's `totalTokenCount` was write-only, so a bucket busbar did not
+    /// know about could go missing from the bill with nothing anywhere to notice. A count that does
+    /// not reconcile is a fact about the wire, and the honest thing to do with it is HAND IT TO THE
+    /// CALLER. Nothing is zeroed, clamped, or back-filled to make the sum close: the decoded buckets
+    /// stay exactly as the provider sent them and the discrepancy travels beside them.
+    ///
+    /// `billable_tokens` ignores this field like every other on the struct, so populating it can
+    /// never change what busbar bills.
+    pub usage_identity_note: Option<UsageIdentityNote>,
+}
+
+/// One provider `usage` block whose per-bucket counts do not sum to the total the provider itself
+/// stated. Carries the numbers rather than a rendered string so a caller can act on it (alert,
+/// reconcile, refuse) instead of parsing prose.
+///
+/// `unaccounted` is the signed shortfall, `reported_total - summed_total`. POSITIVE means the
+/// provider billed for tokens busbar did not decode into any bucket — the under-count direction, and
+/// the one that costs money silently.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UsageIdentityNote {
+    /// The total the provider stated (Gemini `usageMetadata.totalTokenCount`).
+    pub reported_total: u64,
+    /// The sum of the buckets busbar decoded from that same block.
+    pub summed_total: u64,
+    /// `reported_total - summed_total`. Positive = tokens the provider counted and busbar did not.
+    pub unaccounted: i64,
+    /// Stable identifier for WHICH identity was checked, so a caller can branch without string
+    /// matching (e.g. `"gemini.usageMetadata"`).
+    pub identity: &'static str,
 }
 
 impl IrUsage {
