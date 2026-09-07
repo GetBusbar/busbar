@@ -90,11 +90,22 @@
       "kind": "improvement",
       "changelog": "Validation messages know the new keys.",
       "by": "owner (Matthew Jackson), 2026-09-04 parity triage",
-      "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09|020|043b)\\|validate$",
+      "cells": "^boot\\.refusal\\|BOOT-(P20|P29|P30|P07|P09)\\|validate$",
       "classes": [
         "effects.stderr"
       ],
-      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode / unknown-member sentences rephrased; protocol list reordered. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance."
+      "rationale": "The new token limit metrics appear in a limit's expected-one-of list; reserved-name / credential-mode sentences rephrased. Same refusal, same exit code. NARROWED 2026-09-05 (the plane-key-lift fix): the top-level plane-key row dropped — the TOP-LEVEL expected-one-of list no longer includes the plane keys, because the 1.6.0-additive keys are lifted off the document before the frozen 1.5.5-shaped parse. That cell is byte-identical to 1.5.5 now and needs no acceptance. NARROWED AGAIN 2026-09-06 (oracle-phase0, committed-golden triage) for the two cells this entry should never have carried. BOOT-020: the divergence it forgave was 'protocol list reordered', and a reorder of an operator-visible list is neither additive nor better — it is a change nobody announced. The PUBLISHED 1.5.5 binary prints `anthropic, openai, gemini, bedrock, responses, cohere`; the plugin consolidation had moved it to `anthropic, gemini, openai, …` believing that was already the shipped order. The order is RESTORED in `busbar_llm_codec::DECLS`, so BOOT-020 is byte-identical to 1.5.5 again and owes no acceptance at all. BOOT-043b: the unknown-member refusal did not merely rephrase a sentence — its FRAME LINE moved from the validate stage to the resolve stage, which an operator's log match sees; it is registered on its own terms as kind=breaking (F-013b) rather than folded into an improvement."
+    },
+    {
+      "id": "F-013b the unknown pool member is refused by the resolver, not the validator",
+      "kind": "breaking",
+      "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 committed-golden triage",
+      "cells": "^boot\\.refusal\\|BOOT-043b\\|validate$",
+      "classes": [
+        "effects.stderr"
+      ],
+      "rationale": "A pool that names a member nothing defines is refused by BOTH releases, with exit code 1, the same empty stdout and the same preceding BUSBAR_PROVIDERS deprecation warning — but the refusal now comes out of a DIFFERENT STAGE and says so. 1.5.5 collected it in semantic validation and framed it `[error] config validation failed:` with the sentence `pool 'oracle-unused' references unknown model 'nope'`. 1.6.0 resolves pool members against three top-level maps (`models:`, `tools:`, `agents:`) rather than one, so the check belongs to `config::resolve` — which frames its errors `[error] config errors:` — and the sentence names the config path and the three maps: `pools.oracle-unused: member `nope` is not defined in any of the top-level `models:`, `tools:`, or `agents:` maps. Define it there, or remove it from the pool.` The new sentence is strictly more useful, but the FRAME LINE is not additive: an operator or CI job that greps `config validation failed:` to catch a bad config stops matching on this class of refusal, so this is registered as a break with a migration note rather than as an improvement. SPLIT OUT of F-013 (which forgave it as a rephrasing) 2026-09-06. The `BUSBAR-3015:` prefix on the [error] line is D-1's and is already rewritten away before this entry is consulted. Scoped to the ONE recorded cell that drives an undefined pool member; a further fixture gets its own row rather than a widened regex.",
+      "changelog": "1.6.0 Changed: a pool member that nothing defines is refused by the resolver, under the `config errors:` frame, naming `models:`, `tools:` and `agents:`."
     },
     {
       "id": "F-015 an inline secret is refused without echoing it",

@@ -233,10 +233,11 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly four entries of kind `breaking`:
+The accepted-differences register for this release has exactly five entries of kind `breaking`:
 two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is unchanged in
-both), one confined to Cohere backends that report `usage.billed_units`, and one field removed
-from the hook view. Everything else that touches a 1.5.5 config, request or plugin is named above
+both), one confined to Cohere backends that report `usage.billed_units`, one field removed
+from the hook view, and one refusal that now comes out of the resolver rather than the validator.
+Everything else that touches a 1.5.5 config, request or plugin is named above
 as an improvement or does not exist: a config written for 1.5.5 boots, validates and migrates
 identically, and every 1.5.5 key and minted secret carries over.
 
@@ -274,6 +275,16 @@ identically, and every 1.5.5 key and minted secret carries over.
   for you, and a persisted overlay auto-migrates it at boot; a client or dashboard that READ the
   `at` field off a hook view must read `fires_at` instead. See
   [the 1.6.0 migration guide](docs/migration-1.6.md).
+- 1.6.0 Changed: a pool member that nothing defines is refused by the resolver, under the
+  `config errors:` frame, naming `models:`, `tools:` and `agents:`. A pool may now hold tools and
+  agents as well as models, so member resolution belongs to the resolver rather than to semantic
+  validation, and the sentence names the config path and all three maps it looked in
+  (`pools.<pool>: member `x` is not defined in any of the top-level `models:`, `tools:`, or
+  `agents:` maps.`) instead of 1.5.5's `pool '<pool>' references unknown model 'x'`. The refusal
+  itself is unchanged: same exit code 1, same empty stdout, same surrounding lines. **Migration:**
+  a CI job or log alert that matches the `config validation failed:` frame line to catch a bad
+  config must also match `config errors:`, which is the frame every resolver refusal already used;
+  no config change is needed.
 
 Four retired 1.5.x spellings that were never the documented form are rewritten for you rather
 than accepted: the hook `plugin:` key (the read-only alias of `module:`) and the single-stage tap
