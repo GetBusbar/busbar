@@ -267,11 +267,19 @@ jobs:
       # anything is built, so a missing set of notes costs seconds and produces no staging tag, no
       # draft and no image. Fail-closed and unconditional - the remedy is to write the notes and
       # push again, which is the work the check is asking for.
-      - name: The version being tagged must have release notes (fail-closed)
+      #
+      # `--require-dated-top` is the release half of `## [X.Y.Z], unreleased`. A branch mid-cycle
+      # names its version long before it has a ship date, and the lint accepts that spelling on
+      # every ordinary run - otherwise the gate is red for a whole release cycle and stops being
+      # read. It is a lie on a published release, though: the tag exists and the changelog page
+      # would render the shipped version with no date. So the date is required HERE, at the one
+      # caller that is actually shipping, and nowhere else. `--require-version` implies it too; it
+      # is spelled out anyway, because a reader of this file should not have to know that.
+      - name: The version being tagged must have release notes, and a ship date (fail-closed)
         if: ${{ steps.p.outputs.release == '1' }}
         env:
           V: ${{ steps.p.outputs.version }}
-        run: python3 scripts/changelog-lint.py --require-version "$V"
+        run: python3 scripts/changelog-lint.py --require-version "$V" --require-dated-top
 
   # -- GATE ZERO: NOTHING IS RELEASED FROM A RED BRANCH -------------------------------------------
   #
