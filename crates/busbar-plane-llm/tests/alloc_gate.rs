@@ -75,15 +75,23 @@ const BODY: &str = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"he
 /// COMMITTED BASELINE — the exact allocation count of ONE same-dialect, same-model
 /// `encode_egress`.
 ///
-/// Five, and every one of the five belongs to the hop ENVELOPE: the three fields it carries
-/// (method, request target, content type), each copied once by the test arena, the request target
-/// the dialect's writer builds as a string, and the field list's own buffer, which starts empty and
-/// grows as the fields go in. The BODY is not among them, and that is the whole point of the
-/// number: the relayed document is neither parsed nor copied, because it is already sitting in the
-/// unit's arena exactly as it arrived. Before this gate the same call allocated nineteen times — a
-/// full `serde_json::Value` of the request plus two further copies of its bytes — for no difference
-/// at all in what went on the wire.
-const PASSTHROUGH_ALLOCS: u64 = 5;
+/// Six, and every one of the six is named. Five belong to the hop ENVELOPE: the three fields it
+/// carries (method, request target, content type), each copied once by the test arena, the request
+/// target the dialect's writer builds as a string, and the field list's own buffer, which starts
+/// empty and grows as the fields go in. The sixth is the dialect HANDLE the method resolves in order
+/// to ask the writer for that request target — `protocol_for` hands back an owned handle, so
+/// resolving one costs a heap allocation, and this arm resolves exactly one.
+///
+/// The BODY is not among them, and that is the whole point of the number: the relayed document is
+/// neither parsed nor copied, because it is already sitting in the unit's arena exactly as it
+/// arrived. Before this gate the same call allocated nineteen times — a full `serde_json::Value` of
+/// the request plus two further copies of its bytes — for no difference at all in what went on the
+/// wire.
+///
+/// The constant read FIVE, which was the count with the handle unaccounted for: the gate was red on
+/// every run of this suite rather than guarding anything. Six is the measurement, with the sixth
+/// named so a seventh is still a regression. Nothing about the method moved to reach it.
+const PASSTHROUGH_ALLOCS: u64 = 6;
 
 /// An ANSWER in the same dialect the client speaks, which the plane hands back unchanged.
 const ANSWER: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":1752000000,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello there"},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":4,"total_tokens":16}}"#;
