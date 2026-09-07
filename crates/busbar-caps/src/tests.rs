@@ -15,6 +15,25 @@ mod lint {
     include!("../fixtures/lint_rules.rs");
 }
 
+/// The renderings every one of these types hand-rolls, read back — including the two that carry
+/// something they are not allowed to say.
+///
+/// The `#[path]` is not decoration: this file is itself reached by one, so a child module of it
+/// would otherwise be looked for beside `lib.rs` — in `src/`, where it would spend the crate's
+/// surface ceiling. Under `src/tests/` it is classified as the proof it is.
+#[path = "tests/what_the_record_reads.rs"]
+mod what_the_record_reads;
+
+/// The posting's arithmetic at the edges: the width the priced total does not share with the
+/// reservation, the line between spending the reservation and spending past it, and a unit that
+/// runs past the end more than once.
+#[path = "tests/the_posting_arithmetic.rs"]
+mod the_posting_arithmetic;
+
+/// Where a reported quantity came from, and the three questions the crate asks about it.
+#[path = "tests/what_the_usage_report_says.rs"]
+mod what_the_usage_report_says;
+
 /// Everything a test needs to act as the kernel, in one place, so no test quietly reaches for the
 /// seal on its own.
 struct Kernel {
