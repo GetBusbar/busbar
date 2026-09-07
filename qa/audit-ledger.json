@@ -186,14 +186,16 @@
     "crates/busbar-caps/src"
    ],
    "tree_hash": "23e131ce5510c6d853bfbb964a039a2d4e02778db4bdb9bfa28992fb0b6df159",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "3895a444fc5b57bbe2c1b786560fa59d6f40830c",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "MEDIUM": 2
+    "MEDIUM": 1,
+    "LOW": 4,
+    "NIT": 2
    },
-   "report": "pass 2 fresh eyes: mixed usage report lost the estimated mark on settle (fixed 17534dae); seal-sites literal blind to a two-line take (fixed 4b0dbfb2); all src read fully",
-   "auditor": "opus-pass2",
+   "report": "pass-3 fresh eyes on fixed bytes (keep-kernel-p3): challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named",
+   "auditor": "opus-p3-caps-contract-kernel",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-caps/src/tests"
@@ -206,14 +208,15 @@
     "crates/busbar-contract/src"
    ],
    "tree_hash": "1399ebd150cd1f1813018cc72a60710bb7424d408711079becde52e827e43c3f",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "263c6d9b01c4913aad236257875cf32a4e2c303a",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "NIT": 2
+    "MEDIUM": 3,
+    "LOW": 4
    },
-   "report": "pass 2 fresh eyes: two test-name nits; all src read fully",
-   "auditor": "opus-pass2",
+   "report": "pass-3 fresh eyes on fixed bytes (keep-kernel-p3): challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named",
+   "auditor": "opus-p3-caps-contract-kernel",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract/src/tests"
@@ -291,15 +294,15 @@
     "crates/busbar-kernel/src"
    ],
    "tree_hash": "46d22124c992709e046a8b7cd23cdc7c1dd0ff62afd7bf8b59ef8096d97b39ca",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 7,
+   "audited_at": "e4776c64ded321be3d753b4cbb8f9060c592e94e",
+   "round": 8,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 4
+    "MEDIUM": 3,
+    "LOW": 3
    },
-   "report": "pass 3 fresh eyes on the batteries (14 plants red): credential masking and SliceBook are dead code with zero production callers; no-early-exits lint misses return;; loop battery blind to fee/requests wiring; challenge round skips three steps (design ruling); sweep posts against a different class than exit (needs a Posted accessor); all test files read fully",
-   "auditor": "opus-pass3",
+   "report": "pass-3 fresh eyes on fixed bytes (keep-kernel-p3): challenge round dropped its accrual, Sessions::open displaced a live session, NestedPool::leave unbounded (all fixed); canary identity mis-specified (owner); 18/18 plants caught, 4 survivors named",
+   "auditor": "opus-p3-caps-contract-kernel",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel/src/tests"
@@ -330,16 +333,15 @@
     "crates/busbar-llm-codec/src"
    ],
    "tree_hash": "0a6238586d970b53cf4a42c5e3735b8b8eb1b2085d8b3a36695d67b97ab68654",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 6,
+   "audited_at": "765fba7af34c36e95e1903065a8233263e4d155a",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 9,
-    "LOW": 5
+    "HIGH": 5,
+    "MEDIUM": 5
    },
-   "report": "pass 2 fresh eyes: cohere truncated-tail billed on raw bucket (fixed 38983be9), bedrock attachment double-emit on index desync (fixed 18a6ceea), responses citations unreadable (fixed d32ee6d6), gemini tts audio by part (fixed 7fbe4721); gemini toolUsePromptTokenCount, responses cache_write_tokens, error mapping loses status, responses error arm, logprobs unbounded, cohere latch/rerank index, openai_chat text after tool call reported; all production files read",
-   "auditor": "opus-pass2",
+   "report": "pass-3 fresh eyes on fixed bytes (keep-llm-codec-p3): 3 fixed (gemini tail toolUse tokens, openai cache_write tier, gemini open_tools product cap), 8 HIGH/MEDIUM unfixed handed to a follow-up wave; conformance 255/260 unchanged",
+   "auditor": "opus-p3-llm-codec",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm-codec/src/tests"
@@ -436,16 +438,16 @@
     "crates/busbar-plane-llm/src"
    ],
    "tree_hash": "df2d3d5c22c0dfaa6602fa06c09f1bc8c5be3278575f1d87e0ad2b9f98cebde1",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "f7e3f05ec1893804bae3f2a73bf473af1a23b7cd",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
-    "MEDIUM": 1,
-    "LOW": 2
+    "MEDIUM": 2,
+    "LOW": 3,
+    "NIT": 1
    },
-   "report": "pass 2 fresh eyes: model-listing route claimed by the model rung (fixed e95344d7), stream decode state never written back (fixed 013a30f3), target-carried stream ask unheard (fixed 2c8f7de0); all src and tests read fully",
-   "auditor": "opus-pass2",
+   "report": "pass-3 fresh eyes on fixed bytes: same-dialect answer relay parsed the answer it relayed (fixed, gate added); request-relay alloc gate red on protocol_for's boxed handle; two money-shaped coverage gaps named",
+   "auditor": "opus-p3-plane-llm",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
@@ -730,7 +732,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -769,7 +771,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -787,7 +789,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -805,7 +807,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -823,7 +825,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -841,7 +843,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -855,14 +857,15 @@
     "crates/busbar-unit-ledger/src"
    ],
    "tree_hash": "0f299a4a22bdd156b00a550c39179a3830a9b2bb7e2e61f02deff3778c92a99d",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "049fd177fe8309eb965651dac48815146669524d",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "LOW": 1
+    "LOW": 3,
+    "NIT": 1
    },
-   "report": "pass 2 fresh eyes: legacy figure key lane/provider separator fold reported",
-   "auditor": "opus-pass2",
+   "report": "pass-3 fresh eyes on fixed bytes (keep-wal-ledger-verbs-p3): every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
+   "auditor": "opus-p3-wal-ledger-verbs",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-ledger/src/tests"
@@ -879,7 +882,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -915,7 +918,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -933,7 +936,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "docs/design/1.6.0-TRACKER.md J5 (round 5 in flight; report lands with the round)",
+   "report": "round 5 report pending; the round is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -947,16 +950,16 @@
     "crates/busbar-unit-verbs/src"
    ],
    "tree_hash": "ca18cc5a88485ef196fdbfed5f753d370d6ab7b2098694e30f8a01f0df85d28b",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "bc268b1675d4141f8956dde14834f11f64ac0190",
+   "round": 7,
    "result": "findings",
    "counts": {
     "HIGH": 1,
-    "LOW": 1,
-    "NIT": 2
+    "MEDIUM": 1,
+    "LOW": 3
    },
-   "report": "pass 2 fresh eyes: verify/plane_facts executed as mutations (fixed e336307c); debug-only mint guard (fixed 72adc863)",
-   "auditor": "opus-pass2",
+   "report": "pass-3 fresh eyes on fixed bytes (keep-wal-ledger-verbs-p3): every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
+   "auditor": "opus-p3-wal-ledger-verbs",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-verbs/src/tests"
@@ -969,17 +972,15 @@
     "crates/busbar-unit-wal/src"
    ],
    "tree_hash": "71b9271705405e0c00b42dc75e9ebdb2194786bda79bc847e3a6cbdef9896a7f",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 6,
+   "audited_at": "d09ff1dfac8a0fda0c1133f31a5d4a50e7098e71",
+   "round": 7,
    "result": "findings",
    "counts": {
-    "HIGH": 0,
     "MEDIUM": 1,
-    "LOW": 3,
-    "NIT": 1
+    "LOW": 2
    },
-   "report": "pass 2 fresh eyes: journal resume could reissue a held seq (fixed 0d20f367); digest none-folding, legacy key separator, replayed_lost_batch dropped reported",
-   "auditor": "opus-pass2",
+   "report": "pass-3 fresh eyes on fixed bytes (keep-wal-ledger-verbs-p3): every fix proven by a failing case first, 15/15 plants caught after two coverage adds",
+   "auditor": "opus-p3-wal-ledger-verbs",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-unit-wal/src/tests"
@@ -2245,7 +2246,7 @@
     "HIGH": 11,
     "NIT": 1
    },
-   "report": "pass 1: voice legs ungated (fixed 838cb7f1), spec pins unverified after first run (fixed 21db45ef), dangling CFG-220 (fixed a0a43711); construction-gate --summary exit 0, stale segment waiver, silent known_sites waivers, ws production waiver, PB-37/93 golden citations reported",
+   "report": "pass 1: voice legs ungated (fixed), spec pins unverified after first run (fixed), a dangling config-inventory id (fixed); construction-gate --summary exit 0, stale segment waiver, silent known_sites waivers, ws production waiver, PB-37/93 golden citations reported",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
