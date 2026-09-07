@@ -96,6 +96,67 @@ fn batches_n_and_n_plus_one_are_re_appended_to_a_fresh_segment_in_order() {
     );
 }
 
+/// A REPLAY THAT ALSO HAD TO ROLL IS STILL A REPLAY, AND THE ACK HAS TO SAY SO.
+///
+/// `replayed_lost_batch` is how a caller learns that this commit re-wrote records an earlier one
+/// lost — the fact an operator counts, alarms on, and reconciles a store against. There are two ways
+/// the retained batch goes down, and only one of them was reporting it: when the retained batch and
+/// the new one together do not fit in what is left of the segment, the commit rolls and drives the
+/// whole lot through a second time, and the second pass answers "was anything retained?" by looking
+/// at a buffer the first pass has already emptied. It always says no. The records land correctly and
+/// in order; what is lost is the report that they were ever at risk.
+///
+/// Driven memory-buffered, because that is the mode where a refused ship retains a batch WITHOUT
+/// poisoning the segment — which is what leaves a full-ish segment and a retained batch in the same
+/// hand.
+#[test]
+fn a_replay_that_had_to_roll_to_fit_still_reports_that_it_replayed() {
+    use crate::ship::{ShipError, Shipper};
+
+    /// A store that refuses once and then takes everything.
+    struct RefusesOnce {
+        refusals_left: u32,
+    }
+    impl Shipper for RefusesOnce {
+        fn ship(&mut self, _records: &[crate::record::Record]) -> Result<(), ShipError> {
+            if self.refusals_left > 0 {
+                self.refusals_left -= 1;
+                return Err(ShipError::Unavailable("the store is away".to_string()));
+            }
+            Ok(())
+        }
+    }
+
+    // Eight frames of room, so a batch of six and a batch of six cannot share a segment.
+    let ceiling = 8 * FRAME_BYTES as u64;
+    let mut wal = Wal::with_parts(
+        Box::new(crate::backend::MemoryFactory::new()),
+        Box::new(RefusesOnce { refusals_left: 1 }),
+        Mode::MemoryBuffered,
+        ceiling,
+    )
+    .unwrap();
+    let token = durability_token();
+
+    // The store refuses batch n. The bytes are in the buffer; the batch is retained for the store.
+    let n = records(1, 1, 6, 40);
+    wal.append_batch(&token, busbar_caps::StepName::Meter, &n)
+        .expect_err("the store was armed to refuse");
+    assert_eq!(wal.owed(), n.as_slice(), "batch n is retained");
+
+    // Batch n+1 does not fit beside n in what is left of this segment, so the commit has to roll —
+    // and it is still the commit that replayed n.
+    let n_plus_one = records(1, 7, 6, 40);
+    let ack = wal
+        .append_batch(&token, busbar_caps::StepName::Meter, &n_plus_one)
+        .expect("the fresh segment takes what is offered");
+    assert!(
+        ack.replayed_lost_batch,
+        "this commit re-wrote a batch an earlier one lost, and the ack has to say so even though \
+         fitting it took a roll"
+    );
+}
+
 #[test]
 fn re_appending_a_batch_that_is_already_in_the_log_writes_nothing_twice() {
     let (mut wal, _switch, _memory) = wal_with_faults();
