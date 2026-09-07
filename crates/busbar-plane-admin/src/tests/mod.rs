@@ -626,6 +626,659 @@ fn a_response_larger_than_the_arena_encodes_verbatim() {
     );
 }
 
+// ── the plane's own registration identity ───────────────────────────────────────────────────────
+
+/// The key the plugin answers to IS the key the plane declares, and it is the registry's `admin`.
+///
+/// Two reads of one name: the registry binds this plane's claim by the plugin's `key`, and a
+/// composition root names the plane by `PlaneMeta::KEY`. A drift between them registers the admin
+/// surface's claim under a name nothing looks up — the whole surface simply stops being reachable,
+/// with every one of this crate's other tests still green. The literal is pinned too: two spellings
+/// checked only against each other agree perfectly while both being wrong.
+#[test]
+fn the_plugin_key_is_the_plane_key_and_is_admin() {
+    let plane = AdminPlane::new();
+    assert_eq!(
+        busbar_contract::plugin::Plugin::key(&plane),
+        <AdminPlane as PlaneMeta>::KEY
+    );
+    assert_eq!(busbar_contract::plugin::Plugin::key(&plane), "admin");
+}
+
+/// This plugin registers as a PLANE, on the one ABI the loader accepts.
+#[test]
+fn the_plugin_registers_as_a_plane_on_abi_one() {
+    let plane = AdminPlane::new();
+    assert_eq!(
+        busbar_contract::plugin::Plugin::kind(&plane),
+        busbar_contract::plugin::Kind::Plane
+    );
+    assert_eq!(
+        busbar_contract::plugin::Plugin::abi(&plane),
+        busbar_contract::plugin::AbiVersion(1)
+    );
+}
+
+// ── the refusal envelope: this plane's own shape, with 1.5.5's bytes ────────────────────────────
+
+/// Every one of the closed reason set renders the frozen envelope, with prose of its own.
+///
+/// The envelope's SHAPE was already pinned; what nothing pinned was the message inside it. A
+/// message table that answered the empty string for every reason, or one string for every reason,
+/// left an envelope that still parsed, still carried the right code and told an operator nothing —
+/// and the shape assertions could not see the difference. So this reads all forty-two: each message
+/// is non-empty, none of them is a Rust identifier leaking through, and the set is not one string
+/// wearing forty-two hats. The exact bytes of a representative envelope are pinned as bytes,
+/// because the wire shape is bytes and not a parsed document.
+#[test]
+fn every_refusal_reason_renders_its_own_prose_inside_the_frozen_envelope() {
+    use busbar_contract::unit::RefusalReason as R;
+    let all = [
+        R::InFlightCap,
+        R::CursorBudget,
+        R::CredentialBudget,
+        R::SessionBudget,
+        R::BodyTooLarge,
+        R::OpenSlotBusy,
+        R::SchemeNotDeclared,
+        R::CredentialRejected,
+        R::SessionUnbound,
+        R::Revoked,
+        R::ScopeMissing,
+        R::Vetoed,
+        R::NoDestination,
+        R::OverBudget,
+        R::GroupFrozen,
+        R::Unpriced,
+        R::OverdraftCeiling,
+        R::StaleSlice,
+        R::DurabilityUnavailable,
+        R::TierMismatch,
+        R::SpillBudget,
+        R::ArenaBudget,
+        R::RateLimited,
+        R::DecodeFailed,
+        R::ChallengeExhausted,
+        R::PoolNotPermitted,
+        R::NoRate,
+        R::Replayed,
+        R::InFlight,
+        R::DestinationBudgetExhausted,
+        R::BreakerOpen,
+        R::DestinationUnreachable,
+        R::MeterDisputed,
+        R::HandoffMismatch,
+        R::PlanePanic,
+        R::TaskLost,
+        R::SecretPlaceholder,
+        R::Stalled,
+        R::Drain,
+        R::Superseded,
+        R::ClientGone,
+        R::DeadlineExceeded,
+    ];
+    assert_eq!(
+        all.len(),
+        42,
+        "the contract's reason set changed and this walk did not"
+    );
+    let mut distinct = std::collections::BTreeSet::new();
+    for reason in all {
+        let message = crate::refusal::message_for(reason);
+        assert!(!message.is_empty(), "{reason:?} renders an empty message");
+        assert_ne!(
+            message,
+            format!("{reason:?}"),
+            "{reason:?} puts a Rust identifier on the wire"
+        );
+        assert!(
+            !message.contains('"') && !message.contains('\\'),
+            "{reason:?}: the envelope is hand-formatted, so its message must be quote-free"
+        );
+        distinct.insert(message);
+        // Whatever the prose, it is the prose the rendered envelope carries.
+        assert_eq!(
+            crate::refusal::envelope(reason),
+            format!(
+                r#"{{"error":{{"code":"{}","message":"{message}"}}}}"#,
+                crate::refusal::code_for(reason)
+            )
+        );
+    }
+    assert!(
+        distinct.len() >= 40,
+        "forty-two reasons share {} messages: an operator cannot tell them apart",
+        distinct.len()
+    );
+}
+
+/// The refusal a caller receives is those exact bytes, in that exact order, with nothing round it.
+///
+/// Pinned as a byte string rather than as a parsed document: key order, spacing and the absence of
+/// a trailing newline are all part of the surface 1.5.5 froze, and a parsed comparison sees none of
+/// them.
+#[test]
+fn the_refusal_a_caller_receives_is_the_frozen_bytes() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+    let refusal = busbar_contract::unit::Refusal {
+        step: busbar_contract::unit::Step::Approve,
+        reason: busbar_contract::unit::RefusalReason::ScopeMissing,
+        retry_after_secs: None,
+        stream: None,
+        correlates: None,
+    };
+    let rendered = plane
+        .encode_refusal(&refusal, None, None, &ctx)
+        .expect("refusal renders");
+    assert_eq!(
+        rendered.as_slice(),
+        br#"{"error":{"code":"forbidden","message":"principal lacks the required scope"}}"#
+    );
+}
+
+// ── the envelope scan: a brace inside a string is text, across a frame boundary too ─────────────
+
+/// A split that lands inside a string carrying a brace still reads the whole envelope.
+///
+/// The single-frame case cannot tell a string-aware scan from a brace-counting one: both answer
+/// "complete" over bytes that ARE complete, and the decode reads the same head either way. The
+/// difference only shows at a boundary — a scan that treated a quote as nothing would see the brace
+/// inside a string value close the envelope early, hand `identify` a truncated object and refuse a
+/// request that had merely not finished arriving.
+#[test]
+fn a_split_inside_a_string_carrying_a_brace_is_read_whole() {
+    let head = br#"{"method":"GET","path":"/api/v1/admin/audit","body":{},"note":"}"#;
+    let tail = br#"x"}"#;
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let frames = vec![
+        Frame {
+            direction: Direction::Inbound,
+            stream: busbar_contract::ids::StreamId(0),
+            bytes: SlabBytes::new(std::sync::Arc::from(head.to_vec().into_boxed_slice())),
+            meta: FrameMeta::default(),
+        },
+        Frame {
+            direction: Direction::Inbound,
+            stream: busbar_contract::ids::StreamId(0),
+            bytes: SlabBytes::new(std::sync::Arc::from(tail.to_vec().into_boxed_slice())),
+            meta: FrameMeta::default(),
+        },
+    ];
+    let mut cursor = FrameCursor::new(&frames);
+    let ingress = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("the two frames close one envelope");
+    let Ingress::OneShot(draft) = ingress else {
+        panic!("an admin request is one shot");
+    };
+    assert!(matches!(
+        draft.facts.get(crate::meta::FACT_VERB),
+        Some(busbar_contract::bounded::FactValue::Str("get_audit"))
+    ));
+}
+
+// ── what the decode step hands on: the span table, and every pointer it resolved ────────────────
+
+/// The pointer the verb's documented body field names reaches the draft's span table.
+///
+/// The decode resolves the request line's two structural values and, where the row documents one,
+/// the body member as well — and the count of pointers it declares is what the span table is built
+/// from. A count that stopped short dropped the path, the body field or both: the fact map still
+/// carried them, so every fact assertion stayed green while the IR a later step reads went blind.
+#[test]
+fn every_pointer_the_decode_resolved_reaches_the_drafts_span_table() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let text = envelope("POST", "/api/v1/admin/keys", r#"{"name":"k1"}"#);
+    let (frames, ()) = frame_cursor_for(&text);
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("post_keys decodes")
+    else {
+        panic!("an admin request is one shot");
+    };
+
+    assert_eq!(draft.body_ir.pointer("/method"), Some(&b"\"POST\""[..]));
+    assert_eq!(
+        draft.body_ir.pointer("/path"),
+        Some(&b"\"/api/v1/admin/keys\""[..])
+    );
+    assert_eq!(draft.body_ir.pointer("/body/name"), Some(&b"\"k1\""[..]));
+    assert_eq!(
+        draft.body_ir.pointers().count(),
+        3,
+        "three pointers were resolved, so three belong in the table"
+    );
+
+    // A verb whose row documents no body field declares the two structural pointers and no third.
+    let text = envelope("GET", "/api/v1/admin/audit", "{}");
+    let (frames, ()) = frame_cursor_for(&text);
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("get_audit decodes")
+    else {
+        panic!("an admin request is one shot");
+    };
+    assert_eq!(draft.body_ir.pointers().count(), 2);
+}
+
+/// A body member that is not a string is read as its own bytes, quotes and all being absent.
+///
+/// The quote-stripping is conditional on the value BEING quoted; a member spelled as a number or an
+/// object is located, not unwrapped, so nothing invents a value by shaving a byte off each end of
+/// something that was never a string.
+#[test]
+fn a_body_member_that_is_not_a_string_is_located_rather_than_unwrapped() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    // `post_config_rollback` documents `version`; a caller who sends it as a number rather than a
+    // string still decodes, and the span the draft carries is the number's own bytes.
+    let text = envelope("POST", "/api/v1/admin/config/rollback", r#"{"version":12}"#);
+    let (frames, ()) = frame_cursor_for(&text);
+    let mut cursor = FrameCursor::new(&frames);
+    let Ingress::OneShot(draft) = plane
+        .decode_ingress(&mut cursor, None, &ctx)
+        .expect("post_config_rollback decodes")
+    else {
+        panic!("an admin request is one shot");
+    };
+    assert_eq!(draft.body_ir.pointer("/body/version"), Some(&b"12"[..]));
+}
+
+// ── codec only: this plane executes nothing and dials nobody ────────────────────────────────────
+
+/// Nothing on this plane reaches an upstream, in either direction, at any step.
+///
+/// The admin surface's operations are KERNEL VERBS: `busbar-unit-verbs` executes them, and this
+/// crate is the codec that reads the request and renders the answer. The three egress-shaped steps
+/// therefore have no honest answer at all and say so, rather than quietly succeeding with nothing —
+/// a `route` that planned a leg, or an `encode_egress` that answered empty bytes, would put the
+/// admin credential's own surface on a wire.
+#[test]
+fn the_plane_plans_no_leg_and_encodes_no_egress() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let bytes = envelope("GET", "/api/v1/admin/audit", "{}");
+    let unit = build_unit(
+        &bytes,
+        verbs::OP_READ,
+        busbar_contract::bounded::Facts::new(),
+    );
+    let dest = busbar_contract::dest::VerifiedDestination::seal(
+        &TestUnitSeal,
+        busbar_contract::dest::DestinationFacts::KernelVerb { verb: "get_audit" },
+        "http",
+        None,
+    );
+
+    assert_eq!(
+        plane.route(&unit, &ctx).legs.as_slice().len(),
+        0,
+        "this plane opens no leg of its own"
+    );
+    assert!(matches!(
+        plane.encode_egress(&unit, &dest, None, &ctx),
+        Err(busbar_contract::wire::Encode::Unrepresentable)
+    ));
+    let frame = Frame {
+        direction: Direction::Outbound,
+        stream: busbar_contract::ids::StreamId(0),
+        bytes: SlabBytes::new(std::sync::Arc::from(b"{}".to_vec().into_boxed_slice())),
+        meta: FrameMeta::default(),
+    };
+    assert!(matches!(
+        plane.encode_ingress_frame(&unit, &frame, &dest, None, &ctx),
+        Err(busbar_contract::wire::Encode::Unrepresentable)
+    ));
+    let empty: Vec<Frame> = Vec::new();
+    let mut cursor = FrameCursor::new(&empty);
+    assert!(matches!(
+        plane.decode_response(&mut cursor, &dest, None, &ctx),
+        Err(busbar_contract::wire::Decode::UnsupportedOperation)
+    ));
+    assert_eq!(
+        plane.encode_end(
+            &unit,
+            &busbar_contract::unit::UnitEnd::Completed,
+            None,
+            &ctx
+        ),
+        Ok(None)
+    );
+}
+
+/// This plane prices nothing of its own: no lane, no ceiling, no priced span, no usage line.
+///
+/// The design's admin row prices every verb under the kernel-reserved `count` class, which a plane
+/// may not declare — so an admit that named a lane locator, or a meter that located a quantity,
+/// would be this plane pricing a surface the kernel already prices.
+#[test]
+fn the_admin_plane_locates_no_priced_quantity() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let bytes = envelope("GET", "/api/v1/admin/audit", "{}");
+    let unit = build_unit(
+        &bytes,
+        verbs::OP_READ,
+        busbar_contract::bounded::Facts::new(),
+    );
+    let admit = plane.admit(&unit, &ctx);
+    assert!(admit.lane_locator.is_none());
+    assert!(admit.max_response_ptrs.as_slice().is_empty());
+    assert!(admit.input_span.is_none());
+
+    let response = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::empty(),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: busbar_contract::bounded::Facts::new(),
+    };
+    assert!(plane
+        .meter(&unit, &response, &ctx)
+        .lines
+        .as_slice()
+        .is_empty());
+    assert!(<AdminPlane as PlaneMeta>::METER_CLASSES.is_empty());
+}
+
+/// The admin credential travels on every request, under the claim's one alternative, never cached.
+///
+/// The claim is over plain HTTP request/response, so there is no session for a credential to be
+/// cached on — a locator that said otherwise would ask the auth unit for a principal off a session
+/// that has none. And the claim declares exactly one alternative, so there is nothing to narrow to.
+#[test]
+fn the_admin_credential_is_on_the_request_and_narrows_to_nothing() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+    let bytes = envelope("GET", "/api/v1/admin/audit", "{}");
+    let unit = build_unit(
+        &bytes,
+        verbs::OP_READ,
+        busbar_contract::bounded::Facts::new(),
+    );
+
+    let locator = plane.authenticate(&unit, &ctx);
+    assert!(locator.narrowing.is_none());
+    assert!(!locator.from_session);
+    assert_eq!(crate::claims::CLAIMS[0].scheme_alternatives.len(), 1);
+}
+
+/// A plane that declares no introspection verb answers none — it does not answer an empty one.
+///
+/// An empty `PlaneFacts` is a plane saying "that verb of mine had nothing to report", which is a
+/// different sentence from "that is not a verb of mine": the first is a successful read of a verb
+/// this plane never declared.
+#[test]
+fn this_plane_declares_no_introspection_verb_so_it_answers_none() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+    assert!(<AdminPlane as PlaneMeta>::INTROSPECTION_VERBS.is_empty());
+    for verb in ["dialects", "ladder", "verb_table"] {
+        assert!(matches!(
+            plane.plane_facts(busbar_contract::ids::AdminVerbId::new(verb), None, &ctx),
+            Err(busbar_contract::wire::Decode::UnsupportedOperation)
+        ));
+    }
+}
+
+/// The content fact names the verb, and the EXECUTING unit's own answer wins over the draft's.
+///
+/// The response's `verb` fact is what the unit that actually ran stamped back; the draft's is what
+/// the decode step resolved before anything ran. They agree on every ordinary request, which is why
+/// a test that only ever set one of them could not see the precedence at all — and why dropping the
+/// response arm looked harmless. Where they differ, the record has to say what ran.
+#[test]
+fn the_content_fact_names_the_verb_the_executing_unit_reported() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let bytes = envelope("GET", "/api/v1/admin/audit", "{}");
+    let mut draft_facts = busbar_contract::bounded::Facts::new();
+    draft_facts
+        .set(
+            crate::meta::FACT_VERB,
+            busbar_contract::bounded::FactValue::Str("get_audit"),
+        )
+        .expect("one fact fits");
+    let unit = build_unit(&bytes, verbs::OP_READ, draft_facts);
+
+    // With nothing on the response, the draft's verb is what the record carries.
+    let bare = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::empty(),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: busbar_contract::bounded::Facts::new(),
+    };
+    assert!(matches!(
+        plane
+            .content_facts(&unit, &bare, &ctx)
+            .facts
+            .get(crate::meta::FACT_VERB),
+        Some(busbar_contract::bounded::FactValue::Str("get_audit"))
+    ));
+
+    // With a verb on the response, THAT is what ran, and that is what the record carries.
+    let mut response_facts = busbar_contract::bounded::Facts::new();
+    response_facts
+        .set(
+            crate::meta::FACT_VERB,
+            busbar_contract::bounded::FactValue::Str("get_usage"),
+        )
+        .expect("one fact fits");
+    let executed = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::empty(),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: response_facts,
+    };
+    assert!(matches!(
+        plane
+            .content_facts(&unit, &executed, &ctx)
+            .facts
+            .get(crate::meta::FACT_VERB),
+        Some(busbar_contract::bounded::FactValue::Str("get_usage"))
+    ));
+}
+
+// ── replay: decoding the same mutating request twice is the same draft, every time ──────────────
+
+/// Every mutating verb in the closed table decodes identically the second time it arrives.
+///
+/// An admin mutation that a client retries — because a connection dropped, because a proxy
+/// retried, because an operator pressed the button twice — has to reach the verbs unit as the same
+/// operation carrying the same parameters both times, or the idempotency the executing unit
+/// enforces is being enforced over two different requests. The plane is the step that has to be
+/// boring here: same bytes in, same verb, same class, same parameter facts, same span table.
+#[test]
+fn every_mutating_verb_decodes_identically_on_replay() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let mut mutating = 0usize;
+    for row in verbs::table() {
+        if row.read_only {
+            continue;
+        }
+        mutating += 1;
+        let concrete = concretize_path(row.template);
+        let body = match verbs::documented_body_field(row.verb) {
+            Some(field) => format!(r#"{{"{field}":"v1"}}"#),
+            None => "{}".to_string(),
+        };
+        let text = envelope(row.method, &concrete, &body);
+
+        let mut seen: Option<(String, busbar_contract::ids::OpClassId, Vec<String>)> = None;
+        for attempt in 0..2 {
+            let (frames, ()) = frame_cursor_for(&text);
+            let mut cursor = FrameCursor::new(&frames);
+            let Ingress::OneShot(draft) = plane
+                .decode_ingress(&mut cursor, None, &ctx)
+                .unwrap_or_else(|e| panic!("{} {concrete}: {e:?}", row.method))
+            else {
+                panic!("an admin request is one shot");
+            };
+            let verb = match draft.facts.get(crate::meta::FACT_VERB) {
+                Some(busbar_contract::bounded::FactValue::Str(v)) => v,
+                other => panic!("{}: the verb fact is {other:?}", row.verb),
+            };
+            let mut pointers: Vec<String> = draft
+                .body_ir
+                .pointers()
+                .map(|(p, s)| {
+                    format!(
+                        "{p}={}",
+                        String::from_utf8_lossy(&text.as_bytes()[s.start..s.end])
+                    )
+                })
+                .collect();
+            pointers.sort();
+            match &seen {
+                None => seen = Some(((*verb).to_string(), draft.op, pointers)),
+                Some((first_verb, first_op, first_pointers)) => {
+                    assert_eq!(verb, first_verb, "{}: replay {attempt}", row.verb);
+                    assert_eq!(draft.op, *first_op, "{}: replay {attempt}", row.verb);
+                    assert_eq!(&pointers, first_pointers, "{}: replay {attempt}", row.verb);
+                }
+            }
+            assert_eq!(verb, row.verb);
+            assert_eq!(draft.op, verbs::OP_WRITE);
+        }
+    }
+    assert_eq!(
+        mutating,
+        VERB_COUNT - verbs::table().iter().filter(|r| r.read_only).count(),
+        "every mutating row was walked"
+    );
+    assert!(mutating >= 32, "the pinned split has at least 32 mutations");
+}
+
+// ── the pinned document ─────────────────────────────────────────────────────────────────────────
+
+/// The `openapi.json` this surface serves is 1.5.5's own bytes, but for `info.version`.
+///
+/// The document is the operator-facing contract, and every byte of it — key order, whitespace,
+/// every field this crate has no opinion about — is passed through rather than re-serialised. The
+/// one documented exception is `info.version`, which names the version actually running. Checked
+/// against the pinned fixture as BYTES: a parsed comparison would agree with a document whose keys
+/// had been reordered, which is exactly the change a client pinned to the bytes would notice.
+#[test]
+fn the_openapi_document_is_the_pinned_bytes_but_for_the_version() {
+    let plane = AdminPlane::new();
+    let config = TestConfig;
+    let transport = TestTransport;
+    let labels = Labels::new();
+    let arena = TestArena;
+    let ctx = test_ctx(&config, &transport, &labels, &arena);
+
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/fixtures/openapi-1.5.5.json");
+    let pinned = std::fs::read(&fixture).expect("the pinned document is readable");
+
+    let mut facts = busbar_contract::bounded::Facts::new();
+    facts
+        .set(
+            crate::meta::FACT_VERB,
+            busbar_contract::bounded::FactValue::Str(verbs::VERB_OPENAPI_JSON),
+        )
+        .expect("one fact fits");
+    let response = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::new(&pinned, &[]),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts,
+    };
+    let served = plane
+        .encode_response(&response, None, &ctx)
+        .expect("the document encodes");
+
+    // The one substitution, and nothing else. The expected bytes are the pinned ones with the
+    // CONTENT of `/info/version` replaced — located through the contract's own span grammar rather
+    // than by a string search, so what is compared is the whole document and not a window of it.
+    let version_span = match busbar_contract::spans::resolve_pointer(&pinned, "/info/version") {
+        busbar_contract::spans::Resolved::Found(span) => span,
+        other => panic!("the pinned document names no info.version: {other:?}"),
+    };
+    let mut expected = Vec::with_capacity(pinned.len());
+    expected.extend_from_slice(&pinned[..version_span.start]);
+    expected.extend_from_slice(format!(r#""{}""#, env!("CARGO_PKG_VERSION")).as_bytes());
+    expected.extend_from_slice(&pinned[version_span.end..]);
+    assert_eq!(
+        served.as_slice(),
+        expected.as_slice(),
+        "the served document differs from the pinned one somewhere other than info.version"
+    );
+    // And the version really did change, so the comparison above is not vacuous.
+    assert_ne!(served.as_slice(), pinned.as_slice());
+
+    // A response the executing unit did not label as the document is passed through untouched.
+    let unlabelled = busbar_contract::plane::Response {
+        ir: busbar_contract::bounded::Ir::new(&pinned, &[]),
+        finish: busbar_contract::unit::FinishClass::Complete,
+        facts: busbar_contract::bounded::Facts::new(),
+    };
+    assert_eq!(
+        plane
+            .encode_response(&unlabelled, None, &ctx)
+            .expect("passthrough")
+            .as_slice(),
+        pinned.as_slice()
+    );
+}
+
+/// The seal a test uses to build a verified destination, which only the kernel builds for real.
+struct TestUnitSeal;
+
+impl busbar_contract::plugin::KernelSeal for TestUnitSeal {
+    fn seal_origin(&self) -> &'static str {
+        "busbar-plane-admin::tests"
+    }
+}
+
 fn walk(dir: &std::path::Path, f: &mut impl FnMut(&std::path::Path, &str)) {
     let entries = std::fs::read_dir(dir).expect("src dir is readable");
     for entry in entries.flatten() {
