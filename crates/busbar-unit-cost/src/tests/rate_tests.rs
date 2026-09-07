@@ -6,8 +6,8 @@
 
 use super::*;
 use crate::{
-    nano_rate, price, Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, Posting,
-    RateCard, STANDARD_TIER_BP,
+    nano_rate, price, Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass,
+    Posting, RateCard, STANDARD_TIER_BP,
 };
 
 /// The conversion rounds to NEAREST, half away from zero — it does not truncate. Fifteen
@@ -50,7 +50,9 @@ fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
 #[test]
 fn card_carries_integer_rates_per_class() {
     let c = card4("quad", [1.0, 2.0, 0.5, 4.0], 0);
-    let r = c.lane_rates("quad", CurrencyCode::USD).expect("the lane is priced");
+    let r = c
+        .lane_rates("quad", CurrencyCode::USD)
+        .expect("the lane is priced");
     assert_eq!(
         (
             r.nanos_per_unit(INPUT),
@@ -73,7 +75,9 @@ fn lane_lookup_has_exactly_three_outcomes() {
         !none.lane_unpriced("anything"),
         "with no card there is nothing to be missing from"
     );
-    let view = none.lane_rates("anything", CurrencyCode::USD).expect("a zero-rate view");
+    let view = none
+        .lane_rates("anything", CurrencyCode::USD)
+        .expect("a zero-rate view");
     assert_eq!(view.nanos_per_unit(INPUT), 0);
 
     let present = card("known", 1.0, 1.0, 0);
@@ -99,7 +103,10 @@ fn negative_per_request_fee_clamps_to_zero() {
 fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
     let c = RateCard::absent(3);
     assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 30_000_000);
-    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD) % crate::NANOS_PER_CENT, 0);
+    assert_eq!(
+        c.fee_unit_price_nanos(CurrencyCode::USD) % crate::NANOS_PER_CENT,
+        0
+    );
 }
 
 /// **AN EDIT PRICES WHAT HAPPENS AFTER IT, NOT WHAT HAPPENED BEFORE IT.**
@@ -123,7 +130,11 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
         appended_at: 5_000,
         author: Author::Config { policy_epoch: 1 },
     });
-    assert_eq!(second, HistorySeq(1), "the seq is dense and assigned on append");
+    assert_eq!(
+        second,
+        HistorySeq(1),
+        "the seq is dense and assigned on append"
+    );
 
     let report = usage(&[(INPUT, 1_000_000)]);
     let before = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 4_999, 4_999);
@@ -133,9 +144,17 @@ fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
     let earlier = price(&view, &before, CurrencyCode::USD).expect("entry zero covers it");
     let later = price(&view, &after, CurrencyCode::USD).expect("entry one covers it");
     assert_eq!(earlier.card_seq, HistorySeq(0));
-    assert_eq!(earlier.minor(), 1000, "the unit that arrived first did not move");
+    assert_eq!(
+        earlier.minor(),
+        1000,
+        "the unit that arrived first did not move"
+    );
     assert_eq!(later.card_seq, HistorySeq(1));
-    assert_eq!(later.minor(), 500, "the unit that arrived after pays the new rate");
+    assert_eq!(
+        later.minor(),
+        500,
+        "the unit that arrived after pays the new rate"
+    );
 
     // And the older snapshot still answers the older way for BOTH instants, which is what makes an
     // invoice cut against it reproducible.
