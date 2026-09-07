@@ -6,6 +6,7 @@ pub mod harness;
 
 mod codec;
 mod ulaw;
+mod ulaw_hardening;
 
 /// What a request path matches, decided the same way the boot's overlap check decides it.
 mod selectors {
