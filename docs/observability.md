@@ -225,14 +225,14 @@ without false positives, so it is enforced by review, not CI. See `xtask/src/gat
 module comment for why that gate deliberately stops at the `#[instrument]`-level-presence rule.
 
 **Enforcement: `cargo xtask gate tracing`.** Runs in CI (the `structure-lint` job, alongside
-`structure-lint.sh` / `cargo xtask gate response-header`). Fails the build on any `#[tracing::instrument]` (or
+`cargo xtask gate structure-lint` / `cargo xtask gate response-header`). Fails the build on any `#[tracing::instrument]` (or
 bare `#[instrument]`) anywhere in `crates/**/*.rs` (excluding `*/tests/*`) whose attribute text,
 gathered across however many lines it spans, never mentions `level`. Parens and the word `level` are
 counted only OUTSIDE string literals, so `name = "f("` does not swallow the rest of the file and
 `name = "log_level"` does not count as declaring a level; an attribute that never balances before
 EOF is its own reported finding rather than the silent end of the scan. `--selftest` proves the
 scanner still catches a level-less instrument (bare, single-line, and multi-line shapes) before its
-verdict on the tree is trusted, mirroring `structure-lint.sh --selftest` /
+verdict on the tree is trusted, mirroring `cargo xtask gate structure-lint --selftest` /
 `cargo xtask gate response-header --selftest`.
 
 ---

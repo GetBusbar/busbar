@@ -4,10 +4,10 @@ The point of these rules is **predictable location**: given a concept, there is 
 it can live, derivable from its name and role. "I'm looking for X, and I know where it is" should be
 true by construction. Size reduction is a side effect of getting that right, not the goal.
 
-Four invariants, all mechanically enforced by `scripts/structure-lint.sh` (run in CI). If they hold,
-the tree cannot drift back into giant, inconsistent files.
+Four invariants, all mechanically enforced by `cargo xtask gate structure-lint` (run in CI). If they
+hold, the tree cannot drift back into giant, inconsistent files.
 
-The same script enforces six further invariants that are about *behavior* rather than layout:
+The same gate enforces six further invariants that are about *behavior* rather than layout:
 
 - the **choke-point registry** (every hazard class has one owner, and no file hand-rolls a bypass).
   It belongs to the remediation contract and is documented in
@@ -120,7 +120,7 @@ bucket **without one store call and without one `await`**. That is not an accide
 implementation; it is the property every published latency number rests on. Durability happens
 *behind* the request (the ledger flushes to the store on its own cadence), never in front of it.
 
-The `REQUEST_PATH` table in `scripts/structure-lint.sh` names the function and the calls it may not
+The request-path table (`xtask/src/gates/structure_lint/fn_scoped.rs`) names the function and the calls it may not
 contain, and the check is **function-scoped**, not tree-wide: the same store call is entirely
 legitimate one function further down the same file, so the unit of the rule has to be the function.
 
@@ -202,9 +202,9 @@ digest — and never on text an upstream authors. An upstream rewrites its own d
 a router that reads one is a router the upstream steers; that is the confused-deputy half of every
 tool-poisoning writeup.
 
-The `DECISION_INPUT` table in `scripts/structure-lint.sh` names each function that turns a request
+The decision-input table (`xtask/src/gates/structure_lint/fn_scoped.rs`) names each function that turns a request
 into a destination (or decides what a caller may see) and the text it may not read. It shares the
-`REQUEST_PATH` runner, so it is function-scoped for the same reason and reports `SUBJECT-MISSING` the
+request-path runner, so it is function-scoped for the same reason and reports `SUBJECT-MISSING` the
 same way. Function-scoped rather than tree-wide because `description` is a legitimate word almost
 everywhere — the catalogue stores one, the listing publishes the *operator's* one — and illegitimate
 in exactly the code that decides where a call goes.
@@ -250,10 +250,14 @@ Module names use the product/API vocabulary (ingress, egress, pool, lane, hook, 
 ## Running the lint
 
 ```
-scripts/structure-lint.sh
+cargo xtask gate structure-lint
 ```
 
-Non-zero exit on any violation, with the offending path and the fix. It runs in CI (the `check` job),
+Non-zero exit on any violation, with the offending path and the fix. Every rule is a LEDGER ROW with
+its own id (`structure-lint:oversized`, `structure-lint:choke-point:bypass`, …), so the report says
+WHICH invariant broke rather than only that "structure-lint failed", and a rule that stops running
+is reported as `DID NOT RUN` rather than as silence. `--format=tsv` emits the rows for a reader that
+wants them as data. It runs in CI (the `check` job),
 so a PR that reintroduces a giant file or a hybrid module fails before merge, and likewise a PR that
 leaves a test body inline (`INLINE-TEST`), silences one without saying why (`ALLOW-WITHOUT-REASON`),
 hand-rolls a durable write, a plugin export, or a config swap outside its choke point
@@ -267,14 +271,20 @@ word or a second copy of a shared decision (`WIRE-WORD-RESPELT` / `TRUST-DECISIO
 `TRUST-COMPARISON-BYPASS` / `ASK-NOT-OPERATOR-AUTHORED` / `SWEEP-NOT-SPAWNED`).
 See [testing.md](testing.md#the-remediation-contract).
 
-The scanner that decides "is this line test code?" is itself guarded:
+The scanner that decides "is this line test code?" is itself guarded, and so is every other rule:
 
 ```
-scripts/structure-lint.sh --selftest
+cargo xtask gate structure-lint --selftest
 ```
 
-It runs the real scanners over a fixture corpus whose every shape is a known way to lie about being
-test code, with each fixture declaring the verdict it must get, including fixtures that must **miss**
-(a legitimately test-only file, the correct `#[path]` shape, a support module with no tests). It
-fails if zero cases execute and it fails if a fixture does not reach disk, because a self-test that
-skipped to green would report exactly what a passing one reports.
+EVERY OWED ROW HAS A CASE, and the runner refuses a report that leaves one uncovered — a rule whose
+case was deleted is a rule that could be deleted with the self-test still green. Each case plants its
+violation into an overlay (never a scratch copy, never a restore step) and requires the run to NAME
+the planted offender: "something went red" is not an accepted answer. The cases that must **miss**
+are there too — a legitimately test-only file, the correct `#[path]` shape, a support module with no
+tests, prose that merely quotes a banned call, and a grandfathered file over the size cap.
+
+The rules whose subject is a TABLE rather than the tree — a malformed row, an allowed path that
+moved, a ledger row that outlived the duplication it recorded — are proven by driving the shipped
+runner over a deliberately broken table, because no overlay can plant a violation into source that
+is not part of the tree being scanned.
