@@ -76,6 +76,22 @@ What is normalized (each rule is a named entry in `applied`):
                       a client header that leaked upstream when it should not have)
   text.port           127.0.0.1:<port> in any text body or stderr line: listen, admin and mock ports are the harness's
   egress.host         effects.egress[].headers.host: the mock's port becomes <PORT> (chosen per recording)
+  stderr.platform-capability
+                      whole stderr LINES that report a capability of the RECORDING HOST rather than
+                      anything busbar did — today exactly one: darwin's "[warn] could not enable
+                      jemalloc background purge thread ...", which the same binary does not print on
+                      linux. It sat in 56 golden cells, so the committed golden and a linux CI
+                      candidate differed on those cells by a fact about the machine that recorded
+                      them. The patterns are ANCHORED and match a whole line; a keyword or a
+                      severity match would also swallow a refusal, which is the one thing in stderr
+                      the oracle exists to compare. stderr ONLY — a body is busbar's answer.
+  egress.elapsed      effects.egress[].response.elapsed_ms (how long the upstream took to answer that
+                      one attempt) -> `elapsed`, one of "<1s" / "1-5s" / ">5s". The raw millisecond
+                      count is a measurement of the recording host; the BUCKET is the contract, and
+                      `route.failover|fo|primary-slow` is named for it. The mock records the raw
+                      value so renormalize.sh can re-derive the bucket; the boundaries live here.
+                      `status` and `retry_after` beside it are NOT normalized: a dropped Retry-After
+                      or a changed status is exactly the divergence these cells exist to catch.
   eventstream.frames  a body whose Content-Type is `application/vnd.amazon.eventstream` (Bedrock's
                       binary framing for a streamed Converse) is DECODED rather than read as text.
                       Before this rule the bytes were run through `.decode("utf-8", "replace")`,
@@ -325,10 +341,54 @@ def norm_egress_entry(entry, applied: set):
     return out
 
 
+# ── THE ATTEMPT'S WALL CLOCK, AT THE ONLY RESOLUTION THAT IS A CONTRACT ──────────────────────────
+# `egress[].response.elapsed_ms` is a real measurement of the recording host: the same attempt is
+# 4ms on a warm laptop and 40ms on a loaded runner, and pinning either into a golden makes every
+# failover cell a stopwatch. But the DURATION IS THE CONTRACT on `route.failover|fo|primary-slow` --
+# the cell exists because the attempt ran past busbar's cap -- so dropping it entirely would put the
+# cell back where it was, named for something it does not record.
+#
+# The bucket is the resolution at which the fact is busbar's and not the machine's. The boundaries
+# are chosen against what the harness actually produces, not round numbers for their own sake: every
+# healthy mock response is single-digit milliseconds, and the `slow` verb sleeps
+# ORACLE_MOCK_SLOW_SECS (default 8). So `<1s` and `>5s` are separated by three orders of magnitude
+# of headroom, and no cell can cross a boundary because a runner was busy. `1-5s` is the middle
+# nothing should land in: a healthy attempt that reaches it is a real slowdown and SHOULD move the
+# cell, which is the point of keeping a bucket there rather than a two-way split.
+ELAPSED_BUCKETS = ((1000, "<1s"), (5000, "1-5s"))
+
+
+def elapsed_bucket(ms: int) -> str:
+    for edge, name in ELAPSED_BUCKETS:
+        if ms < edge:
+            return name
+    return ">5s"
+
+
+def norm_egress_response(resp, applied: set):
+    """The upstream's own answer to one attempt. `status` and `retry_after` stay byte-exact -- a
+    dropped Retry-After or a changed status is the divergence these cells exist to catch -- and only
+    the raw duration is rewritten, into its bucket."""
+    if not isinstance(resp, dict):
+        return resp
+    out = dict(resp)
+    ms = out.pop("elapsed_ms", None)
+    if isinstance(ms, (int, float)) and not isinstance(ms, bool):
+        applied.add("egress.elapsed")
+        out["elapsed"] = elapsed_bucket(int(ms))
+    return out
+
+
 def norm_egress(egress, applied: set):
     if not isinstance(egress, list):
         return egress
-    return [norm_egress_entry(e, applied) for e in egress]
+    out = []
+    for e in egress:
+        ne = norm_egress_entry(e, applied)
+        if isinstance(ne, dict) and "response" in ne:
+            ne["response"] = norm_egress_response(ne["response"], applied)
+        out.append(ne)
+    return out
 
 
 def sort_runs(lines: list, rx, rule: str, applied: set) -> list:
@@ -355,6 +415,36 @@ def sort_pool_lines(lines: list, applied: set) -> list:
 
 VERSION_KV = re.compile(r'version="(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?"')
 LOOPBACK_PORT = re.compile(r"127\.0\.0\.1:\d{2,5}\b")
+
+# ── LINES THAT SAY WHAT THE HOST CAN DO, NOT WHAT BUSBAR DID ─────────────────────────────────────
+# A `[warn]` that reports a CAPABILITY OF THE MACHINE is not a behaviour of the binary. The golden is
+# recorded on darwin, where jemalloc cannot start its background purge thread, so every cell that
+# carries a boot log carries one extra stderr line that the same binary does not print on the linux
+# runner -- 52 cells differing by a fact about the recording host. The line is real and it is worth
+# seeing; it is simply not a thing 1.5.5 and 1.6.0 can disagree about, because neither wrote it in
+# response to anything a request did.
+#
+# THE PATTERNS ARE ANCHORED AND EXHAUSTIVE, NOT A KEYWORD SEARCH. Each entry must match the whole
+# line and must name the specific capability. A rule that dropped any line MENTIONING jemalloc, or
+# any line at severity `warn`, would also swallow a refusal -- and a refusal is the single thing in
+# stderr the oracle exists to compare. That is what `stderr.platform-capability` may never do, and
+# what replay-selftest.sh holds it to.
+PLATFORM_CAPABILITY_LINES = (
+    # darwin: jemalloc's background_thread runs off pthread_create at a point macOS forbids it.
+    re.compile(r"^\[warn\] could not enable jemalloc background purge thread\b.*$"),
+)
+
+
+def drop_platform_capability(text: str, applied: set) -> str:
+    """Remove whole lines that report a capability of the RECORDING HOST. stderr only -- see
+    PLATFORM_CAPABILITY_LINES. Never reached from a body: a body is busbar's answer, and a line in it
+    is busbar's whatever it says."""
+    lines = text.split("\n")
+    kept = [ln for ln in lines if not any(rx.match(ln) for rx in PLATFORM_CAPABILITY_LINES)]
+    if len(kept) != len(lines):
+        applied.add("stderr.platform-capability")
+        return "\n".join(kept)
+    return text
 
 
 def norm_text(text: str, applied: set, keep_regex=None) -> str:
@@ -560,7 +650,11 @@ def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep
         "effects": effects,
     }
     if isinstance(out["effects"].get("stderr"), str):
-        out["effects"]["stderr"] = norm_text(out["effects"]["stderr"], applied)
+        # The host-capability strip runs FIRST and ONLY here: stderr is the one place a line can be
+        # about the machine rather than about busbar. It is deliberately not part of norm_text, which
+        # also normalizes bodies.
+        stderr_text = drop_platform_capability(out["effects"]["stderr"], applied)
+        out["effects"]["stderr"] = norm_text(stderr_text, applied)
     out["applied"] = sorted(applied)
     return out
 
