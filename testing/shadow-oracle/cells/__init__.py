@@ -925,7 +925,7 @@ def billing_cells() -> list[dict]:
 
 
 def rate_card_history_cells() -> list[dict]:
-    """THE RATE-CARD HISTORY (tracker M7; design docs/design/rate-card-history.md §11.2; PB-103).
+    """THE RATE-CARD HISTORY: the cells the rate-card-history design lists for the oracle, pinning the money-as-a-lookup binding.
 
     Seven cells recorded from the PUBLISHED 1.5.5 BINARY FIRST, so that when M6 lands the divergence
     has a judge that predates it. Six of the seven name a 1.6.0 surface that DOES NOT EXIST in 1.5.5
@@ -971,7 +971,7 @@ def rate_card_history_cells() -> list[dict]:
     # 1. THE JUDGE. Two complete cards written into ONE window with a request either side of each,
     #    and `/usage` read after EVERY write. 1.5.5's read-time derivation means each read reprices
     #    the WHOLE window at whatever card is current at that instant, so the same three requests
-    #    have three different histories depending only on when you looked. Under the history (M6)
+    #    have three different histories depending only on when you looked. Under the dated history
     #    the same sequence answers with each row at the card it was earned under, and only the LAST
     #    read moves — which is why this cell and the recorded `epoch-mid-window` are the entire
     #    scope of the PB-103 breaking registration.
@@ -993,7 +993,7 @@ def rate_card_history_cells() -> list[dict]:
                "reported at THREE different prices over the life of ONE window, so an invoice read "
                "off this endpoint stops being reproducible from it the moment a rate is corrected, "
                "and the number depends only on when you looked. This is the cell the 1.6.0 "
-               "divergence is judged on (PB-103): under the dated rate-card history the two "
+               "divergence is judged on (the money-as-a-lookup binding): under the dated rate-card history the two "
                "pre-edit requests keep the boot and 10x cards, the final answer becomes "
                "277,530,000, and ONLY the final read moves — the two earlier reads were already the "
                "honest figure at their own instant and stay byte-identical. The script driver, not "
@@ -1063,7 +1063,7 @@ def rate_card_history_cells() -> list[dict]:
                           "is refused AND journalled — and this cell is the recorded baseline that "
                           "separation is measured against."))
 
-    # 5. NATIVE CURRENCY. §3.1 forbids a pivot: a card prices a lane in the currency it is billed
+    # 5. NATIVE CURRENCY. The native-currency rule forbids a pivot: a card prices a lane in the currency it is billed
     #    in, with no cross-rate anywhere. 1.5.5's `currency` is a fixed LABEL on the response
     #    ("USD" in every billing golden) and its rate_card entries have no currency at all — so the
     #    open question is whether an entry carrying one is refused as an unknown field or accepted
@@ -1077,7 +1077,7 @@ def rate_card_history_cells() -> list[dict]:
                                             for m in PRICED_MODELS}}),
                       config_variant="rate-card-currency", bindings=["PB-103"],
                       why="a complete card that prices ONE lane in a second currency natively "
-                          "(m-openai-chat in JPY, the rest USD) — the shape §3.1 requires and the "
+                          "(m-openai-chat in JPY, the rest USD) — the shape the native-currency rule requires and the "
                           "shape 1.5.5 has no field for. RECORDED (published 1.5.5): 400 "
                           "`invalid_request`, \"malformed config settings body: unknown field "
                           "`currency`, expected one of `input_utok`, `output_utok`, "
@@ -1092,7 +1092,7 @@ def rate_card_history_cells() -> list[dict]:
                           "a 1.6.0 build that accepts `currency` to refusing every OTHER "
                           "misspelling the same way."))
 
-    # 6. MINOR-UNIT ROUNDING. §3.3 divides by 10^(9-exp) ONCE per row, truncating. Before that can
+    # 6. MINOR-UNIT ROUNDING. The minor-unit rule divides by 10^(9-exp) ONCE per row, truncating. Before that can
     #    be a per-currency exponent it has to be true of the currency 1.5.5 already has, so this
     #    cell drives rates far below USD's minor unit (1 micro-unit per token against the mock's
     #    11 in / 7 out = 18 micros for a whole request, where one cent is 10,000) and records where
@@ -1108,7 +1108,7 @@ def rate_card_history_cells() -> list[dict]:
                           "minor unit at all: `spend_micros` is carried at full micro-unit "
                           "precision and nothing is truncated to cents anywhere in the view — the "
                           "cents truncation lives on the paths that REPORT cents, not here. That is "
-                          "the baseline §3.3 must be compatible with, and it makes the compatible "
+                          "the baseline the minor-unit rule must be compatible with, and it makes the compatible "
                           "reading precise: 'divide by 10^(9-exp) ONCE per row, truncating' has to "
                           "leave THIS endpoint's figures alone, or the identity test's statement 2 "
                           "— exact against the published 1.5.5 binary for a single-entry history — "
@@ -1119,7 +1119,7 @@ def rate_card_history_cells() -> list[dict]:
     cells[-1]["request"]["pre"] = [put_settings({"rate_card": {m: {"input_utok": 1, "output_utok": 1}
                                                                for m in PRICED_MODELS}}), chat()]
 
-    # 7. APPEND, NOT REPLACE. §4.1 makes a config PUT append a dated entry to the history instead of
+    # 7. APPEND, NOT REPLACE. The append-not-replace rule makes a config PUT append a dated entry to the history instead of
     #    overwriting the card. The 1.5.5 behaviour it has to be compatible with is the refusal that
     #    the epoch cell's own history turns on: a PARTIAL card is a 400, "rate_card is AUTHORITATIVE
     #    and COMPLETE". That refusal is load-bearing for the whole design — it is why "the card" is
@@ -1142,7 +1142,7 @@ def rate_card_history_cells() -> list[dict]:
                           "drops the list of what is missing is a diff. This is the refusal an "
                           "earlier pass at the epoch cell tripped over WITHOUT seeing it (a `pre` "
                           "need only be ANSWERED, not 2xx, so a refused write was recorded as a "
-                          "pricing epoch), and it is the precondition for §4.1: a config PUT can "
+                          "pricing epoch), and it is the precondition for the append-not-replace rule: a config PUT can "
                           "APPEND a dated entry to the history precisely because the thing it "
                           "carries is always a WHOLE card, never a patch. Under 1.6.0 this stays a "
                           "400 and the accepted sibling appends instead of overwriting — which is "

@@ -1,4 +1,4 @@
-//! Red-before-green cases for the `cargo xtask gate` infrastructure, one per rule the design
+//! Cases proving each rule of the `cargo xtask gate` infrastructure can go red, one per rule the design
 //! document names. Every case here was written and observed FAILING before the module it drives
 //! existed; each one names the rule it pins so a deletion of that rule is a named test failure
 //! rather than a quieter test suite.

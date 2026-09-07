@@ -3,7 +3,7 @@
 # Copyright (C) 2026 Busbar Inc and contributors
 #
 # Script-driver cell `billing|rate-card|history-mid-window` (tracker M7; design
-# docs/design/rate-card-history.md §11.2 cell 1; PB-103).
+# the first cell the rate-card-history design lists for the oracle).
 #
 # WHAT IT ASKS. `billing|rate-card|epoch-mid-window` already recorded what ONE mid-window card edit
 # does to ONE read: the whole ledger comes back at the new card. This cell asks the question that
