@@ -3,7 +3,7 @@
     "description": "busbar config-surface structural fingerprint — FROZEN at 1.5.3, additive-only forever (enforced by the config-stability gate).",
     "frozen_at": "1.5.3",
     "generator": "scripts/config-schema.py gen",
-    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape and accepted wire keys) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar and the MCP `tools:` grammar"
+    "surface": "serde-Deserialize structs/enums (derived AND hand-impl'd, including each hand-impl'd type's declared shape, accepted wire keys, and the input forms it REFUSES outright -- the last frozen in BOTH directions, because a refusal that is dropped widens the grammar to accept exactly the inline literal the type exists to reject) + the named-definition-map type aliases, over the tracked source set (SOURCES in scripts/config-schema.py): the busbar config module, SecretRef, UpstreamCreds, the A2A `agents:` grammar and the MCP `tools:` grammar"
   },
   "types": {
     "AdvancedCfg": {
@@ -2242,6 +2242,7 @@
     "manual-de AgentsCfg": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": []
     },
     "manual-de LimitCfg": {
@@ -2260,6 +2261,7 @@
         }
       },
       "kind": "manual",
+      "refused": [],
       "wire_keys": [
         "budget",
         "concurrent",
@@ -2278,11 +2280,13 @@
     "manual-de OnErrorCfg": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": []
     },
     "manual-de OnExhaustedCfg": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": [
         "least_bad",
         "reject"
@@ -2291,16 +2295,19 @@
     "manual-de PoolCfg": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": []
     },
     "manual-de PoolMember": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": []
     },
     "manual-de PoolsCfg": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": []
     },
     "manual-de SecretRef": {
@@ -2315,6 +2322,14 @@
         }
       },
       "kind": "manual",
+      "refused": [
+        "bool",
+        "bytes",
+        "f64",
+        "i64",
+        "str",
+        "u64"
+      ],
       "wire_keys": [
         "env",
         "file",
@@ -2325,11 +2340,13 @@
     "manual-de SplitDocument": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": []
     },
     "manual-de ToolsCfg": {
       "fields": {},
       "kind": "manual",
+      "refused": [],
       "wire_keys": []
     },
     "type AskRoundCfg": {
