@@ -1217,6 +1217,7 @@ llm|bedrock|anthropic|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"s
 llm|bedrock|anthropic|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|bedrock|bedrock|request|malformed	PASS	HTTP 400; usage Δ {}	
 llm|bedrock|bedrock|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|bedrock|bedrock|request|ok_cachepoint_document	SKIP	UNSUPPORTED: happy path whose REQUEST puts a `cachePoint` BEFORE a native `document` block: a wire slot that yields no IR block, ahead of a block the rea	named gap: the fixture this cell needs is not in the tree yet
 llm|bedrock|bedrock|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|bedrock|bedrock|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|bedrock|bedrock|request|over_budget	PASS	HTTP 429; usage Δ {}	
@@ -1321,6 +1322,7 @@ llm|responses|openai|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"sp
 llm|responses|openai|request|upstream_down	PASS	HTTP 503; usage Δ {"requests":1}	
 llm|responses|responses|request|malformed	PASS	HTTP 400; usage Δ {}	
 llm|responses|responses|request|ok	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|responses|responses|request|ok_citation	SKIP	UNSUPPORTED: happy path whose ANSWER carries a URL citation: the Responses annotation the published UrlCitationBody FLATTENS onto the annotation object, 	named gap: the fixture this cell needs is not in the tree yet
 llm|responses|responses|request|ok_stream	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|responses|responses|request|out_of_scope	PASS	HTTP 403; usage Δ {}	
 llm|responses|responses|request|over_budget	PASS	HTTP 429; usage Δ {}	
