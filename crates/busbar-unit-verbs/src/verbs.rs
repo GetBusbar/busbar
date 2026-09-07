@@ -343,9 +343,18 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
     }
 
     /// `POST /api/v1/admin/keys/{id}/rotate` — ported in full: same idempotency mechanics as
-    /// [`Verbs::create_key`], SCOPED to `(actor, "rotate:{id}:{k}")` rather than `(actor, k)` — the
-    /// architecture document's note that a create and a rotate sharing a header value must never
-    /// replay each other.
+    /// [`Verbs::create_key`], SCOPED to the key id as well as the header value — the architecture
+    /// document's note that a create and a rotate sharing a header value must never replay each
+    /// other.
+    ///
+    /// THE ID IS LENGTH-FRAMED INTO THE SLOT NAME, not joined to the header on a separator. Both
+    /// halves are text the caller chooses: the id comes off the request path and the header value is
+    /// whatever the client sent, so joining them on a character either may contain does not make a
+    /// key, it makes a coincidence. `("a:b", "c")` and `("a", "b:c")` join to one string, and a
+    /// rotate that lands on another rotate's slot goes wrong twice over in the same breath — the key
+    /// the caller named is never rotated, so its old credential goes on authenticating, and what
+    /// comes back is the credential minted for a DIFFERENT key. Writing the id's length ahead of it
+    /// fixes the boundary somewhere no id's content can move it.
     #[allow(clippy::too_many_arguments)]
     pub fn rotate_key(
         &self,
@@ -358,7 +367,8 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         id: &str,
     ) -> Result<MintOutcome, Refusal> {
         self.admit(KernelVerb::PostKeysIdRotate, actor, granted, now)?;
-        let ck = idempotency_key.map(|k| (actor.to_string(), format!("rotate:{id}:{k}")));
+        let ck =
+            idempotency_key.map(|k| (actor.to_string(), format!("rotate:{}:{id}:{k}", id.len())));
         let reservation = match ck {
             None => None,
             Some(key) => match self.rotate_key_cache.probe(key, now) {
