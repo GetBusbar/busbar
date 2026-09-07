@@ -581,9 +581,24 @@ def rule_neutral_no_dialect(tree, cfg, hits_path):
                 detail, current, c["max_hits"], c["why"], offenders)]
 
 
+def _defines(tree, verb):
+    """Is `fn <verb>` defined anywhere in the scanned tree (test code included)?"""
+    return bool(tree.grep(r"fn\s+" + re.escape(verb) + r"(?![A-Za-z0-9_])", production_only=False))
+
+
 def rule_single_terminal(tree, cfg):
     c = cfg["rules"]["single-terminal"]
     term = c["terminal"]
+    # THE SUBJECT FIRST, for the reason one-pick-site states: this rule counts call sites of one
+    # verb, so a verb that no longer exists measures zero and reads as the cleanest possible pass.
+    # Renaming `finish_inner` across the tree leaves this row at 0/0 PASS while nothing at all is
+    # being watched -- and the terminal is where a unit's end is sealed and posted ONCE.
+    if not _defines(tree, term):
+        return [_unproven("single-terminal", f"`{term}` is called only from its allowed doors",
+                          f"no `fn {term}` is defined anywhere in the scanned tree, so this rule "
+                          f"counted call sites of a verb that does not exist; point "
+                          f"qa/construction.toml's [rules.single-terminal] terminal at the request "
+                          f"terminal's new name", c["why"])]
     allowed = set(c["allowed_callers"])
     call_rx = r"(?<![A-Za-z0-9_])" + re.escape(term) + r"\s*\("
     defn_rx = re.compile(r"fn\s+" + re.escape(term) + r"(?![A-Za-z0-9_])")
@@ -875,6 +890,19 @@ def rule_one_teller_loop(tree, cfg):
     rows = [row("one-teller-loop", worst <= c["max_callers_per_plane_crate"],
                 "each plane runs its units through the one Teller loop, from one place",
                 detail, worst, c["max_callers_per_plane_crate"], c["why"], offenders)]
+    # A RATCHET WHOSE SUBJECT IS GONE WALKS BACKWARDS. This row is the count of legacy adapter call
+    # sites, driven to zero by moving each plane off the shim -- and it measures a verb by name, so
+    # renaming the shim takes the count from 4 to 0 in green and the next --calibrate writes 0 as the
+    # new ceiling. The shim would still be there under its new name, with the ratchet that watched it
+    # permanently satisfied. Zero definitions of the verb is UNPROVEN, not a ratchet met.
+    if not _defines(tree, c["legacy_verb"]):
+        rows.append(_unproven(
+            "one-teller-loop:run_gauntlet", "the legacy adapter's call sites only ever shrink",
+            f"no `fn {c['legacy_verb']}` is defined anywhere in the scanned tree, so this ratchet "
+            f"counted call sites of an adapter that does not exist; point qa/construction.toml's "
+            f"[rules.one-teller-loop] legacy_verb at its new name, or -- if the shim is really gone "
+            f"-- retire this row rather than let it calibrate to zero", c["why"]))
+        return rows
     legacy = [f"{rel}:{l.no}" for rel, l in _call_sites(tree, c["legacy_verb"])]
     detail = (f"{len(legacy)} production call site(s) of the legacy `{c['legacy_verb']}(` adapter "
               f"(ceiling {c['max_legacy_sites']}): " + ("; ".join(legacy) if legacy else "none"))
@@ -1683,10 +1711,14 @@ def rule_secret_carrier_debug(tree, cfg):
     c = cfg["rules"]["secret-carrier-debug"]
     offenders = []
     checked = 0
+    absent = []
     for name in c["carriers"]:
         decl_rx = re.compile(r"(?:^|[^A-Za-z0-9_])(?:struct|enum)\s+" + re.escape(name)
                              + r"(?![A-Za-z0-9_])")
-        for rel, l in tree.grep(decl_rx.pattern):
+        sites = tree.grep(decl_rx.pattern)
+        if not sites:
+            absent.append(name)
+        for rel, l in sites:
             checked += 1
             lines = tree.files[rel]
             # Walk back over the attribute block sitting directly on the declaration, joining it so
@@ -1705,6 +1737,17 @@ def rule_secret_carrier_debug(tree, cfg):
             if re.search(r"derive\s*\([^)]*\bDebug\b", " ".join(reversed(attrs))):
                 offenders.append(f"`{name}` derives Debug at {rel}:{l.no}")
     current = len(offenders)
+    # A CARRIER THE SCANNER CANNOT FIND IS A CARRIER NOBODY IS WATCHING. The list IS the subject:
+    # each name is looked up by its declaration, so a carrier renamed (or moved behind a type alias)
+    # contributes zero findings for the one reason that proves nothing, and the row reads 0/0 PASS
+    # while the type that holds key material is free to derive the Debug it must hand-roll. The whole
+    # list is UNPROVEN when any of it is absent, because the answer for that name is not "clean".
+    if absent:
+        return [_unproven("secret-carrier-debug", "a type carrying secret bytes hand-rolls its Debug",
+                          "no declaration was found for " + ", ".join(f"`{n}`" for n in absent)
+                          + ", so those carriers were not read at all; point qa/construction.toml's "
+                            "[rules.secret-carrier-debug] carriers at their current names, or strike "
+                            "the ones that no longer exist", c["why"])]
     if checked == 0:
         detail = VACUOUS + "no named secret carrier is declared in the scanned tree"
     else:
