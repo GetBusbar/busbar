@@ -155,8 +155,7 @@ fn drive(
         let usage = Usage::report(&usage_token(), lines(s.input, s.output))
             .expect("the usage report is within the line limit");
         let fee_count = u64::from(s.billable);
-        let quantities =
-            Posting::from_usage(s.lane, &usage, fee_count, STANDARD_TIER_BP, 0, 0);
+        let quantities = Posting::from_usage(s.lane, &usage, fee_count, STANDARD_TIER_BP, 0, 0);
         let posting = price(&view, &quantities, CurrencyCode::USD)
             .expect("the opening entry covers instant zero and names USD");
 
@@ -195,7 +194,9 @@ fn drive(
         .map(|(row, (input, output, billable))| {
             let l = lines(input, output);
             let spend_micros = derive_spend_micros(
-                view.card_at(0).expect("the opening entry covers instant zero").1,
+                view.card_at(0)
+                    .expect("the opening entry covers instant zero")
+                    .1,
                 [(row.lane.as_str(), l.as_slice())].into_iter(),
                 billable,
                 true,
