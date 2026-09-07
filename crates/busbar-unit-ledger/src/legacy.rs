@@ -155,14 +155,20 @@ pub trait LegacyMigrationSource {
     fn read_head(&self) -> LegacyHead;
 }
 
-/// The opening entries a migration seals: one per bucket, at the named card version.
+/// The opening entries a migration seals: one per bucket, under the opening history entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpeningBalance {
     /// Which bucket.
     pub bucket: String,
     /// What it opens at.
     pub amount: i128,
-    /// Which card version the opening was priced under.
+    /// Which rate-card history entry the opening resolves under.
+    ///
+    /// A migration passes the opening entry's number and nothing else
+    /// ([`crate::migration::OPENING_HISTORY_SEQ`]). The field is not a price and not a claim about
+    /// one: the amount beside it is a QUANTITY the previous release already counted, and the seq is
+    /// how a reader finds the card to price it at. Two readings of one opening at one seq are the
+    /// same money forever, which is the whole reason the number is on the record rather than implied.
     pub rate_card_version: u64,
 }
 

@@ -15,7 +15,7 @@ use crate::legacy::{LegacyHead, LegacyMigrationSource};
 use crate::migration::{
     migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
     MigrationError, MigrationMarker, MigrationRecords, NodeLocalRecords, Outcome,
-    OPENING_CHECKPOINT_SEQ,
+    OPENING_CHECKPOINT_SEQ, OPENING_HISTORY_SEQ,
 };
 use crate::totals::{BucketScope, CapDimension, Totals, TotalsKey, WindowStart};
 
@@ -141,7 +141,7 @@ fn a_serving_deployment() -> SeededRows {
 }
 
 fn sealed(source: &SeededRows, records: &mut NodeLocalRecords) -> Result<Outcome, MigrationError> {
-    migrate(source, records, 1, 1_700_000_000, 3, None)
+    migrate(source, records, 1, 1_700_000_000, None)
 }
 
 fn figures_for(
@@ -372,7 +372,7 @@ fn two_rows_for_one_balance_sum() {
 
 /// The opening entry per bucket, at the card version the migration was told to name.
 #[test]
-fn the_opening_entries_carry_the_named_card_version() {
+fn the_opening_entries_carry_the_opening_history_entry() {
     let source = a_serving_deployment();
     let mut records = NodeLocalRecords::new();
     let Outcome::Sealed(opening) = sealed(&source, &mut records).expect("migrates") else {
@@ -381,8 +381,14 @@ fn the_opening_entries_carry_the_named_card_version() {
     assert_eq!(opening.balances.len(), 2);
     assert_eq!(opening.balances[0].bucket, "team-a");
     assert_eq!(opening.balances[0].amount, 9_000);
-    assert!(opening.balances.iter().all(|b| b.rate_card_version == 3));
-    assert_eq!(opening.marker.rate_card_version, 3);
+    assert!(opening
+        .balances
+        .iter()
+        .all(|b| b.rate_card_version == OPENING_HISTORY_SEQ));
+    assert_eq!(
+        opening.marker.rate_card_version, OPENING_HISTORY_SEQ,
+        "the marker names the ONE history entry a migration seals, not a number a caller chose"
+    );
     assert_eq!(
         opening.marker.cells_read, 7,
         "the marker records how many of the previous release's cells were read"
@@ -487,7 +493,7 @@ fn an_unsigned_opening_writes_no_marker() {
     let source = a_serving_deployment();
     let mut records = NodeLocalRecords::new();
     let err =
-        migrate(&source, &mut records, 1, 1, 1, Some(&NoKey)).expect_err("the signer refuses");
+        migrate(&source, &mut records, 1, 1, Some(&NoKey)).expect_err("the signer refuses");
     assert!(matches!(err, MigrationError::NotSealed(_)));
     assert!(
         !records.is_sealed(),
@@ -501,7 +507,7 @@ fn an_unsigned_opening_writes_no_marker() {
 fn records_that_cannot_be_read_are_an_error_rather_than_a_second_run() {
     let source = a_serving_deployment();
     let mut records = RefusingRecords { on_read: true };
-    let err = migrate(&source, &mut records, 1, 1, 1, None).expect_err("the records refuse");
+    let err = migrate(&source, &mut records, 1, 1, None).expect_err("the records refuse");
     assert!(matches!(err, MigrationError::RecordsUnavailable(_)));
     assert_eq!(
         source.reads(),
@@ -516,7 +522,7 @@ fn records_that_cannot_be_read_are_an_error_rather_than_a_second_run() {
 fn a_marker_that_cannot_be_written_is_an_error() {
     let source = a_serving_deployment();
     let mut records = RefusingRecords { on_read: false };
-    let err = migrate(&source, &mut records, 1, 1, 1, None).expect_err("the records refuse");
+    let err = migrate(&source, &mut records, 1, 1, None).expect_err("the records refuse");
     assert!(matches!(err, MigrationError::RecordsUnavailable(_)));
 }
 

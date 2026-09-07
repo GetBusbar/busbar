@@ -68,6 +68,24 @@ use crate::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey, Wind
 /// the marker, the checkpoint and anything reading either agree by construction.
 pub const OPENING_CHECKPOINT_SEQ: u64 = 0;
 
+/// The number of the rate-card history entry the opening is priced under.
+///
+/// Zero, and NOT an argument. It used to be one: the caller handed a card version in, the marker
+/// recorded it, and nothing anywhere checked that a figure had ever been earned under the card that
+/// number named. That made it an operator's assertion wearing a field's clothes — unfalsifiable, and
+/// therefore unfixable, because there was no card behind the number to compare anything against.
+///
+/// Under a dated history it is not an assertion at all. The migration seals ONE entry, numbered zero,
+/// effective from instant zero and open-ended, holding the card the deployment configured; every
+/// pre-migration figure resolves to that entry because it is the only entry there is. So the number
+/// here is not a claim about which card was in force — it is the identity of the entry that IS the
+/// card, and if the wrong card was sealed the remedy is an amendment over the migration window, which
+/// leaves an adjusting entry rather than silently restating the past.
+///
+/// A caller cannot pass a different one, which is the point: a parameter is a place a mistake can be
+/// made, and there is exactly one entry a migration may open at.
+pub const OPENING_HISTORY_SEQ: u64 = 0;
+
 /// Which of the previous release's two row families a figure was read from.
 ///
 /// It is carried on the figure rather than decided by the reader, because the family is what
@@ -172,7 +190,12 @@ pub struct MigrationMarker {
     pub balances: u64,
     /// How many of the previous release's cells were read to arrive at them.
     pub cells_read: u64,
-    /// Which card version the opening entries were priced under.
+    /// Which rate-card history entry the opening entries are priced under.
+    ///
+    /// Always [`OPENING_HISTORY_SEQ`]. Kept as a `u64` field at its existing offset — the marker's
+    /// 88 bytes and their decode do not move — but it no longer carries an operator's unchecked
+    /// claim about which card a year of history was earned under. It carries the number of the one
+    /// history entry the migration sealed, and that entry holds the card.
     pub rate_card_version: u64,
 }
 
@@ -373,7 +396,6 @@ pub fn migrate(
     records: &mut dyn MigrationRecords,
     node: u64,
     wall: u64,
-    rate_card_version: u64,
     secret: Option<&dyn CheckpointSecret>,
 ) -> Result<Outcome, MigrationError> {
     // The marker first, and the read only if there is no marker. Reading anyway would be harmless
@@ -385,7 +407,7 @@ pub fn migrate(
     let head = source.read_head();
     let read = source.read_figures();
     let totals = opening_totals(&read.figures)?;
-    let balances = opening_balances(&head, rate_card_version);
+    let balances = opening_balances(&head, OPENING_HISTORY_SEQ);
 
     let checkpoint = Checkpoint::seal(
         OPENING_CHECKPOINT_SEQ,
@@ -407,7 +429,7 @@ pub fn migrate(
         body_hash: checkpoint.body_hash,
         balances: checkpoint.totals.len() as u64,
         cells_read: head.cells_read,
-        rate_card_version,
+        rate_card_version: OPENING_HISTORY_SEQ,
     };
     // The marker goes down only over a COMPLETE read. It is the run-once record: written over a
     // degraded read it makes the degradation permanent, because every later boot then returns
