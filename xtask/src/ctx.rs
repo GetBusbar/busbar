@@ -1,0 +1,519 @@
+//! `Ctx` — the shared context every gate reads the tree through, and the overlay that lets a
+//! self-test plant a violation without a scratch copy, a restore step or a hand-maintained
+//! `TOUCHED` list (the fragile half of `scripts/construction-gate/plant.py`). An overlay is *by
+//! construction* per-plant: `with_overlay` returns a new `Ctx` and never mutates the base, so
+//! plants cannot stack and "exactly one FAIL row" can never be produced by a leftover.
+//!
+//! [`WalkSpec`] reproduces the tree's dominant `find` idiom
+//! (`find crates -name '*.rs' -not -path '*/tests/*' | sort`) including the sort, several gates'
+//! outputs being order-sensitive — and including the two things `find` gets wrong:
+//! a missing root is silently dropped, and an empty result reads exactly like a clean tree. Here a
+//! missing root is [`WalkError::MissingRoot`] and a result under [`WalkSpec::min_files`] is
+//! [`WalkError::BelowFloor`]. The floor is not optional decoration; it is the single most repeated
+//! fix in the shell gates it replaces.
+
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::sync::Arc;
+
+use crate::gitp;
+use crate::scan;
+
+/// What an overlay says about one path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Change {
+    /// The file's bytes, as the gate must see them.
+    Content(String),
+    /// The file is absent, whatever the real tree says.
+    Absent,
+}
+
+/// A per-plant view of the tree: path overrides plus canned outputs for the few derived inputs
+/// (today `cargo metadata`) a gate cannot read as a file.
+#[derive(Debug, Clone, Default)]
+pub struct Overlay {
+    files: BTreeMap<PathBuf, Change>,
+    commands: BTreeMap<String, String>,
+}
+
+impl Overlay {
+    pub fn new() -> Overlay {
+        Overlay::default()
+    }
+
+    pub fn set(&mut self, rel: impl AsRef<Path>, content: impl Into<String>) {
+        self.files
+            .insert(rel.as_ref().to_path_buf(), Change::Content(content.into()));
+    }
+
+    pub fn remove(&mut self, rel: impl AsRef<Path>) {
+        self.files
+            .insert(rel.as_ref().to_path_buf(), Change::Absent);
+    }
+
+    /// Override a derived input keyed by a stable string (e.g. `cargo-metadata:xtask/Cargo.toml`).
+    pub fn set_command(&mut self, key: impl Into<String>, stdout: impl Into<String>) {
+        self.commands.insert(key.into(), stdout.into());
+    }
+
+    pub fn paths(&self) -> impl Iterator<Item = &PathBuf> {
+        self.files.keys()
+    }
+}
+
+/// A planted edit. `apply` reads through the [`Ctx`] it is given, so an edit is always expressed
+/// against what the gate would otherwise have seen.
+#[derive(Debug, Clone)]
+pub enum Edit {
+    Append(String),
+    Replace(String),
+    Create(String),
+    Delete,
+}
+
+impl Edit {
+    pub fn apply(&self, cx: &Ctx, rel: impl AsRef<Path>, ov: &mut Overlay) -> Result<(), String> {
+        let rel = rel.as_ref();
+        match self {
+            Edit::Append(s) => {
+                let mut base = cx.read(rel)?;
+                base.push_str(s);
+                ov.set(rel, base);
+            }
+            Edit::Replace(s) => {
+                cx.read(rel)?;
+                ov.set(rel, s.clone());
+            }
+            Edit::Create(s) => {
+                if cx.exists(rel) {
+                    return Err(format!(
+                        "{}: Create planted over a file that already exists",
+                        rel.display()
+                    ));
+                }
+                ov.set(rel, s.clone());
+            }
+            Edit::Delete => {
+                if !cx.exists(rel) {
+                    return Err(format!(
+                        "{}: Delete planted over a file that is already absent",
+                        rel.display()
+                    ));
+                }
+                ov.remove(rel);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// A file the walk yielded.
+#[derive(Debug, Clone)]
+pub struct SourceFile {
+    /// Path relative to the workspace root, `/`-separated in its string form.
+    pub rel: PathBuf,
+    pub abs: PathBuf,
+    pub text: String,
+}
+
+impl SourceFile {
+    pub fn rel_str(&self) -> String {
+        self.rel.to_string_lossy().replace('\\', "/")
+    }
+
+    /// The file's production lines, through the one scanner.
+    pub fn production_lines(&self) -> Vec<(usize, String)> {
+        scan::production_lines(&self.text)
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WalkSpec {
+    roots: Vec<String>,
+    ext: Option<String>,
+    exclude: Vec<String>,
+    min_files: usize,
+}
+
+impl WalkSpec {
+    pub fn new<I, S>(roots: I) -> WalkSpec
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        WalkSpec {
+            roots: roots.into_iter().map(Into::into).collect(),
+            ..WalkSpec::default()
+        }
+    }
+
+    pub fn ext(mut self, ext: impl Into<String>) -> WalkSpec {
+        self.ext = Some(ext.into());
+        self
+    }
+
+    /// Path fragments matched against the `/`-prefixed relative path, the `-not -path '*/tests/*'`
+    /// half of the idiom.
+    pub fn exclude<I, S>(mut self, fragments: I) -> WalkSpec
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.exclude.extend(fragments.into_iter().map(Into::into));
+        self
+    }
+
+    /// The denominator floor. A walk that yields fewer files than this is an error, not a pass.
+    pub fn min_files(mut self, n: usize) -> WalkSpec {
+        self.min_files = n;
+        self
+    }
+
+    pub fn roots(&self) -> &[String] {
+        &self.roots
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum WalkError {
+    MissingRoot {
+        root: String,
+    },
+    BelowFloor {
+        found: usize,
+        floor: usize,
+        roots: Vec<String>,
+    },
+    Io {
+        path: PathBuf,
+        message: String,
+    },
+}
+
+impl fmt::Display for WalkError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            WalkError::MissingRoot { root } => write!(
+                f,
+                "walk root `{root}` does not exist. `find` drops a missing root silently and then \
+                 scans nothing of it, and zero is the passing answer to every ban — so a root that \
+                 moved is an error here, never a narrower scan."
+            ),
+            WalkError::BelowFloor {
+                found,
+                floor,
+                roots,
+            } => write!(
+                f,
+                "walk over [{}] yielded {found} file(s), under its floor of {floor}. An empty or \
+                 shrunken scan reads exactly like a clean tree; it is not one.",
+                roots.join(", ")
+            ),
+            WalkError::Io { path, message } => write!(f, "walk {}: {message}", path.display()),
+        }
+    }
+}
+
+/// Environment the gates read, captured once so a gate never reaches for `std::env` itself.
+#[derive(Debug, Clone, Default)]
+pub struct Env {
+    pub github_step_summary: Option<PathBuf>,
+    pub runner_temp: Option<PathBuf>,
+    pub report_only: bool,
+}
+
+impl Env {
+    fn capture() -> Env {
+        Env {
+            github_step_summary: std::env::var_os("GITHUB_STEP_SUMMARY").map(PathBuf::from),
+            runner_temp: std::env::var_os("RUNNER_TEMP").map(PathBuf::from),
+            report_only: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct Ctx {
+    root: PathBuf,
+    overlay: Option<Arc<Overlay>>,
+    scratch: PathBuf,
+    env: Env,
+}
+
+impl Ctx {
+    /// Open a context over `root`, proving the scratch directory writable BY WRITING A BYTE rather
+    /// than by asking the filesystem whether it thinks it is writable.
+    pub fn new(root: impl Into<PathBuf>) -> Result<Ctx, String> {
+        let root = root.into();
+        let scratch = root.join(".fix").join("xtask");
+        std::fs::create_dir_all(&scratch)
+            .map_err(|e| format!("scratch {}: {e}", scratch.display()))?;
+        // A UNIQUE probe per opener: two contexts opening at once must not race each other's
+        // cleanup and report an unwritable scratch dir that is perfectly writable.
+        let probe = scratch.join(format!(
+            ".writable-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(&probe, b"x").map_err(|e| format!("scratch {}: {e}", probe.display()))?;
+        std::fs::remove_file(&probe).map_err(|e| format!("scratch {}: {e}", probe.display()))?;
+        Ok(Ctx {
+            root,
+            overlay: None,
+            scratch,
+            env: Env::capture(),
+        })
+    }
+
+    /// A context over `root` whose scratch dir is somewhere else — for driving a gate over a
+    /// fixture tree without writing a byte into it.
+    pub fn at(root: impl Into<PathBuf>, scratch: impl Into<PathBuf>) -> Result<Ctx, String> {
+        let scratch = scratch.into();
+        std::fs::create_dir_all(&scratch)
+            .map_err(|e| format!("scratch {}: {e}", scratch.display()))?;
+        Ok(Ctx {
+            root: root.into(),
+            overlay: None,
+            scratch,
+            env: Env::capture(),
+        })
+    }
+
+    /// The workspace root, from `xtask/Cargo.toml`'s own directory's parent.
+    pub fn workspace() -> Result<Ctx, String> {
+        Ctx::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .ok_or("xtask/Cargo.toml has no parent directory")?
+                .to_path_buf(),
+        )
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn scratch(&self) -> &Path {
+        &self.scratch
+    }
+
+    pub fn env(&self) -> &Env {
+        &self.env
+    }
+
+    pub fn report_only(mut self, yes: bool) -> Ctx {
+        self.env.report_only = yes;
+        self
+    }
+
+    /// A FRESH context with this overlay. The base is untouched.
+    pub fn with_overlay(&self, overlay: Overlay) -> Ctx {
+        Ctx {
+            overlay: Some(Arc::new(overlay)),
+            ..self.clone()
+        }
+    }
+
+    pub fn overlay(&self) -> Option<&Overlay> {
+        self.overlay.as_deref()
+    }
+
+    pub fn abs(&self, rel: impl AsRef<Path>) -> PathBuf {
+        self.root.join(rel)
+    }
+
+    /// Read a file, consulting the overlay first.
+    pub fn read(&self, rel: impl AsRef<Path>) -> Result<String, String> {
+        let rel = rel.as_ref();
+        if let Some(ov) = self.overlay() {
+            match ov.files.get(rel) {
+                Some(Change::Content(c)) => return Ok(c.clone()),
+                Some(Change::Absent) => {
+                    return Err(format!("{}: absent (overlay)", rel.display()));
+                }
+                None => {}
+            }
+        }
+        std::fs::read_to_string(self.abs(rel)).map_err(|e| format!("{}: {e}", rel.display()))
+    }
+
+    pub fn exists(&self, rel: impl AsRef<Path>) -> bool {
+        let rel = rel.as_ref();
+        if let Some(ov) = self.overlay() {
+            match ov.files.get(rel) {
+                Some(Change::Content(_)) => return true,
+                Some(Change::Absent) => return false,
+                None => {}
+            }
+        }
+        self.abs(rel).exists()
+    }
+
+    /// The repo walk. Sorted, floor-checked, missing-root-checked, overlay-aware.
+    pub fn walk(&self, spec: &WalkSpec) -> Result<Vec<SourceFile>, WalkError> {
+        let mut rels: Vec<PathBuf> = Vec::new();
+        for root in &spec.roots {
+            let abs = self.abs(root);
+            let overlay_adds_it = self
+                .overlay()
+                .map(|ov| {
+                    ov.paths()
+                        .any(|p| p.to_string_lossy().starts_with(&format!("{root}/")))
+                })
+                .unwrap_or(false);
+            if !abs.exists() && !overlay_adds_it {
+                return Err(WalkError::MissingRoot { root: root.clone() });
+            }
+            collect(&abs, &self.root, &mut rels)?;
+        }
+
+        if let Some(ov) = self.overlay() {
+            for (path, change) in &ov.files {
+                let s = path.to_string_lossy().replace('\\', "/");
+                let under_a_root = spec
+                    .roots
+                    .iter()
+                    .any(|r| s.starts_with(&format!("{r}/")) || &s == r);
+                match change {
+                    Change::Absent => rels.retain(|p| p != path),
+                    Change::Content(_) => {
+                        if under_a_root && !rels.contains(path) {
+                            rels.push(path.clone());
+                        }
+                    }
+                }
+            }
+        }
+
+        let mut out = Vec::new();
+        for rel in rels {
+            let s = rel.to_string_lossy().replace('\\', "/");
+            if let Some(ext) = &spec.ext {
+                if !s.ends_with(&format!(".{ext}")) {
+                    continue;
+                }
+            }
+            let probe = format!("/{s}");
+            if spec
+                .exclude
+                .iter()
+                .any(|frag| probe.contains(frag.as_str()))
+            {
+                continue;
+            }
+            let text = self.read(&rel).map_err(|message| WalkError::Io {
+                path: rel.clone(),
+                message,
+            })?;
+            out.push(SourceFile {
+                abs: self.abs(&rel),
+                rel,
+                text,
+            });
+        }
+        out.sort_by_key(SourceFile::rel_str);
+
+        if out.len() < spec.min_files {
+            return Err(WalkError::BelowFloor {
+                found: out.len(),
+                floor: spec.min_files,
+                roots: spec.roots.clone(),
+            });
+        }
+        Ok(out)
+    }
+
+    /// Write the overlaid view of `paths` into `dest`, for the gates not yet converted that must
+    /// still shell out over a tree on disk.
+    pub fn materialize(&self, dest: &Path, paths: &[&str]) -> Result<(), String> {
+        for rel in paths {
+            let content = self.read(rel)?;
+            let target = dest.join(rel);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("{}: {e}", parent.display()))?;
+            }
+            std::fs::write(&target, content).map_err(|e| format!("{}: {e}", target.display()))?;
+        }
+        Ok(())
+    }
+
+    /// `git`, as a process, always `-C <root>`, never a `cd`.
+    pub fn git(&self, args: &[&str]) -> Result<String, String> {
+        gitp::git(&self.root, args)
+    }
+
+    pub fn git_lines(&self, args: &[&str]) -> Result<Vec<String>, String> {
+        gitp::git_lines(&self.root, args)
+    }
+
+    /// Run a command and REFUSE to hand back stdout on a non-zero status. The shell's
+    /// `h=$(scan "$f") || true` discarded its producer's exit status, so a broken scanner produced
+    /// empty output for every file and read as "no findings" gate-wide.
+    pub fn run_checked(&self, program: &str, args: &[String]) -> Result<String, String> {
+        let out = Command::new(program)
+            .args(args)
+            .current_dir(&self.root)
+            .output()
+            .map_err(|e| format!("{program}: {e}"))?;
+        if !out.status.success() {
+            return Err(format!(
+                "{program} {} exited {}: {}",
+                args.join(" "),
+                out.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&out.stderr).trim()
+            ));
+        }
+        String::from_utf8(out.stdout).map_err(|e| format!("{program}: non-utf8 stdout: {e}"))
+    }
+
+    /// `cargo metadata` for one manifest, overlay-overridable so a self-test can plant a dependency
+    /// closure without a fixture workspace.
+    pub fn cargo_metadata(&self, manifest_rel: &str) -> Result<String, String> {
+        let key = format!("cargo-metadata:{manifest_rel}");
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return Ok(out.clone());
+            }
+        }
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        self.run_checked(
+            &cargo,
+            &[
+                "metadata".to_string(),
+                "--format-version".to_string(),
+                "1".to_string(),
+                "--manifest-path".to_string(),
+                self.abs(manifest_rel).display().to_string(),
+            ],
+        )
+    }
+}
+
+fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkError> {
+    if dir.is_file() {
+        if let Ok(rel) = dir.strip_prefix(root) {
+            out.push(rel.to_path_buf());
+        }
+        return Ok(());
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Ok(());
+    };
+    let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+    entries.sort();
+    for path in entries {
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name == "target" || name == ".git" {
+            continue;
+        }
+        if path.is_dir() {
+            collect(&path, root, out)?;
+        } else if let Ok(rel) = path.strip_prefix(root) {
+            out.push(rel.to_path_buf());
+        }
+    }
+    Ok(())
+}

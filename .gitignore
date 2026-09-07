@@ -15,6 +15,11 @@ target/
 # a working tree the workspace is judged from.
 /.ledger-work/
 
+# `cargo xtask`'s scratch directory. Ctx proves it writable by writing a byte into it, the gates
+# that still shell out write their ledger legs here, and the selftests materialise overlaid trees
+# here. Never a working tree the workspace is judged from.
+/.fix/
+
 # NOTE: Cargo.lock IS committed for binaries (busbar is a bin) — do not ignore it.
 
 # Local runtime config & secrets (real config is mounted; keys come from env)
