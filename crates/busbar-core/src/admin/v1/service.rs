@@ -153,7 +153,9 @@ fn usage_card_history() -> Option<&'static std::sync::Arc<dyn UsageCardHistory>>
 /// resolves to the OPENING entry, which is correct rather than merely safe: the opening entry IS
 /// the card those tokens were earned under, by definition.
 fn accrued_under(pricing_version: &str) -> u64 {
-    pricing_version.parse::<u64>().unwrap_or(OPENING_HISTORY_SEQ)
+    pricing_version
+        .parse::<u64>()
+        .unwrap_or(OPENING_HISTORY_SEQ)
 }
 
 /// The history's opening entry: effective from the beginning of time, with no end.
@@ -208,7 +210,11 @@ pub(crate) fn card_for_row(
 /// by the caller — not the card the node happens to be running when somebody reads. The arithmetic
 /// is unchanged and is deliberately single-sited: a second copy of it against a second card is how
 /// a request comes to be judged at one rate and billed at another.
-pub(crate) fn derive_spend_micros_row(cost: &crate::cost::CostModel, model: &str, b: &UsageBreakdown) -> i64 {
+pub(crate) fn derive_spend_micros_row(
+    cost: &crate::cost::CostModel,
+    model: &str,
+    b: &UsageBreakdown,
+) -> i64 {
     // Project the metering row's flat tier fields (its OWN JSON-contract names, unchanged) onto the
     // name-keyed unit map the pricer now consumes. `tokens_cache_creation` is the row's field name;
     // it maps onto the canonical `cache_write` unit key.
