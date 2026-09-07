@@ -22,6 +22,7 @@ pub mod blocking_ffi;
 pub mod denylist_gate;
 pub mod duplex_ws_default_edge;
 pub mod kernel_token_wire_purity;
+pub mod no_deferral;
 pub mod no_self_filed_issues;
 pub mod plane_abi_neutrality;
 pub mod plane_transport_neutrality;
@@ -360,6 +361,20 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(plane_abi_neutrality::PlaneAbiNeutralityGate),
         summary:
             "the plane ABI's hot lane is derived from the taxonomy, not named after a protocol",
+    },
+    Registration {
+        name: "no-deferral",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(no_deferral::NoDeferralGate::check()),
+        summary: "every deferral marker in shipped source is a floor-checked, expiring waiver",
+    },
+    Registration {
+        name: "no-deferral-strict-done",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(no_deferral::NoDeferralGate::strict_done()),
+        summary: "the same, plus: the only surviving waivers are the permanent hot/* fixtures",
     },
     Registration {
         name: "duplex-ws-default-edge",
