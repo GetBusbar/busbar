@@ -4394,6 +4394,86 @@
    "rounds": []
   },
   {
+   "id": ".githooks",
+   "kind": "instrument",
+   "paths": [
+    ".githooks"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github/scripts",
+   "kind": "instrument",
+   "paths": [
+    ".github/scripts"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "assets/readme",
+   "kind": "instrument",
+   "paths": [
+    "assets/readme"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "examples",
+   "kind": "instrument",
+   "paths": [
+    "examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github",
+   "kind": "instrument",
+   "paths": [
+    ".github"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    ".github/workflows",
+    ".github/scripts",
+    ".github/ISSUE_TEMPLATE"
+   ]
+  },
+  {
    "id": "testing/a2a-governance",
    "kind": "instrument",
    "paths": [
