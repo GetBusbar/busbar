@@ -71,13 +71,33 @@ _hr_files() {  # print, one per line, every file whose contents decide what gets
   # NAMES ARE HASHED ALONGSIDE THE BYTES. Concatenated contents alone cannot see a file being added
   # or removed (an empty new fixture, a deleted script) — and both change what gets recorded.
   # LC_ALL=C fixes the glob order, or the same tree hashes differently under a different locale.
+  #   FOUR MORE DECIDE THE VERDICT, NOT THE RECORDING, AND WERE OUTSIDE THE SET. The rule this file
+  #   states is "what gets recorded AND HOW IT IS COMPARED" — it is that second half that puts
+  #   accepted-differences.json and owed-baseline.txt in the set, since neither is executed while
+  #   recording and both change the verdict on identical bytes. By the same argument:
+  #     replay.sh                 the comparison DRIVER: the owed-baseline regression check, the
+  #                               golden-binary provenance gate and the skew plumbing all live here,
+  #                               so an edit to it gives the same two recordings a different verdict.
+  #     ../fleet-fixtures/verdict.sh
+  #                               its own header: "This is the ONLY place the gate decides anything."
+  #                               lib.sh was in the set for WRITING a ledger row; the file that turns
+  #                               those rows into red or green was not.
+  #     accepted-gaps.json        the register that forgives an owed-baseline regression with an
+  #                               owner and a rationale — the same shape, and the same power, as
+  #                               accepted-differences.json beside it.
+  #     harness-rev.sh            the definition of the set itself. Dropping a file from the list
+  #                               moved the hash only because that file's bytes left it; changing how
+  #                               the list is built or hashed did not move it at all.
+  #   rigs-baseline.json is deliberately NOT here: it is the sign-off floor of the SEPARATE plane-rigs
+  #   gate (rigs-ledger.sh), which has its own verdict and never reads an LLM-plane recording.
   local d="$_hr_here" f
   (
     LC_ALL=C
     for f in "$d/cells.json" "$d"/*.py "$d/oracle-config.sh" "$d/record.sh" "$d/renormalize.sh" \
+             "$d/replay.sh" "$d/harness-rev.sh" \
              "$d"/scripts/* "$d"/fixtures/*.json "$d/golden-digests.tsv" "$d/plugin-digests.tsv" \
-             "$d/accepted-differences.json" "$d/owed-baseline.txt" \
-             "$d/../fleet-fixtures/lib.sh"; do
+             "$d/accepted-differences.json" "$d/accepted-gaps.json" "$d/owed-baseline.txt" \
+             "$d/../fleet-fixtures/lib.sh" "$d/../fleet-fixtures/verdict.sh"; do
       [ -f "$f" ] || continue
       printf '%s\n' "$f"
     done
