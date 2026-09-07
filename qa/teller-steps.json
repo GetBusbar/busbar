@@ -76,23 +76,23 @@
   "root_legs": {
     "root-llm": {
       "plane": "llm",
-      "file": "crates/busbar/src/root/units_llm.rs"
+      "file": "crates/busbar/src/root/tests/units_llm.rs"
     },
     "root-mcp": {
       "plane": "mcp",
-      "file": "crates/busbar/src/root/units_mcp.rs"
+      "file": "crates/busbar/src/root/tests/units_mcp.rs"
     },
     "root-a2a": {
       "plane": "a2a",
-      "file": "crates/busbar/src/root/units_a2a.rs"
+      "file": "crates/busbar/src/root/tests/units_a2a.rs"
     },
     "root-voice": {
       "plane": "voice",
-      "file": "crates/busbar/src/root/units_voice.rs"
+      "file": "crates/busbar/src/root/tests/units_voice.rs"
     },
     "root-admin": {
       "plane": "admin",
-      "file": "crates/busbar/src/root/units_admin.rs"
+      "file": "crates/busbar/src/root/tests/units_admin.rs"
     }
   },
   "matrix": {
@@ -104,7 +104,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::every_fixture_reaches_the_end_it_names",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::every_fixture_reaches_the_end_it_names",
           "note": "the Malformed fixture is the arrival step's own parse refusal, taken before a model exists and before anything is accounted"
         }
       },
@@ -115,7 +115,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_decodes_every_dialect_the_way_the_shipped_plane_decodes_it",
           "note": "each of the six body-model dialects driven through run_unit in four shapes and compared with the shipped entry point: a named model reaches the door, a body with no model is the ladder's own 400, a malformed body is step 0's parse refusal, and a verb the dialect declares nothing for is the endpoint's own 404"
         }
       },
@@ -126,7 +126,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_attributes_the_identity_the_door_resolved_and_invents_none",
           "note": "three credentials through the deployment's own door (EngineHost::identity_admit -- the configured chain plus the one verdict resolution the HTTP middleware runs): the live bearer is admitted and the hold the loop opens names the key it resolved, while a bearer this deployment never minted and one whose exp has passed are both refused before the plane, and the shape the middleware leaves when it binds no key settles on the anonymous actor rather than on the key that was turned away"
         }
       },
@@ -137,7 +137,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::every_fixture_reaches_the_end_it_names",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::every_fixture_reaches_the_end_it_names",
           "note": "the PoolAcl fixture: a key that may not reach the pool it named, refused by the pre-admission guard before anything is priced"
         }
       },
@@ -148,7 +148,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_changes_nothing",
           "note": "the 1.6.0-native Before(Approve) seat driven both ways through run_unit: the mount's own seat list is asserted empty (the migrated hooks fire after the door and a veto moved in front of a charge would change what is billed), a seat that does not veto is consulted and the unit still answers what the shipped entry point answers, and a seat that vetoes stops the unit at approve -- nothing charged, no metering row, the upstream never dialled, one link on the chain and the plane's own permission refusal in the caller's dialect"
         }
       },
@@ -159,7 +159,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
           "note": "the OverBudget fixture: the door refuses, and the money the store holds afterwards is compared against the shipped plane's"
         }
       },
@@ -170,7 +170,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_matches_the_shipped_entry_point_on_every_fixture",
           "note": "the walk the route step drives, compared byte for byte with the shipped entry point on all six fixtures"
         }
       },
@@ -181,7 +181,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::the_loop_leaves_the_money_where_the_shipped_plane_leaves_it",
           "note": "the delivered fixtures' usage and spend, compared field by field against the shipped plane's own"
         }
       },
@@ -192,7 +192,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain",
           "note": "one unit over the loop seals exactly one link, with the action and outcome the shipped plane seals"
         }
       },
@@ -203,7 +203,7 @@
         "root": {
           "state": "proven",
           "leg": "root-llm",
-          "test": "crates/busbar/src/root/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain",
+          "test": "crates/busbar/src/root/tests/units_llm.rs::one_unit_leaves_exactly_one_link_on_the_chain",
           "note": "the same cell is the exit assertion: exactly one link, never two, so the exit posts once"
         }
       }
@@ -216,7 +216,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::the_arrival_facts_are_the_stack_the_claim_was_matched_on",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::the_arrival_facts_are_the_stack_the_claim_was_matched_on",
           "note": "the gate stays the kernel's, but the handover is this plane's and it is driven: the three claimed surfaces (http, sse over it, stdio) carry the transport's record forward unchanged, a claim naming a transport no claim of this plane makes is refused HandoffMismatch, and so is a claim whose transport is below rather than at the top of the composed chain -- an sse stack matched as a document request. Every later step resolves against these bytes, so a record handed on under the wrong claim authenticates one surface and answers another"
         }
       },
@@ -227,7 +227,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::an_envelope_resolves_to_an_operation_and_a_malformed_one_is_refused",
           "note": "a real frame through the plane's own ingress decoder, over a real arena: a tools/call envelope resolves to the method table's own operation class and the step proceeds carrying it; five malformed shapes (wrong version, non-string method, an identifier that is neither string nor number, no version member, a method the table never named) each refuse at the decode step with decode_failed; an unrecognised notice is DROPPED rather than refused, because a refusal is an answer and this protocol forbids answering a message with no identifier. The metadata block is read as the depth-1 walk it is -- the block resolves by pointer and its separator-carrying member names do not, which is why the block is located by pointer and its members read by name out of it"
         }
       },
@@ -238,7 +238,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::the_bound_form_authenticates_through_the_nodes_own_seams",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::the_bound_form_authenticates_through_the_nodes_own_seams",
           "note": "the bound form reaches the node's own auth seams and the signed key it resolves is the directory's, so a dispatch cannot hand three absences and verify nothing"
         }
       },
@@ -249,7 +249,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::an_explicit_empty_scope_list_denies_every_pool",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::an_explicit_empty_scope_list_denies_every_pool",
           "note": "a key scoped to nothing is refused before the door draws anything -- the explicit-empty-list rule the rig's verify cell turns on"
         }
       },
@@ -260,7 +260,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::a_read_only_grant_lists_and_does_not_call",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::a_read_only_grant_lists_and_does_not_call",
           "note": "THE required_scope NARROWING, driven through the root's own approve(): a read-only grant lists and is refused a tools/call. Its two companions on this leg are every_operation_class_has_a_required_scope (no class authorized by silence) and silence_is_a_refusal"
         }
       },
@@ -271,7 +271,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::a_call_is_estimated_flat_plus_its_document",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::a_call_is_estimated_flat_plus_its_document",
           "note": "what the door draws for a call: the flat fee plus its request document, and the document alone for everything else"
         }
       },
@@ -282,7 +282,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::every_planned_kind_classifies",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::every_planned_kind_classifies",
           "note": "every kind this plane's plans name classifies to something the root can service, and no plan yields the unsupported arm"
         }
       },
@@ -293,7 +293,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::a_completed_call_is_counted_once",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::a_completed_call_is_counted_once",
           "note": "the metering binding posts a completed call under the class the plane declares, once"
         }
       },
@@ -304,7 +304,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::the_audit_strings_are_the_codecs_own",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::the_audit_strings_are_the_codecs_own",
           "note": "the action and the resource prefix the chain records are read out of the codec's own source, so a rename there is red here"
         }
       },
@@ -315,7 +315,7 @@
         "root": {
           "state": "proven",
           "leg": "root-mcp",
-          "test": "crates/busbar/src/root/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry",
+          "test": "crates/busbar/src/root/tests/units_mcp.rs::only_a_served_call_leaves_an_administrative_entry",
           "note": "one served call leaves exactly one administrative entry and nothing else leaves one at all -- one terminal per unit"
         }
       }
@@ -328,7 +328,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::the_arrival_carries_the_transports_own_record_and_a_full_table_refuses_at_arrival",
           "note": "both halves of what Arrival decides for a data-listener leg: the gate refuses an a2a unit at the in-flight cap with the arrival hold handed back, and the step carries the transport's own composed chain forward rather than re-deriving one"
         }
       },
@@ -339,7 +339,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::every_operation_class_is_declared",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::every_operation_class_is_declared",
           "note": "THE decode OP CLASS: the step maps a body into this plane's declared operation classes and refuses with DecodeFailed when it names none. This cell pins that set -- every class the plane declares is real and reachable, so a class outside it cannot be produced. What it does NOT do is push a malformed envelope through decode() itself; that half stays the rig column's \"none\""
         }
       },
@@ -350,7 +350,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_bad_credential_is_refused_before_verify_through_the_nodes_own_seams",
           "note": "a bad credential refused before Verify is ever reached, through the node's own three auth seams: a forged credential is unauthenticated, a burned one is revoked (the revocation view is asked because an unbound a2a unit is a new unit), and another plane's audience does not open this one. Zero egress is structural and asserted as such -- the fixture carries an Upstream destination, so every refusal is a dial that did not happen. The rig column's AUTH-SERVER-002 stays the separately-reported evidence it always was"
         }
       },
@@ -361,7 +361,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_metadata_endpoint_is_refused_even_when_private_addressing_is_allowed",
           "note": "a destination this deployment's credential could never be scoped to reach, refused at the guard before Admit draws anything -- and refused whatever the deployment opted into"
         }
       },
@@ -372,7 +372,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::a_read_only_grant_does_not_reach_a_send",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_read_only_grant_does_not_reach_a_send",
           "note": "the required scope from (claim, op_class): a read-only grant reaches a projection and is refused a send"
         }
       },
@@ -383,7 +383,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::only_a_hop_to_an_agent_carries_the_fee",
           "note": "what the door draws: a draft whose plan reaches an agent carries the fee, one that only touches records does not"
         }
       },
@@ -394,7 +394,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::a_plan_runs_its_record_legs_in_order_and_skips_the_hop",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_plan_runs_its_record_legs_in_order_and_skips_the_hop",
           "note": "the route step's plan runs its legs in the plan's own order and leaves the upstream hop alone -- the ordering an out-of-order run would break"
         }
       },
@@ -405,7 +405,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::a_record_leg_is_not_priced_on_a_lane",
           "note": "a record leg carries no lane and so never enters the sealed set; the priced axis is exactly the hops"
         }
       },
@@ -416,7 +416,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::the_audit_action_is_the_word_the_rig_reads",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::the_audit_action_is_the_word_the_rig_reads",
           "note": "the action the chain records is pinned against the word the gating rig reads, so the two cannot drift apart"
         }
       },
@@ -427,7 +427,7 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/units_a2a.rs::every_ending_has_an_audited_spelling",
+          "test": "crates/busbar/src/root/tests/units_a2a.rs::every_ending_has_an_audited_spelling",
           "note": "the four endings a unit can reach map one for one onto the audit unit's own four -- every terminal has exactly one spelling"
         }
       }
@@ -440,7 +440,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::the_arrival_chain_records_both_composed_layers",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::the_arrival_chain_records_both_composed_layers",
           "note": "a session arrives on WebSocket over HTTP and the chain names both layers; the under-reported chain of one is what composition exists to fix"
         }
       },
@@ -451,7 +451,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::a_client_event_opens_a_turn_and_a_later_one_relays_onto_it",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::a_client_event_opens_a_turn_and_a_later_one_relays_onto_it",
           "note": "the dialect is settled at the door, but the per-frame read is not: a first client event on a realtime session opens a turn and mints the correlation, and the class the step carries is read off the plane's own answer rather than restated, so a shape that drifted from the plane's vocabulary goes red rather than pricing under a name nothing declares (every shape's class is asserted to be one the plane DECLARES). A tool result on the same session relays onto that turn's correlation instead of opening a second unit, which is what one-open-unit-per-direction means. A telephony-carried session handed bytes that are not that carrier's shape is refused Malformed at the step that read them, so no unit exists to have been given a class"
         }
       },
@@ -462,7 +462,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::a_credential_is_resolved_against_this_planes_own_audience",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::a_credential_is_resolved_against_this_planes_own_audience",
           "note": "the session-opening unit's credential, through a closed chain whose only arm is the node's own signed-key directory, so the arm is the one thing that can open the door. Three answers: a key minted for this plane admits and carries the key's own id (which is what the audit row and the settlement attribute to); a credential the directory does not hold, and no credential at all, are both refused unauthenticated at the authenticate step before the unit reaches a destination; and a REAL, unexpired key minted for another plane's audience is refused here at this plane's ingress rather than carried to an upstream that would have honoured it -- an audience declared and never checked is not an audience. The rig's provider-credential leg stays the outside evidence"
         }
       },
@@ -473,7 +473,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::each_dialect_dials_its_own_composed_endpoint",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::each_dialect_dials_its_own_composed_endpoint",
           "note": "each dialect reaches its own composed provider endpoint and neither reaches the other's -- a destination this session was never scoped to reach"
         }
       },
@@ -484,7 +484,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::an_undeclared_operation_class_is_refused_before_the_door",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::an_undeclared_operation_class_is_refused_before_the_door",
           "note": "a turn on an undeclared class is refused at approve, driven through the loop rather than asserted at the table: authorization by omission is what the empty answer prevents"
         }
       },
@@ -495,7 +495,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::a_detached_node_refuses_the_session_at_the_door",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::a_detached_node_refuses_the_session_at_the_door",
           "note": "the reservation IS the budget: a node that cannot take the lease refuses at the door rather than opening a session that cannot pay"
         }
       },
@@ -506,7 +506,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::a_refused_dial_ends_the_opening_unit",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::a_refused_dial_ends_the_opening_unit",
           "note": "a guard-refused or breaker-open dial ends the opening unit rather than half-opening a session -- the down-lane-ends-terminal outcome, in voice terms"
         }
       },
@@ -517,7 +517,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::a_turn_meters_the_classes_the_plane_declares_with_text_split_by_direction",
           "note": "a turn settles against exactly what it reports, with the two text halves on their own classes rather than summed at the input rate"
         }
       },
@@ -528,7 +528,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::the_opening_unit_seals_under_the_declared_operation_class",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::the_opening_unit_seals_under_the_declared_operation_class",
           "note": "every unit of a session leaves a record, the opening one included, under the operation class the plane declared"
         }
       },
@@ -539,7 +539,7 @@
         "root": {
           "state": "proven",
           "leg": "root-voice",
-          "test": "crates/busbar/src/root/units_voice.rs::unit_zero_runs_every_station_and_settles_exactly_once",
+          "test": "crates/busbar/src/root/tests/units_voice.rs::unit_zero_runs_every_station_and_settles_exactly_once",
           "note": "the whole session-bound path as one unit, settling exactly once -- the exit path takes the hold and there is no second taker"
         }
       }
@@ -552,7 +552,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at",
           "note": "the exemption is what Arrival decides for this leg: on a table with no room at all the admin unit still enters and its step proceeds under the admin transport, while the same table refuses a data-listener unit at Arrival with InFlightCap"
         }
       },
@@ -563,7 +563,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::every_row_the_plane_decodes_names_a_verb_the_unit_knows",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::every_row_the_plane_decodes_names_a_verb_the_unit_knows",
           "note": "every row the plane decodes to names a verb the executing unit knows, so the decode step cannot bind an operation to nothing"
         }
       },
@@ -574,7 +574,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::a_revoked_credential_is_refused_before_the_operation_runs",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::a_revoked_credential_is_refused_before_the_operation_runs",
           "note": "a revoked credential is refused on the root leg and refused BEFORE the operation runs, with the admitted control beside it"
         }
       },
@@ -585,7 +585,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere_priced",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::a_verb_the_table_never_named_has_nowhere_to_go_and_a_resolved_one_has_nowhere_priced",
           "note": "the admin-tokens principal is exempt and full, so there is no destination scope to cap -- but the step still answers two things and both are driven: a path the verb table never named is refused NoDestination before Admit draws a bucket, and a resolved verb proceeds with an EMPTY verified set, which is the fact the money path reads to post no fee and draw no request slot. A verify that sealed a destination would put every admin request on the priced axis"
         }
       },
@@ -596,7 +596,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::the_two_spellings_of_the_scope_split_agree",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::the_two_spellings_of_the_scope_split_agree",
           "note": "the required scope from (claim, op_class): the two spellings of the read-only/full split are one split, so a read-only credential is not admitted to a mutation"
         }
       },
@@ -607,7 +607,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::the_rate_class_is_the_shipped_table_and_not_the_default",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::the_rate_class_is_the_shipped_table_and_not_the_default",
           "note": "the rate class comes off the shipped table rather than the blast-radius-blind default, so a config mutation is limited at the config budget"
         }
       },
@@ -618,7 +618,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::only_the_two_minting_verbs_are_reached_through_the_seam_directly",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::only_the_two_minting_verbs_are_reached_through_the_seam_directly",
           "note": "route is the one place that chooses between the unit's general execution path and its two dedicated minting methods, and the choice is exactly those two verbs"
         }
       },
@@ -629,7 +629,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::an_admin_unit_settles_at_zero_requests_and_zero_fee",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::an_admin_unit_settles_at_zero_requests_and_zero_fee",
           "note": "what the exit path settles for an admin unit: no request slot and no flat fee, whatever the deployment configured the fee to be"
         }
       },
@@ -640,7 +640,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::one_admin_unit_seals_exactly_one_entry_and_a_read_seals_none",
           "note": "the same chain the rig column reads from outside, read from the step that writes it: a mutating verb appends exactly one entry under its own name and the applied outcome, a read appends none because the chain records what changed, and a unit refused before Admit still appends one under the rejected outcome. The chain is verified after each, so the entries are linked and not merely counted"
         }
       },
@@ -651,7 +651,7 @@
         "root": {
           "state": "proven",
           "leg": "root-admin",
-          "test": "crates/busbar/src/root/units_admin.rs::a_replayed_idempotency_key_answers_the_first_answers_bytes",
+          "test": "crates/busbar/src/root/tests/units_admin.rs::a_replayed_idempotency_key_answers_the_first_answers_bytes",
           "note": "a replayed idempotency key answers with the FIRST answer's bytes through the root's own store adapter -- one terminal per mutation, never doubled"
         }
       }
