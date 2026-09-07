@@ -512,16 +512,34 @@ def rule_claimed_path_has_arm(tree, cfg):
     c = cfg["rules"]["claimed-path-has-arm"]
     open_rx = re.compile(c["open_claim_pattern"])
     rows = []
-    claim_files = sorted(rel for rel in tree.files
-                         if fnmatch.fnmatch(rel.replace(os.sep, "/"), c["claims_glob"]))
-    if not claim_files:
-        return [rules.row("claimed-path-has-arm", True,
+    # ONE ROW PER DECLARED PLANE, from the census — not one per claims file found on disk. The owed
+    # id set is built from the same list (see expected_ids), and a rule whose rows are enumerated by
+    # what it happened to find can never owe a row for what it did not: a claims module renamed out
+    # from under `claims_glob` would simply stop producing its row, and a row nobody owes is a row
+    # nobody notices is missing. A declared plane whose claims module is absent is UNPROVEN, which is
+    # the same answer this gate gives everywhere else its subject goes away.
+    found = {tree.crate_of(rel): rel for rel in sorted(tree.files)
+             if fnmatch.fnmatch(rel.replace(os.sep, "/"), c["claims_glob"])}
+    declared = cfg["gate"].get("expected_kind_crates", {}).get("plane", [])
+    if not declared:
+        return [rules.row("claimed-path-has-arm", not found,
                           "every claimed exact path has an arm in the plane's decoder",
-                          rules.VACUOUS + "no plane claims module is present in this tree",
-                          0, 0, c["why"], [])]
-    for claims_rel in claim_files:
-        crate = tree.crate_of(claims_rel)
+                          rules.VACUOUS + "gate.expected_kind_crates declares no plane crate"
+                          if not found else
+                          rules.UNPROVEN + "gate.expected_kind_crates declares no plane crate, yet "
+                          + ", ".join(sorted(found)) + " carries a claims module nothing measures",
+                          len(found), 0, c["why"], sorted(found))]
+    for crate in declared:
         ceiling = c["max_unanswered"].get(crate, 0)
+        claims_rel = found.get(crate)
+        if claims_rel is None:
+            rows.append(rules._unproven(
+                f"claimed-path-has-arm:{crate}", f"{crate} decodes every exact path it claims",
+                f"no file matching {c['claims_glob']} exists under crates/{crate}, so this plane's "
+                "claims were never read; point qa/construction.toml's [rules.claimed-path-has-arm] "
+                "claims_glob at the module's new name, or strike the crate from "
+                "gate.expected_kind_crates.plane", c["why"]))
+            continue
         literals = {}
         for l in tree.files[claims_rel]:
             for m in _STR_CONST.finditer(l.code):
@@ -558,6 +576,38 @@ def rule_claimed_path_has_arm(tree, cfg):
 
 
 # ── the seam rules.py calls ───────────────────────────────────────────────────────────────────────
+
+# Every row id this module OWES, with no declared subject list behind it. Order matches evaluate().
+SINGLETON_IDS = (
+    "gate-script-hygiene:strict-mode", "gate-script-hygiene:muffled-subject", "unused-waiver",
+    "assertion-free-tests", "assertion-loose-for-name", "accrued-floor-metered",
+    "live-config-pinned",
+)
+
+
+def expected_ids(cfg):
+    """The row ids this module owes, derived from the ceilings file alone.
+
+    THE VERDICT ONLY SEES WHAT IS OWED. testing/fleet-fixtures/verdict.sh resolves EXPECTED_IDS
+    against the ledger and ignores every row whose id is not on that list -- so a FAIL row this
+    module wrote was read by nobody and `--check` exited 0 through it. Every rule here was
+    unenforceable from the day the module was added: the self-test's plant loop reads ledger.tsv
+    directly and saw each planted violation go red, which proved the ROW was written and never that
+    the GATE went red on it. The two are only the same thing for an id the verdict owes.
+
+    `claimed-path-has-arm` is per-plane, keyed by the census's declared plane crates rather than by
+    the claims files found on disk, for the same reason rules.py derives its own owed set from the
+    config: a claims module that moved out from under `claims_glob` must leave a row missing, not
+    quietly stop being owed. The vacuous single row (no plane claims module anywhere in the tree) is
+    owed under its bare id, because that is the id the rule writes in that case.
+    """
+    ids = list(SINGLETON_IDS)
+    planes = cfg["gate"].get("expected_kind_crates", {}).get("plane", [])
+    if planes:
+        ids += [f"claimed-path-has-arm:{crate}" for crate in planes]
+    else:
+        ids.append("claimed-path-has-arm")
+    return ids
 
 
 def evaluate(tree, cfg):

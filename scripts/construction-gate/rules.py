@@ -2191,6 +2191,13 @@ def expected_ids(cfg):
         ids.append(f"forbid-unsafe-deny:{crate}")
     for key in cfg["rules"]["legacy-reach"]["prefixes"]:
         ids.append(f"legacy-reach:{key}")
+    # The second measuring module's rows are owed exactly as much as this one's. They were not, and
+    # verdict.sh resolves EXPECTED_IDS against the ledger and IGNORES every row whose id is not on
+    # it -- so every rule in rules_extra.py wrote its FAIL row into a ledger nobody read and
+    # `construction-gate.sh --check` exited 0 through it. The self-test did not catch it because its
+    # plant loop reads ledger.tsv directly: it proved the row was WRITTEN, which is not the same
+    # claim as the gate going red.
+    ids += rules_extra.expected_ids(cfg)
     return ids
 
 
