@@ -15,14 +15,14 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 97,
-  "unproven": 7,
+  "mapped": 98,
+  "unproven": 6,
   "unmapped": 0,
   "checks_by_kind": {
-   "gate": 12,
+   "gate": 13,
    "lint": 5,
    "oracle-cell": 56,
-   "oracle-family": 4,
+   "oracle-family": 5,
    "test": 426
   }
  },
@@ -3379,7 +3379,7 @@
    "surface": "documented behaviour",
    "binding": "the 27 README (:1047-1073) and 29 CHANGELOG (:1087-1115) claims, the two CONTRADICTED rows (:1061, :1099) each with an explicit cell of the ops cross-check are pinned as code-wins: each row's actual behaviour is the parity target, not the documented one; one cell family (`documented-vs-actual`)",
    "inventory": "ops",
-   "status": "unproven",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-family",
@@ -3390,14 +3390,14 @@
     },
     {
      "kind": "gate",
-     "ref": "qa/documented-claims.json",
+     "ref": "scripts/documented-claims-check.sh",
      "status": "mapped",
      "source": "hand",
-     "proves": "the full 56-claim ledger: `cell` for every testable claim (with its cell id(s)), `prose` with a one-line reason for the 23 claims not testable through the binary — nothing silently dropped"
+     "proves": "the 27 README and 29 CHANGELOG documented-behaviour claims: every claim is pinned by a shadow-oracle cell the golden RECORDED or excused in writing as prose, the claim run for each document is complete and contiguous, the counts are re-derived rather than trusted, and both CONTRADICTED rows stay flagged, cell-pinned and code-wins. Reads qa/documented-claims.json, which is the register the gate asserts, not a gate itself."
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: gate:qa/documented-claims.json (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing)"
+   "verdict": "PASS",
+   "verdict_detail": "oracle-family:documented, gate:scripts/documented-claims-check.sh"
   },
   {
    "id": "PB-72",
