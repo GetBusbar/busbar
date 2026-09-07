@@ -1,0 +1,1734 @@
+//! Tests for `chain.rs`. Lifted out of the implementation file so its line count
+//! measures implementation and nothing else; still a direct child module, so `use
+//! super::*` reaches the private items it always did.
+
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use axum::body::Bytes;
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::Response;
+
+use busbar_caps::{
+    Admission, AdmitToken, Approve, Audit, Authenticate, KernelSeal, OpClassId, Outcome,
+    PrincipalId, Route, TrustToken, UnitToken, UsageToken, VerifiedDestination, Verify,
+};
+use busbar_core::proxy::reqlog::REQUESTS;
+use busbar_substrate::plane_host::EngineTablesView;
+use busbar_substrate::testkit::engine_kit::EngineTestKit as _;
+
+use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+use crate::unit::{admit, approve, arrival, audit, authenticate, decode, meter, route, verify};
+
+/// The one dialect these fixtures speak. Same-protocol openai→openai, so the comparison is about
+/// the CHAIN rather than about a translation: a cross-protocol leg has its own identity harness in
+/// the codec crate, and putting one here would give a divergence two possible homes.
+const PROTO: &str = crate::proto_codec::PROTO_OPENAI;
+
+/// The pool every fixture names, and the one lane behind it.
+const POOL: &str = "p";
+const LANE: &str = "m0";
+
+/// The flat per-request fee the governed rigs price, in whole cents — one, so that derived spend in
+/// cents reads as the billable count.
+const FEE_CENTS: i64 = 1;
+
+/// The token figures the scripted upstream reports on a delivered answer.
+const INPUT: u64 = 11;
+const OUTPUT: u64 = 7;
+
+// ---------------------------------------------------------------------------------------------
+// The fixtures
+// ---------------------------------------------------------------------------------------------
+
+/// The six units this rehearsal drives. Each names an END, not a step: what a client is answered
+/// with, and what the operator's counters say afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Fixture {
+    /// An admitted, buffered 200 — the whole loop, delivered.
+    BufferedOk,
+    /// An admitted streamed answer — the same loop with the accrual landing at stream end rather
+    /// than at the buffered tap.
+    StreamedOk,
+    /// A key whose group budget is spent: the door refuses, nothing is charged, nothing is
+    /// refunded.
+    OverBudget,
+    /// A key that may not reach the pool it named: the pre-admission guard refuses, before pricing
+    /// is asked about at all.
+    PoolAcl,
+    /// A model that resolves to no pool and no lane: refused AFTER the door, so it is charged.
+    UnknownModel,
+    /// The destination answered, badly: an upstream 502 relayed to the client under the pool's
+    /// least-bad disposition. A FAILED TRANSFER — the fee does not post and the fee base is
+    /// refunded, while the admission slot the door drew is kept.
+    UpstreamFailure,
+    /// A STREAM CUT MID-BODY: 2xx headers, one real frame relayed to the client, and then the
+    /// connection dies. The end no status line can name — the client saw a 200 and did not get
+    /// the answer — and the reason the tap has to report a class rather than a status.
+    StreamCut,
+    /// A TRANSFER THAT FAILED after the upstream's 2xx headers and before a single byte of the
+    /// answer: the client is given the headers and then a broken body. Nothing was delivered, so
+    /// the end is an error rather than a truncated answer, and the lane's request-budget unit is
+    /// refunded where the cut-after-first-byte case keeps it.
+    StreamFailedTransfer,
+}
+
+impl Fixture {
+    /// The model the caller names. Every fixture but [`Fixture::UnknownModel`] names the configured
+    /// pool.
+    fn model(self) -> &'static str {
+        match self {
+            Fixture::UnknownModel => "no-such-model",
+            _ => POOL,
+        }
+    }
+
+    /// Whether the caller asked for a stream.
+    fn streamed(self) -> bool {
+        matches!(
+            self,
+            Fixture::StreamedOk | Fixture::StreamCut | Fixture::StreamFailedTransfer
+        )
+    }
+
+    /// The pools the key is restricted to, or `None` for a key that may reach every pool.
+    fn key_scopes(self) -> Option<Vec<String>> {
+        match self {
+            // Restricted to a pool that is NOT the one it asks for, which is the pre-admission
+            // guard's own condition.
+            Fixture::PoolAcl => Some(vec!["some-other-pool".to_string()]),
+            _ => None,
+        }
+    }
+
+    /// The seeded spend on the key's group bucket, or `None` for an ungrouped key under no cap.
+    fn seeded_group_requests(self) -> Option<u64> {
+        // 250 seeded requests at a one-cent fee derive to 250 cents, over the 100-cent cap the
+        // group declares — the same arithmetic the admit step's own refusal identity pins.
+        matches!(self, Fixture::OverBudget).then_some(250)
+    }
+
+    /// What the scripted upstream is told to answer.
+    fn upstream(self) -> MockResponse {
+        match self {
+            Fixture::StreamedOk => MockResponse::Sse {
+                events: sse_events(),
+                abort_at_index: None,
+            },
+            // A TRUE transport cut, not a clean in-band error frame: the upstream relays one
+            // real chunk and then the connection drops mid-body. The client has bytes and the
+            // answer never finished, which is exactly the end a 200 cannot describe.
+            Fixture::StreamCut => MockResponse::SseTransportError {
+                ok_events: vec![sse_events()[0].clone()],
+            },
+            // The same cut with nothing relayed first: 2xx headers, then the transfer fails
+            // before the first byte of the answer.
+            Fixture::StreamFailedTransfer => {
+                MockResponse::SseTransportError { ok_events: vec![] }
+            }
+            Fixture::UpstreamFailure => MockResponse::ServerError {
+                status: reqwest::StatusCode::BAD_GATEWAY,
+                body: serde_json::json!({"error": {"message": "upstream refused the transfer",
+                                                   "type": "server_error"}}),
+            },
+            _ => MockResponse::Ok {
+                status: reqwest::StatusCode::OK,
+                body: serde_json::json!({
+                    "id": "chatcmpl-chain", "object": "chat.completion", "created": 0,
+                    "model": LANE,
+                    "choices": [{"index": 0, "finish_reason": "stop",
+                                 "message": {"role": "assistant", "content": "hello"}}],
+                    "usage": {"prompt_tokens": INPUT, "completion_tokens": OUTPUT,
+                              "total_tokens": INPUT + OUTPUT}
+                }),
+            },
+        }
+    }
+}
+
+/// A streamed answer carrying the same token figures the buffered one reports, so the two admitted
+/// fixtures differ only in HOW the accrual arrives.
+fn sse_events() -> Vec<String> {
+    vec![
+        serde_json::json!({"id": "chatcmpl-chain", "object": "chat.completion.chunk",
+                           "created": 0, "model": LANE,
+                           "choices": [{"index": 0, "delta": {"role": "assistant",
+                                                              "content": "hello"}}]})
+        .to_string(),
+        serde_json::json!({"id": "chatcmpl-chain", "object": "chat.completion.chunk",
+                           "created": 0, "model": LANE,
+                           "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                           "usage": {"prompt_tokens": INPUT, "completion_tokens": OUTPUT,
+                                     "total_tokens": INPUT + OUTPUT}})
+        .to_string(),
+        "[DONE]".to_string(),
+    ]
+}
+
+/// The request body, as the caller sends it.
+fn request_body(fixture: Fixture) -> Bytes {
+    let mut v = serde_json::json!({
+        "model": fixture.model(),
+        "messages": [{"role": "user", "content": "hi"}],
+    });
+    if fixture.streamed() {
+        v["stream"] = serde_json::Value::Bool(true);
+    }
+    Bytes::from(serde_json::to_vec(&v).expect("the fixture body serializes"))
+}
+
+fn json_headers() -> HeaderMap {
+    let mut h = HeaderMap::new();
+    h.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    h
+}
+
+// ---------------------------------------------------------------------------------------------
+// The rig
+// ---------------------------------------------------------------------------------------------
+
+/// One deployment: a governed key, a one-lane pool, and a scripted upstream. Each LEG builds its
+/// own, so the two legs' counters are compared rather than summed.
+struct Rig {
+    app: Arc<crate::test_support::BuiltApp>,
+    key: Arc<busbar_api::VirtualKey>,
+    server: MockServer,
+    charged_at: u64,
+    /// The group bucket this rig's key charges through. Unique per rig so two rigs never share a
+    /// bucket — and therefore normalized out of the observed body, because the door's quota copy
+    /// NAMES the group and two legs legitimately run on two different ones.
+    group: String,
+}
+
+/// A unique group name per rig, so two rigs running concurrently never share a bucket.
+fn unique(prefix: &str) -> String {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{prefix}-{}",
+        N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
+async fn rig(fixture: Fixture) -> Rig {
+    crate::testkit::install_test_seams();
+    busbar_substrate::metrics::init();
+
+    let state = Arc::new(MockServerState::new());
+    // Enough for every failover hop the walk may take; a delivered fixture consumes one.
+    for _ in 0..8 {
+        state.push(fixture.upstream());
+    }
+    let server = MockServer::new(state).await;
+
+    let group = unique("chain");
+    let mut groups = std::collections::BTreeMap::new();
+    if fixture.seeded_group_requests().is_some() {
+        groups.insert(
+            group.clone(),
+            busbar_substrate::config::groups::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: vec![busbar_substrate::config::groups::LimitCfg {
+                    metric: busbar_substrate::config::groups::LimitMetric::Budget,
+                    amount: 100,
+                    per: Some(busbar_substrate::config::groups::LimitWindow::Total),
+                    scope: None,
+                    on_exhaust: None,
+                    downgrade_to: None,
+                }],
+                ..Default::default()
+            },
+        );
+    }
+
+    let store = Arc::new(busbar_store_memory::MemoryStore::new());
+    if let Some(requests) = fixture.seeded_group_requests() {
+        use busbar_api::Store as _;
+        store
+            .put_usage(
+                &format!("group:{group}@total"),
+                0,
+                &busbar_api::UsageLedger {
+                    requests,
+                    billable_requests: requests,
+                    models: vec![],
+                },
+            )
+            .expect("seed the durable bucket");
+    }
+    let gov = crate::test_support::engine_kit::CORE_ENGINE_KIT
+        .governance(store, None, None)
+        .expect("governance");
+    let (key, _) = gov
+        .create_key(
+            busbar_substrate::governance::NewKeySpec {
+                name: "chain".to_string(),
+                allowed_pools: fixture.key_scopes(),
+                group: fixture
+                    .seeded_group_requests()
+                    .is_some()
+                    .then(|| group.clone()),
+                labels: Default::default(),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("create key");
+    let cost =
+        crate::test_support::engine_kit::CORE_ENGINE_KIT.cost_parts(None, FEE_CENTS, &groups);
+    // Enforcement is in-memory and authoritative, so the seeded durable spend has to be hydrated
+    // into the cells exactly as boot hydrates it; without this the door would not see it.
+    gov.hydrate_budgets(cost.as_ref(), 0).expect("hydrate");
+
+    let mut builder = TestApp::new()
+        .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
+        .pool(POOL, &[(0, 1)])
+        .governance_kit(gov)
+        .cost_kit(cost);
+    if fixture == Fixture::UpstreamFailure {
+        // RELAY, not retry-until-exhausted: `least_bad` is the disposition that hands the client
+        // the upstream's own answer when every lane is unhealthy, which is what makes this fixture
+        // a FAILED TRANSFER (the destination answered, badly) rather than a pool-empty 503.
+        builder =
+            builder.on_exhausted(POOL, busbar_substrate::config::pools::OnExhausted::LeastBad);
+    }
+    let app = builder.build();
+
+    Rig {
+        app,
+        key: Arc::new(key),
+        server,
+        charged_at: busbar_substrate::store::now(),
+        group,
+    }
+}
+
+impl Rig {
+    fn gov(&self) -> busbar_api::PlaneRequestCtx {
+        busbar_api::PlaneRequestCtx {
+            key: Some(self.key.clone()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------------------------
+// What a leg leaves behind
+// ---------------------------------------------------------------------------------------------
+
+/// Header values a response mints fresh per run. The NAME stays in the comparison and only the
+/// value is blanked, so a leg that stopped emitting one is still a divergence.
+const VOLATILE_HEADERS: [&str; 6] = [
+    "date",
+    "request-id",
+    "x-request-id",
+    "x-amzn-requestid",
+    "x-amzn-request-id",
+    "retry-after",
+];
+
+/// Everything one leg left behind, as comparable strings: the bytes a client saw, and the counters
+/// an operator can read back.
+#[derive(Debug, PartialEq, Eq)]
+struct Observed(Vec<(&'static str, String)>);
+
+/// Blank the values a response synthesizes per run — ids and clocks — so the comparison is about
+/// content rather than about a fresh id.
+fn normalize(s: &str) -> String {
+    fn blank(v: &mut serde_json::Value) {
+        match v {
+            serde_json::Value::Object(map) => {
+                for (k, val) in map.iter_mut() {
+                    let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
+                    let is_clock =
+                        matches!(k.as_str(), "created" | "created_at" | "createTime");
+                    if is_id && val.is_string() {
+                        *val = serde_json::Value::String("<id>".to_string());
+                    } else if (is_clock || k == "latencyMs") && val.is_number() {
+                        *val = serde_json::Value::from(0);
+                    } else {
+                        blank(val);
+                    }
+                }
+            }
+            serde_json::Value::Array(items) => items.iter_mut().for_each(blank),
+            _ => {}
+        }
+    }
+    // An SSE body is a sequence of framed JSON documents; normalize each frame's payload so a
+    // streamed leg is compared on the same footing as a buffered one.
+    if s.contains("data:") {
+        return s
+            .lines()
+            .map(|line| match line.strip_prefix("data: ") {
+                Some(rest) => format!("data: {}", normalize(rest)),
+                None => line.to_string(),
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+    }
+    match serde_json::from_str::<serde_json::Value>(s) {
+        Ok(mut v) => {
+            blank(&mut v);
+            v.to_string()
+        }
+        Err(_) => s.to_string(),
+    }
+}
+
+async fn observe(rig: &Rig, resp: Response) -> Observed {
+    use busbar_substrate::store::BreakerState;
+
+    let mut fields: Vec<(&'static str, String)> = Vec::new();
+    fields.push(("status", resp.status().as_u16().to_string()));
+    let mut headers: Vec<String> = resp
+        .headers()
+        .iter()
+        .map(|(k, v)| {
+            if VOLATILE_HEADERS.contains(&k.as_str()) {
+                format!("{k}: <volatile>")
+            } else {
+                format!("{k}: {}", String::from_utf8_lossy(v.as_bytes()))
+            }
+        })
+        .collect();
+    headers.sort();
+    fields.push(("headers", headers.join("\n")));
+    let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .unwrap_or_default();
+    fields.push((
+        "body",
+        normalize(&String::from_utf8_lossy(&body)).replace(&rig.group, "<group>"),
+    ));
+
+    // The body wrapper records the stream's outcome on drop; give it a tick before the reads.
+    tokio::task::yield_now().await;
+
+    // THE MONEY. The derived figures the enforcer compares against a cap, and the raw per-model
+    // series row the flush writes — the two surfaces a metering divergence would show on.
+    let gov = rig
+        .app
+        .governance
+        .clone()
+        .expect("governance is configured");
+    let derived = gov
+        .derived_bucket_usage(&rig.app.cost, &rig.key.id, "total", true, rig.charged_at)
+        .expect("usage read");
+    fields.push(("ledger_requests", derived.requests.to_string()));
+    fields.push(("ledger_tokens", derived.tokens.to_string()));
+    fields.push(("ledger_spend_cents", derived.spend_cents.to_string()));
+    gov.flush_metering();
+    let mut rows: Vec<busbar_api::MeteringRow> = gov
+        .metering_for(busbar_substrate::governance::metering_bucket(
+            rig.charged_at,
+        ))
+        .expect("metering read")
+        .into_iter()
+        .filter(|r| r.key_id == rig.key.id)
+        .collect();
+    rows.sort_by(|a, b| (&a.model, &a.provider).cmp(&(&b.model, &b.provider)));
+    fields.push((
+        "metering_rows",
+        rows.iter()
+            .map(|r| {
+                format!(
+                    "{}/{} in={} out={} cr={} cw={} req={} billable={}",
+                    r.model,
+                    r.provider,
+                    r.tokens_input,
+                    r.tokens_output,
+                    r.tokens_cache_read,
+                    r.tokens_cache_write,
+                    r.requests,
+                    r.billable_requests
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    ));
+
+    // THE BREAKER. The lane's own state after the walk, which is what an exhausted fixture moves.
+    let store = &*rig.app.store;
+    fields.push((
+        "breaker",
+        match store.breaker_state_in(POOL, 0) {
+            BreakerState::Closed => "Closed",
+            BreakerState::Open { .. } => "Open",
+            BreakerState::HalfOpen => "HalfOpen",
+        }
+        .to_string(),
+    ));
+    fields.push((
+        "cooldown",
+        if store.cooldown_remaining_in(POOL, 0, busbar_substrate::store::now()) > 0 {
+            "running".to_string()
+        } else {
+            "none".to_string()
+        },
+    ));
+    fields.push(("admissible", store.lane_admissible(0).to_string()));
+    fields.push((
+        "lane_budget",
+        format!("{:?}", store.lane_budget_remaining(0)),
+    ));
+
+    Observed(fields)
+}
+
+// ---------------------------------------------------------------------------------------------
+// LEG 1 — the legacy plane
+// ---------------------------------------------------------------------------------------------
+
+/// The shipped entry point, driven on this fixture. Arrival, decode, the gauntlet's verify,
+/// `NativePlane::drive`'s door, the one engine and the finish tail — all of it, unchanged.
+async fn leg_legacy(fixture: Fixture) -> Observed {
+    let rig = rig(fixture).await;
+    let (host, _rt) = crate::engine::test_host_rt(&rig.app);
+    let resp = crate::native_ingress::operation_ingress_inner(
+        &host,
+        &rig.gov(),
+        None,
+        &json_headers(),
+        request_body(fixture),
+        PROTO,
+        busbar_api::operation::Operation::CHAT,
+        None,
+    )
+    .await;
+    let observed = observe(&rig, resp).await;
+    rig.server.shutdown().await;
+    observed
+}
+
+// ---------------------------------------------------------------------------------------------
+// LEG 2 — the step files, in the design's order
+// ---------------------------------------------------------------------------------------------
+
+/// THE ONE MINT SITE. The kernel lends a unit its seal; this rehearsal has no kernel, so it stands
+/// in for one — in ONE place, so that "who may open a decision" is as readable here as it is in the
+/// loop, and so a step's harness cannot quietly mint a second one.
+fn kernel_seal() -> KernelSeal {
+    KernelSeal::acquire_for_kernel()
+}
+
+/// THE NODE'S ONE INTERNER, standing in for the composition root's.
+///
+/// A configured lane's name is read out of config at boot and a [`LaneId`] is a borrowed static
+/// name, so the two are bridged by interning the name ONCE — the root's job, and the recorded rule
+/// for every config-derived open-vocabulary key. This rehearsal has no root, so it holds the one
+/// interner itself: process-wide, filled from the deployment's own tables, and idempotent, so a
+/// second leg over the same lane name leaks nothing further. A per-leg interner would be a leak per
+/// request wearing a test's clothes, which is exactly the shape the rule forbids.
+static LANES: std::sync::LazyLock<std::sync::Mutex<busbar_contract::Registration>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(busbar_contract::Registration::new()));
+
+/// The destination set the trust unit would have sealed, over the lane this deployment CONFIGURED —
+/// the name read back off the running routing tables, not a literal spelled here.
+fn sealed_destinations(seal: &KernelSeal, lane: &str) -> Vec<VerifiedDestination> {
+    let lane = LANES
+        .lock()
+        .expect("the rehearsal's interner is never poisoned")
+        .lane(lane)
+        .expect("the rehearsal's vocabulary is open and holds this fixture's lane");
+    vec![VerifiedDestination::seal(&TrustToken::mint(seal), lane)]
+}
+
+/// The one operation class these fixtures are, as the Audit step's facts name it.
+const OP_CLASS: OpClassId = OpClassId::new(busbar_api::operation::Operation::CHAT.name());
+
+/// The terminal's context, built once per end. `destination` is the string the record's pool label
+/// is bounded from — the pool the charge landed on for an admitted unit, whatever destination had
+/// been read for one refused before the door, and the reserved unresolved label for one refused
+/// before any destination existed to read.
+fn audit_ctx<'a>(
+    host: &'a Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    gov: &'a busbar_api::PlaneRequestCtx,
+    destination: &'a str,
+    started: Instant,
+    charged_at: u64,
+) -> audit::AuditCtx<'a> {
+    audit::AuditCtx {
+        host,
+        gov,
+        proto: PROTO,
+        op_class: OP_CLASS,
+        destination,
+        started,
+        charged_at,
+    }
+}
+
+/// A refusal raised before this unit had a destination at all — the arrival and decode steps, which
+/// answer before the model has been read. The record names the reserved unresolved label, which is
+/// what the live pre-routing arms name it too.
+fn refused_before_a_destination(
+    seal: &KernelSeal,
+    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    gov: &busbar_api::PlaneRequestCtx,
+    started: Instant,
+    charged_at: u64,
+    resp: Response,
+) -> Response {
+    audit::audit_refused(
+        &UnitToken::mint(seal),
+        &audit_ctx(
+            host,
+            gov,
+            crate::engine::POOL_LABEL_UNRESOLVED,
+            started,
+            charged_at,
+        ),
+        audit::Served::of(resp),
+    )
+    .response
+    .into_response()
+}
+
+/// What one chained leg left behind at the METER step, as the rehearsal reads it back.
+///
+/// Kept apart from [`Observed`] on purpose: `Observed` is the field list the two legs are compared
+/// on, and the legacy leg has no step files to answer for, so a field only one leg can fill would
+/// misalign the comparison rather than extend it.
+#[derive(Debug, PartialEq, Eq)]
+struct Metering {
+    /// Whether the Meter step ran at all on this unit.
+    reached: bool,
+    /// Whether the Meter step made the accrual itself, as opposed to sealing the one the walk's tap
+    /// had already made.
+    posted_here: bool,
+    /// The fee the step says posts, and the refund it says is owed.
+    fee_count: u32,
+    refund: bool,
+    /// What the METER step was bound to, as the Route step handed it over: the serving lane, the
+    /// reported split, and whether those figures are evidence rather than a charge. Empty while
+    /// the answer was still in flight when the step ran, which is every stream.
+    bound: (Option<usize>, Option<(u64, u64)>, bool),
+    /// How the AUDIT step sealed the end, at the moment it really runs.
+    finish: Option<busbar_contract::FinishClass>,
+    /// What the walk's tap reported, read AFTER the body was drained — which for a stream is the
+    /// only moment any of it exists.
+    tap: Option<crate::engine::TapReport>,
+}
+
+impl Metering {
+    /// Nothing metered yet — what a leg starts with, and what a unit refused at the door ends with.
+    fn none() -> Self {
+        Metering {
+            reached: false,
+            posted_here: false,
+            fee_count: 0,
+            refund: false,
+            bound: (None, None, false),
+            finish: None,
+            tap: None,
+        }
+    }
+}
+
+/// The two token figures of a report, as a pair, so a fixture can spell what it expects.
+fn split(usage: Option<&busbar_substrate::billing::TokenUsage>) -> Option<(u64, u64)> {
+    usage.map(|u| (u.input, u.output))
+}
+
+/// The chained leg: every step file, in the loop's order, each fed from the one before it.
+async fn leg_chain(fixture: Fixture) -> Observed {
+    leg_chain_metered(fixture).await.0
+}
+
+/// The same leg, with what the Meter step answered kept alongside what the client and the operator
+/// can see.
+async fn leg_chain_metered(fixture: Fixture) -> (Observed, Metering) {
+    let rig = rig(fixture).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let headers = json_headers();
+    let body = request_body(fixture);
+    let started = Instant::now();
+    let charged_at = rig.charged_at;
+
+    // THE SEAL, held for the length of this one unit. Every token below is minted from it and
+    // dropped when the step it was lent to returns, exactly as the loop lends them.
+    let seal = kernel_seal();
+
+    let mut metering = Metering::none();
+    let resp = drive(
+        &seal,
+        &host,
+        &rt,
+        &gov,
+        &headers,
+        &body,
+        started,
+        charged_at,
+        &mut metering,
+    )
+    .await;
+
+    // THE TAP'S CELL, taken off the response before the body is consumed and read after. For a
+    // buffered end it is already filled here; for a stream it fills while `observe` drains the
+    // body, which is the whole point — the figures do not exist until then.
+    let cell = resp.extensions().get::<crate::engine::TapCell>().cloned();
+    let observed = observe(&rig, resp).await;
+    metering.tap = cell.and_then(|c| c.get().cloned());
+    rig.server.shutdown().await;
+    (observed, metering)
+}
+
+/// STEP 0 THROUGH STEP 7, called in the order section 2.2 fixes them in.
+#[allow(clippy::too_many_arguments)]
+async fn drive(
+    seal: &KernelSeal,
+    host: &Arc<dyn busbar_substrate::plane_host::EngineHost>,
+    rt: &Arc<crate::engine::NativeRuntime>,
+    gov: &busbar_api::PlaneRequestCtx,
+    headers: &HeaderMap,
+    body: &Bytes,
+    started: Instant,
+    charged_at: u64,
+    metering: &mut Metering,
+) -> Response {
+    // ---- STEP 0, ARRIVAL --------------------------------------------------------------------
+    // The body-model path: read the content type, validate the bytes, capture the head projection.
+    let arrived = match arrival::arrival_body(headers, body) {
+        Ok(a) => a,
+        Err(refusal) => {
+            // A named refusal becomes bytes at the audit step and nowhere else: the step answers
+            // with a `RefusalOutcome` and the terminal is the one place that renders one.
+            let outcome = refusal.outcome();
+            return refused_before_a_destination(
+                seal,
+                host,
+                gov,
+                started,
+                charged_at,
+                audit::render_refusal(PROTO, &outcome),
+            );
+        }
+    };
+
+    // ---- STEP 1, DECODE ---------------------------------------------------------------------
+    let mut model_out = String::new();
+    let decoded = match decode::decode_body(
+        PROTO,
+        busbar_api::operation::Operation::CHAT,
+        &arrived.content_type,
+        &arrived.body,
+        arrived.parsed.as_ref(),
+        None,
+        &mut model_out,
+    ) {
+        Ok(d) => d,
+        Err(refusal) => {
+            let outcome = refusal.outcome();
+            return refused_before_a_destination(
+                seal,
+                host,
+                gov,
+                started,
+                charged_at,
+                audit::render_refusal(PROTO, &outcome),
+            );
+        }
+    };
+    let model: String = decoded.model.to_string();
+
+    // ---- STEP 1, AUTHENTICATE ---------------------------------------------------------------
+    // Cannot refuse — every refusal this step could raise is the middleware's, upstream of the
+    // plane — so the principal is always established. It is still called, and its answer is still
+    // opened, because the chain is about what each step ACTUALLY returns.
+    let principal: PrincipalId = {
+        let token: UnitToken<Authenticate> = UnitToken::mint(seal);
+        let decision = authenticate::authenticate(&token, gov);
+        match decision.into_result(seal) {
+            Ok(facts) => facts.principal().cloned().expect(
+                "this plane opens no handshake unit, so the challenge arm is unreachable",
+            ),
+            Err(_) => unreachable!("the authenticate step's refusal set is empty"),
+        }
+    };
+
+    // ---- STEP 2, VERIFY ---------------------------------------------------------------------
+    // The destination set the trust unit would have sealed, over the lane this deployment
+    // configured — the runtime name read off the tables and interned once, which is how a
+    // config-derived name becomes the borrowed static one the priced axis is written in.
+    let configured_lane = rt
+        .lane_view(0)
+        .expect("the fixture configures one lane")
+        .model
+        .to_string();
+    let destinations = sealed_destinations(seal, &configured_lane);
+    let view = verify::HostPoolView::new(&**host, &**rt, gov.key.as_deref());
+    let destinations = {
+        let token: UnitToken<Verify> = UnitToken::mint(seal);
+        let answer = verify::verify(&token, &view, &model, &principal, destinations);
+        // The step's own named refusal, carried back beside the decision — the guards are read once
+        // and the wire triple is the step's, not the driver's.
+        let named = answer.refusal;
+        match answer.decision.into_result(seal) {
+            Ok(dests) => dests,
+            Err(_) => {
+                // A named refusal becomes bytes at the audit step and nowhere else, exactly as
+                // arrival's and decode's do.
+                let outcome = named
+                    .expect("a refused decision carries the refusal that named it")
+                    .outcome();
+                // The destination WAS read, and it is the pool the guard turned this unit away
+                // from, so that is the pool the record names — the same bound the live
+                // pre-admission guard applies to the same string.
+                return audit::audit_refused(
+                    &UnitToken::mint(seal),
+                    &audit_ctx(host, gov, &model, started, charged_at),
+                    audit::Served::of(audit::render_refusal(PROTO, &outcome)),
+                )
+                .response
+                .into_response();
+            }
+        }
+    };
+
+    // ---- STEP 3, APPROVE --------------------------------------------------------------------
+    // No seat is installed on any deployment today, so the step is a no-op — and it is still
+    // called, because "nothing is seated" is a fact about config, not a licence to skip a step.
+    {
+        let token: UnitToken<Approve> = UnitToken::mint(seal);
+        let decision = approve::approve(&token, &principal, &destinations, &[]);
+        if decision.into_result(seal).is_err() {
+            unreachable!("no veto seat is installed, so this step cannot refuse");
+        }
+    }
+
+    // ---- STEP 4, ADMIT ----------------------------------------------------------------------
+    let admitted = admit::admit(
+        &UnitToken::mint(seal),
+        &AdmitToken::mint(seal),
+        &admit::AdmitCtx {
+            host,
+            gov,
+            proto: PROTO,
+            destination: &model,
+            charged_at,
+        },
+        &principal,
+        &destinations,
+    );
+    let charged = admitted.charged;
+    let effective = admitted
+        .effective_pool
+        .clone()
+        .unwrap_or_else(|| model.clone());
+    // The door RENDERS its refusal and stops there: it does not post one. So the over-budget path
+    // leaves through the same terminal every other path leaves through — the not-charged door of
+    // the Audit step — and the unit that was turned away has exactly one link on its chain, named
+    // with the pool it asked for.
+    if let Some(resp) = admitted.refusal {
+        let _ = admitted.decision;
+        return audit::audit_refused(
+            &UnitToken::mint(seal),
+            &audit_ctx(host, gov, &model, started, charged_at),
+            audit::Served::of(resp),
+        )
+        .response
+        .into_response();
+    }
+    let hold = match admitted.decision.into_result(seal) {
+        Ok(Admission::Own(hold)) => Some(hold),
+        Ok(Admission::Accrual(_)) => panic!("a client unit holds its own admission"),
+        Ok(Admission::ZeroHold) => None,
+        Err(_) => unreachable!("a refusal carries its rendered bytes and returned above"),
+    };
+
+    // ---- STEP 5, ROUTE ----------------------------------------------------------------------
+    let routed = route::route(
+        &UnitToken::mint(seal),
+        route::RouteInput {
+            host,
+            rt,
+            proto: PROTO,
+            op: busbar_substrate::handlers::frame(
+                busbar_substrate::transport::Transport::Http,
+                busbar_api::operation::Operation::CHAT,
+                decoded.op_handler,
+            ),
+            destination: &effective,
+            headers,
+            body: body.clone(),
+            parsed: arrived.parsed,
+            caller_token: None,
+            resolved_gov_key: gov.key.as_ref(),
+            // The meter half of the hold, built at the door and carried to every accrual site. The
+            // walk's taps are where a streamed answer's usage becomes known, so this is where the
+            // unit's ONE accrual is made — and the Meter step below is told so and seals it.
+            usage_sink: admitted.sink,
+            model_not_found_message: None,
+            // The rehearsal's one interner — the composition root's, standing in.
+        },
+    )
+    .await;
+    let route::Routed {
+        decision: route_decision,
+        response,
+        facts,
+        meter_sink,
+    } = routed;
+
+    // ---- STEP 6, METER ----------------------------------------------------------------------
+    // Fed from what the Route step returned, and from nothing else. The lane the facts name is
+    // borrowed out of the engine's own table rather than copied, which is why the table is bound
+    // here rather than inside the facts.
+    let tables = crate::engine::EngineTables::new(rt);
+    let lane = facts.lane.and_then(|i| tables.lanes().get(i));
+    let ctx = meter::MeterCtx::bind(host, meter_sink.as_ref(), lane, &facts, charged);
+    // The rehearsal drives this plane's steps and keeps no books, so what a report is worth is a
+    // question it cannot answer: it holds no card, and inventing one here would be this crate
+    // deciding what a lane's rates are. It answers nothing, and the hold below reaches no exit
+    // path anyway. What the money actually comes to is the composition root's, and it is proven
+    // where the card is.
+    let metered = meter::meter(
+        &UnitToken::mint(seal),
+        &UsageToken::mint(seal),
+        &ctx,
+        hold,
+        &Outcome::Completed,
+        &|_| 0,
+    );
+    metering.reached = true;
+    // The accrual arm's own report of itself. `row` is filled whether the step posted or only
+    // sealed, so it cannot be the instrument here: one-posting-per-unit is what this pins.
+    metering.posted_here = metered.posted;
+    metering.fee_count = metered.fee_count;
+    metering.refund = metered.refund;
+    // What the step was actually BOUND to, read off the facts rather than off the response: the
+    // three figures Route folds out of the tap where the tap had already finished.
+    metering.bound = (
+        facts.lane,
+        split(facts.usage.as_ref()),
+        facts.billing_failed,
+    );
+    // The hold reaches no exit path in this rehearsal: the exit is the kernel's, and there is no
+    // plane-side settle. Held to the end of the unit so the accounting is not silently dropped.
+    let _hold = metered.hold;
+    let _usage = metered.decision;
+
+    // ---- STEP 7, AUDIT ----------------------------------------------------------------------
+    // A destination that never resolved is a refusal taken AFTER the door, so it is charged and it
+    // leaves through the admitted terminal, exactly as the legacy tail leaves it. The Route step's
+    // own answer says which of the two ends this was; both end here.
+    let _ = route_decision;
+    let audited = audit::audit(
+        &UnitToken::mint(seal),
+        &audit_ctx(host, gov, &effective, started, charged_at),
+        audit::Served::of(response),
+        charged,
+    );
+    // The sealed end, read back at the moment the terminal really runs — which for a stream is
+    // while the body is still flowing, so it is the client-facing status the terminal names and
+    // not the class the tap will report later.
+    metering.finish = audited.decision.into_result(seal).ok().map(|f| f.finish);
+    audited.response.into_response()
+}
+
+// ---------------------------------------------------------------------------------------------
+// The rehearsal
+// ---------------------------------------------------------------------------------------------
+
+const CASES: [Fixture; 6] = [
+    Fixture::BufferedOk,
+    Fixture::StreamedOk,
+    Fixture::OverBudget,
+    Fixture::PoolAcl,
+    Fixture::UnknownModel,
+    Fixture::UpstreamFailure,
+];
+
+/// THE REHEARSAL. Same fixture in, same bytes and same counters out — through the legacy plane and
+/// through the nine step files driven one after another.
+///
+/// Every field is compared: the status, every header the identity tests pin (with only the
+/// per-response volatiles blanked, name kept), the body, the derived ledger the enforcer reads, the
+/// raw metering rows the flush writes, and the lane's breaker state and remaining budget.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_chain_matches_the_legacy_drive_on_every_fixture() {
+    let mut failures: Vec<String> = Vec::new();
+    for fixture in CASES {
+        let legacy = leg_legacy(fixture).await;
+        let chained = leg_chain(fixture).await;
+        for ((field, want), (_, got)) in legacy.0.iter().zip(chained.0.iter()) {
+            if want != got {
+                failures.push(format!(
+                    "{fixture:?}: field `{field}` diverges\n  legacy: {want}\n  chain:  {got}"
+                ));
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} chain divergence(s) across {} fixtures:\n{}",
+        failures.len(),
+        CASES.len(),
+        failures.join("\n")
+    );
+}
+
+/// THE TWO ENDS ONLY THE TAP CAN NAME — kept out of [`CASES`] deliberately, so the six fixtures
+/// the rehearsal was built on are compared on exactly the values they always were.
+const TAP_CASES: [Fixture; 2] = [Fixture::StreamCut, Fixture::StreamFailedTransfer];
+
+/// A CUT STREAM AND A FAILED TRANSFER, through both legs, with the report-back read afterwards.
+///
+/// Both fixtures are served on 2xx headers and neither delivers the answer, so the status line
+/// says the same thing about both and about a stream that succeeded — which is precisely why the
+/// tap has to report a CLASS. The cut relayed a frame and stopped: `Partial`. The failed transfer
+/// relayed nothing at all: `Error`. Both bill zero tokens, both name the lane that served them,
+/// and the legacy plane and the chained steps still leave a client and an operator looking at the
+/// same thing on both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_tap_reports_the_end_a_status_line_cannot() {
+    use busbar_contract::FinishClass;
+
+    let mut failures: Vec<String> = Vec::new();
+    for fixture in TAP_CASES {
+        // The same identity the six are held to: same fixture in, same bytes and same counters
+        // out through the legacy plane and through the steps.
+        let legacy = leg_legacy(fixture).await;
+        let (chained, metering) = leg_chain_metered(fixture).await;
+        for ((field, want), (_, got)) in legacy.0.iter().zip(chained.0.iter()) {
+            if want != got {
+                failures.push(format!(
+                    "{fixture:?}: field `{field}` diverges\n  legacy: {want}\n  chain:  {got}"
+                ));
+            }
+        }
+
+        let report = metering
+            .tap
+            .as_ref()
+            .unwrap_or_else(|| panic!("{fixture:?}: the tap reported nothing at all"));
+        let want_finish = match fixture {
+            Fixture::StreamCut => crate::engine::TapFinish::Partial,
+            _ => crate::engine::TapFinish::Error,
+        };
+        assert_eq!(
+            report.finish, want_finish,
+            "{fixture:?}: the tap names the end the response actually reached"
+        );
+        assert_eq!(
+            report.lane, 0,
+            "{fixture:?}: and the lane that served it, which is what the accrual is keyed on"
+        );
+        assert!(
+            report.billing_failed,
+            "{fixture:?}: an answer that never finished bills zero — the figures are evidence"
+        );
+
+        // And nothing was billed, on either leg: the ledger and the metering series are empty
+        // for a token charge that the report says must not be made.
+        fn field(o: &Observed, k: &str) -> String {
+            o.0.iter()
+                .find(|(f, _)| *f == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default()
+        }
+        assert_eq!(field(&chained, "ledger_tokens"), "0", "{fixture:?}");
+        assert_eq!(field(&chained, "metering_rows"), "", "{fixture:?}");
+        assert_eq!(
+            field(&legacy, "ledger_tokens"),
+            field(&chained, "ledger_tokens"),
+            "{fixture:?}: the legacy plane bills what the chain bills"
+        );
+
+        // THE TERMINAL'S TIMING IS UNCHANGED, and this is the half that is easy to break: the
+        // record is written where the older release writes it — at the head, while the body is
+        // still flowing — so the class it seals there is still the client-facing status's. The
+        // tap's class is what a reader of the SAME response gets once the body has ended, which
+        // the next assertion shows.
+        assert_eq!(
+            metering.finish,
+            Some(FinishClass::Complete),
+            "{fixture:?}: the terminal ran at the head, on a 2xx, exactly as it always has"
+        );
+        assert_eq!(
+            (metering.bound.0, metering.bound.1),
+            (None, None),
+            "{fixture:?}: and the Meter step was bound to nothing, because nothing existed yet"
+        );
+    }
+    assert!(
+        failures.is_empty(),
+        "{} divergence(s) across the two tap fixtures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// THE SEALED END, WRITTEN AT THE TAP'S COMPLETION. The same response, audited after its body has
+/// ended rather than at its head, seals the class the tap reported — `Partial` for the cut,
+/// `Error` for the failed transfer — and never the `Complete` its 2xx status line says.
+///
+/// This is the whole difference the report-back buys the terminal, and it is asserted on the
+/// REAL step: `audit::audit` reads the cell off the response it is handed, so a driver that seals
+/// a stream's end at the end of the stream gets the truer class for free, and one that seals it
+/// at the head gets the older release's answer with the older release's timing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
+    use busbar_contract::FinishClass;
+
+    for (fixture, want) in [
+        (Fixture::StreamedOk, FinishClass::Complete),
+        (Fixture::StreamCut, FinishClass::Partial),
+        (Fixture::StreamFailedTransfer, FinishClass::Error),
+    ] {
+        let rig = rig(fixture).await;
+        let (host, rt) = crate::engine::test_host_rt(&rig.app);
+        let gov = rig.gov();
+        let headers = json_headers();
+        let seal = kernel_seal();
+        let body = request_body(fixture);
+        let routed = route::route(
+            &UnitToken::mint(&seal),
+            route::RouteInput {
+                host: &host,
+                rt: &rt,
+                proto: PROTO,
+                op: crate::test_support::CHAT,
+                destination: POOL,
+                headers: &headers,
+                body: body.clone(),
+                parsed: crate::engine::LazyBody::parse(&body).ok(),
+                caller_token: None,
+                resolved_gov_key: None,
+                usage_sink: None,
+                model_not_found_message: None,
+            },
+        )
+        .await;
+        let _ = routed.decision;
+        assert_eq!(
+            routed.response.status().as_u16(),
+            200,
+            "{fixture:?}: every one of these is served on 2xx headers"
+        );
+
+        // DRAIN FIRST. The body is the tap: until it has ended there is nothing to seal, which
+        // is why a stream's record cannot be a head-time reading of its status.
+        let (parts, stream) = routed.response.into_parts();
+        let bytes = axum::body::to_bytes(stream, usize::MAX)
+            .await
+            .unwrap_or_default();
+        tokio::task::yield_now().await;
+        let drained = Response::from_parts(parts, axum::body::Body::from(bytes));
+
+        let audited = audit::audit(
+            &UnitToken::mint(&seal),
+            &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
+            audit::Served::of(drained),
+            true,
+        );
+        let facts = audited
+            .decision
+            .into_result(&seal)
+            .expect("the terminal seals rather than refuses");
+        assert_eq!(
+            facts.finish, want,
+            "{fixture:?}: the end the tap saw, not the end the status line claims"
+        );
+        assert_ne!(
+            facts.finish,
+            FinishClass::TurnComplete,
+            "{fixture:?}: no dialect on this plane ends a turn of a continuing session"
+        );
+        let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX)
+            .await;
+        rig.server.shutdown().await;
+    }
+}
+
+/// The ENDS are what the fixtures claim they are. Without this the rehearsal above could be green
+/// on six identical 404s and prove nothing about the loop at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_fixture_reaches_the_end_it_names() {
+    let mut seen: Vec<(Fixture, String)> = Vec::new();
+    for fixture in CASES {
+        let observed = leg_chain(fixture).await;
+        let status = observed
+            .0
+            .iter()
+            .find(|(k, _)| *k == "status")
+            .map(|(_, v)| v.clone())
+            .expect("every leg observes a status");
+        seen.push((fixture, status));
+    }
+    assert_eq!(
+        seen,
+        vec![
+            (Fixture::BufferedOk, "200".to_string()),
+            (Fixture::StreamedOk, "200".to_string()),
+            // The exhausted budget: the door's own 429.
+            (Fixture::OverBudget, "429".to_string()),
+            // The pre-admission guard's 403, before pricing is asked about.
+            (Fixture::PoolAcl, "403".to_string()),
+            // Refused AFTER the door, so it is charged and audited as an admitted unit.
+            (Fixture::UnknownModel, "404".to_string()),
+            // The failed transfer: the upstream's own 502, relayed to the client.
+            (Fixture::UpstreamFailure, "502".to_string()),
+        ],
+        "the fixtures do not reach the six distinct ends they are named for"
+    );
+}
+
+/// THE MONEY, spelled out rather than only compared. A delivered unit charges one admission slot,
+/// posts one fee cent and meters the reported token split; a refusal at the door charges nothing;
+/// a refusal after the door keeps its slot and refunds its fee base.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_chain_leaves_the_money_where_the_legacy_plane_leaves_it() {
+    fn field(o: &Observed, k: &str) -> String {
+        o.0.iter()
+            .find(|(f, _)| *f == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
+    // A STREAMED unit accrues at stream end rather than at the buffered tap, so it is asserted in
+    // its own right: without this the rehearsal could be green on a stream that metered nothing.
+    let streamed = leg_chain(Fixture::StreamedOk).await;
+    assert_eq!(field(&streamed, "ledger_requests"), "1");
+    assert_eq!(
+        field(&streamed, "ledger_tokens"),
+        (INPUT + OUTPUT).to_string(),
+        "the stream-end tap accrued the reported split"
+    );
+    assert_eq!(
+        field(&streamed, "metering_rows"),
+        format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1")
+    );
+
+    // A FAILED TRANSFER keeps its admission slot and posts no tokens.
+    let failed = leg_chain(Fixture::UpstreamFailure).await;
+    assert_eq!(field(&failed, "ledger_requests"), "1");
+    assert_eq!(field(&failed, "ledger_tokens"), "0");
+    assert_eq!(field(&failed, "metering_rows"), "");
+
+    let delivered = leg_chain(Fixture::BufferedOk).await;
+    assert_eq!(field(&delivered, "ledger_requests"), "1");
+    assert_eq!(
+        field(&delivered, "ledger_tokens"),
+        (INPUT + OUTPUT).to_string()
+    );
+    assert_eq!(
+        field(&delivered, "metering_rows"),
+        format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1")
+    );
+
+    // The door refused: nothing was charged, so there is nothing on the key's own bucket at all.
+    let refused = leg_chain(Fixture::OverBudget).await;
+    assert_eq!(field(&refused, "ledger_requests"), "0");
+    assert_eq!(field(&refused, "metering_rows"), "");
+
+    // The pre-admission guard refused: charged nothing either, and it never reached the door.
+    let guarded = leg_chain(Fixture::PoolAcl).await;
+    assert_eq!(field(&guarded, "ledger_requests"), "0");
+    assert_eq!(field(&guarded, "metering_rows"), "");
+
+    // Refused after the door: the admission slot is drawn and NEVER released, which is the rule
+    // that makes a request cap impossible to escape by failing.
+    let post_door = leg_chain(Fixture::UnknownModel).await;
+    assert_eq!(field(&post_door, "ledger_requests"), "1");
+    assert_eq!(field(&post_door, "metering_rows"), "");
+}
+
+// ---------------------------------------------------------------------------------------------
+// THE SEAM GAPS — the flip's work order
+// ---------------------------------------------------------------------------------------------
+//
+// Each test below names one place where the step files do not yet fit together, and each one is
+// written as a failing assertion rather than as a comment, so the gap closes by turning a test
+// green rather than by someone remembering to delete a paragraph.
+
+/// GAP 1, CLOSED — ROUTE hands the METER step what it is fed with.
+///
+/// `route::route` answers with a `Routed` carrying `MeterFacts`: the serving lane, the reported
+/// `TokenUsage`, the client-facing status and the billing-failed fact — the four `MeterCtx` asks
+/// for — plus the meter half the walk did not spend and the one fact that says where this unit's
+/// accrual was made. `MeterCtx::bind` is the expression that did not exist; the chain above writes
+/// it, and this test drives the whole leg to hold that it is real rather than merely typed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_meter_step_is_fed_from_the_route_steps_output() {
+    for fixture in [
+        Fixture::BufferedOk,
+        Fixture::StreamedOk,
+        Fixture::UnknownModel,
+        Fixture::UpstreamFailure,
+    ] {
+        let (_observed, metering) = leg_chain_metered(fixture).await;
+        assert!(
+            metering.reached,
+            "{fixture:?}: the Meter step is reached from what Route returned"
+        );
+    }
+
+    // The fee and the refund are the step's own answer over those facts, and they are read back
+    // here rather than assumed: a delivered 2xx from an upstream leg posts the flat fee and refunds
+    // nothing; a charged non-2xx posts none and refunds the fee base; and a candidate miss is a
+    // charged non-2xx that never dialled, so it posts no fee either.
+    let (_, delivered) = leg_chain_metered(Fixture::BufferedOk).await;
+    assert_eq!((delivered.fee_count, delivered.refund), (1, false));
+    let (_, failed) = leg_chain_metered(Fixture::UpstreamFailure).await;
+    assert_eq!((failed.fee_count, failed.refund), (0, true));
+    let (_, missed) = leg_chain_metered(Fixture::UnknownModel).await;
+    assert_eq!((missed.fee_count, missed.refund), (0, true));
+}
+
+/// GAP 2, CLOSED — the walk's tap IS the METER step's body, and it fires once.
+///
+/// The admission's meter half is still handed to `route` and still threaded into the walk, because
+/// the walk's own taps are where a streamed response's usage becomes known at all — there is no
+/// moment before the client has its bytes at which a stream's figures exist. So the split is the
+/// other way round from "Meter posts": the tap makes the one accrual, `MeterFacts::accrued` is
+/// Route saying so, and the Meter step SEALS it instead of posting a second copy. Both bodies are
+/// the same function with the same four arguments, which is why the row and the ledger are the
+/// 1.5.5 figures to the digit either way.
+///
+/// The proof is on the money, not on the shape: one metering row and one request's worth of tokens
+/// per delivered unit, buffered and streamed, with the Meter step reached on both.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
+    fn field(o: &Observed, k: &str) -> String {
+        o.0.iter()
+            .find(|(f, _)| *f == k)
+            .map(|(_, v)| v.clone())
+            .unwrap_or_default()
+    }
+
+    for fixture in [Fixture::BufferedOk, Fixture::StreamedOk] {
+        let (observed, metering) = leg_chain_metered(fixture).await;
+        assert!(metering.reached, "{fixture:?}: the Meter step ran");
+        assert!(
+            !metering.posted_here,
+            "{fixture:?}: the walk's tap made the accrual, so the step sealed it rather than \
+             posting a second one"
+        );
+        let rows = field(&observed, "metering_rows");
+        assert_eq!(
+            rows.lines().count(),
+            1,
+            "{fixture:?}: one unit, one metering row — got:\n{rows}"
+        );
+        assert_eq!(
+            rows,
+            format!("{LANE}/test in={INPUT} out={OUTPUT} cr=0 cw=0 req=1 billable=1"),
+            "{fixture:?}: and it is the 1.5.5 row, posted once"
+        );
+        assert_eq!(field(&observed, "ledger_requests"), "1");
+        assert_eq!(
+            field(&observed, "ledger_tokens"),
+            (INPUT + OUTPUT).to_string(),
+            "{fixture:?}: the tokens are accrued once, not twice"
+        );
+    }
+}
+
+/// GAP 3, CLOSED — the VERIFY step hands its named refusal back with the decision.
+///
+/// `verify::verify` answers a [`verify::Verified`]: the `Decision<Verify>` the loop reads, whose
+/// `Refusal` carries the neutral reason code and retry hint, and beside it the `VerifyRefusal` the
+/// step actually raised. The wire triple therefore comes from the ONE reading of the guards that
+/// produced the refusal, rather than from a second reading that could answer differently.
+#[tokio::test]
+async fn the_verify_refusal_carries_the_wire_triple_the_guards_named() {
+    let rig = rig(Fixture::PoolAcl).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
+    let seal = kernel_seal();
+    let answer = verify::verify(
+        &UnitToken::mint(&seal),
+        &view,
+        POOL,
+        &PrincipalId::new(rig.key.id.clone()),
+        Vec::new(),
+    );
+    let named = answer.refusal.clone().expect("the guards refused");
+    let refusal = answer
+        .decision
+        .into_result(&seal)
+        .expect_err("the decision refused");
+    // The two readings of one answer agree: the loop's reason code, and the step's own triple.
+    assert_eq!(refusal.reason(), named.reason());
+    assert_eq!(named.status(), 403);
+    assert_eq!(named.kind(), crate::engine::KIND_PERMISSION);
+    rig.server.shutdown().await;
+}
+
+/// GAP 3b, CLOSED — VERIFY is on the typed refusal value.
+///
+/// `VerifyRefusal::outcome()` answers an `audit::RefusalOutcome`, exactly as `ArrivalRefusal` and
+/// `DecodeRefusal` do, so the driver above names no status, no kind word and no sentence of its own
+/// — it hands the outcome to the terminal, which is the one place a refusal becomes bytes.
+#[test]
+fn the_verify_step_answers_with_the_typed_refusal_value() {
+    let outcome = verify::VerifyRefusal::NotAuthorized.outcome();
+    assert_eq!(outcome.status(), StatusCode::FORBIDDEN);
+    assert_eq!(outcome.kind(), crate::engine::KIND_PERMISSION);
+    assert_eq!(
+        outcome.message(),
+        "Your API key does not have permission to access this resource."
+    );
+}
+
+/// GAP 4, CLOSED — the VERIFY step reads a live deployment through a production `PoolView`.
+///
+/// `verify::HostPoolView` is that view, and the chain above drives it rather than an adapter of its
+/// own. This pins that it answers what the LIVE guard answers on the same deployment: the fixture's
+/// key may not reach the pool it names, `destination_guard` over the view refuses, and
+/// `EngineHost::destination_guard` — the shipped path, which answers with finished bytes — refuses
+/// the same request.
+#[tokio::test]
+async fn the_verify_step_reads_a_live_deployment_through_a_pool_view() {
+    let rig = rig(Fixture::PoolAcl).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
+
+    let refused = verify::destination_guard(&view, POOL).expect_err("the key may not reach it");
+    assert_eq!(refused, verify::VerifyRefusal::NotAuthorized);
+    assert!(
+        host.destination_guard(&gov, PROTO, POOL, Instant::now(), rig.charged_at)
+            .is_err(),
+        "the shipped guard refuses the same request on the same deployment"
+    );
+
+    // And an unrestricted name on the same deployment passes both.
+    let unkeyed = busbar_api::PlaneRequestCtx { key: None };
+    let open = verify::HostPoolView::new(&*host, &*rt, None);
+    assert_eq!(verify::destination_guard(&open, POOL), Ok(()));
+    assert!(host
+        .destination_guard(&unkeyed, PROTO, POOL, Instant::now(), rig.charged_at)
+        .is_ok());
+    rig.server.shutdown().await;
+}
+
+/// GAP 4b, CLOSED — the plane can read whether a rate card is present.
+///
+/// The two questions VERIFY's third guard asks are answered through the host's cost seam over the
+/// opaque handle, so the guard that refuses an unbillable name is answered from the plane side
+/// without the plane ever reading a rate. The fixtures configure no card, and the seam says so —
+/// which is the difference between an answer and a fixture-shaped guess.
+#[tokio::test]
+async fn the_plane_reads_whether_a_rate_card_is_present() {
+    use verify::PoolView as _;
+
+    let rig = rig(Fixture::BufferedOk).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let cost = host.cost();
+    assert!(
+        !host.cost_pricing_enabled(&cost),
+        "these fixtures configure no rate card"
+    );
+    assert!(!host.cost_model_unpriced(&cost, "made-up-name"));
+
+    let gov = rig.gov();
+    let view = verify::HostPoolView::new(&*host, &*rt, gov.key.as_deref());
+    assert_eq!(view.pricing_enabled(), host.cost_pricing_enabled(&cost));
+    assert_eq!(
+        view.is_unpriced("made-up-name"),
+        host.cost_model_unpriced(&cost, "made-up-name")
+    );
+    rig.server.shutdown().await;
+}
+
+/// GAP 5, CLOSED — a configured lane's runtime name can be sealed into a `VerifiedDestination`.
+///
+/// The bridge is the registration interner, not a second id type: a config-derived name is leaked
+/// into a `&'static str` exactly once and `LaneId` stays the one `Copy` name the rate card, the
+/// verified destination and the locator comparison are all written in. Interning is idempotent, so
+/// sealing the same lane twice yields the same id and leaks once — which is what makes this legal on
+/// a request path at all.
+#[tokio::test]
+async fn a_configured_lanes_runtime_name_can_be_sealed() {
+    let rig = rig(Fixture::BufferedOk).await;
+    let (_host, rt) = crate::engine::test_host_rt(&rig.app);
+    // Read out of the running tables as a runtime `String` — nothing static about it.
+    let configured: String = rt
+        .lane_view(0)
+        .expect("the fixture configures one lane")
+        .model
+        .to_string();
+    assert_eq!(configured, LANE);
+
+    let seal = kernel_seal();
+    let sealed = sealed_destinations(&seal, &configured);
+    assert_eq!(sealed.len(), 1);
+    assert_eq!(sealed[0].lane().as_str(), configured);
+    // Idempotent: the second seal of the same name is the same id, so this is a fixed cost.
+    let again = sealed_destinations(&seal, &configured);
+    assert_eq!(again[0].lane(), sealed[0].lane());
+    assert!(std::ptr::eq(
+        again[0].lane().as_str(),
+        sealed[0].lane().as_str()
+    ));
+    rig.server.shutdown().await;
+}
+
+/// GAP 6, CLOSED — the ADMIT door renders its refusal and the AUDIT step posts it.
+///
+/// `admit::admit` reaches the door through `EngineHost::admission_check`, which is the door's own
+/// check-and-charge WITHOUT the `finish_rejected` `admission_door` wraps its refusing arm in. So
+/// `Admitted::refusal` is bytes rather than an already-posted record, the chain hands it to
+/// `audit::audit_refused`, and the over-budget path ends where every other path ends — with exactly
+/// one link on the unit's chain.
+#[tokio::test]
+async fn the_admit_doors_refusal_is_posted_once_by_the_audit_step() {
+    let rig = rig(Fixture::OverBudget).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let headers = json_headers();
+    let body = request_body(Fixture::OverBudget);
+    let seal = kernel_seal();
+    let mut metering = Metering::none();
+    let resp = drive(
+        &seal,
+        &host,
+        &rt,
+        &gov,
+        &headers,
+        &body,
+        Instant::now(),
+        rig.charged_at,
+        &mut metering,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 429, "the door's own refusal");
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+
+    let records = REQUESTS.records_for(&rig.key.id);
+    assert_eq!(
+        records.len(),
+        1,
+        "one unit, one link — the door posted none of its own"
+    );
+    assert_eq!(
+        records[0].pool, POOL,
+        "and the one link names the pool the caller asked for"
+    );
+    assert!(
+        !metering.reached,
+        "a unit refused at the door never reaches the Meter step"
+    );
+    assert!(REQUESTS.verify_principal_chain(&rig.key.id).is_ok());
+    rig.server.shutdown().await;
+}
+
+/// GAP 7, CLOSED — `audit_refused` labels a pre-door refusal with the pool it was raised against.
+///
+/// The live pre-admission guard finishes through `finish_rejected` with `pool_label(app, pool)`, so
+/// a 403 against a CONFIGURED pool is recorded against that pool's name. `audit::audit_refused` now
+/// takes the destination and applies the SAME bound, so the two agree on the record as well as on
+/// the bytes — and a name no deployment configured still reads back as the reserved unresolved
+/// label, so nothing was widened to close this.
+#[tokio::test]
+async fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
+    // LEG 1 — the live pre-admission guard, on its own deployment.
+    let live_rig = rig(Fixture::PoolAcl).await;
+    let (live_host, _live_rt) = crate::engine::test_host_rt(&live_rig.app);
+    assert_eq!(
+        live_host.pool_label(POOL),
+        POOL,
+        "the fixture's pool is configured, so the live label is its name"
+    );
+    let live = live_host
+        .destination_guard(
+            &live_rig.gov(),
+            PROTO,
+            POOL,
+            Instant::now(),
+            live_rig.charged_at,
+        )
+        .expect_err("the key may not reach the pool it named");
+    assert_eq!(live.status().as_u16(), 403);
+    let live_records = REQUESTS.records_for(&live_rig.key.id);
+    assert_eq!(live_records.len(), 1, "the live guard posts one link");
+    assert_eq!(
+        live_records[0].pool, POOL,
+        "and names the pool it turned the caller away from"
+    );
+    live_rig.server.shutdown().await;
+
+    // LEG 2 — the chain, through the step files, on its own deployment.
+    let unit_rig = rig(Fixture::PoolAcl).await;
+    let (host, rt) = crate::engine::test_host_rt(&unit_rig.app);
+    let gov = unit_rig.gov();
+    let headers = json_headers();
+    let body = request_body(Fixture::PoolAcl);
+    let seal = kernel_seal();
+    let mut metering = Metering::none();
+    let resp = drive(
+        &seal,
+        &host,
+        &rt,
+        &gov,
+        &headers,
+        &body,
+        Instant::now(),
+        unit_rig.charged_at,
+        &mut metering,
+    )
+    .await;
+    assert_eq!(resp.status().as_u16(), 403);
+    let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
+
+    let unit_records = REQUESTS.records_for(&unit_rig.key.id);
+    assert_eq!(unit_records.len(), 1, "one unit, one link");
+    assert_eq!(
+        unit_records[0].pool, live_records[0].pool,
+        "the step's record names the pool the live guard's record names"
+    );
+    assert_eq!(
+        (
+            unit_records[0].outcome.clone(),
+            unit_records[0].reason.clone(),
+            unit_records[0].status
+        ),
+        (
+            live_records[0].outcome.clone(),
+            live_records[0].reason.clone(),
+            live_records[0].status
+        )
+    );
+    // The bound is unchanged for a name nothing configured, which is the half a fix could have
+    // broken without any of the above noticing.
+    assert_eq!(
+        host.pool_label("no-such-pool"),
+        crate::engine::POOL_LABEL_UNRESOLVED
+    );
+    unit_rig.server.shutdown().await;
+}
+
+/// GAP 8, CLOSED — ROUTE and AUDIT are on the token seam.
+///
+/// Both now take a `UnitToken<S>` and answer with a `Decision<S>` over the step's own facts:
+/// `route::route` with a `RoutePlan`, `audit::audit` and `audit::audit_refused` with `AuditFacts`.
+/// The response each of them still carries rides beside the decision rather than instead of it, the
+/// way the admit step's rendered refusal already does — a plane's steps decide, and the last of
+/// them also happens to have bytes to hand back.
+///
+/// What is checked here is what a driver could not write before: a decision of the RIGHT step,
+/// opened with the seal, carrying the facts `Step::Facts` names for that step. A step answering the
+/// wrong step's question does not compile, which is the seam doing its job at the type level; this
+/// test holds the runtime half — that the answers are real values and not defaults built to satisfy
+/// a signature.
+#[tokio::test]
+async fn route_and_audit_are_on_the_token_seam() {
+    use busbar_caps::{AuditFacts, RoutePlan, StepName};
+    use busbar_contract::FinishClass;
+
+    let rig = rig(Fixture::UnknownModel).await;
+    let (host, rt) = crate::engine::test_host_rt(&rig.app);
+    let gov = rig.gov();
+    let headers = json_headers();
+    let seal = kernel_seal();
+
+    // ROUTE, on a destination that resolves: a proceed carrying the plan the walk ran, whose one
+    // leg names the lane this deployment CONFIGURED — the runtime name off the tables, interned
+    // once through the node's own registration, the same bridge the verified set crosses.
+    let body = request_body(Fixture::BufferedOk);
+    let token: UnitToken<Route> = UnitToken::mint(&seal);
+    let routed = route::route(
+        &token,
+        route::RouteInput {
+            host: &host,
+            rt: &rt,
+            proto: PROTO,
+            op: crate::test_support::CHAT,
+            destination: POOL,
+            headers: &headers,
+            body: body.clone(),
+            parsed: crate::engine::LazyBody::parse(&body).ok(),
+            caller_token: None,
+            resolved_gov_key: None,
+            usage_sink: None,
+            model_not_found_message: None,
+            // The rehearsal's one interner — the composition root's, standing in.
+        },
+    )
+    .await;
+    let response = routed.response;
+    let plan: RoutePlan = routed
+        .decision
+        .into_result(&seal)
+        .expect("a resolvable destination proceeds");
+    assert_eq!(plan.legs.as_slice().len(), 1, "one lane, one leg");
+    assert_eq!(
+        plan.legs.as_slice()[0]
+            .destination
+            .lane()
+            .expect("an upstream leg is priced on a lane")
+            .as_str(),
+        LANE,
+        "the leg names the lane the walk would dial, not a literal spelled here"
+    );
+
+    // AUDIT, over those same bytes: a proceed carrying what the plane says the unit was and how it
+    // says it ended.
+    let token: UnitToken<Audit> = UnitToken::mint(&seal);
+    let audited = audit::audit(
+        &token,
+        &audit_ctx(&host, &gov, POOL, Instant::now(), rig.charged_at),
+        audit::Served::of(response),
+        true,
+    );
+    let status = audited.response.as_response().status().as_u16();
+    let _ =
+        axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
+    let facts: AuditFacts = audited
+        .decision
+        .into_result(&seal)
+        .expect("the terminal seals rather than refuses");
+    assert_eq!(
+        facts,
+        AuditFacts {
+            op_class: OP_CLASS,
+            finish: if (200..300).contains(&status) {
+                FinishClass::Complete
+            } else {
+                FinishClass::Error
+            },
+        },
+        "the sealed end is the end the CLIENT saw"
+    );
+
+    // ROUTE again, on a destination that resolves to nothing: a refusal stamped with its own step,
+    // which is the half of the seam a proceed cannot show.
+    let body = request_body(Fixture::UnknownModel);
+    let token: UnitToken<Route> = UnitToken::mint(&seal);
+    let missed = route::route(
+        &token,
+        route::RouteInput {
+            host: &host,
+            rt: &rt,
+            proto: PROTO,
+            op: crate::test_support::CHAT,
+            destination: "no-such-model",
+            headers: &headers,
+            body: body.clone(),
+            parsed: crate::engine::LazyBody::parse(&body).ok(),
+            caller_token: None,
+            resolved_gov_key: None,
+            usage_sink: None,
+            model_not_found_message: None,
+            // The rehearsal's one interner — the composition root's, standing in.
+        },
+    )
+    .await;
+    let _ = axum::body::to_bytes(missed.response.into_body(), usize::MAX).await;
+    let refusal = missed
+        .decision
+        .into_result(&seal)
+        .expect_err("a destination that resolves to nothing refuses");
+    assert_eq!(refusal.step(), Some(StepName::Route));
+    assert_eq!(refusal.reason(), busbar_caps::ReasonCode::NoDestination);
+
+    rig.server.shutdown().await;
+}
