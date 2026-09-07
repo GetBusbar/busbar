@@ -1791,14 +1791,22 @@ fn mutations() -> Vec<Mutation> {
             creates: false,
         },
         Mutation {
+            // THE ANCHOR IS THE `needs:` LINE ALONE. It used to carry the two lines that followed
+            // it in release.yml at the time it was written (`runs-on:` then `outputs:`) to
+            // disambiguate. There is nothing to disambiguate -- `needs: [plan, branch-green]`
+            // occurs exactly once in the file -- and the extra lines only made the mutation break
+            // the moment anything was inserted between the job header and its outputs, which is
+            // what adding a `permissions:` block does. Same failure shape as R11's checkout anchor:
+            // a mutation that edits nothing proves nothing, and the selftest then refuses the whole
+            // lint's verdict.
             label: "R9 the record resolution stops depending on the red-branch gate",
             file: "release.yml",
             rule: "R9",
             apply: |t| {
                 replace_once(
                     t,
-                    "    needs: [plan, branch-green]\n    runs-on: ubuntu-latest\n    outputs:",
-                    "    needs: [plan]\n    runs-on: ubuntu-latest\n    outputs:",
+                    "    needs: [plan, branch-green]\n",
+                    "    needs: [plan]\n",
                 )
             },
             creates: false,

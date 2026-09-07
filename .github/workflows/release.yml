@@ -103,6 +103,15 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+# THE WORKFLOW-LEVEL BLOCK IS THE CEILING, NOT THE GRANT. Every job below states its own
+# `permissions:`, and a job-level block REPLACES this one rather than adding to it, so what any one
+# job holds is what it names. That distinction is the whole point here: four of the six jobs in this
+# file are pure reads, and until they said so they each ran with `packages: write`, `contents: write`
+# and `attestations: write` -- the full set needed by the one job that promotes. `resolve-staged` in
+# particular is documented three screens down as "a pure read of the Actions API, the registries and
+# the release", and it was holding the capability to push an image and move a tag while it read.
+# Nothing exploited that; the point is that a token's blast radius should be an argument someone had
+# to make, not a default someone forgot to narrow.
 permissions:
   contents: write      # draft the Release, upload assets, push the version tag on promote
   packages: write      # docker.yml (called below) pushes to GHCR
@@ -133,6 +142,13 @@ jobs:
   plan:
     name: plan (version, staging name, is this name still free)
     runs-on: ubuntu-latest
+    # Reads Cargo.toml, the git tags, the release list and an anonymous Docker Hub manifest HEAD.
+    # It decides whether to release; it must not be able to release.
+    permissions:
+      contents: read
+    # A version read, a tag lookup, two `gh` calls and two 30s-capped curls. Anything past this is
+    # a hang, and a hang here holds `concurrency: release` -- so the NEXT release waits on it too.
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.p.outputs.version }}
       tag: ${{ steps.p.outputs.tag }}
@@ -249,6 +265,12 @@ jobs:
     needs: plan
     if: ${{ needs.plan.outputs.release == '1' }}
     runs-on: ubuntu-latest
+    # It asks the Actions API and the statuses API what concluded on this sha. It changes nothing,
+    # and a gate that could change what it is judging is not a gate.
+    permissions:
+      contents: read
+      actions: read
+      statuses: read
     # Bounded well above a normal CI run (the `check` job with its Postgres and Valkey service
     # containers is the long pole) and well below anything that would sit here all day. Running out
     # is a refusal, not a pass, so a generous bound costs waiting and never correctness.
@@ -495,6 +517,19 @@ jobs:
     name: resolve the staged record (refuse if absent, stale or contradicted)
     needs: [plan, branch-green]
     runs-on: ubuntu-latest
+    # THE PURE READ, SAID IN THE ONE PLACE THAT ENFORCES IT. `actions: read` finds the stage run and
+    # downloads its artifact, `contents: read` views and downloads the draft, `attestations: read`
+    # is what `gh attestation verify` needs. It re-derives every claim in the record from outside
+    # and writes nothing anywhere; withholding the write scopes is what makes that checkable rather
+    # than merely stated.
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    # Registry HEADs and `gh` reads, all individually capped, plus one draft-asset download to
+    # re-hash. Generous for a big draft, far short of the 6h default that would pin the release
+    # concurrency group behind a wedged read.
+    timeout-minutes: 30
     outputs:
       staging_tag: ${{ steps.r.outputs.staging_tag }}
       digest: ${{ steps.r.outputs.digest }}
@@ -817,6 +852,18 @@ jobs:
     name: promote ${{ needs['resolve-staged'].outputs.promote_tag }} (tag + publish + prove it landed)
     needs: [plan, resolve-staged, promote-image]
     runs-on: ubuntu-latest
+    # THE ONE JOB IN THIS FILE THAT MAY WRITE, and it writes exactly two things: the git tag and the
+    # release's draft flag. `actions: read` is for the red-right-now re-check immediately below,
+    # which reads every run on the sha before the tag is pushed. No `packages:`/`id-token:`/
+    # `attestations:` -- promote-image already did the registry half in its own call, under its own
+    # grant, and finished before this job started.
+    permissions:
+      contents: write
+      actions: read
+      statuses: read
+    # The API re-check retries for at most ~2.5 minutes; everything after it is a tag push, a draft
+    # flip and four independent reads. Twenty is slack, not a budget.
+    timeout-minutes: 20
     outputs:
       version: ${{ needs.plan.outputs.version }}
       # Re-exported so the three public-facing jobs below can branch on it WITHOUT taking a
@@ -1015,6 +1062,13 @@ jobs:
     # fan a soak out to nineteen repos as though it had shipped.
     if: ${{ needs['promote-release'].outputs.is_rc != '1' }}
     runs-on: ubuntu-latest
+    # It checks out this repo only to read .github/release-notify-targets.txt, and every write it
+    # performs is to OTHER repos under RELEASE_DISPATCH_TOKEN. GITHUB_TOKEN needs nothing but read.
+    permissions:
+      contents: read
+    # Nineteen `gh api` dispatches. If this is still running at 15 minutes something is hung, and a
+    # hung fan-out holds `concurrency: release` against the next version.
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Dispatch upstream-release to every listed downstream repo
@@ -1085,6 +1139,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    # One `gh release view` and one webhook POST.
+    timeout-minutes: 10
     steps:
       - name: Post the release to Discord
         env:
