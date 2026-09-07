@@ -813,16 +813,17 @@ mod tests {
             "a holder that has heard no apply prices nothing"
         );
 
-        let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 3)));
+        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(3)));
         let admitted = holder.pin().expect("the first apply put a card in place");
-        assert_eq!(admitted.fee_unit_price_nanos(), 30_000_000);
+        assert_eq!(
+            admitted.fee_unit_price_nanos(busbar_unit_cost::CurrencyCode::USD),
+            30_000_000
+        );
 
         // The apply a request in flight must not feel.
-        let version = busbar_unit_cost::RateCardVersion::new("root-llm");
-        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(version, 11)));
+        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(11)));
         assert_eq!(
-            admitted.fee_unit_price_nanos(),
+            admitted.fee_unit_price_nanos(busbar_unit_cost::CurrencyCode::USD),
             30_000_000,
             "a reader that pinned before the apply was repriced by it"
         );
@@ -830,7 +831,7 @@ mod tests {
             holder
                 .pin()
                 .expect("the second apply put a card in place")
-                .fee_unit_price_nanos(),
+                .fee_unit_price_nanos(busbar_unit_cost::CurrencyCode::USD),
             110_000_000,
             "the apply did not reach the next admission's card"
         );
