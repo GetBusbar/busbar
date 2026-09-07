@@ -313,7 +313,7 @@ jobs:
       - name: Blocking-FFI lint
         run: cargo xtask gate blocking-ffi
       # THE FOUR GATES BELOW EACH SHIPPED WITH A --selftest AND A --check AND WERE INVOKED BY
-      # NOTHING: no workflow step, no qa/segments.toml row, and so nothing scripts/full-gate.sh could
+      # NOTHING: no workflow step, no qa/segments.toml row, and so nothing cargo xtask full-gate could
       # discover. A gate nobody runs measures nothing — it is a script with the SHAPE of a gate, which
       # is worse than no gate at all, because its existence reads as coverage. All four are GREEN on
       # this tree today, which is exactly why they are being wired now rather than after a regression
@@ -2085,7 +2085,7 @@ jobs:
           diff -u qa/design-bindings.json target/design-bindings/fresh.json || stale=1
           diff -u qa/DESIGN-BINDINGS.md target/design-bindings/fresh.md || stale=1
           if [ "$stale" -ne 0 ]; then
-            # The regen command is spelled without its directory on purpose: scripts/full-gate.sh
+            # The regen command is spelled without its directory on purpose: cargo xtask full-gate
             # discovers gates from this file's run lines, and a literal path here would make it run
             # the --write (rewriting the committed ledger locally) as if it were a gate.
             echo "::error::qa/design-bindings.json or qa/DESIGN-BINDINGS.md is stale. Regenerate with design-bindings.sh --write (under scripts/) and commit both files."

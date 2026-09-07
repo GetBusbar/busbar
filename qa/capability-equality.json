@@ -15,7 +15,7 @@
     "                     A proof that nobody watched is a claim; MISSING is the honest state until",
     "                     a named test exists. The missing set is the work queue, and every umbrella",
     "                     run prints it (scripts/capability-equality-summary.py, wired into",
-    "                     scripts/full-gate.sh) -- green stays green, but the gap is NAMED.",
+    "                     cargo xtask full-gate) -- green stays green, but the gap is NAMED.",
     "  not-applicable  -- with `reason`: a one-line argument. N/A is a claim, not an escape; the",
     "                     gate refuses an n/a cell whose argument is missing or trivial.",
     "",
