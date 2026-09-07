@@ -2209,7 +2209,9 @@ mod failed_open_reclaim {
     static TEST_LOCK: Mutex<()> = Mutex::new(());
 
     pub fn lock() -> MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+        TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// A plugin `busbar_close` that records the handle it was handed.
