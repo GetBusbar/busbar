@@ -220,9 +220,9 @@ jobs:
       # site repo; this guards the source shape the site can only render what it is given. Self-test
       # runs FIRST: never trust the lint's verdict before proving the lint still fires.
       - name: Changelog lint self-test (every rule proven RED)
-        run: python3 scripts/changelog-lint.py --selftest
+        run: cargo xtask gate changelog --selftest
       - name: Changelog lint
-        run: python3 scripts/changelog-lint.py --root .
+        run: cargo xtask gate changelog
       # WORKSPACE-DEPS lint: one version requirement per external dependency, written once in
       # [workspace.dependencies]. The table makes that POSSIBLE; only this lint makes it TRUE —
       # nothing in Cargo stops a member re-stating a version, and before the table `hex`, `sha2` and

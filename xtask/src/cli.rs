@@ -117,7 +117,40 @@ fn gate(args: &[String]) -> i32 {
         return 2;
     };
 
-    let gate = (reg.build)();
+    // THE RELEASE-TIME ARMS, as flags on the gate and never as an environment variable.
+    //
+    // A few gates run a stricter form at release time than on every push. Those arms stay explicit
+    // here because an env-overridable strictness is a strictness that is off wherever nobody looked
+    // — the cautionary case is a group floor that was overridable downward from the environment
+    // with no floor-only-rises guard. A flag has to be written at the call site, in a diff.
+    //
+    // Unknown here is an ARGUMENT error, not a quietly looser run: a gate handed `--require-verison`
+    // must not report green having checked the ordinary arm.
+    let require_dated_top = args.iter().any(|a| a == "--require-dated-top");
+    let require_version = args
+        .iter()
+        .find_map(|a| a.strip_prefix("--require-version="))
+        .map(str::to_string);
+    let gate: Box<dyn gates::Gate> = if require_dated_top || require_version.is_some() {
+        if reg.name != "changelog" {
+            eprintln!(
+                "xtask gate {}: --require-version/--require-dated-top are the changelog gate's \
+                 release arms; `{}` has no such arm and must not report green as though it ran one.",
+                reg.name, reg.name
+            );
+            return 2;
+        }
+        let mut g = crate::gates::changelog::ChangelogGate::new();
+        if require_dated_top {
+            g = g.require_dated_top();
+        }
+        if let Some(v) = require_version {
+            g = g.require_version(v);
+        }
+        Box::new(g)
+    } else {
+        (reg.build)()
+    };
     if want_selftest {
         return run_selftest(gate.as_ref(), &cx);
     }
