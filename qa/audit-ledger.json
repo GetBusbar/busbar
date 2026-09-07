@@ -3239,15 +3239,33 @@
    "paths": [
     "crates/busbar/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "d05798da5436a9190f90b4dc4d673a82ba99cdfd3c6704bd600f055959c4eac5",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 15,
+    "MEDIUM": 38,
+    "LOW": 13
+   },
+   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md",
+   "auditor": "opus-test-auditor-root",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-root",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "d05798da5436a9190f90b4dc4d673a82ba99cdfd3c6704bd600f055959c4eac5",
+     "counts": {
+      "HIGH": 15,
+      "MEDIUM": 38,
+      "LOW": 13
+     },
+     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar/benches",
@@ -3329,15 +3347,33 @@
    "paths": [
     "crates/busbar-core/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "a86ee2c767b7ca142d4002b0db57f6d6843f7e118c6a529269cf12deb80d3dd2",
+   "audited_at": "759280973a9075e8c1197116643156290af970a0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 4,
+    "LOW": 9
+   },
+   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md",
+   "auditor": "opus-test-auditor-core",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-core",
+     "audited_at": "759280973a9075e8c1197116643156290af970a0",
+     "tree_hash": "a86ee2c767b7ca142d4002b0db57f6d6843f7e118c6a529269cf12deb80d3dd2",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 4,
+      "LOW": 9
+     },
+     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-core/tests",
@@ -3555,15 +3591,33 @@
    "paths": [
     "crates/busbar-plane-mcp/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "56342b88ee8fb65b1ecd3f343114e02fa25e214500b25a6e6294a6a1334bb4cc",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 3,
+    "LOW": 5
+   },
+   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-planes",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "56342b88ee8fb65b1ecd3f343114e02fa25e214500b25a6e6294a6a1334bb4cc",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "LOW": 5
+     },
+     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-voice/src/tests",
