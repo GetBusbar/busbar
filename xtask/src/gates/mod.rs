@@ -19,6 +19,7 @@
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
 pub mod denylist_gate;
+pub mod kernel_token_wire_purity;
 pub mod segregation;
 
 use std::collections::BTreeSet;
@@ -60,6 +61,17 @@ pub trait Gate {
     /// Proves the gate can still be RED, by planting violations into overlays and requiring the
     /// run to report them BY NAME.
     fn selftest(&self, cx: &Ctx) -> Report;
+
+    /// Read the legacy script's OWN OUTPUT into the rows this gate would emit for the same tree,
+    /// for the conversions whose legacy writes no ledger TSV to compare against.
+    ///
+    /// `None` — the default — means "this gate's legacy writes a ledger"; `cargo xtask gate
+    /// <name> --parity` then reads `$LEDGER` instead. A translator MUST build its rows with the
+    /// same constructor [`Gate::run`] uses, so the only thing that can differ between the two
+    /// sides is the offender set, which is the only thing worth comparing.
+    fn legacy_rows(&self, _run: &crate::parity::LegacyRun) -> Option<Result<Vec<Row>, String>> {
+        None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -283,6 +295,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(segregation::SegregationGate),
         summary: "xtask depends on no product crate and the oracle imports nothing from the tree",
+    },
+    Registration {
+        name: "kernel-token-wire-purity",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(kernel_token_wire_purity::KernelTokenWirePurityGate),
+        summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
     },
 ];
 
