@@ -16,6 +16,10 @@
 #      and splits two OVERLAPPING lines into separate batches.
 #   E  a red landing stops the queue, leaves the rest queued, and writes a RED ledger row.
 #   F  the ledger records one row per landing, with the ignored flags named.
+#   G  a commit with an EMPTY path set is refused, like a merge, instead of batching with anything.
+#
+# EVERY CASE THAT OPENS A PR ALSO ASSERTS WHICH HASHES REACHED THE LANDER. Counting calls is not the
+# claim; landing what the queue said is. See the `landed` helper below.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 root="$here/.fix/pr-queue-selftest.$$"
@@ -25,6 +29,30 @@ rm -rf "$root"; mkdir -p "$root"
 fails=0
 ok()  { echo "  ok   — $*"; }
 bad() { echo "  BAD  — $*" >&2; fails=$((fails + 1)); }
+
+# ── ASSERT THE HASHES, NOT THE CALL COUNT ─────────────────────────────────────────────────────────
+# Counting lander calls and counting --wait flags is not the same claim as "the queue landed what
+# the queue said". A consumer that opened the right NUMBER of PRs while landing the wrong commits —
+# or no commit at all — satisfied every count this file used to assert, and one did: the flush
+# clobbered the consume loop's cursor, so every line after the first reached the lander as a blank
+# record. Two lander calls, two --wait flags, two ledger rows, one landing. Every case that opens a
+# PR now names the hashes it expects to see and asserts that NO call was made without one.
+landed() {   # landed <hash>...  — exactly these hashes reached the lander, and nothing hash-less did
+  local h missing=""
+  for h in "$@"; do grep -q "$h" "$SHIM_LOG" || missing="$missing $h"; done
+  [ -z "$missing" ] && ok "every queued hash reached the lander" \
+                    || bad "queued hash(es) never reached the lander:$missing — log: $(tr '\n' ';' <"$SHIM_LOG")"
+  if grep -qE '^[[:space:]]*--' "$SHIM_LOG"; then
+    bad "the lander was called with NO hash at all — a landing was silently dropped"
+  else
+    ok "no hash-less lander call"
+  fi
+}
+ledger_hashes_present() {  # every ledger row names a hash in column 2
+  local n; n="$(awk -F'\t' 'NF && $2==""{n++} END{print n+0}' "$1")"
+  [ "$n" = "0" ] && ok "every ledger row names a hash" \
+                 || bad "$n ledger row(s) carry an EMPTY hash column"
+}
 
 # ── THE LANDER SHIM ───────────────────────────────────────────────────────────────────────────────
 # Records its argv one line per call, and fails for any hash listed in $SHIM_RED.
@@ -94,6 +122,7 @@ out="$(run_queue "$A1
 $B1" --base dev)"
 [ "$(grep -c . "$SHIM_LOG")" = "2" ] && ok "two landings, two lander calls" || bad "expected 2 lander calls, got $(grep -c . "$SHIM_LOG")"
 [ "$(grep -c -- '--wait' "$SHIM_LOG")" = "2" ] && ok "each solo PR is waited on" || bad "a solo PR was not waited on"
+landed "$A1" "$B1"
 
 # ── CASE D: --parallel 2 BATCHES DISJOINT LINES AND SPLITS OVERLAPPING ONES ───────────────────────
 echo "case D — --parallel 2 batches disjoint lines and splits overlapping ones"
@@ -103,12 +132,27 @@ $C1" --base dev --parallel 2)"
   && ok "a batch of two is not waited on serially (the merge queue orders them)" \
   || bad "a parallel batch was still waited on serially"
 [ "$(grep -c . "$SHIM_LOG")" = "2" ] && ok "both disjoint lines were opened" || bad "expected 2 opens"
+landed "$B1" "$C1"
 # b and a-again overlap nothing; a and a-again DO overlap, so they must not share a batch.
 out="$(run_queue "$A1
 $A2" --base dev --parallel 2)"
 [ "$(grep -c -- '--wait' "$SHIM_LOG")" = "2" ] \
   && ok "two lines touching the same file are two batches of one" \
   || bad "overlapping lines were batched together"
+# THE CASE THAT CAUGHT IT. Two batches of one satisfied the --wait count above while the SECOND
+# batch landed nothing: the flush that split them had already blanked the consume loop's cursor.
+landed "$A1" "$A2"
+
+# ── A COMMIT WITH AN EMPTY PATH SET IS DISJOINT FROM EVERYTHING ───────────────────────────────────
+# `--allow-empty` is not a merge, so it walked past the merge refusal and handed back the empty set,
+# which batches with anything. It must be refused for the same reason a merge is.
+git -C "$wt" commit -q --allow-empty -m 'an empty commit'
+E1="$(git -C "$wt" rev-parse HEAD)"
+out="$(run_queue "$B1
+$E1" --base dev --parallel 2)"; rc=$?
+[ "$rc" -ne 0 ] && ok "a commit touching no files is refused ($rc)" || bad "an empty commit was scheduled: $out"
+case "$out" in *"touches no files"*) ok "says why it refused" ;; *) bad "no empty-path-set message: $out" ;; esac
+grep -q "$E1" "$SHIM_LOG" && bad "the empty commit reached the lander" || ok "the empty commit never reached the lander"
 
 # ── CASE E: A RED LANDING STOPS THE QUEUE ─────────────────────────────────────────────────────────
 echo "case E — a red landing stops the queue and leaves the rest queued"
@@ -127,9 +171,13 @@ $C1" --base dev)"
 grep -q "ignored=--gate rowA" "$wt/land-queue.done" && ok "the ledger names the ignored flags" || bad "the ledger does not name the ignored flags"
 grep -q "ignored=none" "$wt/land-queue.done" && ok "a line with no flags says none" || bad "no 'ignored=none' row"
 grep -q "OPENED" "$wt/land-queue.done" && ok "ledger carries an OPENED row" || bad "no OPENED row"
+# A blank record also parses as "ignored=none", so the row count and the flag names above were both
+# satisfied by a dropped landing. The hash column is the assertion that is not.
+landed "$B1" "$C1"
+ledger_hashes_present "$wt/land-queue.done"
 
 if [ "$fails" -eq 0 ]; then
-  echo "pr-queue-selftest: GREEN — 6 cases; flags ignored aloud, STOP honoured, batching by disjoint files, ledger written"
+  echo "pr-queue-selftest: GREEN — 7 cases; flags ignored aloud, STOP honoured, batching by disjoint files, every queued hash landed, ledger written"
   exit 0
 fi
 echo "pr-queue-selftest: RED — $fails assertion(s) failed" >&2
