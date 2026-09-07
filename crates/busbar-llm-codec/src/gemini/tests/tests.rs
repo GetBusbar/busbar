@@ -6906,6 +6906,59 @@ fn recover_truncated_usage_counts_thinking_as_output() {
     assert_eq!(usage.cache_read, Some(200));
 }
 
+/// Regression: the truncated-usage recovery path must bill a tool turn's
+/// `toolUsePromptTokenCount` as INPUT, exactly as the buffered `gemini_usage` path does.
+///
+/// The discovery document makes `toolUsePromptTokenCount` its own top-level `UsageMetadata` member
+/// ("Output only. Number of tokens present in tool-use prompt(s)") while `promptTokenCount` folds in
+/// exactly ONE other member (the cached content). On a tool turn it is therefore an ADDITIVE bucket
+/// Google bills at the input rate. `gemini_usage` adds it; this path did not read the field at all,
+/// so the SAME Gemini body billed two different amounts depending only on whether it fit the
+/// reassembly cap — and the tool-heavy responses are exactly the ones large enough to overflow it.
+///
+/// WHAT IS ASSERTED IS THE IDENTITY BETWEEN THE TWO PATHS, not a literal on this one. A body whose
+/// own `totalTokenCount` leaves NO room for the bucket is the interesting case, and this dialect's
+/// settled posture there is that nothing is zeroed, clamped or back-filled: the buckets stay as
+/// Google sent them and the shortfall travels beside them as a `usage_identity_note` — see the
+/// header on `gemini_usage_identity_note`. So the truncated path must not clamp either, or the two
+/// readings of one body would disagree, which is the whole defect this test exists for.
+#[test]
+fn recover_truncated_usage_bills_tool_use_prompt_tokens_as_input() {
+    let reader = GeminiReader;
+    // A total that LEAVES ROOM for the additive bucket: 1000 + 50 + 300 = 1350. The provider has
+    // reported the split, so the tool-use tokens are input tokens on top of `promptTokenCount`.
+    let tail = br#"...head cut"},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":50,"toolUsePromptTokenCount":300,"totalTokenCount":1350}}"#;
+    let usage = reader
+        .recover_truncated_usage(tail)
+        .expect("usageMetadata tail must be recoverable");
+    assert_eq!(
+        usage.input, 1300,
+        "toolUsePromptTokenCount(300) is an additive input bucket on top of promptTokenCount(1000)"
+    );
+    assert_eq!(usage.output, 50);
+
+    // AND THE TWO PATHS AGREE ON THE HARD CASE. A total with no room for the bucket (1050) is the
+    // shape that tempts a clamp; the buffered path does not clamp, so neither does this one, and
+    // what is pinned is that they answer alike rather than either one's literal.
+    let folded_tail = br#"...head cut"}],"usageMetadata":{"promptTokenCount":1000,"candidatesTokenCount":50,"toolUsePromptTokenCount":300,"totalTokenCount":1050}}"#;
+    let folded_doc = serde_json::json!({
+        "usageMetadata": {
+            "promptTokenCount": 1000,
+            "candidatesTokenCount": 50,
+            "toolUsePromptTokenCount": 300,
+            "totalTokenCount": 1050
+        }
+    });
+    let recovered = reader
+        .recover_truncated_usage(folded_tail)
+        .expect("usageMetadata tail must be recoverable");
+    assert_eq!(
+        recovered.input,
+        gemini_usage(&folded_doc).input_tokens,
+        "one body, two readings: the truncated recovery must bill what the buffered path bills"
+    );
+}
+
 /// Measure the nesting depth of a `Value` iteratively. A recursive walk would itself overflow the
 /// stack on the very input this test exists to bound, so the measurement must not recurse.
 fn value_depth(v: &serde_json::Value) -> usize {
