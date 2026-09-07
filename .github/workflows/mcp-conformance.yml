@@ -64,8 +64,8 @@ jobs:
     name: gate self-test (the coverage assertion cannot be lied to)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       # FIRST, and separately from any verdict. The same discipline structure-lint and
@@ -100,8 +100,8 @@ jobs:
     # be a red that is not a defect — the exact thing this workflow is arranged to avoid.
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       # The control peer's repo pins pnpm through its own lockfile. Installed explicitly rather than
@@ -129,7 +129,7 @@ jobs:
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
           echo "suite=$(printf '%s' "$suite" | tr -c 'A-Za-z0-9._-' '-')" >> "$GITHUB_OUTPUT"
       - name: Cache the pinned control peer
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .mcp-conformance/sdk
           key: mcp-control-peer-${{ steps.pin.outputs.ref }}-${{ steps.pin.outputs.suite }}
@@ -137,7 +137,7 @@ jobs:
         run: ./scripts/mcp-conformance.sh --official-control
       - name: Publish the control results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mcp-official-control
           path: .mcp-conformance/control
@@ -155,12 +155,12 @@ jobs:
     outputs:
       armed: ${{ steps.arm.outputs.armed }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # THE SUBJECT IS BUILT FROM THIS COMMIT, and that is the change that makes this leg mean
       # something. It used to be armed from `vars.MCP_CONFORMANCE_SUBJECT_URL` -- an externally
@@ -232,7 +232,7 @@ jobs:
       # standing over another run's artifact is unreadable evidence.
       - name: Publish the subject results
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: mcp-official-subject
           path: |
@@ -246,11 +246,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
       # No fetch, no clone, no secret. The battery is `testing/mcp-conformance/` in this checkout.
@@ -260,7 +260,7 @@ jobs:
       # declared `needs: battery-control`, which orders the jobs but does NOT share a workspace, so
       # `run-subject.sh` found no control report and exited 1 — under a message blaming busbar.
       # A differential with nothing to differ against is not a comparison.
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: mcp-battery-control-report
@@ -273,8 +273,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
       # A battery that only ever runs against a good implementation says nothing about its own
@@ -322,15 +322,15 @@ jobs:
     outputs:
       armed: ${{ steps.arm.outputs.armed }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: '22'
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # THE SUBJECT IS BUILT FROM THIS COMMIT, the same change that made the official subject leg
       # mean something, applied to the leg that never ran at all. This one was armed out of
@@ -380,7 +380,7 @@ jobs:
       # THE CONTROL REPORT THE DIFFERENTIAL COMPARES AGAINST. `needs:` orders the jobs; it does
       # not share a workspace, so without this the subject leg reached its differential with
       # nothing to differ against and exited non-zero — for years, on every commit.
-      - uses: actions/download-artifact@v7
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: mcp-battery-control-report
           path: testing/mcp-conformance/reports/
@@ -391,7 +391,7 @@ jobs:
           MCP_SUBJECT_CLIENT_CMD: ${{ vars.MCP_SUBJECT_CLIENT_CMD }}
           MCP_SUBJECT_UPSTREAM_CONFIG_CMD: ${{ vars.MCP_SUBJECT_UPSTREAM_CONFIG_CMD }}
         run: ./scripts/mcp-conformance.sh --battery-subject
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         if: always()
         with:
           name: mcp-battery-subject
@@ -413,9 +413,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # Two axes, because a fixture can survive into a shipped build two independent ways and
       # neither axis sees the other's. See the script's header.
       - name: Both axes
