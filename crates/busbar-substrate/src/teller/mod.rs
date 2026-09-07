@@ -114,3 +114,7 @@ step_marker!(
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tokens_tests.rs"]
+mod tokens_tests;
