@@ -568,17 +568,69 @@ def runner_floor_mutations() -> None:
 def main() -> int:
     print("a2a-supplement SELFTEST -- every check is made to fail on purpose")
     print("A check that does not bite here is a check that reports green over nothing.")
-    in_task_authorization_mutations()
-    card_signing_mutations()
-    binding_equivalence_mutations()
-    versioning_mutations()
-    runner_floor_mutations()
-    print()
     # A SELFTEST THAT DISCOVERED NO CASES IS NOT A PASS. Same discipline as
     # testing/a2a-tck/check-baseline-selftest.py: without a floor, deleting a mutation family
     # leaves this file printing SELFTEST PASSED over the checks it stopped exercising.
+    #
+    # THE FLOOR IS COUNTED PER FAMILY, NOT AS ONE HAND-TYPED TOTAL. A single number is a second
+    # thing that drifts, and it drifts in the direction of being loosened: the total sat at 24
+    # against 29 actual cases, five cases of slack, which is more than the whole of the family
+    # that had most recently been added -- delete that family and the floor it was written to
+    # defend never noticed. Each family is now made to account for itself, so a family that stops
+    # running is named rather than absorbed by the slack of its neighbours, and the TOTAL floor is
+    # the sum of the per-family floors rather than a literal typed underneath them.
+    FAMILY_FLOORS = {
+        "in_task_authorization_mutations": 6,
+        "card_signing_mutations": 8,
+        "binding_equivalence_mutations": 6,
+        "versioning_mutations": 5,
+        "runner_floor_mutations": 4,
+    }
+    # THE DECLARED FAMILIES AND THE FAMILIES ON THE PAGE, HELD TO EACH OTHER, IN BOTH DIRECTIONS.
+    # A per-family floor defends against cases being deleted out of a family. It defends against
+    # nothing if the family and its floor are deleted TOGETHER, which is what removing a mutation
+    # family actually looks like in a diff -- and that is the same hole one level up, wearing the
+    # fix as a coat. So the floor table is held to the `*_mutations` functions this module
+    # defines, the way `bin/mcp-battery.mjs` holds its declared suite list to the files on disk:
+    # a family with no floor is a family that would run without a floor, a floor with no family is
+    # a family that stopped running, and the COUNT is pinned so that deleting both halves at once
+    # is a red rather than a silence.
+    EXPECTED_FAMILIES = 5
+    on_the_page = {
+        n for n, v in globals().items()
+        if n.endswith("_mutations") and callable(v) and v.__module__ == __name__
+    }
+    if on_the_page != set(FAMILY_FLOORS) or len(FAMILY_FLOORS) != EXPECTED_FAMILIES:
+        print("SELFTEST FAMILY INVENTORY IS WRONG, so no floor below can be trusted:")
+        for n in sorted(on_the_page - set(FAMILY_FLOORS)):
+            print(f"  - {n} is defined but declares no floor: it would run unmeasured")
+        for n in sorted(set(FAMILY_FLOORS) - on_the_page):
+            print(f"  - {n} declares a floor but is not defined: it has stopped running")
+        if len(FAMILY_FLOORS) != EXPECTED_FAMILIES:
+            print(f"  - {len(FAMILY_FLOORS)} families declared, {EXPECTED_FAMILIES} expected: a "
+                  "family and its floor were removed together, which is a deletion nothing else "
+                  "here can see")
+        return 2
+
+    census: dict[str, int] = {}
+    for name, floor in FAMILY_FLOORS.items():
+        before = len(FAILURES) + PASSES_SEEN[0]
+        globals()[name]()
+        census[name] = len(FAILURES) + PASSES_SEEN[0] - before
+    print()
+    short = [
+        f"{n}: {census[n]} of {FAMILY_FLOORS[n]}"
+        for n in FAMILY_FLOORS
+        if census[n] < FAMILY_FLOORS[n]
+    ]
+    if short:
+        print("SELFTEST FAMILIES RAN FEWER CASES THAN THEY DECLARE. Mutations were deleted or")
+        print("never ran, and the checks they exercise now report green over nothing:")
+        for line in short:
+            print(f"  - {line}")
+        return 2
     total = len(FAILURES) + PASSES_SEEN[0]
-    if total < 24:
+    if total < sum(FAMILY_FLOORS.values()):
         print(f"SELFTEST DISCOVERED ONLY {total} CASES. Mutations were deleted or never ran.")
         return 2
     if FAILURES:
