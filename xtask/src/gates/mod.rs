@@ -22,6 +22,7 @@ pub mod blocking_ffi;
 pub mod denylist_gate;
 pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
+pub mod plane_abi_neutrality;
 pub mod plane_transport_neutrality;
 pub mod response_header;
 pub mod segregation;
@@ -350,6 +351,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(plane_transport_neutrality::PlaneTransportNeutralityGate),
         summary: "no voice-transport or media noun reaches the neutral crates",
+    },
+    Registration {
+        name: "plane-abi-neutrality",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_abi_neutrality::PlaneAbiNeutralityGate),
+        summary:
+            "the plane ABI's hot lane is derived from the taxonomy, not named after a protocol",
     },
 ];
 
