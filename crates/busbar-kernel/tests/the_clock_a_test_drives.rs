@@ -46,5 +46,9 @@ fn the_kernels_own_door_onto_the_clock_reads_the_same_hand() {
     let seen: &dyn Clock = &clock;
     assert_eq!(seen.now(), 4_096);
     clock.advance(4);
-    assert_eq!(seen.now(), 4_100, "the door reads the hand, not a copy of it");
+    assert_eq!(
+        seen.now(),
+        4_100,
+        "the door reads the hand, not a copy of it"
+    );
 }
