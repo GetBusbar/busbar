@@ -187,7 +187,33 @@ jobs:
           set -euo pipefail
           pg="$(PGPASSWORD=busbar psql -h localhost -U busbar -d busbar_test -tAc 'select version()' | head -1)"
           my="$(mysql -h 127.0.0.1 -ubusbar -pbusbar -N -B -e 'select version()' busbar_test | head -1)"
-          vk="$(redis-cli -h localhost -p 6379 INFO server | tr -d '\r' | awk -F: '/^valkey_version|^redis_version/{print $1"="$2}' | paste -sd' ' -)"
+          # Valkey is asked over RESP directly. `redis-cli`/`valkey-cli` are NOT on the runner image,
+          # and installing a package to read one version string would put an unpinned apt fetch on
+          # the path of a recording whose whole point is that everything it touches is pinned.
+          # `INFO server` is two words on a socket.
+          vk="$(python3 - <<'PY'
+          import socket, sys
+          s = socket.create_connection(("localhost", 6379), 10)
+          s.settimeout(10)
+          s.sendall(b"INFO server\r\n")
+          buf = b""
+          # RESP bulk string: `$<len>\r\n<payload>\r\n`. Read the length, then read exactly that
+          # many bytes -- a recv loop that stops on a timeout would take the timeout every run.
+          while b"\r\n" not in buf:
+              buf += s.recv(4096)
+          head, rest = buf.split(b"\r\n", 1)
+          if not head.startswith(b"$"):
+              sys.exit(f"valkey answered {head!r}, not a bulk string")
+          want = int(head[1:])
+          while len(rest) < want:
+              rest += s.recv(65536)
+          out = [l for l in rest[:want].decode("utf-8", "replace").splitlines()
+                 if l.startswith(("valkey_version:", "redis_version:", "server_name:"))]
+          if not out:
+              sys.exit("valkey's INFO server named no version")
+          print(" ".join(l.replace(":", "=", 1) for l in out))
+          PY
+          )"
           for v in "$pg" "$my" "$vk"; do
             [ -n "$v" ] || { echo "::error::a backend did not answer a version query; the recording would not be able to say what it was made against"; exit 1; }
           done
