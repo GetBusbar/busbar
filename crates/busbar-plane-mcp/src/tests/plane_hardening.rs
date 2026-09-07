@@ -89,7 +89,11 @@ fn a_key_that_opens_with_an_escape_is_read_from_its_first_byte() {
 /// position and the walk would re-read bytes it had already passed.
 #[test]
 fn whitespace_is_stepped_over_forwards_from_a_position_that_is_not_the_start() {
-    assert_eq!(skip_space(b"x   y", 1), 4, "past the three spaces, to the y");
+    assert_eq!(
+        skip_space(b"x   y", 1),
+        4,
+        "past the three spaces, to the y"
+    );
     assert_eq!(
         skip_space(b"x\t\r\n y", 1),
         5,

@@ -8,16 +8,17 @@
 //! arm of the alphabet lookup and most of its arithmetic, and the decoder's bit assembly. Audio
 //! that came back subtly wrong would not crash anything; it would be heard.
 //!
-//! The published vectors are the right judge precisely because they are not ours. RFC 4648 §10
-//! fixes seven of them, and the round trip over every byte and every alphabet character covers the
-//! rest of the table. A transform that agrees with the RFC on all seven lengths-mod-3 and inverts
+//! The published vectors are the right judge precisely because they are not ours. RFC 4648 fixes
+//! seven of them in its test-vector section, and the round trip over every byte and every alphabet
+//! character covers the rest of the table. A transform that agrees with the RFC on all seven lengths-mod-3 and inverts
 //! itself over the whole byte range is the transform.
 
 use super::{base64_decode, base64_encode, base64_len, base64_sextet, B64_ALPHABET};
 
 /// THE SEVEN PUBLISHED VECTORS, which fix the padding for every length modulo three.
 ///
-/// From RFC 4648 §10. They are the whole point of using a standard: a private encoder that agrees
+/// From the test vectors RFC 4648 publishes. They are the whole point of using a standard: an
+/// encoder that agrees
 /// with these is interoperable, and one that does not is a private encoding wearing the name.
 #[test]
 fn the_published_vectors_encode_and_decode_exactly() {
