@@ -434,13 +434,8 @@ impl Gate for ChangelogRegisterGate {
         // Each probe therefore carries the legacy's own wording, so the comparison stays about the
         // same rule across that rename instead of decaying into "both went red somehow".
         let probe = |label: &str, reg: String, changelog: &str, rule: &str, legacy: &str| {
-            crate::gates::ParityProbe::red(
-                label,
-                plant(&reg, changelog),
-                materialize.clone(),
-                rule,
-            )
-            .named_by(legacy)
+            crate::gates::ParityProbe::red(label, plant(&reg, changelog), materialize.clone(), rule)
+                .named_by(legacy)
         };
         let named = r#"{"id":"X-1","kind":"improvement","changelog":"the grass is now greener"}"#;
         vec![
@@ -529,11 +524,12 @@ impl Gate for ChangelogRegisterGate {
                 "",
             )
             .diverges(crate::gates::Divergence::LegacyGreen {
-                reason: "the legacy reads an empty accepted list as nothing owed and exits 0, so a \
+                reason:
+                    "the legacy reads an empty accepted list as nothing owed and exits 0, so a \
                          renamed key or a truncated write is indistinguishable from a clean \
                          register. Zero rows against a non-empty owed set is this crate's oldest \
                          refusal and it applies to the register's own input too."
-                    .to_string(),
+                        .to_string(),
             }),
         ]
     }

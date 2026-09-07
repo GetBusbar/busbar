@@ -545,10 +545,11 @@ impl Gate for ChangelogGate {
                 ROW_NO_FUTURE_DATE,
             )
             .diverges(crate::gates::Divergence::LegacyCrashes {
-                reason: "the legacy raises out of date parsing and exits 1 with a traceback, so it \
+                reason:
+                    "the legacy raises out of date parsing and exits 1 with a traceback, so it \
                          reaches the right verdict by dying rather than by reporting a rule. This \
                          gate names the day that does not exist."
-                    .to_string(),
+                        .to_string(),
             }),
         ]
     }
