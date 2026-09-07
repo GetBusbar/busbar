@@ -120,5 +120,7 @@ mod translate_parity_cross_pairs_tests;
 mod translate_parity_golden_tests;
 #[path = "usage_money_parity_tests.rs"]
 mod usage_money_parity_tests;
+#[path = "usage_stream_money_tests.rs"]
+mod usage_stream_money_tests;
 #[path = "usage_tail_hardening_tests.rs"]
 mod usage_tail_hardening_tests;
