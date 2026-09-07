@@ -439,8 +439,6 @@ fn an_accrual_is_sealed_to_an_admitted_parent_with_the_same_principal() {
         AccrualRefused::ParentExited
     );
 
-    let late = HoldCell::new(Hold::open(&admit, who("acct-1"), 0));
-    let _ = late.take(&k.exit_token());
     let posted = Posted::settle_late(accrual, &k.ledger_token());
     assert!(posted.flags().contains(PostingFlags::LATE_ACCRUAL));
     assert_eq!(posted.settled(), 10);

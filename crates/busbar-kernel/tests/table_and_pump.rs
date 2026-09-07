@@ -159,7 +159,6 @@ fn the_cap_holds_when_everything_arrives_at_once() {
         }
         let admitted = racers
             .into_iter()
-            .filter(|_| true)
             .map(|racer| racer.join().expect("the thread finished"))
             .filter(|ok| *ok)
             .count();
@@ -183,7 +182,6 @@ fn a_session_pairs_no_ninth_upstream_however_the_dials_interleave() {
         }
         let paired = racers
             .into_iter()
-            .filter(|_| true)
             .map(|racer| racer.join().expect("the thread finished"))
             .filter(|ok| *ok)
             .count();
@@ -541,10 +539,8 @@ fn a_supersede_frees_only_the_direction_the_superseded_unit_was_holding() {
 
 #[test]
 fn one_shots_run_under_a_small_fixed_concurrency() {
-    let kernel = Kernel::new();
     let table = InFlight::new(64, 0);
     let scheduler = Scheduler::new(2);
-    let _ = kernel;
     assert_eq!(
         scheduler.dispatch(
             None,
