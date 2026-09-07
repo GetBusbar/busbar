@@ -21,6 +21,7 @@
 pub mod denylist_gate;
 pub mod kernel_token_wire_purity;
 pub mod segregation;
+pub mod tracing_lint;
 
 use std::collections::BTreeSet;
 
@@ -302,6 +303,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(kernel_token_wire_purity::KernelTokenWirePurityGate),
         summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
+    },
+    Registration {
+        name: "tracing",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(tracing_lint::TracingGate),
+        summary: "every #[instrument] span is bound to an explicit Level, set in one place",
     },
 ];
 
