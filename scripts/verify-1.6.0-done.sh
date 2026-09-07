@@ -70,6 +70,9 @@
 #
 # bash 3.2 + POSIX, the same bare-runner posture as the sibling gates.
 set -uo pipefail
+# Resolved BEFORE the cd, because the floor below is counted out of this file and `$0` stops
+# resolving the moment the working directory moves under a relative invocation.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.."
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
@@ -118,11 +121,57 @@ step() {   # $1 = label ; rest = command
 # banner and the SAME exit 0 as a full run — and the banner and the exit code are all a wrapper
 # script, a CI step or the proof-manifest collator ever sees. A provisional answer must not be
 # spendable as the real one.
-# The floor is the number of begin_group/end_group pairs this file defines (19 today). Raise it
-# with a new group; a run that reports fewer is a run that lost groups, not a run that passed.
-DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-19}"
+# THE FLOOR IS COUNTED OUT OF THIS FILE, AND IT IS NOT LOWERABLE FROM THE ENVIRONMENT.
+#
+# It was a hand-maintained constant, `DONE_GROUP_FLOOR="${DONE_GROUP_FLOOR:-19}"`, and it had two
+# holes that both end in the DONE banner and exit 0 — which is all a wrapper, a CI step or the proof
+# collator ever reads:
+#
+#   * IT HAD FALLEN BEHIND THE FILE. This script defines TWENTY begin_group/end_group pairs; the
+#     constant still said nineteen. So a run that lost a whole group — a `begin_group` moved inside
+#     an `if` that did not fire, a sourced fragment that returned early, a group deleted in a
+#     refactor and its constant left alone — reported "19 / 19 groups GREEN" and announced DONE. The
+#     floor exists precisely to catch that, and it was one short of being able to.
+#   * IT WAS AN ENVIRONMENT OVERRIDE. `DONE_GROUP_FLOOR=1 scripts/verify-1.6.0-done.sh` made one
+#     green group a DONE claim. Every other operator-chosen repoint in this file is refused by
+#     assert_bless_env_empty for exactly this reason; the floor on the verdict itself was the one
+#     that could still be dialled down, and unlike a blessed golden it leaves nothing behind.
+#
+# So: the number of groups this file DEFINES is counted from the file, the declared constant must
+# agree with it (a group added or removed is a two-place edit a reviewer sees), and the environment
+# may only ever RAISE the floor. A count that cannot be taken is RED, never a floor of zero.
+DONE_GROUPS_DECLARED=20
+# awk, not `grep -c ... || echo 0`: `grep -c` on a file with no matches PRINTS 0 and EXITS 1, so the
+# obvious fallback fires on top of grep's own output and the variable becomes the two-line string
+# "0\n0" — which then fails every numeric comparison below and takes the honest-floor check with it.
+# (gate.sh carries the same note over the same trap.) awk prints exactly one number, always.
+DONE_GROUPS_DEFINED="$(awk '/^begin_group /{n++} END{print n+0}' "$SELF" 2>/dev/null)"
+[ -n "$DONE_GROUPS_DEFINED" ] || DONE_GROUPS_DEFINED=0
+DONE_GROUP_FLOOR="$DONE_GROUPS_DECLARED"
+# An override may only tighten. `-gt` and not `-ne`: a caller raising the floor is asserting more,
+# which is always safe to honour; a caller lowering it is un-owing groups from outside the file.
+if [ -n "${DONE_GROUP_FLOOR_MIN:-}" ] && [ "${DONE_GROUP_FLOOR_MIN}" -gt "$DONE_GROUP_FLOOR" ] 2>/dev/null; then
+  DONE_GROUP_FLOOR="$DONE_GROUP_FLOOR_MIN"
+fi
+
+# Checked at the top of the verdict rather than here, so --selftest can drive it.
+floor_is_honest() {
+  if [ "${DONE_GROUPS_DEFINED:-0}" -lt 1 ] 2>/dev/null; then
+    red "══ done-oracle: could not count the begin_group definitions in ${SELF} — the floor would be"
+    red "   whatever the constant happens to say, checked against nothing. Refusing to render a verdict. ══"
+    return 1
+  fi
+  if [ "$DONE_GROUPS_DEFINED" != "$DONE_GROUPS_DECLARED" ]; then
+    red "══ done-oracle: this file defines ${DONE_GROUPS_DEFINED} group(s) but declares a floor of"
+    red "   ${DONE_GROUPS_DECLARED}. A group was added or removed and the declaration did not follow, so the"
+    red "   floor no longer measures anything. Set DONE_GROUPS_DECLARED=${DONE_GROUPS_DEFINED}. ══"
+    return 1
+  fi
+  return 0
+}
 final_verdict() {
   local fail=0 green=0 total=0 i
+  floor_is_honest || return 1
   if [ "${#G_NAME[@]}" -gt 0 ]; then
     for i in $(seq 0 $(( ${#G_NAME[@]} - 1 ))); do
       total=$((total+1))
@@ -170,14 +219,61 @@ if [ "$SELFTEST" -eq 1 ]; then
       printf 'FAIL  %s (rc=%s want=%s, looked for %s)\n' "$label" "$rc" "$want" "$needle"; _st_fails=$((_st_fails+1))
     fi
   }
+  # THE COUNTS ARE TAKEN FROM THE FILE, NOT TYPED. They used to be the literal 19 the floor
+  # happened to say, so the case that is supposed to prove "a lost group is refused" was passing a
+  # number that WAS the floor rather than one below the groups this file actually defines — which is
+  # how the floor came to sit one under reality with a green self-test over it.
+  _n="$DONE_GROUPS_DEFINED"
   # A --fast run whose groups are all green must NOT be spendable as the DONE claim.
-  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 19 0
-  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 19 0
-  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 18 1
-  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 18 1
+  _st "--fast + all green -> PROVISIONAL, non-zero"      3 "PROVISIONAL"    1 "$_n"           0
+  _st "full run + all green -> DONE, exit 0"             0 "is DONE"        0 "$_n"           0
+  _st "--fast + a red group -> NOT done"                 1 "is NOT done"    1 "$((_n - 1))"   1
+  _st "full run + a red group -> NOT done"               1 "is NOT done"    0 "$((_n - 1))"   1
   # Zero groups is not DONE: nothing raised `fail`, because nothing ran.
-  _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0  0
-  _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3  0
+  _st "zero groups -> RED, never DONE"                   1 "floor is"       0 0              0
+  _st "groups went missing (below the floor) -> RED"     1 "floor is"       0 3              0
+  # ONE group short of what this file DEFINES. The case the old literal could not express: with the
+  # floor one under the group count, this run printed "19 / 19 groups GREEN" and the DONE banner.
+  _st "one group short of the defined set -> RED"        1 "floor is"       0 "$((_n - 1))"   0
+
+  # THE FLOOR ITSELF MUST BE HONEST, and it must not be dialled down from outside the file.
+  if floor_is_honest >/dev/null 2>&1; then
+    printf 'PASS  the declared floor matches the %s group(s) this file defines\n' "$_n"
+  else
+    printf 'FAIL  the declared floor (%s) does not match the %s group(s) defined\n' \
+      "$DONE_GROUPS_DECLARED" "$_n"; _st_fails=$((_st_fails + 1))
+  fi
+  ( DONE_GROUPS_DECLARED=$((_n - 1)); floor_is_honest ) >/dev/null 2>&1 \
+    && { printf 'FAIL  a declaration one under the defined group count was accepted\n'; _st_fails=$((_st_fails + 1)); } \
+    || printf 'PASS  a declaration that has fallen behind the group count -> RED\n'
+  ( DONE_GROUPS_DEFINED=0; floor_is_honest ) >/dev/null 2>&1 \
+    && { printf 'FAIL  a group count that could not be taken was accepted as a floor\n'; _st_fails=$((_st_fails + 1)); } \
+    || printf 'PASS  a group count that could not be taken -> RED, not a floor of zero\n'
+  # The environment may raise the floor and may not lower it. Driven through a real re-read of the
+  # floor block out of this file, so it is the shipped derivation under test and not a copy of it.
+  _floor_under() {  # _floor_under <env assignment>  -> prints the floor the script would use
+    env "$1" bash -c '
+      SELF="$1"; shift
+      eval "$(awk "/^DONE_GROUPS_DECLARED=/,/^fi\$/" "$SELF")"
+      echo "$DONE_GROUP_FLOOR"' _ "$SELF"
+  }
+  if [ "$(_floor_under DONE_GROUP_FLOOR=1)" = "$_n" ]; then
+    printf 'PASS  DONE_GROUP_FLOOR=1 in the environment cannot lower the floor\n'
+  else
+    printf 'FAIL  the environment lowered the floor to %s\n' "$(_floor_under DONE_GROUP_FLOOR=1)"
+    _st_fails=$((_st_fails + 1))
+  fi
+  if [ "$(_floor_under DONE_GROUP_FLOOR_MIN=1)" = "$_n" ]; then
+    printf 'PASS  DONE_GROUP_FLOOR_MIN below the floor cannot lower it\n'
+  else
+    printf 'FAIL  DONE_GROUP_FLOOR_MIN lowered the floor to %s\n' "$(_floor_under DONE_GROUP_FLOOR_MIN=1)"
+    _st_fails=$((_st_fails + 1))
+  fi
+  if [ "$(_floor_under DONE_GROUP_FLOOR_MIN=$((_n + 5)))" = "$((_n + 5))" ]; then
+    printf 'PASS  DONE_GROUP_FLOOR_MIN above the floor still raises it (a caller may owe more)\n'
+  else
+    printf 'FAIL  DONE_GROUP_FLOOR_MIN could not raise the floor\n'; _st_fails=$((_st_fails + 1))
+  fi
   echo
 fi
 
