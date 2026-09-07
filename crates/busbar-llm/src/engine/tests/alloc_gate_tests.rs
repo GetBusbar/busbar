@@ -330,7 +330,11 @@ async fn alloc_gate_request_echo_body_materialized_once() {
             None,
         )
         .await;
-        assert_eq!(resp.status().as_u16(), 200, "the arm under test must be 200");
+        assert_eq!(
+            resp.status().as_u16(),
+            200,
+            "the arm under test must be 200"
+        );
         let _ = axum::body::to_bytes(resp.into_body(), usize::MAX).await;
     }
 

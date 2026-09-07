@@ -3621,11 +3621,18 @@ mod tests {
     impl crate::root::auth_bindings::VirtualKeyDirectory for Denylist {
         fn verify(
             &self,
-            _credential: &str,
+            credential: &str,
             _now: u64,
             _expected_aud: Option<&str>,
         ) -> Option<crate::root::auth_bindings::KeyFacts> {
-            None
+            // A revocation withdraws an IDENTIFICATION: the directory has to know the credential
+            // before its denylist can take it away, or the refusal would be a probe answered for
+            // a string nothing verified. So the one credential these cells present is one this
+            // directory minted.
+            (credential == "admin-token").then(|| crate::root::auth_bindings::KeyFacts {
+                id: "key-admin-1".to_string(),
+                name: "the operator credential these cells present".to_string(),
+            })
         }
 
         fn revoked(&self, _credential: &str) -> bool {
@@ -3633,11 +3640,47 @@ mod tests {
         }
     }
 
-    /// Walk one request through the whole loop against a node whose directory revokes everything, or
-    /// nothing.
+    /// A door that IDENTIFIES the operator credential these cells present, so that a revocation has
+    /// an identification to withdraw. Revocation is a statement about a credential the chain
+    /// resolved to somebody; on an open door nothing is resolved, and a denylist consulted there
+    /// would be a probe answered for a string nothing verified.
+    #[cfg(feature = "root-admin")]
+    struct IdentifiesOperator;
+
+    #[cfg(feature = "root-admin")]
+    impl busbar_unit_auth::module::AuthModule for IdentifiesOperator {
+        fn name(&self) -> &'static str {
+            "identifies-operator"
+        }
+        fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+            match candidate {
+                Some("admin-token") => busbar_unit_auth::module::AuthOutcome::Identify(
+                    busbar_unit_auth::principal::Principal::from_id(
+                        crate::root::auth_bindings::ADMIN_PRINCIPAL_ID,
+                    ),
+                ),
+                _ => busbar_unit_auth::module::AuthOutcome::Pass,
+            }
+        }
+    }
+
+    #[cfg(feature = "root-admin")]
+    fn a_door_that_identifies_the_operator() -> busbar_unit_auth::AuthChain {
+        busbar_unit_auth::AuthChain::new(
+            vec![busbar_unit_auth::chain::ChainEntry {
+                provider: "identifies-operator".to_string(),
+                module: Box::new(IdentifiesOperator),
+            }],
+            false,
+        )
+    }
+
+    /// Walk one request through the whole loop against a node whose door identifies the operator
+    /// credential and whose directory then revokes everything, or nothing.
     #[cfg(feature = "root-admin")]
     fn answer_under_denylist(revoked: bool) -> AdminAnswer {
         let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_auth_chain(a_door_that_identifies_the_operator())
             .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                 Denylist(revoked),
             )));
@@ -3646,11 +3689,14 @@ mod tests {
 
     /// A revoked credential is refused on the root leg, and refused BEFORE the operation runs.
     ///
-    /// This is the seam the step was handed three absences for: revocation gates new units, an admin
-    /// unit is always a new unit, and a set nothing supplies revokes nothing — so an unbound step
-    /// would have let a revoked credential through the front door of the administrative surface. The
-    /// control is the same request over a directory that revokes nobody, which reaches the operation
-    /// and comes back with its answer.
+    /// This is the seam the step was handed three absences for: revocation gates a new unit's
+    /// identification, an admin unit is always a new unit, and a set nothing supplies revokes
+    /// nothing — so an unbound step would have let a revoked credential through the front door of
+    /// the administrative surface. The door here identifies the operator credential, so the
+    /// revocation has an identification to withdraw; the control is the same request over a
+    /// directory that revokes nobody, which reaches the operation and comes back with its answer.
+    /// The refusal is the DOOR'S answer: a refusal at the authenticate step is written with the
+    /// door's own bytes, not re-run through the surface to get them.
     #[cfg(feature = "root-admin")]
     #[test]
     fn a_revoked_credential_is_refused_before_the_operation_runs() {
@@ -3664,6 +3710,23 @@ mod tests {
             refused,
             door_answer(),
             "a credential the node took away is the door's answer, written and not re-run"
+        );
+    }
+
+    /// On an OPEN door a denylist withdraws nothing, because nothing was identified: a string on
+    /// the list is admitted anonymously exactly as any other string is. A refusal there would tell
+    /// an unauthenticated caller whether the string they presented was ever a credential.
+    #[cfg(feature = "root-admin")]
+    #[test]
+    fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified() {
+        let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+            .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+                Denylist(true),
+            )));
+        let answer = AdminNode::new(crate::root::kernel::new_kernel(), units).answer(a_request());
+        assert_eq!(
+            answer.status, 200,
+            "the open door admits, and the denylist is not a probe"
         );
     }
 
@@ -5126,23 +5189,27 @@ mod tests {
     /// the SAME one. A literal would still pass on the day the shared posture changed and the views
     /// were left behind.
     ///
-    /// The refused case is a credential the node's directory has revoked. That is what an
-    /// unauthenticated caller IS on this composition: the admin-only node's chain is open, so a
-    /// request carrying no credential at all is admitted — for the views exactly as for `/usage`,
-    /// which the second half asserts. Choosing the reachable refusal over the unreachable one is
-    /// what keeps this test about the posture the two share rather than about a 401 this node never
-    /// produces.
+    /// The refused case is a credential the door identified and the node's directory has revoked.
+    /// That is what an unauthenticated caller IS on this composition: a request carrying no
+    /// credential at all is admitted by an open door — for the views exactly as for `/usage`, which
+    /// the second half asserts over an open chain. Choosing the reachable refusal over the
+    /// unreachable one is what keeps this test about the posture the two share rather than about a
+    /// 401 this node never produces.
     #[cfg(feature = "root-admin")]
     #[test]
     fn a_ledger_view_answers_an_unauthenticated_caller_exactly_as_the_legacy_usage_read_does() {
         let under = |path: &str, credential: Option<&str>, revoked: bool| -> AdminAnswer {
             let mut request = a_ledger_request(path);
             request.credential = credential.map(ToString::to_string);
-            let units =
+            let mut units =
                 crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
                     .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
                         Denylist(revoked),
                     )));
+            if revoked {
+                // The revocation withdraws an identification, so the door must identify first.
+                units = units.with_auth_chain(a_door_that_identifies_the_operator());
+            }
             AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
         };
 

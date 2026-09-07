@@ -1768,10 +1768,22 @@ mod tests {
                 expected_aud: Option<&str>,
             ) -> Option<KeyFacts> {
                 // The audience is the plane boundary, and the verifier is where it is enforced.
-                (credential == "tok" && expected_aud == Some(AUD)).then(|| KeyFacts {
-                    id: "key-a2a-1".to_string(),
-                    name: "an approved key".to_string(),
-                })
+                // The burned credential is one this directory DID mint: a revocation withdraws an
+                // identification, so the string it withdraws has to identify first.
+                if expected_aud != Some(AUD) {
+                    return None;
+                }
+                match credential {
+                    "tok" => Some(KeyFacts {
+                        id: "key-a2a-1".to_string(),
+                        name: "an approved key".to_string(),
+                    }),
+                    "burned" => Some(KeyFacts {
+                        id: "key-a2a-burned".to_string(),
+                        name: "a key that was minted and then burned".to_string(),
+                    }),
+                    _ => None,
+                }
             }
 
             fn revoked(&self, credential: &str) -> bool {
