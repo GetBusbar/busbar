@@ -29,6 +29,9 @@ export BUSBAR_ORACLE_TOOL_DIGEST="$tag@$sha"
 # that decides a verdict changes, which they do by editing a throwaway copy of the data and re-asking
 # — impossible if this shim forced every run at busbar's real directory.
 export BUSBAR_ORACLE_PRODUCT_ROOT="${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}"
+# The tool must not litter the DATA directory with byte-code caches: the segregation gate walks
+# that directory and refuses a file it cannot read as source, and a cache is not a data file.
+export PYTHONDONTWRITEBYTECODE=1
 export BUSBAR_ORACLE_DATA="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
 # The cell DRIVERS under the data directory call the tool's fetchers (fetch-plugin.sh, fetch-golden.sh),
 # which left this tree with the tool. They find them through this variable, never by a path beside
