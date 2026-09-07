@@ -158,6 +158,29 @@ CONTROL="$WORK/mock.control"
 
 fail_setup() { record "setup" FAIL "$1" "${2:-}"; exit 1; }
 
+# THE OUTAGE VERB IS PER-CELL STATE, AND PUTTING IT BACK WAS THE ONE CONTROL WRITE NOBODY CHECKED.
+# Setting the verb is asserted (`oracle_write_control … || record FAIL`), because a cell served a
+# healthy upstream is not the cell that was asked for. Clearing it was `|| true` — and the mock's own
+# policy is to HOLD the last verb it read rather than treat an unreadable control as "no outage"
+# (mock-upstream.py), so a clear that did not land does not decay: every cell after it is recorded
+# against an upstream that is still down, still 429ing, still cutting the socket. Nothing says so.
+# The next cell records a refusal under the name of a success, its `why` describes a path it never
+# took, and the candidate — clearing just as unsuccessfully for the same reason — records the same
+# bytes, so the differ sees a match on a whole tail of the corpus.
+#
+# So the clear is asserted like the write, and a mock that will not let go of the verb ends the run:
+# the same posture stop_busbar already takes for a port that still answers after the kill. Continuing
+# would not produce a worse recording, it would produce a CONFIDENT one about the wrong upstream.
+clear_control_or_die() {  # <cell-id> — returns non-zero after recording the FAIL row; never returns 0 on failure
+  oracle_clear_control "$CONTROL" "$MOCK_PORT" 2>/dev/null && return 0
+  # one retry: the confirm poll is a 2 s curl and a wedged-for-a-moment mock is not a wedged mock
+  oracle_clear_control "$CONTROL" "$MOCK_PORT" 2>/dev/null && return 0
+  record "$1" FAIL "the mock still serves this cell's outage after its control file was removed" \
+    "control ${CONTROL} on mock port ${MOCK_PORT}; the mock holds the last verb it read, so every later cell would be recorded against this cell's outage"
+  echo "record.sh: the mock on ${MOCK_PORT} still echoes a control verb after ${CONTROL} was removed; refusing to record the rest of the corpus against ${id:-this cell}'s outage" >&2
+  exit 1
+}
+
 # exec and script cells do not boot the recording busbar, so nothing on their path rewrites
 # "$WORK/config.yaml" — they read whatever variant the LAST http/llm cell's boot happened to leave
 # there. Under `--plane all` the ordering makes that the baseline already, but under `--filter` a
@@ -717,7 +740,7 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   mc="$(jq -c '.mock_control // empty' <<<"$cell")"
   if [ -n "$mc" ] && [ "$mc" != "{}" ]; then
     oracle_write_control "$CONTROL" "$MOCK_PORT" "$mc" \
-      || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; return; }
+      || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; oracle_clear_control "$CONTROL" "$MOCK_PORT" >/dev/null 2>&1; return; }
   fi
   settle_then_snapshot "$raw/before" "$kid"
   mkdir -p "$raw/par"
@@ -729,7 +752,7 @@ record_concurrent_cell() {  # <id> <cell-json> <raw-dir> <safe>
   done
   for p in "${pids[@]}"; do wait "$p" 2>/dev/null; done
   settle_then_snapshot "$raw/after" "$kid"
-  oracle_clear_control "$CONTROL" "$MOCK_PORT" || true
+  clear_control_or_die "$id"
   # each par/<i>.status file holds exactly the one %{http_code} curl wrote for that request; a
   # missing/empty file (curl itself never got a status line) counts as 0, same convention capture.py
   # uses for "no HTTP response" elsewhere in this recorder.
@@ -947,7 +970,7 @@ PY
     mc="$(jq -c '.mock_control // empty' <<<"$cell")"
     if [ -n "$mc" ] && [ "$mc" != "{}" ]; then
       oracle_write_control "$CONTROL" "$MOCK_PORT" "$mc" \
-        || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; continue; }
+        || { record "$id" FAIL "mock control write never landed" "wrote '${mc}' to ${CONTROL}"; oracle_clear_control "$CONTROL" "$MOCK_PORT" >/dev/null 2>&1; continue; }
     fi
     settle_then_snapshot "$raw/before" "$kid"
     ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
@@ -991,7 +1014,7 @@ PY
 
   if [ "$outcome" = upstream_down ]; then
     oracle_write_control "$CONTROL" "$MOCK_PORT" "down" \
-      || { record "$id" FAIL "mock control write never landed" "wrote 'down' to ${CONTROL}"; continue; }
+      || { record "$id" FAIL "mock control write never landed" "wrote 'down' to ${CONTROL}"; oracle_clear_control "$CONTROL" "$MOCK_PORT" >/dev/null 2>&1; continue; }
   fi
   settle_then_snapshot "$raw/before" "$kid"
   ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.before"
@@ -1000,7 +1023,7 @@ PY
   case "$curl_rc:$status" in 0:*|18:[1-5]??|56:[1-5]??) printf '%s\n' "$curl_rc" >"$raw/curl.rc" ;; *) status="000" ;; esac
   fi
   settle_then_snapshot "$raw/after" "$kid"
-  oracle_clear_control "$CONTROL" "$MOCK_PORT" || true
+  clear_control_or_die "$id"
   ls "$WORK/egress" 2>/dev/null | sort >"$raw/egress.after"
   egress_files=()
   while IFS= read -r f; do [ -n "$f" ] && egress_files+=("$WORK/egress/$f"); done < <(comm -13 "$raw/egress.before" "$raw/egress.after")
