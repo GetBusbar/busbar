@@ -26,6 +26,175 @@ cd "$(dirname "$0")/../.." || exit 1
 # shellcheck source=scripts/release-gate/lib.sh
 . scripts/release-gate/lib.sh
 
+# ── THE TWO VERDICTS THE SELF-TEST BELOW DRIVES ─────────────────────────────────────────────────
+# Defined here, above the self-test, so the self-test exercises THE code the run uses rather than a
+# copy of its rule.
+
+# release:no-extras, both directions.
+no_extras_verdict() {  # no_extras_verdict <observed-names-newline-separated> <tag>
+  local got want extra missing
+  got="$(printf '%s\n' "$1" | awk 'NF' | sort)"
+  want="$(contract_asset_names "$2" | awk 'NF' | sort)" || {
+    record "release:no-extras" FAIL "cannot derive the contracted asset set from ${CONTRACT}" \
+      "the owed side of this comparison could not be built, so neither direction was asserted. A short owed list makes every un-owed asset look contracted. Fix: repair ${CONTRACT}."
+    return
+  }
+  extra="$(comm -23 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | tr '\n' ' ')"
+  # BOTH DIRECTIONS, WHICH IS WHAT THE TITLE ALREADY CLAIMED. `comm -23` alone answers only "is
+  # anything here that should not be"; a release with ZERO assets satisfies it, and the row then
+  # records "publishes exactly the contracted asset set" over an empty release. The per-target legs
+  # assert presence for the five archives, but the two metadata assets are owed by nobody else, and
+  # a leg that never ran reports nothing at all — which is the case this row is the backstop for.
+  missing="$(comm -13 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | tr '\n' ' ')"
+  if [ -z "${extra// /}" ] && [ -z "${missing// /}" ]; then
+    record "release:no-extras" PASS "Release ${2} publishes exactly the contracted asset set" ""
+  elif [ -n "${missing// /}" ]; then
+    record "release:no-extras" FAIL "Release ${2} is MISSING contracted assets" \
+      "missing: ${missing}${extra:+ | unaccounted: ${extra}}. The contract names an asset this release does not publish. Fix: re-run the job that uploads it, or stop contracting it in ${CONTRACT}."
+  else
+    record "release:no-extras" FAIL "Release ${2} carries assets the contract does not account for" \
+      "unaccounted: ${extra}. Either release.yml grew an artifact nobody verifies, or a contracted asset was renamed (in which case its old name is also reported missing above). Fix: add it to ${CONTRACT} so it is checked, or stop uploading it."
+  fi
+}
+
+# meta:openapi's version assertion. An ABSENT .info.version is a REFUSAL, not a skip: the guard was
+# `[ -n "$docver" ] && [ "$docver" != "$V" ]`, so a document with the field stripped or nulled fell
+# straight through to PASS — the "generated from the wrong ref" case the check exists for, satisfied
+# by deleting the evidence rather than by matching it.
+openapi_version_ok() {  # openapi_version_ok <docver> <want>
+  [ -n "$1" ] && [ "$1" = "$2" ]
+}
+
+# ── --selftest ──────────────────────────────────────────────────────────────────────────────────
+#
+# Offline, before a single outbound call. Every case is one the code got WRONG in the green (or the
+# permanently-red) direction before the case existed; that is the entrance requirement.
+if [ "${1:-}" = "--selftest" ]; then
+  st_bad=0
+  ok()   { printf '  [ok]     %s\n' "$1"; }
+  nope() { printf '  [FAILED] %s\n' "$1"; st_bad=1; }
+  st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/relgate-channels-selftest-XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$st_tmp'" EXIT
+  LEDGER="$st_tmp/ledger.tsv"; : > "$LEDGER"
+  st_row() { awk -F'\t' -v i="$1" '$1==i{print $2; exit}' "$LEDGER"; }
+  st_reset() { : > "$LEDGER"; }
+
+  echo "channel-checks selftest"
+
+  # CASE 1: the metadata assets must be in the OWED list at all. The inline jq read
+  # `.metadata_assets[].name` out of an array of STRINGS and the placeholder as `{TAG}` rather than
+  # `{tag}`, so it exited 5, printed nothing, and its status went into a `$( )` — the owed list came
+  # back two names short on every run and both metadata assets were reported as unaccounted extras.
+  if names="$(contract_asset_names v9.9.9 2>"$st_tmp/err")"; then
+    if printf '%s\n' "$names" | grep -q 'busbar-v9\.9\.9\.cdx\.json' \
+       && printf '%s\n' "$names" | grep -q 'busbar-openapi-v9\.9\.9\.json'; then
+      ok "the owed asset list carries the metadata assets, tag-substituted"
+    else
+      nope "the owed asset list is missing a metadata asset: $(printf '%s' "$names" | tr '\n' ' ')"
+    fi
+    if [ "$(printf '%s\n' "$names" | awk 'NF{c++} END{print c+0}')" -ge 7 ]; then
+      ok "and one name per published target beside them"
+    else
+      nope "the owed asset list is short: $(printf '%s' "$names" | tr '\n' ' ')"
+    fi
+  else
+    nope "contract_asset_names FAILED on the real contract: $(tr '\n' ' ' < "$st_tmp/err")"
+  fi
+
+  # CASE 2: a release that publishes NOTHING must not satisfy "publishes exactly the contracted
+  # asset set". `comm -23` alone answers one direction, and an empty observed side has no extras.
+  st_reset; no_extras_verdict "" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "a release with zero assets is RED, not 'exactly the contracted set'"
+  else
+    nope "a release with ZERO assets recorded $(st_row release:no-extras) on release:no-extras"
+  fi
+
+  # CASE 3: one contracted asset missing is RED, and named.
+  st_reset
+  no_extras_verdict "$(contract_asset_names v9.9.9 | grep -v 'cdx')" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ] && grep -q 'cdx' "$LEDGER"; then
+    ok "a single missing contracted asset is RED and named"
+  else
+    nope "a missing SBOM asset recorded $(st_row release:no-extras)"
+  fi
+
+  # CASE 4: the exact contracted set is still GREEN — the fix must not make the row unpassable.
+  st_reset; no_extras_verdict "$(contract_asset_names v9.9.9)" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "PASS" ]; then
+    ok "the exact contracted set still passes"
+  else
+    nope "the exact contracted set recorded $(st_row release:no-extras) — the pass path is broken"
+  fi
+
+  # CASE 5: an extra asset is still RED (the direction that already worked must keep working).
+  st_reset
+  no_extras_verdict "$(contract_asset_names v9.9.9; echo busbar-nobody-verifies-this.tar.gz)" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ] && grep -q 'nobody-verifies-this' "$LEDGER"; then
+    ok "an asset the contract does not name is still RED and named"
+  else
+    nope "an unaccounted asset recorded $(st_row release:no-extras)"
+  fi
+
+  # CASE 6: a contract the owed side cannot be derived from is RED, never a short owed list.
+  printf 'not json\n' > "$st_tmp/broken.json"
+  st_reset
+  CONTRACT="$st_tmp/broken.json" no_extras_verdict "busbar-anything.tar.gz" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "an unreadable contract is RED, not an owed set of nothing"
+  else
+    nope "an unreadable contract recorded $(st_row release:no-extras)"
+  fi
+  st_reset
+  printf '{"targets":[],"metadata_assets":[]}\n' > "$st_tmp/empty.json"
+  CONTRACT="$st_tmp/empty.json" no_extras_verdict "busbar-anything.tar.gz" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "a contract that collapsed to zero assets is RED, not 'nothing is owed'"
+  else
+    nope "a collapsed contract recorded $(st_row release:no-extras)"
+  fi
+  # And the case the empty-array one does NOT reach: a contract that still PARSES and still yields
+  # names, just far too few. jq refuses an empty selection on its own; a contract that lost four of
+  # its five platforms does not, and that is the shape the floor is for.
+  st_reset
+  printf '{"targets":[{"target":"x86_64-unknown-linux-gnu","archive":"tar.gz","published":true}],"metadata_assets":["busbar-{tag}.cdx.json"]}\n' \
+    > "$st_tmp/thin.json"
+  # The observed list is EXACTLY what the thin contract owes, so the two-direction comparison is
+  # satisfied and the only thing that can refuse this run is the floor itself.
+  CONTRACT="$st_tmp/thin.json" no_extras_verdict \
+    "$(printf 'busbar-x86_64-unknown-linux-gnu.tar.gz\nbusbar-v9.9.9.cdx.json\n')" v9.9.9 >/dev/null 2>&1
+  if [ "$(st_row release:no-extras)" = "FAIL" ]; then
+    ok "a contract that parses but lost most of its platforms trips the owed floor"
+  else
+    nope "a two-asset contract recorded $(st_row release:no-extras) — the owed floor did not fire"
+  fi
+
+  # CASE 6d: the FLOOR'S OWN vacuous case. `[ "" -lt 3 ]` is a shell ERROR, not false, so a count
+  # that could not be taken leaves the `if` untaken and the short list printed with a zero exit —
+  # the floor defeated by exactly the input it exists to catch. Driven against an `awk` on PATH that
+  # prints nothing, which is what a broken or absent awk looks like from here.
+  mkdir -p "$st_tmp/awkstub"
+  printf '#!/bin/sh\nexit 1\n' > "$st_tmp/awkstub/awk"; chmod +x "$st_tmp/awkstub/awk"
+  if ( PATH="$st_tmp/awkstub:$PATH"; contract_asset_names v9.9.9 ) >/dev/null 2>&1; then
+    nope "a count that could not be taken was accepted as a floor — the owed list went out unchecked"
+  else
+    ok "a count that could not be taken is a refusal, not an unchecked owed list"
+  fi
+
+  # CASE 7: an OpenAPI document whose .info.version is ABSENT must not pass the version assertion.
+  # `[ -n "$docver" ] && [ "$docver" != "$V" ]` skipped the comparison entirely when the field was
+  # stripped, and the row fell through to PASS — the exact "generated from the wrong ref" case the
+  # check exists for, satisfied by deleting the evidence.
+  if openapi_version_ok "1.6.0" "1.6.0"; then ok "a matching .info.version passes"; else nope "a matching .info.version was rejected"; fi
+  if openapi_version_ok "" "1.6.0"; then nope "an ABSENT .info.version passed the version assertion"; else ok "an absent .info.version is RED, not skipped"; fi
+  if openapi_version_ok "1.5.0" "1.6.0"; then nope "a WRONG .info.version passed"; else ok "a wrong .info.version is RED"; fi
+
+  echo
+  [ "$st_bad" = 0 ] && { echo "channel-checks selftest: the owed asset set and its two directions hold"; exit 0; }
+  echo "channel-checks selftest: FAILED"; exit 1
+fi
+
 VERSION="${1:?usage: channel-checks.sh <version>}"
 V="${VERSION#v}"
 TAG="v${V}"
@@ -100,20 +269,7 @@ fi
 # missing — which the presence check catches, but which reads as an unexplained absence rather than
 # a rename until you can see what IS there.
 if [ -n "$rel_json" ]; then
-  got="$(printf '%s' "$rel_json" | jq -r '.assets[].name' | sort)"
-  want="$( { while read -r t; do
-               [ -n "$t" ] || continue
-               printf 'busbar-%s.%s\n' "$t" "$(target_field "$t" archive)"
-             done < <(published_targets)
-             jq -r --arg tag "$TAG" '.metadata_assets[].name | gsub("\\{TAG\\}"; $tag)' "$CONTRACT"
-           } | sort )"
-  extra="$(comm -23 <(printf '%s\n' "$got") <(printf '%s\n' "$want") | tr '\n' ' ')"
-  if [ -z "${extra// /}" ]; then
-    record "release:no-extras" PASS "Release ${TAG} publishes exactly the contracted asset set" ""
-  else
-    record "release:no-extras" FAIL "Release ${TAG} carries assets the contract does not account for" \
-      "unaccounted: ${extra}. Either release.yml grew an artifact nobody verifies, or a contracted asset was renamed (in which case its old name is also reported missing above). Fix: add it to .github/release-targets.json so it is checked, or stop uploading it."
-  fi
+  no_extras_verdict "$(printf '%s' "$rel_json" | jq -r '.assets[].name')" "$TAG"
 else
   record "release:no-extras" FAIL "cannot compare the asset list — Release ${TAG} was not readable" "see release:exists."
 fi
@@ -166,9 +322,9 @@ check_metadata_asset() {  # check_metadata_asset <id> <name> <min-bytes> <kind>
           "observed openapi='$(jq -r '.openapi // "<absent>"' "${WORK}/${name}")'. Fix: re-run release.yml's openapi job."
         return
       fi
-      if [ -n "$docver" ] && [ "$docver" != "$V" ]; then
-        record "$id" FAIL "${name} describes version ${docver}, not ${V}" \
-          "the document was generated from the wrong ref; its filename says ${TAG}. Fix: re-run release.yml's openapi job at ${TAG}."
+      if ! openapi_version_ok "$docver" "$V"; then
+        record "$id" FAIL "${name} describes version ${docver:-<absent>}, not ${V}" \
+          "the document was generated from the wrong ref, or it carries no .info.version at all; its filename says ${TAG}. Fix: re-run release.yml's openapi job at ${TAG}."
         return
       fi
       ;;
