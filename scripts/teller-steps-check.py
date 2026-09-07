@@ -71,7 +71,8 @@ MIN_ROOT_NOTE = 60
 
 # ── the rig column's owners ──────────────────────────────────────────────────────────────────────
 ORACLE_CELLS = ROOT / "testing/shadow-oracle/cells.json"
-RIGS_LEDGER = ROOT / "testing/shadow-oracle/rigs-ledger.sh"
+# The rigs ledger ships with the pinned oracle tool now; bin/oracle is the shim that runs it.
+RIGS_LEDGER = ROOT / "bin/oracle"
 RIGS_BASELINE = ROOT / "testing/shadow-oracle/rigs-baseline.json"
 RELEASE_BIN = ROOT / "target/release/busbar"
 # rigs-ledger.sh mints `<ns>|h2-<step>` by running every h2-*.sh in the plane's subject directory.
@@ -460,7 +461,7 @@ def run_rig_legs():
             file=sys.stderr,
         )
         return 1
-    cmd = ["bash", str(RIGS_LEDGER), "--bin", str(RELEASE_BIN), "--check"]
+    cmd = [str(RIGS_LEDGER), "rigs-ledger", "--bin", str(RELEASE_BIN), "--check"]
     print("RIG-LEGS: " + " ".join(cmd))
     rc = subprocess.call(cmd)
     if rc != 0:

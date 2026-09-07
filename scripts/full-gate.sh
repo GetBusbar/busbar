@@ -80,15 +80,13 @@ declare -a SKIP_REASON=(
   "scripts/release-order-lint.py|release-graph shape; included via its own entries below, see RELEASE_ORDER."
   # ── THE `testing/` HARNESS GATES ────────────────────────────────────────────────────────────────
   # Newly VISIBLE, not newly skipped: discovery could not see a `testing/` path at all until now, so
-  # these were neither run nor named. Four of the eleven invocations DO run here and are absent from
-  # this list on purpose — testing/shadow-oracle/enumerate-cells.py --check,
-  # testing/shadow-oracle/harness-rev.sh, testing/shadow-oracle/replay-selftest.sh and
-  # testing/llm-conformance/selftest.sh are hermetic and each takes seconds.
-  "testing/shadow-oracle/fetch-golden.sh|downloads the PUBLISHED 1.5.5 release tarball from GitHub Releases and verifies it against golden-digests.tsv. It measures the network and a published artifact, not this tree."
-  "testing/shadow-oracle/fetch-plugin.sh|same: fetches each published plugin artifact by digest over the network, one per plugin named in plugin-digests.tsv."
-  "testing/shadow-oracle/selftest.sh|takes TWO built binaries as positional arguments (the release build and the cached 1.5.5 golden). Neither exists on a laptop until fetch-golden.sh has run and a release profile has been built; a bare invocation has nothing to compare."
-  "testing/shadow-oracle/record.sh|drives a built binary through every recorded cell and writes a recording tree. Needs the release build and the fetched golden binary, exactly as selftest.sh does — CI runs it twice, once per side."
-  "testing/shadow-oracle/replay.sh|compares the two recording trees record.sh produces. With no recordings there is nothing to replay; the harness's own logic IS proven here by testing/shadow-oracle/replay-selftest.sh, which runs."
+  # these were neither run nor named. The hermetic ones DO run here and are absent from this list on
+  # purpose — testing/shadow-oracle/enumerate-cells.py --check, `bin/oracle harness-rev`,
+  # `bin/oracle replay-selftest` and testing/llm-conformance/selftest.sh each take seconds.
+  # THE ORACLE IS ONE ENTRY NOW, NOT FIVE. Its scripts left this tree for GetBusbar/busbar-oracle,
+  # pinned by testing/shadow-oracle/oracle.pin and run through bin/oracle. Discovery can only see
+  # the shim, so the reasons the five invocations did not run here are collected on it.
+  "bin/oracle|the shadow oracle, run from the pinned tool. Its subcommands are not bare-runnable here for the reasons they never were: fetch-golden/fetch-plugin measure the NETWORK and published artifacts rather than this tree; selftest takes two built binaries positionally (the release build and the cached 1.5.5 golden), neither of which exists on a laptop until a release profile is built and fetch-golden has run; record drives a built binary through every cell, and CI runs it once per side; replay compares the two recording trees record produces, and with no recordings there is nothing to replay. The harness's OWN logic is proven here by `bin/oracle replay-selftest`, which runs."
   "testing/llm-conformance/run.sh|replays the candidate recording against the vendor specs pinned in spec-digests.tsv, which are fetched over the network and are not in the repository. Its harness logic is proven here by testing/llm-conformance/selftest.sh, which runs."
   "scripts/construction-gate.sh|RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceilings) while the construction work it measures is in flight; ci.yml runs its --check report-only (continue-on-error, verdict printed by the umbrella, not counted). Running it here would red the whole local gate on a fact CI does not score. Its --selftest DOES run here (the rule above). Run 'scripts/construction-gate.sh --check' directly for the report; DELETE this entry when the CI job is flipped to blocking."
 )
@@ -395,8 +393,7 @@ if [ "${1:-}" = "--selftest" ]; then
 
   # And the real ones: the shadow-oracle harness and the llm-conformance suite, by name, so the
   # directory set cannot narrow back to `scripts/` without this going red.
-  for must in testing/shadow-oracle/replay-selftest.sh testing/shadow-oracle/record.sh \
-              testing/shadow-oracle/enumerate-cells.py testing/llm-conformance/run.sh; do
+  for must in bin/oracle testing/shadow-oracle/enumerate-cells.py testing/llm-conformance/run.sh; do
     if printf '%s\n' "${DISCOVERED[@]}" | grep -q "$must"; then
       printf '  [ok]     %s is discovered\n' "$must"
     else
