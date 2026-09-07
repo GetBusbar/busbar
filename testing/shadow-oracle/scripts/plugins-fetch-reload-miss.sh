@@ -38,7 +38,7 @@ rm -rf "$W"; mkdir -p "$W/plugins" "$W/serve" "$W/tmp"
 # see durable-governance-precondition.sh's header comment: isolate `sweep_dead_staging`'s host-wide
 # `$TMPDIR` scan so its opportunistic `[info] removed N orphaned ...` line never fires here.
 export TMPDIR="$W/tmp"
-tarball="$(bash "${here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
 asset="$(basename "$tarball")"
 cp "$tarball" "$W/serve/"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null

@@ -29,7 +29,7 @@ BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracl
 BOOT_BOUND="${ORACLE_BOOT_BOUND_SECS:-60}"
 LP="${STORE_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48831}}" AP="${STORE_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48832}}" MP="${STORE_MOCK_PORT:-${SCRIPT_MOCK_PORT:-48791}}"
 W="$RAW/store-work"; mkdir -p "$W/plugins"
-tarball="$(bash "${here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"
 alias_="$(tar -xzOf "$tarball" manifest.json | jq -r .alias)"
 # The store's fixture. sqlite's lives in the tree (a path under this cell's own work dir). Every

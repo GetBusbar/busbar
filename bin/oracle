@@ -30,4 +30,8 @@ export BUSBAR_ORACLE_TOOL_DIGEST="$tag@$sha"
 # — impossible if this shim forced every run at busbar's real directory.
 export BUSBAR_ORACLE_PRODUCT_ROOT="${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}"
 export BUSBAR_ORACLE_DATA="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
+# The cell DRIVERS under the data directory call the tool's fetchers (fetch-plugin.sh, fetch-golden.sh),
+# which left this tree with the tool. They find them through this variable, never by a path beside
+# themselves, so a driver cannot silently fall back to a stale in-tree copy.
+export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$("$root/.venv/bin/python" -c 'import busbar_oracle, os; print(os.path.dirname(busbar_oracle.__file__))')}"
 exec "$root/bin/busbar-oracle" "$@"

@@ -66,7 +66,7 @@ rm -rf "$W"; mkdir -p "$W/plugins" "$W/tmp"
 export TMPDIR="$W/tmp"
 for p in "$LP" "$AP"; do assert_port_free "$p" || fail "port $p busy"; done
 
-tarball="$(bash "${here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || fail "store-sqlite plugin fetch failed"
 cp "$tarball" "$W/plugins/"
 "$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
 [ -s "$W/signing.key" ] || fail "--generate-signing-key produced no key"

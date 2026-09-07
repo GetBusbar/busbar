@@ -39,7 +39,7 @@ for p in "$LP" "$AP" "$MP"; do
 done
 command -v sqlite3 >/dev/null 2>&1 || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"sqlite3 not installed"}}' >"$RAW/captured.json"; exit 0; }
 
-tarball="$(bash "${here}/fetch-plugin.sh" store-sqlite)" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" store-sqlite)" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"
 alias_="$(tar -xzOf "$tarball" manifest.json | jq -r .alias)"
 DB="$W/governance.db"

@@ -7,7 +7,7 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 PLUGIN="${1:?plugin name}"; BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"
 W="$RAW/plugin-work"; mkdir -p "$W/plugins"
-tarball="$(bash "${here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
+tarball="$(bash "${BUSBAR_ORACLE_TOOL_DIR:-$here}/fetch-plugin.sh" "$PLUGIN")" || { echo '{"status":-1,"headers":{},"body":"","effects":{"error":"plugin fetch failed"}}' >"$RAW/captured.json"; exit 0; }
 cp "$tarball" "$W/plugins/"
 cat >"$W/config.yaml" <<YAML
 listen: "127.0.0.1:48851"
