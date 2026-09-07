@@ -89,7 +89,7 @@ pub use legacy::{
 pub use migration::{
     migrate, opening_totals, LegacyFamily, LegacyFigure, LegacyFigures, LegacyLedgerRows,
     MigrationError, MigrationMarker, MigrationRecords, NodeLocalRecords, Opening,
-    Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ,
+    Outcome as MigrationOutcome, OPENING_CHECKPOINT_SEQ, OPENING_HISTORY_SEQ,
 };
 pub use recompute::{
     apply_tier, divergence_of, price_line, recheck, recompute, DerivedPrice, Divergence,
