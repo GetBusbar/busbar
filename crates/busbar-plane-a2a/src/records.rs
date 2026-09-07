@@ -23,7 +23,7 @@
 //! | keeps the caller's push configurations in a process-local map | a `push_config` leg, so a restart no longer forgets them |
 //! | keeps a callback's pinned address in a process-local map | a `pin` leg, for the same reason |
 //! | keeps a mapping from the identifier this node minted to the one the agent minted | a `tasks` `get`; the mapping is a member of the row, not a second store |
-//! | redeems a one-time callback token | a `push_config` leg, operation `redeem` |
+//! | authorises a callback token | a `push_config` leg, operation `verify_live`, and a `revoke` leg once the task is terminal |
 //!
 //! And the five reaches that are NOT records, because they were never this plane's to hold:
 //!
@@ -80,11 +80,39 @@ pub const OP_APPEND: &str = "append";
 /// Remove one record.
 pub const OP_DELETE: &str = "delete";
 
-/// Spend a one-time token, exactly once, and say whether this caller is the one who spent it.
-pub const OP_REDEEM: &str = "redeem";
+/// Ask whether a callback token is STILL LIVE, and spend nothing asking.
+///
+/// The verb a push callback is authorised by, and deliberately not a `redeem`. The token busbar
+/// registers with a backend names ONE TASK and is presented once per state that task moves through —
+/// `working`, then `input-required`, then `completed` — so it is a capability that lasts as long as
+/// the work does, not a one-time nonce. A `redeem` gets that wrong twice over: spent on the first
+/// callback it refuses the rest of an honest sequence, and answered `true` every time it accepts a
+/// captured one forever.
+///
+/// LIVE means all three of: the configuration is still there, the task it names has not reached a
+/// terminal state, and the task's deadline has not passed. The moment any of those stops holding the
+/// token is dead and every later callback carrying it is refused.
+pub const OP_VERIFY_LIVE: &str = "verify_live";
+
+/// Revoke a callback token, so nothing presenting it is authorised again.
+///
+/// Its own operation rather than a `delete`, because the two say different things to an operator
+/// reading the plan: a `delete` is the caller withdrawing a configuration it registered, and this is
+/// busbar retiring a capability whose task has finished. They happen at different moments for
+/// different reasons, and folding them together would make the revocation invisible in the one place
+/// the push-event plan is read.
+pub const OP_REVOKE: &str = "revoke";
 
 /// Every operation any of this plane's schemas declares.
-pub const OPERATIONS: &[&str] = &[OP_GET, OP_PUT, OP_SCAN, OP_APPEND, OP_DELETE, OP_REDEEM];
+pub const OPERATIONS: &[&str] = &[
+    OP_GET,
+    OP_PUT,
+    OP_SCAN,
+    OP_APPEND,
+    OP_DELETE,
+    OP_VERIFY_LIVE,
+    OP_REVOKE,
+];
 
 /// Which operations one schema declares.
 ///
@@ -95,7 +123,14 @@ pub fn operations_for(schema: RecordSchemaId) -> &'static [&'static str] {
     match schema.as_str() {
         s if s == SCHEMA_TASK.as_str() => &[OP_GET, OP_PUT, OP_SCAN, OP_DELETE],
         s if s == SCHEMA_TASK_EVENT.as_str() => &[OP_APPEND, OP_SCAN],
-        s if s == SCHEMA_PUSH_CONFIG.as_str() => &[OP_GET, OP_PUT, OP_SCAN, OP_DELETE, OP_REDEEM],
+        s if s == SCHEMA_PUSH_CONFIG.as_str() => &[
+            OP_GET,
+            OP_PUT,
+            OP_SCAN,
+            OP_DELETE,
+            OP_VERIFY_LIVE,
+            OP_REVOKE,
+        ],
         s if s == SCHEMA_PIN.as_str() => &[OP_GET, OP_PUT, OP_DELETE],
         _ => &[],
     }
