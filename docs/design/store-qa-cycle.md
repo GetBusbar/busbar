@@ -395,7 +395,9 @@ golden whose `meta.json` stamps an older rev can be traced to the exact change t
 | `d238d8d8b6088612…` | `integration/oracle-phase0` tip. The golden was ALREADY skewed against the tree at this point — the differ's `--allow-harness-skew` was carrying it. |
 | `3ddac3c2b6930702…` | three differ fixes cherry-picked off `keep-oracle-p2`: a script cell's own `effects` keys compared by no class, an empty after-scrape written as a negated absolute, and the golden ledger read at its first row where the verdict reads its last. Two of the three are `*.py` beside `harness-rev.sh`, so they are in the hash. |
 | `bbbbd0c138617cb7…` | `normalize.py`'s `eventstream.frames` rule (and `diff-cells.py` learning its representation). This is trigger 1 above, verbatim — "the harness changes (`cells.json`, `normalize.py`, …)". |
-| `b72dd9e667bfa61c…` | `record.sh`'s `script_mock_port()`: a script cell's mock port may not be one this recording already holds. **This is the rev `golden/1.5.5` must be re-recorded at.** |
+| `b72dd9e667bfa61c…` | `record.sh`'s `script_mock_port()`: a script cell's mock port may not be one this recording already holds. |
+| `9cfaf6b13b52b799…` | the judge, corpus and recorder branches landing together on this integration line. In the hash: `diff-cells.py` (the `norm.rules` exemption named at module scope and asserted disjoint from the content rules; `expected_cells` on every register entry; the ledger read at its LAST row), `replay.sh` and `../fleet-fixtures/verdict.sh` and `accepted-gaps.json` and `harness-rev.sh` itself ENTERING the hashed set, `accepted-differences.json` and `owed-baseline.txt` (the register and the owed floor decide the verdict on identical bytes), `cells.json` + `enumerate-cells.py` + `oracle-config.sh` + `scripts/rate-card-history.sh` (fifteen new cell definitions: the eight overlong-id/retrieve/epoch cells and the seven rate-card-history cells), and `record.sh` (the outage control write asserted, the mutation tool's break written down as a named gap, a boot cell's private ten-second stopwatch). |
+| `d68e446b259c1f62…` | the five host-vs-busbar rules this re-record exists to apply, all in the hash: `normalize.py` gains `stderr.platform-capability` (the darwin jemalloc purge-thread line, which sat in 56 golden cells and no linux cell), `egress.elapsed` (the attempt's wall clock, bucketed) and `metrics.concurrent-attempts` (a per-thread counter 1.5.5 itself records as 3,1,1,1); `diff-cells.py` learns `HOST_RULES` and reports a one-sided host firing on the row; `record.sh` unsets the SUPERVISOR_MARKERS so the host stops choosing the restart arm, waits for each egress record's response half, and passes `--driver concurrent`; `mock-upstream.py` records the upstream's own answer per attempt; `renormalize.sh`'s driver table follows record.sh's new flag. **This is the rev `golden/1.5.5` is re-recorded at.** |
 
 The last two rows force the full re-record. A normalizer rule changes what every cell's `applied`
 set and body look like, so a golden recorded before it cannot be compared against a candidate
@@ -409,13 +411,21 @@ list vs the old lossy text). That is expected and is the whole reason the rotati
 not a regression in busbar. Record it with:
 
 ```
-ORACLE_LISTEN_PORT=50701 ORACLE_ADMIN_PORT=50702 ORACLE_MOCK_PORT=50703 \
+ORACLE_LISTEN_PORT=51901 ORACLE_ADMIN_PORT=51902 ORACLE_MOCK_PORT=51911 \
+ORACLE_BOOT_LISTEN_PORT=51921 ORACLE_BOOT_ADMIN_PORT=51922 \
   record.sh --bin ~/.cache/busbar-oracle/1.5.5/busbar --plane all \
             --out target/oracle/recordings/golden-new
 ```
 
 on an otherwise-idle machine: a full pass takes ~50 minutes and its boot-bound cells
 (`ORACLE_BOOT_BOUND_SECS`, default 60) time out under heavy concurrent load.
+
+**Pin the boot ports whenever you move the main three.** `BOOT_LISTEN_PORT` and `BOOT_ADMIN_PORT`
+default to `LISTEN+10` / `ADMIN+10` and then step by 2 per boot-bound cell, so a mock port within ten
+of the listen port is a collision the defaults walk straight into — with `51901/51902/51911` the
+derived boot listener IS the mock port. The pair above puts the boot band clear of all three. The
+recorder's own three ports are also the only ones a script cell's mock will refuse to take
+(`script_mock_port()`), so they must be right before the run rather than adjusted during it.
 
 ### 3.2 (b) Candidate recording per stage
 
