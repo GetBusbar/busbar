@@ -428,7 +428,9 @@ spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py"
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 shipped = set(m.UNPROVEN_BY_NOTE)
 bad = []
-for want in ("PB-17", "PB-48", "PB-58", "PB-61"):
+# PB-17 left this set when a check that COUNTS boot warning lines landed; the three below are the
+# rows whose own note still says the surface they bind does not exist in crates/.
+for want in ("PB-48", "PB-58", "PB-61"):
     if want not in shipped:
         bad.append(f"{want} is not carried as unproven-by-note")
     if not m.UNPROVEN_BY_NOTE[want].strip() if want in shipped else False:
