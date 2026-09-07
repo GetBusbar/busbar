@@ -89,6 +89,38 @@ assert {k for k, w in CLASS_WEIGHT.items() if w == 10} == MONEY_CLASSES | {"miss
 # Families where BODY bytes are the contract itself (admin responses, boot messages, CLI output).
 BODY_IS_CONTRACT = {"admin.ops", "boot.refusal", "boot.warning", "config.migrate", "cli", "ops.scrape"}
 
+# ── THE ONE EXEMPTION FROM `norm.rules`, AND THE ONLY KIND OF RULE ALLOWED INTO IT ───────────────
+# `norm.rules` exists because a normalizer rule that fires on ONE side is itself a finding: content
+# was rewritten on the candidate that was not rewritten on the golden, and the rewrite is exactly
+# where a real divergence goes to hide. ORDER_RULES is the single exemption — a RE-SORT changes no
+# content at all, so whether a map happened to come out sorted on one run is not a contract.
+#
+# It was a bare set literal INSIDE compare(), hand-copied from normalize.py's rule list, and it had
+# already drifted: normalize.py grew `boot.exhaustion-order` (sort_pool_lines, a third sort_runs
+# call) and this set was never told, so that rule counted as one-sided. That drift was the harmless
+# direction. The other direction is not: the membership test here is a plain name match, so putting
+# a rule that DROPS or BLANKS content into this set — metrics.timing (drops a key), metrics.shape
+# (drops lines), body.keep-lines (keeps only matching lines), hdr.retry-after (blanks a value) —
+# would make its one-sided firing invisible, and a one-sided firing of a rule that removes content
+# is precisely how a money figure leaves a cell without a class saying so.
+#
+# So the two kinds are named separately and asserted disjoint at import. A re-sort rule may be
+# exempted; a rule that removes or rewrites content may never be, whatever it is called. Adding a
+# CONTENT_RULES name to ORDER_RULES stops this file from loading rather than quietly widening the
+# exemption. replay-selftest.sh holds the set to normalize.py's ACTUAL re-sort rules as well, so
+# drift in either direction is red rather than merely lucky.
+ORDER_RULES = {"boot.pool-order", "boot.error-order", "boot.exhaustion-order", "boot.pair-order",
+               "keys.order"}
+# Every normalize.py rule whose effect is to DROP, BLANK or REWRITE content rather than reorder it.
+CONTENT_RULES = {"hdr.date", "hdr.retry-after", "hdr.etag", "hdr.length", "id.wire", "audit.hash",
+                 "ts.unix", "ts.usage-window", "info.uptime", "ver.string", "key.id",
+                 "metrics.timing", "metrics.cooldown", "metrics.shape", "metrics.absolute",
+                 "body.keep-lines", "keep.header", "keep.header-min", "keep.json_key",
+                 "keep.text_regex", "egress.cred", "egress.host", "egress.body", "text.port"}
+assert not (ORDER_RULES & CONTENT_RULES), \
+    ("a rule that drops/blanks/rewrites content may never be exempted from norm.rules: "
+     f"{sorted(ORDER_RULES & CONTENT_RULES)}")
+
 
 def allowed_classes(kind: str, classes: set) -> set:
     """The classes an accepted-differences entry may forgive — ONE definition, shared by the
@@ -293,9 +325,6 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
         detail["effects.script"] = {"keys": moved,
                                     "paths": json_paths_diff({k: ge.get(k) for k in moved},
                                                              {k: ce.get(k) for k in moved})}
-    # ORDER canonicalizations fire only when the input happened to be unsorted; whether a map came
-    # out sorted on one run is not a contract, so those rules never count as one-sided.
-    ORDER_RULES = {"boot.pool-order", "boot.error-order", "boot.pair-order", "keys.order"}
     ga = [r for r in g.get("applied", []) + (g.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
     ca = [r for r in c.get("applied", []) + (c.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
     if sorted(ga) != sorted(ca):
