@@ -2194,9 +2194,23 @@ fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
 mod failed_open_reclaim {
     use std::os::raw::c_void;
     use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+    use std::sync::{Mutex, MutexGuard};
 
     pub static CLOSED_WITH: AtomicPtr<c_void> = AtomicPtr::new(std::ptr::null_mut());
     pub static CLOSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+    /// The three tests below share the process-global counters above (see the doc comment on this
+    /// module: a `CloseFn` is a bare `extern` fn pointer with no captured state, so the stubs have
+    /// nowhere else to record what they saw). `cargo test` runs tests from the same binary
+    /// concurrently on separate threads by default, so without serializing access here, one test's
+    /// `reset()` or `fetch_add` can interleave with another's read, corrupting counts that look
+    /// like a production double-close but are actually a test race. Every test below must hold this
+    /// lock for its full body, from `reset()` through its final assertion.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    pub fn lock() -> MutexGuard<'static, ()> {
+        TEST_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     /// A plugin `busbar_close` that records the handle it was handed.
     pub unsafe extern "C-unwind" fn record(handle: *mut c_void) {
@@ -2222,6 +2236,7 @@ mod failed_open_reclaim {
 #[test]
 fn a_failed_open_that_published_a_handle_still_closes_the_instance() {
     use failed_open_reclaim as stub;
+    let _guard = stub::lock();
     stub::reset();
     let handle = &mut 7u8 as *mut u8 as *mut std::os::raw::c_void;
 
@@ -2246,6 +2261,7 @@ fn a_failed_open_that_published_a_handle_still_closes_the_instance() {
 #[test]
 fn a_failed_open_with_no_handle_closes_nothing() {
     use failed_open_reclaim as stub;
+    let _guard = stub::lock();
     stub::reset();
     assert!(!reclaim_failed_open(
         stub::record,
@@ -2263,6 +2279,7 @@ fn a_failed_open_with_no_handle_closes_nothing() {
 #[test]
 fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
     use failed_open_reclaim as stub;
+    let _guard = stub::lock();
     stub::reset();
     let handle = &mut 9u8 as *mut u8 as *mut std::os::raw::c_void;
     assert!(reclaim_failed_open(
