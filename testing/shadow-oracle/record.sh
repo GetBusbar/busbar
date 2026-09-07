@@ -885,10 +885,8 @@ while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture p
   # it names the variable that carries the fixture (a backend connection URL), and the cell is a
   # named gap only while that variable is unset. Both arms record the SAME row text, so a gap that
   # later becomes recordable does not churn the ledger of the gaps beside it.
-  if [ -n "$needs_fixture" ] && [ "$needs_fixture" != false ] && [ "$needs_fixture" != null ]; then
-    if [ "$needs_fixture" = true ] || [ -z "${!needs_fixture:-}" ]; then
-      record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
-    fi
+  if oracle_fixture_missing "$needs_fixture"; then
+    record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
   fi
   case "$plane" in
     mcp|a2a) record "$id" SKIP "UNSUPPORTED: ${plane} is proven by its conformance rig, not recorded here" "named gap on the golden, never owed"; continue ;;
