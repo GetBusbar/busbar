@@ -102,7 +102,7 @@ DIALECTS="openai gemini anthropic bedrock cohere responses"
 # shellcheck source=scripts/plane-keys.sh
 . "$(dirname "$0")/plane-keys.sh"
 # The NEUTRAL roots come from the same file, for the same reason: the ABI side is one list, shared with
-# plane-purity-lint.sh / plane-transport-neutrality.sh / plane-noun-gate.sh, and a drained crate leaves
+# plane-purity-lint.sh / the plane-transport-neutrality gate / plane-noun-gate.sh, and a drained crate leaves
 # the set by ONE named deletion there. The env override exists for the self-test's blind-scan cases
 # below and nothing else; CI never sets it.
 NEUTRAL_ROOTS="${PLANE_GREP_NEUTRAL_ROOTS:-$(neutral_src_roots)}"

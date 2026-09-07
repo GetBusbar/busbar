@@ -60,7 +60,7 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 
 # ── THE NEUTRAL SURFACE (the ABI side; the only place these nouns are a leak) ─────────────────────
 # The four ABI-side roots are single-sourced from scripts/plane-keys.sh — the same list
-# plane-purity-lint.sh and plane-transport-neutrality.sh scan, so the gates cannot disagree about
+# plane-purity-lint.sh and the plane-transport-neutrality gate scan, so they cannot disagree about
 # what "neutral" means and a drained crate leaves the set by ONE named deletion there. THIS gate adds
 # `crates/busbar-plugin/src`: the plugin ABI is the surface a third-party plugin compiles against, so
 # an LLM noun frozen into it is the same leak as one in busbar-core, and it is measured here alone.
