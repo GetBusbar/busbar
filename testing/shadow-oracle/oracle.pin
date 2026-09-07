@@ -1,0 +1,17 @@
+# The shadow-oracle TOOL this checkout is judged by. The tool is a separate product
+# (GetBusbar/busbar-oracle); everything else in this directory is busbar's own DATA.
+#
+# WHY A DIGEST AND NOT JUST A TAG. A tag is a name and a name can be moved. The oracle
+# decides whether busbar shipped a regression, so the one thing that must not be able to
+# change quietly is which judge ran. bin/oracle refuses an archive that does not hash to
+# `sha256` below, and harness-rev.sh folds `tag@sha256` into the harness revision — so a
+# tool upgrade shows up in every recording made after it, exactly as a recorder change does.
+#
+# CAVEAT WORTH KNOWING: this is GitHub's auto-generated source archive for the tag. Those
+# are stable in practice but are not contractually byte-stable (the compression has changed
+# once in GitHub's history). If that ever bites, publish a real release ASSET and pin that
+# instead; the shim's check does not care which URL the bytes came from.
+#
+# To move the pin: bump `tag`, download the archive, and put its sha256 here.
+tag=v0.1.0
+sha256=43c874a7553b2bbef6dc23148daf074f2c644795a8e1a80ac4ae2d03a5494844

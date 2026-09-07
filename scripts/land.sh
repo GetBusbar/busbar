@@ -200,7 +200,7 @@ if [ -n "$families" ]; then
   # reads must contain this candidate's cells and nothing else.
   rm -rf "$out" "$out.report"
   ORACLE_LISTEN_PORT="$ORACLE_LISTEN_PORT" ORACLE_ADMIN_PORT="$ORACLE_ADMIN_PORT" ORACLE_MOCK_PORT="$ORACLE_MOCK_PORT" \
-    "$here/testing/shadow-oracle/record.sh" --plane all --bin "$here/target/release/busbar" --filter "$families" \
+    "$here/bin/oracle" record --plane all --bin "$here/target/release/busbar" --filter "$families" \
     --out "$out" >"$out.log" 2>&1 || {
       echo "land.sh: RED — record.sh on ports $ORACLE_LISTEN_PORT/$ORACLE_ADMIN_PORT/$ORACLE_MOCK_PORT (see $out.log)" >&2
       echo "land.sh:       if another landing is recording on this host, set ORACLE_LISTEN_PORT/ORACLE_ADMIN_PORT/ORACLE_MOCK_PORT and re-run" >&2
@@ -215,7 +215,7 @@ if [ -n "$families" ]; then
   # now diff against the committed, signed-off recording, which is also why `--allow-harness-skew` is
   # gone: with one golden on both sides the skew guard means the same thing in both places, and a
   # harness edit that moves the rev is a golden to re-stamp or re-record, not a warning to pass over.
-  python3 "$here/testing/shadow-oracle/diff-cells.py" --golden "$here/testing/shadow-oracle/golden/1.5.5" \
+  "$here/bin/oracle" diff --golden "$here/testing/shadow-oracle/golden/1.5.5" \
     --candidate "$out" --out "$out.report" --id-filter "$families" --strict \
     || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; exit 1; }
   echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed)"

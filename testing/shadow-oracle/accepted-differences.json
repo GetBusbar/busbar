@@ -101,6 +101,7 @@
       "kind": "breaking",
       "by": "owner (Matthew Jackson), 2026-09-06 oracle-phase0 committed-golden triage",
       "cells": "^boot\\.refusal\\|BOOT-043b\\|validate$",
+      "expected_cells": 1,
       "classes": [
         "effects.stderr"
       ],
