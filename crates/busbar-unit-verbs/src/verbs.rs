@@ -202,6 +202,13 @@ pub struct Verbs<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<Minte
     config_class_rules: &'static [ConfigClassRule],
     create_key_cache: IdempotencyCache<Vec<u8>>,
     rotate_key_cache: IdempotencyCache<Vec<u8>>,
+    /// The amendment replay cache. It holds the RECEIPT rather than encoded response bytes, and
+    /// that difference is safety rather than taste: the two minting caches hold bytes precisely so
+    /// that a replay has no decode step that could re-mint a `SecretOnce`. An amendment's receipt
+    /// carries no credential at all — a seq, a count and a delta per currency — so there is nothing
+    /// a decode could re-mint, and holding the structured value means this crate needs no second
+    /// `ReplayEncoder` (and `Verbs` needs no fifth type parameter) to make the verb replayable.
+    amend_cache: IdempotencyCache<crate::amend::AmendReceipt>,
     limiter: MutationLimiter,
 }
 
@@ -228,6 +235,7 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
             config_class_rules,
             create_key_cache: IdempotencyCache::new(),
             rotate_key_cache: IdempotencyCache::new(),
+            amend_cache: IdempotencyCache::new(),
             limiter: MutationLimiter::new(),
         }
     }
@@ -450,6 +458,15 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         if verb == KernelVerb::PostKeys || verb == KernelVerb::PostKeysIdRotate {
             return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Internal));
         }
+        // `amend_rate_history` is refused here for the same reason and in every build. This path
+        // carries no operator-signature check, no interval check and no replay cache: routed
+        // through it, an amendment reaches the new-verb catch-all UNSIGNED, and a full-scope admin
+        // credential alone would then be enough to reprice a window that has already been invoiced
+        // — the one thing the operator signature exists to prevent. It has its own method, which
+        // runs all four.
+        if verb == KernelVerb::AmendRateHistory {
+            return Err(Refusal::new(RefusalStep::Admit, ReasonCode::Internal));
+        }
         self.admit(verb, actor, granted, now)?;
         // A ledger view is answered BEFORE the new-verb branch, and the ordering is the whole of
         // its posture: it never reaches `check_new_verb_admission`, because there is no mutation
@@ -480,6 +497,109 @@ impl<G: Governance, S: Store, N: NonceSource, E: ReplayEncoder<MintedKeyOutcome>
         self.governance
             .execute_legacy(verb, admin, request)
             .map_err(GovernanceError::into_refusal)
+    }
+
+    /// `POST /api/v1/admin/ledger/amend-rate-history` — back-date the card over a window, under an
+    /// operator signature.
+    ///
+    /// The order of the checks is the design, not an implementation detail:
+    ///
+    /// 1. **Scope and rate**, as every verb runs them.
+    /// 2. **Posture.** The verb is in the irreducible set in BOTH dual-control postures, so a
+    ///    fleet that has not run the operator ceremony refuses it outright and a fleet under
+    ///    `required` needs a matching `approve` first.
+    /// 3. **The operator signature**, over [`crate::amend::canonical_payload`]. Checked before the
+    ///    history is read and before the arguments are judged, so a caller with no operator
+    ///    authority is told that and learns nothing about the history's shape from a more specific
+    ///    refusal.
+    /// 4. **The card and the interval** — a partial card, a `from` in the future, an empty window
+    ///    and an entry dated before the opening are each refused with the amendment still nothing
+    ///    but a plan.
+    /// 5. **Payload equality with the newest `Amend`**, which is checked BEFORE the
+    ///    `Idempotency-Key` slot because it is the stronger of the two: it is a fact about the
+    ///    sealed history rather than about this process's memory, so it still holds after a
+    ///    restart, after a failover, and for a caller that sent no header at all.
+    /// 6. **The `Idempotency-Key` slot**, keyed by the canonical payload as well as the header
+    ///    value (see [`crate::amend::replay_slot`]).
+    ///
+    /// Only then does anything reach [`crate::amend::RateHistory::apply_amendment`].
+    ///
+    /// **The history is lent per call rather than bound at construction.** The four seams `Verbs`
+    /// holds are the ones every verb call needs; a caller that never amends should not have to bind
+    /// a history to create a key. Taking it here also keeps [`Verbs::new`] the four-seam
+    /// constructor every existing composition already calls.
+    ///
+    /// # Errors
+    ///
+    /// Any of the six steps above, as its own [`Refusal`]. Nothing is appended and no figure moves
+    /// on any of them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn amend_rate_history<H: crate::amend::RateHistory>(
+        &self,
+        history: &H,
+        admin: &AdminToken,
+        actor: &str,
+        granted: VerbScope,
+        now: u64,
+        posture: Option<PostureCtx>,
+        approval: ApprovalState,
+        idempotency_key: Option<&str>,
+        request: &crate::amend::AmendRequest<'_>,
+        now_ms: u64,
+    ) -> Result<crate::amend::AmendOutcome, Refusal> {
+        use crate::amend::AmendOutcome;
+        self.admit(KernelVerb::AmendRateHistory, actor, granted, now)?;
+        let Some(ctx) = posture else {
+            return Err(Refusal::new(RefusalStep::Verify, ReasonCode::Validation));
+        };
+        crate::posture::check_new_verb_admission(KernelVerb::AmendRateHistory, ctx, approval)?;
+
+        let canonical = crate::amend::canonical_payload(request);
+        crate::amend::check_signature(history, request, &canonical)?;
+        crate::amend::check_card_complete(request)?;
+
+        let bounds = history.bounds().map_err(GovernanceError::into_refusal)?;
+        crate::amend::check_interval(request, &bounds, now_ms)?;
+
+        if let Some(newest) = &bounds.newest_amend {
+            if newest.is_same_amendment(request) {
+                return Ok(AmendOutcome::AlreadyAmended {
+                    history_seq: newest.history_seq,
+                });
+            }
+        }
+
+        let slot =
+            idempotency_key.map(|k| (actor.to_string(), crate::amend::replay_slot(&canonical, k)));
+        let reservation = match slot {
+            None => None,
+            Some(key) => match self.amend_cache.probe(key, now) {
+                Probe::NoKey => None,
+                Probe::Replay(receipt) => return Ok(AmendOutcome::Replayed(receipt)),
+                Probe::InFlight => {
+                    return Err(Refusal::new(
+                        RefusalStep::Admit,
+                        ReasonCode::IdempotencyInFlight,
+                    ))
+                }
+                Probe::Reserved(r) => Some(r),
+            },
+        };
+
+        match history.apply_amendment(admin, request, &canonical) {
+            Ok(receipt) => {
+                if let Some(r) = reservation {
+                    r.commit(receipt.clone(), now);
+                }
+                Ok(AmendOutcome::Applied(receipt))
+            }
+            Err(e) => {
+                if let Some(r) = reservation {
+                    r.clear();
+                }
+                Err(e.into_refusal())
+            }
+        }
     }
 
     /// The bound store, for this crate's own tests to observe what did and did not reach it.
