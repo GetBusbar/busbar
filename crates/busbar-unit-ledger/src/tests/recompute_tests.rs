@@ -219,9 +219,7 @@ fn a_hand_corrupted_quantity_moves_both_figures() {
         kinds
             .iter()
             .any(|d| matches!(d, Divergence::PreTier { .. }))
-            && kinds
-                .iter()
-                .any(|d| matches!(d, Divergence::Priced { .. })),
+            && kinds.iter().any(|d| matches!(d, Divergence::Priced { .. })),
         "the pre-tier figure and the priced one both move: {kinds:?}"
     );
 }

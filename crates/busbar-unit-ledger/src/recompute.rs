@@ -58,8 +58,8 @@ use std::collections::BTreeMap;
 
 use busbar_caps::MeterClassId;
 use busbar_unit_cost::{
-    price, CurrencyCode, History, HistorySeq, HistoryView, Posting as CostPosting, Priced, Quantity,
-    Unpriceable,
+    price, CurrencyCode, History, HistorySeq, HistoryView, Posting as CostPosting, Priced,
+    Quantity, Unpriceable,
 };
 
 use crate::totals::TotalsKey;
@@ -150,6 +150,7 @@ pub enum PostingOrigin {
 /// of lines on every request would be a different performance profile, and a stored figure to
 /// compare the lookup against is what makes a hand edit detectable at all. Where it disagrees with
 /// the lookup, the lookup wins and this is corrected in place.
+///
 /// It says what it is true OF as well as what it is, and that is the point: a figure that named no
 /// snapshot would be a number with no way to tell "computed under an older history" from "wrong".
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
