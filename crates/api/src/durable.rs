@@ -4,7 +4,7 @@
 //! The ONE durable-write choke point. Every durable file publish in busbar goes through here:
 //! `temp → write → flush → fsync(file) → rename → fsync(parent)`, with RAII tmp cleanup on EVERY
 //! error path. There is no other public durable-write path in the crate (see the guard test in
-//! `admin::structure` / `scripts/structure-lint.sh`): outside this module, the ephemeral
+//! `admin::structure` / the `structure-lint` gate): outside this module, the ephemeral
 //! `plugin-loader::stage`, and `#[cfg(test)]` blocks, no source file may hand-roll a
 //! `std::fs::rename` used to publish or a `sync_all` for durability. A 5th call-site that tries to
 //! re-hand-roll the dance fails CI instead of compiling — the atomic-write bug class is made

@@ -4,6 +4,12 @@
 #
 # plane-roots.sh — THE ONE ANSWER TO "WHERE DOES A PLANE LIVE?", for the lints that need it.
 #
+# NO SHELL LINT SOURCES THIS FILE ANY MORE. All four callers below are `cargo xtask gate <name>`
+# now, and the live implementation of the rule this file states is `xtask/src/planes.rs`, which is
+# the one both the disk resolver and the overlay-aware one in `structure_lint::roots` go through.
+# The file is kept until the end of the batch-1 conversion rather than deleted mid-flight, and this
+# note is here so nobody reads its four-caller argument below as a description of today.
+#
 # WHY THIS FILE EXISTS. 1.6.0's owner ruling R-E makes the MCP and A2A planes PLUGIN CRATES: a crate
 # depending on `busbar-api` alone, which `busbar-core` depends on, exactly as it depends on
 # `busbar-auth-admin-tokens` today. So `crates/busbar-core/src/{mcp,a2a}` is a FACT ABOUT TODAY'S

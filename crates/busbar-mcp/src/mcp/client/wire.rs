@@ -6,7 +6,7 @@
 //!
 //! ## Why a vtable and not a `match` on the dispatch path
 //!
-//! [`busbar_substrate::transport::Transport`] is an axis of the matrix, and `structure-lint.sh` bans the core
+//! [`busbar_substrate::transport::Transport`] is an axis of the matrix, and the `structure-lint` gate bans the core
 //! from comparing one: a dispatch path that can see which transport it is on forks at every step it
 //! takes afterwards. So the axis answers the question once —
 //! [`busbar_substrate::transport::Transport::upstream_wire`] is the only `match` on it in the tree — and hands back

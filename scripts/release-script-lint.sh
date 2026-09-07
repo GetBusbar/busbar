@@ -50,7 +50,7 @@
 #
 # Runs in CI (see .github/workflows/ci.yml, structure-lint job). No external deps; bash 3.2 + POSIX
 # awk (macOS/Linux). `--selftest` proves the scanner still catches the real antipattern before its
-# verdict on the tree is trusted (same discipline as structure-lint.sh --selftest).
+# verdict on the tree is trusted (same discipline as cargo xtask gate structure-lint --selftest).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
