@@ -112,7 +112,7 @@ jobs:
       BUSBAR_TEST_MYSQL_URL: mysql://busbar:busbar@127.0.0.1:3306/busbar_test
       VALKEY_URL: redis://localhost:6379
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       # FIRST, AND BEFORE ANYTHING EXPENSIVE. If the `image:` lines above have drifted from the
       # pinned table, everything after this step records against a backend that is not the one the
@@ -392,7 +392,7 @@ jobs:
       # normalised view and are what the import consumes.
       - name: Upload the recorded cells and the merge notes
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: oracle-store-cells-${{ github.run_id }}
           path: |

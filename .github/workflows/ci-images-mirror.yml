@@ -258,7 +258,7 @@ jobs:
           # cannot sit behind a permanent notice. Derived from git rather than hardcoded.
           added="$(git log --diff-filter=A --format=%aI -- .github/workflows/ci-images-mirror.yml | tail -1)"
           if [ -n "${added:-}" ]; then
-            age_days=$(( ( $(date -u +%s) - $(date -u -d "$added" +%s 2>/dev/null || echo "$(date -u +%s)") ) / 86400 ))
+            age_days=$(( ( $(date -u +%s) - $(date -u -d "$added" +%s 2>/dev/null || date -u +%s) ) / 86400 ))
           else
             age_days=0
           fi
