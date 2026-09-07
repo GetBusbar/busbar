@@ -503,6 +503,12 @@ impl CloneForTest for busbar_contract_transport::wire::Conn {
 
 /// The destination's argument vector and environment both reach the child. A single opaque path
 /// could carry neither, so a deployment naming a program with arguments had no way to say so.
+///
+/// UNIX ONLY, like every other spawn cell in this tree: the fixture names `/bin/sh`, which does not
+/// exist on windows, so `spawn` there fails with `TransportError::Refused` and the cell would be
+/// asserting the absence of a shell rather than anything about this transport. The windows leg of
+/// CI runs `cargo test --workspace` over exactly these binaries, so the gate is what keeps it green.
+#[cfg(unix)]
 #[tokio::test]
 async fn argv_and_env_reach_the_spawned_child() {
     // `sh -c SCRIPT NAME`: the script reads the environment this destination declared and the
@@ -522,6 +528,11 @@ async fn argv_and_env_reach_the_spawned_child() {
 /// The environment is cleared before anything the destination declared is set, so a child never
 /// inherits a variable the deployment did not write down. `HOME` is set in this process and
 /// must not survive into a child that was given an empty environment.
+///
+/// UNIX ONLY, for both of the reasons the sibling cell above names: `/bin/sh` is not a program on
+/// windows, and `HOME` is not the variable a windows process carries — so the leak this cell needs
+/// to have something to prove would not be there either.
+#[cfg(unix)]
 #[tokio::test]
 async fn the_child_inherits_no_environment_it_was_not_given() {
     assert!(
@@ -539,6 +550,10 @@ async fn the_child_inherits_no_environment_it_was_not_given() {
 
 /// A sealed destination naming `/bin/sh`, the given argument vector (with `argzero` appended to
 /// stand in for the shell's own `$0`) and the given environment.
+///
+/// Carries the same `#[cfg(unix)]` as its only two callers: left ungated it is dead code on windows,
+/// which that leg's `cargo clippy --workspace --all-targets -- -D warnings` reads as a failure.
+#[cfg(unix)]
 fn program_dest(
     args: &[&'static str],
     env: &'static [(&'static str, &'static str)],
