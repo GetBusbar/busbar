@@ -119,5 +119,9 @@ host_triple() {  # the running machine's target triple, as busbar release assets
 # Run directly (not sourced): print the harness revision, e.g. for ci.yml's cache key or a human
 # checking whether their tree still matches a cached golden.
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
-  echo "harness_rev $(harness_rev)"
+  # `--files`: the repo-relative file list, one per line — the SAME set the hash above is taken over,
+  # so a caller asking "did this change touch the harness?" and the rev itself can never answer
+  # differently. No caller asks today: land.sh diffs against the one committed golden and has no skew
+  # flag to earn, so this exists for humans and for whatever next needs the set rather than the hash.
+  if [ "${1:-}" = "--files" ]; then harness_rev_files; else echo "harness_rev $(harness_rev)"; fi
 fi
