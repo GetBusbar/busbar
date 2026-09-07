@@ -664,12 +664,16 @@ NOTES: dict[str, str] = {
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
     "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
     "PB-61": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-    "PB-17": "The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are "
-             "the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric "
-             "SERIES are absent on a config with no data_dir -- a different surface, and not a count. "
-             "The boot.warning cells assert that individual warnings are PRESENT; none totals them. "
-             "The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 "
-             "corpus config and compare the total against the pinned golden's.",
+    "PB-17": "Resolved 2026-09-06: the binding is a COUNT, and it is now counted. "
+             "crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did "
+             "migrates and validates each of the 69 shipped configs in tests/migration-corpus/from-tags "
+             "and compares the warning lines the current binary emits, per config, against the number "
+             "the PUBLISHED 1.5.5 binary emitted on the same config -- read out of the pinned golden's "
+             "own config.migrate|<tag>|validate-migrated recordings, so the baseline is measured and not "
+             "typed in. 1.5.5 warned 69 times over the 69 configs; this binary warns fewer, having "
+             "retired the BUSBAR_PROVIDERS deprecation, and a warning that APPEARS is reported with its "
+             "config and its text. The absence tripwire it used to cite is kept: it proves a different, "
+             "still-wanted thing about metric series.",
 }
 
 # ── Bindings the ledger's own note already says nothing proves ───────────────────────────────────
@@ -689,12 +693,6 @@ UNPROVEN_BY_NOTE: dict[str, str] = {
     "PB-61": "the note on this row says MAX_NEEDMORE_FRAMES does not exist in crates/ and that no test "
              "drives a multi-chunk body to the cap. The tests it cites bound a body by BYTES; the "
              "binding is about the CHUNK-COUNT cap. Nothing was compared.",
-    "PB-17": "this row cites the shared absence tripwire (the ops.scrape no-ledger-series cell and "
-             "no_ledger_series_and_no_keyset_lines_without_data_dir), which asserts that certain metric "
-             "SERIES are absent. The binding is a COUNT of boot warning lines, and no check counts "
-             "them. A cell or test that counts the boot warning lines emitted on the 1.5.5 corpus "
-             "config and compares that count to the golden's would prove it; until one exists, the "
-             "tripwire proves a different thing about a different surface.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────

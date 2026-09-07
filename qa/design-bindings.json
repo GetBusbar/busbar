@@ -15,16 +15,16 @@
  },
  "counts": {
   "bindings": 103,
-  "mapped": 97,
-  "unproven": 6,
+  "mapped": 98,
+  "unproven": 5,
   "unmapped": 0,
   "gap": 0,
   "checks_by_kind": {
    "gate": 13,
    "lint": 5,
-   "oracle-cell": 49,
+   "oracle-cell": 50,
    "oracle-family": 5,
-   "test": 426
+   "test": 428
   }
  },
  "owner_decisions": {
@@ -870,8 +870,8 @@
    "surface": "boot warnings",
    "binding": "none beyond 1.5.5's 228 unless a 1.6.0-additive key (`data_dir`, `peers`, `keyset_ref`, `wal_capacity`, …) is written",
    "inventory": "config",
-   "note": "The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: the binding is a COUNT, and it is now counted. crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did migrates and validates each of the 69 shipped configs in tests/migration-corpus/from-tags and compares the warning lines the current binary emits, per config, against the number the PUBLISHED 1.5.5 binary emitted on the same config -- read out of the pinned golden's own config.migrate|<tag>|validate-migrated recordings, so the baseline is measured and not typed in. 1.5.5 warned 69 times over the 69 configs; this binary warns fewer, having retired the BUSBAR_PROVIDERS deprecation, and a warning that APPEARS is reported with its config and its text. The absence tripwire it used to cite is kept: it proves a different, still-wanted thing about metric series.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -886,10 +886,17 @@
      "proves": "a 1.5.5-shaped config (no data_dir) exposes no busbar_ledger_/journal_/hold_/wal_ series and logs no keyset / data-dir / WAL / record-rate line",
      "source": "hand",
      "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did",
+     "status": "mapped",
+     "source": "hand",
+     "proves": "the COUNT itself: warning lines per shipped config, current binary vs the number the published 1.5.5 binary emitted on the same config, read from the pinned golden recordings"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's."
+   "verdict": "PASS",
+   "verdict_detail": "oracle-cell:ops.scrape|metrics|no-ledger-series, test:no_ledger_series_and_no_keyset_lines_without_data_dir, test:crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did"
   },
   {
    "id": "PB-18",
