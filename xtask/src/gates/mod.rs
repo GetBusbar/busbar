@@ -26,6 +26,7 @@ pub mod inventory_ref;
 pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod segregation;
+pub mod service_images;
 pub mod workspace_deps;
 
 use std::collections::BTreeSet;
@@ -311,11 +312,60 @@ pub static REGISTRY: &[Registration] = &[
         summary: "the pure plugin kinds carry no banned transitive source (ARCHITECTURE.md 1.2)",
     },
     Registration {
+        name: "changelog",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(changelog::ChangelogGate::new()),
+        summary: "the changelog's grammar, and its newest entry carries a version and a date",
+    },
+    Registration {
+        name: "changelog-register",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(changelog_register::ChangelogRegisterGate::new()),
+        summary: "every accepted difference names a changelog line that was actually written",
+    },
+    Registration {
+        name: "ci-umbrella",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(ci_umbrella::CiUmbrellaGate),
+        summary: "every job is in the umbrella's needs or excluded for a written reason",
+    },
+    Registration {
+        name: "inventory-ref",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(inventory_ref::InventoryRefGate),
+        summary: "every design binding's inventory column names a file that exists",
+    },
+    Registration {
+        name: "qa-gate-dispatch",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(qa_gate_dispatch::QaGateDispatchGate::new()),
+        summary: "the dispatcher this branch declares is the dispatcher this branch ships",
+    },
+    Registration {
         name: "release-order",
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(release_order::ReleaseOrderGate),
         summary: "nothing may be tagged until it has been verified from the consumer side",
+    },
+    Registration {
+        name: "service-images",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(service_images::ServiceImagesGate),
+        summary: "every container image a workflow or the release harness names is a pinned digest",
+    },
+    Registration {
+        name: "workspace-deps",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(workspace_deps::WorkspaceDepsGate),
+        summary: "every crate dependency goes through the workspace table",
     },
     Registration {
         name: "segregation",

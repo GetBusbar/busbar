@@ -47,11 +47,11 @@
 //!     row on a fast-tier run. A guarded job labelled `fast` reddens every fast-tier run for doing
 //!     what it was told; an unguarded job labelled `full` has its real skip forgiven, which is the
 //!     required check quietly not requiring it.
-//! 12–14. [`ROW_JOBS_FLOOR`], [`ROW_NEEDS_FLOOR`], [`ROW_RESULTS_FLOOR`] — THE FLOORS. A reader that
-//!     matched nothing reports a clean file; a `needs` list that shrank is a required check that
-//!     stopped requiring things; an unread ledger scores nothing and prints GREEN. Each floor is a
-//!     `const` here with no environment override, and each is proven to bite ON ITS OWN in
-//!     [`Gate::selftest`] — proving them together proves only that at least one fired, and the
+//! 12. [`ROW_JOBS_FLOOR`], 13. [`ROW_NEEDS_FLOOR`], 14. [`ROW_RESULTS_FLOOR`] — THE FLOORS.
+//!     A reader that matched nothing reports a clean file; a `needs` list that shrank is a required
+//!     check that stopped requiring things; an unread ledger scores nothing and prints GREEN. Each
+//!     floor is a `const` here with no environment override, and each is proven to bite ON ITS OWN
+//!     in [`Gate::selftest`] — proving them together proves only that at least one fired, and the
 //!     jobs floor alone fires on every stub small enough to write by hand.
 
 use std::collections::BTreeSet;
@@ -168,9 +168,9 @@ impl Gate for CiUmbrellaGate {
                 "the single required check is gone: nothing branch protection points at waits for \
                  anything, and every job's red reports GREEN",
             ));
-            rows.extend(fail_umbrella_dependent(
-                format!("there is no `{UMBRELLA}` job to read this from"),
-            ));
+            rows.extend(fail_umbrella_dependent(format!(
+                "there is no `{UMBRELLA}` job to read this from"
+            )));
             return Verdict::of(rows);
         };
         rows.push(Row::pass(
@@ -407,7 +407,13 @@ fn all_fail(title: impl Into<String>, detail: impl Into<String>) -> Vec<Row> {
 fn fail_umbrella_dependent(detail: String) -> Vec<Row> {
     UMBRELLA_DEPENDENT
         .iter()
-        .map(|id| Row::fail(*id, "the umbrella's wiring could not be read", detail.clone()))
+        .map(|id| {
+            Row::fail(
+                *id,
+                "the umbrella's wiring could not be read",
+                detail.clone(),
+            )
+        })
         .collect()
 }
 
@@ -621,11 +627,7 @@ fn rule_scored(
         Row::pass(
             ROW_SCORED,
             "every job the umbrella waits for is scored, or declared report-only",
-            format!(
-                "{} scored, {} report-only",
-                scored.len(),
-                report_only.len()
-            ),
+            format!("{} scored, {} report-only", scored.len(), report_only.len()),
         )
     } else {
         Row::fail(
@@ -943,7 +945,9 @@ fn synthetic(jobs: usize, needs: usize, results: usize) -> String {
     }
     out.push_str("    runs-on: ubuntu-latest\n    env:\n      RESULTS: |\n");
     for job in waited.iter().take(results) {
-        out.push_str(&format!("        {job}|fast|${{{{ needs.{job}.result }}}}\n"));
+        out.push_str(&format!(
+            "        {job}|fast|${{{{ needs.{job}.result }}}}\n"
+        ));
     }
     out.push_str("    steps:\n      - run: true\n");
     out
