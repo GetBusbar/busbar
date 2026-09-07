@@ -461,6 +461,7 @@ tools:
     // Drive prompts/get until the budget bites. Each admitted call asks first — a LIVE
     // `elicitation/create` request on the channel — and is answered; a refused call asks nothing.
     let mut successes = 0;
+    let mut elicitations = 0;
     let mut refusal: Option<serde_json::Value> = None;
     for i in 0..4 {
         child.send(&serde_json::json!({
@@ -469,6 +470,7 @@ tools:
         }));
         let mut line = child.recv();
         if line.get("method").and_then(|m| m.as_str()) == Some("elicitation/create") {
+            elicitations += 1;
             assert_eq!(
                 line.pointer("/params/message").and_then(|v| v.as_str()),
                 Some("Render the greeting?"),
@@ -496,6 +498,17 @@ tools:
     assert!(
         successes >= 1,
         "the within-budget calls must have served; first non-result: {refusal:?}"
+    );
+    // THE ELICITATION HALF, which until now lived entirely inside an `if` with no `else` and no
+    // counter. This battery's own header claims it owns proving that the operator's `ask_caller` is
+    // driven as LIVE `elicitation/create` requests over the pipes -- but if the server stopped
+    // emitting them (the confirmation gate regressing to auto-accept, a GOVERNANCE regression),
+    // every iteration took the fall-through path, `successes` still incremented, the budget still
+    // bit on the third call, and the test was green having driven zero elicitations.
+    assert_eq!(
+        elicitations, successes,
+        "every ADMITTED call must ask first: {successes} served but only {elicitations} \
+         elicitation/create request(s) crossed the pipes"
     );
     let refusal = refusal.expect("the over-budget call must be refused");
     let message = serde_json::to_string(&refusal).unwrap();

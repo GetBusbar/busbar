@@ -57,7 +57,14 @@ fn credential_is_compared_under_a_digest() {
         64,
         "must be a hex digest, not raw material"
     );
-    assert_eq!(m.token_hash, busbar_api::sha256_hex(b"sekret"));
+    // The LITERAL digest, not `sha256_hex(b"sekret")` again. `token_hash` was assigned from that
+    // exact call twelve lines up, so comparing it back to the same expression could not fail for
+    // any implementation of `sha256_hex` -- including one that returned a constant. Spelled out,
+    // this pins that the field holds the digest of the token and not of something else.
+    assert_eq!(
+        m.token_hash,
+        "bb757689c39373a6cac9ef6ba55616c6249d7500ca4d443f1130c4766453a412"
+    );
     assert_ne!(m.token_hash, "sekret", "must never store the raw token");
 
     // Behavioral: the correct credential still identifies, a wrong one of the SAME length still

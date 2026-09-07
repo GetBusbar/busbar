@@ -10,6 +10,36 @@ use super::*;
 /// for this append-only catalog (mirrors the codebase's `KNOWN_PROTOCOLS` pattern).
 #[test]
 fn all_lists_every_variant_and_name_matches_serde() {
+    // THE EXHAUSTIVENESS HALF, and it has to be a `match` rather than a walk of `ALL`. Every other
+    // assertion in this test is driven BY `Signal::ALL`, so all of them are self-referential: add a
+    // variant plus its `Signal::name` arm (both compiler-forced) and forget `Signal::ALL` (a
+    // hand-maintained slice the compiler does NOT check) and the whole test passed -- while
+    // `Signal::bit` panics on "Signal::ALL must list every variant" the first time anyone declares
+    // that signal, on the live decide/tap path. Degenerately, an EMPTY `ALL` passed everything
+    // below too (`0 == 0`, `vec![] == (0..0)`). This match is non-exhaustive the moment a variant
+    // is added, so the omission becomes a compile error in the same change that introduces it.
+    for &s in Signal::ALL {
+        let listed = match s {
+            Signal::RequestedModel
+            | Signal::RequestTotalChars
+            | Signal::RequestMessageCount
+            | Signal::RequestToolCount
+            | Signal::RequestSystemChars
+            | Signal::CandidateBreakerState
+            | Signal::CandidateErrorRate
+            | Signal::CandidateLatencyP95Ms
+            | Signal::RoutingPolicy
+            | Signal::ResponseTokensOut => true,
+        };
+        assert!(listed);
+    }
+    assert_eq!(
+        Signal::ALL.len(),
+        10,
+        "the catalog is append-only: a variant was added or removed without updating this pin, \
+         and every ALL-driven assertion below cannot see it"
+    );
+
     for &s in Signal::ALL {
         let derived = serde_json::to_value(s).unwrap();
         assert_eq!(derived, serde_json::Value::String(s.name().to_string()));

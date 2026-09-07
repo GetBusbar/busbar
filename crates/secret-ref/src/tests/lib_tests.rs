@@ -190,6 +190,13 @@ fn the_schema_and_the_deserializer_agree_shape_for_shape() {
 #[test]
 fn an_unquoted_inline_secret_is_refused_without_echoing_it() {
     for (yaml, value) in [
+        // THE QUOTED STRING FIRST, and it was the one form this table was missing. `visit_str` is
+        // the overwhelmingly common spelling of an inline secret, and it had no absence assertion
+        // anywhere: the two places that fed it (`"plain-string"` and `json!("s3cret"))` asserted
+        // only `is_err()`. Dropping the `visit_str` override -- or spelling `{_v}` into its message
+        // -- put the secret verbatim into the boot log, which is the single thing this type exists
+        // to prevent, and every test in the file stayed green.
+        ("\"hunter2secret\"", "hunter2secret"),
         ("483920175534", "483920175534"),
         ("-42", "42"),
         ("true", "true"),
