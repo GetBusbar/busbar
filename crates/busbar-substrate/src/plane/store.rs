@@ -49,6 +49,15 @@ pub trait PlaneStore: Send + Sync + 'static {
         expires_at: u64,
         now: u64,
     ) -> StoreResult<bool>;
+    /// See [`Store::plane_token_live`] — the neutral MULTI-USE capability check (kind `push_config`):
+    /// live while the record is present, still `Active`, and inside its deadline. Spends nothing.
+    fn plane_token_live(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool>;
 }
 
 /// The one bridge across the plane store seam: wraps the real [`busbar_api::Store`] and forwards
@@ -103,5 +112,14 @@ impl PlaneStore for PlaneStoreView {
         now: u64,
     ) -> StoreResult<bool> {
         self.0.redeem_plane_token(kind, token, expires_at, now)
+    }
+    fn plane_token_live(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> StoreResult<bool> {
+        self.0.plane_token_live(kind, token, expires_at, now)
     }
 }
