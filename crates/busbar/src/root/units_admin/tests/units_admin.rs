@@ -915,6 +915,155 @@ fn an_open_door_does_not_consult_the_denylist_for_a_string_it_never_identified()
     );
 }
 
+/// A door that identifies SOMEBODY, and it is not the operator.
+///
+/// The sibling of `IdentifiesOperator`, and the only way this plane reaches its 403: the grant an
+/// admin unit carries is the operator principal's or none at all, so a caller the chain resolves to
+/// any other identity is authenticated and then has nothing to compare the endpoint's matrix row
+/// against. That is the authorization ending, and it is a different answer from the door's.
+#[cfg(feature = "root-admin")]
+struct IdentifiesSomebodyElse;
+
+#[cfg(feature = "root-admin")]
+impl busbar_unit_auth::module::AuthModule for IdentifiesSomebodyElse {
+    fn name(&self) -> &'static str {
+        "identifies-somebody-else"
+    }
+    fn authenticate(&self, candidate: Option<&str>) -> busbar_unit_auth::module::AuthOutcome {
+        match candidate {
+            Some("a-tenants-token") => busbar_unit_auth::module::AuthOutcome::Identify(
+                busbar_unit_auth::principal::Principal::from_id("acct:not-the-operator"),
+            ),
+            _ => busbar_unit_auth::module::AuthOutcome::Pass,
+        }
+    }
+}
+
+/// Walk one request through the whole loop against a node whose door is CLOSED — one module,
+/// identifying exactly one string — presenting `credential` and nothing else.
+///
+/// Closed is the property that makes the negative arms mean anything: a chain naming a module is
+/// not the open front door, so a candidate no arm identifies ends `Denied` rather than admitted
+/// anonymously. The denylist revokes nobody here, so every refusal below is about the credential
+/// the caller presented and not about a credential the node withdrew.
+#[cfg(feature = "root-admin")]
+fn answer_at_the_closed_door(
+    door: busbar_unit_auth::AuthChain,
+    credential: Option<&str>,
+) -> AdminAnswer {
+    let units = crate::root::kernel::ProductionUnits::admin_only(Arc::new(AnsweringDispatch))
+        .with_auth_chain(door)
+        .with_auth_bindings(crate::root::auth_bindings::AuthBindings::new(Arc::new(
+            Denylist(false),
+        )));
+    let mut request = a_request();
+    request.credential = credential.map(str::to_string);
+    AdminNode::new(crate::root::kernel::new_kernel(), units).answer(request)
+}
+
+/// THE DOOR IS TWO-SIDED: A CALLER WHO PRESENTS THE WRONG STRING, OR NONE, IS REFUSED.
+///
+/// Every other credential-negative cell in this file is the REVOCATION path — a credential the door
+/// identified and the node then took away — and each one presents the operator's own string. None
+/// of them asks the prior question, which is whether the authenticate step reads what the CALLER
+/// presented at all. A step that stopped reading the request's credential and handed the chain a
+/// fixed operator string would satisfy every revocation cell in this file while authenticating any
+/// caller as the operator, including one who presented nothing.
+///
+/// Three arms over the same closed door and the same whole loop, so the refusals are known to be
+/// about the credential rather than about a fixture that refuses everything:
+///
+/// - the operator's own string reaches the operation and comes back with its 200 — the control;
+/// - a string the chain will not identify is the door's answer;
+/// - NO credential at all is the same door's answer, which is the arm a step that ignores the
+///   request cannot produce.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_wrong_or_absent_credential_is_refused_at_the_door() {
+    assert_eq!(
+        answer_at_the_closed_door(a_door_that_identifies_the_operator(), Some("admin-token"))
+            .status,
+        200,
+        "the control must actually be admitted, or the refusals below prove only that the fixture \
+         refuses everything"
+    );
+
+    let wrong = answer_at_the_closed_door(
+        a_door_that_identifies_the_operator(),
+        Some("not-the-admin-token"),
+    );
+    assert_eq!(
+        wrong,
+        door_answer(),
+        "a credential no arm of the chain identifies must be the door's answer"
+    );
+    assert_eq!(wrong.status, 401, "and that answer's status is the door's");
+
+    let absent = answer_at_the_closed_door(a_door_that_identifies_the_operator(), None);
+    assert_eq!(
+        absent,
+        door_answer(),
+        "a caller who presented NO credential must be the door's answer — this is the arm a step \
+         that never reads `request.credential` cannot produce"
+    );
+    assert_eq!(absent.status, 401, "and that answer's status is the door's");
+}
+
+/// THE REFUSED CALLER'S ENVELOPE, BYTE FOR BYTE, OFF THE LOOP.
+///
+/// The first test in this file pins `door_answer()`'s bytes to the published release's own
+/// recording; this one pins what a REFUSED WALK hands back, so the two are joined end to end. The
+/// literal is restated here deliberately: it is the second, independent pin, and a change to the
+/// frozen envelope has to move both this line and the golden recording rather than either alone.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_refusal_the_loop_hands_back_is_the_frozen_envelope_byte_for_byte() {
+    let absent = answer_at_the_closed_door(a_door_that_identifies_the_operator(), None);
+    assert_eq!(absent.status, 401);
+    assert_eq!(
+        String::from_utf8(absent.body).expect("the envelope is text"),
+        r#"{"error":{"code":"unauthorized","message":"missing or invalid admin credential (Bearer or x-admin-token)"}}"#
+    );
+    assert_eq!(
+        absent.headers,
+        vec![("content-type".to_string(), "application/json".to_string())],
+        "the refused caller is told the envelope is JSON, and told nothing else"
+    );
+}
+
+/// AN IDENTIFIED CALLER WHO IS NOT THE OPERATOR IS ANSWERED WITH THE SCOPE, NOT WITH THE DOOR.
+///
+/// The other half of the gate, and the half that proves the two endings are distinguished: this
+/// caller PASSES authenticate — the chain resolved a real identity for the string it presented —
+/// and is refused at approve, because the grant an admin unit carries belongs to the operator
+/// principal and this is not it. The status and the envelope are the authorization ending's, so a
+/// loop that had collapsed the two refusals into one would fail here rather than answer 403.
+#[cfg(feature = "root-admin")]
+#[test]
+fn a_caller_the_door_identifies_as_somebody_else_is_answered_with_the_scope_it_needed() {
+    let door = busbar_unit_auth::AuthChain::new(
+        vec![busbar_unit_auth::chain::ChainEntry {
+            provider: "identifies-somebody-else".to_string(),
+            module: Box::new(IdentifiesSomebodyElse),
+        }],
+        false,
+    );
+    let refused = answer_at_the_closed_door(door, Some("a-tenants-token"));
+    assert_eq!(
+        refused.status, 403,
+        "an identified caller with no grant is the authorization ending, not the door's"
+    );
+    assert_ne!(
+        refused,
+        door_answer(),
+        "and it is not the door's answer: the two endings must stay distinguishable"
+    );
+    assert_eq!(
+        String::from_utf8(refused.body).expect("the envelope is text"),
+        r#"{"error":{"code":"forbidden","message":"insufficient scope: this endpoint requires `read-only`"}}"#
+    );
+}
+
 /// A binding holding one open unit, with the decode step run so the verb is resolved exactly as
 /// the loop resolves it. Returns the binding and the context every later step reads the unit
 /// through, so a cell drives the real steps rather than a table it filled in by hand.
