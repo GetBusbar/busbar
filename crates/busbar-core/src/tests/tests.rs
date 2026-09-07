@@ -2086,6 +2086,11 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_te
 /// cap, which must catch a body a lying/absent header would otherwise let through).
 #[tokio::test]
 async fn plugin_fetch_downloader_rejects_an_oversized_body() {
+    // NO "let the server start" SLEEP in any of the three legs below (nor in the redirect test that
+    // follows): `TcpListener::bind` already listens, so the kernel queues the client's SYN in the
+    // accept backlog whether or not the spawned serve task has reached its first `accept()` yet. A
+    // wall-clock pause there synchronises nothing — it is a fixed tax on every run, and a bound that
+    // a loaded machine can outlast.
     const CAP: usize = 64;
     let oversized = vec![b'x'; CAP * 4];
 
@@ -2099,7 +2104,6 @@ async fn plugin_fetch_downloader_rejects_an_oversized_body() {
             axum::routing::get(move || async move { axum::body::Bytes::from(body) }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
         let url = format!("http://{addr}/big");
@@ -2132,7 +2136,6 @@ async fn plugin_fetch_downloader_rejects_an_oversized_body() {
             }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
         let url = format!("http://{addr}/big-streamed");
@@ -2162,7 +2165,6 @@ async fn plugin_fetch_downloader_rejects_an_oversized_body() {
             axum::routing::get(move || async move { axum::body::Bytes::from(small) }),
         );
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
         let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
         let url = format!("http://{addr}/small");
@@ -2208,7 +2210,6 @@ async fn plugin_fetch_downloader_refuses_to_follow_a_redirect() {
             axum::routing::get(|| async { axum::body::Bytes::from_static(SECRET_BODY) }),
         );
     let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
     let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
     let url = format!("http://{addr}/artifact");
