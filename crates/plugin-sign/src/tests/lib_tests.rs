@@ -48,6 +48,25 @@ fn hook_needs_is_signed_and_defaults_to_none() {
     assert!(parsed.prompt.wants_read() && parsed.prompt.wants_rewrite());
     assert!(parsed.user.wants_read() && !parsed.user.wants_rewrite());
 
+    // `declares_any` is an OR of the two axes, not an AND: a plugin that declares a need on only
+    // ONE axis still declares_any(). Pinned both ways so a mutant swapping `||` for `&&` goes red.
+    assert!(
+        HookNeeds {
+            prompt: NeedLevel::Ro,
+            user: NeedLevel::No
+        }
+        .declares_any(),
+        "declaring only the prompt axis is still declaring a need"
+    );
+    assert!(
+        HookNeeds {
+            prompt: NeedLevel::No,
+            user: NeedLevel::Ro
+        }
+        .declares_any(),
+        "declaring only the user axis is still declaring a need"
+    );
+
     // It is covered by the signature: changing `needs` after signing breaks verification.
     let key = test_key(9);
     let mut m = manifest("busbar-hook-x", "x", "busbar");
@@ -202,6 +221,25 @@ fn first_party_version_floats_free_of_the_binary_version() {
     assert!(
         err.reason.contains("first-party anti-downgrade"),
         "got {err:?}"
+    );
+
+    // A per-name floor that the version MEETS must NOT reject — the floor check is "floor set
+    // AND below it", not "floor set OR below it". (A mutant that turns the `&&` into `||` would
+    // reject here purely because a floor exists, regardless of the version satisfying it.)
+    let mut met = policy(Some(&release), &[], true, true);
+    met.first_party_floors.insert(
+        "busbar-store-valkey-plugin".to_string(),
+        "1.0.0".to_string(),
+    );
+    assert!(
+        matches!(
+            evaluate(artifact, &m, &met),
+            Ok(Verdict::Trusted {
+                first_party: true,
+                ..
+            })
+        ),
+        "a version at/above its own per-name floor must load, not be rejected"
     );
 }
 
@@ -674,6 +712,44 @@ fn malformed_floor_reason_says_the_floor_is_malformed() {
     assert!(note.contains("MAJOR.MINOR.PATCH"));
 }
 
+/// `Rejected`'s `Display` impl is the operator-facing rendering (e.g. a CLI's `{err}`), so it must
+/// actually carry the human `reason`, not a blank/default string.
+#[test]
+fn rejected_display_carries_the_reason() {
+    let r = Rejected::new(
+        RejectKind::Unsigned,
+        "manifest carries no signature".to_string(),
+    );
+    assert_eq!(
+        r.to_string(),
+        "plugin rejected: manifest carries no signature"
+    );
+}
+
+/// `validate_structure`'s abi_version range check accepts the full CLOSED interval `[floor, max]`,
+/// including both endpoints — a mutant that deletes the in-range match arm falls through to the
+/// generic "no supported abi_version range" error instead, which names the wrong problem.
+#[test]
+fn validate_structure_accepts_abi_version_at_either_end_of_the_supported_range() {
+    fn abi_1_to_3(_kind: &str) -> &'static [u32] {
+        &[1, 2, 3]
+    }
+    let release = test_key(1);
+    let artifact = b"lib bytes";
+
+    let mut floor = manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER);
+    floor.abi_version = 1;
+    let floor = sign(&release, floor, artifact);
+    validate_structure(&floor, artifact, &abi_1_to_3, HOST_IDENTITY)
+        .expect("abi_version at the floor of the supported range is accepted");
+
+    let mut max = manifest("busbar-store-x", "x", FIRST_PARTY_PUBLISHER);
+    max.abi_version = 3;
+    let max = sign(&release, max, artifact);
+    validate_structure(&max, artifact, &abi_1_to_3, HOST_IDENTITY)
+        .expect("abi_version at the max of the supported range is accepted");
+}
+
 /// The embedded-release-key accessor mirrors the build-time env exactly: a build that carried
 /// BUSBAR_RELEASE_PUBKEY (CI, and every build in this tree through .cargo/config.toml) embeds a key
 /// that parses; a build without it embeds none. Neither state is assumed, so the test is honest in
@@ -682,9 +758,15 @@ fn malformed_floor_reason_says_the_floor_is_malformed() {
 fn embedded_key_mirrors_the_build_env() {
     match option_env!("BUSBAR_RELEASE_PUBKEY") {
         Some(hex) if !hex.trim().is_empty() => {
-            assert!(
-                embedded_release_pubkey().is_some(),
-                "a build with the key set must embed it"
+            // Not just `is_some()` (which a mutant that always returns `Some(Default::default())`
+            // would also satisfy) — the embedded key must be the SPECIFIC key that build-time hex
+            // parses to, so a mutant returning a fabricated key still goes red.
+            let expected = public_key_from_hex(hex)
+                .expect("this tree's committed BUSBAR_RELEASE_PUBKEY parses");
+            assert_eq!(
+                embedded_release_pubkey(),
+                Some(expected),
+                "a build with the key set must embed exactly that key, not a stand-in"
             );
         }
         _ => assert!(
