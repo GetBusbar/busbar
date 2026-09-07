@@ -22,18 +22,24 @@ impl ProtocolReader for CohereReader {
                 .and_then(|b| b.get(k))
                 .and_then(super::super::usage_tail::token_count)
         };
+        // A truncated body reads the cache hit like an untruncated one, or the same completion
+        // prices its cached share at two different tiers depending on whether it fit the cap.
+        let cached = v
+            .get("cached_tokens")
+            .and_then(super::super::usage_tail::token_count);
         Some(
             crate::ir::IrUsage {
                 input_tokens: tokens
                     .and_then(|t| t.get("input_tokens"))
                     .and_then(super::super::usage_tail::token_count)
-                    .unwrap_or(0),
+                    .unwrap_or(0)
+                    .saturating_sub(cached.unwrap_or(0)),
                 output_tokens: tokens
                     .and_then(|t| t.get("output_tokens"))
                     .and_then(super::super::usage_tail::token_count)
                     .unwrap_or(0),
                 cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
+                cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail {
                     search_units: billed_u64("search_units"),
                     billed_input_tokens: billed_u64("input_tokens"),
@@ -970,17 +976,24 @@ impl ProtocolReader for CohereReader {
                             .and_then(|t| t.as_object())
                             .cloned()
                             .unwrap_or_default();
+                        // `cached_tokens` rides the STREAM's terminal `message-end.delta.usage`
+                        // object exactly as it rides the buffered `usage`. See the buffered site
+                        // for why a prompt-cache hit belongs in `cache_read_input_tokens`.
+                        let cached = u
+                            .get("cached_tokens")
+                            .and_then(super::super::usage_tail::token_count);
                         crate::ir::IrUsage {
                             input_tokens: tokens_map
                                 .get("input_tokens")
                                 .and_then(super::super::usage_tail::token_count)
-                                .unwrap_or(0),
+                                .unwrap_or(0)
+                                .saturating_sub(cached.unwrap_or(0)),
                             output_tokens: tokens_map
                                 .get("output_tokens")
                                 .and_then(super::super::usage_tail::token_count)
                                 .unwrap_or(0),
                             cache_creation_input_tokens: None,
-                            cache_read_input_tokens: None,
+                            cache_read_input_tokens: cached,
                             // `billed_units.search_units` rides the STREAM's terminal
                             // `message-end.delta.usage` object exactly as it rides the buffered
                             // `usage` — and it is a SEPARATELY BILLED unit that is not a token count
@@ -1272,19 +1285,34 @@ impl ProtocolReader for CohereReader {
         // `Option`, so each token lookup below already defaults to 0.
         let usage_val = obj.get("usage");
         let tokens_val = usage_val.and_then(|u| u.get("tokens"));
+        // `cached_tokens` is Cohere's prompt-cache hit count — the pinned document types it on
+        // `ApiMeta`, beside `tokens` and `billed_units`, as "The number of prompt tokens that hit
+        // the inference cache". Those are PROMPT tokens, counted inside `tokens.input_tokens`, that
+        // the model did not have to process, so they belong in `cache_read_input_tokens` — the
+        // field every sibling dialect's cache-read count lands in (OpenAI
+        // `prompt_tokens_details.cached_tokens`, Anthropic `cache_read_input_tokens`, Bedrock
+        // `cacheReadInputTokens`) and the one that prices them at the cache-READ tier instead of
+        // the full input rate. Hardcoded `None`, a Cohere cache hit was billed as ordinary input.
+        // The IR keeps `input_tokens` UNCACHED and the cache fields ADDITIVE, so the two
+        // reconstruct exactly the `tokens.input_tokens` the upstream reported: the TOTAL is
+        // unchanged and only the tier the cached share prices at moves.
+        let cached = usage_val
+            .and_then(|u| u.get("cached_tokens"))
+            .and_then(super::super::usage_tail::token_count);
         let usage = crate::ir::IrUsage {
             input_tokens: tokens_val
                 .and_then(|t| t.as_object())
                 .and_then(|t_obj| t_obj.get("input_tokens"))
                 .and_then(super::super::usage_tail::token_count)
-                .unwrap_or(0),
+                .unwrap_or(0)
+                .saturating_sub(cached.unwrap_or(0)),
             output_tokens: tokens_val
                 .and_then(|t| t.as_object())
                 .and_then(|t_obj| t_obj.get("output_tokens"))
                 .and_then(super::super::usage_tail::token_count)
                 .unwrap_or(0),
             cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
+            cache_read_input_tokens: cached,
             // `billed_units.search_units` is a SEPARATELY BILLED unit that is not a token count at
             // all, so no token field can carry it — and its loss is invisible in a token total that
             // reconciles perfectly, which is exactly why it went unnoticed.

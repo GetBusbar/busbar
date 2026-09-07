@@ -866,3 +866,7 @@ mod egress_media_regression_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/cached_tokens_tests.rs"]
+mod cached_tokens_tests;
