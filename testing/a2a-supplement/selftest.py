@@ -44,9 +44,14 @@ from a2asup.target import Interface, Target
 from a2asup.transport import Reply
 
 FAILURES: list[str] = []
+# Every case this file runs, passing or missing. The per-family floors in `main` are counted off
+# this rather than off `FAILURES`, because a family whose cases all PASS contributes nothing to
+# `FAILURES` and would otherwise read as a family that had stopped running.
+CASES = [0]
 
 
 def expect(label: str, result, allowed: set[Verdict]) -> None:
+    CASES[0] += 1
     ok = result.verdict in allowed
     mark = "ok " if ok else "MISS"
     print(f"  {mark}  {label}")
@@ -488,11 +493,71 @@ def in_task_authorization_mutations() -> None:
 def main() -> int:
     print("a2a-supplement SELFTEST -- every check is made to fail on purpose")
     print("A check that does not bite here is a check that reports green over nothing.")
-    in_task_authorization_mutations()
-    card_signing_mutations()
-    binding_equivalence_mutations()
-    versioning_mutations()
+    # A SELFTEST THAT DISCOVERED NO CASES IS NOT A PASS. Same discipline as
+    # testing/a2a-tck/check-baseline-selftest.py: without a floor, deleting a mutation family
+    # leaves this file printing SELFTEST PASSED over the checks it stopped exercising.
+    #
+    # THE FLOOR IS COUNTED PER FAMILY, NOT AS ONE HAND-TYPED TOTAL. A single number is a second
+    # thing that drifts, and it drifts in the direction of being loosened: a total written with
+    # slack in it can absorb the deletion of a whole family. Each family is now made to account for
+    # itself, so a family that stops running is named rather than absorbed by the slack of its
+    # neighbours, and the TOTAL floor is the sum of the per-family floors rather than a literal
+    # typed underneath them.
+    FAMILY_FLOORS = {
+        "in_task_authorization_mutations": 6,
+        "card_signing_mutations": 8,
+        "binding_equivalence_mutations": 6,
+        "versioning_mutations": 5,
+    }
+    # THE DECLARED FAMILIES AND THE FAMILIES ON THE PAGE, HELD TO EACH OTHER, IN BOTH DIRECTIONS.
+    # A per-family floor defends against cases being deleted out of a family. It defends against
+    # nothing if the family and its floor are deleted TOGETHER, which is what removing a mutation
+    # family actually looks like in a diff -- and that is the same hole one level up, wearing the
+    # fix as a coat. So the floor table is held to the `*_mutations` functions this module
+    # defines, the way `bin/mcp-battery.mjs` holds its declared suite list to the files on disk:
+    # a family with no floor is a family that would run without a floor, a floor with no family is
+    # a family that stopped running, and the COUNT is pinned so that deleting both halves at once
+    # is a red rather than a silence.
+    EXPECTED_FAMILIES = 4
+    on_the_page = {
+        n
+        for n, v in globals().items()
+        if n.endswith("_mutations") and callable(v) and v.__module__ == __name__
+    }
+    if on_the_page != set(FAMILY_FLOORS) or len(FAMILY_FLOORS) != EXPECTED_FAMILIES:
+        print("SELFTEST FAMILY INVENTORY IS WRONG, so no floor below can be trusted:")
+        for n in sorted(on_the_page - set(FAMILY_FLOORS)):
+            print(f"  - {n} is defined but declares no floor: it would run unmeasured")
+        for n in sorted(set(FAMILY_FLOORS) - on_the_page):
+            print(f"  - {n} declares a floor but is not defined: it has stopped running")
+        if len(FAMILY_FLOORS) != EXPECTED_FAMILIES:
+            print(
+                f"  - {len(FAMILY_FLOORS)} families declared, {EXPECTED_FAMILIES} expected: a "
+                "family and its floor were removed together, which is a deletion nothing else "
+                "here can see"
+            )
+        return 2
+
+    census: dict[str, int] = {}
+    for name, floor in FAMILY_FLOORS.items():
+        before = CASES[0]
+        globals()[name]()
+        census[name] = CASES[0] - before
     print()
+    short = [
+        f"{n}: {census[n]} of {FAMILY_FLOORS[n]}"
+        for n in FAMILY_FLOORS
+        if census[n] < FAMILY_FLOORS[n]
+    ]
+    if short:
+        print("SELFTEST FAMILIES RAN FEWER CASES THAN THEY DECLARE. Mutations were deleted or")
+        print("never ran, and the checks they exercise now report green over nothing:")
+        for line in short:
+            print(f"  - {line}")
+        return 2
+    if CASES[0] < sum(FAMILY_FLOORS.values()):
+        print(f"SELFTEST DISCOVERED ONLY {CASES[0]} CASES. Mutations were deleted or never ran.")
+        return 2
     if FAILURES:
         print(f"SELFTEST FAILED: {len(FAILURES)} check(s) did not bite")
         for line in FAILURES:
