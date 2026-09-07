@@ -450,15 +450,24 @@ run_selftest() {
       "an unattended caller cannot use a teardown that fails when it succeeds"
   fi
 
-  # 11. Every image: line in .github/workflows/ is covered by this table. The dedicated lint
-  #     (scripts/service-images-check.sh) is the gate; this row is the fixture's own smoke test that
-  #     the table it publishes is the one CI actually uses.
+  # 11. Every image: line in .github/workflows/ is covered by this table. The dedicated gate
+  #     (cargo xtask gate service-images) is the gate; this row is the fixture's own smoke test
+  #     that the table it publishes is the one CI actually uses.
+  #
+  #     A MISSING RUNNER IS NOT A PASS. `if <cmd>` reads any non-zero as the lint being red, so a
+  #     runner that is absent or does not build would have been recorded as a red TABLE -- the
+  #     wrong subject, and one nobody could fix by editing the table. The two are separated: 127
+  #     and a build failure are "could not run", which is a FAIL naming the runner.
   owe "fixtures|lint-agrees"
-  if bash "${repo}/scripts/service-images-check.sh" >/dev/null 2>&1; then
-    record "fixtures|lint-agrees" PASS "scripts/service-images-check.sh is green against this table" ""
+  si_out="$(cd "${repo}" && cargo xtask gate service-images 2>&1)"; si_rc=$?
+  if [ "$si_rc" = 0 ]; then
+    record "fixtures|lint-agrees" PASS "cargo xtask gate service-images is green against this table" ""
+  elif [ "$si_rc" = 1 ]; then
+    record "fixtures|lint-agrees" FAIL "the workflow-image gate is red against this table" \
+      "run cargo xtask gate service-images for the rows"
   else
-    record "fixtures|lint-agrees" FAIL "the workflow-image lint is red against this table" \
-      "run scripts/service-images-check.sh for the rows"
+    record "fixtures|lint-agrees" FAIL "the workflow-image gate could not run" \
+      "cargo xtask gate service-images exited ${si_rc}: $(printf '%s' "$si_out" | tr '\t\n' '  ' | cut -c1-200)"
   fi
 
   GATE_NAME="store service fixtures" EXPECTED_IDS="$owed" LEDGER="$LEDGER" \

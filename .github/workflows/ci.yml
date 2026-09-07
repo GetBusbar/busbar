@@ -949,9 +949,9 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: Service-image lint self-test (every rule proven RED)
-        run: scripts/service-images-check.sh --selftest
+        run: cargo xtask gate service-images --selftest
       - name: Service-image pin gate
-        run: scripts/service-images-check.sh
+        run: cargo xtask gate service-images
       # The local store fixtures read the same table. Their self-test needs NO docker: it asserts the
       # properties of the table and of the script's own rules — that the local port band stays
       # disjoint from the shadow oracle's 487xx/488xx band, that a namespace token cannot reach DDL
