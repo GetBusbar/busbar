@@ -507,11 +507,15 @@ begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothi
 # scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
 # recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
 # docs/design/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
-if [ -f scripts/audit-ledger.py ]; then
-  step "audit-ledger --selftest" python3 scripts/audit-ledger.py --selftest
-  step "audit-ledger --check"    python3 scripts/audit-ledger.py --check
+if [ -f qa/audit-ledger.json ]; then
+  # The gate's own RED proof runs first, as everywhere else. It judges the five rules about the
+  # REGISTER (is the instrument believable); `--check` below judges those five plus the two about
+  # the AUDIT (is coverage complete, is anything still open at HIGH/MEDIUM) — which are the ones
+  # that are red until the audit finishes, and this DONE claim is where that red belongs.
+  step "audit-ledger selftest" cargo xtask gate audit-ledger --selftest
+  step "audit-ledger --check"  cargo xtask ledger --check
 else
-  absent_step "audit ledger" "scripts/audit-ledger.py"
+  absent_step "audit ledger" "qa/audit-ledger.json"
 fi
 end_group
 
