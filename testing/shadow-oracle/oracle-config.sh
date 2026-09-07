@@ -289,3 +289,23 @@ oracle_scrape_metrics() {  # <listen-port> <token> <out-file>
   done
   rm -f "$out"; return 1
 }
+
+# ── The fixture gate ────────────────────────────────────────────────────────────────────────────
+# A cell's `needs_fixture` says its fixture is absent, in one of two shapes:
+#
+#   true              flat: nothing in the tree supplies it and no environment can, so the cell is
+#                     always a named gap.
+#   <ENV_VAR_NAME>    env-gated: that variable carries the fixture (a backend connection URL), and
+#                     the cell is a named gap only while the variable is unset or empty.
+#
+# Absent / false / null mean the cell is recordable. This lives here, rather than inline in
+# record.sh, so the recorder and fixture-gate-selftest.sh decide with the SAME code: a gate whose
+# test reimplements it is a gate whose test can go on agreeing with a version that no longer runs.
+# Exit 0 = the fixture is missing (skip the cell); exit 1 = record it.
+oracle_fixture_missing() {  # <needs_fixture value>
+  case "${1-}" in
+    ""|false|null) return 1 ;;
+    true) return 0 ;;
+    *) [ -z "${!1:-}" ] ;;
+  esac
+}
