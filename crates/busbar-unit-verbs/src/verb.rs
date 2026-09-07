@@ -9,8 +9,8 @@
 //!   tag (49 paths, 34 read-only / 32 full) — see [`LEGACY_VERBS`], and the conformance test in
 //!   `tests/table_matches_openapi.rs` that fails the build if this list and the committed fixture
 //!   ever disagree, by even one operation or one scope;
-//! - one of the **17 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
-//! - one of the **five 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
+//! - one of the **18 new 1.6.0 verbs** named in the architecture document — see [`NEW_VERBS`];
+//! - one of the **seven 1.6.0 ledger views** — see [`LEDGER_VERBS`]. These are reads of what the
 //!   ledger already holds, so they are the one group of 1.6.0 additions that is `ReadOnly` rather
 //!   than `Full`, and the only group that is never posture-gated: reading a figure changes nothing,
 //!   so there is no mutation for dual control to check. They carry no legacy row because they are
@@ -319,8 +319,18 @@ pub enum KernelVerb {
     ExportKeyset,
     /// The maker-checker approval verb (checked, not itself dual-controlled).
     Approve,
+    /// `POST /api/v1/admin/ledger/amend-rate-history` — back-date the rate card over a window the
+    /// operator names, under an operator signature.
+    ///
+    /// The eighteenth new verb, and the only one whose effect is money that has already been
+    /// booked. It APPENDS a dated history entry and emits an adjusting entry per affected balance;
+    /// it never rewrites a posting, which is why it can be admitted at all on a window a signed
+    /// checkpoint has already sealed. `PUT /config/settings rate_card` remains the from-now append
+    /// path and is a different operation entirely: it prices what happens after it, this prices
+    /// what already happened.
+    AmendRateHistory,
 
-    // ---- 1.6.0 ledger views (5) ----
+    // ---- 1.6.0 ledger views (7) ----
     /// `GET /api/v1/admin/ledger/totals` — what the ledger posted, per bucket, day, lane and
     /// provider.
     GetLedgerTotals,
@@ -334,6 +344,12 @@ pub enum KernelVerb {
     /// `GET /api/v1/admin/ledger/openapi.json` — the additive document describing the 1.6.0
     /// operations, served beside the 1.5.5 document rather than inside it.
     GetLedgerOpenapiJson,
+    /// `GET /api/v1/admin/ledger/rate-history` — the dated, append-only card history, entry by
+    /// entry, so a reader can see what a figure was priced against without re-deriving it.
+    GetLedgerRateHistory,
+    /// `GET /api/v1/admin/ledger/repricings` — the adjusting entries an amendment left behind, each
+    /// naming both card entries, both figures and the delta between them.
+    GetLedgerRepricings,
 
     // ---- named non-admin surfaces ----
     /// `POST /auth/token` — the self-serve exchange (exempt from dual control in both postures).
@@ -668,7 +684,13 @@ pub const LEGACY_VERBS: &[LegacyVerbRow] = &[
     ),
 ];
 
-/// The 17 new 1.6.0 verbs, in the order the architecture document names them.
+/// The 18 new 1.6.0 verbs, in the order the architecture document names them.
+///
+/// Seventeen were named at the design's first pass; the eighteenth,
+/// [`KernelVerb::AmendRateHistory`], joined them when money became a lookup over quantities against
+/// a dated card history — because at that point back-dating a price stopped being something a
+/// config `PUT` could do silently and became a signed, journaled, adjusting-entry-emitting verb of
+/// its own.
 pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Verify,
     KernelVerb::PlaneFacts,
@@ -687,6 +709,7 @@ pub const NEW_VERBS: &[KernelVerb] = &[
     KernelVerb::Adjust,
     KernelVerb::ExportKeyset,
     KernelVerb::Approve,
+    KernelVerb::AmendRateHistory,
 ];
 
 /// The two of the seventeen the architecture document binds as `GET` — "POST for every mutating
@@ -701,7 +724,7 @@ pub const NEW_VERBS: &[KernelVerb] = &[
 /// does not exist.
 pub const READ_ONLY_NEW_VERBS: &[KernelVerb] = &[KernelVerb::Verify, KernelVerb::PlaneFacts];
 
-/// The five 1.6.0 ledger views, in the order the admin surface lists them.
+/// The seven 1.6.0 ledger views, in the order the admin surface lists them.
 ///
 /// Kept as their own list rather than folded into [`NEW_VERBS`] because membership of that list is
 /// what makes a verb posture-gated and `Full`-scoped, and neither is true of a read. A view answers
@@ -714,6 +737,8 @@ pub const LEDGER_VERBS: &[KernelVerb] = &[
     KernelVerb::GetLedgerReconciliation,
     KernelVerb::GetLedgerMigration,
     KernelVerb::GetLedgerOpenapiJson,
+    KernelVerb::GetLedgerRateHistory,
+    KernelVerb::GetLedgerRepricings,
 ];
 
 /// The named non-admin surfaces, each pinned by its own handler in 1.5.5, not by this crate's
@@ -746,6 +771,14 @@ pub const IRREDUCIBLE_VERBS: &[KernelVerb] = &[
     KernelVerb::ExportKeyset,
     KernelVerb::Adjust,
     KernelVerb::ResolveDispute,
+    // Irreducible in BOTH postures with no threshold caveat at all, which is what puts it above
+    // `adjust`/`resolve_dispute` rather than beside them: those two are irreducible only above
+    // `adjust_threshold`, because below it they move a figure small enough that the fleet decided
+    // one pair of hands is enough. An amendment does not have a size — it reprices every line in a
+    // window it names, and how much that comes to is not known until after the entries are
+    // computed. There is no threshold to compare it against before admitting it, so it is admitted
+    // as the largest thing it could be.
+    KernelVerb::AmendRateHistory,
 ];
 
 /// The two verbs admitted under `operator: unset` (every other irreducible verb is refused until

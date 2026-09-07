@@ -63,6 +63,19 @@ pub enum ReasonCode {
     Validation,
     /// A store/governance call returned an error the caller must fail closed on.
     StoreError,
+    /// An `amend_rate_history` call whose detached operator signature does not verify over the
+    /// canonical payload for the fingerprint it names — including no signature at all. Distinct
+    /// from [`ReasonCode::Unauthorized`], which is about the CALLER's scope: this one says the
+    /// caller was allowed to ask and the operator's authority is what is missing.
+    OperatorSignatureInvalid,
+    /// An amendment whose interval would leave an instant covered by no entry — an interval that
+    /// covers nothing at all (`until <= from`), or one dated before the opening entry the history
+    /// starts at.
+    HistoryHole,
+    /// An amendment dated before the opening entry. Named separately from
+    /// [`ReasonCode::HistoryHole`] because the fix is different: a hole is a window the operator
+    /// mis-typed, and this is a window the deployment has no card for at any seq.
+    PredatesOpening,
     /// Anything else — logged, never detailed to the caller (secrets may be in scope for a verb
     /// call, so an internal error never echoes its cause).
     Internal,

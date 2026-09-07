@@ -50,6 +50,7 @@
 //! could not be ported and why (the concrete config/key/hook/plugin record types live in
 //! `busbar-core`, which this crate does not, and must not, depend on).
 
+pub mod amend;
 pub mod governance;
 pub mod idempotency;
 pub mod mint;
@@ -60,6 +61,10 @@ pub mod store;
 pub mod verb;
 pub mod verbs;
 
+pub use amend::{
+    canonical_payload, AmendIdentity, AmendOutcome, AmendReceipt, AmendRequest, HistoryBounds,
+    RateHistory,
+};
 pub use governance::{Governance, GovernanceError, MintedKey, RotateOutcome};
 pub use idempotency::ReplayEncoder;
 pub use posture::{ApprovalState, DualControl, OperatorState, PostureCtx};
