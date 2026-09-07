@@ -347,3 +347,7 @@ fn the_sweep_drops_only_windows_older_than_the_current_one() {
         .check("alice", MutationClass::Config, 120)
         .admitted());
 }
+
+/// The window arithmetic and the audit labels, in their own file.
+#[path = "rate_window_tests.rs"]
+mod rate_window_tests;
