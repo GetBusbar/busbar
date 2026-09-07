@@ -39,6 +39,28 @@
 //! conservative estimate is invisible to a caller, and the reason the door needs no exception in
 //! the parity corpus.
 //!
+//! ## The card in force THEN
+//!
+//! The hold is sized against the card the root PINNED at admission, resolved out of that snapshot
+//! at the unit's own arrival instant — [`Estimate::size_at_arrival`]. Never a history read later:
+//! an entry appended while the request was in flight prices what happens after it, not what was
+//! already being served.
+//!
+//! Two consequences the design takes on purpose, and they are the same consequence twice. **The
+//! decision is never re-run**: a request admitted under one card stays admitted, whatever the
+//! history does afterwards, because the door is check-then-charge at one instant. And **sizing can
+//! never refuse**: where a lookup at settlement fails closed — a snapshot with no entry covering the
+//! instant, a card that does not name the node's currency — the door falls back to the fee-only
+//! posture 1.5.5 had for a deployment with no rate card, and reports which one it took. An
+//! undersized hold tops up out of the principal's headroom or carries the remainder as an overdraft;
+//! neither is a request that fails.
+//!
+//! ## One currency
+//!
+//! The node's, and only the node's. [`Pricer::currency`] names it, a budget cap is a figure in it,
+//! and the derivation that meets that cap reads the same figure. There is no cross-rate in this
+//! crate and nothing that could hold one.
+//!
 //! ## What is deliberately node-local
 //!
 //! The cells are hydrated once at boot and never re-read on the request path. Two nodes sharing a
@@ -62,7 +84,7 @@ pub use chain::{
     MissingGroup, STANDARD_TIER_BP,
 };
 pub use decide::{AdmitGrant, Blocked, Door, Gauges, Metric};
-pub use estimate::{ClassEstimate, Estimate};
+pub use estimate::{ClassEstimate, Estimate, HoldContext, HoldPosture, HoldSize};
 pub use price::{Pricer, RateNanos};
 pub use window::{budget_window, window_end};
 
