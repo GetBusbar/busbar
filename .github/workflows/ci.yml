@@ -118,6 +118,28 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      # THIS JOB NOW NEEDS A TOOLCHAIN, and that is the one real cost of the conversion: the
+      # cheapest job in CI used to install nothing. It is declared rather than assumed. A Rust
+      # toolchain does happen to be present on today's runner image, but that is a property of the
+      # image and not of anything this repository controls -- the same reasoning the release-order
+      # lint's own header gives for parsing YAML by hand rather than importing a parser the image
+      # happens to ship. A gate that silently stops running when a base image changes is worse than
+      # no gate.
+      #
+      # The cost is bounded by the segregation gate, which holds the runner's dependency count at
+      # one: `cargo build -p xtask --locked` is one step ahead of the gates, and the cache is keyed
+      # on `xtask` so the gates below do not pay for the workspace's build.
+      - name: Install Rust toolchain (the gate runner)
+        uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          workspaces: ". -> target"
+          key: xtask
+      - name: Build the gate runner once
+        run: cargo build -p xtask --locked
+
       # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
       # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
       # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
