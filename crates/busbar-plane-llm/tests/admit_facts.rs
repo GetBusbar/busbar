@@ -141,6 +141,76 @@ fn every_accepted_ceiling_spelling_reaches_the_admission_facts() {
     }
 }
 
+/// The priced input is the CONVERSATION the client sent, never the whole document around it.
+///
+/// The input side of the bill is measured over the span the admission step names, and a span that
+/// widens to the whole body prices the controls: the model name, the sampling knobs, the tool
+/// declarations, the response ceiling itself. Every one of those is a byte the client sent, so the
+/// number that comes out is plausible, larger than it should be, and wrong in the customer's
+/// disfavour on every single request — the failure mode a plane cannot be allowed to have.
+///
+/// Checked three ways, because a span can be wrong without being obviously wrong. It must be the
+/// span the dialect's own conversation pointer resolves to. It must not be the whole body. And it
+/// must not contain the ceiling member the fixture carries — the nearest control to the
+/// conversation, and the one a span that reached one member too far would swallow first.
+#[test]
+fn the_priced_input_is_the_conversation_and_not_the_whole_body() {
+    for request in REQUESTS {
+        admitting(request, |d, unit, facts| {
+            let body = unit.body().body();
+            let span = facts.input_span.unwrap_or_else(|| {
+                panic!(
+                    "the {} request names no priced input at all, so the bill has no input side",
+                    d.name
+                )
+            });
+            let priced = body
+                .get(span.start..span.end)
+                .expect("the priced span lies inside the body it was resolved in");
+            let conversation = unit.body().pointer(d.input_pointer).unwrap_or_else(|| {
+                panic!(
+                    "the {} fixture must carry its conversation under {}",
+                    d.name, d.input_pointer
+                )
+            });
+
+            assert_eq!(
+                priced, conversation,
+                "the {} request prices a span that is not what {} resolves to",
+                d.name, d.input_pointer
+            );
+            assert_ne!(
+                priced, body,
+                "the {} request prices its WHOLE body as input, so every control the client sent \
+                 is billed as conversation",
+                d.name
+            );
+            let control = request
+                .spelling
+                .rsplit('/')
+                .next()
+                .expect("a pointer names at least one member");
+            assert!(
+                !windows_contain(priced, control.as_bytes()),
+                "the {} request prices the {control} control as input: the span has reached past \
+                 the conversation into the controls around it",
+                d.name
+            );
+            assert!(
+                windows_contain(priced, b"hello there"),
+                "the {} request prices a span that does not contain the conversation the client \
+                 sent, so the input side of the bill is measured over the wrong bytes",
+                d.name
+            );
+        });
+    }
+}
+
+/// Whether one byte string occurs in another.
+fn windows_contain(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack.windows(needle.len()).any(|w| w == needle)
+}
+
 /// The fixtures above cover every spelling the dialect table declares, and only declared ones.
 ///
 /// Without this the coverage test is only as good as the day it was written: a dialect that grows a
