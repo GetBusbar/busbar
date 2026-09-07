@@ -1327,3 +1327,79 @@ fn a_host_with_no_escape_in_it_is_returned_unchanged() {
         Some("api.openai.com")
     );
 }
+
+/// WHITESPACE AROUND A URL MUST NOT BUY A METADATA HOP. The WHATWG basic URL parser begins by
+/// trimming leading and trailing C0 controls AND spaces from the input, and by deleting every ASCII
+/// tab / CR / LF from anywhere inside it — so a connecting stack sees `169.254.169.254` for every
+/// spelling below. Any spelling this guard reads differently from the stack that will dial it is a
+/// bypass: a token endpoint POSTs client credentials to the URL verbatim, so a host the guard failed
+/// to recognize as IMDS is a host that receives those credentials.
+///
+/// Ported byte-for-byte from the live sibling copy's own coverage
+/// (`busbar-substrate/src/tests/net_guard_tests.rs`), because the extraction dropped half of that
+/// first step and kept the tests that would have said so on the other side of the move.
+#[test]
+fn whitespace_padded_metadata_urls_are_still_refused() {
+    for spelling in [
+        "http://169.254.169.254/latest/meta-data/ ", // trailing space after the path
+        "http://169.254.169.254 ",                   // trailing space directly after the host
+        " http://169.254.169.254/latest/meta-data/", // leading space (would hide the scheme)
+        "\u{1}http://169.254.169.254/",              // leading C0 control
+        "http://169.254.169.254/\u{1f}",             // trailing C0 control
+        "http://169.254.169\t.254/",                 // interior tab, deleted by the parser
+        "http://169.254.169.254\r\n/",               // interior CR/LF
+        "\t http://169.254.169.254/ \r\n",           // mixed padding, both ends
+    ] {
+        assert_eq!(
+            ssrf_blocked_host(spelling, &[], false, &[]).as_deref(),
+            Some("169.254.169.254"),
+            "{spelling:?} is dialled as the IMDS target once the parser trims and deletes the \
+             whitespace the guard must trim and delete the same way"
+        );
+    }
+}
+
+/// The CONTROL for the trim: whitespace INSIDE a host (not at either end of the input, and not one
+/// of the three deleted bytes) is left alone, so a malformed host stays malformed rather than being
+/// silently repaired into something that matches.
+#[test]
+fn interior_spaces_are_not_trimmed_away() {
+    assert_eq!(
+        extract_normalized_host("http://169.254.169 .254/").as_deref(),
+        Some("169.254.169 .254")
+    );
+    assert_eq!(
+        ssrf_blocked_host("http://169.254.169 .254/", &[], false, &[]),
+        None
+    );
+    assert_eq!(
+        extract_normalized_host("  https://api.openai.com/v1  ").as_deref(),
+        Some("api.openai.com")
+    );
+}
+
+/// THE OPERATOR'S DENYLIST IS THE THING THE PADDING DEFEATED. The metadata refusals above are
+/// hard-coded ranges; an operator's own `blocked_metadata_hosts` entry is a `HostSet` match on the
+/// extracted host, so a host that carries a trailing space matches no entry and the block silently
+/// does not fire while the connecting stack trims and dials it.
+#[test]
+fn a_padded_authority_does_not_slip_past_the_operator_denylist() {
+    let blocked = vec!["10.99.99.99".to_string()];
+    for spelling in [
+        "https://10.99.99.99",
+        "https://10.99.99.99 ",
+        " https://10.99.99.99",
+        "https://10.99.99.99\u{1f}",
+        // The bare-authority spelling of the same destination, which `judge_against_lists` falls
+        // back to and which runs the same first step.
+        "10.99.99.99",
+        "10.99.99.99 ",
+        " 10.99.99.99:8443",
+    ] {
+        assert_eq!(
+            ssrf_blocked_host(spelling, &[], false, &blocked).as_deref(),
+            Some("10.99.99.99"),
+            "{spelling:?} must fire the operator's denylist entry"
+        );
+    }
+}
