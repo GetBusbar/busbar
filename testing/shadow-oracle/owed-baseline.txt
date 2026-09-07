@@ -23,6 +23,7 @@ admin.ops|DeleteKeysId|if-match-malformed
 admin.ops|DeleteKeysId|if-match-stale
 admin.ops|DeleteKeysId|not-found
 admin.ops|DeleteKeysId|ok
+admin.ops|DeleteKeysId|overlong-id
 admin.ops|DeleteKeysId|unauth
 admin.ops|DeleteOverlaySection|if-match-malformed
 admin.ops|DeleteOverlaySection|if-match-stale
@@ -87,9 +88,11 @@ admin.ops|GetKeys|ok
 admin.ops|GetKeys|unauth
 admin.ops|GetKeysId|not-found
 admin.ops|GetKeysId|ok
+admin.ops|GetKeysId|overlong-id
 admin.ops|GetKeysId|unauth
 admin.ops|GetKeysIdUsage|not-found
 admin.ops|GetKeysIdUsage|ok
+admin.ops|GetKeysIdUsage|overlong-id
 admin.ops|GetKeysIdUsage|unauth
 admin.ops|GetModels|ok
 admin.ops|GetModels|unauth
@@ -139,6 +142,7 @@ admin.ops|PatchKeysId|if-match-malformed
 admin.ops|PatchKeysId|if-match-stale
 admin.ops|PatchKeysId|not-found
 admin.ops|PatchKeysId|ok
+admin.ops|PatchKeysId|overlong-id
 admin.ops|PatchKeysId|unauth
 admin.ops|PostAuthCacheFlush|bad-body
 admin.ops|PostAuthCacheFlush|ok
@@ -175,10 +179,12 @@ admin.ops|PostKeys|ok
 admin.ops|PostKeys|unauth
 admin.ops|PostKeysIdRevoke|not-found
 admin.ops|PostKeysIdRevoke|ok
+admin.ops|PostKeysIdRevoke|overlong-id
 admin.ops|PostKeysIdRevoke|unauth
 admin.ops|PostKeysIdRotate|idempotent-replay
 admin.ops|PostKeysIdRotate|not-found
 admin.ops|PostKeysIdRotate|ok
+admin.ops|PostKeysIdRotate|overlong-id
 admin.ops|PostKeysIdRotate|unauth
 admin.ops|PostPlugins|bad-body
 admin.ops|PostPlugins|ok
@@ -246,6 +252,8 @@ billing|key-usage|after-upstream-down
 billing|key-usage|broke-after-429
 billing|key-usage|fresh
 billing|key-usage|noscope-after-403
+billing|rate-card|epoch-mid-window
+billing|rate-card|history-mid-window
 boot.refusal|BOOT-001|validate
 boot.refusal|BOOT-002|validate
 boot.refusal|BOOT-003|validate
@@ -627,6 +635,7 @@ config.migrate|v1.5.2_examples_claude-code-bedrock|migrate
 config.migrate|v1.5.2_examples_claude-code-bedrock|validate-migrated
 config.migrate|v1.5.2|migrate
 config.migrate|v1.5.2|validate-migrated
+config|rate-card|append-not-replace
 cooldown|trip-then-serve
 crosscut.traps|exhausted-retry-after-floor
 crosscut.traps|openapi-info-version
@@ -675,6 +684,7 @@ hooks|register|plugin-alias
 hooks|unhooked-pool|ok
 http.crosscut|413|anthropic
 http.crosscut|413|api-prefix
+http.crosscut|413|gemini-path
 http.crosscut|413|openai
 http.crosscut|413|openai-unauth
 http.crosscut|413|gemini-path
@@ -694,6 +704,11 @@ http.crosscut|unknown-path|bare
 http.crosscut|unknown-path|openai-suffix
 http.crosscut|wrong-method|GET-messages
 http.crosscut|x-api-key-only|bad
+ledger|amend|adjusting-entries
+ledger|amend|refused-unsigned
+ledger|currency|minor-unit-rounding
+ledger|currency|native
+ledger|rate-history|as-of
 llm|anthropic|anthropic|request|malformed
 llm|anthropic|anthropic|request|ok
 llm|anthropic|anthropic|request|ok_stream
@@ -859,6 +874,7 @@ ops.scrape|v1models|anthropic-fp
 ops.scrape|v1models|none
 ops.scrape|v1models|openai-fp
 ops.scrape|v1models|x-api-key
+ops.scrape|v1modelsid|retrieve
 plugins.load|auth-github
 plugins.load|auth-ldap
 plugins.load|auth-oidc
