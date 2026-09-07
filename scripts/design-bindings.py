@@ -64,6 +64,7 @@ GOLDEN_LEDGER = ROOT / "testing" / "shadow-oracle" / "golden" / "1.5.5" / "ledge
 OUT_JSON = ROOT / "qa" / "design-bindings.json"
 OUT_MD = ROOT / "qa" / "DESIGN-BINDINGS.md"
 CRATES = ROOT / "crates"
+GAPS = ROOT / "qa" / "design-bindings-gaps.json"
 
 KINDS = ("test", "oracle-cell", "oracle-family", "lint", "conformance", "gate")
 
@@ -1036,7 +1037,8 @@ def build(arch_text: str, cells_doc: dict, existing: dict | None,
             entry["checks"] = [{"kind": suggest_kind(sug), "ref": "", "status": "unmapped", "suggestion": sug}]
         out_b.append(entry)
     # The status written here is the VERDICT the checks earn, not the fact that checks were listed.
-    classify(out_b, check_context(cells_doc, crates, root, ledger))
+    gaps_doc, _ = load_gaps(root / "qa" / "design-bindings-gaps.json")
+    classify(out_b, check_context(cells_doc, crates, root, ledger, gaps_doc))
     dropped = sorted(set(prior) - {b["id"] for b in bindings})
     return {
         "_comment": [
@@ -1084,6 +1086,7 @@ def counts(bindings: list[dict]) -> dict:
                 by_kind[c["kind"]] += 1
     return {"bindings": len(bindings), "mapped": by_status["mapped"],
             "unproven": by_status["unproven"], "unmapped": by_status["unmapped"],
+            "gap": by_status["gap"],
             "checks_by_kind": dict(sorted(by_kind.items()))}
 
 
@@ -1210,7 +1213,89 @@ def ci_invoked_refs(root: Path) -> set[str]:
     return {r for r in invoked if r.endswith(RUNNABLE_SUFFIXES)}
 
 
-def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> dict:
+# ── The declared-gap register ────────────────────────────────────────────────────────────────────
+# A binding whose proof rests on a cell that CANNOT BE RECORDED on this host is not proven, and
+# pretending otherwise is the one thing this file exists to prevent. But it is not the same failure
+# as a citation that names nothing: the check is real, the cell is real, and what is missing is a
+# backend. qa/design-bindings-gaps.json is where that difference is written down, under an owner, a
+# reason, the EXACT cells excused, and a ceiling on how many such rows may exist at all.
+#
+# The three rules the register is worth having only if it enforces:
+#   * a declared gap is reported GAP and NEVER PASS -- it is kept out of the owed set in both
+#     postures, so it is neither red nor masked, and never counted as proof;
+#   * an entry forgives ONLY the cells it names, on ONLY the binding it names. Any other check of
+#     that binding that settles nothing leaves the binding FAIL;
+#   * an entry that forgives NOTHING is RED. A waiver that outlives what it excused is how a gate
+#     is turned off one row at a time, and it is exactly as dishonest as the citation it replaced.
+def load_gaps(path: Path) -> tuple[dict, list[str]]:
+    """The register, plus any problem that makes it unreadable as a register at all."""
+    if not path.is_file():
+        return {"expected": 0, "gaps": []}, []
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"expected": 0, "gaps": []}, [f"{path.name}: unreadable gap register ({e})"]
+    bad: list[str] = []
+    if not isinstance(doc.get("expected"), int):
+        bad.append(f"{path.name}: no integer `expected` -- a register with no asserted ceiling "
+                   f"cannot be exceeded, so it can grow without ever going red")
+    if not isinstance(doc.get("gaps"), list):
+        bad.append(f"{path.name}: no `gaps` list")
+        doc["gaps"] = []
+    return doc, bad
+
+
+def gap_index(doc: dict) -> dict[str, set[str]]:
+    """binding id -> the exact cell ids that binding's entry excuses."""
+    out: dict[str, set[str]] = {}
+    for g in doc.get("gaps", []):
+        b = g.get("binding")
+        if b:
+            out.setdefault(b, set()).update(g.get("cells") or [])
+    return out
+
+
+def gap_register_problems(doc: dict, bindings: list[dict], ctx: dict) -> list[str]:
+    """Every reason the register itself is RED. Empty means the register is honest."""
+    bad: list[str] = []
+    gaps = doc.get("gaps") or []
+    expected = doc.get("expected")
+    if isinstance(expected, int) and len(gaps) > expected:
+        bad.append(f"the register declares {len(gaps)} gap(s) against an asserted ceiling of "
+                   f"{expected}. A gap over the ceiling is red with no further argument: raise "
+                   f"`expected` deliberately, or close a gap.")
+    by_id = {b.get("id"): b for b in bindings}
+    seen: set[str] = set()
+    for g in gaps:
+        gid, pb = g.get("id") or "<unnamed>", g.get("binding")
+        for field in ("id", "binding", "owner", "reason"):
+            if not str(g.get(field, "")).strip():
+                bad.append(f"gap {gid}: no `{field}` -- a gap is declared with an owner and a reason "
+                           f"or it is not declared")
+        cells = g.get("cells") or []
+        if not cells:
+            bad.append(f"gap {gid}: names no cells, so it forgives nothing in particular")
+        if pb in seen:
+            bad.append(f"gap {gid}: {pb} already has an entry; one binding, one gap")
+        if pb:
+            seen.add(pb)
+        b = by_id.get(pb)
+        if b is None:
+            bad.append(f"gap {gid}: names binding {pb}, which is in no row of the ledger")
+            continue
+        # AN UNUSED ENTRY IS A LIE. Recompute what this binding's checks settle with the register
+        # switched OFF, and require every cell the entry names to be genuinely unproven today.
+        unproven_refs = {ref for ref, _ in broken_refs(b, ctx)}
+        idle = [c for c in cells if c not in unproven_refs]
+        if idle:
+            bad.append(f"gap {gid}: forgives nothing on {pb} -- " + ", ".join(idle)
+                       + " settle(s) fine today. Delete the entry; a waiver that outlives what it "
+                         "excused is a gate turned off one row at a time.")
+    return bad
+
+
+def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path,
+                  gaps_doc: dict | None = None) -> dict:
     """Everything a per-check verdict needs, gathered once."""
     fam_cells: dict[str, list[str]] = defaultdict(list)
     for c in cells_doc.get("cells", []):
@@ -1223,6 +1308,7 @@ def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> di
         "families": Counter((c.get("family") or c.get("plane") or "?") for c in cells_doc.get("cells", [])),
         "root": root,
         "ci": ci_invoked_refs(root),
+        "gaps": gap_index(gaps_doc or {}),
     }
 
 
@@ -1276,6 +1362,22 @@ def check_verdict(c: dict, ctx: dict) -> tuple[bool, str]:
     return False, f"{k}:{r} (unknown check kind)"
 
 
+def broken_refs(b: dict, ctx: dict) -> list[tuple[str, str]]:
+    """(ref, why) for every cited check of this binding that settles nothing today.
+
+    The gap register is NOT consulted here: this is what the binding's citations earn on their own,
+    which is exactly what an entry claiming to excuse something must be measured against.
+    """
+    out: list[tuple[str, str]] = []
+    for c in b.get("checks", []):
+        if c.get("status") != "mapped" or not c.get("ref"):
+            continue
+        ok, why = check_verdict(c, ctx)
+        if not ok:
+            out.append((c["ref"], why))
+    return out
+
+
 def binding_verdict(b: dict, ctx: dict) -> tuple[str, str, str]:
     """One binding's (status, verdict, detail).
 
@@ -1291,19 +1393,31 @@ def binding_verdict(b: dict, ctx: dict) -> tuple[str, str, str]:
     if pb in UNPROVEN_BY_NOTE:
         return "unproven", "FAIL", "UNPROVEN, by the ledger's own note: " + NOTES.get(pb, UNPROVEN_BY_NOTE[pb])
     proving: list[dict] = []
-    broken: list[str] = []
+    broken: list[tuple[str, str]] = []
     for c in mapped:
         ok, why = check_verdict(c, ctx)
         if ok:
             proving.append(c)
         else:
-            broken.append(why)
+            broken.append((c["ref"], why))
+    # A DECLARED GAP FORGIVES ONLY THE CELLS IT NAMES. Everything else this binding cites is judged
+    # exactly as before, so an entry can never widen itself into a blanket waiver: a second broken
+    # citation the entry does not name leaves the binding FAIL, with only the unforgiven reasons
+    # printed, and the binding is never reported PASS on the strength of a gap.
+    forgiven_here = ctx.get("gaps", {}).get(pb, set())
+    excused = [r for r in broken if r[0] in forgiven_here]
+    broken = [r for r in broken if r[0] not in forgiven_here]
     if not proving:
         return "unproven", "FAIL", ("UNPROVEN: nothing this binding cites compares anything today -- "
-                                    + ", ".join(broken))
+                                    + ", ".join(w for _, w in broken + excused))
     if broken:
         return "unproven", "FAIL", ("partly proven; a referenced check settles nothing: "
-                                    + ", ".join(broken))
+                                    + ", ".join(w for _, w in broken))
+    if excused:
+        return "gap", "GAP", ("DECLARED GAP (qa/design-bindings-gaps.json): proven by "
+                              + ", ".join(f"{c['kind']}:{c['ref']}" for c in proving)
+                              + "; not proven on " + ", ".join(r for r, _ in excused)
+                              + " -- " + ", ".join(w for _, w in excused))
     return "mapped", "PASS", ", ".join(f"{c['kind']}:{c['ref']}" for c in proving)
 
 
@@ -1318,8 +1432,9 @@ def classify(bindings: list[dict], ctx: dict) -> list[dict]:
 
 
 def verify(doc: dict, cells_doc: dict, crates: Path, root: Path,
-           ledger: Path = GOLDEN_LEDGER) -> list[tuple[str, str, str, str]]:
-    ctx = check_context(cells_doc, crates, root, ledger)
+           ledger: Path = GOLDEN_LEDGER, gaps: Path = GAPS) -> list[tuple[str, str, str, str]]:
+    gaps_doc, _ = load_gaps(gaps)
+    ctx = check_context(cells_doc, crates, root, ledger, gaps_doc)
     rows: list[tuple[str, str, str, str]] = []
     for b in doc.get("bindings", []):
         title = f"{b['id']} {b['surface']}"[:70]
@@ -1411,17 +1526,44 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--crates", default=str(CRATES))
     ap.add_argument("--golden-ledger", default=str(GOLDEN_LEDGER),
                     help="the pinned golden's ledger.tsv; an oracle check is only proven by a PASS row here")
+    ap.add_argument("--gaps", default=str(GAPS),
+                    help="the declared-gap register; a gap is reported GAP, never PASS, and never masked")
+    ap.add_argument("--verify-gaps", action="store_true",
+                    help="judge the gap register itself: the ceiling, and that every entry still forgives something")
     a = ap.parse_args(argv)
 
     cells_doc = json.loads(Path(a.cells).read_text()) if Path(a.cells).exists() else {"cells": []}
     bp = Path(a.bindings)
     existing = json.loads(bp.read_text()) if bp.is_file() and bp.stat().st_size > 0 else None
 
+    if a.verify_gaps:
+        if existing is None:
+            print(f"design-bindings: {a.bindings} missing -- run --write first", file=sys.stderr)
+            return 2
+        gaps_doc, bad = load_gaps(Path(a.gaps))
+        ctx = check_context(cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger), gaps_doc)
+        bad += gap_register_problems(gaps_doc, existing.get("bindings", []), ctx)
+        n, ceiling = len(gaps_doc.get("gaps") or []), gaps_doc.get("expected")
+        if bad:
+            print(f"design bindings GAP REGISTER: RED -- {len(bad)} problem(s) in {a.gaps}:")
+            for b in bad:
+                print(f"  {b}")
+            print("::error title=design bindings::the declared-gap register is not honest. "
+                  "A gap is declared with an owner and a reason under an asserted ceiling, or it is "
+                  "not declared; a waiver that forgives nothing is deleted, never left standing.")
+            return 1
+        print(f"design bindings GAP REGISTER: {n} declared gap(s) of an asserted ceiling of {ceiling}; "
+              f"each names an owner, a reason and the exact cells it excuses, and each still forgives them")
+        for g in gaps_doc.get("gaps") or []:
+            print(f"  GAP  {g.get('binding'):<8} {g.get('id')}  [{g.get('owner')}]")
+            print(f"       excuses: {', '.join(g.get('cells') or [])}")
+        return 0
+
     if a.verify:
         if existing is None:
             print(f"design-bindings: {a.bindings} missing -- run --write first", file=sys.stderr)
             return 2
-        for r in verify(existing, cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger)):
+        for r in verify(existing, cells_doc, Path(a.crates), ROOT, Path(a.golden_ledger), Path(a.gaps)):
             print("\t".join(x.replace("\t", " ") for x in r))
         return 0
 
@@ -1433,7 +1575,7 @@ def main(argv: list[str]) -> int:
         print(f"wrote {a.out_json} and {a.out_md}")
     c = doc["counts"]
     print(f"bindings {c['bindings']}  mapped {c['mapped']}  unproven {c['unproven']}  "
-          f"unmapped {c['unmapped']}  by kind {c['checks_by_kind']}")
+          f"unmapped {c['unmapped']}  gap {c.get('gap', 0)}  by kind {c['checks_by_kind']}")
     if doc["dropped_since_last_write"]:
         print("dropped (no longer in Appendix B): " + ", ".join(doc["dropped_since_last_write"]))
     return 0

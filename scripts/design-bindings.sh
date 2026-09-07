@@ -64,6 +64,14 @@ run_check() {
   while IFS=$'\t' read -r pb status title detail; do
     [ -n "$pb" ] || continue
     record "$pb" "$status" "$title" "$detail" >/dev/null
+    # A DECLARED GAP IS NEVER OWED, IN EITHER POSTURE. It is not a probe that could have run and
+    # did not: the check is real and the backend is absent, which is why it is written down with an
+    # owner and a reason instead. Owing it would make it red; folding it into PASS would make it a
+    # lie. It stays out of the owed set and is reported on its own line below, in both --check and
+    # --check --strict, exactly as a named gap is treated everywhere else in this tree.
+    case "$status" in
+      GAP) continue ;;
+    esac
     if [ "$strict" = 1 ] || [ "$status" != SKIP ]; then owed="${owed}${pb} "; fi
   done <<EOF
 $rows
@@ -112,8 +120,13 @@ regen_clean() {
 }
 
 check() {
-  local strict="$1" ledger="$WORK/ledger.tsv" rc regen_rc=0
+  local strict="$1" ledger="$WORK/ledger.tsv" rc regen_rc=0 gaps_rc=0
   [ -f "$BINDINGS" ] || { echo "design-bindings: $BINDINGS missing -- run $0 --write first" >&2; return 2; }
+  # THE GAP REGISTER IS JUDGED BEFORE THE BINDINGS IT FORGIVES. A register over its ceiling, or one
+  # carrying an entry that no longer excuses anything, is red in BOTH postures -- otherwise the way
+  # to make this gate green would be to add a row to a file, which is the failure the register is
+  # meant to make impossible rather than convenient.
+  "$PY" "$DERIVE" --verify-gaps --bindings "$BINDINGS" || gaps_rc=$?
   # REGEN-CLEAN first, and only under --strict: plain --check is the gap REPORT, and a report on a
   # slightly stale ledger is still a useful report. --strict is the DONE claim, and that claim is
   # about Appendix B, not about a cache of it.
@@ -122,6 +135,18 @@ check() {
   fi
   run_check "$BINDINGS" "$ledger" "$strict"; rc=$?
   [ "$regen_rc" -ne 0 ] && rc="$regen_rc"
+  [ "$gaps_rc" -ne 0 ] && rc="$gaps_rc"
+  # The declared-gap list: reported in every posture, counted, and never silent. A gap the reader
+  # cannot see is indistinguishable from a pass, which is the whole reason it is printed here.
+  local gapn
+  gapn="$(awk -F'\t' '$2=="GAP"{n++} END{print n+0}' "$ledger")"
+  if [ "$gapn" -gt 0 ]; then
+    echo
+    echo "design bindings: ${gapn} DECLARED GAP(s) -- proven where this host can prove them, and"
+    echo "declared with an owner and a reason where it cannot (qa/design-bindings-gaps.json):"
+    awk -F'\t' '$2=="GAP"{printf "  %-8s %s\n", $1, $4}' "$ledger"
+    echo "design bindings: a declared gap is NEVER a pass. It is out of the owed set in both postures."
+  fi
   # The UNPROVEN list, printed before the gap list because it is the worse condition: a gap is
   # honest about naming nothing, while an unproven binding names checks and proves nothing by them.
   # These are FAIL rows, so they are already red in BOTH postures -- plain --check included. A
@@ -474,6 +499,107 @@ PYEOF
     say PASS "a bare test name two files declare proves nothing; path.rs::name does, and only for the right file"
   else
     say FAIL "an ambiguous bare test ref was accepted as proof"
+  fi
+
+  # ── THE DECLARED-GAP REGISTER ────────────────────────────────────────────────────────────────
+  # A gap register is a way of NOT weakening the gate only if each of its rules is enforced. One
+  # arm per rule, each driven on a planted register over a two-binding fixture whose second binding
+  # cites a cell the pinned golden never recorded (the mysql store cell, which is exactly that in
+  # this tree), so the fixture fails for the real reason before any gap is declared.
+  cat >"$tmp/gapfix.json" <<EOF
+{"bindings": [
+ {"id":"PB-1","surface":"good","binding":"x","inventory":"x","status":"mapped",
+  "checks":[{"kind":"test","ref":"${real_fn}","status":"mapped"}]},
+ {"id":"PB-2","surface":"needs a backend","binding":"x","inventory":"x","status":"mapped",
+  "checks":[{"kind":"test","ref":"${real_fn}","status":"mapped"},
+            {"kind":"oracle-cell","ref":"plugins.store-persist|store-mysql","status":"mapped"}]}
+]}
+EOF
+  gapreg() {  # gapreg <out> <expected> <binding> <cells-json>
+    cat >"$1" <<EOF
+{"expected": $2, "gaps": [
+ {"id":"DBG-selftest","binding":"$3","owner":"selftest","declared_at":"2026-09-06",
+  "cells": $4, "reason":"the selftest's planted gap"}
+]}
+EOF
+  }
+
+  # (k) with NO register, the fixture is red -- the condition every arm below is a delta from.
+  echo '{"expected":0,"gaps":[]}' >"$tmp/gap-none.json"
+  run_check "$tmp/gapfix.json" "$tmp/k.tsv" 0 --gaps "$tmp/gap-none.json" >"$tmp/k.log" 2>&1; rc=$?
+  [ "$rc" != 0 ] && grep -q $'^PB-2\tFAIL' "$tmp/k.tsv" \
+    && say PASS "gap register: an unrecordable cell with NO entry is FAIL, red (the undeclared state)" \
+    || { say FAIL "gap register: undeclared unrecordable cell was not red (rc=$rc)"; cat "$tmp/k.log"; }
+
+  # (l) declared: the binding is GAP, NEVER PASS, and the run is green -- the whole point.
+  gapreg "$tmp/gap-ok.json" 1 PB-2 '["plugins.store-persist|store-mysql"]'
+  run_check "$tmp/gapfix.json" "$tmp/l.tsv" 0 --gaps "$tmp/gap-ok.json" >"$tmp/l.log" 2>&1; rc=$?
+  if [ "$rc" = 0 ] && grep -q $'^PB-2\tGAP' "$tmp/l.tsv" && ! grep -q $'^PB-2\tPASS' "$tmp/l.tsv"; then
+    say PASS "gap register: a declared gap is reported GAP, never PASS, and does not turn the run red"
+  else
+    say FAIL "gap register: declared gap did not read as GAP (rc=$rc)"; cat "$tmp/l.tsv"; cat "$tmp/l.log"
+  fi
+  # ...and it is out of the owed set under --strict too, or "declared" would just mean "red later".
+  run_check "$tmp/gapfix.json" "$tmp/l2.tsv" 1 --gaps "$tmp/gap-ok.json" >"$tmp/l2.log" 2>&1; rc=$?
+  [ "$rc" = 0 ] && grep -q $'^PB-2\tGAP' "$tmp/l2.tsv" \
+    && say PASS "gap register: --strict keeps a declared gap out of the owed set as well" \
+    || { say FAIL "gap register: --strict reddened a declared gap (rc=$rc)"; cat "$tmp/l2.log"; }
+
+  # (m) A GAP FORGIVES ONLY WHAT IT NAMES: an entry naming some other cell excuses nothing here.
+  gapreg "$tmp/gap-wrong.json" 1 PB-2 '["plugins.store-persist|store-valkey"]'
+  run_check "$tmp/gapfix.json" "$tmp/m.tsv" 0 --gaps "$tmp/gap-wrong.json" >"$tmp/m.log" 2>&1; rc=$?
+  [ "$rc" != 0 ] && grep -q $'^PB-2\tFAIL' "$tmp/m.tsv" \
+    && say PASS "gap register: an entry forgives ONLY the cells it names; another cell stays FAIL" \
+    || { say FAIL "gap register: an entry widened itself past the cells it named (rc=$rc)"; cat "$tmp/m.log"; }
+
+  # (n) THE CEILING IS ASSERTED: two declared gaps against a ceiling of one is RED.
+  cat >"$tmp/gap-over.json" <<EOF
+{"expected": 1, "gaps": [
+ {"id":"DBG-a","binding":"PB-1","owner":"selftest","cells":["plugins.store-persist|store-mysql"],"reason":"r"},
+ {"id":"DBG-b","binding":"PB-2","owner":"selftest","cells":["plugins.store-persist|store-mysql"],"reason":"r"}
+]}
+EOF
+  if "$PY" "$DERIVE" --verify-gaps --bindings "$tmp/gapfix.json" --gaps "$tmp/gap-over.json" \
+       >"$tmp/n.log" 2>&1; then
+    say FAIL "gap register: a register OVER its ceiling was accepted"; cat "$tmp/n.log"
+  else
+    grep -q "ceiling of 1" "$tmp/n.log" \
+      && say PASS "gap register: more gaps than the asserted ceiling is red, naming the ceiling" \
+      || { say FAIL "gap register: over-ceiling red did not name the ceiling"; cat "$tmp/n.log"; }
+  fi
+
+  # (o) AN UNUSED ENTRY IS A LIE: an entry on a binding that proves fine today is RED, and the
+  #     message says to delete it rather than leave a waiver standing over nothing.
+  gapreg "$tmp/gap-idle.json" 1 PB-1 '["plugins.store-persist|store-mysql"]'
+  if "$PY" "$DERIVE" --verify-gaps --bindings "$tmp/gapfix.json" --gaps "$tmp/gap-idle.json" \
+       >"$tmp/o.log" 2>&1; then
+    say FAIL "gap register: an entry that forgives NOTHING was accepted"; cat "$tmp/o.log"
+  else
+    grep -q "forgives nothing on PB-1" "$tmp/o.log" && grep -q "Delete the entry" "$tmp/o.log" \
+      && say PASS "gap register: an entry that forgives nothing is red, and is told to delete itself" \
+      || { say FAIL "gap register: unused-entry red did not name the entry"; cat "$tmp/o.log"; }
+  fi
+
+  # (p) A gap is DECLARED, with an owner and a reason, or it is not declared.
+  cat >"$tmp/gap-bare.json" <<EOF
+{"expected": 1, "gaps": [
+ {"id":"DBG-bare","binding":"PB-2","cells":["plugins.store-persist|store-mysql"]}
+]}
+EOF
+  if "$PY" "$DERIVE" --verify-gaps --bindings "$tmp/gapfix.json" --gaps "$tmp/gap-bare.json" \
+       >"$tmp/p.log" 2>&1; then
+    say FAIL "gap register: an entry with no owner and no reason was accepted"; cat "$tmp/p.log"
+  else
+    grep -q "no \`owner\`" "$tmp/p.log" && grep -q "no \`reason\`" "$tmp/p.log" \
+      && say PASS "gap register: an entry with no owner and no reason is red on both counts" \
+      || { say FAIL "gap register: bare-entry red did not name owner and reason"; cat "$tmp/p.log"; }
+  fi
+
+  # (q) the register the tree actually ships is honest, judged against the shipped ledger.
+  if "$PY" "$DERIVE" --verify-gaps >"$tmp/q.log" 2>&1; then
+    say PASS "gap register: the committed qa/design-bindings-gaps.json is within its ceiling and forgives what it names"
+  else
+    say FAIL "gap register: the committed register is RED"; cat "$tmp/q.log"
   fi
 
   echo
