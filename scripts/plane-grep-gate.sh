@@ -50,10 +50,11 @@
 #   * the neutral `Operation` enum — crates/api/src/operation.rs is EXCLUDED wholesale: its variants
 #     (Chat/Embeddings/Moderation/…) are the generic, protocol-neutral op vocabulary the ABI carries as
 #     DATA, and are explicitly in-scope-neutral.
-#   * FROZEN-WIRE ALLOWLIST — a narrow, path-scoped list (token × path-prefix × optional line) of hits
-#     that are frozen CONTRACT vocabulary, not dialect leakage: the OpenAPI/MCP `responses` object key
-#     under the admin/mcp/a2a wire crates, and the frozen `anthropic` protocol default / `mcp:` deploy
-#     key at their pinned lines in config/mod.rs. See ALLOWLIST below — each entry is scoped, never global.
+#   * FROZEN-WIRE ALLOWLIST — a narrow, path-scoped list (token × path-prefix × optional SOURCE TEXT)
+#     of hits that are frozen CONTRACT vocabulary, not dialect leakage: the OpenAPI/MCP `responses`
+#     object key under the admin/mcp/a2a wire crates, and the frozen `anthropic` protocol default /
+#     `mcp:` deploy key pinned to their own declaration text. See ALLOWLIST below — each entry is
+#     scoped, never global, and a row that suppresses NOTHING is reported as dead and fails the gate.
 #
 # REPORTING MODE (this lands NON-BLOCKING to measure the debt R3/R4/R5 will drive to 0):
 #   GREP_GATE_REPORT_ONLY=1 (DEFAULT) → PRINT the violation count + the offending file:line list, EXIT 0.
@@ -75,7 +76,9 @@ set -uo pipefail
 # Resolved BEFORE the cd, so the self-test can re-invoke this exact file as a child process (the root
 # guard below exits the process, which a `$(…)` subshell would swallow).
 SELF="$(cd "$(dirname "$0")" >/dev/null && pwd)/$(basename "$0")"
-cd "$(dirname "$0")/.."
+# `|| exit 1`: with no `set -e`, a failed cd would leave every relative root below resolving against
+# the CALLER's directory instead of the repo — a whole scan aimed somewhere nobody chose.
+cd "$(dirname "$0")/.." || exit 1
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -122,26 +125,42 @@ VOICE_NEEDLES="$DIALECTS $(plane_keys_other voice)"
 OPERATION_EXCLUDE="crates/api/src/operation.rs"
 
 # ── THE FROZEN-WIRE ALLOWLIST (path-scoped, never global) ──────────────────────────────────────────
-# One entry per line:  NEEDLE|PATH-PREFIX|LINE   (LINE empty = every line under the prefix).
+# One entry per line:  NEEDLE|PATH-PREFIX|TEXT   (TEXT empty = every line under the prefix).
 # A hit is suppressed iff its needle equals NEEDLE, its file path STARTS WITH PATH-PREFIX, and (when
-# LINE is given) its line number equals LINE. This is the ONLY allowlist mechanism — inline source
-# markers are NOT honoured (the gate must stay a source-read-only meter; the .rs files are frozen).
+# TEXT is given) the STRIPPED CODE LINE CONTAINS TEXT. This is the ONLY allowlist mechanism — inline
+# source markers are NOT honoured (the gate must stay a source-read-only meter; the .rs files are frozen).
+#
+# THE THIRD FIELD IS SOURCE TEXT, NOT A LINE NUMBER, AND THAT IS THE POINT. It was a line number, and
+# all three numbered rows had rotted: `config/mod.rs` is 2692 lines and two rows pinned 2974 and 5017,
+# so they could never match anything — dead rules carried as if they were protecting something. The
+# third pinned line 1291 for a `DEFAULT_PROTOCOL = "anthropic"` that had since moved to another crate
+# entirely (busbar-substrate/src/config/providers.rs), leaving the row shielding whatever now occupies
+# line 1291 of a file it no longer has any business in. Planting `let leak_default = "anthropic";` at
+# 1291 was silently suppressed; the identical line at 1292 was reported. A line number is a fact about
+# a file's current shape, and every edit above it invalidates one without touching it. The source text
+# is a fact about the frozen contract itself, so it travels with the declaration when the declaration
+# moves and stops matching when the declaration is actually gone — which is when the row should go too.
+#
+# AND A ROW THAT MATCHES NOTHING IS REPORTED AS DEAD (see the dead-row check in run_report), because a
+# dead row is not harmless: it is a standing hole waiting for something to land where it points.
 #   responses : the OpenAPI-3 response-object key + MCP `inputResponses` wire field — frozen contract
 #               vocabulary, allowlisted ONLY under the admin / mcp / a2a wire crates (a stray
-#               `responses` elsewhere still trips).
+#               `responses` elsewhere still trips). Whole-prefix rows: no text pin. The two `-codec`
+#               crates had rows here too; the dead-row check below found they suppress nothing (the
+#               word does not occur in either crate at all), so they were holes rather than
+#               allowances and are deleted. If a codec crate ever carries the frozen key, add the row
+#               back with the diff that puts it there.
 #   anthropic : the frozen `DEFAULT_PROTOCOL = "anthropic"` providers.yaml config-grammar default —
-#               its own comment declares it frozen-wire. Pinned to its exact line in config/mod.rs.
-#   mcp       : the public frozen `mcp:` deploy-config key (`mcp: McpEndpointSection` field + the
-#               `deploy.mcp.0` read). Pinned to the two exact deploy-config lines in config/mod.rs —
-#               the unrelated `mcp` import at the top of the file is NOT covered and still trips.
+#               its own comment declares it frozen-wire. Pinned to that declaration's own text.
+#   mcp       : the public frozen `mcp:` deploy-config key (the `mcp: McpEndpointSection` field and the
+#               `deploy.mcp.0` read). Pinned to the two declarations' own text — the unrelated `mcp`
+#               import at the top of that file matches neither and still trips.
 ALLOWLIST="responses|crates/busbar-core/src/admin/|
 responses|crates/busbar-mcp/src/|
-responses|crates/busbar-mcp-codec/src/|
 responses|crates/busbar-a2a/src/|
-responses|crates/busbar-a2a-codec/src/|
-anthropic|crates/busbar-core/src/config/mod.rs|1291
-mcp|crates/busbar-core/src/config/mod.rs|2974
-mcp|crates/busbar-core/src/config/mod.rs|5017"
+anthropic|crates/busbar-substrate/src/config/providers.rs|DEFAULT_PROTOCOL
+mcp|crates/busbar-core/src/config/mod.rs|mcp: McpEndpointSection
+mcp|crates/busbar-core/src/config/mod.rs|deploy.mcp.0"
 
 # ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
 # Emits the file/subtree prefixes of every brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES
@@ -235,11 +254,13 @@ prod_files() {
 # Emits one TSV line per violation:  NEEDLE<TAB>file:line<TAB>trimmed-source
 # It strips comments/doc-comments/block-comments (respecting string literals) and excludes
 # `#[cfg(test)] mod { … }` blocks, then flags any case-insensitive SUBSTRING hit of a banned needle.
+# $1 = needles, $2 = a path to append the index of every allowlist row that actually FIRED (or "" to
+# record nothing — the self-test's fixtures do not care), $3.. = files.
 scan() {
-  local needles="$1"; shift
+  local needles="$1" usedfile="$2"; shift 2
   [ "$#" -gt 0 ] || return 0
   # BSD awk forbids a literal newline in a -v value, so flatten the row-per-line ALLOWLIST to `;`-joined.
-  awk -v needles="$needles" -v allow="$(printf '%s' "$ALLOWLIST" | tr '\n' ';')" '
+  awk -v needles="$needles" -v used="$usedfile" -v allow="$(printf '%s' "$ALLOWLIST" | tr '\n' ';')" '
     function strip(line,   res, i, n, c, c2, instr) {
       res = ""; n = length(line); i = 1; instr = 0
       while (i <= n) {
@@ -260,10 +281,15 @@ scan() {
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     function emit(needle, text) { printf "%s\t%s:%d\t%s\n", needle, FILENAME, FNR, trim(text) }
-    # allowlisted(needle) — true iff a frozen-wire ALLOWLIST entry covers this needle at FILENAME:FNR.
-    function allowlisted(needle,   i) {
+    # allowlisted(needle, code) — true iff a frozen-wire ALLOWLIST row covers this needle in this file
+    # AND (when the row carries a text pin) this line is the frozen declaration the row names. Records
+    # the row index so run_report can tell a row that is PROTECTING something from a row that is dead.
+    function allowlisted(needle, code,   i) {
       for (i = 1; i <= naA; i++)
-        if (needle == aN[i] && index(FILENAME, aP[i]) == 1 && (aL[i] == "" || aL[i] + 0 == FNR)) return 1
+        if (needle == aN[i] && index(FILENAME, aP[i]) == 1 && (aT[i] == "" || index(code, aT[i]) > 0)) {
+          if (used != "") print i >> used
+          return 1
+        }
       return 0
     }
 
@@ -274,7 +300,7 @@ scan() {
       for (r = 1; r <= nrows; r++) {
         if (rows[r] == "") continue
         nf = split(rows[r], fld, "|")
-        naA++; aN[naA] = fld[1]; aP[naA] = fld[2]; aL[naA] = (nf >= 3 ? fld[3] : "")
+        naA++; aN[naA] = fld[1]; aP[naA] = fld[2]; aT[naA] = (nf >= 3 ? fld[3] : "")
       }
     }
 
@@ -325,7 +351,7 @@ scan() {
 
       # ── substring dialect / plane-key hits (minus the frozen-wire allowlist) ──
       for (k = 1; k <= nN; k++) {
-        if (index(lc, N[k]) > 0 && !allowlisted(N[k])) emit(N[k], code)
+        if (index(lc, N[k]) > 0 && !allowlisted(N[k], code)) emit(N[k], code)
       }
     }
   ' "$@"
@@ -345,7 +371,7 @@ use busbar_a2a::Foo;
 use busbar_voice::Bar;
 fn probe() { let url = "https://api.openai.com/v1/models"; }
 RED
-  out="$(scan "$NEUTRAL_NEEDLES" "$tmp/neutral_red.rs")"
+  out="$(scan "$NEUTRAL_NEEDLES" "" "$tmp/neutral_red.rs")"
   local hit_gemini hit_a2a hit_openai hit_voice
   hit_gemini="$(printf '%s\n' "$out" | awk -F'\t' '$1=="gemini"{n++} END{print n+0}')"
   hit_a2a="$(printf '%s\n' "$out"    | awk -F'\t' '$1=="a2a"{n++}    END{print n+0}')"
@@ -369,7 +395,7 @@ mod tests {
     fn t() { let _ = "openai gemini anthropic"; let _k = "mcp a2a voice"; }
 }
 GREEN
-  out="$(scan "$NEUTRAL_NEEDLES" "$tmp/neutral_green.rs")"
+  out="$(scan "$NEUTRAL_NEEDLES" "" "$tmp/neutral_green.rs")"
   if [ -z "$out" ]; then
     note "GREEN neutral: generic Op vocabulary + comment + cfg(test) fixtures flagged NONE"
   else
@@ -381,7 +407,7 @@ GREEN
 use busbar_mcp::server::McpEndpoint;
 fn wire() { let _ = "a2a"; let _d = "anthropic_v1"; }
 MCP
-  out="$(scan "$MCP_NEEDLES" "$tmp/mcp_case.rs")"
+  out="$(scan "$MCP_NEEDLES" "" "$tmp/mcp_case.rs")"
   local mcp_hit_mcp mcp_hit_a2a mcp_hit_anthropic
   mcp_hit_mcp="$(printf '%s\n' "$out"       | awk -F'\t' '$1=="mcp"{n++}       END{print n+0}')"
   mcp_hit_a2a="$(printf '%s\n' "$out"       | awk -F'\t' '$1=="a2a"{n++}       END{print n+0}')"
@@ -396,7 +422,7 @@ MCP
 use busbar_voice::runtime::Session;
 fn wire() { let _ = "mcp"; let _d = "a2a_bridge"; }
 VOICE
-  out="$(scan "$VOICE_NEEDLES" "$tmp/voice_case.rs")"
+  out="$(scan "$VOICE_NEEDLES" "" "$tmp/voice_case.rs")"
   local voice_hit_voice voice_hit_mcp voice_hit_a2a
   voice_hit_voice="$(printf '%s\n' "$out" | awk -F'\t' '$1=="voice"{n++} END{print n+0}')"
   voice_hit_mcp="$(printf '%s\n' "$out"   | awk -F'\t' '$1=="mcp"{n++}   END{print n+0}')"
@@ -460,14 +486,44 @@ run_report() {
   require_files a2a     "$n_af"
   require_files voice   "$n_vf"
 
+  : >"$tmp/allowused"
   # shellcheck disable=SC2086
-  scan "$NEUTRAL_NEEDLES" $nf >>"$tmp/hits"
+  scan "$NEUTRAL_NEEDLES" "$tmp/allowused" $nf >>"$tmp/hits"
   # shellcheck disable=SC2086
-  scan "$MCP_NEEDLES"     $mf >>"$tmp/hits"
+  scan "$MCP_NEEDLES"     "$tmp/allowused" $mf >>"$tmp/hits"
   # shellcheck disable=SC2086
-  scan "$A2A_NEEDLES"     $af >>"$tmp/hits"
+  scan "$A2A_NEEDLES"     "$tmp/allowused" $af >>"$tmp/hits"
   # shellcheck disable=SC2086
-  scan "$VOICE_NEEDLES"   $vf >>"$tmp/hits"
+  scan "$VOICE_NEEDLES"   "$tmp/allowused" $vf >>"$tmp/hits"
+
+  # ── THE DEAD-ROW CHECK — an allowlist entry that suppresses nothing is reported, never carried ────
+  # Every row above exists to say "this specific hit is frozen contract, not dialect leakage". A row
+  # that matched nothing in the whole scan is making no such statement: the declaration it names is
+  # gone or has moved, and what remains is a scoped hole sitting in the gate waiting for something to
+  # land inside it. That is not theoretical — the three rows this check replaces had ALL rotted (two
+  # pinned past the end of a 2692-line file, one pinned at a line whose declaration had moved to
+  # another crate), and nothing in the gate noticed for as long as they sat there. Like the root and
+  # file-count guards, this is an INSTRUMENT failure rather than debt: it exits non-zero even in
+  # report-only mode, because the fix is to delete the row in a reviewed diff that says the contract
+  # it protected is gone — never to leave it lying there.
+  local dead="" arow ai=0
+  while IFS= read -r arow; do
+    [ -n "$arow" ] || continue
+    ai=$((ai + 1))
+    grep -qx "$ai" "$tmp/allowused" 2>/dev/null && continue
+    dead="${dead}${dead:+
+}    row $ai:  $arow"
+  done <<EOF
+$ALLOWLIST
+EOF
+  if [ -n "$dead" ]; then
+    red "plane-grep gate: FAIL — frozen-wire ALLOWLIST row(s) suppressed nothing in this scan:"
+    printf '%s\n' "$dead"
+    note "A row that matches nothing is not protecting a frozen contract; it is a scoped hole waiting"
+    note "for an unrelated line to land where it points. Either the declaration moved (re-point the"
+    note "row at its new path/text) or it is gone (DELETE the row in a reviewed diff that says so)."
+    exit 1
+  fi
 
   local total; total="$(wc -l <"$tmp/hits" | tr -d ' ')"
   REPORT_TOTAL="$total"
