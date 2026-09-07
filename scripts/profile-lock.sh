@@ -96,42 +96,63 @@ check_profile() {
   return $fail
 }
 
-# ── SELF-TEST: prove the checker goes RED on a weakened profile before trusting its GREEN. ─────────
+# ── SELF-TEST: prove EVERY locked key still goes RED on its own, before trusting a GREEN. ─────────
+# ONE weakened key per fixture, never a bundle. The bundled fixture this replaced weakened opt-level,
+# lto, codegen-units AND debug-assertions at once and omitted strip entirely; check_profile reds on
+# the first rule that fires, so the bundle proved nothing about the other four. Measured: replacing
+# the codegen-units and strip comparisons with `if false` left that self-test PASSing, and the gate
+# then reported "the release profile is the locked optimized posture" on a Cargo.toml carrying
+# codegen-units = 256 and strip = false. A per-rule fixture is what makes a deleted rule visible.
 selftest() {
-  local tmp rc
+  local tmp fails=0 got
   tmp="$(mktemp)"
   trap 'rm -f "$tmp"' RETURN
 
-  # A deliberately-weakened profile (the exact incident shape: LTO dropped, opt lowered,
-  # debug-assertions on). The checker MUST reject it.
-  cat > "$tmp" <<'EOF'
-[profile.release]
-opt-level = 1
-lto = false
-codegen-units = 16
-debug-assertions = true
-EOF
-  echo "[selftest] a weakened [profile.release] must be REJECTED:"
-  if check_profile "$tmp" >/dev/null 2>&1; then
-    echo "  SELFTEST FAILED: checker ACCEPTED a weakened profile (opt-level=1, lto=false, debug-assertions=true)"
-    return 1
-  fi
-  echo "  ok: weakened profile rejected"
+  local GOOD_OPT="opt-level = $REQUIRE_OPT_LEVEL"
+  local GOOD_LTO="lto = $REQUIRE_LTO"
+  local GOOD_CGU="codegen-units = $REQUIRE_CODEGEN_UNITS"
+  local GOOD_STRIP="strip = $REQUIRE_STRIP"
 
-  # The exact optimized posture this repo ships. The checker MUST accept it.
-  cat > "$tmp" <<EOF
-[profile.release]
-opt-level = $REQUIRE_OPT_LEVEL
-lto = $REQUIRE_LTO
-codegen-units = $REQUIRE_CODEGEN_UNITS
-strip = $REQUIRE_STRIP
-EOF
-  echo "[selftest] the optimized posture must be ACCEPTED:"
-  if ! check_profile "$tmp" >/dev/null 2>&1; then
-    echo "  SELFTEST FAILED: checker REJECTED the correct optimized profile"
+  # expect_case <accept|reject> <label> [profile-body-line ...]
+  expect_case() {
+    local want="$1" label="$2"; shift 2
+    { echo '[profile.release]'; [ $# -gt 0 ] && printf '%s\n' "$@"; } > "$tmp"
+    if check_profile "$tmp" >/dev/null 2>&1; then got=accept; else got=reject; fi
+    if [ "$got" = "$want" ]; then
+      echo "  ok: $label -> $got"
+    else
+      echo "  SELFTEST FAILED: $label -> $got (expected $want)"
+      fails=$((fails + 1))
+    fi
+  }
+
+  echo "[selftest] the locked optimized posture must be ACCEPTED:"
+  expect_case accept "the exact posture this repo ships" "$GOOD_OPT" "$GOOD_LTO" "$GOOD_CGU" "$GOOD_STRIP"
+
+  echo "[selftest] every locked key must be proven to fire ON ITS OWN:"
+  expect_case reject "opt-level lowered"          "opt-level = 1"     "$GOOD_LTO"   "$GOOD_CGU"          "$GOOD_STRIP"
+  expect_case reject "opt-level absent"                               "$GOOD_LTO"   "$GOOD_CGU"          "$GOOD_STRIP"
+  expect_case reject "lto dropped"                "$GOOD_OPT"         "lto = false" "$GOOD_CGU"          "$GOOD_STRIP"
+  expect_case reject "lto absent"                 "$GOOD_OPT"                       "$GOOD_CGU"          "$GOOD_STRIP"
+  expect_case reject "codegen-units raised"       "$GOOD_OPT"         "$GOOD_LTO"   "codegen-units = 16" "$GOOD_STRIP"
+  expect_case reject "codegen-units absent"       "$GOOD_OPT"         "$GOOD_LTO"                        "$GOOD_STRIP"
+  expect_case reject "strip removed"              "$GOOD_OPT"         "$GOOD_LTO"   "$GOOD_CGU"          "strip = false"
+  expect_case reject "strip absent"               "$GOOD_OPT"         "$GOOD_LTO"   "$GOOD_CGU"
+  expect_case reject "debug-assertions on"        "$GOOD_OPT"         "$GOOD_LTO"   "$GOOD_CGU"          "$GOOD_STRIP" "debug-assertions = true"
+
+  # And the table missing entirely, which is how a bad merge deletes the whole posture at once.
+  : > "$tmp"
+  if check_profile "$tmp" >/dev/null 2>&1; then
+    echo "  SELFTEST FAILED: a Cargo.toml with no [profile.release] table -> accept (expected reject)"
+    fails=$((fails + 1))
+  else
+    echo "  ok: [profile.release] absent entirely -> reject"
+  fi
+
+  if [ "$fails" -ne 0 ]; then
+    echo "[selftest] FAILED: $fails case(s) did not hold. No profile-lock verdict means anything until they do." >&2
     return 1
   fi
-  echo "  ok: optimized profile accepted"
   echo "[selftest] PASS"
 }
 
