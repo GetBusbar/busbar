@@ -137,6 +137,17 @@ pub enum LegError {
     },
     /// The store refused or failed.
     Store(String),
+    /// A capability leg asked whether a token was still live and the answer was NO.
+    ///
+    /// Its own variant and not a `Store` failure, because nothing failed: the store answered, and
+    /// the answer was that this token no longer authorises anything. Folding the two together would
+    /// render a revoked token as an outage — telling the operator to go and look at a database that
+    /// is working perfectly, and telling the caller to retry something that will never succeed.
+    ///
+    /// It stops the plan where it is raised, which is why the plane puts the check FIRST: the legs
+    /// that record the move have not run, so a callback refused here writes nothing, appends no
+    /// provenance event and leaves the stored task exactly as it was.
+    TokenNotLive,
 }
 
 /// What one record leg came back with.
@@ -360,7 +371,16 @@ impl RecordLegs {
         let mut results = Vec::new();
         for leg in legs {
             if let DestinationFacts::PlaneRecord { schema, op } = leg.destination {
-                results.push(self.run(schema, op, key, body)?);
+                let result = self.run(schema, op, key, body)?;
+                // A DEAD TOKEN STOPS THE PLAN HERE, before any leg that would record something.
+                // The reading has to be ACTED ON and not merely recorded: a check whose answer is
+                // filed beside the write it was supposed to prevent is not a check, and that is what
+                // this leg's answer was until now — the plan asked, the store replied, and every
+                // later leg ran regardless.
+                if op == records::OP_VERIFY_LIVE && !result.live {
+                    return Err(LegError::TokenNotLive);
+                }
+                results.push(result);
             }
         }
         Ok(results)
@@ -1164,6 +1184,14 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             Err(LegError::Store(_)) => {
                 return Decision::refuse(token, Refusal::new(ReasonCode::DurabilityUnavailable))
             }
+            // REVOKED, not unavailable. The store answered; the answer was that this token no longer
+            // authorises anything, because the task it was minted for has ended or its deadline has
+            // passed. Refusing at ROUTE is what makes the money side follow without being touched:
+            // the unit never reaches an upstream leg and never settles, so a refused callback posts
+            // nothing, while an accepted one keeps posting exactly what it posted before.
+            Err(LegError::TokenNotLive) => {
+                return Decision::refuse(token, Refusal::new(ReasonCode::Revoked))
+            }
             Ok(results) => read_through_poison(&self.progress).legs = results,
         }
 
@@ -1482,4 +1510,3 @@ fn trust_origin(kind: busbar_caps::OriginKind) -> OriginKind {
 #[cfg(test)]
 #[path = "tests/units_a2a.rs"]
 mod tests;
-

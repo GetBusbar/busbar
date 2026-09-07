@@ -1183,6 +1183,12 @@ impl busbar_api::Store for RefusingStore {
 #[derive(Default)]
 struct CapabilityStore {
     tokens: Mutex<Vec<(String, busbar_api::PlaneDisposition)>>,
+    /// Every task body this store was asked to write, in order.
+    ///
+    /// Kept so a refusal can be asserted to have changed NOTHING, which is the half of "the
+    /// callback was refused" that actually protects the customer's task. A refusal that still
+    /// wrote the state it was refusing would be a worse defect than the replay it replaced.
+    task_writes: Mutex<Vec<Vec<u8>>>,
 }
 
 impl CapabilityStore {
@@ -1201,6 +1207,10 @@ impl CapabilityStore {
             .iter()
             .any(|(t, _)| t == id)
     }
+
+    fn task_writes(&self) -> Vec<Vec<u8>> {
+        self.task_writes.lock().expect("task writes lock").clone()
+    }
 }
 
 impl busbar_api::Store for CapabilityStore {
@@ -1213,6 +1223,12 @@ impl busbar_api::Store for CapabilityStore {
                 Some(existing) => existing.1 = record.disposition,
                 None => tokens.push((record.id.clone(), record.disposition)),
             }
+        }
+        if record.kind == records::SCHEMA_TASK.as_str() {
+            self.task_writes
+                .lock()
+                .expect("task writes lock")
+                .push(record.body.clone());
         }
         Ok(())
     }
@@ -1292,7 +1308,9 @@ fn was_live(results: &[LegResult]) -> bool {
 ///
 /// The sequence is the real one and not a shortcut: a live token carries a non-terminal update,
 /// then carries the update that ends the task, and only then is replayed. The replay is asserted
-/// to answer NOT LIVE — which is what stops the legs after it from touching the task at all.
+/// to REFUSE THE WHOLE PLAN and to have written nothing — the second half being the half that
+/// protects the customer's task, since a refusal that still applied the state it was refusing
+/// would be a worse defect than the replay it replaced.
 #[test]
 fn a_captured_callback_token_is_refused_once_its_task_has_ended() {
     let store = Arc::new(CapabilityStore::default());
@@ -1329,16 +1347,25 @@ fn a_captured_callback_token_is_refused_once_its_task_has_ended() {
     );
 
     // And the replay, which is the whole point.
-    let replayed = legs
-        .run_plan(
-            &push_event_legs(),
-            &push_key("t-1", 300, 3_700, false),
-            b"{}",
-        )
-        .expect("the legs run");
-    assert!(
-        !was_live(&replayed),
-        "a token captured off a finished task's callback still verified — this is the replay"
+    let wrote_before = store.task_writes().len();
+    let replayed = legs.run_plan(
+        &push_event_legs(),
+        &push_key("t-1", 300, 3_700, false),
+        b"{}",
+    );
+    assert_eq!(
+        replayed,
+        Err(LegError::TokenNotLive),
+        "a token captured off a finished task's callback still moved the task — this is the \
+         replay. It must refuse as REVOKED and not as a store outage: the store answered \
+         perfectly well, and telling an operator to go and look at a working database is the \
+         wrong instruction."
+    );
+    assert_eq!(
+        store.task_writes().len(),
+        wrote_before,
+        "the refused callback still wrote the task; the check has to STOP the plan, not merely \
+         be recorded beside the write it was supposed to prevent"
     );
 }
 
@@ -1396,17 +1423,22 @@ fn a_callback_token_past_its_deadline_is_refused() {
         .expect("the legs run");
     assert!(was_live(&inside), "a token inside its deadline is live");
 
-    let lapsed = legs
-        .run_plan(
-            &push_event_legs(),
-            &push_key("t-1", 3_701, 3_700, false),
-            b"{}",
-        )
-        .expect("the legs run");
-    assert!(
-        !lapsed.first().expect("the liveness leg runs first").live,
-        "a token past its deadline still verified; the deadline and the clock are the same \
-         number again"
+    let wrote_before = store.task_writes().len();
+    let lapsed = legs.run_plan(
+        &push_event_legs(),
+        &push_key("t-1", 3_701, 3_700, false),
+        b"{}",
+    );
+    assert_eq!(
+        lapsed,
+        Err(LegError::TokenNotLive),
+        "a token one second past its deadline still moved the task; the deadline and the clock \
+         are the same number again"
+    );
+    assert_eq!(
+        store.task_writes().len(),
+        wrote_before,
+        "the lapsed callback still wrote the task"
     );
 }
 
