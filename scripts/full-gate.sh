@@ -123,6 +123,12 @@ declare -a CARGO_LOCAL=(
   # compile error in a gate is a build failure with a compiler's message rather than fourteen
   # confusing step failures. It runs here for the same reason it runs there: every gate below is
   # `cargo xtask gate …`, and a runner that does not build runs none of them.
+  #
+  # THE CONVERTED GATES THEMSELVES ARE NOT LISTED HERE, and that is deliberate. A converted gate is
+  # discovered from `ci.yml` by `XTASK_GATE` below and run out of `DISCOVERED`, which is the same
+  # path the shell gates take; enumerating it here as well would run every converted gate twice and
+  # make this list a second place a conversion has to be remembered. One invocation per gate, from
+  # the one list that reads the call site.
   "cargo build -p xtask --locked"
 )
 
