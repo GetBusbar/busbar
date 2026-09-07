@@ -30,7 +30,7 @@ echo "release-gate ledger selftest"
 
 # ── ledger_status_for, directly ─────────────────────────────────────────────────────────────────
 led="$tmp/l.tsv"
-{ printf 'a:one\tPASS\tfine\t\n'; } > "$led"
+{ printf 'a:one\tPASS\tfine\t\t9.9.9\tdeadbee\n'; } > "$led"
 [ "$(ledger_status_for "$led" a:one)" = "PASS" ] \
   && ok "a single PASS row resolves PASS" || nope "a single PASS row resolved '$(ledger_status_for "$led" a:one)'"
 
@@ -38,7 +38,7 @@ led="$tmp/l.tsv"
   && ok "an id with no row resolves to nothing (did not run)" || nope "an absent id resolved to a status"
 
 # THE DEFECT, PINNED: PASS first, FAIL second. First-row-wins read this as PASS.
-{ printf 'a:one\tPASS\tthe first attempt\t\n'; printf 'a:one\tFAIL\tthe retry blew up\tboom\n'; } > "$led"
+{ printf 'a:one\tPASS\tthe first attempt\t\t9.9.9\tdeadbee\n'; printf 'a:one\tFAIL\tthe retry blew up\tboom\t9.9.9\tdeadbee\n'; } > "$led"
 case "$(ledger_status_for "$led" a:one)" in
   CONFLICT) ok "PASS then FAIL for one id is CONFLICT, not the PASS that was written first" ;;
   PASS)     nope "PASS-then-FAIL resolved PASS — a failing check is being swallowed by an earlier row" ;;
@@ -46,17 +46,17 @@ case "$(ledger_status_for "$led" a:one)" in
 esac
 
 # And the other order, so the fix is not "the last row wins" either.
-{ printf 'a:one\tFAIL\tboom\tboom\n'; printf 'a:one\tPASS\tthe retry was fine\t\n'; } > "$led"
+{ printf 'a:one\tFAIL\tboom\tboom\t9.9.9\tdeadbee\n'; printf 'a:one\tPASS\tthe retry was fine\t\t9.9.9\tdeadbee\n'; } > "$led"
 [ "$(ledger_status_for "$led" a:one)" = "CONFLICT" ] \
   && ok "FAIL then PASS is CONFLICT too — the ledger has two answers either way" \
   || nope "FAIL-then-PASS resolved '$(ledger_status_for "$led" a:one)'"
 
 # An honest retry that reports the SAME thing twice is unremarkable.
-{ printf 'a:one\tPASS\tattempt 1\t\n'; printf 'a:one\tPASS\tattempt 2\t\n'; } > "$led"
+{ printf 'a:one\tPASS\tattempt 1\t\t9.9.9\tdeadbee\n'; printf 'a:one\tPASS\tattempt 2\t\t9.9.9\tdeadbee\n'; } > "$led"
 [ "$(ledger_status_for "$led" a:one)" = "PASS" ] \
   && ok "two agreeing PASS rows still resolve PASS (a retry is not a conflict)" \
   || nope "two agreeing PASS rows resolved '$(ledger_status_for "$led" a:one)'"
-{ printf 'a:one\tFAIL\tx\tx\n'; printf 'a:one\tFAIL\ty\ty\n'; } > "$led"
+{ printf 'a:one\tFAIL\tx\tx\t9.9.9\tdeadbee\n'; printf 'a:one\tFAIL\ty\ty\t9.9.9\tdeadbee\n'; } > "$led"
 [ "$(ledger_status_for "$led" a:one)" = "FAIL" ] \
   && ok "two agreeing FAIL rows resolve FAIL" || nope "two agreeing FAIL rows resolved wrong"
 
@@ -66,7 +66,7 @@ esac
   && ok "an unrecognised status is FAIL, not a pass" || nope "an unrecognised status resolved '$(ledger_status_for "$led" a:one)'"
 
 # One id's duplicates must not touch another id.
-{ printf 'a:one\tPASS\tp\t\n'; printf 'a:two\tFAIL\tf\tf\n'; printf 'a:one\tPASS\tp\t\n'; } > "$led"
+{ printf 'a:one\tPASS\tp\t\t9.9.9\tdeadbee\n'; printf 'a:two\tFAIL\tf\tf\t9.9.9\tdeadbee\n'; printf 'a:one\tPASS\tp\t\t9.9.9\tdeadbee\n'; } > "$led"
 [ "$(ledger_status_for "$led" a:one)" = "PASS" ] && [ "$(ledger_status_for "$led" a:two)" = "FAIL" ] \
   && ok "ids are resolved independently" || nope "one id's rows leaked into another's verdict"
 
@@ -107,7 +107,7 @@ run_gate() {
   GATE_RC=$?
   out="$(cat "$GATE_OUT")"
 }
-all_pass() { for i in one two three four five; do printf 'a:%s\tPASS\tok\t\n' "$i"; done; }
+all_pass() { for i in one two three four five; do printf 'a:%s\tPASS\tok\t\t9.9.9\tdeadbee\n' "$i"; done; }
 
 # The pass path first: five agreeing PASS rows is GREEN, or every red below proves nothing.
 all_pass > "$tmp/fake/ledgers/leg.tsv"
@@ -125,7 +125,7 @@ else
 fi
 
 # THE DEFECT END TO END: a PASS row, then a FAIL row for the same id, in one ledger.
-{ all_pass; printf 'a:three\tFAIL\tthe retry blew up\tboom\n'; } > "$tmp/fake/ledgers/leg.tsv"
+{ all_pass; printf 'a:three\tFAIL\tthe retry blew up\tboom\t9.9.9\tdeadbee\n'; } > "$tmp/fake/ledgers/leg.tsv"
 run_gate
 if [ "$GATE_RC" -eq 0 ]; then
   nope "gate.sh printed GREEN with a FAIL row present for a:three — the earlier PASS swallowed it"
@@ -137,7 +137,7 @@ fi
 
 # Across two ledger files, which is the real shape: one per matrix leg, concatenated.
 all_pass > "$tmp/fake/ledgers/leg.tsv"
-printf 'a:four\tFAIL\tthe second leg disagrees\tboom\n' > "$tmp/fake/ledgers/leg2.tsv"
+printf 'a:four\tFAIL\tthe second leg disagrees\tboom\t9.9.9\tdeadbee\n' > "$tmp/fake/ledgers/leg2.tsv"
 run_gate
 if [ "$GATE_RC" -ne 0 ] && printf '%s' "$out" | grep -q 'a:four'; then
   ok "two legs disagreeing about one id is RED, by name"
@@ -147,7 +147,7 @@ fi
 rm -f "$tmp/fake/ledgers/leg2.tsv"
 
 # A duplicated PASS must NOT be red — the fix must not make an ordinary retry a failure.
-{ all_pass; printf 'a:three\tPASS\tthe retry was fine too\t\n'; } > "$tmp/fake/ledgers/leg.tsv"
+{ all_pass; printf 'a:three\tPASS\tthe retry was fine too\t\t9.9.9\tdeadbee\n'; } > "$tmp/fake/ledgers/leg.tsv"
 run_gate
 if [ "$GATE_RC" -eq 0 ]; then
   ok "a duplicated PASS row is not a conflict"
@@ -164,7 +164,7 @@ else
 fi
 
 # And the properties that were already right must stay right.
-{ printf 'a:one\tPASS\tok\t\n'; } > "$tmp/fake/ledgers/leg.tsv"
+{ printf 'a:one\tPASS\tok\t\t9.9.9\tdeadbee\n'; } > "$tmp/fake/ledgers/leg.tsv"
 run_gate
 if [ "$GATE_RC" -ne 0 ] && printf '%s' "$out" | grep -q 'DID NOT RUN'; then
   ok "ids with no row at all are still DID NOT RUN and still red"
@@ -179,9 +179,74 @@ else
   nope "an empty ledger did not report a vacuous run (rc=$GATE_RC)"
 fi
 
+# ── THE ROWS MUST BE ABOUT THE RELEASE THE GATE WAS ASKED ABOUT ────────────────────────────────
+#
+# The rows carried no version, so a full set of green rows about the PREVIOUS release satisfied the
+# gate completely: the ids are the same ids, the count is the right count, and the verdict line
+# names whichever version was on the command line. The ledger is appended to and never truncated,
+# download-artifact merges every ledger into one directory, and the fan-out can be dispatched twice
+# on one runner — so this is not a hypothetical shape, it is the default one.
+for i in one two three four five; do printf 'a:%s\tPASS\tok\t\t9.9.8\tcafe123\n' "$i"; done \
+  > "$tmp/fake/ledgers/leg.tsv"
+run_gate
+if [ "$GATE_RC" -ne 0 ] && printf '%s' "$out" | grep -q 'WRONG RELEASE'; then
+  ok "a complete, all-green ledger about 9.9.8 does NOT verify 9.9.9"
+else
+  nope "a stale ledger from another release passed the gate (rc=$GATE_RC): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+fi
+
+# A row that names NO version is refused for the same reason: it cannot be attributed to this
+# release, and "unattributed" must not resolve to "ours" for exactly the same rows that used to
+# have no version at all.
+for i in one two three four five; do printf 'a:%s\tPASS\tok\t\n' "$i"; done \
+  > "$tmp/fake/ledgers/leg.tsv"
+run_gate
+if [ "$GATE_RC" -ne 0 ] && printf '%s' "$out" | grep -q 'WRONG RELEASE'; then
+  ok "a row that names no release at all is refused, not counted toward this one"
+else
+  nope "an unattributed ledger passed the gate (rc=$GATE_RC)"
+fi
+
+# ONE VERSION, TWO STAGINGS. A version re-cut from a different commit is two releases wearing one
+# name, which is the whole reason the promote consumes a record rather than a version. Rows that
+# agree on the name and disagree on the sha have not told us which release they are about.
+{ for i in one two three; do printf 'a:%s\tPASS\tok\t\t9.9.9\tdeadbee\n' "$i"; done
+  for i in four five; do printf 'a:%s\tPASS\tok\t\t9.9.9\tfeed999\n' "$i"; done; } \
+  > "$tmp/fake/ledgers/leg.tsv"
+run_gate
+if [ "$GATE_RC" -ne 0 ] && printf '%s' "$out" | grep -q 'TWO STAGINGS'; then
+  ok "rows agreeing on the version and disagreeing on the qa sha are RED, by name"
+else
+  nope "a ledger mixing two qa shas passed the gate (rc=$GATE_RC)"
+fi
+
+# The pass path once more, last, so none of the three refusals above is a tripwire that fires on
+# everything: the honest ledger — one version, one sha, on every row — is still GREEN.
+all_pass > "$tmp/fake/ledgers/leg.tsv"
+run_gate
+if [ "$GATE_RC" -eq 0 ] && printf '%s' "$out" | grep -q 'GREEN'; then
+  ok "a ledger whose every row names this release and this sha is still GREEN"
+else
+  nope "the version stamp broke the pass path (rc=$GATE_RC): $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+fi
+
+# ── record() really writes the stamp, driven through THE function ──────────────────────────────
+# Every case above stages rows by hand, which proves the READER. This proves the WRITER: a
+# reader that refuses unattributed rows and a writer that never attributes them would be red on
+# every real release, and the two halves live in different files.
+stamped="$tmp/stamped.tsv"
+( LEDGER="$stamped" STAGED_SHA=abc1234 VERSION=9.9.9
+  . scripts/release-gate/lib.sh
+  record "a:one" PASS "written by the real record()" "" >/dev/null 2>&1 )
+if [ -z "$(ledger_foreign_rows "$stamped" 9.9.9)" ] && [ -s "$stamped" ]; then
+  ok "record() stamps the version and sha the check ran against"
+else
+  nope "record() wrote a row this release does not own: $(cat "$stamped")"
+fi
+
 echo
 if [ "$bad" = 0 ]; then
-  echo "release-gate ledger selftest: one id's verdict is resolved across every row that names it"
+  echo "release-gate ledger selftest: one id's verdict is resolved across every row that names it, and every row names this release"
   exit 0
 fi
 echo "release-gate ledger selftest: FAILED"
