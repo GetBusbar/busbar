@@ -398,9 +398,7 @@ fn legacy_wording(label: &str) -> Option<&'static str> {
         "a binding cites an unrecognized inventory file prefix" => {
             Some("unrecognized inventory file prefix")
         }
-        "an inventory file a binding cites was renamed away" => {
-            Some("inventory file missing for")
-        }
+        "an inventory file a binding cites was renamed away" => Some("inventory file missing for"),
         // The unreadable and not-JSON arms: the legacy raises rather than reporting.
         _ => None,
     }
