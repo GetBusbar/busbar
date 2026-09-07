@@ -132,8 +132,43 @@ def check(root: Path) -> int:
         )
         return 2
 
-    here = structure(local_path.read_text(), "this commit's qa-gate.yml")
+    local_text = local_path.read_text()
+    here = structure(local_text, "this commit's qa-gate.yml")
     there = structure(remote_text, f"{DEFAULT_BRANCH_REF}'s qa-gate.yml")
+
+    # A FLOOR UNDER THE COMPARISON, BECAUSE "IDENTICAL" IS NOT "PRESENT".
+    #
+    # This lint only ever asked whether two structures AGREE, and two structures that are both
+    # empty agree perfectly. An emptied, commented-out or deleted-to-a-stub qa-gate.yml parses to
+    # None; diff_paths(None, None) returns [], and the lint printed "structurally identical to the
+    # default branch" and exited 0 for a dispatcher that defines no trigger, no jobs and fires
+    # nothing at all. An expectation set of zero keys is matched by everything, which is the same
+    # vacuous pass this file was written to stop, arrived at from underneath.
+    #
+    # And agreement is not the only property that matters. The whole dispatcher design rests on
+    # this workflow invoking scripts/qa-gate-run.sh from the triggering checkout; a qa-gate.yml
+    # that no longer does that is a stub whose structural agreement with another stub proves
+    # nothing. Both are checked before the diff, and both fail closed.
+    for label, doc in (("this commit", here), (DEFAULT_BRANCH_REF, there)):
+        if not isinstance(doc, dict) or not doc.get("jobs"):
+            print(
+                f"FAIL: {WORKFLOW} on {label} parses to no jobs at all.\n"
+                f"      An empty dispatcher is 'structurally identical' to another empty "
+                f"dispatcher, so the comparison below would pass while nothing fires. A gate that "
+                f"defines no job is not a gate.",
+                file=sys.stderr,
+            )
+            return 2
+
+    if "qa-gate-run.sh" not in local_text:
+        print(
+            f"FAIL: {WORKFLOW} on this commit never invokes scripts/qa-gate-run.sh.\n"
+            f"      That call is the entire dispatcher design: it is what lets gate LOGIC ride the "
+            f"commit it gates instead of being frozen on the default branch. Without it this file "
+            f"is a stub, and proving a stub structurally identical to another stub proves nothing.",
+            file=sys.stderr,
+        )
+        return 2
 
     differences = diff_paths(here, there)
     if not differences:
@@ -249,18 +284,64 @@ jobs:
             f"\n           {why}"
         )
 
+    extra = 0
+
     # The unreadable-ref arm, proven rather than asserted: a ref that cannot exist must return None,
     # which check() turns into exit 2. This is the fails-closed guarantee.
+    extra += 1
     if read_ref("refs/heads/definitely-not-a-real-ref-for-selftest", WORKFLOW) is not None:
         print("  [FAILED] unreadable ref did not return None", file=sys.stderr)
         failures += 1
     else:
         print("  [ok] unreadable default branch -> None -> exit 2 (fails closed)")
 
+    # THE FLOOR, both arms. Two empty structures agree perfectly, so a lint that only asks whether
+    # they agree passes on an emptied dispatcher. Driven through the real check(), which is where
+    # the floor lives -- diff_paths alone cannot show this, and that is exactly why it was missed.
+    with tempfile.TemporaryDirectory() as td:
+        stub_root = Path(td)
+        (stub_root / WORKFLOW).parent.mkdir(parents=True, exist_ok=True)
+        (stub_root / WORKFLOW).write_text("# the dispatcher, emptied to a comment\n")
+        extra += 1
+        if check(stub_root) == 2:
+            print("  [ok] an emptied dispatcher is exit 2, not 'structurally identical' to another empty one")
+        else:
+            print("  [FAILED] an emptied qa-gate.yml passed the structural comparison", file=sys.stderr)
+            failures += 1
+
+        # A well-formed workflow that no longer invokes the runner is also a stub.
+        (stub_root / WORKFLOW).write_text(
+            "name: qa-gate\non:\n  workflow_run:\n    workflows: [\"CI\"]\n"
+            "jobs:\n  noop:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo nothing\n"
+        )
+        extra += 1
+        if check(stub_root) == 2:
+            print("  [ok] a dispatcher that never invokes qa-gate-run.sh is exit 2")
+        else:
+            print("  [FAILED] a workflow with no qa-gate-run.sh call passed the floor", file=sys.stderr)
+            failures += 1
+
+    # Positive control: the REAL workflow in this checkout must clear the floor, so the floor is
+    # refusing a stub rather than refusing this repo's dispatcher.
+    extra += 1
+    real = Path(__file__).resolve().parent.parent / WORKFLOW
+    if real.is_file():
+        real_text = real.read_text()
+        real_doc = structure(real_text, "this checkout's qa-gate.yml")
+        if isinstance(real_doc, dict) and real_doc.get("jobs") and "qa-gate-run.sh" in real_text:
+            print("  [ok] this checkout's real qa-gate.yml clears the floor (jobs + runner call)")
+        else:
+            print("  [FAILED] the real qa-gate.yml does not clear the floor", file=sys.stderr)
+            failures += 1
+    else:
+        print("  [FAILED] this checkout has no qa-gate.yml to control against", file=sys.stderr)
+        failures += 1
+
+    total = len(cases) + extra
     if failures:
-        print(f"\nSELF-TEST FAILED: {failures} of {len(cases) + 1} checks did not hold", file=sys.stderr)
+        print(f"\nSELF-TEST FAILED: {failures} of {total} checks did not hold", file=sys.stderr)
         return 1
-    print(f"\nself-test: {len(cases) + 1} checks, all hold")
+    print(f"\nself-test: {total} checks, all hold")
     return 0
 
 
