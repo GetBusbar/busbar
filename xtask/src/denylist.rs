@@ -20,9 +20,18 @@
 //!      announcing it (there is no such path today, but the scan is what makes that a fact this
 //!      tool can point at rather than one that must be believed).
 //!
-//! `qa/denylist-allow.toml` is the one waiver seam: empty at hour 0 (section 1.2 says so), and any
-//! future entry that lacks BOTH a `reason` and an `owner` is a hard refusal of the whole run — an
-//! incomplete waiver is worse than none, because it reads as reviewed when it was not.
+//! `qa/denylist-allow.toml` is the one waiver seam, and it is a floor CHECKED BOTH WAYS:
+//!
+//!   * a hit no waiver covers is RED — the ban holds;
+//!   * a waiver that matches NO hit is RED too — the offender it excused is gone, so the exception
+//!     has outlived the thing it was an exception to. A waiver that can sit in the file forever
+//!     without matching anything is one nobody ever has to defend, and it reads to the next
+//!     reviewer as a live, reviewed fact about the tree;
+//!   * an entry lacking BOTH a `reason` and an `owner` is a hard refusal of the whole run — an
+//!     incomplete waiver is worse than none, because it reads as reviewed when it was not.
+//!
+//! It began empty (section 1.2's hour-0 posture) and is not empty now; the entries in it are live
+//! exceptions with an owner and a date, and the both-ways check is what keeps them that way.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
@@ -46,6 +55,14 @@ pub struct Report {
     /// crate matched at all — has proven nothing, and printing "0 hits" for it would publish that
     /// nothing as a pass. Any entry here makes the report RED with no hits at all.
     pub defects: Vec<String>,
+    /// Waivers in `qa/denylist-allow.toml` that matched NO hit in this run. An allow-list is a
+    /// floor CHECKED BOTH WAYS — the posture `scripts/no-deferral.waivers` already has: an
+    /// unwaived hit is red (the offender), and a waiver with nothing to waive is red too (the
+    /// offender was resolved, or was never real, and the exception outlived it). A waiver that can
+    /// sit in the file forever without matching anything is an exception nobody has to defend, and
+    /// the next reviewer reads it as a live, reviewed fact about the tree. Any entry here makes the
+    /// report RED, but the hits are still printed: a stale waiver does not invalidate the scan.
+    pub stale_waivers: Vec<String>,
 }
 
 /// `hyper-util` is not named in ARCHITECTURE.md section 1.2's own list (`reqwest`, `hyper`,
@@ -671,9 +688,22 @@ pub(crate) struct AllowEntry {
     via: Option<Vec<String>>,
 }
 
-/// The load-bearing allow-list check: `qa/denylist-allow.toml` is EMPTY at hour 0 (section 1.2),
-/// so this normally does nothing but confirm the file parses. Any future `[[allow]]` entry missing
-/// `reason` or `owner` refuses the ENTIRE run rather than silently accepting a half-filled waiver.
+impl AllowEntry {
+    /// Self-test-only constructor. In production these come from `qa/denylist-allow.toml` and
+    /// nowhere else; the self-test needs to build one so the both-ways rule can be proven without
+    /// editing the committed allow-list.
+    pub(crate) fn for_selftest(crate_name: &str, offender: &str) -> Self {
+        Self {
+            crate_name: crate_name.to_string(),
+            offender: offender.to_string(),
+            via: None,
+        }
+    }
+}
+
+/// The load-bearing allow-list check. Any `[[allow]]` entry missing `reason` or `owner` refuses the
+/// ENTIRE run rather than silently accepting a half-filled waiver. Whether each entry still has
+/// anything to waive is the other half, and is decided by [`stale_waivers`] once the hits are known.
 fn load_allowlist(root: &Path) -> Vec<AllowEntry> {
     let path = root.join("qa/denylist-allow.toml");
     if !path.exists() {
@@ -825,6 +855,37 @@ fn fully_waived_pairs(
     out
 }
 
+/// The other direction of the allow-list check: which waivers had nothing to waive.
+///
+/// `hits` must be the UNFILTERED hit list — the rows as found, before `fully_waived_pairs` removes
+/// the waived ones — because a waiver that is doing its job is precisely one whose pair is present
+/// there and absent afterwards. Judging staleness on the filtered list would call every working
+/// waiver stale.
+///
+/// A `via`-narrowed entry whose bypass check FAILED is not stale: its (crate, offender) pair is in
+/// the hit list, the hits stayed red, and the entry is a live exception that does not currently
+/// apply. That is already reported by the hits themselves and is not reported again here.
+pub(crate) fn stale_waivers(allowed: &[AllowEntry], hits: &[Hit]) -> Vec<String> {
+    let present: BTreeSet<(&str, &str)> = hits
+        .iter()
+        .map(|h| (h.crate_name.as_str(), h.offender.as_str()))
+        .collect();
+    allowed
+        .iter()
+        .filter(|e| !present.contains(&(e.crate_name.as_str(), e.offender.as_str())))
+        .map(|e| {
+            format!(
+                "qa/denylist-allow.toml: the waiver for crate={:?} dep/path={:?} matched no hit — \
+                 the offender it excuses is not in this tree. Either it was resolved (delete the \
+                 waiver; the ban now holds on its own) or it was never real (delete it; it was \
+                 never an exception to anything). A waiver nobody has to defend reads to the next \
+                 reviewer as a live, reviewed fact about the tree.",
+                e.crate_name, e.offender
+            )
+        })
+        .collect()
+}
+
 pub fn run(root: &Path) -> Report {
     let banned = load_banned_lists(root);
     let allowed = load_allowlist(root);
@@ -841,6 +902,7 @@ pub fn run(root: &Path) -> Report {
                      so nothing was proven",
                     root.display()
                 )],
+                stale_waivers: Vec::new(),
             };
         }
         Ok(crates) => crates,
@@ -849,6 +911,7 @@ pub fn run(root: &Path) -> Report {
                 hits: Vec::new(),
                 crates_scanned: 0,
                 defects: vec![defect],
+                stale_waivers: Vec::new(),
             }
         }
     };
@@ -870,6 +933,9 @@ pub fn run(root: &Path) -> Report {
         hits.extend(own_src_hits(root, pc, &banned, &fragments));
     }
 
+    // Both directions, off the SAME unfiltered hit list: which waivers are doing work, and which
+    // have nothing left to do.
+    let stale = stale_waivers(&allowed, &hits);
     let waived = fully_waived_pairs(&meta, &crates, &allowed);
     hits.retain(|h| !waived.contains(&(h.crate_name.clone(), h.offender.clone())));
 
@@ -877,6 +943,7 @@ pub fn run(root: &Path) -> Report {
         hits,
         crates_scanned: crates.len(),
         defects: Vec::new(),
+        stale_waivers: stale,
     }
 }
 
@@ -965,10 +1032,15 @@ pub fn print_report_tsv(report: &Report) -> bool {
     for d in &report.defects {
         eprintln!("xtask denylist: RED — {d}");
     }
+    // A stale waiver goes to stderr for the same reason a defect does: the row format is keyed by
+    // crate name, and a stale waiver names a crate/offender pair that produced no row.
+    for s in &report.stale_waivers {
+        eprintln!("xtask denylist: RED — {s}");
+    }
     for h in &report.hits {
         println!("{}\t{}\t{}", h.crate_name, h.offender, h.via);
     }
-    report.defects.is_empty() && report.hits.is_empty()
+    report.defects.is_empty() && report.hits.is_empty() && report.stale_waivers.is_empty()
 }
 
 pub fn print_report(report: &Report) -> bool {
@@ -982,12 +1054,33 @@ pub fn print_report(report: &Report) -> bool {
         }
         return false;
     }
-    if report.hits.is_empty() {
+    // Printed before the hits, and on its own if there are none: a waiver with nothing to waive is
+    // red whether or not the scan found anything else, and "0 hits" underneath a stale waiver is
+    // exactly the reading that lets an exception outlive the thing it excused.
+    if !report.stale_waivers.is_empty() {
         println!(
-            "xtask denylist: OK — {} pure-kind crate(s) scanned, 0 banned transitive source(s)",
+            "xtask denylist: RED — {} stale waiver(s) in qa/denylist-allow.toml:",
+            report.stale_waivers.len()
+        );
+        for s in &report.stale_waivers {
+            println!("  {s}");
+        }
+        println!();
+    }
+    if report.hits.is_empty() {
+        if report.stale_waivers.is_empty() {
+            println!(
+                "xtask denylist: OK — {} pure-kind crate(s) scanned, 0 banned transitive source(s)",
+                report.crates_scanned
+            );
+            return true;
+        }
+        println!(
+            "xtask denylist: {} pure-kind crate(s) scanned, 0 banned transitive source(s) — but the \
+             allow-list is not clean, so this run is RED",
             report.crates_scanned
         );
-        return true;
+        return false;
     }
     println!(
         "xtask denylist: RED — {} pure-kind crate(s) scanned, {} hit(s)\n",

@@ -173,6 +173,7 @@ pub fn run() -> bool {
     );
     check_via_multi(&mut fails);
     check_vacuous_config_is_red(&mut fails);
+    check_stale_waiver_is_red(&mut fails);
 
     if fails.is_empty() {
         println!("\nxtask denylist --selftest: ALL GREEN");
@@ -407,5 +408,75 @@ fn check_vacuous_config_is_red(fails: &mut Vec<String>) {
         } else {
             println!("  RED    {label}: reported as a failure rather than a vacuous pass");
         }
+    }
+}
+
+/// THE ALLOW-LIST IS A FLOOR CHECKED BOTH WAYS. A hit no waiver covers was already red; a waiver
+/// that covers no hit was silently accepted, so an exception could outlive the offender it was an
+/// exception to and sit in `qa/denylist-allow.toml` forever, reading as a live, reviewed fact about
+/// the tree. This is the posture `scripts/no-deferral.waivers` already documents for itself.
+///
+/// Driven over [`denylist::stale_waivers`] against a synthetic hit list rather than the committed
+/// allow-list, so the case asserts the RULE and does not move when a real waiver is added or
+/// retired. Both arms: a waiver whose pair IS in the hit list is doing its job and is not reported;
+/// a waiver whose pair is absent is, with a message that names the crate and the offender.
+fn check_stale_waiver_is_red(fails: &mut Vec<String>) {
+    let hits = vec![denylist::Hit {
+        crate_name: "xtask-fixture-dirty-dep".to_string(),
+        offender: "libc".to_string(),
+        via: "xtask-fixture-dirty-dep -> libc".to_string(),
+    }];
+
+    let live = [denylist::AllowEntry::for_selftest(
+        "xtask-fixture-dirty-dep",
+        "libc",
+    )];
+    let stale = denylist::stale_waivers(&live, &hits);
+    if stale.is_empty() {
+        println!("  GREEN  stale-waiver check: a waiver that covers a real hit is NOT reported");
+    } else {
+        fails.push(format!(
+            "stale-waiver check: a waiver covering a hit that IS in the report was called stale \
+             ({stale:?}) — the check would red every working waiver"
+        ));
+    }
+
+    // The same waiver, for an offender no longer in the tree.
+    let outlived = [denylist::AllowEntry::for_selftest(
+        "xtask-fixture-dirty-dep",
+        "async-std",
+    )];
+    let stale = denylist::stale_waivers(&outlived, &hits);
+    if stale.len() == 1
+        && stale[0].contains("async-std")
+        && stale[0].contains("xtask-fixture-dirty-dep")
+    {
+        println!(
+            "  RED    stale-waiver check: a waiver matching no hit is reported, naming the crate \
+             and the offender"
+        );
+    } else {
+        fails.push(format!(
+            "stale-waiver check: a waiver for an offender that is not in the tree produced \
+             {stale:?} — expected exactly one row naming xtask-fixture-dirty-dep and async-std"
+        ));
+    }
+
+    // And the run is RED on a stale waiver with nothing else wrong: "0 hits" printed underneath a
+    // stale waiver is exactly the reading that lets an exception outlive what it excused.
+    let report = denylist::Report {
+        hits: Vec::new(),
+        crates_scanned: 3,
+        defects: Vec::new(),
+        stale_waivers: vec!["a waiver that matched nothing".to_string()],
+    };
+    if denylist::print_report(&report) {
+        fails.push(
+            "stale-waiver check: a clean scan carrying a stale waiver answered GREEN".to_string(),
+        );
+    } else {
+        println!(
+            "  RED    stale-waiver check: 0 hits plus a stale waiver is a RED run, not an OK one"
+        );
     }
 }
