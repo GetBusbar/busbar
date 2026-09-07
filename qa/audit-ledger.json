@@ -3513,15 +3513,25 @@
    "paths": [
     "crates/busbar-llm/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
+   "tree_hash": "e0546e3be8ac02b761616d7f49db247566e4556b95a7adbafd4d4d62d12b0f0e",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
    "counts": {},
-   "report": null,
-   "auditor": null,
+   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md",
+   "auditor": "opus-test-auditor-llm-codec",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-llm-codec",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "e0546e3be8ac02b761616d7f49db247566e4556b95a7adbafd4d4d62d12b0f0e",
+     "counts": {},
+     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-llm-codec/src/tests",
@@ -3529,15 +3539,33 @@
    "paths": [
     "crates/busbar-llm-codec/src/tests"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9a2c9578fe7bfd1f9227439eefc7d672b4ffee70f4a46e6218a7b37daeca80a8",
+   "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 8,
+    "MEDIUM": 25,
+    "LOW": 9
+   },
+   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md",
+   "auditor": "opus-test-auditor-llm-codec",
    "fixed_at": null,
-   "rounds": []
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-test-auditor-llm-codec",
+     "audited_at": "64b54387c4f177667ba688f7680877455579b293",
+     "tree_hash": "9a2c9578fe7bfd1f9227439eefc7d672b4ffee70f4a46e6218a7b37daeca80a8",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 25,
+      "LOW": 9
+     },
+     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md"
+    }
+   ]
   },
   {
    "id": "crates/busbar-mcp/src/tests",
