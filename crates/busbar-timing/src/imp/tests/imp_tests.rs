@@ -8,11 +8,15 @@ use super::*;
 /// The runtime gate is a PROCESS-global atomic, so the tests that drive it cannot run concurrently:
 /// one flipping it on while another asserts the disabled behaviour makes the second flaky. This lock
 /// serializes exactly those tests and nothing else.
-static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+///
+/// `pub(super)` so the sibling `mutation_hardening_tests` module — which also drives the same
+/// process-global gate (and, for its output-capture tests, the process's real stderr fd) — shares
+/// this ONE lock rather than racing it with a second one of its own.
+pub(super) static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Take the gate lock, ignoring poisoning — a failed assertion in one gate test must not cascade
 /// into unrelated failures in the others.
-fn gate_lock() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn gate_lock() -> std::sync::MutexGuard<'static, ()> {
     GATE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
