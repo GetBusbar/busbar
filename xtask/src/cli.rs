@@ -20,7 +20,8 @@ usage:
   cargo xtask gate <name> --parity -- <legacy argv...>
   cargo xtask selftest [<name>]
   cargo xtask denylist [--selftest] [--format=tsv]
-  cargo xtask teller-steps [--root-legs] [--root-legs-gating] [--rig-legs]";
+  cargo xtask teller-steps [--root-legs] [--root-legs-gating]
+  cargo xtask ledger {sync|status|next|record|fixed} | --check";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -37,6 +38,13 @@ pub fn main(args: &[String]) -> i32 {
         // as reconciled ledger rows; this is the human render whose `ROOT-STEPS:` prefix
         // `verify-1.6.0-done.sh` greps, plus the three arms that RUN something (the loop cells, the
         // shipped-leg bar, the rig suites) and are therefore not gates.
+        // THE AUDIT REGISTER's commands. `cargo xtask gate audit-ledger` is `--check` as a
+        // reconciled row set; this is the same computation plus the four commands that WRITE the
+        // register (`sync`/`record`/`fixed`) or the report (`status`), which a gate must not do.
+        Some("ledger") => match open_ctx() {
+            Ok(cx) => crate::audit_cmd::main(cx.root(), &args[1..]),
+            Err(code) => code,
+        },
         Some("teller-steps") => match open_ctx() {
             Ok(cx) => gates::teller_steps::run_arm(&cx, &args[1..]),
             Err(code) => code,
