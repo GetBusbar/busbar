@@ -2,299 +2,167 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright (C) 2026 Busbar Inc and contributors
 #
-# Merge a store-cell recording artifact into the committed golden. RUN BY A HUMAN, LOCALLY.
+# Merge a `oracle record store cells` artifact into the committed golden.
 #
-#   import-store-cells.sh <artifact-dir> [--golden <dir>]
-#   import-store-cells.sh --selftest
+# THE PROBLEM THIS EXISTS FOR. Three cells — plugins.store-persist|store-{postgres,mysql,valkey} —
+# need a live backend. Nothing but CI has all three, CI is x86_64-unknown-linux-gnu, and the
+# committed golden was recorded on aarch64-apple-darwin. So the cells cannot be recorded where the
+# golden lives, and the recording that CAN make them is of a different file: the same published
+# 1.5.5 release, a different per-triple build of it.
 #
-# THE LOOP THIS CLOSES. `plugins.store-persist|store-{postgres,mysql,valkey}` need a real durable
-# backend. The golden was recorded on a laptop, so two of the three read `SKIP … named gap`, and a
-# gap on the golden side makes the candidate's own recording of them unfalsifiable: the differ has
-# nothing to compare. `.github/workflows/oracle-record-store-cells.yml` records the three from the
-# PUBLISHED 1.5.5 binary against the same pinned backends ci.yml's shadow-oracle job uses, and
-# uploads them. It cannot write the golden — a gate that rewrites its own reference is not a gate —
-# so this script is the human's half: merge, re-stamp, PRINT THE DIFF, and stop.
+# WHAT MAKES THAT SAFE. Not that the hosts differ — `--allow-host-skew` is about which machine
+# recorded, and has never been allowed to relax which build ran. What makes it safe is that BOTH
+# digests are pinned: each is a `busbar-<triple>` row in golden-digests.tsv, the table fetch-golden.sh
+# verifies every download and every cache hit against. That is the merge identity the tool enforces
+# under `--pinned-binaries`, and this script's job is to name the table and then get out of the way.
+# An unpinned digest is refused by the tool, not by a check here, because a rule enforced in two
+# places is a rule that can disagree with itself.
 #
-# IT DOES NOT COMMIT, AND THAT IS THE POINT. Accepting bytes into the reference is a review. The
-# script leaves the working tree dirty and prints what changed; `git add`/`git commit` are the
-# operator's, under the operator's name, after they have read it.
+# IT DOES NOT COMMIT. Accepting a golden is a review: this prints the diff and stops. The one thing
+# it will never do is edit a golden cell file, which is the failure mode the shadow oracle exists to
+# make unnecessary.
 #
-# ── WHAT IT REFUSES, AND WHY EACH REFUSAL IS ITS OWN CHECK ──────────────────────────────────────
+#   testing/shadow-oracle/import-store-cells.sh <artifact-dir> [--yes]
 #
-# A ROW THAT IS NOT `PASS`. A `SKIP` row in the artifact means the recorder did not see the backend
-# and named the gap instead. Importing it would write the gap back over the golden while the merge
-# note said three cells had been recorded — the artifact would document its own failure as a
-# success. Checked here, and not only in the workflow, because this script must be safe against an
-# artifact from a run that was never green.
-#
-# A FOREIGN `binary_sha256`. The golden is the answer to "what did THIS binary do". A recording made
-# by a different build that happens to share the version string is a different question, and merging
-# it produces a golden whose cells came from two binaries with nothing saying so.
-# merge-recordings.py refuses this too; it is checked FIRST here so the operator gets a message
-# about their artifact rather than one about a merge they did not know they had started.
-#
-# A HARNESS OR HOST SKEW IS *NOT* REFUSED — it is recorded. The artifact is recorded on
-# `x86_64-unknown-linux-gnu` and the golden on `aarch64-apple-darwin`; the harness moves whenever
-# cells.json or the normalizer does. Both are reportable rather than fatal (see merge-recordings.py),
-# so this script passes --allow-harness-skew and --allow-host-skew WITH a note naming which cells
-# came from where. The binary sha must still match either way: a different host recording the same
-# bytes is fine, a different binary is not.
-set -uo pipefail
-here="$(cd "$(dirname "$0")" && pwd)"
+# <artifact-dir> is the tree `gh run download` produced, or the directory inside it: either the
+# artifact root or the single `oracle-store-cells-<run-id>/` beneath it is accepted.
+set -euo pipefail
 
-STORE_CELL_IDS=(
-  "plugins.store-persist|store-postgres"
-  "plugins.store-persist|store-mysql"
-  "plugins.store-persist|store-valkey"
-)
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+data="$here/testing/shadow-oracle"
+golden="$data/golden/1.5.5"
+digests="$data/golden-digests.tsv"
+oracle="$here/bin/oracle"
 
 die() { printf 'import-store-cells: %s\n' "$*" >&2; exit 1; }
 
-# The id as it appears in a cell FILENAME: record.sh writes `cells/<id with | -> __>.json`.
-cell_file() { printf '%s.json' "${1//|/__}"; }
+[ $# -ge 1 ] || die "usage: testing/shadow-oracle/import-store-cells.sh <artifact-dir> [--yes]"
+src="$1"; shift
+assume_yes=0
+for a in "$@"; do [ "$a" = "--yes" ] && assume_yes=1; done
 
-# ── THE IMPORT ───────────────────────────────────────────────────────────────────────────────────
-# Split out as a function so --selftest drives THE SAME code the operator runs. A self-test that
-# re-implements the check it is testing proves only that two copies agree.
-import_artifact() {  # import_artifact <artifact-dir> <golden-dir> <scratch-dir>
-  local art="$1" golden="$2" scratch="$3" id verdict rows
+# `gh run download` without -n makes a directory per artifact. Accept either level, so a caller who
+# passed the download root does not get a "no meta.json" error naming a path they never typed.
+if [ ! -f "$src/meta.json" ]; then
+  n=0; only=""
+  for d in "$src"/*/; do [ -f "$d/meta.json" ] && { n=$((n + 1)); only="${d%/}"; }; done
+  [ "$n" = 1 ] || die "$src holds no meta.json and $n subdirectories that do — name the artifact directory"
+  src="$only"
+fi
+src="$(cd "$src" && pwd)"
 
-  [ -d "$art" ] || die "no such artifact directory: $art"
-  [ -f "$art/meta.json" ] || die "$art has no meta.json; that is not a recording"
-  [ -f "$art/ledger.tsv" ] || die "$art has no ledger.tsv; that is not a recording"
-  [ -f "$golden/meta.json" ] || die "$golden has no meta.json; that is not a golden"
+# ── WHAT THE ARTIFACT MUST BE ───────────────────────────────────────────────────────────────────
+# Checked before anything is merged, because a half-valid artifact merged and then rolled back has
+# already touched the golden, and the point of this script is that the golden is only ever replaced
+# wholesale by a tool that refused to do it wrong.
+[ -f "$src/ledger.tsv" ] || die "$src has no ledger.tsv"
+[ -d "$src/cells" ] || die "$src has no cells/"
+[ ! -d "$src/raw" ] || die "$src carries raw/ — that tree holds live key material and is deliberately not published; this is not the artifact the workflow uploads"
 
-  # ── the three ids, all PASS, and nothing else ──────────────────────────────────────────────────
-  rows=$(awk -F'\t' 'NF' "$art/ledger.tsv" | wc -l | tr -d ' ')
-  [ "$rows" = "${#STORE_CELL_IDS[@]}" ] \
-    || die "the artifact carries ${rows} ledger rows; this import accepts exactly ${#STORE_CELL_IDS[@]} (the store cells and nothing else)"
-  for id in "${STORE_CELL_IDS[@]}"; do
-    verdict="$(awk -F'\t' -v id="$id" '$1==id{print $2; exit}' "$art/ledger.tsv")"
-    case "$verdict" in
-      PASS) ;;
-      "")   die "the artifact has no row for ${id}; it is not the recording this import is for" ;;
-      *)    die "${id} is ${verdict} in the artifact, not PASS — a recording that named a gap must not be written over the golden ($(awk -F'\t' -v id="$id" '$1==id{print $3; exit}' "$art/ledger.tsv"))" ;;
-    esac
-    [ -f "$art/cells/$(cell_file "$id")" ] \
-      || die "${id} says PASS but has no cell file; the artifact is not whole"
-  done
+want_ids="plugins.store-persist|store-mysql
+plugins.store-persist|store-postgres
+plugins.store-persist|store-valkey"
+got_ids="$(awk -F'\t' 'NF{print $1}' "$src/ledger.tsv" | LC_ALL=C sort)"
+[ "$got_ids" = "$(printf '%s\n' "$want_ids" | LC_ALL=C sort)" ] \
+  || die "the artifact's ledger is not the three store cells; it names:
+$got_ids"
+not_pass="$(awk -F'\t' 'NF && $2!="PASS"{printf " %s(%s)", $1, $2}' "$src/ledger.tsv")"
+[ -z "$not_pass" ] || die "the artifact carries a non-PASS row:${not_pass}. A recording that did not
+  pass is a finding to read, not a golden to import — the cells it would install are what the
+  product did on a bad run, and every later replay would be measured against that."
 
-  # ── the same binary, or nothing ────────────────────────────────────────────────────────────────
-  local gsha asha gver aver
-  gsha="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("binary_sha256",""))' "$golden/meta.json")"
-  asha="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("binary_sha256",""))' "$art/meta.json")"
-  gver="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' "$golden/meta.json")"
-  aver="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("version",""))' "$art/meta.json")"
-  [ -n "$asha" ] || die "the artifact's meta.json carries no binary_sha256; an unproven recording"
-  [ "$asha" = "$gsha" ] \
-    || die "the artifact was recorded by a DIFFERENT binary than the golden — artifact ${asha}, golden ${gsha}. Same version string is not the same bytes; refusing."
-  [ "$aver" = "$gver" ] \
-    || die "the artifact records ${aver} and the golden records ${gver}; a golden holds one version"
+jget() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2],"") or "")' "$1" "$2"; }
+src_ver="$(jget "$src/meta.json" version)"
+src_sha="$(jget "$src/meta.json" binary_sha256)"
+src_host="$(jget "$src/meta.json" host_triple)"
+src_rev="$(jget "$src/meta.json" harness_rev)"
+gold_ver="$(jget "$golden/meta.json" version)"
+gold_sha="$(jget "$golden/meta.json" binary_sha256)"
+gold_host="$(jget "$golden/meta.json" host_triple)"
 
-  # ── rebaseline: the three ids leave the golden before the recording enters ─────────────────────
-  # merge-recordings.py demands DISJOINT parts, which is the rule that stops a merged ledger holding
-  # two verdicts for one cell. The golden already carries a row for each of these three (a PASS for
-  # any that a laptop could do, a SKIP naming the gap for the rest), so the rows and any cell file
-  # are removed from the golden's copy FIRST. That removal is the "rebaseline": the golden stops
-  # asserting anything about these three, and the artifact is then the only thing that does.
-  rm -rf "$scratch"
-  mkdir -p "$scratch"
-  cp -R "$golden" "$scratch/base"
-  for id in "${STORE_CELL_IDS[@]}"; do
-    rm -f "$scratch/base/cells/$(cell_file "$id")"
-  done
-  python3 - "$scratch/base" "${STORE_CELL_IDS[@]}" <<'PY'
-import json, os, sys
-base, ids = sys.argv[1], set(sys.argv[2:])
-led = os.path.join(base, "ledger.tsv")
-kept = [l for l in open(led, encoding="utf-8") if l.split("\t", 1)[0] not in ids]
-open(led, "w", encoding="utf-8").writelines(kept)
-# `recorded` counts PASS rows. Dropping a PASS row and leaving the count alone would hand
-# merge-recordings.py a part that says it holds one more cell than it does, and the merged total
-# would be wrong by exactly the number of store cells the laptop HAD managed to record — the one
-# arithmetic error nobody would think to look for.
-npass = sum(1 for l in kept if l.split("\t")[1:2] == ["PASS"])
-ncell = len(os.listdir(os.path.join(base, "cells")))
-if npass != ncell:
-    sys.exit(f"import-store-cells: after the rebaseline the golden has {npass} PASS rows and "
-             f"{ncell} cell files; refusing to merge a part that does not describe itself")
-m = json.load(open(os.path.join(base, "meta.json")))
-m["recorded"] = npass
-json.dump(m, open(os.path.join(base, "meta.json"), "w"), indent=2, ensure_ascii=False)
-open(os.path.join(base, "meta.json"), "a").write("\n")
-print(f"rebaselined: the golden minus the store cells holds {npass} PASS cells")
-PY
-
-  # ── merge ──────────────────────────────────────────────────────────────────────────────────────
-  local note
-  note="STORE CELLS IMPORTED $(date -u +%Y-%m-%d) from .github/workflows/oracle-record-store-cells.yml: \
-$(printf '%s, ' "${STORE_CELL_IDS[@]}" | sed 's/, $//') were re-recorded from the SAME published \
-binary (${asha:0:8}...) against the service containers testing/fleet-fixtures/service-images.tsv \
-pins — the same pin ci.yml's shadow-oracle job records the CANDIDATE side against, which is what \
-makes the two sides comparable. HOST SKEW IS EXPECTED AND IS THE REASON THIS EXISTS: these three \
-cells boot a real Postgres, MySQL and Valkey, which the darwin host the rest of the golden was \
-recorded on does not have, so they came off a linux runner while every other cell did not. HARNESS \
-SKEW: the recording tree and the golden's tree are both named in harness_rev_history below. No cell \
-was hand-edited and no cell outside these three was touched."
-  python3 "${here}/merge-recordings.py" \
-    --out "$scratch/merged" \
-    --allow-harness-skew \
-    --allow-host-skew \
-    --note "$note" \
-    --cells "${here}/cells.json" \
-    "$scratch/base" "$art" || die "merge-recordings.py refused the merge"
-
-  # ── write it back ──────────────────────────────────────────────────────────────────────────────
-  # cells/, ledger.tsv and meta.json only. `raw/` is not checked into the golden (and is not in the
-  # artifact either — it holds live minted key material), so it is not written here.
-  rm -rf "${golden:?}/cells"
-  cp -R "$scratch/merged/cells" "$golden/cells"
-  cp "$scratch/merged/ledger.tsv" "$golden/ledger.tsv"
-  cp "$scratch/merged/meta.json" "$golden/meta.json"
-  python3 -c 'import json,sys;m=json.load(open(sys.argv[1]));print("imported: %d recorded cells, harness_rev %s, host %s" % (m["recorded"], m["harness_rev"][:12], m["host_triple"]))' "$golden/meta.json"
+# The digests are only REPORTED here; the tool refuses on them. Reporting is still worth doing: the
+# operator should see which two builds are about to become one recording before the merge runs.
+pin_of() {  # pin_of <sha> -> the busbar-<triple> row it is pinned as, or empty
+  awk -F'\t' -v v="${src_ver##* }" -v s="$1" \
+    '$1==v && $2 ~ /^busbar-/ && $2 !~ /\.(json|zip|tar\.gz)$/ && $3==s {print $2; exit}' "$digests"
 }
+src_pin="$(pin_of "$src_sha")"; gold_pin="$(pin_of "$gold_sha")"
 
-# ── SELFTEST ─────────────────────────────────────────────────────────────────────────────────────
-# Over a FIXTURE golden and FIXTURE artifacts, never the real tree: a self-test that rewrote the
-# committed golden to prove it could would be the exact accident this script is careful about.
-selftest() {
-  local w failed=0
-  w="$(mktemp -d)"
-  ok()  { printf '  ok    %s\n' "$1"; }
-  bad() { printf '  FAIL  %s\n' "$1"; failed=1; }
+echo "import-store-cells: merging into $golden"
+echo "  golden    ${gold_ver}  ${gold_sha:0:12}  ${gold_pin:-NOT A PINNED ROW}  ${gold_host}"
+echo "  artifact  ${src_ver}  ${src_sha:0:12}  ${src_pin:-NOT A PINNED ROW}  ${src_host}"
 
-  # A minimal but REAL golden: one unrelated PASS cell, plus the three store rows in the shape the
-  # committed golden has them (one PASS that a laptop managed, two SKIPs naming the gap).
-  local sha="deadbeef$(printf 'a%.0s' {1..56})"
-  mkdir -p "$w/golden/cells"
-  printf '{"status":200,"applied":[]}' >"$w/golden/cells/self__a__ok.json"
-  printf '{"status":200,"applied":[]}' >"$w/golden/cells/plugins.store-persist__store-postgres.json"
-  {
-    printf 'self|a|ok\tPASS\tfixture\t\n'
-    printf 'plugins.store-persist|store-postgres\tPASS\tscript store-persist.sh: status 0\t\n'
-    printf 'plugins.store-persist|store-mysql\tSKIP\tUNSUPPORTED\tnamed gap\n'
-    printf 'plugins.store-persist|store-valkey\tSKIP\tUNSUPPORTED\tnamed gap\n'
-  } >"$w/golden/ledger.tsv"
-  python3 - "$w/golden/meta.json" "$sha" <<'PY'
-import json, sys
-json.dump({"binary": "<oracle-cache>/1.5.5/busbar", "version": "busbar 1.5.5", "recorded": 2,
-           "binary_sha256": sys.argv[2], "harness_rev": "a" * 64,
-           "host_triple": "aarch64-apple-darwin", "at": "2026-09-06T18:10:32Z"},
-          open(sys.argv[1], "w"), indent=2)
-PY
-
-  # A good artifact: the three ids, all PASS, same binary, a different host and harness.
-  make_artifact() {  # make_artifact <dir> <binary-sha> <postgres-verdict>
-    local d="$1" s="$2" v="$3"
-    mkdir -p "$d/cells"
-    printf 'plugins.store-persist|store-postgres\t%s\tscript store-persist.sh: status 0\t\n' "$v" >"$d/ledger.tsv"
-    printf 'plugins.store-persist|store-mysql\tPASS\tscript store-persist.sh: status 0\t\n' >>"$d/ledger.tsv"
-    printf 'plugins.store-persist|store-valkey\tPASS\tscript store-persist.sh: status 0\t\n' >>"$d/ledger.tsv"
-    printf '{"status":200,"applied":[]}' >"$d/cells/plugins.store-persist__store-postgres.json"
-    printf '{"status":200,"applied":[]}' >"$d/cells/plugins.store-persist__store-mysql.json"
-    printf '{"status":200,"applied":[]}' >"$d/cells/plugins.store-persist__store-valkey.json"
-    python3 - "$d/meta.json" "$s" <<'PY'
-import json, sys
-json.dump({"binary": "<oracle-cache>/1.5.5/busbar", "version": "busbar 1.5.5", "recorded": 3,
-           "binary_sha256": sys.argv[2], "harness_rev": "b" * 64,
-           "host_triple": "x86_64-unknown-linux-gnu", "at": "2026-09-07T04:00:00Z"},
-          open(sys.argv[1], "w"), indent=2)
-PY
-  }
-
-  echo "import-store-cells selftest: what the import refuses, and what it accepts"
-
-  # (a) a non-PASS row is REFUSED. The whole failure this guards: a run whose backend never came up
-  #     names a gap, and importing the gap writes the golden's own blind spot back over itself while
-  #     the artifact's notes claim three recordings.
-  make_artifact "$w/art-skip" "$sha" SKIP
-  # In a SUBSHELL, so a refusal's `exit` ends the attempt and not the self-test. The file writes an
-  # import makes are still real — which is exactly what case (c) below then checks.
-  if ( import_artifact "$w/art-skip" "$w/golden" "$w/s1" ) >"$w/skip.log" 2>&1; then
-    bad "a SKIP row was ACCEPTED"
-  elif grep -q 'is SKIP in the artifact, not PASS' "$w/skip.log"; then
-    ok "a non-PASS row is refused, naming the cell and its verdict"
-  else
-    bad "a SKIP row was refused for the wrong reason: $(tail -1 "$w/skip.log")"
-  fi
-
-  # (b) a FOREIGN binary sha is REFUSED. Same version string, different bytes: the golden would hold
-  #     cells from two binaries and nothing would say so.
-  make_artifact "$w/art-foreign" "cafe1234$(printf 'b%.0s' {1..56})" PASS
-  if ( import_artifact "$w/art-foreign" "$w/golden" "$w/s2" ) >"$w/foreign.log" 2>&1; then
-    bad "a foreign binary_sha256 was ACCEPTED"
-  elif grep -q 'recorded by a DIFFERENT binary' "$w/foreign.log"; then
-    ok "a foreign binary_sha256 is refused, naming both digests"
-  else
-    bad "a foreign sha was refused for the wrong reason: $(tail -1 "$w/foreign.log")"
-  fi
-
-  # (c) NEITHER REFUSAL TOUCHED THE GOLDEN. A check that refuses AFTER writing is not a refusal.
-  if [ "$(cat "$w/golden/ledger.tsv" | wc -l | tr -d ' ')" = 4 ] \
-     && [ "$(ls "$w/golden/cells" | wc -l | tr -d ' ')" = 2 ]; then
-    ok "a refused import left the golden exactly as it found it"
-  else
-    bad "a refused import modified the golden"
-  fi
-
-  # (d) the good artifact IS accepted, the three ids are rebaselined onto the recording, and the
-  #     count is the arithmetic it should be: 2 recorded - 1 store PASS removed + 3 = 4.
-  make_artifact "$w/art-good" "$sha" PASS
-  if ( import_artifact "$w/art-good" "$w/golden" "$w/s3" ) >"$w/good.log" 2>&1; then
-    local rec cells
-    rec="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["recorded"])' "$w/golden/meta.json")"
-    cells="$(ls "$w/golden/cells" | wc -l | tr -d ' ')"
-    if [ "$rec" = 4 ] && [ "$cells" = 4 ]; then
-      ok "a good artifact merges: 4 recorded cells, 4 cell files, the three store ids rebaselined"
-    else
-      bad "a good artifact merged to recorded=${rec}, cells=${cells}, want 4/4"
-    fi
-    if grep -q 'HOST SKEW ALLOWED' "$w/good.log" && grep -q 'HARNESS SKEW ALLOWED' "$w/good.log"; then
-      ok "the skew is REPORTED on the way through, not silently accepted"
-    else
-      bad "a skewed merge said nothing about its skew"
-    fi
-  else
-    bad "a good artifact was refused: $(tail -3 "$w/good.log")"
-  fi
-
-  rm -rf "$w"
-  if [ "$failed" = 0 ]; then
-    echo "import-store-cells selftest: both refusals hold, and a good artifact still merges"
-    return 0
-  fi
-  echo "import-store-cells selftest: RED"
-  return 1
-}
-
-# ── ENTRY ────────────────────────────────────────────────────────────────────────────────────────
-GOLDEN="${here}/golden/1.5.5"
-ART=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --selftest) selftest; exit $? ;;
-    --golden) GOLDEN="$2"; shift 2 ;;
-    -h|--help) sed -n '5,8p' "$0"; exit 0 ;;
-    -*) die "unknown argument: $1" ;;
-    *) ART="$1"; shift ;;
-  esac
+# ── THE OVERLAP ─────────────────────────────────────────────────────────────────────────────────
+# The parts of a merge must be disjoint or the merged ledger carries two verdicts for one cell. The
+# golden already holds a store-postgres PASS, recorded on the aarch64 host against a postgres that
+# happened to be on that laptop; the artifact holds one recorded on the pinned postgres:16 image the
+# CANDIDATE side of every CI replay also runs against. Those are not the same fact, and the second
+# is the one a replay can be measured against — so the incoming row wins, and the outgoing one is
+# named here rather than disappearing into a diff nobody reads.
+superseded=""
+for id in $(printf '%s\n' "$want_ids"); do
+  if grep -Fq "$(printf '%s\t' "$id")" "$golden/ledger.tsv"; then superseded="${superseded} ${id}"; fi
 done
-[ -n "$ART" ] || die "usage: import-store-cells.sh <artifact-dir> [--golden <dir>]   (or --selftest)"
-
-# The artifact as downloaded may be the workflow's `merged/` tree or the directory `gh run download`
-# unpacked it into; accept either rather than making the operator guess.
-if [ ! -f "$ART/meta.json" ] && [ -f "$ART/merged/meta.json" ]; then
-  ART="$ART/merged"
+if [ -n "$superseded" ]; then
+  echo "  SUPERSEDED in the golden by this import (recorded against the pinned service images instead):"
+  for id in $superseded; do
+    printf '    %s  was: %s\n' "$id" "$(awk -F'\t' -v i="$id" '$1==i{print $2" "$3}' "$golden/ledger.tsv")"
+  done
+fi
+if [ "$assume_yes" != 1 ]; then
+  printf 'Proceed? [y/N] '
+  read -r reply
+  case "$reply" in y|Y|yes|YES) ;; *) die "stopped at the operator's request; the golden is untouched" ;; esac
 fi
 
-SCRATCH="$(mktemp -d)"
-trap 'rm -rf "$SCRATCH"' EXIT
-import_artifact "$ART" "$GOLDEN" "$SCRATCH/work"
+work="$(mktemp -d "${TMPDIR:-/tmp}/import-store-cells.XXXXXX")"
+trap 'rm -rf "$work"' EXIT
+
+# The golden becomes a PART, minus whatever the artifact supersedes. Copied, never edited in place:
+# if the merge refuses, the committed golden has not been touched at all.
+cp -R "$golden" "$work/golden-part"
+if [ -n "$superseded" ]; then
+  keep="$work/golden-part/ledger.tsv.keep"
+  cp "$work/golden-part/ledger.tsv" "$keep"
+  for id in $superseded; do
+    awk -F'\t' -v i="$id" '$1!=i' "$keep" >"$keep.new" && mv "$keep.new" "$keep"
+    # a cell file is its id with every `|` written `__` — the same spelling record.sh writes
+    f="$(printf '%s' "$id" | sed 's/|/__/g')"
+    [ -f "$work/golden-part/cells/$f.json" ] || die "the golden's ledger names $id but cells/$f.json is not there"
+    rm -f "$work/golden-part/cells/$f.json"
+    rm -rf "$work/golden-part/raw/$f"
+  done
+  mv "$keep" "$work/golden-part/ledger.tsv"
+  # `recorded` must follow the rows, or the merged count is a number nothing on disk supports.
+  python3 - "$work/golden-part/meta.json" "$work/golden-part/ledger.tsv" <<'PY'
+import json, sys
+mp, lp = sys.argv[1], sys.argv[2]
+m = json.load(open(mp, encoding="utf-8"))
+m["recorded"] = sum(1 for ln in open(lp, encoding="utf-8") if ln.strip())
+json.dump(m, open(mp, "w", encoding="utf-8"), indent=2, ensure_ascii=False)
+PY
+fi
+cp -R "$src" "$work/store-cells-part"
+
+note="the three plugins.store-persist cells recorded on ${src_host} from the pinned ${src_pin:-?} build of ${src_ver}, against the postgres/mysql/valkey images testing/fleet-fixtures/service-images.tsv pins — the same images every CI candidate runs against, which is what makes the two sides comparable"
+[ -n "$superseded" ] && note="${note}; supersedes the golden's earlier${superseded} recorded on ${gold_host}"
+
+"$oracle" merge --out "$work/merged" \
+  --cells "$data/cells.json" \
+  --pinned-binaries "$digests" \
+  --allow-host-skew --allow-harness-skew \
+  --note "$note" \
+  "$work/golden-part" "$work/store-cells-part"
+
+# Swap wholesale. The merged tree is complete or the tool exited non-zero above, so there is no
+# state in which the golden is half-replaced.
+rm -rf "$golden"
+mv "$work/merged" "$golden"
 
 echo
-echo "── the diff this import produced ────────────────────────────────────────────────────────────"
-echo "NOTHING IS COMMITTED. Read it, then commit it yourself if it is what you meant to accept."
+echo "import-store-cells: the golden now holds $(awk 'NF' "$golden/ledger.tsv" | wc -l | tr -d ' ') ledger rows."
+echo "harness_rev is the merge's, and it is NOT the tree's current revision: re-stamp it deliberately"
+echo "(bin/oracle harness-rev prints the current one) and write down what moved it, or every replay"
+echo "will refuse on skew. Nothing is committed — accepting a golden is a review:"
 echo
-git -C "$(cd "${here}/../.." && pwd)" --no-pager diff --stat -- "${GOLDEN#"$(cd "${here}/../.." && pwd)/"}" || true
-echo
-git -C "$(cd "${here}/../.." && pwd)" --no-pager diff -- "${GOLDEN#"$(cd "${here}/../.." && pwd)/"}/ledger.tsv" || true
+git -C "$here" --no-pager diff --stat -- testing/shadow-oracle/golden
