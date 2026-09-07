@@ -22,6 +22,7 @@ pub mod denylist_gate;
 pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
 pub mod segregation;
+pub mod settings_leak;
 pub mod tracing;
 
 use std::collections::BTreeSet;
@@ -318,6 +319,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(no_self_filed_issues::NoSelfFiledIssuesGate),
         summary: "the repository does not open issues against itself, nor ask for the scope to",
+    },
+    Registration {
+        name: "settings-leak",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(settings_leak::SettingsLeakGate),
+        summary: "an admin READ never serves an operator settings bag's values, only its key names",
     },
 ];
 
