@@ -18,6 +18,10 @@ use busbar_contract_transport::wire::TransportError;
 
 use crate::StdioTransport;
 
+/// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
+#[path = "mutation_hardening.rs"]
+mod mutation_hardening;
+
 /// Build a connected pair of live connections over an in-memory duplex, standing in for two ends
 /// of a real pipe. `cap` is the duplex's byte capacity, which is what makes the backpressure test
 /// deterministic.
@@ -723,7 +727,14 @@ async fn a_line_within_the_maximum_is_still_a_frame() {
         }
     });
     let mut frames = t.frames(b);
-    let (_s, frame) = frames.next().await.unwrap().unwrap();
+    // Bounded: a write that fails silently in the spawned task (never reaching the wire) must not
+    // leave this read parked on a line that will never arrive — that failure mode has to be a fast
+    // panic, not a hang.
+    let (_s, frame) = tokio::time::timeout(Duration::from_secs(3), frames.next())
+        .await
+        .expect("a line under the maximum must arrive promptly")
+        .unwrap()
+        .unwrap();
     assert_eq!(frame.bytes.len(), payload.len());
     assert!(frame.bytes.as_slice().iter().all(|&c| c == b'y'));
     writer.await.unwrap();
