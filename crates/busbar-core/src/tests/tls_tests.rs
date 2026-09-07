@@ -514,8 +514,15 @@ async fn throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch(
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
     // Deliberately generous / left at the historical default: the point of this test is that
-    // this timer NEVER fires (the dribble is far faster than 30s per byte).
-    crate::limits::install(&crate::config::LimitsResolved::default());
+    // this timer NEVER fires (the dribble is far faster than 30s per byte). Through the RAII guard,
+    // not the bare setter, for the reason the sibling tests in this file already write down: a bare
+    // `install` REPLACES the whole struct behind the process-global RwLock with no restore, so it
+    // leaves the limits INSTALLED for every later reader in the binary — and `limits_tests.rs`'s
+    // `uninstalled_accessors_return_historical_defaults` asserts against the UNINSTALLED state.
+    // That it currently passes is an accident of the values happening to equal the defaults; the
+    // guard makes it a property instead of a coincidence.
+    let _limits_guard =
+        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -592,7 +599,10 @@ async fn a_fast_large_upload_is_not_killed_by_the_throughput_floor() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let _guard = LIMITS_TEST_LOCK.lock().await;
-    crate::limits::install(&crate::config::LimitsResolved::default());
+    // Through the RAII guard, not the bare setter — see the note in
+    // `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`.
+    let _limits_guard =
+        crate::limits::InstallGuard::install(&crate::config::LimitsResolved::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
