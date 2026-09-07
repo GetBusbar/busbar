@@ -16,11 +16,11 @@ The three words are not interchangeable:
 
 ## Summary
 
-- bindings: **103**  (PB-0 master rule + 102 table rows)
+- bindings: **104**  (PB-0 master rule + 103 table rows)
 - mapped (proven): **102**
-- unproven (cited, but nothing compared): **1**
+- unproven (cited, but nothing compared): **2**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 13, lint 4, oracle-cell 58, oracle-family 5, test 452
+- checks by kind (mapped bindings only): gate 13, lint 4, oracle-cell 64, oracle-family 5, test 448
 
 ## Bindings
 
@@ -46,7 +46,7 @@ The three words are not interchangeable:
 | PB-17 | boot warnings | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir`<br>test: `crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did` |
 | PB-18 | arrival budgets | mapped | PASS |  | test: `test_inbound_concurrency_layer_added_only_when_positive`<br>oracle-cell: `boot.refusal\|BOOT-089e\|validate` |
 | PB-19 | `MissingGroup` | mapped | PASS |  | test: `test_missing_group_fails_closed_at_ingress`<br>test: `test_missing_group_fails_closed`<br>test: `govern_admit_reason_reason_bytes_match_direct_try_admit` |
-| PB-20 | admin audit chain | mapped | PASS |  | test: `the_admin_audit_digest_is_unchanged_by_the_unification`<br>test: `crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies`<br>test: `crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain`<br>test: `admin_audit_chain_boot_verifies_from_frozen_bytes`<br>oracle-cell: `admin.ops\|GetAudit\|ok` |
+| PB-20 | admin audit chain | unproven | FAIL | partly proven; a referenced check settles nothing: test:the_admin_audit_digest_is_unchanged_by_the_unification | test: `the_admin_audit_digest_is_unchanged_by_the_unification`<br>test: `crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies`<br>test: `crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain`<br>test: `admin_audit_chain_boot_verifies_from_frozen_bytes`<br>oracle-cell: `admin.ops\|GetAudit\|ok` |
 | PB-21 | idempotency | mapped | PASS |  | oracle-cell: `admin.ops\|PostKeysIdRotate\|idempotent-replay`<br>oracle-cell: `admin.ops\|PostKeys\|idempotent-replay`<br>test: `test_admin_v1_rotate_idempotency_in_flight_is_not_replayed_as_complete`<br>test: `test_admin_v1_key_idempotent_mint_and_if_match`<br>test: `test_admin_v1_idempotency_key_is_principal_scoped`<br>test: `test_admin_v1_rotate_idempotent_replay_survives_the_ttl_sweep`<br>test: `test_admin_v1_idempotency_reservation_frees_on_failure`<br>test: `an_idempotency_key_survives_a_client_disconnect_mid_mint` |
 | PB-22 | admission decision | mapped | PASS |  | test: `test_governance_over_budget_native_envelope_all_ingress`<br>test: `test_governance_rate_limit_429_native_envelope_all_ingress`<br>test: `crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing`<br>test: `test_group_blocked_429_names_the_budget_group`<br>test: `crates/busbar-core/src/governance/tests/limits_tests.rs::budget_cap_derives_from_ledger_and_rate_card`<br>test: `test_group_token_spend_blocks_chain_admission`<br>test: `crates/busbar-core/src/governance/tests/limits_tests.rs::concurrent_gauge_holds_and_releases`<br>test: `crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain`<br>gate: `scripts/construction-gate.sh` |
 | PB-23 | `--safe-mode` as first argument | mapped | PASS |  | oracle-cell: `cli\|--safe-mode\|first-arg` |
@@ -97,15 +97,9 @@ The three words are not interchangeable:
 | PB-68 | network guard | mapped | PASS |  | test: `test_ssrf_blocks_metadata_denylist_by_default`<br>test: `test_ssrf_blocked_returns_exact_host_string`<br>test: `test_reject_cidr_metadata_entries`<br>test: `test_global_allow_overrides_blocked_metadata_hosts`<br>test: `test_allow_all_metadata_beats_nonempty_blocked_list`<br>test: `test_ssrf_allows_private_and_loopback_by_default`<br>test: `test_validate_rejects_non_https_base_url`<br>test: `test_validate_token_url_ssrf_and_scheme`<br>test: `crates/busbar-substrate/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked` |
 | PB-69 | ingress server posture | mapped | PASS |  | test: `server_posture_matches_the_1_5_5_defaults` |
 | PB-70 | scrape shape | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|key`<br>test: `a_1_5_5_shaped_config_exposes_no_plane_series_with_every_plane_compiled_in`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir`<br>oracle-cell: `ops.scrape\|metrics\|no-ledger-series` |
-<<<<<<< HEAD
 | PB-71 | documented behaviour | mapped | PASS |  | oracle-family: `documented`<br>gate: `scripts/documented-claims-check.sh` |
 | PB-72 | inventory precedence for bindings | unproven | FAIL | UNPROVEN: nothing this binding cites compares anything today -- lint:scripts/inventory-ref-lint.py | lint: `scripts/inventory-ref-lint.py` |
-| PB-73 | `advanced.response_headers` | mapped | PASS |  | test: `server_timing_header_absent_by_default_present_when_enabled`<br>test: `route_policy_headers_absent_by_default_on_the_live_stack`<br>test: `route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled`<br>test: `route_policy_headers_present_only_when_both_gates_open`<br>test: `test_emit_server_timing_moved_to_advanced_response_headers`<br>lint: `scripts/response-header-lint.sh` |
-=======
-| PB-71 | documented behaviour | unproven | FAIL | partly proven; a referenced check settles nothing: gate:qa/documented-claims.json (exists on disk, but nothing under .github/workflows invokes it, directly or through the qa segment manifest -- a gate nobody runs compares nothing) | oracle-family: `documented`<br>gate: `qa/documented-claims.json` |
-| PB-72 | inventory precedence for bindings | mapped | PASS |  | lint: `scripts/inventory-ref-lint.py` |
 | PB-73 | `advanced.response_headers` | mapped | PASS |  | test: `server_timing_header_absent_by_default_present_when_enabled`<br>test: `route_policy_headers_absent_by_default_on_the_live_stack`<br>test: `route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled`<br>test: `route_policy_headers_present_only_when_both_gates_open`<br>test: `test_emit_server_timing_moved_to_advanced_response_headers`<br>lint: `xtask/src/gates/response_header.rs` |
->>>>>>> 77a8747e0 (the response-header shell retires, and PB-73 goes on citing the gate that replaced it)
 | PB-74 | reserved-name sets | mapped | PASS |  | oracle-cell: `documented\|readme\|export-standards`<br>test: `reserved_hook_names_are_frozen`<br>test: `test_validate_allows_api_prefixed_but_boundary_safe_names`<br>gate: `scripts/config-stability-gate.sh` |
 | PB-75 | served OpenAPI document | mapped | PASS |  | test: `openapi_json_matches_committed_file`<br>test: `served_openapi_equals_committed_file` |
 | PB-76 | admin listener route set | mapped | PASS |  | oracle-cell: `http.crosscut\|admin-outside-prefix\|admin`<br>oracle-cell: `http.crosscut\|admin-unknown\|admin`<br>oracle-cell: `ops.scrape\|metrics\|admin-listener`<br>test: `split_admin_listener_no_double_exposure`<br>test: `auth_token_absent_from_admin_router`<br>test: `admin_auth_route_is_absent_from_the_data_listener`<br>test: `test_api_root_unmatched_paths_speak_the_admin_envelope` |
@@ -135,6 +129,7 @@ The three words are not interchangeable:
 | PB-100 | admin wire details | mapped | PASS |  | oracle-family: `admin.ops` (44/240 cells cite it)<br>oracle-cell: `http.crosscut\|OPTIONS\|chat`<br>oracle-cell: `http.crosscut\|auth-token\|POST-empty`<br>oracle-cell: `ops.scrape\|v1models\|openai-fp`<br>test: `test_admin_v1_key_idempotent_mint_and_if_match`<br>test: `test_admin_v1_overlay_reset_hooks_reverts_to_base`<br>test: `keys_error_surface_is_byte_stable`<br>test: `admin_error_surface_witnesses_every_declared_response`<br>test: `declared_error_set_is_exactly_what_the_handlers_emit`<br>test: `record_list_get_and_bound`<br>test: `exchange_ok_body_includes_base_url_equal_to_public_url`<br>test: `begin_sets_httponly_secure_cookie_and_redirects`<br>test: `callback_state_mismatch_400`<br>test: `callback_nonce_mismatch_rejected`<br>test: `execute_hop_refuses_non_allowlisted_host`<br>test: `vet_hop_url_enforces_https_allowlist_and_blocks_metadata`<br>test: `execute_hop_does_not_follow_redirect`<br>test: `refresh_rotates_key_and_revokes_the_old_one` |
 | PB-101 | inbound auth details | mapped | PASS |  | test: `test_verify_sigv4_ingress_credential_unsigned_payload_rejected`<br>test: `test_verify_sigv4_ingress_credential_body_matches_signed_hash_admits`<br>test: `test_verify_sigv4_ingress_credential_tampered_body_rejected`<br>test: `test_verify_inbound_sigv4_unknown_key_dummy_secret_is_signature_mismatch`<br>test: `throughput_floor_trips_on_a_dribble_the_inter_frame_timer_cannot_catch`<br>test: `a_fast_large_upload_is_not_killed_by_the_throughput_floor`<br>test: `total_deadline_trips_on_a_body_that_stays_above_the_floor_forever`<br>test: `body_read_timeout_trips_on_stalled_body`<br>test: `mtls_valid_client_cert_gets_200`<br>test: `mtls_rejects_bad_client_then_serves_valid` |
 | PB-102 | alarms and the disputes report | mapped | PASS |  | test: `a_1_5_5_request_lifecycle_emits_no_alarm_or_dispute_event_or_metric` |
+| PB-103 | `/usage` across a rate-card change — **the ONE deliberate breaking difference, registered** | mapped | PASS |  | oracle-cell: `billing\|rate-card\|history-mid-window`<br>oracle-cell: `config\|rate-card\|append-not-replace`<br>oracle-cell: `ledger\|amend\|adjusting-entries`<br>oracle-cell: `ledger\|amend\|refused-unsigned`<br>oracle-cell: `ledger\|currency\|minor-unit-rounding`<br>oracle-cell: `ledger\|currency\|native`<br>oracle-cell: `ledger\|rate-history\|as-of` |
 
 ## The unproven bindings: cited, but nothing was compared
 
@@ -142,6 +137,7 @@ Each of these names one or more checks and is still proof of nothing. A binding 
 red under `scripts/design-bindings.sh --check`; it is fixed by making the citation real,
 or it is demoted to a named gap. It is never waived.
 
+- **PB-20** (admin audit chain): partly proven; a referenced check settles nothing: test:the_admin_audit_digest_is_unchanged_by_the_unification
 - **PB-72** (inventory precedence for bindings): UNPROVEN: nothing this binding cites compares anything today -- lint:scripts/inventory-ref-lint.py
 
 ## Findings: bindings in conflict with the tree
