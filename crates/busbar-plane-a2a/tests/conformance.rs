@@ -98,7 +98,9 @@ fn decode(plane: &A2aPlane, body: &[u8]) -> Result<(ops::MethodRow, String), Dec
 #[test]
 fn every_method_of_the_later_vocabulary_decodes() {
     let plane = A2aPlane::EMPTY;
-    for (slot, method) in rig_vocabulary("METHODS_1_0") {
+    // The slot name is the rig's own key for the row; the two tables are paired on it by
+    // `the_two_vocabularies_agree_slot_for_slot`, which is where that pairing is actually proved.
+    for (_slot, method) in rig_vocabulary("METHODS_1_0") {
         let body = request("1", &method);
         let (row, correlation) = decode(&plane, &body)
             .unwrap_or_else(|e| panic!("the rig sends {method} and this plane answered {e:?}"));
@@ -109,7 +111,6 @@ fn every_method_of_the_later_vocabulary_decodes() {
             "{method} is the verb wording"
         );
         assert_eq!(correlation, "Num(1)", "{method} lost its identifier");
-        assert!(!slot.is_empty());
     }
 }
 
@@ -289,8 +290,6 @@ fn an_unsolicited_document_opens_a_provider_unit() {
     let plane = A2aPlane::EMPTY;
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
-    let dest = None::<()>;
-    let _ = dest;
     let pushed = br#"{"taskId":"t1","status":{"state":"completed"}}"#;
     let frames = vec![response_frame(pushed)];
     let mut cursor = FrameCursor::new(&frames);

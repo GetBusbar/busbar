@@ -4,7 +4,6 @@
 //! crate, because the table-driven test below needs the crate's own `pub(crate)` verb table and
 //! `find_verb` to state its expectations without hand-duplicating either.
 
-use std::cell::Cell;
 use std::sync::Arc;
 
 use busbar_contract::bounded::{Arena, ArenaBudget, ArenaBytes, Labels};
@@ -482,11 +481,6 @@ fn declares_exactly_one_claim_over_http() {
     assert_eq!(claims.len(), 1);
     assert_eq!(claims[0].transport, "http");
 }
-
-// A cell used only to keep clippy quiet about an otherwise-unused import in some feature
-// combinations; referenced so the import is never flagged as dead in a `--tests` build.
-#[allow(dead_code)]
-fn _touch(_: &Cell<u8>, _: Span) {}
 
 // ── requirement 4: no section-sign or parity-binding literals anywhere in this crate ────────────
 
