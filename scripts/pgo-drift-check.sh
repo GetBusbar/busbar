@@ -59,15 +59,35 @@
 # calibrated on real data WITH this skew included; do not expect 90% overlap from a healthy
 # trainer, and re-calibrate if either side's measurement method changes.
 #
+# THE TWO MEASURES GATE SEPARATELY, BECAUSE THEY POINT IN OPPOSITE DIRECTIONS. Overlap asks "is the
+# trainer's heat recognizable to production"; the missing table asks "is production's heat reachable
+# by the trainer". Only the first used to decide the exit code, and the second - the header calls it
+# "the actionable signal" - was printed and thrown away. Those are not the same question, and one
+# can read perfect while the other reads zero: if the trainer's top-N are ANCESTOR frames in
+# production's stacks, they all land in production's inclusive top-3N (overlap 100%) while every
+# LEAF production actually burns cycles in is untrained. Measured on a constructed pair: overlap
+# 100%, `trainer coverage 0/3 ... 3 genuine gaps`, the whole missing table printed, exit 0 "OK".
+# --max-miss-share closes that: the MISS rows' share of production's total counted self weight is
+# itself a gate.
+#
 # Usage:
 #   scripts/pgo-drift-check.sh --folded /path/to/folded.txt \
-#       [--profdata target/pgo-profiles/merged.profdata] [--top 40] [--min-overlap 10]
+#       [--profdata target/pgo-profiles/merged.profdata] [--top 40] [--min-overlap 10] \
+#       [--max-miss-share 25]
+#   scripts/pgo-drift-check.sh --selftest    # prove both gates fire, on constructed fixtures
 #
 # Exit codes (distinct so CI can tell "broken" from "drifted"):
-#   0  overlap >= --min-overlap
-#   1  DRIFT: overlap below --min-overlap
+#   0  overlap >= --min-overlap AND miss share <= --max-miss-share
+#   1  DRIFT: overlap below --min-overlap, or too much of production's self weight untrained
 #   2  environment/usage error (missing file, missing tool, unparsable input) - fail closed,
 #      never report "no drift" on inputs it could not actually read
+#
+# --max-miss-share default (25) provenance: NOT measured against a production capture - there is no
+# post-egress-cutover folded capture in this tree to calibrate against, and the header records that
+# the w6 capture OVERSTATES gaps (six reqwest/hyper rows are capture staleness, not trainer gaps).
+# 25 is therefore a deliberately loose ceiling chosen to catch the constructed catastrophe above
+# (100% of self weight untrained) without reddening on a stale capture's noise. RE-MEASURE AND
+# TIGHTEN before wiring this script into CI, the same way --min-overlap was calibrated.
 #
 # --min-overlap default (10) provenance: measured 2026-08-28 on real artifacts - this tree's
 # 3-run pgo-build.sh merged.profdata against the w6 production-shaped bench folded profile -
@@ -113,6 +133,9 @@
 # No knobs beyond the four flags. Requires: llvm-profdata (rustup llvm-tools), awk, sort,
 # and rustfilt or a Rust-v0-capable c++filt.
 set -uo pipefail
+# Resolved BEFORE the cd, so --selftest can re-invoke the real script (never a re-implementation of
+# its rules) no matter what cwd the operator started from.
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
 cd "$(dirname "$0")/.." || exit 2
 
 # Defaults. --profdata default is THE path pgo-build.sh merges to (PROF_DIR/merged.profdata).
@@ -120,14 +143,131 @@ PROFDATA_FILE="target/pgo-profiles/merged.profdata"
 FOLDED_FILE=""
 TOP=40
 MIN_OVERLAP=10
+MAX_MISS_SHARE=25
 
 usage() {
-  echo "usage: $0 --folded <stackcollapse.txt> [--profdata <merged.profdata>] [--top N] [--min-overlap PCT]" >&2
+  echo "usage: $0 --folded <stackcollapse.txt> [--profdata <merged.profdata>] [--top N]" >&2
+  echo "          [--min-overlap PCT] [--max-miss-share PCT]" >&2
+  echo "       $0 --selftest" >&2
   exit 2
 }
 # Environment/usage failure: loud and exit 2, so CI can distinguish "the check could not run"
 # from "the check ran and found drift" (exit 1). NEVER exit 0 without a real comparison.
 die() { echo "[pgo-drift] ERROR: $*" >&2; exit 2; }
+
+# ── --selftest: prove BOTH gates fire, and that neither fires on a healthy pair ─────────────────
+# A detector nobody has watched fail is a guess, and this one had never been watched at all: it has
+# no CI caller, so its ~100 lines of demangling, normalization, deny-listing and matching had never
+# been shown to discriminate. Every case below drives the REAL script (via $SELF) over constructed
+# inputs, never a re-implementation of its rules.
+#
+# The fixtures are llvm-profdata TEXT profiles merged into real .profdata, so the parser under test
+# is the same one the release path feeds. Symbol names are plain Rust paths: they carry `::` (so
+# deny() keeps them) and pass through the demangler unchanged, which is exactly what a demangled
+# perf frame does.
+selftest() {
+  local pd work fails=0 rc
+  pd="$(find "$(rustc --print sysroot)" -name llvm-profdata -type f 2>/dev/null | head -1)"
+  [ -n "$pd" ] || die "--selftest needs llvm-profdata (rustup component add llvm-tools). Skipping the self-test is the vacuous pass this whole script exists to refuse."
+  work="$(mktemp -d)" || die "--selftest could not create a work directory"
+  # shellcheck disable=SC2064  # $work must expand now, not at trap time
+  trap "rm -rf '$work'" RETURN
+
+  local F1="busbar_core::proxy::forward_request_and_stream_response"
+  local F2="busbar_api::auth::sha256_hex_digest_of_request_chain"
+  local F3="busbar_core::ingress::openai::translate_chat_completion_body"
+  local U1="busbar_core::realtime::duplex_session_websocket_frame_relay"
+  local U2="busbar_core::mcp::stdio_transport_pump_message_loop"
+  local U3="busbar_core::grpc::serve_unary_call_handler_state_machine"
+
+  # emit_func <name> <max-counter>: one function record in llvm-profdata text format.
+  emit_func() { printf '%s\n# Func Hash:\n%s\n# Num Counters:\n2\n# Counter Values:\n%s\n%s\n\n' \
+                       "$1" "${#1}" "$2" "$2"; }
+
+  # The trainer executed F1/F2/F3 and nothing else was codegen'd: U1..U3 have NO entry, which is the
+  # instrumentation-invisible classification.
+  { emit_func "$F1" 1000; emit_func "$F2" 800; emit_func "$F3" 600; } > "$work/trained.txt"
+  # Same, plus U1..U3 PRESENT WITH ZERO counters - codegen'd, never run - which is a genuine MISS.
+  { emit_func "$F1" 1000; emit_func "$F2" 800; emit_func "$F3" 600
+    emit_func "$U1" 0;    emit_func "$U2" 0;   emit_func "$U3" 0; } > "$work/roster.txt"
+  # Nothing ran at all.
+  { emit_func "$U1" 0; emit_func "$U2" 0; emit_func "$U3" 0; } > "$work/allzero.txt"
+  for p in trained roster allzero; do
+    "$pd" merge -o "$work/$p.profdata" "$work/$p.txt" 2>/dev/null \
+      || die "--selftest could not build the $p fixture profile with $pd"
+  done
+
+  # Production's leaves ARE the trainer's hot functions: healthy on both axes.
+  printf '%s\n' \
+    "busbar;$F1 1000" "busbar;$F2 1000" "busbar;$F3 600" > "$work/match.folded"
+  # Production burns its cycles somewhere the trainer never went, and those symbols are not even in
+  # the instrumented roster: overlap collapses.
+  printf '%s\n' \
+    "busbar;$U1 1000" "busbar;$U2 800" "busbar;$U3 600" > "$work/disjoint.folded"
+  # THE CASE THE OVERLAP GATE CANNOT SEE. Every trainer-hot symbol is an ANCESTOR frame, so it lands
+  # in production's inclusive top-3N and overlap reads 100% - while every LEAF, i.e. everything
+  # production actually spends cycles on, is present-with-zero in the roster and therefore untrained.
+  printf '%s\n' \
+    "busbar;$F1;$U1 1000" "busbar;$F2;$U2 900" "busbar;$F3;$U3 800" > "$work/ancestors.folded"
+  # The same shape but with the untrained leaf a small minority of self weight: a real trainer always
+  # misses something, and a ceiling that reds on that is a ceiling somebody disables.
+  printf '%s\n' \
+    "busbar;$F3;$F1 1000" "busbar;$F3;$F2 1000" "busbar;$F3;$U2 100" > "$work/smallmiss.folded"
+  : > "$work/empty.folded"
+
+  # probe <expected-exit> <label> <args...>: run the REAL script and require an exact exit code.
+  probe() {
+    local want="$1" label="$2"; shift 2
+    "$SELF" "$@" >"$work/last.log" 2>&1
+    rc=$?
+    if [ "$rc" -eq "$want" ]; then
+      echo "  ok: $label (exit $rc)"
+    else
+      echo "  SELFTEST FAILED: $label -> exit $rc, expected $want"
+      sed 's/^/      /' "$work/last.log"
+      fails=$((fails + 1))
+    fi
+  }
+
+  echo "== pgo-drift-check SELF-TEST (both gates proven to fire, on constructed profiles) =="
+  # GREEN first: a detector that is red on everything proves nothing when it is red on a defect.
+  probe 0 "green: production's hot leaves are the trainer's hot functions" \
+    --profdata "$work/trained.profdata" --folded "$work/match.folded" --top 3
+  probe 0 "green: a small untrained minority is under the ceiling" \
+    --profdata "$work/roster.profdata" --folded "$work/smallmiss.folded" --top 3
+
+  echo "-- the overlap gate --"
+  probe 1 "red: the trainer's heat is unrecognizable to production" \
+    --profdata "$work/trained.profdata" --folded "$work/disjoint.folded" --top 3
+
+  echo "-- the missing-table gate (this is the one overlap cannot see) --"
+  probe 1 "red: 100% overlap, and every production leaf untrained" \
+    --profdata "$work/roster.profdata" --folded "$work/ancestors.folded" --top 3
+  probe 0 "control: the same pair passes when the ceiling is lifted above it" \
+    --profdata "$work/roster.profdata" --folded "$work/ancestors.folded" --top 3 --max-miss-share 100
+
+  echo "-- fail-closed on inputs it cannot read (exit 2, never 'no drift') --"
+  probe 2 "env: the profdata file is absent" \
+    --profdata "$work/no-such-file.profdata" --folded "$work/match.folded" --top 3
+  probe 2 "env: the folded file is empty" \
+    --profdata "$work/trained.profdata" --folded "$work/empty.folded" --top 3
+  probe 2 "env: the profile has no nonzero counters at all" \
+    --profdata "$work/allzero.profdata" --folded "$work/match.folded" --top 3
+  probe 2 "usage: --top is not a number" \
+    --profdata "$work/trained.profdata" --folded "$work/match.folded" --top not-a-number
+  probe 2 "usage: --max-miss-share is not a number" \
+    --profdata "$work/trained.profdata" --folded "$work/match.folded" --max-miss-share pct
+
+  if [ "$fails" -ne 0 ]; then
+    echo ""
+    echo "pgo-drift-check self-test: RED - $fails expectation(s) did not hold. No drift verdict from" >&2
+    echo "this script means anything until they do." >&2
+    return 1
+  fi
+  echo ""
+  echo "pgo-drift-check self-test: PASS."
+  return 0
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -135,12 +275,15 @@ while [ $# -gt 0 ]; do
     --folded)      [ $# -ge 2 ] || usage; FOLDED_FILE="$2"; shift 2 ;;
     --top)         [ $# -ge 2 ] || usage; TOP="$2"; shift 2 ;;
     --min-overlap) [ $# -ge 2 ] || usage; MIN_OVERLAP="$2"; shift 2 ;;
+    --max-miss-share) [ $# -ge 2 ] || usage; MAX_MISS_SHARE="$2"; shift 2 ;;
+    --selftest)    selftest; exit $? ;;
     *) usage ;;
   esac
 done
 [ -n "$FOLDED_FILE" ] || usage
 case "$TOP" in ''|*[!0-9]*) die "--top must be a positive integer, got '$TOP'" ;; esac
 case "$MIN_OVERLAP" in ''|*[!0-9]*) die "--min-overlap must be an integer percentage, got '$MIN_OVERLAP'" ;; esac
+case "$MAX_MISS_SHARE" in ''|*[!0-9]*) die "--max-miss-share must be an integer percentage, got '$MAX_MISS_SHARE'" ;; esac
 [ "$TOP" -ge 1 ] || die "--top must be >= 1"
 [ -s "$PROFDATA_FILE" ] || die "profdata missing/empty at $PROFDATA_FILE (run scripts/pgo-build.sh, or pass --profdata)"
 [ -s "$FOLDED_FILE" ] || die "folded stacks missing/empty at $FOLDED_FILE"
@@ -329,6 +472,12 @@ OVERLAP_OF="$(printf '%s\n' "$RESULT" | awk -F'\t' '$1 == "OVERLAP" { print $4 }
 MISS_COUNT="$(printf '%s\n' "$RESULT" | grep -c '^MISS' || true)"
 INVIS_COUNT="$(printf '%s\n' "$RESULT" | grep -c '^INVIS' || true)"
 PROD_N="$(wc -l < "$WORK/prod.top" | tr -d ' ')"
+# The MISS rows' share of production's total counted self weight. This is the number that decides
+# whether the missing table is a footnote or the verdict: a COUNT of rows says nothing about how
+# much production work is untrained (one row can be 40% of the profile, ten rows can be 2%).
+MISS_SHARE="$(printf '%s\n' "$RESULT" | awk -F'\t' -v total="$TOTAL_SELF" '
+  $1 == "MISS" { s += $2 } END { printf "%d", s * 100 / total }')"
+[ -n "$MISS_SHARE" ] || die "internal: could not compute the missing-table self-weight share"
 
 echo "[pgo-drift] trainer profile : $PROFDATA_FILE ($(wc -l < "$WORK/train.all" | tr -d ' ') executed functions, $(wc -l < "$WORK/train.instr" | tr -d ' ') instrumented)"
 echo "[pgo-drift] production folded: $FOLDED_FILE"
@@ -338,7 +487,13 @@ echo "[pgo-drift] trainer-heat overlap: ${OVERLAP_PCT}% (${OVERLAP_HIT}/${OVERLA
 echo "[pgo-drift] trainer coverage    : $((PROD_N - MISS_COUNT - INVIS_COUNT))/$PROD_N of production's self-weight top-$TOP were executed by the trainer ($INVIS_COUNT instrumentation-invisible, $MISS_COUNT genuine gaps)"
 echo "[pgo-drift]"
 if [ "$MISS_COUNT" -eq 0 ]; then
-  echo "[pgo-drift] every instrumentable production-hot symbol was executed by the trainer: no scenario gaps."
+  # Scoped to what was actually TESTABLE. The old wording ("every production-hot symbol was executed
+  # by the trainer: no scenario gaps") printed whenever the MISS count was zero, which includes the
+  # case where every one of production's hot symbols was classified instrumentation-invisible and
+  # the trainer's real coverage was 0/N. Saying how many rows the claim covers is what stops the
+  # sentence from being a verdict about a set it never examined.
+  echo "[pgo-drift] no scenario gaps: all $((PROD_N - INVIS_COUNT)) of production's $PROD_N self-weight top-$TOP symbols that"
+  echo "[pgo-drift] the instrumented binary can report on were executed by the trainer ($INVIS_COUNT were instrumentation-invisible)."
 else
   echo "[pgo-drift] production-hot symbols the trainer NEVER executed - each is a trainer-scenario gap"
   echo "[pgo-drift] (ranked by production self weight; % is share of production's total counted self weight):"
@@ -353,11 +508,25 @@ if [ "$INVIS_COUNT" -gt 0 ]; then
     $1 == "INVIS" { printf "[pgo-drift]   %6.2f%%  %14d  %s\n", $2 * 100 / total, $2, $3 }'
 fi
 echo "[pgo-drift]"
+DRIFTED=0
 if [ "$OVERLAP_PCT" -lt "$MIN_OVERLAP" ]; then
   echo "[pgo-drift] DRIFT: overlap ${OVERLAP_PCT}% < required ${MIN_OVERLAP}% - the trainer's heat no longer" >&2
   echo "[pgo-drift] resembles production traffic. Update the phase-2 shapes in scripts/pgo-build.sh" >&2
   echo "[pgo-drift] (the missing table above names what production runs that the trainer does not)." >&2
-  exit 1
+  DRIFTED=1
 fi
-echo "[pgo-drift] OK: overlap ${OVERLAP_PCT}% >= ${MIN_OVERLAP}%"
+# THE SECOND GATE, in the other direction. Overlap can read 100% while every symbol production
+# actually burns cycles in is untrained - the trainer's top-N need only be ANCESTOR frames in
+# production's stacks to land in its inclusive top-3N. Both gates report; neither short-circuits the
+# other, so a run never hides one verdict behind the other.
+if [ "$MISS_SHARE" -gt "$MAX_MISS_SHARE" ]; then
+  echo "[pgo-drift] DRIFT: ${MISS_SHARE}% of production's counted self weight sits in symbols the trainer" >&2
+  echo "[pgo-drift] NEVER executed (ceiling ${MAX_MISS_SHARE}%). Overlap measures whether the trainer's heat is" >&2
+  echo "[pgo-drift] recognizable to production; this measures whether production's heat is reachable by the" >&2
+  echo "[pgo-drift] trainer, and they are not the same question. The missing table above names the shapes" >&2
+  echo "[pgo-drift] to add to scripts/pgo-build.sh's phase-2 mix." >&2
+  DRIFTED=1
+fi
+[ "$DRIFTED" -eq 0 ] || exit 1
+echo "[pgo-drift] OK: overlap ${OVERLAP_PCT}% >= ${MIN_OVERLAP}%, untrained self weight ${MISS_SHARE}% <= ${MAX_MISS_SHARE}%"
 exit 0
