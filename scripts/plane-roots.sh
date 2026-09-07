@@ -58,9 +58,25 @@ PLANE_ROOTS_ERR=""
 
 plane_roots_resolve() {   # $1.. = plane keys. Sets PLANE_ROOT_<key> per plane; returns 1 on any failure.
   local plane root grammar hits d owned n rc=0
+  PLANE_ROOTS_ERR=""
+  # ── ZERO PLANES IS NOT ZERO PROBLEMS ─────────────────────────────────────────────────────────────
+  # Everything below refuses a plane that resolves to no home or two homes, on the stated ground that
+  # zero is the passing answer to every ban the callers apply. That reasoning indicts the loop's own
+  # arity first: `for plane in "$@"` over an empty list runs zero times, leaves `rc` at 0 and
+  # PLANE_ROOTS_ERR empty, and hands the caller a silent success in which nothing was located and
+  # therefore nothing will be scanned. The four callers pass literal keys today, so this is the hole
+  # that has not opened yet rather than one that has — which is the only kind worth closing in a file
+  # four lints delegate their scan addresses to.
+  if [ "$#" -eq 0 ]; then
+    PLANE_ROOTS_ERR="PLANE-ROOTS-EMPTY: plane_roots_resolve was called with NO plane keys. Zero planes
+  resolved is zero planes located and zero files scanned, and zero is the passing answer to every rule
+  that asks this file where to look. Fix the caller's plane list (scripts/plane-keys.sh) rather than
+  resolving an empty set.
+"
+    return 1
+  fi
   root="${PLANE_ROOTS_SEARCH_ROOT:-crates}"
   grammar="${PLANE_ROOTS_GRAMMAR:-pub const PLANE_DECL}"
-  PLANE_ROOTS_ERR=""
   for plane in "$@"; do
     hits=$(find "$root" -type d -name "$plane" -not -path '*/target/*' 2>/dev/null | sort -u)
     # A NAME MATCH IS NOT AN OWNERSHIP CLAIM (see the file header). A candidate must directly hold a
@@ -170,6 +186,20 @@ plane_roots_selftest() {
   PLANE_ROOTS_SEARCH_ROOT="$tmp/norust" plane_roots_resolve w >/dev/null 2>&1 && rc=1
   if [ "$rc" -ne 0 ]; then
     note "SELFTEST FAIL [plane-roots: a-directory-with-no-rust-owns-nothing] a directory holding no .rs file resolved as the plane's declaring home"
+    fails=$((fails + 1))
+  fi
+
+  # Case 3c: NO PLANES AT ALL. Cases 1–3b drive the loop with a key and judge what it finds; this
+  # drives the loop with nothing and judges the arity. An empty plane list used to return 0 with an
+  # empty error string — a caller whose list came back empty was told every plane resolved.
+  cases=$((cases + 1))
+  rc=0
+  plane_roots_resolve >/dev/null 2>&1 && rc=1
+  if [ "$rc" -ne 0 ]; then
+    note "SELFTEST FAIL [plane-roots: no-planes-is-an-error] an empty plane list resolved successfully"
+    fails=$((fails + 1))
+  elif ! printf '%s' "$PLANE_ROOTS_ERR" | grep -q "PLANE-ROOTS-EMPTY"; then
+    note "SELFTEST FAIL [plane-roots: no-planes-is-named] the empty-list refusal did not name itself: $PLANE_ROOTS_ERR"
     fails=$((fails + 1))
   fi
 
