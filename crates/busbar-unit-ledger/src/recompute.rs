@@ -487,6 +487,13 @@ impl std::fmt::Display for Watermark {
 /// What one pass of the recompute did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Pass {
+    /// The history snapshot every line in this pass was repriced against.
+    ///
+    /// On the pass rather than only on each corrected figure, because it is what makes a
+    /// reconciliation entry re-derivable: an auditor holding the entry knows which head produced
+    /// these findings without having to infer it from the lines. `None` for a pass over an archive
+    /// with no history at all, which is the state of a node that has read no configuration yet.
+    pub history_seq: Option<HistorySeq>,
     /// Where the watermark is now.
     pub watermark: Watermark,
     /// How many lines were checked.
@@ -718,6 +725,7 @@ pub fn recompute(
         at.advance(posting.node, posting.node_seq);
     }
     Pass {
+        history_seq: archive.head(),
         watermark: at,
         checked,
         corrected,

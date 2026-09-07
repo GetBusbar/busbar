@@ -364,6 +364,12 @@ fn the_watermark_reaches_the_head_every_pass() {
     assert!(pass.is_clean());
     assert_eq!(pass.checked, 50);
     assert_eq!(pass.corrected, 0);
+    assert_eq!(
+        pass.history_seq,
+        Some(HistorySeq::OPENING),
+        "the pass says which history it repriced against, so a reconciliation entry carrying it is \
+         re-derivable without inferring the head from the lines"
+    );
     assert_eq!(pass.watermark, Watermark::from_pairs([(1, 50)]));
 
     // A second pass over the same lines checks nothing, because the watermark is already there.
