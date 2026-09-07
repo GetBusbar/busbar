@@ -31,13 +31,17 @@
 
 use super::*;
 
+/// The four neutral counters a completion is priced on: uncached input, output, cache-read,
+/// cache-write.
+type Money = (u64, u64, Option<u64>, Option<u64>);
+
 /// The neutral money four, as the billing path reads them.
-fn money(u: &busbar_substrate_values::billing::TokenUsage) -> (u64, u64, Option<u64>, Option<u64>) {
+fn money(u: &busbar_substrate_values::billing::TokenUsage) -> Money {
     (u.input, u.output, u.cache_read, u.cache_creation)
 }
 
 /// The buffered arm: the whole body through `read_response`, projected onto the billing carrier.
-fn buffered_money(proto: &str, body: &[u8]) -> (u64, u64, Option<u64>, Option<u64>) {
+fn buffered_money(proto: &str, body: &[u8]) -> Money {
     let v: serde_json::Value = busbar_substrate_values::json::parse(body).expect("json body");
     let ir = protocol_for(proto)
         .expect("known proto")
@@ -49,7 +53,7 @@ fn buffered_money(proto: &str, body: &[u8]) -> (u64, u64, Option<u64>, Option<u6
 
 /// The HEAD-TRUNCATED arm: the same body with its opening structure cut away (what the reassembly
 /// cap leaves behind), recovered through the dialect's tail scan.
-fn truncated_money(proto: &str, body: &[u8]) -> (u64, u64, Option<u64>, Option<u64>) {
+fn truncated_money(proto: &str, body: &[u8]) -> Money {
     // Cut the head hard enough that the retained slice is NOT a well-formed document — the
     // condition this path exists for — while keeping the trailing usage member, which is what the
     // reassembly cap leaves behind. The cut lands a few bytes ahead of the usage key.
@@ -269,7 +273,7 @@ fn gemini_tool_use_prompt_is_added_unless_the_total_contradicts_the_parts() {
 /// a valid body.
 #[test]
 fn a_response_without_usage_bills_zero_rather_than_failing() {
-    let cases: &[(&str, &[u8], (u64, u64, Option<u64>, Option<u64>))] = &[
+    let cases: &[(&str, &[u8], Money)] = &[
         (
             "anthropic",
             br#"{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}"#,

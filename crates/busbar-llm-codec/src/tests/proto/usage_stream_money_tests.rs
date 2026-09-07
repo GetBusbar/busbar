@@ -30,14 +30,18 @@
 
 use super::*;
 
+/// The four neutral counters a completion is priced on: uncached input, output, cache-read,
+/// cache-write.
+type Money = (u64, u64, Option<u64>, Option<u64>);
+
 /// The neutral money four the billing path reads.
-fn money(u: &busbar_substrate_values::billing::TokenUsage) -> (u64, u64, Option<u64>, Option<u64>) {
+fn money(u: &busbar_substrate_values::billing::TokenUsage) -> Money {
     (u.input, u.output, u.cache_read, u.cache_creation)
 }
 
 /// Drive a SAME-PROTOCOL stream and project the A-tap usage — the exact value the streaming billing
 /// arm ledgers — onto the billing carrier.
-fn streamed_money(proto: &str, frames: &[&[u8]]) -> (u64, u64, Option<u64>, Option<u64>) {
+fn streamed_money(proto: &str, frames: &[&[u8]]) -> Money {
     let mut t = StreamTranslate::new_same_proto(proto).expect("same-proto translator");
     for f in frames {
         let _ = t.feed(f);
@@ -51,7 +55,7 @@ fn streamed_money(proto: &str, frames: &[&[u8]]) -> (u64, u64, Option<u64>, Opti
 }
 
 /// The buffered arm over the same numbers.
-fn buffered_money(proto: &str, body: &[u8]) -> (u64, u64, Option<u64>, Option<u64>) {
+fn buffered_money(proto: &str, body: &[u8]) -> Money {
     let v: serde_json::Value = busbar_substrate_values::json::parse(body).expect("json body");
     let ir = protocol_for(proto)
         .expect("known proto")
