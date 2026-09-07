@@ -329,7 +329,12 @@ impl Gate for NoSelfFiledIssuesGate {
         ])
     }
 
-    fn legacy_rows(&self, run: &LegacyRun) -> Option<Result<Vec<Row>, String>> {
+    fn has_legacy_adapter(&self) -> bool {
+        true
+    }
+
+    fn legacy_rows(&self, _cx: &Ctx, runs: &[LegacyRun]) -> Option<Result<Vec<Row>, String>> {
+        let run = &runs[0];
         Some(translate(run))
     }
 

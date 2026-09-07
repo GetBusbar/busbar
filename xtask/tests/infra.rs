@@ -1148,9 +1148,10 @@ fn the_structure_lint_translator_refuses_a_finding_it_cannot_classify() {
         stdout: "== a header ==\n  BRAND-NEW-FINDING: something nobody taught this to read\n"
             .to_string(),
         stderr: String::new(),
+        scratch: std::env::temp_dir(),
     };
     let err = gate
-        .legacy_rows(&run)
+        .legacy_rows(&cx(), std::slice::from_ref(&run))
         .expect("this gate translates its legacy's own output")
         .expect_err("an unrecognised finding is an error, never a line dropped");
     assert!(err.contains("BRAND-NEW-FINDING"), "{err}");
@@ -1165,9 +1166,10 @@ fn the_structure_lint_translator_refuses_output_it_recognised_nothing_in() {
         code: Some(0),
         stdout: String::new(),
         stderr: String::new(),
+        scratch: std::env::temp_dir(),
     };
     assert!(
-        gate.legacy_rows(&run)
+        gate.legacy_rows(&cx(), std::slice::from_ref(&run))
             .expect("this gate translates")
             .is_err(),
         "silence read as a clean tree is the exact defect this gate exists for"

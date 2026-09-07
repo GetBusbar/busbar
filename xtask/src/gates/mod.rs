@@ -28,6 +28,7 @@ pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
 pub mod plane_abi_neutrality;
+pub mod plane_purity;
 pub mod plane_transport_neutrality;
 pub mod qa_gate_dispatch;
 pub mod release_order;
@@ -40,6 +41,7 @@ pub mod tracing;
 pub mod workspace_deps;
 
 use std::collections::BTreeSet;
+use std::path::Path;
 
 use crate::ctx::{Ctx, Overlay};
 use crate::ledger::{Reconcile, Row, Verdict};
@@ -93,26 +95,57 @@ pub trait Gate {
         Vec::new()
     }
 
-    /// THE OTHER PROOF STYLE: read the legacy script's OWN OUTPUT into the rows this gate would
-    /// emit for the same tree, for the conversions whose legacy writes no ledger TSV to compare
-    /// against.
+    /// THE OTHER PROOF STYLE: extra legacy commands `--parity` must run beside the one named on
+    /// the command line, for a gate whose legacy half was more than one script. Each is run over
+    /// the same tree, with the same environment, and handed to [`Gate::legacy_rows`] in this order
+    /// after the primary.
+    fn legacy_companions(&self) -> Vec<Vec<String>> {
+        Vec::new()
+    }
+
+    /// Environment the legacy scripts need so `--parity` can read WHAT THEY MEASURED rather than
+    /// re-deriving it from prose. `scratch` is a directory the harness owns for this run.
+    fn legacy_env(&self, _scratch: &Path) -> Vec<(String, String)> {
+        Vec::new()
+    }
+
+    /// Whether `--parity` reads the legacy half through [`Gate::legacy_rows`] instead of through
+    /// the `$LEDGER` TSV. Answered ahead of the run so a gate without an adapter never pays for
+    /// the legacy invocation, and so a `None` from `legacy_rows` is a BUG rather than a silent
+    /// fall-back to an empty ledger file.
+    fn has_legacy_adapter(&self) -> bool {
+        false
+    }
+
+    /// Derive the legacy half's ledger rows from its own run — THE ROW-AGAINST-ROW PROOF.
     ///
-    /// A gate proves parity one of two ways and the two are not interchangeable. A legacy that
-    /// writes a `$LEDGER` TSV, or one whose findings can be READ BACK out of its stdout, is
-    /// compared ROW AGAINST ROW — that is this method, and it is the stronger claim, because the
-    /// only thing a diff can then be about is the offender set. A legacy that prints prose no
-    /// translator can key on is compared VERDICT AGAINST VERDICT over planted trees — that is
-    /// [`Gate::parity_probes`], where the plants are what stop "both found nothing" from passing
-    /// for agreement. A gate may declare both; it may not declare neither and still claim parity.
+    /// A gate proves parity one of two ways, and the two answer different questions. This one is
+    /// the stronger claim: the legacy's own measurement is translated into rows built by the SAME
+    /// constructor [`Gate::run`] uses, so the only thing a diff can be about is the offender set.
+    /// The other is [`Gate::parity_probes`] — verdict against verdict over planted trees — for a
+    /// legacy whose output no translator can key on; there the plants are what stop "both found
+    /// nothing" from passing for agreement. A gate may declare both. A gate that declares neither
+    /// is refused by the harness rather than claiming parity vacuously.
     ///
-    /// `None` — the default — means "this gate's legacy writes a ledger, or is proved by probes";
-    /// `cargo xtask gate <name> --parity` then reads `$LEDGER` instead. A translator MUST build its
-    /// rows with the same constructor [`Gate::run`] uses, so the only thing that can differ between
-    /// the two sides is the offender set, which is the only thing worth comparing.
-    fn legacy_rows(&self, _run: &crate::parity::LegacyRun) -> Option<Result<Vec<Row>, String>> {
+    /// `None` — the default — means the legacy script writes the TSV itself through `$LEDGER`, the
+    /// shape `release-gate/lib.sh::record` established, or that this gate is proved by probes. A
+    /// gate whose script PREDATES the ledger and prints a report instead supplies the adapter here,
+    /// and the adapter must read the script's own MEASUREMENT artefact (its hit list with its
+    /// `#SCAN` denominator, its counted table), never its prose: a parity proof built out of two
+    /// prose parsers proves the parsers agree, not the gates.
+    ///
+    /// `runs` carries the primary invocation first and every [`Gate::legacy_companions`] entry
+    /// after it, in the order they were declared — a single-script legacy reads `runs[0]` and
+    /// ignores the rest.
+    fn legacy_rows(&self, _cx: &Ctx, _runs: &[LegacyRun]) -> Option<Result<Vec<Row>, String>> {
         None
     }
 }
+
+/// ONE `LegacyRun`, WHICHEVER PROOF STYLE READS IT. The type lives in [`crate::parity`] beside the
+/// harness that fills it in, and is re-exported here because a gate's adapter is written against
+/// `gates::LegacyRun` and should not have to know which module the harness keeps it in.
+pub use crate::parity::LegacyRun;
 
 /// One planted tree both implementations are driven over.
 pub struct ParityProbe {
@@ -544,6 +577,22 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(workspace_deps::WorkspaceDepsGate),
         summary: "every crate dependency goes through the workspace table",
+    },
+    Registration {
+        name: "plane-purity",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(plane_purity::PlanePurityGate),
+        summary:
+            "no side channel in the neutral crates, no backwards reach, core names no LLM family",
+    },
+    Registration {
+        name: "plane-purity-strict",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(plane_purity::PlanePurityStrictGate),
+        summary:
+            "test-scope side-channel debt stays under the ceilings in qa/plane-purity-strict.toml",
     },
     Registration {
         name: "segregation",

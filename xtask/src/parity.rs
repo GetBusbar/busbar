@@ -45,15 +45,19 @@
 
 use std::path::{Path, PathBuf};
 
-/// One execution of a legacy gate script: what it printed and how it exited. A gate's
-/// [`Gate::legacy_rows`] translator reads this and nothing else.
+/// One execution of a legacy gate script: what it printed, what it WROTE, and how it exited. A
+/// gate's [`Gate::legacy_rows`] translator reads this and nothing else.
 #[derive(Debug, Clone)]
 pub struct LegacyRun {
     pub argv: Vec<String>,
-    /// `None` when the process was killed by a signal and never returned a code at all.
+    /// `None` when the process was killed by a signal, or never started, and so never returned a
+    /// code at all. Neither is green.
     pub code: Option<i32>,
     pub stdout: String,
     pub stderr: String,
+    /// The directory [`Gate::legacy_env`] was told to point its artefacts at. A translator that
+    /// reads a MEASUREMENT rather than prose — a hit list, a counted table — finds it under here.
+    pub scratch: PathBuf,
 }
 
 impl LegacyRun {
@@ -173,6 +177,7 @@ pub fn run_legacy_captured(
         code: out.status.code(),
         stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
         stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+        scratch: cx.scratch().to_path_buf(),
     })
 }
 
@@ -199,6 +204,55 @@ fn agrees_with_exit(run: &LegacyRun, rows: &[Row]) -> Result<(), String> {
     }
 }
 
+/// The adapter path: run the primary legacy command and every companion the gate names, then let
+/// the gate read their artefacts back. `Ok(None)` means this gate has no adapter and the ledger
+/// file is the legacy side, which is [`run_legacy`]'s job.
+fn legacy_via_adapter(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    legacy_argv: &[String],
+) -> Result<Option<Vec<Row>>, String> {
+    if !gate.has_legacy_adapter() {
+        return Ok(None);
+    }
+    let scratch = cx.scratch().join(format!("parity-{}", std::process::id()));
+    std::fs::create_dir_all(&scratch).map_err(|e| format!("parity scratch: {e}"))?;
+    let env = gate.legacy_env(&scratch);
+
+    let mut runs = vec![invoke(cx, legacy_argv, &env, &scratch)];
+    for companion in gate.legacy_companions() {
+        if companion.is_empty() {
+            return Err("parity: a gate named an empty companion command".to_string());
+        }
+        runs.push(invoke(cx, &companion, &env, &scratch));
+    }
+    match gate.legacy_rows(cx, &runs) {
+        Some(Ok(rows)) if rows.is_empty() => Err(format!(
+            "parity: the legacy half produced ZERO rows. A comparison against an empty legacy \
+             ledger passes vacuously, which is the opposite of a parity proof. stderr: {}",
+            runs.iter()
+                .map(|r| r.stderr.trim())
+                .collect::<Vec<_>>()
+                .join(" | ")
+        )),
+        Some(Ok(rows)) => {
+            // AND THE ROWS MUST AGREE WITH THE EXIT STATUS OF THE RUN THEY CAME OUT OF. The
+            // primary is the one that carries the verdict; a translator that read every row as
+            // PASS out of a script that exited on a finding is not reading its subject, and the
+            // parity green built on that reading is worthless.
+            agrees_with_exit(&runs[0], &rows)?;
+            Ok(Some(rows))
+        }
+        Some(Err(e)) => Err(e),
+        // `has_legacy_adapter` said there is one; a `None` here is the gate's own bug, and
+        // reporting it as "no adapter" would silently fall back to an empty ledger file.
+        None => Err(format!(
+            "parity: {} advertises a legacy adapter and then supplied none",
+            gate.name()
+        )),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ParityOutcome {
     pub legacy: Vec<Row>,
@@ -212,6 +266,32 @@ impl ParityOutcome {
     }
 }
 
+/// Run one legacy command, capturing what it PRINTED and what it WROTE, without judging either.
+/// Used by the adapter path, where the rows come out of the script's own measurement artefact.
+fn invoke(cx: &Ctx, argv: &[String], env: &[(String, String)], scratch: &Path) -> LegacyRun {
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]).current_dir(cx.root());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    match cmd.output() {
+        Ok(out) => LegacyRun {
+            argv: argv.to_vec(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            code: out.status.code(),
+            scratch: scratch.to_path_buf(),
+        },
+        Err(e) => LegacyRun {
+            argv: argv.to_vec(),
+            stdout: String::new(),
+            stderr: format!("{}: {e}", argv[0]),
+            code: None,
+            scratch: scratch.to_path_buf(),
+        },
+    }
+}
+
 /// The whole harness: legacy script, Rust gate, same tree, identical rows or a named diff.
 pub fn check(
     cx: &Ctx,
@@ -219,33 +299,11 @@ pub fn check(
     legacy_argv: &[String],
     ledger_env: &str,
 ) -> Result<ParityOutcome, String> {
-    // A gate whose legacy writes no ledger declares a translator instead. The translator is asked
-    // FIRST, because for those gates the ledger read below would fail on a file the script never
-    // had any reason to write.
-    let legacy = match gate.legacy_rows(&LegacyRun {
-        argv: legacy_argv.to_vec(),
-        code: None,
-        stdout: String::new(),
-        stderr: String::new(),
-    }) {
-        Some(_) => {
-            let run = run_legacy_captured(cx, legacy_argv, ledger_env)?;
-            let rows = gate
-                .legacy_rows(&run)
-                .expect("a gate that translates once translates always")?;
-            if rows.is_empty() {
-                return Err(format!(
-                    "parity: the legacy translator for `{}` read ZERO rows out of `{}`. A \
-                     comparison against nothing passes vacuously, which is the opposite of a \
-                     parity proof. stdout: {}",
-                    gate.name(),
-                    legacy_argv.join(" "),
-                    run.stdout.trim()
-                ));
-            }
-            agrees_with_exit(&run, &rows)?;
-            rows
-        }
+    // A gate whose legacy writes no ledger declares an adapter instead, and it is asked FIRST:
+    // for those gates the ledger read below would fail on a file the script never had any reason
+    // to write.
+    let legacy = match legacy_via_adapter(cx, gate, legacy_argv)? {
+        Some(rows) => rows,
         None => run_legacy(cx, legacy_argv, ledger_env)?,
     };
     let rust = gates::execute(gate, cx).rows;
