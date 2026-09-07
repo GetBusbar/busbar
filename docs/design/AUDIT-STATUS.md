@@ -6,7 +6,7 @@ An audit result describes one tree. When a scope's tree hash moves, its result e
 the scope reads `stale` -- the code must be looked at again. Nothing here is a wall clock;
 `age` is commits between the audited commit and HEAD.
 
-HEAD at generation: `bbde33fcc5b2811af5b5bab67cf9348f50e40958`
+HEAD at generation: `6e6d75e1048b5a76a420b5c7413bdd648a3e08cf`
 
 ## Totals over production LOC
 
@@ -95,28 +95,28 @@ HEAD at generation: `bbde33fcc5b2811af5b5bab67cf9348f50e40958`
 
 | scope | status | round | age (commits) | LOC | result | auditor | report |
 | --- | --- | ---: | ---: | ---: | --- | --- | --- |
-| `crates/api/src/tests` | unaudited | - | - | 1632 | unaudited | - | - |
-| `crates/auth-admin-tokens/src/tests` | unaudited | - | - | 56 | unaudited | - | - |
-| `crates/auth-static-plugin/src/tests` | unaudited | - | - | 92 | unaudited | - | - |
-| `crates/busbar-a2a-codec/src/tests` | unaudited | - | - | 98 | unaudited | - | - |
+| `crates/api/src/tests` | open | 1 | 5 | 1632 | findings (severities unrecorded) | opus-test-auditor-root | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md` |
+| `crates/auth-admin-tokens/src/tests` | open | 1 | 5 | 56 | findings (severities unrecorded) | opus-test-auditor-root | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md` |
+| `crates/auth-static-plugin/src/tests` | open | 1 | 5 | 92 | findings (severities unrecorded) | opus-test-auditor-root | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md` |
+| `crates/busbar-a2a-codec/src/tests` | open | 1 | 5 | 98 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
 | `crates/busbar-contract-transport/tests` | unaudited | - | - | 215 | unaudited | - | - |
 | `crates/busbar-contract/tests` | unaudited | - | - | 3012 | unaudited | - | - |
-| `crates/busbar-core/benches` | unaudited | - | - | 115 | unaudited | - | - |
+| `crates/busbar-core/benches` | open | 1 | 5 | 115 | findings (severities unrecorded) | opus-test-auditor-core | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md` |
 | `crates/busbar-core/src/tests` | unaudited | - | - | 11065 | unaudited | - | - |
-| `crates/busbar-core/tests` | unaudited | - | - | 898 | unaudited | - | - |
+| `crates/busbar-core/tests` | open | 1 | 5 | 898 | findings (severities unrecorded) | opus-test-auditor-core | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md` |
 | `crates/busbar-grammar/tests` | unaudited | - | - | 717 | unaudited | - | - |
 | `crates/busbar-kernel/tests` | unaudited | - | - | 5226 | unaudited | - | - |
 | `crates/busbar-llm-codec/src/tests` | unaudited | - | - | 16705 | unaudited | - | - |
 | `crates/busbar-llm/src/tests` | unaudited | - | - | 660 | unaudited | - | - |
-| `crates/busbar-mcp-codec/src/tests` | unaudited | - | - | 704 | unaudited | - | - |
+| `crates/busbar-mcp-codec/src/tests` | open | 1 | 5 | 704 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
 | `crates/busbar-mcp/src/tests` | unaudited | - | - | 73 | unaudited | - | - |
-| `crates/busbar-plane-a2a/tests` | unaudited | - | - | 1798 | unaudited | - | - |
-| `crates/busbar-plane-llm/tests` | unaudited | - | - | 2518 | unaudited | - | - |
+| `crates/busbar-plane-a2a/tests` | open | 1 | 5 | 1798 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plane-llm/tests` | stale | 1 | 5 | 2518 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
 | `crates/busbar-plane-mcp/tests` | unaudited | - | - | 1842 | unaudited | - | - |
-| `crates/busbar-plane-voice/src/tests` | unaudited | - | - | 1666 | unaudited | - | - |
-| `crates/busbar-plane-voice/tests` | unaudited | - | - | 186 | unaudited | - | - |
-| `crates/busbar-plugin/src/tests` | unaudited | - | - | 166 | unaudited | - | - |
-| `crates/busbar-plugin/tests` | unaudited | - | - | 1104 | unaudited | - | - |
+| `crates/busbar-plane-voice/src/tests` | open | 1 | 5 | 1666 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plane-voice/tests` | open | 1 | 5 | 186 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plugin/src/tests` | open | 1 | 5 | 166 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
+| `crates/busbar-plugin/tests` | open | 1 | 5 | 1104 | findings (severities unrecorded) | opus-test-auditor-planes | `/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md` |
 | `crates/busbar-substrate-values/src/tests` | unaudited | - | - | 2949 | unaudited | - | - |
 | `crates/busbar-substrate/src/tests` | unaudited | - | - | 961 | unaudited | - | - |
 | `crates/busbar-substrate/tests` | unaudited | - | - | 334 | unaudited | - | - |
@@ -167,8 +167,8 @@ HEAD at generation: `bbde33fcc5b2811af5b5bab67cf9348f50e40958`
 | `.github/workflows` | stale | 3 | 5 | 12389 | findings (HIGH=4, MEDIUM=3, LOW=3) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
 | `assets/readme` | unaudited | - | - | 3122 | unaudited | - | - |
 | `examples` | unaudited | - | - | 996 | unaudited | - | - |
-| `qa` | stale | 2 | 5 | 28265 | findings (HIGH=2, MEDIUM=4, LOW=2, NIT=3) | opus-instr-p3-construction | `construction gate fresh eyes: eight rules wrote FAIL into a ledger nobody read, the only gating legacy-reach ratchet and two doubles rows were never owed (now RED at 95 vs 92), seven stale unsafe waivers each forgave a paid debt, two waiver families invisible to the stale-waiver rule, three more rules pass on a renamed subject; 45/45 rules planted` |
-| `scripts` | stale | 4 | 5 | 46178 | findings (HIGH=8, MEDIUM=2, LOW=5) | opus-instr-p3-release | `release and landing scripts fresh eyes: the done gate's floor was one below its group count and env-overridable, the no-extras check flagged two contracted assets on every healthy release and accepted zero assets, the release gate read only the first ledger row per id, channel checks guessed the pointer they were meant to verify, the script lint's producers failed open; digests are never re-bound after promote (report)` |
+| `qa` | stale | 2 | 5 | 28335 | findings (HIGH=2, MEDIUM=4, LOW=2, NIT=3) | opus-instr-p3-construction | `construction gate fresh eyes: eight rules wrote FAIL into a ledger nobody read, the only gating legacy-reach ratchet and two doubles rows were never owed (now RED at 95 vs 92), seven stale unsafe waivers each forgave a paid debt, two waiver families invisible to the stale-waiver rule, three more rules pass on a renamed subject; 45/45 rules planted` |
+| `scripts` | stale | 5 | 5 | 46178 | findings (HIGH=20, MEDIUM=14, LOW=1) | opus-instr-p3-scripts-mz | `scripts m-z fresh eyes: six gates guarded their scan root but not their subject, the queue lander only ever landed the first commit, a secret gate nothing runs, the PGO proof asserted a flag not the artifact, a prose comment satisfied the plugin registry check; 37 plants, every survivor closed with a red proof; 33 fixes` |
 | `testing` | unaudited | - | - | 320 | unaudited | - | - |
 | `testing/a2a-governance` | open | 3 | 5 | 305 | findings (MEDIUM=1) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
 | `testing/a2a-harness` | stale | 3 | 5 | 11167 | findings (HIGH=3, MEDIUM=2) | opus-instr-p3 | `instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling` |
