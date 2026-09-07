@@ -769,3 +769,9 @@ async fn deliver(
         relayed_error: None,
     })
 }
+
+/// The private deadline arithmetic this module owns, proved directly. Declared here because
+/// `attempt_cap_ms` is private to this module and is not widened just to be looked at.
+#[cfg(test)]
+#[path = "tests/attempt_internal_tests.rs"]
+mod attempt_internal_tests;
