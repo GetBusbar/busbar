@@ -337,7 +337,7 @@
     },
     {
      "kind": "test",
-     "ref": "sticky_affinity_never_selects_zero_weight_drained_member",
+     "ref": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member",
      "proves": "sticky fast path skipped on weight 0",
      "source": "curated",
      "status": "mapped"
@@ -358,21 +358,21 @@
     },
     {
      "kind": "test",
-     "ref": "order_last_in_chain_wins",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins",
      "proves": "the last ordering gate wins",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "stale_order_filtered_against_post_restrict_set",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set",
      "proves": "the order is re-validated against the post-restrict set",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate",
+     "ref": "crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate",
      "proves": "empty order abstains to the base policy",
      "source": "curated",
      "status": "mapped"
@@ -393,7 +393,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:sticky_affinity_never_selects_zero_weight_drained_member, test:sticky_fall_through_records_reason, test:test_sticky_yields_when_tripped, test:order_last_in_chain_wins, test:stale_order_filtered_against_post_restrict_set, test:last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:ordered_walk_falls_through_to_swrr_when_no_preferred_ready, test:ordered_walk_empty_order_is_swrr"
+   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member, test:sticky_fall_through_records_reason, test:test_sticky_yields_when_tripped, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:ordered_walk_falls_through_to_swrr_when_no_preferred_ready, test:ordered_walk_empty_order_is_swrr"
   },
   {
    "id": "PB-6",
@@ -961,14 +961,14 @@
     },
     {
      "kind": "test",
-     "ref": "hash_chain_links_and_verifies",
+     "ref": "crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies",
      "proves": "genesis prev_hash is empty; tamper breaks verify",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "export_load_roundtrip_resumes_chain",
+     "ref": "crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain",
      "proves": "restore resumes the sequence",
      "source": "curated",
      "status": "mapped"
@@ -989,7 +989,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:the_admin_audit_digest_is_unchanged_by_the_unification, test:hash_chain_links_and_verifies, test:export_load_roundtrip_resumes_chain, test:admin_audit_chain_boot_verifies_from_frozen_bytes, oracle-cell:admin.ops|GetAudit|ok"
+   "verdict_detail": "test:the_admin_audit_digest_is_unchanged_by_the_unification, test:crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies, test:crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain, test:admin_audit_chain_boot_verifies_from_frozen_bytes, oracle-cell:admin.ops|GetAudit|ok"
   },
   {
    "id": "PB-21",
@@ -1081,7 +1081,7 @@
     },
     {
      "kind": "test",
-     "ref": "chain_and_parent_blocks_child_and_charges_nothing",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing",
      "proves": "a blocked attempt charges nothing on any chain bucket",
      "source": "curated",
      "status": "mapped"
@@ -1095,7 +1095,7 @@
     },
     {
      "kind": "test",
-     "ref": "budget_cap_derives_from_ledger_and_rate_card",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::budget_cap_derives_from_ledger_and_rate_card",
      "proves": "the derived + fee lookahead",
      "source": "curated",
      "status": "mapped"
@@ -1109,14 +1109,14 @@
     },
     {
      "kind": "test",
-     "ref": "concurrent_gauge_holds_and_releases",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::concurrent_gauge_holds_and_releases",
      "proves": "the concurrent gauge",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "disabled_group_freezes_the_chain",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain",
      "proves": "the FREEZE arm",
      "source": "curated",
      "status": "mapped"
@@ -1130,7 +1130,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_governance_over_budget_native_envelope_all_ingress, test:test_governance_rate_limit_429_native_envelope_all_ingress, test:chain_and_parent_blocks_child_and_charges_nothing, test:test_group_blocked_429_names_the_budget_group, test:budget_cap_derives_from_ledger_and_rate_card, test:test_group_token_spend_blocks_chain_admission, test:concurrent_gauge_holds_and_releases, test:disabled_group_freezes_the_chain, gate:scripts/construction-gate.sh"
+   "verdict_detail": "test:test_governance_over_budget_native_envelope_all_ingress, test:test_governance_rate_limit_429_native_envelope_all_ingress, test:crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing, test:test_group_blocked_429_names_the_budget_group, test:crates/busbar-core/src/governance/tests/limits_tests.rs::budget_cap_derives_from_ledger_and_rate_card, test:test_group_token_spend_blocks_chain_admission, test:crates/busbar-core/src/governance/tests/limits_tests.rs::concurrent_gauge_holds_and_releases, test:crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain, gate:scripts/construction-gate.sh"
   },
   {
    "id": "PB-23",
@@ -1763,49 +1763,49 @@
     },
     {
      "kind": "test",
-     "ref": "test_empty_chain_is_open_front_door",
+     "ref": "crates/busbar-core/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door",
      "proves": "an empty chain is Open with or without a credential",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_nonempty_chain_fails_closed_on_all_pass",
+     "ref": "crates/busbar-core/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass",
      "proves": "all-Pass without a keys arm is Denied",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_keys_in_chain_sets_flag_not_module",
+     "ref": "crates/busbar-core/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module",
      "proves": "the keys arm sets keys_in_chain and boxes no module",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_chain_identifies_with_module_and_principal",
+     "ref": "crates/busbar-core/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal",
      "proves": "the first Identify wins",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_extract_client_token_precedence_is_authorization_first",
+     "ref": "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first",
      "proves": "carrier precedence: Authorization first",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key",
+     "ref": "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key",
      "proves": "a non-Bearer Authorization falls through to x-api-key",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key",
+     "ref": "crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key",
      "proves": "a non-Bearer Authorization falls through to x-goog-api-key",
      "source": "curated",
      "status": "mapped"
@@ -1833,7 +1833,7 @@
     },
     {
      "kind": "test",
-     "ref": "an_unauthenticated_chain_admits_nothing_to_the_cache",
+     "ref": "crates/busbar-core/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache",
      "proves": "run_chain_cached caches nothing for a denied chain",
      "source": "curated",
      "status": "mapped"
@@ -1847,7 +1847,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:test_empty_chain_is_open_front_door, test:test_nonempty_chain_fails_closed_on_all_pass, test:test_keys_in_chain_sets_flag_not_module, test:test_chain_identifies_with_module_and_principal, test:test_extract_client_token_precedence_is_authorization_first, test:test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:verdict_rules_and_expiry, test:bounded_eviction, test:module_partitions_and_flush, test:an_unauthenticated_chain_admits_nothing_to_the_cache, test:test_admin_v1_credential_cache_and_flush_endpoint"
+   "verdict_detail": "oracle-cell:http.crosscut|bearer-and-x-api-key, test:crates/busbar-core/src/auth/tests/tests.rs::test_empty_chain_is_open_front_door, test:crates/busbar-core/src/auth/tests/tests.rs::test_nonempty_chain_fails_closed_on_all_pass, test:crates/busbar-core/src/auth/tests/tests.rs::test_keys_in_chain_sets_flag_not_module, test:crates/busbar-core/src/auth/tests/tests.rs::test_chain_identifies_with_module_and_principal, test:crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_precedence_is_authorization_first, test:crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key, test:crates/busbar-core/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key, test:verdict_rules_and_expiry, test:bounded_eviction, test:module_partitions_and_flush, test:crates/busbar-core/src/auth/tests/plugin_chain_tests.rs::an_unauthenticated_chain_admits_nothing_to_the_cache, test:test_admin_v1_credential_cache_and_flush_endpoint"
   },
   {
    "id": "PB-36",
@@ -2361,14 +2361,14 @@
     },
     {
      "kind": "test",
-     "ref": "pool_scoped_accrual_and_refund_mirror_the_charge",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::pool_scoped_accrual_and_refund_mirror_the_charge",
      "proves": "accrual and refund land on the pool the admission charged",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "budget_block_carries_downgrade_target",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::budget_block_carries_downgrade_target",
      "proves": "the block names the downgrade pool",
      "source": "curated",
      "status": "mapped"
@@ -2389,7 +2389,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fb|member-down, test:pool_scoped_accrual_and_refund_mirror_the_charge, test:budget_block_carries_downgrade_target, test:test_budget_exhaustion_downgrades_pool, test:test_downgrade_cycle_terminates_via_the_revisit_guard"
+   "verdict_detail": "oracle-cell:route.failover|fb|member-down, test:crates/busbar-core/src/governance/tests/limits_tests.rs::pool_scoped_accrual_and_refund_mirror_the_charge, test:crates/busbar-core/src/governance/tests/limits_tests.rs::budget_block_carries_downgrade_target, test:test_budget_exhaustion_downgrades_pool, test:test_downgrade_cycle_terminates_via_the_revisit_guard"
   },
   {
    "id": "PB-48",
@@ -2718,7 +2718,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_zero_weight_member_is_never_selected",
+     "ref": "crates/busbar-core/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected",
      "proves": "weight-0 lanes are filtered before selection",
      "source": "curated",
      "status": "mapped"
@@ -2746,7 +2746,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:test_zero_weight_member_is_never_selected, test:test_swrr_no_open_selection, test:test_swrr_all_down_returns_none, test:a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
+   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-core/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected, test:test_swrr_no_open_selection, test:test_swrr_all_down_returns_none, test:a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
   },
   {
    "id": "PB-58",
@@ -2930,7 +2930,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "required_scope_matrix",
+     "ref": "crates/busbar-core/src/admin/v1/contract/tests/tests.rs::required_scope_matrix",
      "proves": "reads are read-only, mutations full, config/validate and plugins/inspect read-only",
      "source": "curated",
      "status": "mapped"
@@ -2951,7 +2951,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
+   "verdict_detail": "test:crates/busbar-core/src/admin/v1/contract/tests/tests.rs::required_scope_matrix, test:required_scope_mutations_are_full, test:openapi_paths_annotate_required_scope"
   },
   {
    "id": "PB-63",
@@ -3312,14 +3312,14 @@
     },
     {
      "kind": "test",
-     "ref": "the_shared_internal_predicate_covers_every_range_any_plane_ever_checked",
+     "ref": "crates/busbar-substrate/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked",
      "proves": "one shared predicate across planes",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_ssrf_blocks_metadata_denylist_by_default, test:test_ssrf_blocked_returns_exact_host_string, test:test_reject_cidr_metadata_entries, test:test_global_allow_overrides_blocked_metadata_hosts, test:test_allow_all_metadata_beats_nonempty_blocked_list, test:test_ssrf_allows_private_and_loopback_by_default, test:test_validate_rejects_non_https_base_url, test:test_validate_token_url_ssrf_and_scheme, test:the_shared_internal_predicate_covers_every_range_any_plane_ever_checked"
+   "verdict_detail": "test:test_ssrf_blocks_metadata_denylist_by_default, test:test_ssrf_blocked_returns_exact_host_string, test:test_reject_cidr_metadata_entries, test:test_global_allow_overrides_blocked_metadata_hosts, test:test_allow_all_metadata_beats_nonempty_blocked_list, test:test_ssrf_allows_private_and_loopback_by_default, test:test_validate_rejects_non_https_base_url, test:test_validate_token_url_ssrf_and_scheme, test:crates/busbar-substrate/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked"
   },
   {
    "id": "PB-69",
@@ -3638,28 +3638,28 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "missing_group_fails_closed",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::missing_group_fails_closed",
      "proves": "MissingGroup fails closed at admission",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "disabled_group_freezes_the_chain",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain",
      "proves": "a frozen group blocks the chain",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "chain_and_parent_blocks_child_and_charges_nothing",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing",
      "proves": "a parent block charges nothing",
      "source": "curated",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "total_window_blocks_without_retry_after",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::total_window_blocks_without_retry_after",
      "proves": "a block without Retry-After",
      "source": "curated",
      "status": "mapped"
@@ -3694,7 +3694,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:missing_group_fails_closed, test:disabled_group_freezes_the_chain, test:chain_and_parent_blocks_child_and_charges_nothing, test:total_window_blocks_without_retry_after, test:test_try_admit_rejects_at_group_cap, test:test_chain_enforcement_rejects_naming_the_blocking_group, test:test_governance_rate_limit_429_native_envelope_all_ingress, test:test_budget_over_quota_bedrock_envelope"
+   "verdict_detail": "test:crates/busbar-core/src/governance/tests/limits_tests.rs::missing_group_fails_closed, test:crates/busbar-core/src/governance/tests/limits_tests.rs::disabled_group_freezes_the_chain, test:crates/busbar-core/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing, test:crates/busbar-core/src/governance/tests/limits_tests.rs::total_window_blocks_without_retry_after, test:test_try_admit_rejects_at_group_cap, test:test_chain_enforcement_rejects_naming_the_blocking_group, test:test_governance_rate_limit_429_native_envelope_all_ingress, test:test_budget_over_quota_bedrock_envelope"
   },
   {
    "id": "PB-80",
@@ -4181,7 +4181,7 @@
     },
     {
      "kind": "test",
-     "ref": "refund_returns_the_fee_but_never_the_requests_limit_slot",
+     "ref": "crates/busbar-core/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot",
      "proves": "a refund returns the fee but never the requests slot",
      "source": "curated",
      "status": "mapped"
@@ -4202,7 +4202,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|primary-cut-body, test:refund_returns_the_fee_but_never_the_requests_limit_slot, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, gate:scripts/construction-gate.sh"
+   "verdict_detail": "oracle-cell:route.failover|fo|primary-cut-body, test:crates/busbar-core/src/governance/tests/limits_tests.rs::refund_returns_the_fee_but_never_the_requests_limit_slot, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx, gate:scripts/construction-gate.sh"
   },
   {
    "id": "PB-92",
