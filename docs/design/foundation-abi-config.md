@@ -353,7 +353,7 @@ Today `default_plane_sections` (`config.rs:262`) already folds `test_registered_
 a frozen 4-name `NAMED_MAP_SECTIONS` tail — so a *registered* plane's section enters the hook-reference
 grammar automatically. The gap is the **grep gates**: SEVERAL scripts hard-code the plane list, each
 independently — `scripts/plane-purity-lint.sh:110-111,205,212,236`, `scripts/plane-grep-gate.sh:92-96`,
-and the `plane_roots_resolve mcp a2a` callers (`response-header-lint.sh:136`, `structure-lint.sh:95`,
+and the `plane_roots_resolve mcp a2a` callers (`xtask/src/gates/response_header.rs::scan_roots`, `structure-lint.sh:95`,
 `blocking-ffi-lint.sh:335`, `xtask/src/gates/settings_leak.rs::scan_roots` via `xtask::planes`) — all list
 `llm|mcp|a2a` and are **stale for voice**. Only `scripts/plane-abi-neutrality.sh:33` already lists
 `voice/realtime/audio` (proving the pattern: it is self-checked against an identical `mandated` set at

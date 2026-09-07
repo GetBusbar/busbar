@@ -3538,14 +3538,14 @@
     },
     {
      "kind": "lint",
-     "ref": "scripts/response-header-lint.sh",
+     "ref": "xtask/src/gates/response_header.rs",
      "proves": "every injected response header is an opt-in advanced.response_headers toggle from one site",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled, test:route_policy_headers_present_only_when_both_gates_open, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:scripts/response-header-lint.sh"
+   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled, test:route_policy_headers_present_only_when_both_gates_open, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:xtask/src/gates/response_header.rs"
   },
   {
    "id": "PB-74",
