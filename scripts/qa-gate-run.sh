@@ -51,7 +51,7 @@ TARBALL_DEFAULT="/tmp/busbar-target.tzst"
 # is the one on the DEFAULT branch, not the one in the commit being gated. A policy written in the
 # workflow therefore cannot take effect until it has already shipped — so a qa-gate improvement
 # could never gate the release that carried it, and the run would go green having done less than
-# anyone reading it thinks. `qa-gate-dispatch-lint.py` exists to catch exactly that, and its own
+# anyone reading it thinks. `cargo xtask gate qa-gate-dispatch` exists to catch exactly that, and its own
 # remedy is this: gate LOGIC belongs in this script, which rides the commit.
 #
 # The two contexts still want different answers, and they still get them. `release-check.sh`

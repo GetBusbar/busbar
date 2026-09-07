@@ -250,13 +250,13 @@ jobs:
       # release, so a byte-identical rule would make every prose edit red until the very release it
       # is meant to gate. Self-test first, as everywhere else here.
       - name: qa-gate dispatcher drift self-test
-        run: python3 scripts/qa-gate-dispatch-lint.py --selftest
+        run: cargo xtask gate qa-gate-dispatch --selftest
       # `fetch-depth: 0` is not set on this job's checkout, so origin/main may be absent; fetch it
       # explicitly rather than letting the lint fail closed for a reason that is not drift.
       - name: Fetch the default branch (the dispatcher that will actually fire)
         run: git fetch --no-tags --depth=1 origin main
       - name: qa-gate dispatcher drift
-        run: python3 scripts/qa-gate-dispatch-lint.py
+        run: cargo xtask gate qa-gate-dispatch
       # ARTIFACT CONTRACT wholeness. The contract is data (.github/artifact-contract.json) and the
       # verifier implements it, so the two can drift: a row declared with no implementation is a
       # property everybody believes is checked and nobody checks, and a check outside the contract is

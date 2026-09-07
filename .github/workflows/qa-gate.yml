@@ -126,7 +126,7 @@ env:
   # THE POLICY LIVES IN `scripts/qa-gate-run.sh`, NOT HERE, and deliberately so. `workflow_run`
   # loads this file from the DEFAULT branch, so anything written here gates every commit except
   # the one that introduced it — a qa-gate improvement could not gate the release that shipped it.
-  # `qa-gate-dispatch-lint.py` fails the build on exactly that shape. The script rides the commit,
+  # `cargo xtask gate qa-gate-dispatch` fails the build on exactly that shape. The script rides the commit,
   # so `BUSBAR_RELEASE_CHECK_REQUIRE_SIBLINGS` is exported there with the reasoning intact.
 
 jobs:
