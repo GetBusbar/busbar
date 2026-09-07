@@ -30,10 +30,12 @@ use crate::migration::{
     migrate, LegacyFigures, LegacyLedgerRows, MigrationError, NodeLocalRecords, Outcome,
 };
 use crate::recompute::{
-    Divergence, Finding, Posting, PostingOrigin, PricedLine, RateCard, Watermark,
+    DerivedPrice, Divergence, Finding, HistoryArchive, Posting, PostingOrigin, PricedLine,
+    SealedHistory, Verdict, Watermark, BASIS_POINTS,
 };
 use crate::settle::Ledger;
 use crate::totals::Totals;
+use busbar_unit_cost::{CurrencyCode, History, HistorySeq};
 
 /// A signer that stamps the digest of what it was handed, so one body can be told from another.
 struct StampSigner;
@@ -337,14 +339,20 @@ fn the_recompute_diagnostics_carry_their_figures() {
     assert!(text.contains("450"), "{text}");
 
     for (divergence, needles) in [
-        (Divergence::PolicyMissing { epoch: 12 }, vec!["12"]),
         (
-            Divergence::CardMissing {
-                epoch: 12,
-                version: 34,
+            Divergence::HistoryMissing {
+                seq: HistorySeq(12),
+            },
+            vec!["12"],
+        ),
+        (
+            Divergence::CardSeq {
+                posted: HistorySeq(12),
+                resolved: HistorySeq(34),
             },
             vec!["12", "34"],
         ),
+        (Divergence::NoCardInForce { at: 77 }, vec!["77"]),
         (
             Divergence::PreTier {
                 posted: 11,
@@ -373,11 +381,21 @@ fn the_recompute_diagnostics_carry_their_figures() {
             posted: 500,
             recomputed: 450,
         },
+        verdict: Verdict::Alarm,
     };
     let text = finding.to_string();
     assert!(text.contains('3'), "{text}");
     assert!(text.contains("41"), "{text}");
     assert!(text.contains("450"), "{text}");
+    // The verdict is on the face of the line, because a stale cache after an amendment and a hand
+    // edit under an unmoved head read identically without it.
+    assert!(text.contains("ALARM"), "{text}");
+    assert!(Finding {
+        verdict: Verdict::Stale,
+        ..finding
+    }
+    .to_string()
+    .contains("stale cache"));
 }
 
 /// The hex digest is the digest, in lowercase hex, for a vector anybody can check by hand.
@@ -577,20 +595,29 @@ fn a_ledger_says_whether_it_dual_writes() {
     assert!(format!("{:?}", Ledger::new()).contains("false"));
 }
 
-/// An empty card is empty at the version it was asked for, and prices every class at nothing.
+/// An archive over a history nothing was appended to has no head and no snapshot, and every bucket
+/// on it is at full price.
+///
+/// The card the recompute reads is no longer a version the archive keeps — it is the entry the
+/// history resolves at the line's instant — so what is left to state here is the archive's own
+/// answers when it holds nothing: a head of `None`, a view at `None`, and a tier of full price. A
+/// head of zero for an empty history would let a caller snapshot an entry that is not there and read
+/// a hole as a card, and a tier of zero would price a whole deployment at nothing.
 #[test]
-fn an_empty_card_keeps_the_version_it_was_asked_for() {
-    let card = RateCard::empty(42);
-    assert_eq!(card.version, 42);
-    assert!(card.prices.is_empty());
-    assert_eq!(card.per_request_fee, 0);
-    assert_eq!(card.price(&MeterClassId::new("input")), 0);
-    assert_ne!(
-        card,
-        RateCard::default(),
-        "a card at a version is not the default one"
+fn an_empty_archive_has_no_head_and_prices_every_bucket_at_full() {
+    let archive = SealedHistory::new(History::new());
+    assert_eq!(archive.head(), None);
+    assert!(archive.view_at(HistorySeq::OPENING).is_none());
+    assert_eq!(archive.tier_bp(&key("b")), BASIS_POINTS);
+
+    // One entry, and the head is that entry — not the count of them.
+    let sealed = SealedHistory::new(History::opening(busbar_unit_cost::RateCard::absent(0), 0));
+    assert_eq!(sealed.head(), Some(HistorySeq::OPENING));
+    assert!(sealed.view_at(HistorySeq::OPENING).is_some());
+    assert!(
+        sealed.view_at(HistorySeq(1)).is_none(),
+        "an archive never answers with a snapshot it has not reached"
     );
-    assert_eq!(RateCard::empty(0), RateCard::default());
 }
 
 /// A posting's position is its own node and its own sequence number.
@@ -605,16 +632,16 @@ fn a_postings_position_is_its_own_node_and_sequence() {
         node_seq: 77,
         key: key("b"),
         window_start: 1,
-        policy_epoch: 1,
-        rate_card_version: 1,
+        lane: "lane-a".to_string(),
         lines: vec![PricedLine {
             class: MeterClassId::new("input"),
             quantity: 3,
         }],
         fee_count: 1,
         tier_bp: 10_000,
-        pre_tier_amount: 0,
-        priced_amount: 0,
+        arrived_ms: 1,
+        currency: CurrencyCode::USD,
+        cached: DerivedPrice::default(),
         origin: PostingOrigin::Client,
     };
     assert_eq!(posting.position(), (5, 77));
@@ -981,37 +1008,28 @@ fn a_book_is_empty_only_before_anything_touches_it() {
 /// checked nothing would report itself clean over money it never looked at.
 #[test]
 fn the_recompute_checks_what_its_own_node_is_behind_and_counts_it() {
-    use std::collections::BTreeMap;
-
-    use crate::recompute::{recompute, SealedPolicy};
+    use crate::recompute::recompute;
 
     let posting_at = |node: u64, node_seq: u64| Posting {
         node,
         node_seq,
         key: key("b"),
         window_start: 1,
-        policy_epoch: 1,
-        rate_card_version: 1,
+        lane: "lane-a".to_string(),
         lines: Vec::new(),
         fee_count: 0,
         tier_bp: 10_000,
-        pre_tier_amount: 0,
-        priced_amount: 0,
+        arrived_ms: 1,
+        currency: CurrencyCode::USD,
+        cached: DerivedPrice::default(),
         origin: PostingOrigin::Internal,
     };
-    let mut cards = BTreeMap::new();
-    cards.insert(1u64, RateCard::empty(1));
-    let mut policies: BTreeMap<u64, SealedPolicy> = BTreeMap::new();
-    policies.insert(
-        1,
-        SealedPolicy {
-            epoch: 1,
-            cards,
-            tiers: BTreeMap::new(),
-        },
-    );
+    // An absent card over a single-entry history: nothing is priced, so every line's lookup is zero
+    // and every cache already agrees with it. What is being counted here is which lines the pass
+    // LOOKS at, so the arithmetic is deliberately the one that cannot itself produce a finding.
+    let archive = SealedHistory::new(History::opening(busbar_unit_cost::RateCard::absent(0), 0));
 
-    let postings = vec![
+    let mut postings = vec![
         posting_at(1, 1),
         posting_at(1, 2),
         posting_at(2, 1),
@@ -1019,19 +1037,23 @@ fn the_recompute_checks_what_its_own_node_is_behind_and_counts_it() {
     ];
 
     // From the beginning, every posting is owed a recompute.
-    let first = recompute(Watermark::start(), &postings, &policies);
+    let first = recompute(Watermark::start(), &mut postings, &archive);
     assert_eq!(first.checked, 4, "nothing has been checked before");
-    assert!(first.is_clean());
+    assert!(first.is_clean(), "{:?}", first.findings);
     assert_eq!(first.watermark.mark_for(1), Some(2));
     assert_eq!(first.watermark.mark_for(2), Some(2));
 
     // Run again against the mark it left: nothing is behind it any more.
-    let second = recompute(first.watermark.clone(), &postings, &policies);
+    let second = recompute(first.watermark.clone(), &mut postings, &archive);
     assert_eq!(second.checked, 0, "a posting is not rechecked twice");
     assert_eq!(second.watermark, first.watermark);
 
     // A mark on one node leaves the OTHER node's postings still owed, whatever their numbers.
-    let one_node_only = recompute(Watermark::from_pairs([(1u64, 9u64)]), &postings, &policies);
+    let one_node_only = recompute(
+        Watermark::from_pairs([(1u64, 9u64)]),
+        &mut postings,
+        &archive,
+    );
     assert_eq!(
         one_node_only.checked, 2,
         "a mark on one node never skips another node's postings"
