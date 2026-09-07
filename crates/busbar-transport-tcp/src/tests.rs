@@ -8,6 +8,9 @@ use busbar_contract_transport::wire::FrameMeta;
 use futures::StreamExt;
 use std::sync::Arc as StdArc;
 
+/// New file per the mutation-hardening pass on this crate: `src/tests/mutation_hardening.rs`.
+mod mutation_hardening;
+
 struct TestCfg {
     bind: String,
 }
