@@ -1,120 +1,132 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The independent recompute: pricing every posting again, from the policy it was priced under.
+//! The recompute: pricing every line again by lookup, from the dated history it was priced under.
 //!
-//! ## Why "independent" is the load-bearing word
+//! ## What a ledger line is now, and what it is not
 //!
-//! The pricing path and the checking path must not share code, because a bug in shared code passes
-//! its own check. So this walks the postings and reprices them from the sealed policy — the rate
-//! card at the posting's card version, the per-request fee, and the bucket's tier — and compares
-//! the answer to the figure the posting carries. A divergence is an alarm, not a correction: the
-//! recompute does not know which of the two numbers is right, only that they disagree.
+//! A line carries QUANTITIES and the instant they happened. It also carries the number of the
+//! history head it was settled under, the entry that head resolved to at that instant, and the
+//! currency the bucket is denominated in. It carries a price as well — and that price is a CACHE.
+//! It is re-derivable from the quantities and the history at any moment, it is kept only so that a
+//! read does not have to walk a day of lines, and where it disagrees with the lookup the lookup is
+//! right.
 //!
-//! ## Why the watermark is a posting and not a checkpoint
+//! ## Why the recompute became the arbiter
+//!
+//! It used to be an auditor: it repriced from a sealed policy, compared, and alarmed, because it
+//! did not know which of the two numbers was correct. Under a dated history it does know. The
+//! history is append-only and journalled, the quantities are immutable, and the lookup over the two
+//! is a pure function — so the lookup IS the amount, and a stored figure that differs from it is by
+//! definition the stale one. So a disagreement is corrected here rather than only reported.
+//!
+//! That does not make every disagreement ordinary. Two cases have to be told apart, and telling
+//! them apart is the whole of [`Verdict`]:
+//!
+//! - The head has ADVANCED since the line was settled. Somebody amended the history behind this
+//!   line, the cache was computed under an older snapshot, and it going stale is exactly what an
+//!   amendment does. Correct it, journal the correction, do not alarm.
+//! - The head has NOT moved. Nothing legitimate can have changed the answer, so the quantities or
+//!   the cache have been edited by hand. Correct it AND alarm: this is the tamper case the
+//!   recompute exists for, and it must not be laundered into a routine cache refresh.
+//!
+//! ## Why the watermark is a line and not a checkpoint
 //!
 //! The obvious design is "recompute everything since the last checkpoint". It is wrong, and the
 //! reason is arithmetic rather than taste: at a busy node's rate a checkpoint is a few tens of
-//! milliseconds old, so "since the last checkpoint" covers a few percent of the postings and quietly
-//! skips the rest. Worse, a posting edited before the last checkpoint would then never be looked at
-//! again — which is exactly the posting somebody would edit.
+//! milliseconds old, so "since the last checkpoint" covers a few percent of the lines and quietly
+//! skips the rest. Worse, a line edited before the last checkpoint would then never be looked at
+//! again — which is exactly the line somebody would edit.
 //!
 //! So the watermark is the last `node_seq` that was actually recomputed FOR EACH NODE, it is carried
 //! in the reconciliation entry so it survives a restart, and the requirement is that it REACHES THE
 //! HEAD each tick. A hand-corrupted amount older than the last checkpoint still alarms, and that is
 //! stated as a test rather than as a paragraph.
 //!
-//! Per node, because postings arrive interleaved. One `(node, node_seq)` pair for the whole run,
-//! compared lexicographically, is ahead of every posting a lower-numbered node writes from the
-//! moment it passes a higher-numbered one — so those postings are skipped permanently and the pass
+//! Per node, because lines arrive interleaved. One `(node, node_seq)` pair for the whole run,
+//! compared lexicographically, is ahead of every line a lower-numbered node writes from the
+//! moment it passes a higher-numbered one — so those lines are skipped permanently and the pass
 //! calls itself clean over money it never looked at.
 //!
 //! ## The origin rule on the fee line
 //!
 //! The per-request fee is charged on client-originated work and not on the rest, so the recompute
-//! applies the same rule: a posting whose origin is not a client prices its fee line at zero. On a
-//! deployment with no rate card the fee line is the whole of what the recompute checks, which is
-//! why it is not folded into the class loop.
+//! applies the same rule: a line whose origin is not a client prices its fee line at zero. On a
+//! deployment with no rate card the fee line is the whole of what the recompute checks.
 
 use std::collections::BTreeMap;
 
 use busbar_caps::MeterClassId;
+use busbar_unit_cost::{
+    price, CurrencyCode, History, HistorySeq, HistoryView, Posting as CostPosting, Priced, Quantity,
+    Unpriceable,
+};
 
 use crate::totals::TotalsKey;
-
-/// A price list, as one policy epoch sealed it.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RateCard {
-    /// The card's version, as a posting names it.
-    pub version: u64,
-    /// What one unit of each declared meter class costs, in nano-units, by class name.
-    ///
-    /// Keyed by name for the same reason a bucket's dimension is: the card is part of a sealed
-    /// policy that gets digested, so its keys need a total order.
-    pub prices: BTreeMap<String, i128>,
-    /// What one client-originated request costs, in nano-units, before any class line.
-    pub per_request_fee: i128,
-}
-
-impl RateCard {
-    /// An empty card at a version: no class prices, no fee. This is the no-card deployment, and it
-    /// is a real configuration rather than a degenerate one.
-    pub fn empty(version: u64) -> Self {
-        RateCard {
-            version,
-            prices: BTreeMap::new(),
-            per_request_fee: 0,
-        }
-    }
-
-    /// The price of one unit of `class`, or zero if the card does not name it.
-    pub fn price(&self, class: &MeterClassId) -> i128 {
-        self.prices.get(class.as_str()).copied().unwrap_or(0)
-    }
-}
-
-/// What one policy epoch sealed: the cards in force, and the tier that applied to each bucket.
-#[derive(Debug, Clone, Default)]
-pub struct SealedPolicy {
-    /// Which epoch.
-    pub epoch: u64,
-    /// The cards, by version.
-    pub cards: BTreeMap<u64, RateCard>,
-    /// The tier in basis points, per bucket key. Absent means no tier, which is ten thousand basis
-    /// points — full price.
-    pub tiers: BTreeMap<TotalsKey, u32>,
-}
-
-impl SealedPolicy {
-    /// The card at `version`, if this epoch sealed one.
-    pub fn card(&self, version: u64) -> Option<&RateCard> {
-        self.cards.get(&version)
-    }
-
-    /// The tier for `key`, in basis points. Ten thousand when none was sealed.
-    pub fn tier_bp(&self, key: &TotalsKey) -> u32 {
-        self.tiers.get(key).copied().unwrap_or(BASIS_POINTS)
-    }
-}
-
-/// Where the policies live. A trait so the recompute reads sealed policy rather than live
-/// configuration: pricing a two-day-old posting against today's card would report every price
-/// change as a defect.
-pub trait PolicyArchive {
-    /// The policy sealed at `epoch`.
-    fn at(&self, epoch: u64) -> Option<&SealedPolicy>;
-}
-
-impl PolicyArchive for BTreeMap<u64, SealedPolicy> {
-    fn at(&self, epoch: u64) -> Option<&SealedPolicy> {
-        self.get(&epoch)
-    }
-}
 
 /// Ten thousand basis points is full price.
 pub const BASIS_POINTS: u32 = 10_000;
 
-/// One quantity, against one declared class.
+/// The dated card history the recompute reads, and the tier each bucket's chain is on.
+///
+/// A trait so the recompute reads a SEALED history rather than live configuration: pricing a
+/// two-day-old line against today's card would report every price change as a defect. Under the
+/// dated model that statement gets sharper — the history is the record of what things cost and
+/// since when, so "the card at this line's instant, under the snapshot this line was settled at" is
+/// a question with one answer forever.
+pub trait HistoryArchive {
+    /// The history as it stood at `at`: every entry with `seq <= at`. `None` when the archive has
+    /// no snapshot at that number at all, which is itself a finding.
+    fn view_at(&self, at: HistorySeq) -> Option<HistoryView<'_>>;
+
+    /// The head the history has reached NOW. This is what decides whether a stale cache is an
+    /// ordinary consequence of an amendment or a line somebody edited.
+    fn head(&self) -> Option<HistorySeq>;
+
+    /// The tier for `key`, in basis points. Ten thousand when none was sealed, which is full price.
+    fn tier_bp(&self, key: &TotalsKey) -> u32;
+}
+
+/// A history with the tiers that went with it — the archive the recompute reads.
+///
+/// The tier is a property of the chain a request was admitted through rather than of the card, so
+/// it cannot live inside a `CardEntry`; it is sealed beside the history for the same reason the
+/// history is sealed at all, which is that repricing against a tier somebody changed yesterday
+/// would report every tier change as a defect.
+#[derive(Debug, Clone, Default)]
+pub struct SealedHistory {
+    /// The dated cards.
+    pub history: History,
+    /// The tier in basis points, per bucket key. Absent means full price.
+    pub tiers: BTreeMap<TotalsKey, u32>,
+}
+
+impl SealedHistory {
+    /// An archive over a history with no tiers sealed — every bucket at full price.
+    pub fn new(history: History) -> Self {
+        SealedHistory {
+            history,
+            tiers: BTreeMap::new(),
+        }
+    }
+}
+
+impl HistoryArchive for SealedHistory {
+    fn view_at(&self, at: HistorySeq) -> Option<HistoryView<'_>> {
+        let head = self.history.head()?;
+        (at <= head).then(|| self.history.snapshot(at))
+    }
+
+    fn head(&self) -> Option<HistorySeq> {
+        self.history.head()
+    }
+
+    fn tier_bp(&self, key: &TotalsKey) -> u32 {
+        self.tiers.get(key).copied().unwrap_or(BASIS_POINTS)
+    }
+}
+
+/// One quantity, against one declared class. The stored truth: no rate, no product, no money.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PricedLine {
     /// Which class.
@@ -132,7 +144,26 @@ pub enum PostingOrigin {
     Internal,
 }
 
-/// One posting, as the journal holds it: the inputs to the price, and the price itself.
+/// The price the node computed at settlement — **a cache, never a truth**.
+///
+/// It is kept for two reasons and neither of them is authority: a totals read that repriced a day
+/// of lines on every request would be a different performance profile, and a stored figure to
+/// compare the lookup against is what makes a hand edit detectable at all. Where it disagrees with
+/// the lookup, the lookup wins and this is corrected in place.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DerivedPrice {
+    /// The amount before the tier was applied.
+    pub pre_tier_nanos: i128,
+    /// The amount after it.
+    pub priced_nanos: i128,
+}
+
+/// One booked ledger line, as the journal holds it.
+///
+/// **A booked line is never rewritten.** Everything above [`Posting::cached`] is what happened, and
+/// what happened does not change: an amendment to the history moves money by emitting an adjusting
+/// entry against this line, not by editing it. The one field this crate ever writes back is the
+/// cache, and that is because the cache was never the record in the first place.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Posting {
     /// Which node wrote it.
@@ -143,20 +174,25 @@ pub struct Posting {
     pub key: TotalsKey,
     /// Which window.
     pub window_start: u64,
-    /// Which policy epoch it was priced under.
-    pub policy_epoch: u64,
-    /// Which card version.
-    pub rate_card_version: u64,
-    /// The quantities.
+    /// The serving lane — the key the card is priced by, and the reason the books now keep it.
+    pub lane: String,
+    /// The quantities. THE STORED TRUTH.
     pub lines: Vec<PricedLine>,
-    /// How many request fees the posting carries.
-    pub fee_count: u32,
-    /// The tier applied, in basis points, as the posting recorded it.
+    /// How many request fees the line carries.
+    pub fee_count: u64,
+    /// The tier applied, in basis points, as the line recorded it.
     pub tier_bp: u32,
-    /// The amount before the tier was applied.
-    pub pre_tier_amount: i128,
-    /// The amount after it — the figure the money is actually moved by.
-    pub priced_amount: i128,
+    /// The instant it happened, in wall-clock milliseconds. The scale the history resolves at.
+    pub arrived_ms: u64,
+    /// The history HEAD at settlement — the snapshot the cache was computed under.
+    pub history_seq: HistorySeq,
+    /// The entry `card_at(arrived_ms)` resolved to under that head. Recorded rather than re-derived
+    /// so that a resolution somebody later out-ranked is still visible as what was used at the time.
+    pub card_seq: HistorySeq,
+    /// The currency the bucket is denominated in. Two currencies never sum.
+    pub currency: CurrencyCode,
+    /// The cached lookup. Derived, correctable, and never the record.
+    pub cached: DerivedPrice,
     /// Whether the fee line applies.
     pub origin: PostingOrigin,
 }
@@ -166,43 +202,73 @@ impl Posting {
     pub fn position(&self) -> (u64, u64) {
         (self.node, self.node_seq)
     }
+
+    /// Whether this line predates the history — a row migrated from the previous release.
+    ///
+    /// Such a row was earned under the one card the migration sealed, so it reads as priced under
+    /// [`HistorySeq::OPENING`] at both numbers: the opening entry is effective from instant zero
+    /// with no end, so it covers every instant a legacy row could carry, and there is no earlier
+    /// snapshot it could have meant.
+    pub fn is_pre_history(&self) -> bool {
+        self.history_seq == HistorySeq::OPENING && self.card_seq == HistorySeq::OPENING
+    }
 }
 
-/// Why the recompute disagreed with a posting.
+/// Why the recompute disagreed with a line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Divergence {
-    /// The policy epoch the posting names was never sealed, so the price cannot be rechecked at
-    /// all. That is itself a finding: a posting priced under a policy nobody kept.
-    PolicyMissing {
-        /// Which epoch.
-        epoch: u64,
+    /// No entry of the snapshot covers the line's instant. A hole in the history is a refusal and
+    /// never a zero: pricing an uncovered instant at nothing is how a gap becomes free service.
+    NoCardInForce {
+        /// The instant that fell in the hole.
+        at: u64,
     },
-    /// The card version the posting names is not in the sealed policy.
-    CardMissing {
-        /// Which epoch.
-        epoch: u64,
-        /// Which version.
-        version: u64,
+    /// The archive holds no snapshot at the number the line names, so its price cannot be rechecked
+    /// at all. That is itself a finding: a line priced under a history nobody kept.
+    HistoryMissing {
+        /// Which snapshot.
+        seq: HistorySeq,
     },
-    /// The pre-tier figure does not match.
+    /// The card in force does not name the line's currency. NEVER converted from another.
+    CurrencyNotPriced {
+        /// The entry that was in force.
+        card_seq: HistorySeq,
+        /// The currency the line is denominated in.
+        currency: CurrencyCode,
+    },
+    /// The card in force names no rate for the line's lane.
+    LaneUnpriced {
+        /// The entry that was in force.
+        card_seq: HistorySeq,
+        /// The lane the card is silent about.
+        lane: String,
+    },
+    /// The entry the line says it resolved to is not the entry the snapshot resolves to.
+    CardSeq {
+        /// What the line says.
+        posted: HistorySeq,
+        /// What the lookup resolves to.
+        resolved: HistorySeq,
+    },
+    /// The cached pre-tier figure does not match the lookup.
     PreTier {
-        /// What the posting says.
+        /// What the cache says.
         posted: i128,
-        /// What the recompute makes it.
+        /// What the lookup makes it.
         recomputed: i128,
     },
-    /// The tier the posting recorded is not the tier the sealed policy holds.
+    /// The tier the line recorded is not the tier the archive holds.
     Tier {
-        /// What the posting says.
+        /// What the line says.
         posted: u32,
-        /// What the sealed policy says.
+        /// What the archive says.
         sealed: u32,
     },
-    /// The final figure does not match. This is the one that moves money.
+    /// The cached priced figure does not match the lookup. This is the one that moves money.
     Priced {
-        /// What the posting says.
+        /// What the cache says.
         posted: i128,
-        /// What the recompute makes it.
+        /// What the lookup makes it.
         recomputed: i128,
     },
 }
@@ -210,29 +276,53 @@ pub enum Divergence {
 impl std::fmt::Display for Divergence {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Divergence::PolicyMissing { epoch } => {
-                write!(f, "no sealed policy at epoch {epoch} to reprice against")
+            Divergence::NoCardInForce { at } => {
+                write!(f, "no card is in force at instant {at}")
             }
-            Divergence::CardMissing { epoch, version } => {
-                write!(f, "the policy at epoch {epoch} holds no card version {version}")
+            Divergence::HistoryMissing { seq } => {
+                write!(f, "no history snapshot at {seq} to reprice against")
             }
+            Divergence::CurrencyNotPriced { card_seq, currency } => write!(
+                f,
+                "the card at history entry {card_seq} does not price {currency}"
+            ),
+            Divergence::LaneUnpriced { card_seq, lane } => write!(
+                f,
+                "the card at history entry {card_seq} names no rate for lane {lane}"
+            ),
+            Divergence::CardSeq { posted, resolved } => write!(
+                f,
+                "the line was priced under history entry {posted}; the snapshot resolves {resolved}"
+            ),
             Divergence::PreTier { posted, recomputed } => write!(
                 f,
-                "the pre-tier amount is {posted} on the posting and {recomputed} on the recompute"
+                "the pre-tier amount is {posted} in the cache and {recomputed} on the lookup"
             ),
             Divergence::Tier { posted, sealed } => write!(
                 f,
-                "the posting recorded a tier of {posted} basis points; the sealed policy holds {sealed}"
+                "the line recorded a tier of {posted} basis points; the archive holds {sealed}"
             ),
             Divergence::Priced { posted, recomputed } => write!(
                 f,
-                "the priced amount is {posted} on the posting and {recomputed} on the recompute"
+                "the priced amount is {posted} in the cache and {recomputed} on the lookup"
             ),
         }
     }
 }
 
-/// One posting the recompute disagreed with.
+/// What a disagreement MEANS, which is a different question from what it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// The head has moved since the line was settled, so the cache is stale for a reason the
+    /// deployment consented to. Correct it, journal the correction, and do not alarm.
+    Stale,
+    /// The head has NOT moved, so nothing legitimate can have changed the answer. Correct it AND
+    /// alarm: this is the hand edit the recompute exists to catch, and routing it through the same
+    /// quiet path as an amendment would be the way to launder one.
+    Alarm,
+}
+
+/// One line the recompute disagreed with.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Finding {
     /// Which node wrote it.
@@ -241,26 +331,52 @@ pub struct Finding {
     pub node_seq: u64,
     /// What the disagreement is.
     pub divergence: Divergence,
+    /// Whether it is an amendment catching up or somebody's hand.
+    pub verdict: Verdict,
 }
 
 impl std::fmt::Display for Finding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let verdict = match self.verdict {
+            Verdict::Stale => "stale cache",
+            Verdict::Alarm => "ALARM",
+        };
         write!(
             f,
-            "posting {}/{}: {}",
+            "line {}/{} ({verdict}): {}",
             self.node, self.node_seq, self.divergence
         )
+    }
+}
+
+/// What one recheck concluded about one line.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Recheck {
+    /// Everything the lookup disagreed with, in a fixed order.
+    pub divergences: Vec<Divergence>,
+    /// The lookup's answer, when it could be taken at all. The cache is corrected TO this — it is
+    /// `None` only when the line could not be priced, and an unpriceable line's cache is left
+    /// alone, because overwriting a figure with a refusal would turn a hole into a zero.
+    pub corrected: Option<DerivedPrice>,
+    /// What the disagreement means.
+    pub verdict: Verdict,
+}
+
+impl Recheck {
+    /// Whether the lookup agreed with the line in every respect.
+    pub fn agrees(&self) -> bool {
+        self.divergences.is_empty()
     }
 }
 
 /// How far the recompute has got, PER NODE. Carried in the reconciliation entry so it survives a
 /// restart, because a watermark that resets at boot checks nothing on a node that restarts often.
 ///
-/// One mark per node rather than one pair for the whole run, and the reason is that postings arrive
+/// One mark per node rather than one pair for the whole run, and the reason is that lines arrive
 /// interleaved. A single `(node, node_seq)` pair compared lexicographically is ahead of everything a
-/// lower-numbered node writes as soon as it passes a higher-numbered one, so those postings are
+/// lower-numbered node writes as soon as it passes a higher-numbered one, so those lines are
 /// skipped — not deferred, skipped, permanently — and the pass reports itself clean over an amount
-/// it declined to look at. A mark per node cannot do that: each node's postings are measured against
+/// it declined to look at. A mark per node cannot do that: each node's lines are measured against
 /// that node's own progress and nobody else's.
 ///
 /// Nodes are few and their marks are numbers, so this is a small ordered map. Ordered because it is
@@ -308,7 +424,7 @@ impl Watermark {
         }
     }
 
-    /// Move `node`'s mark to `node_seq`. A mark only ever moves forward: a posting that arrived out
+    /// Move `node`'s mark to `node_seq`. A mark only ever moves forward: a line that arrived out
     /// of order behind a number already recomputed must not re-open everything after it.
     pub fn advance(&mut self, node: u64, node_seq: u64) {
         let mark = self.marks.entry(node).or_insert(node_seq);
@@ -338,79 +454,158 @@ impl std::fmt::Display for Watermark {
 pub struct Pass {
     /// Where the watermark is now.
     pub watermark: Watermark,
-    /// How many postings were checked.
+    /// How many lines were checked.
     pub checked: usize,
-    /// Everything the recompute disagreed with.
+    /// How many caches were corrected in place. Every one of these owes a journalled
+    /// reconciliation entry, which is the caller's to write: this crate does not touch a disk.
+    pub corrected: usize,
+    /// Everything the recompute disagreed with, stale and alarming alike.
     pub findings: Vec<Finding>,
 }
 
 impl Pass {
-    /// Whether every posting checked out.
+    /// Whether every line checked out.
     pub fn is_clean(&self) -> bool {
         self.findings.is_empty()
     }
+
+    /// Whether anything needs an operator, as opposed to a journal line.
+    ///
+    /// A pass full of stale caches after an amendment is not an alarm; a single one under an
+    /// unmoved head is.
+    pub fn alarms(&self) -> bool {
+        self.findings.iter().any(|f| f.verdict == Verdict::Alarm)
+    }
 }
 
-/// Price one posting again from the sealed policy, and report every way it disagrees.
+/// The lookup's answer for one line under one snapshot, at the archive's tier.
 ///
-/// The order is deliberate: a missing policy or card short-circuits, because there is nothing to
-/// compare against and reporting a pre-tier mismatch of "everything" would bury the real finding.
-pub fn recheck(posting: &Posting, policies: &dyn PolicyArchive) -> Vec<Divergence> {
-    let Some(policy) = policies.at(posting.policy_epoch) else {
-        return vec![Divergence::PolicyMissing {
-            epoch: posting.policy_epoch,
-        }];
+/// This is the single place the ledger asks what a line costs. It builds the cost unit's posting
+/// from the line's own quantities and hands it to the one lookup, rather than re-deriving a product
+/// out of a card's parts: a second copy of the multiply-and-sum is how a request comes to be judged
+/// at one figure and billed at another, and that has happened here before.
+pub fn price_line(
+    posting: &Posting,
+    view: &HistoryView<'_>,
+    tier_bp: u32,
+) -> Result<Priced, Unpriceable> {
+    let cost = CostPosting {
+        lane: posting.lane.clone(),
+        quantities: posting
+            .lines
+            .iter()
+            .map(|line| Quantity::new(line.class.as_str(), line.quantity))
+            .collect(),
+        // The origin rule, applied by charging no fees rather than by a branch further down: a line
+        // the node did for its own reasons carries no client request to charge one for.
+        fee_count: match posting.origin {
+            PostingOrigin::Client => posting.fee_count,
+            PostingOrigin::Internal => 0,
+        },
+        tier_bp,
+        arrived_ms: posting.arrived_ms,
+        arrived_mono: 0,
+        estimated: false,
+        cached: None,
     };
-    let Some(card) = policy.card(posting.rate_card_version) else {
-        return vec![Divergence::CardMissing {
-            epoch: posting.policy_epoch,
-            version: posting.rate_card_version,
-        }];
+    price(view, &cost, posting.currency)
+}
+
+/// Name a refusal from the lookup in the recompute's own vocabulary.
+///
+/// One conversion, in one place, so that a statement and a recheck report the same hole in the same
+/// words rather than two callers each deciding what a refusal is called.
+pub fn divergence_of(why: Unpriceable) -> Divergence {
+    match why {
+        Unpriceable::NoCardInForce { at } => Divergence::NoCardInForce { at },
+        Unpriceable::CurrencyNotPriced { card_seq, currency } => {
+            Divergence::CurrencyNotPriced { card_seq, currency }
+        }
+        Unpriceable::LaneUnpriced { card_seq, lane } => Divergence::LaneUnpriced { card_seq, lane },
+    }
+}
+
+/// Narrow a lookup's unsigned nano-units into the book's signed vocabulary, saturating.
+///
+/// Saturating rather than wrapping for the reason the whole money path saturates: a figure that
+/// wrapped lands negative, and a negative amount in a settled column reads as a credit nobody
+/// issued. A saturated figure can only ever disagree, which is an answer an alarm is allowed to
+/// give.
+fn signed(nanos: u128) -> i128 {
+    i128::try_from(nanos).unwrap_or(i128::MAX)
+}
+
+/// Price one line again by lookup, and report every way the record disagrees with it.
+///
+/// The order is deliberate: a missing snapshot or an unpriceable line short-circuits, because there
+/// is nothing to compare against and reporting a pre-tier mismatch of "everything" would bury the
+/// real finding.
+pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
+    // The verdict is decided from the head alone, BEFORE anything is priced, so that it cannot be
+    // influenced by what the comparison happens to find. A head that has moved past the snapshot
+    // this line was settled under is consent for its cache to be behind; a head that has not moved
+    // is not.
+    let verdict = match archive.head() {
+        Some(head) if head > posting.history_seq => Verdict::Stale,
+        _ => Verdict::Alarm,
+    };
+    let refuse = |divergence: Divergence| Recheck {
+        divergences: vec![divergence],
+        corrected: None,
+        verdict,
     };
 
-    let mut found = Vec::new();
+    let Some(view) = archive.view_at(posting.history_seq) else {
+        return refuse(Divergence::HistoryMissing {
+            seq: posting.history_seq,
+        });
+    };
 
-    // The class lines, then the fee line. The fee line is separate because the origin rule applies
-    // to it and to nothing else, and because on a no-card deployment it is the whole check.
-    // Saturating, like the pricing path this exists to check. A figure that wrapped could land back
-    // on the posted one and report a clean pass over a posting that is wrong; a figure that
-    // saturates can only ever disagree, which is the answer an alarm is allowed to give.
-    let mut pre_tier: i128 = 0;
-    for line in &posting.lines {
-        pre_tier = pre_tier.saturating_add(
-            card.price(&line.class)
-                .saturating_mul(i128::from(line.quantity)),
-        );
+    let sealed_tier = archive.tier_bp(&posting.key);
+    let priced = match price_line(posting, &view, sealed_tier) {
+        Ok(priced) => priced,
+        Err(why) => return refuse(divergence_of(why)),
+    };
+
+    let mut divergences = Vec::new();
+    if priced.card_seq != posting.card_seq {
+        divergences.push(Divergence::CardSeq {
+            posted: posting.card_seq,
+            resolved: priced.card_seq,
+        });
     }
-    if posting.origin == PostingOrigin::Client {
-        pre_tier = pre_tier.saturating_add(
-            card.per_request_fee
-                .saturating_mul(i128::from(posting.fee_count)),
-        );
-    }
-    if pre_tier != posting.pre_tier_amount {
-        found.push(Divergence::PreTier {
-            posted: posting.pre_tier_amount,
+
+    let pre_tier = signed(priced.pre_tier_nanos);
+    if pre_tier != posting.cached.pre_tier_nanos {
+        divergences.push(Divergence::PreTier {
+            posted: posting.cached.pre_tier_nanos,
             recomputed: pre_tier,
         });
     }
 
-    let sealed_tier = policy.tier_bp(&posting.key);
     if sealed_tier != posting.tier_bp {
-        found.push(Divergence::Tier {
+        divergences.push(Divergence::Tier {
             posted: posting.tier_bp,
             sealed: sealed_tier,
         });
     }
 
-    let priced = apply_tier(pre_tier, sealed_tier);
-    if priced != posting.priced_amount {
-        found.push(Divergence::Priced {
-            posted: posting.priced_amount,
-            recomputed: priced,
+    let final_nanos = signed(priced.priced_nanos);
+    if final_nanos != posting.cached.priced_nanos {
+        divergences.push(Divergence::Priced {
+            posted: posting.cached.priced_nanos,
+            recomputed: final_nanos,
         });
     }
-    found
+
+    Recheck {
+        divergences,
+        corrected: Some(DerivedPrice {
+            pre_tier_nanos: pre_tier,
+            priced_nanos: final_nanos,
+        }),
+        verdict,
+    }
 }
 
 /// Apply a tier in basis points to a pre-tier amount.
@@ -418,36 +613,60 @@ pub fn recheck(posting: &Posting, policies: &dyn PolicyArchive) -> Vec<Divergenc
 /// Integer arithmetic, multiply before divide, so a tier of 9,999 basis points on a small amount
 /// does not round to nothing through a division that happened first. The multiply saturates, so a
 /// figure at the ceiling stays at the ceiling rather than wrapping through it.
+///
+/// One multiply and ONE divide, over the summed pre-tier amount — never a sum of per-line floors,
+/// which undercharges: two lines of five nano-units at half price are two floors of two, which is
+/// four, where the single divide over ten is five.
 pub fn apply_tier(pre_tier: i128, tier_bp: u32) -> i128 {
     pre_tier.saturating_mul(i128::from(tier_bp)) / i128::from(BASIS_POINTS)
 }
 
-/// Recompute every posting after `watermark`, in order, and advance the watermark to the head.
+/// Recompute every line after `watermark`, correcting stale caches in place, and advance the
+/// watermark to the head.
 ///
-/// The watermark advances over a posting the recompute DISAGREED with, on purpose: the divergence
-/// has been reported, and a watermark that stalled on the first bad posting would stop checking
+/// The lines are taken by mutable reference because the cache is the one field this crate writes
+/// back, and it writes back only the cache: every quantity, instant and sequence number on a booked
+/// line is left exactly as it was. Correcting rather than only alarming is what makes an amendment
+/// a normal event; leaving the quantities alone is what keeps the line a record.
+///
+/// The watermark advances over a line the recompute disagreed with, on purpose: the divergence
+/// has been reported, and a watermark that stalled on the first bad line would stop checking
 /// everything after it — which is how one alarm hides a hundred.
-pub fn recompute(watermark: Watermark, postings: &[Posting], policies: &dyn PolicyArchive) -> Pass {
+pub fn recompute(
+    watermark: Watermark,
+    postings: &mut [Posting],
+    archive: &dyn HistoryArchive,
+) -> Pass {
     let mut at = watermark;
     let mut checked = 0usize;
+    let mut corrected = 0usize;
     let mut findings = Vec::new();
-    for posting in postings {
+    for posting in postings.iter_mut() {
         if !at.is_behind(posting) {
             continue;
         }
         checked += 1;
-        for divergence in recheck(posting, policies) {
+        let outcome = recheck(posting, archive);
+        for divergence in outcome.divergences {
             findings.push(Finding {
                 node: posting.node,
                 node_seq: posting.node_seq,
                 divergence,
+                verdict: outcome.verdict,
             });
+        }
+        if let Some(fresh) = outcome.corrected {
+            if fresh != posting.cached {
+                posting.cached = fresh;
+                corrected += 1;
+            }
         }
         at.advance(posting.node, posting.node_seq);
     }
     Pass {
         watermark: at,
         checked,
+        corrected,
         findings,
     }
 }

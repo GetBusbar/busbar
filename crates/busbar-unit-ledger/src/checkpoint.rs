@@ -28,6 +28,8 @@
 
 use std::collections::BTreeMap;
 
+use busbar_unit_cost::HistorySeq;
+
 use crate::totals::{Totals, TotalsKey, WindowStart};
 
 /// One node chain's head, as a checkpoint cross-links it.
@@ -165,6 +167,18 @@ pub struct Checkpoint {
     pub backup_watermark: u64,
     /// The store's sequence high-water at the moment of sealing.
     pub store_seq_high_water: u64,
+    /// The history snapshot the sealed totals were derived against.
+    ///
+    /// A checkpoint's figures are a MATERIALISED VIEW of a lookup, so on their own they say what
+    /// the totals were without saying what they were true of. With this number they say "these
+    /// totals, at that history" — which is what makes a sealed checkpoint re-derivable rather than
+    /// merely signed.
+    ///
+    /// `None` on a checkpoint sealed before the history existed, and that is not a defect: such a
+    /// checkpoint is digested under the encoding it was sealed with, so it still verifies, byte for
+    /// byte, forever. A sealed body is never rewritten — including by an amendment, which is
+    /// expressed forward as an adjusting entry precisely so that it does not have to be.
+    pub history_seq: Option<HistorySeq>,
     /// The digest of the sealed body.
     pub body_hash: [u8; 32],
     /// The signature over that body, if a signer was available.
@@ -186,10 +200,67 @@ impl Checkpoint {
         checkpoint_seq: u64,
         node: u64,
         wall: u64,
+        heads: Vec<ChainHead>,
+        totals: BTreeMap<(TotalsKey, WindowStart), Totals>,
+        backup_watermark: u64,
+        store_seq_high_water: u64,
+        secret: Option<&dyn CheckpointSecret>,
+    ) -> Result<Self, SignError> {
+        Checkpoint::seal_inner(
+            checkpoint_seq,
+            node,
+            wall,
+            heads,
+            totals,
+            backup_watermark,
+            store_seq_high_water,
+            None,
+            secret,
+        )
+    }
+
+    /// Seal a set of totals AS OF a history snapshot.
+    ///
+    /// The same act as [`Checkpoint::seal`] with the one fact that turns a set of figures into a
+    /// re-derivable claim: which history they were derived against. A caller that has a history
+    /// uses this one; [`Checkpoint::seal`] is what a deployment that predates the history used, and
+    /// it stays because the checkpoints it sealed have to keep verifying.
+    #[allow(clippy::too_many_arguments)]
+    // Nine, for the same reason the eight above are eight.
+    pub fn seal_as_of(
+        checkpoint_seq: u64,
+        node: u64,
+        wall: u64,
+        heads: Vec<ChainHead>,
+        totals: BTreeMap<(TotalsKey, WindowStart), Totals>,
+        backup_watermark: u64,
+        store_seq_high_water: u64,
+        history_seq: HistorySeq,
+        secret: Option<&dyn CheckpointSecret>,
+    ) -> Result<Self, SignError> {
+        Checkpoint::seal_inner(
+            checkpoint_seq,
+            node,
+            wall,
+            heads,
+            totals,
+            backup_watermark,
+            store_seq_high_water,
+            Some(history_seq),
+            secret,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn seal_inner(
+        checkpoint_seq: u64,
+        node: u64,
+        wall: u64,
         mut heads: Vec<ChainHead>,
         totals: BTreeMap<(TotalsKey, WindowStart), Totals>,
         backup_watermark: u64,
         store_seq_high_water: u64,
+        history_seq: Option<HistorySeq>,
         secret: Option<&dyn CheckpointSecret>,
     ) -> Result<Self, SignError> {
         heads.sort();
@@ -201,6 +272,7 @@ impl Checkpoint {
             &totals,
             backup_watermark,
             store_seq_high_water,
+            history_seq,
         );
         let body_hash = crate::digest::sha256(&body);
         let signature = match secret {
@@ -215,6 +287,7 @@ impl Checkpoint {
             totals,
             backup_watermark,
             store_seq_high_water,
+            history_seq,
             body_hash,
             signature,
         })
@@ -231,28 +304,26 @@ impl Checkpoint {
     /// Recompute the body digest and compare it to the stored one. This is what catches a
     /// checkpoint whose figures were edited after it was sealed.
     pub fn body_hash_verifies(&self) -> bool {
-        let body = encode_body(
-            self.checkpoint_seq,
-            self.node,
-            self.wall,
-            &self.heads,
-            &self.totals,
-            self.backup_watermark,
-            self.store_seq_high_water,
-        );
-        crate::digest::sha256(&body) == self.body_hash
+        crate::digest::sha256(&self.signed_body()) == self.body_hash
     }
 
     /// The exact bytes that were signed, so a verifier can hand them to the same secret plugin.
+    ///
+    /// Re-encoded from the checkpoint's own fields every time, with the heads in sorted order, so
+    /// that two verifiers holding the same checkpoint produce the same bytes whatever order they
+    /// received the heads in.
     pub fn signed_body(&self) -> Vec<u8> {
+        let mut heads = self.heads.clone();
+        heads.sort();
         encode_body(
             self.checkpoint_seq,
             self.node,
             self.wall,
-            &self.heads,
+            &heads,
             &self.totals,
             self.backup_watermark,
             self.store_seq_high_water,
+            self.history_seq,
         )
     }
 }
@@ -262,6 +333,16 @@ impl Checkpoint {
 /// Length-prefixed throughout: a bucket name can contain any character, so a separator-joined body
 /// would let a caller who controls one name forge the same byte stream under a different split.
 /// Length prefixes make the boundary between fields unforgeable regardless of what any field holds.
+///
+/// ## Why the history snapshot is framed at the end, and only when there is one
+///
+/// The digest has to cover it: a checkpoint that claimed one history and was digested under
+/// another would be a signature over figures whose meaning could be swapped after the fact. But it
+/// also has to leave every checkpoint sealed before the history existed verifying exactly as it
+/// did, and those bodies do not carry the field at all. So it is appended, under its own
+/// length-framed name, and only when the checkpoint has one — a body with no snapshot is the byte
+/// sequence it always was, and a body with one cannot be read as a body without one, because the
+/// name and the number are framed rather than run on.
 fn encode_body(
     checkpoint_seq: u64,
     node: u64,
@@ -270,6 +351,7 @@ fn encode_body(
     totals: &BTreeMap<(TotalsKey, WindowStart), Totals>,
     backup_watermark: u64,
     store_seq_high_water: u64,
+    history_seq: Option<HistorySeq>,
 ) -> Vec<u8> {
     let mut body = Vec::new();
     let num = |v: u64, body: &mut Vec<u8>| body.extend_from_slice(&v.to_be_bytes());
@@ -310,8 +392,18 @@ fn encode_body(
         num(figures.open_dispute_count, &mut body);
         num(figures.oldest_dispute_age_secs, &mut body);
     }
+    if let Some(seq) = history_seq {
+        push_text(&mut body, HISTORY_SEQ_FIELD);
+        num(seq.get(), &mut body);
+    }
     body
 }
+
+/// The name the history snapshot is framed under in a checkpoint body.
+///
+/// Named rather than positional, because it is the first field that is sometimes absent, and a
+/// reader that told presence from length alone would be one totals row away from being wrong.
+const HISTORY_SEQ_FIELD: &str = "history_seq";
 
 fn push_text(body: &mut Vec<u8>, text: &str) {
     body.extend_from_slice(&(text.len() as u64).to_be_bytes());
