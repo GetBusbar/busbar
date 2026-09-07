@@ -5,7 +5,10 @@
 //! and the pin that makes a posting immune to a later card edit.
 
 use super::*;
-use crate::{nano_rate, price, RateCard, RateCardVersion, STANDARD_TIER_BP};
+use crate::{
+    nano_rate, price, Author, CardEntryDraft, CurrencyCode, History, HistorySeq, LaneClass, Posting,
+    RateCard, STANDARD_TIER_BP,
+};
 
 /// The conversion rounds to NEAREST, half away from zero — it does not truncate. Fifteen
 /// ten-thousandths of a micro-unit is one and a half nano-units and must become two; fourteen is
@@ -47,7 +50,7 @@ fn nano_rate_clamps_a_finite_but_overflowing_rate_to_zero_not_the_maximum() {
 #[test]
 fn card_carries_integer_rates_per_class() {
     let c = card4("quad", [1.0, 2.0, 0.5, 4.0], 0);
-    let r = c.lane_rates("quad").expect("the lane is priced");
+    let r = c.lane_rates("quad", CurrencyCode::USD).expect("the lane is priced");
     assert_eq!(
         (
             r.nanos_per_unit(INPUT),
@@ -64,29 +67,29 @@ fn card_carries_integer_rates_per_class() {
 /// the lane yields nothing at all, so the caller fails closed rather than serving for free.
 #[test]
 fn lane_lookup_has_exactly_three_outcomes() {
-    let none = RateCard::absent(RateCardVersion::new("none"), 3);
+    let none = RateCard::absent(3);
     assert!(!none.pricing_enabled());
     assert!(
         !none.lane_unpriced("anything"),
         "with no card there is nothing to be missing from"
     );
-    let view = none.lane_rates("anything").expect("a zero-rate view");
+    let view = none.lane_rates("anything", CurrencyCode::USD).expect("a zero-rate view");
     assert_eq!(view.nanos_per_unit(INPUT), 0);
 
     let present = card("known", 1.0, 1.0, 0);
     assert!(present.pricing_enabled());
     assert!(!present.lane_unpriced("known"));
     assert!(present.lane_unpriced("mystery"));
-    assert!(present.lane_rates("mystery").is_none());
+    assert!(present.lane_rates("mystery", CurrencyCode::USD).is_none());
 }
 
 /// A negative configured fee clamps to nothing at resolve. No request may bill a negative amount,
 /// which would credit a budget bucket back toward headroom.
 #[test]
 fn negative_per_request_fee_clamps_to_zero() {
-    let c = RateCard::absent(RateCardVersion::new("v"), -5);
-    assert_eq!(c.per_request_fee_cents(), 0);
-    assert_eq!(c.fee_unit_price_nanos(), 0);
+    let c = RateCard::absent(-5);
+    assert_eq!(c.per_request_fee(CurrencyCode::USD), 0);
+    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 0);
 }
 
 /// The fee's unit price is its cents lifted to nano-units — an exact multiple of ten million,
@@ -94,38 +97,54 @@ fn negative_per_request_fee_clamps_to_zero() {
 /// afterwards.
 #[test]
 fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
-    let c = RateCard::absent(RateCardVersion::new("v"), 3);
-    assert_eq!(c.fee_unit_price_nanos(), 30_000_000);
-    assert_eq!(c.fee_unit_price_nanos() % crate::NANOS_PER_CENT, 0);
+    let c = RateCard::absent(3);
+    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD), 30_000_000);
+    assert_eq!(c.fee_unit_price_nanos(CurrencyCode::USD) % crate::NANOS_PER_CENT, 0);
 }
 
-/// A posting is priced against the card PINNED when its hold opened, and records that version. A
-/// card edit that lands afterwards produces different figures under a different version, and moves
-/// nothing already posted.
+/// **AN EDIT PRICES WHAT HAPPENS AFTER IT, NOT WHAT HAPPENED BEFORE IT.**
+///
+/// The card that used to be pinned for the life of a hold is now an entry of the history, and the
+/// pin is the instant the unit arrived. An operator who halves a rate appends a second entry
+/// effective from the moment of the edit; the unit that arrived before it still resolves to entry
+/// zero and still prices at the old rate, at every snapshot, forever. That is the whole of the
+/// behaviour change registered for this release, stated as one case.
 #[test]
-fn a_pinned_card_prices_the_posting_and_a_later_edit_moves_nothing() {
-    let at_hold = RateCard::from_micro_rates(
-        RateCardVersion::new("card-1"),
-        [(LaneClass::new("m", INPUT), 10.0)],
-        0,
-    );
-    let pin = at_hold.pin();
-    let report = usage(&[(INPUT, 1_000_000)]);
-    let posted = price(&pin, "m", &report, 0, STANDARD_TIER_BP);
-    assert_eq!(posted.cents(), 1000);
-    assert_eq!(posted.rate_card_version().as_str(), "card-1");
+fn an_appended_entry_prices_later_instants_and_moves_nothing_earlier() {
+    let at_boot = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 10.0)], 0);
+    let corrected = RateCard::from_micro_rates([(LaneClass::new("m", INPUT), 5.0)], 0);
 
-    // The operator halves the rate. The new card is a new version; the posting already made is
-    // untouched, and re-pricing through the OLD pin still gives the old figure.
-    let corrected = RateCard::from_micro_rates(
-        RateCardVersion::new("card-2"),
-        [(LaneClass::new("m", INPUT), 5.0)],
-        0,
+    let mut history = History::opening(at_boot, 0);
+    assert_eq!(history.head(), Some(HistorySeq(0)));
+    let second = history.append(CardEntryDraft {
+        effective_from: 5_000,
+        effective_until: None,
+        card: corrected,
+        appended_at: 5_000,
+        author: Author::Config { policy_epoch: 1 },
+    });
+    assert_eq!(second, HistorySeq(1), "the seq is dense and assigned on append");
+
+    let report = usage(&[(INPUT, 1_000_000)]);
+    let before = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 4_999, 4_999);
+    let after = Posting::from_usage("m", &report, 0, STANDARD_TIER_BP, 5_000, 5_000);
+
+    let view = history.current();
+    let earlier = price(&view, &before, CurrencyCode::USD).expect("entry zero covers it");
+    let later = price(&view, &after, CurrencyCode::USD).expect("entry one covers it");
+    assert_eq!(earlier.card_seq, HistorySeq(0));
+    assert_eq!(earlier.minor(), 1000, "the unit that arrived first did not move");
+    assert_eq!(later.card_seq, HistorySeq(1));
+    assert_eq!(later.minor(), 500, "the unit that arrived after pays the new rate");
+
+    // And the older snapshot still answers the older way for BOTH instants, which is what makes an
+    // invoice cut against it reproducible.
+    let at_zero = history.snapshot(HistorySeq(0));
+    assert_eq!(
+        price(&at_zero, &after, CurrencyCode::USD)
+            .expect("entry zero is open-ended")
+            .minor(),
+        1000,
+        "a snapshot taken before the edit cannot see the edit"
     );
-    let repriced = price(&corrected.pin(), "m", &report, 0, STANDARD_TIER_BP);
-    assert_eq!(repriced.cents(), 500);
-    assert_eq!(repriced.rate_card_version().as_str(), "card-2");
-    assert_eq!(posted.cents(), 1000, "the earlier posting did not move");
-    let again = price(&pin, "m", &report, 0, STANDARD_TIER_BP);
-    assert_eq!(again, posted, "the pin still prices the card it froze");
 }
