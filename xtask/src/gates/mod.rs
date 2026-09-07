@@ -18,9 +18,15 @@
 //!    [`Gate::run`] — the trait gives it no other handle — so re-implementing the predicate beside
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
+pub mod changelog;
+pub mod changelog_register;
+pub mod ci_umbrella;
 pub mod denylist_gate;
+pub mod inventory_ref;
+pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod segregation;
+pub mod workspace_deps;
 
 use std::collections::BTreeSet;
 
@@ -61,6 +67,32 @@ pub trait Gate {
     /// Proves the gate can still be RED, by planting violations into overlays and requiring the
     /// run to report them BY NAME.
     fn selftest(&self, cx: &Ctx) -> Report;
+
+    /// The planted trees `cargo xtask gate <name> --parity` drives BOTH implementations over.
+    ///
+    /// A parity run that compares only the real tree compares one green against another green, and
+    /// two implementations that both do nothing agree perfectly. Each probe is a violation planted
+    /// into an overlay together with the row id the legacy script and this gate must BOTH report,
+    /// so parity is asserted where the two could actually differ. A gate that declares no probes is
+    /// refused by the harness rather than passing vacuously.
+    ///
+    /// The paths a probe touches are listed so the harness knows what to materialize for the
+    /// legacy script, which reads a tree on disk and has no overlay.
+    fn parity_probes(&self, _cx: &Ctx) -> Vec<ParityProbe> {
+        Vec::new()
+    }
+}
+
+/// One planted tree both implementations are driven over.
+pub struct ParityProbe {
+    pub label: String,
+    /// The overlay the Rust gate reads through.
+    pub overlay: Overlay,
+    /// Every path the legacy script must be shown, relative to the workspace root. The harness
+    /// materializes the OVERLAID view of each one into a scratch tree.
+    pub materialize: Vec<String>,
+    /// The row id both implementations must report. Empty means "both must be green".
+    pub expect_rule: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

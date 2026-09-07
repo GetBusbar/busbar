@@ -125,6 +125,201 @@ pub fn check(
     })
 }
 
+/// PARITY FOR A LINT THAT WRITES NO LEDGER.
+///
+/// Most of the gates being converted print findings and set an exit code; they never learned the
+/// ledger's TSV, and teaching them it now would be adding logic to a script whose next commit
+/// deletes it. So parity for those is asserted over the thing they DO both produce: a verdict, and
+/// the rule that verdict names.
+///
+/// The comparison is driven over PLANTED trees, not only over the real one. Two implementations
+/// that both find nothing agree perfectly, so a parity run against a green tree is exactly the
+/// vacuous proof the design refuses elsewhere. Each probe plants one violation, materializes the
+/// overlaid view of the touched paths into a scratch tree, and requires the legacy script and the
+/// Rust gate to BOTH go red naming the same rule.
+///
+/// A gate that declares no probes is an error, not a pass.
+pub fn check_lint(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    legacy_argv: &[String],
+    root_flag: Option<&str>,
+) -> Result<LintParityOutcome, String> {
+    if legacy_argv.is_empty() {
+        return Err("parity: no legacy command given".to_string());
+    }
+    let probes = gate.parity_probes(cx);
+    if probes.is_empty() {
+        return Err(format!(
+            "parity {}: the gate declares no probes, so the only comparison available is one green \
+             against another green. Two implementations that both find nothing agree perfectly; \
+             that is not a parity proof.",
+            gate.name()
+        ));
+    }
+
+    let mut diffs: Vec<String> = Vec::new();
+    let mut compared = 0usize;
+
+    // The real tree first: both must agree on the verdict everybody actually reads.
+    let legacy_real = run_lint(cx.root(), cx.root(), legacy_argv, root_flag)?;
+    let rust_real = gates::execute(gate, cx);
+    compared += 1;
+    if legacy_real.red != rust_real.red {
+        diffs.push(format!(
+            "the real tree: legacy is {}, the rust gate is {} ({})",
+            verdict_word(legacy_real.red),
+            verdict_word(rust_real.red),
+            first_line(&legacy_real.output)
+        ));
+    }
+
+    for probe in &probes {
+        let planted_cx = cx.with_overlay(probe.overlay.clone());
+        let scratch = cx
+            .scratch()
+            .join(format!("parity-{}-{}", gate.name(), compared));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let paths: Vec<&str> = probe.materialize.iter().map(String::as_str).collect();
+        planted_cx.materialize(&scratch, &paths)?;
+
+        let legacy = run_lint(cx.root(), &scratch, legacy_argv, root_flag)?;
+        let rust = gates::execute(gate, &planted_cx);
+        compared += 1;
+
+        let want_red = probe.expect_rule.is_some();
+        if legacy.red != want_red {
+            diffs.push(format!(
+                "{}: the LEGACY script is {} over the planted tree, but the plant is a real \
+                 violation. A probe the legacy script does not see cannot prove the two agree. \
+                 ({})",
+                probe.label,
+                verdict_word(legacy.red),
+                first_line(&legacy.output)
+            ));
+        }
+        if rust.red != want_red {
+            diffs.push(format!(
+                "{}: the RUST gate is {} over the planted tree ({:?})",
+                probe.label,
+                verdict_word(rust.red),
+                rust.problems
+            ));
+        }
+        if let Some(rule) = &probe.expect_rule {
+            if !legacy.output.contains(rule.as_str()) {
+                diffs.push(format!(
+                    "{}: the legacy script went red without naming `{rule}`, so the two are red \
+                     about different things",
+                    probe.label
+                ));
+            }
+            if !rust.problems.iter().any(|p| p.starts_with(rule.as_str())) {
+                diffs.push(format!(
+                    "{}: the rust gate went red without naming `{rule}` ({:?})",
+                    probe.label, rust.problems
+                ));
+            }
+        }
+    }
+
+    Ok(LintParityOutcome { compared, diffs })
+}
+
+fn verdict_word(red: bool) -> &'static str {
+    if red {
+        "RED"
+    } else {
+        "green"
+    }
+}
+
+fn first_line(s: &str) -> String {
+    s.lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(160)
+        .collect()
+}
+
+struct LintRun {
+    red: bool,
+    output: String,
+}
+
+/// Run a legacy lint over `root` and read its VERDICT.
+///
+/// A non-zero exit is red and a zero exit is green — but a signal, or an exit code the script never
+/// documents, is neither, and reading it as green is how a crashed gate reports a clean tree. Those
+/// are an error here, which the caller surfaces as "could not run".
+fn run_lint(
+    cwd: &Path,
+    subject: &Path,
+    argv: &[String],
+    root_flag: Option<&str>,
+) -> Result<LintRun, String> {
+    let mut cmd = std::process::Command::new(&argv[0]);
+    cmd.args(&argv[1..]);
+    if let Some(flag) = root_flag {
+        cmd.arg(flag).arg(subject);
+    }
+    let out = cmd
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| format!("parity: {} : {e}", argv[0]))?;
+    let code = out
+        .status
+        .code()
+        .ok_or_else(|| format!("parity: `{}` was killed by a signal", argv.join(" ")))?;
+    if code > 1 {
+        return Err(format!(
+            "parity: `{}` exited {code} over {}, which is neither its green nor its red. \
+             stderr: {}",
+            argv.join(" "),
+            subject.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    let mut output = String::from_utf8_lossy(&out.stdout).into_owned();
+    output.push_str(&String::from_utf8_lossy(&out.stderr));
+    Ok(LintRun {
+        red: code != 0,
+        output,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct LintParityOutcome {
+    pub compared: usize,
+    pub diffs: Vec<String>,
+}
+
+impl LintParityOutcome {
+    pub fn at_parity(&self) -> bool {
+        self.diffs.is_empty()
+    }
+}
+
+pub fn print_lint_outcome(name: &str, outcome: &LintParityOutcome) {
+    println!(
+        "parity {name}: {} tree(s) compared — the real one plus one per planted violation",
+        outcome.compared
+    );
+    for d in &outcome.diffs {
+        println!("  DIFF  {d}");
+    }
+    println!(
+        "parity {name}: {}",
+        if outcome.at_parity() {
+            "IDENTICAL VERDICTS — the legacy script may be deleted in its own commit"
+        } else {
+            "RED — do not switch the call site or delete the legacy script"
+        }
+    );
+}
+
 /// Print an outcome the way a CI step wants to read it.
 pub fn print_outcome(name: &str, path_hint: &Path, outcome: &ParityOutcome) {
     println!(

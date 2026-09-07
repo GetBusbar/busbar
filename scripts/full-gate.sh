@@ -268,9 +268,19 @@ GATE_EXT='(sh|py|mjs|js|ts|rb)'
 # gates is the mirror of one that loses them, and it fails just as closed: those three would land in
 # neither list and abort the runner.
 GATE_PATH="(scripts|testing)/([a-z0-9-]+/)*[a-z0-9-]+\.${GATE_EXT}\b"
+# A CONVERTED GATE IS STILL A GATE, AND DISCOVERY MUST STILL SEE IT.
+#
+# The path pattern above finds a gate by the FILE it invokes, so a gate that becomes
+# `cargo xtask gate <name>` disappears from this list the moment its call site is switched — and it
+# does not reappear in the cargo list either, because the cargo capture matches only
+# `fmt|clippy|build|test|run`. A converted gate would therefore be in NEITHER list: invisible to the
+# floor, invisible to the classifier, and silently not run here. That is precisely the
+# discovery-loses-a-gate failure this file exists to make impossible, so the registry spelling is
+# discovered alongside the script spelling.
+XTASK_GATE='cargo xtask gate [a-z0-9-]+'
 mapfile -t DISCOVERED < <(
   sed -e 's/^[[:space:]]*#.*$//' -e 's/^[[:space:]]*-\{0,1\}[[:space:]]*name:.*$//' "$CI_YML" \
-    | grep -oE "(python3 |bash |node |npx )?${GATE_PATH}( --[a-z-]+( [^ \"'|]+)?)*" \
+    | grep -oE "(python3 |bash |node |npx )?${GATE_PATH}( --[a-z-]+( [^ \"'|]+)?)*|${XTASK_GATE}( --[a-z-]+( [^ \"'|]+)?)*" \
     | sed 's/^ *//' | sort -u
 )
 
