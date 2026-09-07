@@ -174,6 +174,10 @@ pub(super) fn identity_from_config(
         engine().builtin_secret_resolver().as_ref(),
     )
     .expect("the operator's cert and key resolve into a client identity");
+    // THE PEM FILES HAVE DONE THEIR JOB. `resolve_client_identities` has read them into the returned
+    // identity, so the fixture directory is dead from here — and leaving one behind per call meant
+    // every local and CI run accumulated key material under the OS temp dir forever.
+    let _ = std::fs::remove_dir_all(&dir);
     identities
         .get("planner")
         .expect("an identity for the registration that named one")
