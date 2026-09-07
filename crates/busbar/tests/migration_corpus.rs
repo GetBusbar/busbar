@@ -574,11 +574,22 @@ fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
     // A run that compared nothing must never read as green. Without this, a renamed golden
     // directory or a corpus that stopped migrating would silently turn the whole test into a
     // no-op -- which is precisely what the binding's old absence-tripwire citation already was.
-    assert!(
-        compared >= 20,
+    //
+    // EVERY config, not a floor. Three `else { continue; }` arms above drop a config silently: no
+    // golden cell, migration failed, validation failed. A floor of 20 against 69 configs let two
+    // thirds of the corpus fall through all three and still reported green -- so a migrator change
+    // that broke validation for 49 of the 69 turned the sibling test red while THIS one quietly
+    // proved the binding over the 20 that survived. PB-17's claim is a count over the whole corpus
+    // ("1.5.5 warned 69 times over the 69 configs"); anything less than the whole corpus is a
+    // different, smaller claim wearing its name. Every shipped config has a recording today, so
+    // equality is the honest statement and a config that loses one is a fact worth a red.
+    assert_eq!(
+        compared,
+        files.len(),
         "only {compared} of {} corpus configs were compared against a recorded 1.5.5 warning \
-         count, so this test verified almost nothing. Either the pinned golden lost its \
-         config.migrate|<tag>|validate-migrated recordings, or the corpus stopped migrating.",
+         count, so this test verified less than it claims. Either the pinned golden lost its \
+         config.migrate|<tag>|validate-migrated recordings, or the corpus stopped migrating, or \
+         a migrated config stopped validating.",
         files.len()
     );
     assert!(

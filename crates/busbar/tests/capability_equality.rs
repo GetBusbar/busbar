@@ -118,10 +118,15 @@ const PLANE_CRATE_LEDGER_COLUMNS: &[(&str, &[&str])] = &[
     ("voice", &["voice-client", "voice-server"]),
 ];
 
-/// Floor on the capability axis. Sized below today's real number (13) so an ordinary addition does
-/// not trip it, and well above zero so a file that quietly lost its rows cannot report equality of
-/// nothing.
-const MIN_CAPABILITIES: usize = 12;
+/// Floor on the capability axis. Set AT today's real number (13), not below it. A floor of 12 was
+/// slack the gate could not afford: deleting one capability row together with its seven cells left
+/// `capabilities.len() == 12`, kept the cross-product tiling consistent (the row is gone from both
+/// axes), and left `proven` and `root_proven` above their own floors — so every test in this file
+/// stayed green while the matrix silently shrank, which is the one act the header forbids
+/// ("Never delete a capability to shrink the queue"). A floor that only catches wholesale loss
+/// does not catch the loss anyone would actually commit. Raise this line when a capability is
+/// ADDED; that edit is the deliberate act the doctrine wants to see in a diff.
+const MIN_CAPABILITIES: usize = 13;
 
 /// Floor on proven cells. A matrix where nothing is proven is a matrix nobody filled from the tree;
 /// today's honest count is well above this.
@@ -919,7 +924,7 @@ fn the_gates_own_constants_are_the_doctrines() {
          bidirectional three); changing it is a doctrine change, not a refactor"
     );
     const {
-        assert!(MIN_CAPABILITIES >= 12 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
+        assert!(MIN_CAPABILITIES >= 13 && MIN_PROVEN >= 20 && MIN_NA_REASON >= 60);
     }
     assert_eq!(
         ROOT_LEGS,
