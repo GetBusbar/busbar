@@ -920,15 +920,25 @@ def rate_card_history_cells() -> list[dict]:
         "weight": 10, "bindings": ["PB-103"],
         "why": "TWO complete rate cards written into ONE window (10x, then 100x + a 3-cent "
                "per_request_fee), with a chat before the first, between the two and after the "
-               "second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH from the "
-               "published 1.5.5 binary: every read prices the ENTIRE window at the card in force at "
-               "READ time, so the first request is reported at three different prices over the life "
-               "of one window and no row is ever left at what it was earned under. This is the cell "
-               "the 1.6.0 divergence is judged on (PB-103): under the dated history the two "
-               "pre-edit requests keep the boot and 10x cards and only the final read moves. The "
-               "script driver, not `pre`, because a `pre` request's response is never recorded "
-               "(record.sh run_pre_request checks only that busbar ANSWERED) and this cell's "
-               "finding is the relation between the three reads, not any one of them."})
+               "second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH "
+               "(published 1.5.5, binary 48e2800c): both PUTs are 200, all three chats are 200, and "
+               "the three reads total 25,000,000 / 500,060,000 / 750,090,000 micro-units — every "
+               "read prices the ENTIRE window at the card in force at READ time. The arithmetic "
+               "says so unambiguously: chat1 ALONE reads back at 25,000,000 (one request at CARD A) "
+               "when it was earned at 2,500,000 under the boot card, and by the final read all "
+               "three requests sit at 250,030,000 each. Priced-at-charge would have given 2,500,000 "
+               "/ 27,500,000 / 277,530,000 — no leading digit in common — so the reading is "
+               "measured, not inferred. THE CONSEQUENCE, which is the finding: the first request is "
+               "reported at THREE different prices over the life of ONE window, so an invoice read "
+               "off this endpoint stops being reproducible from it the moment a rate is corrected, "
+               "and the number depends only on when you looked. This is the cell the 1.6.0 "
+               "divergence is judged on (PB-103): under the dated rate-card history the two "
+               "pre-edit requests keep the boot and 10x cards, the final answer becomes "
+               "277,530,000, and ONLY the final read moves — the two earlier reads were already the "
+               "honest figure at their own instant and stay byte-identical. The script driver, not "
+               "`pre`, because a `pre` request's response is never recorded (record.sh "
+               "run_pre_request checks only that busbar ANSWERED) and this cell's finding is the "
+               "relation between the three reads, not any one of them."})
 
     # 2. `as_of` — the read-time snapshot selector 1.6.0 adds to every ledger read. On 1.5.5 the
     #    RESPONSE already carries an `as_of` field (it is in the epoch cell's golden), so the
@@ -940,13 +950,18 @@ def rate_card_history_cells() -> list[dict]:
                       config_variant="rate-card-as-of", bindings=["PB-103"],
                       why="a mid-window 100x card, then GET /admin/usage?as_of=1 — the snapshot "
                           "selector 1.6.0 gives every ledger read, sent to the binary that has no "
-                          "history to select from. RECORDED: what 1.5.5 does with an UNKNOWN query "
-                          "parameter on a money endpoint. The response's own `as_of` field already "
-                          "exists in 1.5.5 and is 0; if the request-side parameter is dropped "
-                          "silently, the answer is the CURRENT-card reprice under a name that "
-                          "promises a snapshot — which is the reading this cell pins so that "
-                          "1.6.0's honouring of it is a visible, registered change and not a "
-                          "quietly different number under the same URL."))
+                          "history to select from. RECORDED (published 1.5.5): 200, and the "
+                          "parameter is SILENTLY IGNORED. The body is the current-card reprice "
+                          "`billing|rate-card|epoch-mid-window` records — total 1,000,120,000, all "
+                          "four rows at the newest card — and the response's OWN `as_of` field "
+                          "comes back 0, not the 1 that was asked for. So 1.5.5 neither honours the "
+                          "snapshot nor refuses the request: it answers a DIFFERENT question under "
+                          "a name that promises a snapshot, and reports an `as_of` that "
+                          "contradicts the one in the URL. A caller who guesses this parameter "
+                          "today gets a confident wrong answer. Under 1.6.0 the same URL returns "
+                          "the snapshot it names — a changed number under unchanged request bytes, "
+                          "which is exactly why the additive registration has to name this cell "
+                          "instead of resting on the ledger endpoints being new."))
     cells[-1]["request"]["pre"] = [chat(), put_settings({"rate_card": HUNDREDFOLD_RATE_CARD,
                                                          "per_request_fee": NEW_PER_REQUEST_FEE}), chat()]
 
@@ -963,24 +978,29 @@ def rate_card_history_cells() -> list[dict]:
                                "X-Busbar-Signature": "ed25519:oracle-operator-signature"},
                       body=amend_body, config_variant="rate-card-amend", bindings=["PB-103"],
                       why="POST /api/v1/admin/ledger/amend-rate-history, SIGNED, against the binary "
-                          "that has no ledger route table. RECORDED: 1.5.5's refusal, verbatim — "
-                          "which code, which body, and (the distinction that matters) whether it is "
-                          "a 404 `not_found` from the router or a 405 from a path that exists for "
-                          "some other method. That refusal is the proof the 1.6.0 verb is ADDITIVE: "
-                          "no 1.5.5 operator can be relying on an answer here, because there is no "
-                          "answer here. Recorded before the verb is built, so the claim is a diff "
-                          "rather than an assertion."))
+                          "that has no ledger route table. RECORDED (published 1.5.5): 404 with "
+                          "code `not_found` and message \"resource not found\" — the ROUTER's "
+                          "generic miss, NOT a 405 from a path that exists for another method, and "
+                          "the `X-Busbar-Signature` header is never read (it cannot be: nothing "
+                          "routes). That distinction is the point of recording it rather than "
+                          "assuming it: a 405 would have meant the path already exists in some "
+                          "form. The refusal is the proof the 1.6.0 verb is ADDITIVE — no 1.5.5 "
+                          "operator can be relying on an answer here, because there is no answer "
+                          "here — and it is recorded before the verb is built, so the claim is a "
+                          "diff rather than an assertion."))
     cells.append(http("ledger|amend|refused-unsigned", LF, "POST",
                       "/api/v1/admin/ledger/amend-rate-history", auth="admin", listener="admin",
                       headers={"Content-Type": "application/json"}, body=amend_body,
                       config_variant="rate-card-amend-unsigned", bindings=["PB-103"],
-                      why="the same amend call with NO operator signature. Its value is the PAIR: "
-                          "1.5.5 must refuse this identically to the signed one, because it is "
-                          "refusing the ROUTE and knows nothing about signatures. If the two "
-                          "goldens ever differ, the premise that this verb is new is false. Under "
-                          "1.6.0 the two separate — signed proceeds, unsigned is refused AND "
-                          "journalled — and this cell is where that separation first becomes "
-                          "visible against a recorded baseline."))
+                      why="the same amend call with NO operator signature. RECORDED (published "
+                          "1.5.5): 404 `not_found` / \"resource not found\", BYTE-IDENTICAL to the "
+                          "signed sibling — which is the whole value of the pair. 1.5.5 is refusing "
+                          "the ROUTE and knows nothing about signatures, so the two calls cannot be "
+                          "told apart; had they differed, the premise that this verb is new would "
+                          "be false and the additive registration would be wrong. Under 1.6.0 the "
+                          "two separate — signed proceeds and journals a repricing record, unsigned "
+                          "is refused AND journalled — and this cell is the recorded baseline that "
+                          "separation is measured against."))
 
     # 5. NATIVE CURRENCY. §3.1 forbids a pivot: a card prices a lane in the currency it is billed
     #    in, with no cross-rate anywhere. 1.5.5's `currency` is a fixed LABEL on the response
@@ -997,13 +1017,19 @@ def rate_card_history_cells() -> list[dict]:
                       config_variant="rate-card-currency", bindings=["PB-103"],
                       why="a complete card that prices ONE lane in a second currency natively "
                           "(m-openai-chat in JPY, the rest USD) — the shape §3.1 requires and the "
-                          "shape 1.5.5 has no field for. RECORDED: whether 1.5.5 REFUSES the "
-                          "unknown per-entry `currency` key or ACCEPTS and silently drops it. The "
-                          "second answer is the one worth having a golden for: a card that says JPY "
-                          "while /usage keeps labelling the money USD is a mislabelled invoice, and "
-                          "the recorded write is what makes 1.6.0's honouring of the field a "
-                          "registered improvement rather than a change of meaning under the same "
-                          "bytes."))
+                          "shape 1.5.5 has no field for. RECORDED (published 1.5.5): 400 "
+                          "`invalid_request`, \"malformed config settings body: unknown field "
+                          "`currency`, expected one of `input_utok`, `output_utok`, "
+                          "`cache_read_utok`, `cache_write_utok`\" — 1.5.5 REFUSES the key rather "
+                          "than accepting and dropping it, and names the four it does know. That is "
+                          "the good answer and it is worth pinning as bytes, because the "
+                          "alternative was a card that says JPY while /usage keeps labelling the "
+                          "money USD: a mislabelled invoice no cell would have caught. Since the "
+                          "field is refused today, 1.6.0 accepting it is purely ADDITIVE — the "
+                          "known-key list IS the contract, and this cell is what proves `currency` "
+                          "was outside it before the history landed. Fixing the wording also holds "
+                          "a 1.6.0 build that accepts `currency` to refusing every OTHER "
+                          "misspelling the same way."))
 
     # 6. MINOR-UNIT ROUNDING. §3.3 divides by 10^(9-exp) ONCE per row, truncating. Before that can
     #    be a per-currency exponent it has to be true of the currency 1.5.5 already has, so this
@@ -1014,15 +1040,21 @@ def rate_card_history_cells() -> list[dict]:
                       auth="admin", listener="admin",
                       config_variant="rate-card-minor-unit", bindings=["PB-103"],
                       why="a complete card priced at ONE micro-unit per token — a whole request "
-                          "costs 18 micro-units against a USD minor unit of 10,000 — then "
-                          "GET /admin/usage. RECORDED: 1.5.5's sub-minor-unit arithmetic, exactly. "
-                          "Whether the per-key rows, the per-model rows and the total each truncate "
-                          "independently or the projection happens once decides whether §3.3's "
-                          "'divide by 10^(9-exp) ONCE per row, truncating' is a restatement of "
-                          "today's behaviour (byte-identical, as the identity test's statement 2 "
-                          "requires) or a change to it. Recorded on the currency 1.5.5 already has, "
-                          "so the zero-exponent (JPY) and three-exponent (BHD) arms 1.6.0 adds have "
-                          "a USD baseline to be identical to."))
+                          "costs 11+7 = 18 micro-units against a USD minor unit of 10,000 — then "
+                          "GET /admin/usage. RECORDED (published 1.5.5): every per-key row is "
+                          "spend_micros 18, and the per-model row and the total are 54, an EXACT "
+                          "sum of three exact rows. So on this endpoint 1.5.5 does NOT project to a "
+                          "minor unit at all: `spend_micros` is carried at full micro-unit "
+                          "precision and nothing is truncated to cents anywhere in the view — the "
+                          "cents truncation lives on the paths that REPORT cents, not here. That is "
+                          "the baseline §3.3 must be compatible with, and it makes the compatible "
+                          "reading precise: 'divide by 10^(9-exp) ONCE per row, truncating' has to "
+                          "leave THIS endpoint's figures alone, or the identity test's statement 2 "
+                          "— exact against the published 1.5.5 binary for a single-entry history — "
+                          "fails on any window worth less than a cent, which is every window on a "
+                          "quiet day. Recorded on the currency 1.5.5 already has, so the "
+                          "zero-exponent (JPY) and three-exponent (BHD) arms 1.6.0 adds have a USD "
+                          "baseline that is a measurement rather than a belief."))
     cells[-1]["request"]["pre"] = [put_settings({"rate_card": {m: {"input_utok": 1, "output_utok": 1}
                                                                for m in PRICED_MODELS}}), chat()]
 
@@ -1039,16 +1071,22 @@ def rate_card_history_cells() -> list[dict]:
                                                               "output_utok": 20000000}}}),
                       config_variant="rate-card-partial", bindings=["PB-103"],
                       why="a PARTIAL rate card (one model of the nine) through "
-                          "PUT /config/settings. RECORDED: the 400 that 1.5.5 answers — 'rate_card "
-                          "is AUTHORITATIVE and COMPLETE: you either price nothing or price "
-                          "everything' — as bytes rather than as a quotation from the source. This "
-                          "is the refusal an earlier pass at the epoch cell tripped over WITHOUT "
-                          "seeing it (a `pre` need only be answered, not 2xx, so a refused write "
-                          "was recorded as a pricing epoch), and it is the precondition for §4.1: a "
-                          "config PUT can APPEND a dated entry to the history precisely because the "
-                          "thing it carries is always a whole card. Under 1.6.0 this stays a 400 "
-                          "and the accepted sibling appends instead of overwriting, which "
-                          "/ledger/rate-history is what shows."))
+                          "PUT /config/settings. RECORDED (published 1.5.5): 400 `invalid_request` "
+                          "— \"config validation failed: rate_card is present but 8 configured "
+                          "models have no rate entry (rate_card is AUTHORITATIVE and COMPLETE: you "
+                          "either price nothing or price everything)\", followed by all eight "
+                          "missing models named one per line with a paste-ready zero-rate stub. The "
+                          "sentence used to be quoted from the source; it is now bytes, INCLUDING "
+                          "the remediation block, so a later binary that keeps the refusal but "
+                          "drops the list of what is missing is a diff. This is the refusal an "
+                          "earlier pass at the epoch cell tripped over WITHOUT seeing it (a `pre` "
+                          "need only be ANSWERED, not 2xx, so a refused write was recorded as a "
+                          "pricing epoch), and it is the precondition for §4.1: a config PUT can "
+                          "APPEND a dated entry to the history precisely because the thing it "
+                          "carries is always a WHOLE card, never a patch. Under 1.6.0 this stays a "
+                          "400 and the accepted sibling appends instead of overwriting — which is "
+                          "what /ledger/rate-history shows, and what makes 'append, not replace' a "
+                          "property of a well-defined object rather than a slogan."))
     return cells
 
 
