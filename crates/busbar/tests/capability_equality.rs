@@ -23,7 +23,7 @@
 //! | state | claim | enforced how |
 //! |---|---|---|
 //! | `proven` | a named test exercises the capability ON that plane | the file must exist, the fn must be in it, and the file must live in a test location. A proven cell whose test vanishes or is renamed is RED. |
-//! | `missing` | the capability does not reach the plane, or nothing proves it does | allowed, pinned, and NAMED on every umbrella run (`scripts/capability-equality-summary.py`, wired into `scripts/full-gate.sh`). Closing a cell without flipping the pin leaves the queue lying, and the review that lands the closing test is expected to flip it in the same commit. |
+//! | `missing` | the capability does not reach the plane, or nothing proves it does | allowed, pinned, and NAMED on every umbrella run (`scripts/capability-equality-summary.py`, wired into `cargo xtask full-gate`). Closing a cell without flipping the pin leaves the queue lying, and the review that lands the closing test is expected to flip it in the same commit. |
 //! | `not-applicable` | the plane is not owed this capability | only WITH an argument long enough to actually argue. N/A is a claim, not an escape; an unexplained absent cell is the failure mode this gate exists to prevent, so there is no way to express one. |
 //!
 //! The matrix is EXACT: every capability x plane pair appears exactly once, no hole, no duplicate,
@@ -775,7 +775,7 @@ fn pinned_equality_matrix_is_exact_and_every_proof_exists() {
     );
 
     // The named gap -- same honest-ledger shape as qa/method-coverage.missing. Green while the pin
-    // matches reality; the umbrella (scripts/full-gate.sh) prints this list on every run.
+    // matches reality; the umbrella (cargo xtask full-gate) prints this list on every run.
     println!(
         "EQUALITY: {} cells missing ({} proven, {} n/a) -- {}",
         summary.missing.len(),
