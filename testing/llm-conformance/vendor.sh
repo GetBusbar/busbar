@@ -73,9 +73,26 @@ while IFS=$'\t' read -r spec fmt want url; do
   file="${dir}/spec.${ext}"
   if [ "$MODE" = paths ]; then printf '%s\t%s\n' "$spec" "$file"; continue; fi
 
-  if [ -s "$file" ] && [ "$(cat "${dir}/.digest" 2>/dev/null || true)" = "$want" ]; then
-    echo "cached     ${spec}  ${want:0:12}  ${file}"
-    continue
+  # A CACHE HIT IS MEASURED, NOT REMEMBERED. This used to compare the `.digest` sidecar this very
+  # script wrote with the digest it was about to check — a note comparing itself, which says nothing
+  # about the bytes in spec.<ext> and is still true after those bytes change. `--check`, whose whole
+  # job is "verify the cache only", therefore printed `cached` for a document that was no longer the
+  # one the pin names, and fetch mode declined to re-download it. The file itself is digested here:
+  # 2 ms for the largest spec, and the difference between a pin and a note about a pin.
+  if [ -s "$file" ]; then
+    have="$(digest_of "$fmt" "$file")"
+    if [ "$have" = "$want" ]; then
+      rm -f "${dir}/spec.parsed.json"   # a pre-parse of this document that nothing measures; validate.py no longer reads it
+      printf '%s\n' "$want" >"${dir}/.digest"
+      echo "cached     ${spec}  ${want:0:12}  ${file}"
+      continue
+    fi
+    echo "vendor: CACHE DRIFT for ${spec} (${fmt}): ${file}" >&2
+    echo "  expected ${want}" >&2
+    echo "  actual   ${have}" >&2
+    echo "  The cached document is not the one this digest names. Nothing may be validated against it." >&2
+    if [ "$MODE" = check ]; then fails=$((fails+1)); continue; fi
+    echo "  re-fetching from ${url}" >&2
   fi
   if [ "$MODE" = check ]; then
     echo "MISSING    ${spec}  ${want:0:12}  (run vendor.sh to fetch)"; fails=$((fails+1)); continue
