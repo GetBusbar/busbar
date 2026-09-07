@@ -791,7 +791,86 @@ the plugin workflows download. Batch 3 must pick one before it starts, because i
 
 ---
 
-## 6. Batch-1 gate list and sizing
+## 6. What the conversion INTRODUCED, and what it renamed
+
+A port is supposed to change the implementation and nothing else, so the places where that is not
+true are the places most worth writing down. Each entry below is a deliberate, owner-accepted
+departure from "same semantics, same row ids" — recorded here because a departure nobody wrote down
+is indistinguishable from a porting mistake the next reader has to re-derive.
+
+### 6.1 A rule the conversion added: `ci-umbrella`'s TIER-IFF-FULL-GUARD
+
+`ci-umbrella-lint.py` asserts only the SHAPE half of the tier column — that every `RESULTS` row
+parses as `jobkey|tier|${{ needs.<job>.result }}` and carries a tier at all. Nothing in the tree
+asserts that the tier a row *declares* is the tier the job it scores actually *is*.
+
+The Rust gate adds that as `ci-umbrella:results-tier-matches-guard`: a row's tier is `full` **exactly
+when** the job it scores carries the full-tier `if:` guard the umbrella's own `FULL_TIER` expression
+mirrors. Not "at least when" — iff, in both directions, because both directions fail:
+
+* a **guarded** job labelled `fast` reddens every fast-tier run for doing exactly what its guard told
+  it to do, which is the kind of red that gets a gate relaxed rather than fixed;
+* an **unguarded** job labelled `full` has its real skip *forgiven* — the umbrella forgives `skipped`
+  only for a `full` row on a fast-tier run — so the required check quietly stops requiring that job.
+  That is the same silent-membership failure the gate exists for, one column to the right.
+
+This holds exactly on today's `ci.yml` (eleven `full` rows against the eleven guarded gating jobs;
+the `!cancelled()` conformance job and the push-only proof-manifest job are correctly not full-tier),
+so it lands green rather than as a ratchet. It is recorded here as **introduced, not inherited**: no
+prior gate, comment or document states it, and a reader diffing the Rust against the Python will find
+it with no Python behind it.
+
+### 6.2 Row ids the conversion split, and why a static owed set forced it
+
+Two gates could not keep their legacy ids, because those ids were not a fixed set.
+
+**`service-images`.** `service-images-check.sh` recorded one row per image LOCATION —
+`images|ci.yml:413` — so the id moved with the line number and the row set changed whenever a
+workflow was edited. That cannot be a `Gate::owed` set: the owed set is what makes "a rule stopped
+being emitted" detectable, and an id nobody can predict is an id nobody can miss. So the RULE became
+the id and the location moved into the row detail. The split is strictly finer, not coarser: the
+three distinct failures the shell folded into one dynamic id — a floating tag, an image with no row
+in the pinned table, and a digest that disagrees with the table — are now three separately owed rows
+with three separate RED proofs.
+
+**`changelog-register`.** The Python prints per-ENTRY ids (one per accepted difference), which is
+again a set that moves with the data file. The Rust owes rule ids and names every offending entry in
+the row detail.
+
+Consequence, and it is the reason this is written down rather than mentioned: **anything that reads
+those ids out of a ledger will not find the old spellings.** The TSV shape is unchanged and the
+readers still parse it; it is the id column's vocabulary that moved.
+
+### 6.3 Where the Rust is deliberately stricter than the script it replaces
+
+These are not parity failures. They are the zero-is-not-clean rule from risk 5.2(b) applied where the
+legacy had no equivalent, and each is a named FAIL with its own selftest case:
+
+* `changelog-register` treats a register that parsed to **zero entries** as RED. The legacy reads
+  `"accepted": []` as "nothing owed" and exits 0 — a renamed key or a truncated write is then
+  indistinguishable from a clean register.
+* `changelog` reports an **impossible calendar date** as a named `NO-FUTURE-DATE` failure. The legacy
+  raises out of `date.fromisoformat` and exits non-zero with a traceback, which is a red for the
+  wrong reason and one nobody can act on.
+* Every gate's walk carries a `min_files` floor and every gate's unreadable-input path emits FAIL
+  rows rather than reporting a clean tree.
+
+### 6.4 What parity does NOT cover
+
+The parity harness compares verdicts over planted trees, so it can only cover arms the legacy script
+also has. Recorded so a green parity run is not read as a wider claim than it is:
+
+* `changelog-register --require-version` has **no legacy counterpart** — it is the register-side half
+  of `changelog-lint --require-version`, added here. Nothing compares it.
+* `qa-gate-dispatch`'s `default-branch-copy` arm reads the promoted workflow out of **git**, and a
+  materialized scratch directory is not a repository. The declared-shape arm — the one that runs on
+  every branch — is covered; the `origin/main` arm is proven by its selftest and not by parity.
+* `release-order`'s graph proof (`PROVE`) is answered by the legacy under a different flag. A probe
+  whose two sides are asking different questions is not a parity probe, so it is excluded.
+
+---
+
+## 7. Batch-1 gate list and sizing
 
 Sizes are **estimated Rust source lines including the gate's own selftest**, derived from the script's
 non-comment, non-blank line count and the shape of the port (text scan ≈ 1.3×, `cargo metadata` graph
