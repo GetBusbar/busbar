@@ -14,6 +14,8 @@
 
 use std::collections::BTreeMap;
 
+use busbar_unit_cost::{CurrencyCode, HistorySeq, HistoryView};
+
 /// Nano-units per cent: the divisor that lands a derived nano-unit total in whole cents, and the
 /// multiplier that takes a configured cent cap back into the nano-units a hold is sized in.
 pub const NANOS_PER_CENT: u128 = 10_000_000;
@@ -121,10 +123,22 @@ impl RateNanos {
 /// caps still work (they count tokens, not money) and the flat fee still bills. `rates` present
 /// means the table is authoritative: a model with no entry derives at zero, which is the operator's
 /// rate-card edit taking effect retroactively, by design.
-#[derive(Debug, Clone, Default)]
+/// ONE CURRENCY, AND ONLY ONE. A pricer names the node's currency and nothing on this path can turn
+/// it into another: there is no rate table keyed by currency here, no second currency to compare
+/// against, and no conversion. A budget cap is a figure in the node's own money, and the derivation
+/// that meets it reads the same money.
+#[derive(Debug, Clone)]
 pub struct Pricer {
     rates: Option<BTreeMap<String, RateNanos>>,
     price_per_request_cents: i64,
+    card_seq: Option<HistorySeq>,
+    currency: CurrencyCode,
+}
+
+impl Default for Pricer {
+    fn default() -> Self {
+        Pricer::flat(0)
+    }
 }
 
 impl Pricer {
@@ -133,6 +147,8 @@ impl Pricer {
         Self {
             rates: None,
             price_per_request_cents,
+            card_seq: None,
+            currency: CurrencyCode::USD,
         }
     }
 
@@ -141,7 +157,62 @@ impl Pricer {
         Self {
             rates: Some(rates),
             price_per_request_cents,
+            card_seq: None,
+            currency: CurrencyCode::USD,
         }
+    }
+
+    /// **THE PRICER THE DOOR JUDGES WITH**, bound to the entry the PINNED snapshot resolves at the
+    /// unit's arrival instant.
+    ///
+    /// The snapshot is the root's pin, not a history read later: a card appended while the request
+    /// was in flight must not change the figure the request is judged at, which is the same reason
+    /// the pin exists at all.
+    ///
+    /// No entry covering the instant is the fee-only 1.5.5 posture — token pricing zero everywhere,
+    /// the flat fee still applied — and NOT a refusal. The door may never refuse a request 1.5.5
+    /// admitted, and a 1.5.5 deployment that configured no rate card admitted this one. It is also
+    /// why the rate table is dropped in that arm rather than kept: a table read under a card that is
+    /// not in force would be prices from nowhere, and `model_unpriced` would then fail a request
+    /// closed on a card the history does not have.
+    ///
+    /// The currency is the node's, carried for reporting and for the one refusal posture that names
+    /// it. Nothing here converts.
+    pub fn resolved_at(
+        view: &HistoryView<'_>,
+        arrived_ms: u64,
+        currency: CurrencyCode,
+        price_per_request_cents: i64,
+        rates: Option<BTreeMap<String, RateNanos>>,
+    ) -> Self {
+        match view.card_at(arrived_ms) {
+            Some((card_seq, _)) => Self {
+                rates,
+                price_per_request_cents,
+                card_seq: Some(card_seq),
+                currency,
+            },
+            None => Self {
+                rates: None,
+                price_per_request_cents,
+                card_seq: None,
+                currency,
+            },
+        }
+    }
+
+    /// The history entry this pricer's rates belong to, when one was resolved.
+    ///
+    /// A read-back seam and nothing else: no comparison in the decision consults it. It is here so
+    /// the caller can write down WHICH card a request was judged at, which is the one fact a
+    /// re-derivation of that decision cannot recover from the counters afterwards.
+    pub fn card_seq(&self) -> Option<HistorySeq> {
+        self.card_seq
+    }
+
+    /// The node's currency — the only currency any figure here is in.
+    pub fn currency(&self) -> CurrencyCode {
+        self.currency
     }
 
     /// Whether a rate card is configured.
