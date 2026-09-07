@@ -78,6 +78,17 @@ echo "subject armed: running the battery for real. A failure from here is an iss
 echo
 
 mkdir -p reports
+# THIS RUN'S REPORT, OR NONE. `scripts/mcp-conformance.sh` deletes the control
+# report before its control leg for a reason it states in full -- "reading one
+# from a previous run is how a gate reports a state it never reached" -- and the
+# SUBJECT report got no such treatment. A battery that dies before writing left
+# the previous run's `reports/subject.json` in place, the ARMED GUARD below
+# counted ITS rows and printed `armed guard: N test(s) actually executed` about a
+# run that did not happen, and `compare` wrote `reports/differential.json` -- the
+# artifact CI uploads and a human reads -- out of stale evidence. The exit code
+# stays red on `RUN_STATUS`, so this is a false ARTIFACT rather than a false
+# verdict; a false artifact is what the verdict gets re-read from later.
+rm -f reports/subject.json reports/differential.json
 
 # PREFLIGHT. A wrong launch command is the commonest way to arm this job badly,
 # and without this check every test waits out its failsafe timeout before the
