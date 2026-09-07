@@ -70,6 +70,74 @@ assert {k for k, w in CLASS_WEIGHT.items() if w == 10} == MONEY_CLASSES | {"miss
 # Families where BODY bytes are the contract itself (admin responses, boot messages, CLI output).
 BODY_IS_CONTRACT = {"admin.ops", "boot.refusal", "boot.warning", "config.migrate", "cli", "ops.scrape"}
 
+# ── THE ONE EXEMPTION FROM `norm.rules`, AND THE ONLY KIND OF RULE ALLOWED INTO IT ───────────────
+# `norm.rules` exists because a normalizer rule that fires on ONE side is itself a finding: content
+# was rewritten on the candidate that was not rewritten on the golden, and the rewrite is exactly
+# where a real divergence goes to hide. ORDER_RULES is the single exemption — a RE-SORT changes no
+# content at all, so whether a map happened to come out sorted on one run is not a contract.
+#
+# It was a bare set literal INSIDE compare(), hand-copied from normalize.py's rule list, and it had
+# already drifted: normalize.py grew `boot.exhaustion-order` (sort_pool_lines, a third sort_runs
+# call) and this set was never told, so that rule counted as one-sided. That drift was the harmless
+# direction. The other direction is not: the membership test here is a plain name match, so putting
+# a rule that DROPS or BLANKS content into this set — metrics.timing (drops a key), metrics.shape
+# (drops lines), body.keep-lines (keeps only matching lines), hdr.retry-after (blanks a value) —
+# would make its one-sided firing invisible, and a one-sided firing of a rule that removes content
+# is precisely how a money figure leaves a cell without a class saying so.
+#
+# So the two kinds are named separately and asserted disjoint at import. A re-sort rule may be
+# exempted; a rule that removes or rewrites content may never be, whatever it is called. Adding a
+# CONTENT_RULES name to ORDER_RULES stops this file from loading rather than quietly widening the
+# exemption. replay-selftest.sh holds the set to normalize.py's ACTUAL re-sort rules as well, so
+# drift in either direction is red rather than merely lucky.
+ORDER_RULES = {"boot.pool-order", "boot.error-order", "boot.exhaustion-order", "boot.pair-order",
+               "keys.order"}
+# Every normalize.py rule whose effect is to DROP, BLANK or REWRITE content rather than reorder it.
+CONTENT_RULES = {"hdr.date", "hdr.retry-after", "hdr.etag", "hdr.length", "id.wire", "audit.hash",
+                 "ts.unix", "ts.usage-window", "info.uptime", "ver.string", "key.id",
+                 "metrics.timing", "metrics.cooldown", "metrics.shape", "metrics.absolute",
+                 "body.keep-lines", "keep.header", "keep.header-min", "keep.json_key",
+                 "keep.text_regex", "egress.cred", "egress.host", "egress.body", "text.port",
+                 "stderr.platform-capability", "egress.elapsed"}
+assert not (ORDER_RULES & CONTENT_RULES), \
+    ("a rule that drops/blanks/rewrites content may never be exempted from norm.rules: "
+     f"{sorted(ORDER_RULES & CONTENT_RULES)}")
+
+# ── A RULE ABOUT THE HOST IS NOT A RULE ABOUT BUSBAR, AND IS NOT SILENT EITHER ───────────────────
+# `stderr.platform-capability` drops lines that report what the RECORDING MACHINE can do (see
+# normalize.py). Such a rule is ASYMMETRIC BY CONSTRUCTION: the golden is recorded on darwin, where
+# jemalloc cannot start its purge thread, and the CI candidate runs on linux, where the same binary
+# never prints the line. The rule therefore fires on the golden side and not the candidate side on
+# every cell that carries a boot log — which is the correct outcome, and which `norm.rules` would
+# report as 56 divergences about the difference between two laptops.
+#
+# It is NOT put in ORDER_RULES. ORDER_RULES means "changes no content", and this rule removes a line;
+# the disjointness assert above exists precisely so that a stripping rule cannot be smuggled into the
+# exemption, and quietly reclassifying this one to buy silence is the move that assert is there to
+# stop. So it gets its own category, with a different and weaker promise: its one-sided firing does
+# not make a cell RED, and is REPORTED on the cell's row regardless — including on a cell that is
+# otherwise green, which is the case the ordinary `detail` channel drops on the floor.
+#
+# The bar for adding a name here is not "this is noisy". It is: the line is emitted by the host's
+# capabilities and not in response to anything a request did, so 1.5.5 and 1.6.0 CANNOT disagree
+# about it. Anything a request can influence belongs in norm.rules where it can be red.
+HOST_RULES = {"stderr.platform-capability"}
+assert HOST_RULES <= CONTENT_RULES, \
+    f"a host rule still removes content and must be declared as such: {sorted(HOST_RULES - CONTENT_RULES)}"
+assert not (HOST_RULES & ORDER_RULES), \
+    f"a host rule is not a re-sort and may not take the norm.rules exemption: {sorted(HOST_RULES & ORDER_RULES)}"
+
+
+def host_rule_skew(g: dict, c: dict) -> dict | None:
+    """Which HOST_RULES fired on one side only. Reported on the row whether or not the cell diverges,
+    so "this cell is green because a host-capability line was dropped from the golden" is a sentence
+    the ledger actually contains rather than one a reader has to infer."""
+    ga = {r for r in g.get("applied", [])} & HOST_RULES
+    ca = {r for r in c.get("applied", [])} & HOST_RULES
+    if ga == ca:
+        return None
+    return {"only_golden": sorted(ga - ca), "only_candidate": sorted(ca - ga)}
+
 
 def allowed_classes(kind: str, classes: set) -> set:
     """The classes an accepted-differences entry may forgive — ONE definition, shared by the
@@ -207,6 +275,19 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
     # it removes content, so it is REPORTED on the row instead of being silently forgiven.
     # Both sets are the module-level ones: the hand-copied literal that used to sit here had already
     # drifted off normalize.py's rule list.
+    # EVERY OTHER EFFECTS KEY, or a script cell's whole contract is compared by nobody. The loop
+    # above walks a FIXED list, and a script cell writes its evidence under a name of its own
+    # (`survived`, `key_after_restart`, `validate_exit`, `hazard_lines`, `usage_before`) — 14 golden
+    # cells carry such a key that neither `status` nor `body` mirrors, so a candidate could flip
+    # `survived` from "yes" to "no" and the row still printed `PASS  identical`. A key present on
+    # one side only counts too: an effect that stopped being reported is exactly as much a
+    # divergence as one whose value moved.
+    moved = sorted(k for k in (set(ge) | set(ce)) - EFFECT_KEYS_WITH_OWN_CLASS if ge.get(k) != ce.get(k))
+    if moved:
+        classes.append("effects.script")
+        detail["effects.script"] = {"keys": moved,
+                                    "paths": json_paths_diff({k: ge.get(k) for k in moved},
+                                                             {k: ce.get(k) for k in moved})}
     _exempt = ORDER_RULES | HOST_RULES
     ga = [r for r in g.get("applied", []) + (g.get("effects") or {}).get("exec_rules", []) if r not in _exempt]
     ca = [r for r in c.get("applied", []) + (c.get("effects") or {}).get("exec_rules", []) if r not in _exempt]
@@ -454,6 +535,11 @@ def main() -> int:
             fam_stats[fam]["accepted"] += 1
         results.append({"id": cid, "family": fam, "plane": c.get("plane"), "weight": owed_w,
                         "classes": classes, "first_diff": first_diff_text(classes, detail), "detail": detail if classes else {},
+                        # A narrowed cell says so ON ITS OWN ROW. `PASS  identical` on a cell that
+                        # compared four of sixteen classes is a true sentence that reads as a
+                        # different, larger one; the reader of the ledger is the person who has to
+                        # know the row is narrow.
+                        **({"narrowed": compare_narrowed(c["compare"])} if c.get("compare") else {}),
                         # A host-capability rule that fired on one side only is stated on the row even
                         # when the cell is green — that is the whole point of it having its own
                         # category rather than sitting in the norm.rules exemption unremarked.

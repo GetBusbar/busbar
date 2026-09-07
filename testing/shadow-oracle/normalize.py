@@ -76,6 +76,52 @@ What is normalized (each rule is a named entry in `applied`):
                       a client header that leaked upstream when it should not have)
   text.port           127.0.0.1:<port> in any text body or stderr line: listen, admin and mock ports are the harness's
   egress.host         effects.egress[].headers.host: the mock's port becomes <PORT> (chosen per recording)
+  stderr.platform-capability
+                      whole stderr LINES that report a capability of the RECORDING HOST rather than
+                      anything busbar did — today exactly one: darwin's "[warn] could not enable
+                      jemalloc background purge thread ...", which the same binary does not print on
+                      linux. It sat in 56 golden cells, so the committed golden and a linux CI
+                      candidate differed on those cells by a fact about the machine that recorded
+                      them. The patterns are ANCHORED and match a whole line; a keyword or a
+                      severity match would also swallow a refusal, which is the one thing in stderr
+                      the oracle exists to compare. stderr ONLY — a body is busbar's answer.
+  egress.elapsed      effects.egress[].response.elapsed_ms (how long the upstream took to answer that
+                      one attempt) -> `elapsed`, one of "<1s" / "1-5s" / ">5s". The raw millisecond
+                      count is a measurement of the recording host; the BUCKET is the contract, and
+                      `route.failover|fo|primary-slow` is named for it. The mock records the raw
+                      value so renormalize.sh can re-derive the bucket; the boundaries live here.
+                      `status` and `retry_after` beside it are NOT normalized: a dropped Retry-After
+                      or a changed status is exactly the divergence these cells exist to catch.
+  eventstream.frames  a body whose Content-Type is `application/vnd.amazon.eventstream` (Bedrock's
+                      binary framing for a streamed Converse) is DECODED rather than read as text.
+                      Before this rule the bytes were run through `.decode("utf-8", "replace")`,
+                      which is lossy in both directions: every non-UTF-8 framing byte — the two
+                      big-endian lengths, the prelude CRC, the message CRC, the header block's
+                      type/length bytes — collapsed to U+FFFD, so two DIFFERENT frame streams could
+                      normalize to the same golden text, and the JSON payload inside each frame was
+                      never seen by the JSON path at all (its `metrics.latencyMs`, a per-run
+                      measurement, sat in the golden as a literal). The oracle was blind inside the
+                      frames on exactly the five `llm|bedrock|*|ok_stream` cells.
+                      The rule decodes the whole message stream: for each frame the 12-byte prelude
+                      (total_length, headers_length, prelude CRC32), the header block (all nine AWS
+                      header value types), the payload, and the trailing message CRC32 — and it
+                      VERIFIES both CRCs, so a corrupted stream cannot decode into a clean-looking
+                      list. Each payload is then normalized through the ordinary JSON path, so every
+                      existing rule applies inside a frame exactly as it does to an unframed body
+                      (`metrics.timing` on `latencyMs`, `ts.unix`, `id.wire`, ...).
+                      The body is represented as the ordered list of `[event-type, payload]` pairs
+                      with the framing DROPPED: lengths and CRCs are a re-encoding of the payload
+                      and its headers, not a busbar contract, and keeping them would re-introduce
+                      the per-run noise the payload rules just removed. Frame ORDER is kept, because
+                      the order of a stream's events is a contract. The event-type is the frame's
+                      `:event-type` header; a frame that carries none (an exception frame) is keyed
+                      by its `:exception-type`/`:error-code`, else its `:message-type`, so an error
+                      frame can never be mistaken for a nameless event.
+                      A body that claims the content-type but does NOT decode (bad CRC, truncated
+                      frame, unknown header type) does not silently fall back and disappear: the
+                      rule records `eventstream.undecodable` instead and the old text path runs, and
+                      because the applied-rule SET is itself a diff class (`norm.rules`), one side
+                      decoding where the other does not is red on its own.
   egress.body         effects.egress[].body is parsed as JSON and re-serialized canonically (same
                       technique as a response body) so key order/whitespace cannot masquerade as a
                       diff; a non-JSON body is left untouched. No id/timestamp scrubbing rule from
@@ -293,10 +339,54 @@ def norm_egress_entry(entry, applied: set):
     return out
 
 
+# ── THE ATTEMPT'S WALL CLOCK, AT THE ONLY RESOLUTION THAT IS A CONTRACT ──────────────────────────
+# `egress[].response.elapsed_ms` is a real measurement of the recording host: the same attempt is
+# 4ms on a warm laptop and 40ms on a loaded runner, and pinning either into a golden makes every
+# failover cell a stopwatch. But the DURATION IS THE CONTRACT on `route.failover|fo|primary-slow` --
+# the cell exists because the attempt ran past busbar's cap -- so dropping it entirely would put the
+# cell back where it was, named for something it does not record.
+#
+# The bucket is the resolution at which the fact is busbar's and not the machine's. The boundaries
+# are chosen against what the harness actually produces, not round numbers for their own sake: every
+# healthy mock response is single-digit milliseconds, and the `slow` verb sleeps
+# ORACLE_MOCK_SLOW_SECS (default 8). So `<1s` and `>5s` are separated by three orders of magnitude
+# of headroom, and no cell can cross a boundary because a runner was busy. `1-5s` is the middle
+# nothing should land in: a healthy attempt that reaches it is a real slowdown and SHOULD move the
+# cell, which is the point of keeping a bucket there rather than a two-way split.
+ELAPSED_BUCKETS = ((1000, "<1s"), (5000, "1-5s"))
+
+
+def elapsed_bucket(ms: int) -> str:
+    for edge, name in ELAPSED_BUCKETS:
+        if ms < edge:
+            return name
+    return ">5s"
+
+
+def norm_egress_response(resp, applied: set):
+    """The upstream's own answer to one attempt. `status` and `retry_after` stay byte-exact -- a
+    dropped Retry-After or a changed status is the divergence these cells exist to catch -- and only
+    the raw duration is rewritten, into its bucket."""
+    if not isinstance(resp, dict):
+        return resp
+    out = dict(resp)
+    ms = out.pop("elapsed_ms", None)
+    if isinstance(ms, (int, float)) and not isinstance(ms, bool):
+        applied.add("egress.elapsed")
+        out["elapsed"] = elapsed_bucket(int(ms))
+    return out
+
+
 def norm_egress(egress, applied: set):
     if not isinstance(egress, list):
         return egress
-    return [norm_egress_entry(e, applied) for e in egress]
+    out = []
+    for e in egress:
+        ne = norm_egress_entry(e, applied)
+        if isinstance(ne, dict) and "response" in ne:
+            ne["response"] = norm_egress_response(ne["response"], applied)
+        out.append(ne)
+    return out
 
 
 def sort_runs(lines: list, rx, rule: str, applied: set) -> list:
