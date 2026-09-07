@@ -503,8 +503,6 @@ impl Plane for LlmPlane {
         let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
         let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
 
-        let egress_protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
-            .ok_or(Encode::Unrepresentable)?;
         let bytes = u.body().body();
         // Both quantities the hop needs from the REQUEST document were read once, at decode, and
         // sealed into the draft: whether the client asked for a stream, and which model it named.
@@ -531,10 +529,11 @@ impl Plane for LlmPlane {
             // Same dialect, but the model may have to change. Only this arm needs the document.
             let mut value: serde_json::Value =
                 sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
-            if egress_protocol
-                .writer()
-                .rewrite_model_if_needed(&mut value, upstream.model)
-            {
+            let rewritten = busbar_llm_codec::proto_codec::with_writer(egress.name, |w| {
+                w.rewrite_model_if_needed(&mut value, upstream.model)
+            })
+            .ok_or(Encode::Unrepresentable)?;
+            if rewritten {
                 put(ctx, &serialize(&value)?)?
             } else {
                 ArenaBytes::new(bytes)
@@ -542,6 +541,8 @@ impl Plane for LlmPlane {
         } else {
             let value: serde_json::Value =
                 sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
+            let egress_protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
+                .ok_or(Encode::Unrepresentable)?;
             let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
                 .ok_or(Encode::Unrepresentable)?;
             let mut request = ingress_protocol
@@ -570,9 +571,15 @@ impl Plane for LlmPlane {
         };
 
         let mut envelope = TransportEnvelope::default();
-        let path = egress_protocol
-            .writer()
-            .upstream_path_for_stream(upstream.model, stream);
+        // The upstream target is the ONE writer question every hop asks, the byte-for-byte relay
+        // included. Asked through the codec crate's stack-borrow seam rather than by resolving a
+        // whole `Protocol`: a resolved `Protocol` boxes a reader and a writer, and the writers carry
+        // per-stream state, so a `Box` for a relay that touches no document is per-request heap the
+        // hop has no use for.
+        let path = busbar_llm_codec::proto_codec::with_writer(egress.name, |w| {
+            w.upstream_path_for_stream(upstream.model, stream)
+        })
+        .ok_or(Encode::Unrepresentable)?;
         let _ = envelope.fields.push(EnvelopeField {
             name: "method",
             value: put(ctx, b"POST")?,

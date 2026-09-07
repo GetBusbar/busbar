@@ -898,7 +898,7 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 ///
 /// `None` for a name no protocol declares, and for a protocol that declares no codec (MCP) — the same
 /// domain [`protocol_for`] answers.
-fn with_writer<R>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> R) -> Option<R> {
+pub fn with_writer<R>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> R) -> Option<R> {
     // Same test-registry priming `protocol_for` does, for the same reason: a writer resolves protocol
     // facts through `decl_for`. Once-guarded, prod-free.
     #[cfg(any(test, feature = "test-support"))]
