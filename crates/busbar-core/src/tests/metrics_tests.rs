@@ -945,14 +945,18 @@ fn test_key_gauge_limit_truncation() {
         .filter(|l| l.contains("vk_limit_"))
         .count();
 
-    assert!(
-            spend_series_count <= LIMIT,
-            "refresh_scrape_gauges must emit at most key_gauge_limit ({LIMIT}) per-key series; got {spend_series_count}"
-        );
-    // Also assert we got at least 1 series (sanity — something was emitted).
-    assert!(
-        spend_series_count > 0,
-        "at least one key spend series must be emitted; got 0"
+    // EXACTLY the limit, not merely "at most" it. `<= LIMIT` is satisfied by any truncation at all
+    // — a `.take(1)`, a `.take(0)` guarded by the `> 0` floor below, an off-by-a-thousand — so the
+    // pair of bounds it replaces bracketed the answer between 1 and 2000 and called that a proof.
+    // With LIMIT + 1 keys seeded, all of them carrying usage (so none is skipped for a zero
+    // `usage_for`), the cap is BINDING and the emitted count is a single determined number: LIMIT.
+    // Asserting that number is what makes a regression in either direction — a cap that stopped
+    // capping (2001) or one that clamped far below its own value — a failure here.
+    assert_eq!(
+        spend_series_count, LIMIT,
+        "refresh_scrape_gauges must emit EXACTLY key_gauge_limit ({LIMIT}) per-key series when \
+         {} keys are present: the cap must bind, and must bind AT its own value",
+        LIMIT + 1
     );
 }
 
