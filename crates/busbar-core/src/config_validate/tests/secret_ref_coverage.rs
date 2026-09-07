@@ -542,3 +542,101 @@ auth:
          report `ok: config valid` for a config whose client_secret cannot resolve. Got: {paths:?}"
     );
 }
+
+/// `api_key: none` — the declaration that there is NO credential — is meaningful for a provider
+/// `api_key` and for NOTHING else. Every other secret here protects something with no
+/// credential-free mode (a TLS cert, `auth.signing_key`, the authorization server's key, an admin
+/// token, an OIDC client secret, a plane's outbound delegation credential), and accepting `none`
+/// on one of those would not configure anything — it would silently disarm the thing the secret
+/// exists to protect.
+///
+/// Driven over the REAL walk of a config that populates every secret-bearing section, so the
+/// classification is checked against the paths that actually exist rather than against a list
+/// somebody has to remember to update: a new secret-bearing field arrives here as a new path and is
+/// classified by this test the moment `secret_refs` reports it.
+#[test]
+fn keyless_is_accepted_on_provider_api_keys_alone() {
+    let yaml = r#"
+listen: "127.0.0.1:8080"
+public_url: "https://busbar.example.com"
+providers:
+  hosted:
+    api_key: { env: BUSBAR_TEST_HOSTED_KEY }
+  local:
+    api_key: none
+models: {}
+tls:
+  cert: { file: /run/secrets/cert.pem }
+  key: { file: /run/secrets/key.pem }
+  client_ca: { file: /run/secrets/ca.pem }
+admin_tls:
+  cert: { file: /run/secrets/admin-cert.pem }
+  key: { file: /run/secrets/admin-key.pem }
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_TEST_ADMIN_TOKEN }
+  corp-oidc:
+    module: oidc
+    browser_login:
+      client_id: busbar-web
+      client_secret: { env: BUSBAR_TEST_OIDC_CLIENT_SECRET }
+auth:
+  chain: [keys]
+  admin_auth: [admin-tokens]
+  signing_key: { file: /run/secrets/signing.key }
+"#;
+    let deploy: crate::config::DeployCfg =
+        serde_yaml::from_str(yaml).expect("the fixture DeployCfg yaml must parse");
+    // Both providers need a catalog entry (`providers.yaml`); only the credential differs between
+    // them, which is the whole point of the fixture.
+    let defs: std::collections::HashMap<String, crate::config::ProviderDef> = ["hosted", "local"]
+        .into_iter()
+        .map(|name| {
+            let def: crate::config::ProviderDef = serde_yaml::from_str(
+                "protocol: anthropic\nbase_url: \"https://api.anthropic.test\"\n",
+            )
+            .expect("the fixture ProviderDef yaml must parse");
+            (name.to_string(), def)
+        })
+        .collect();
+    let cfg = crate::config::resolve(&deploy, &defs).expect("the fixture config must resolve");
+
+    let keyless: Vec<String> = super::secret_refs(&cfg)
+        .into_iter()
+        .map(|(p, _)| p)
+        .filter(|p| super::keyless_credential_allowed(p))
+        .collect();
+    let mut keyless_sorted = keyless.clone();
+    keyless_sorted.sort();
+    assert_eq!(
+        keyless_sorted,
+        vec![
+            "providers.hosted.api_key".to_string(),
+            "providers.local.api_key".to_string()
+        ],
+        "exactly the provider api_keys may be keyless; got: {keyless:?}"
+    );
+
+    // And the config as written is VALID: `api_key: none` on the local provider passes, while the
+    // hosted provider's real reference is untouched. (Structure only — no value is resolved here.)
+    let mut errors = Vec::new();
+    crate::config_validate::validate(&cfg).unwrap_or_else(|e| errors = e);
+    assert!(
+        !errors.iter().any(|e| e.contains("providers.local.api_key")),
+        "`api_key: none` on a provider must validate; got: {errors:?}"
+    );
+
+    // Move that same `none` onto a secret that requires a credential and it is REFUSED, naming the
+    // field. This is the half that keeps the new form from becoming a quiet off switch.
+    let mut cfg = cfg;
+    cfg.auth.as_mut().expect("auth").signing_key = Some(crate::config::SecretRef::none());
+    let errors = crate::config_validate::validate(&cfg)
+        .expect_err("`none` on auth.signing_key must be refused");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.contains("auth.signing_key") && e.contains("NO credential")),
+        "the refusal names the field and says why `none` is wrong there; got: {errors:?}"
+    );
+}

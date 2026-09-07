@@ -75,7 +75,9 @@ fn none_is_the_one_scalar_a_secret_field_accepts() {
     assert!(serde_yaml::from_str::<SecretRef>("{ module: none }")
         .unwrap()
         .is_none());
-    assert!(serde_json::from_str::<SecretRef>("\"none\"").unwrap().is_none());
+    assert!(serde_json::from_str::<SecretRef>("\"none\"")
+        .unwrap()
+        .is_none());
 
     for bad in ["None", "NONE", "no", "nones", "{ none: true }"] {
         assert!(

@@ -2701,3 +2701,23 @@ tools:
         out.warnings
     );
 }
+
+/// MIGRATION NEVER INVENTS `api_key: none`. Whether an upstream takes a credential is a fact about
+/// the deployment, not something readable off the config file: guessing `none` for a provider with
+/// no `api_key_env` to convert would silently disarm a provider that does need one — the same quiet
+/// failure the boot degrade used to cause, moved into the migrator. The migration converts an
+/// `api_key_env` it can SEE and otherwise leaves the field absent, so the operator has to decide.
+#[test]
+fn migrate_never_invents_a_keyless_api_key() {
+    let raw = "providers:\n  anthropic: { api_key_env: ANTHROPIC_KEY }\n  local: { base_url: 'http://127.0.0.1:11434' }\n";
+    let (_out, doc) = migrate_to_value(raw);
+    assert_eq!(
+        dig(&doc, &["providers", "anthropic", "api_key", "env"]).and_then(|v| v.as_str()),
+        Some("ANTHROPIC_KEY"),
+        "a visible api_key_env still converts to the secret reference"
+    );
+    assert!(
+        dig(&doc, &["providers", "local", "api_key"]).is_none(),
+        "a provider with no credential to convert gets NO api_key — never a fabricated `none`"
+    );
+}

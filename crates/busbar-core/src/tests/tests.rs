@@ -1213,6 +1213,92 @@ fn secrets_block_rejects_non_secret_kind() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// FAIL-CLOSED PROVIDER CREDENTIAL: a provider `api_key` whose reference does not resolve STOPS
+/// BOOT. It used to warn and start the lane with an empty credential — a lane that reported healthy,
+/// was never probed (no key, no probe), and 401'd every request routed to it.
+///
+/// The refusal must name the provider and the REFERENCE, and must carry no credential material: a
+/// SECOND provider whose key DOES resolve puts a sentinel value in the process environment, and the
+/// refusal must not contain it. That is the real property — nothing dumps a resolved credential into
+/// a boot diagnostic — and it is checkable, unlike asserting the absence of a value that was never
+/// read.
+#[test]
+fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
+    crate::metrics::init();
+    const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
+    let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
+    let unset_var = format!("BUSBAR_TEST_PROVIDER_KEY_UNSET_{}", std::process::id());
+    std::env::set_var(&set_var, SENTINEL);
+    std::env::remove_var(&unset_var);
+
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(&unset_var));
+    // A second, RESOLVING provider (the same fixture under another name), so the sentinel really is
+    // resolvable during this boot and its absence from the error means something.
+    let resolving = cfg_with_provider_api_key(crate::config::SecretRef::env(&set_var))
+        .providers
+        .remove("acme")
+        .expect("fixture provider");
+    cfg.providers.insert("resolves".to_string(), resolving);
+    for (model, provider) in [("m-unset", "acme"), ("m-set", "resolves")] {
+        cfg.models
+            .insert(model.to_string(), model_cfg_for_provider(provider));
+    }
+
+    let err = build_once(cfg, None)
+        .err()
+        .expect("an api_key that does not resolve must refuse boot, not degrade to an empty key");
+    assert!(
+        err.contains("acme"),
+        "the refusal names the provider: {err}"
+    );
+    assert!(
+        err.contains(&format!("env:{unset_var}")),
+        "the refusal names the reference: {err}"
+    );
+    assert!(
+        err.contains("api_key: none"),
+        "and points at the keyless declaration for an upstream that takes no credential: {err}"
+    );
+    assert!(
+        !err.contains(SENTINEL),
+        "a resolved credential value must never appear in a boot diagnostic"
+    );
+
+    std::env::remove_var(&set_var);
+}
+
+/// `api_key: none` — the EXPLICIT keyless declaration — BOOTS. It is the one form that starts a lane
+/// with no credential now that a reference which fails to resolve refuses, so the whole migration
+/// path for a keyless local upstream rests on this building an App at all.
+///
+/// What that lane then does on the wire — no auth header, and skipped by the prober — is asserted at
+/// the seams that decide it, in busbar-llm's `auth_style_tests` and `health` tests, rather than
+/// re-derived here through a lane accessor that exists only for the test.
+#[test]
+fn boot_starts_a_keyless_lane_declared_none() {
+    crate::metrics::init();
+    let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
+    cfg.models
+        .insert("m0".to_string(), model_cfg_for_provider("acme"));
+    build_once(cfg, None).expect("`api_key: none` starts the lane");
+}
+
+/// A `ModelCfg` naming `provider`, with every other field at its default — the two credential tests
+/// above differ only in the provider's `api_key`, so the model they hang off it is boilerplate.
+#[cfg(test)]
+fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
+    crate::config::ModelCfg {
+        provider: provider.into(),
+        max_concurrent: Some(1),
+        max_requests: -1,
+        default_max_tokens: None,
+        upstream_model: None,
+        attempt_timeout_ms: None,
+        reasoning: None,
+        prompt_caching: None,
+    }
+}
+
 /// The marquee 1.5.0 "secrets are plugins" feature — a provider
 /// `api_key: { module: acme-vault, … }` (TLS cert/key, `auth.signing_key`, and the admin token are
 /// the same shape) — must PASS validation when the `kind: secret` plugin is loaded + trusted. The

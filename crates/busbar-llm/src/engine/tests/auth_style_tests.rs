@@ -76,6 +76,37 @@ fn test_default_auth_falls_back_to_protocol_bearer() {
     }
 }
 
+/// NO CREDENTIAL ⇒ NO AUTH HEADER. A lane whose provider declared `api_key: none` (a keyless local
+/// upstream — ollama, vLLM) holds an empty key, and an empty key must produce NO auth header at all
+/// — not `Authorization: Bearer ` with an empty token, and not an empty `api-key:` header. A bare
+/// `Bearer` is a proxy tell no native client emits, and a keyless upstream is entitled to reject a
+/// malformed empty credential outright.
+///
+/// The same rule is applied to the boot-time freeze in `prebuild_auth`, so a lane-constant
+/// credential cannot smuggle an empty header back in through the prebuilt path.
+#[test]
+fn test_keyless_lane_sends_no_auth_header() {
+    crate::testkit::install_test_seams();
+    for auth in [None, Some("bearer"), Some("api-key")] {
+        let lane = lane_with_auth(auth);
+        assert!(
+            lane_auth_headers(&lane, "", &ctx(b"{}")).is_empty(),
+            "an empty credential must send NO auth header (auth style {auth:?})"
+        );
+        assert!(
+            busbar_substrate::egress_auth::prebuild_auth(&lane.credential, "", &lane.signing_host)
+                .is_none_or(|h| h.is_empty()),
+            "and the boot-time prebuilt freeze must not hold one either (auth style {auth:?})"
+        );
+    }
+    // A NON-empty credential is unaffected — the guard is about absence, not about auth style.
+    assert_eq!(
+        lane_auth_headers(&lane_with_auth(Some("bearer")), "SECRETKEY", &ctx(b"{}")).len(),
+        1,
+        "a real credential still sends its header"
+    );
+}
+
 #[test]
 fn test_host_from_base_strips_scheme_and_userinfo() {
     crate::testkit::install_test_seams();

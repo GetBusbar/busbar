@@ -1642,27 +1642,20 @@ async fn test_passthrough_no_caller_token_selects_empty_not_lane_key() {
     .await;
     assert_eq!(resp.status().as_u16(), 200);
 
-    // The upstream must NOT have received the operator key. With the fix the forwarded credential
-    // is empty → `Authorization: Bearer ` (empty token); the OLD code forwarded
-    // `Authorization: Bearer sk-operator-secret`, silently borrowing the operator key.
-    let recorded_auth = state
-        .get_last_auth_header()
-        .expect("mock recorded an Authorization header");
-    assert_ne!(
-        recorded_auth, "Bearer sk-operator-secret",
-        "passthrough with no caller credential must NOT borrow the operator's lane api_key"
-    );
-    assert!(
-            !recorded_auth.contains("sk-operator-secret"),
-            "operator key must never leak upstream for an unauthenticated passthrough caller; got {recorded_auth:?}"
-        );
-    // The forwarded credential is empty → a bare `Bearer` token (HTTP strips the trailing space of
-    // the empty value on the wire), NOT `Bearer <operator-key>`.
-    assert_eq!(
-        recorded_auth.trim(),
-        "Bearer",
-        "passthrough with no caller credential must forward an EMPTY Bearer credential upstream"
-    );
+    // The upstream must NOT have received the operator key. The forwarded credential is empty, and
+    // an empty credential now sends NO auth header at all: a bare `Authorization: Bearer` with no
+    // token is a proxy tell no native client emits, and an upstream is entitled to reject it. The
+    // OLD code forwarded `Authorization: Bearer sk-operator-secret`, silently borrowing the
+    // operator key.
+    if let Some(recorded_auth) = state.get_last_auth_header() {
+        // Never print the header verbatim: on the regression this guards, it IS the operator key.
+        let what = if recorded_auth.contains("sk-operator-secret") {
+            "the operator's lane api_key (LEAK)"
+        } else {
+            "an unexpected auth header"
+        };
+        panic!("passthrough with no caller credential must forward NO auth header; got {what}");
+    }
 
     server.shutdown().await;
 }
