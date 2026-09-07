@@ -23,6 +23,7 @@ pub mod changelog;
 pub mod changelog_register;
 pub mod ci_umbrella;
 pub mod denylist_gate;
+pub mod duplex_ws_default_edge;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
@@ -529,6 +530,13 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(plane_abi_neutrality::PlaneAbiNeutralityGate),
         summary:
             "the plane ABI's hot lane is derived from the taxonomy, not named after a protocol",
+    },
+    Registration {
+        name: "duplex-ws-default-edge",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(duplex_ws_default_edge::DuplexWsDefaultEdgeGate),
+        summary: "no WebSocket crate in the default money-path dependency closure",
     },
 ];
 
