@@ -2,11 +2,30 @@
 # 1.2's transitive source denylist over the pure plugin kinds: plane, hook, static/pure auth,
 # egress-auth-scheme).
 #
-# EMPTY AT HOUR 0, per section 1.2 ("allow-list empty at hour 0"). It stays empty until a specific,
-# reviewed exception is needed — never populated speculatively, never populated to make a red run
-# green without a decision behind it.
+# IT BEGAN EMPTY, per section 1.2 ("allow-list empty at hour 0"), and it is NOT empty now: the
+# `[[allow]]` tables below are specific, reviewed exceptions, each with an owner and a date. Nothing
+# is ever added here speculatively, and nothing is added to make a red run green without a decision
+# behind it.
 #
-# Every future entry is a `[[allow]]` table naming the crate and either the banned dependency name
+# THE FILE IS A FLOOR CHECKED BOTH WAYS — the same posture `scripts/no-deferral.waivers` has:
+#
+#   * a hit no entry covers is RED. The ban holds.
+#   * an ENTRY THAT MATCHES NO HIT IS RED. The offender it excused is not in this tree any more, so
+#     the exception has outlived the thing it was an exception to: delete it (the ban now holds on
+#     its own), or, if it never matched anything, delete it (it was never an exception to anything).
+#     `xtask/src/denylist.rs::stale_waivers` computes this against the UNFILTERED hit list, so an
+#     entry that is doing its job is exactly one that is not reported here.
+#   * an entry missing `reason` or `owner` refuses the entire run.
+#
+# The middle rule is why an entry cannot quietly become decoration. A waiver nobody has to defend is
+# read by the next reviewer as a live, reviewed fact about the tree, and after the offender is gone
+# it is not a fact at all.
+#
+# A `via`-narrowed entry whose bypass check FAILS is not stale: its hits are still in the report and
+# still red, and the entry is a live exception that does not currently apply. It is reported by
+# those hits, not a second time as a stale waiver.
+#
+# Every entry is a `[[allow]]` table naming the crate and either the banned dependency name
 # (`dep`) or the banned own-src path (`path`) it waives, with BOTH a `reason` and an `owner`. An
 # entry missing either field is a REFUSAL of the entire run (`xtask/src/denylist.rs::load_allowlist`
 # panics rather than silently accepting a half-filled waiver), so there is no way for an unreviewed
