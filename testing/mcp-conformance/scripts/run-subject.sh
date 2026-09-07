@@ -137,11 +137,35 @@ if [ ! -f reports/subject.json ]; then
   echo "ARMED GUARD: a subject was configured but no report was produced." >&2
   exit 1
 fi
+# THE COUNT MUST BE A NUMBER, AND A COUNT THAT COULD NOT BE READ IS ZERO.
+#
+# This reader used to be a bare command substitution whose failure was invisible. A report that is
+# truncated, that is not JSON, or that simply has no `results` member makes `require(...).results`
+# undefined, `.filter` throws, node exits non-zero and writes NOTHING — and `[ "" -eq 0 ]` is not
+# false, it is a SYNTAX ERROR that bash reports as exit 2. `if` reads 2 as "not zero", takes the
+# ELSE path, and the ARMED GUARD — the one check whose whole job is to refuse a run that executed
+# nothing — steps aside and lets the run continue, printing `armed guard:  test(s) actually
+# executed` with a hole where the number should be. A guard that fails OPEN on an unreadable report
+# is the vacuous green it exists to refuse, arriving through the door nobody watches.
+#
+# So the node exit status is captured, and a count that is not a plain non-negative integer is
+# treated as the failure it is rather than as an unreadable success.
 EXECUTED=$(node -e '
   const r = require("./reports/subject.json").results;
+  if (!Array.isArray(r)) throw new Error("the report has no `results` array");
   const ran = r.filter(x => x.verdict !== "SKIP").length;
   process.stdout.write(String(ran));
-')
+') || EXECUTED=""
+case "$EXECUTED" in
+  ''|*[!0-9]*)
+    cat >&2 <<MSG
+ARMED GUARD FAILED: reports/subject.json could not be read as a run at all --
+no \`results\` array, or the file is truncated or not JSON. The executed-test
+count is therefore UNKNOWN, and unknown is red: a run whose report cannot be
+read is indistinguishable from a run that tested nothing.
+MSG
+    exit 1 ;;
+esac
 if [ "$EXECUTED" -eq 0 ]; then
   cat >&2 <<MSG
 ARMED GUARD FAILED: a subject IS configured but ZERO tests actually executed
