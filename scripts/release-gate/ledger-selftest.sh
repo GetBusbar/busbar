@@ -92,8 +92,17 @@ chmod +x "$tmp/fake/scripts/release-gate/expected-ids.sh"
 # dropped-status shape this file is about.
 GATE_RC=0
 GATE_OUT="$tmp/gate.out"
+# GATE_EXPECTED_FLOOR is lowered TO THE SIZE OF THE STAGED LIST, and only here. gate.sh refuses an
+# expected list shorter than 50 ids because a collapsed contract is how a gate goes green having
+# checked nothing — that floor is the subject of gate.sh --selftest's own case and is not touched.
+# This file's subject is a different one: how ONE id's verdict is resolved when several rows name
+# it. Five ids is the smallest list that can stage a PASS-then-FAIL pair, a CONFLICT pair, an
+# honest duplicate and an id nobody reported, so the floor has to be told that five is the whole
+# world here rather than a contract that shrank. Anything larger than the staged list would put
+# every case back behind the short-list error and read as "the ledger cases pass".
 run_gate() {
   LEDGER_DIR="$tmp/fake/ledgers" RUNNER_TEMP="$tmp/fake" GITHUB_STEP_SUMMARY=/dev/null \
+    GATE_EXPECTED_FLOOR=5 \
     "$tmp/fake/scripts/release-gate/gate.sh" 9.9.9 >"$GATE_OUT" 2>&1
   GATE_RC=$?
   out="$(cat "$GATE_OUT")"
