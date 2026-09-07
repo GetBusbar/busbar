@@ -589,7 +589,13 @@ impl Gate for QaGateDispatchGate {
                 overlay,
                 materialize: vec![WORKFLOW.to_string(), DECLARED.to_string()],
                 expect_rule: expect_rule.map(str::to_string),
-                legacy_names: None,
+                // The legacy's own sentence for the declared-shape arm. Deliberately the sentence
+                // and not the gate's name: the script's `--write` hint contains the script's own
+                // filename, so matching on that would have passed for every probe while proving
+                // nothing about WHICH rule fired. The other arm's message reads "differs
+                // STRUCTURALLY from the one on origin/main", so the two cannot be confused.
+                legacy_names: expect_rule
+                    .map(|_| "does not match the shape this branch declares in".to_string()),
                 divergence: None,
             });
         };
