@@ -143,6 +143,8 @@ declare -a CARGO_LOCAL=(
   "cargo xtask gate blocking-ffi"
   "cargo xtask gate plane-transport-neutrality --selftest"
   "cargo xtask gate plane-transport-neutrality"
+  "cargo xtask gate plane-abi-neutrality --selftest"
+  "cargo xtask gate plane-abi-neutrality"
 )
 
 declare -a CARGO_CI_ONLY=(
