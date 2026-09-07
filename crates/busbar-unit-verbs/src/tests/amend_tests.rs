@@ -321,6 +321,29 @@ fn the_canonical_payload_frames_every_field_by_its_own_length() {
     assert_ne!(canonical_payload(&open), canonical_payload(&bounded));
 }
 
+/// The payload is domain-separated: it opens with a tag naming the verb and the encoding version,
+/// so a signature an operator gave over an amendment can never verify as a signature over anything
+/// else this deployment asks that same key to sign — and a signature given under a future encoding
+/// can never be replayed against this one.
+#[test]
+fn the_canonical_payload_is_domain_separated() {
+    let request = AmendRequest {
+        from_ms: 2_000,
+        until_ms: Some(3_000),
+        card_hash: [1u8; 32],
+        card_complete: true,
+        reason_hash: [2u8; 32],
+        operator_fingerprint: "op",
+        signature: b"sig",
+    };
+    let payload = canonical_payload(&request);
+    assert!(
+        payload.starts_with(b"28:busbar.amend_rate_history.v1"),
+        "the payload does not open with the framed verb tag: {}",
+        String::from_utf8_lossy(&payload)
+    );
+}
+
 /// The replay slot carries the payload as well as the header value, and it length-frames both. A
 /// second amendment sent under a header value the caller reused must not replay the first's
 /// receipt: the seq and the delta in it belong to a window this call never named.
