@@ -23,7 +23,7 @@ PATH-INCLUDE = 0
 SYMBOL = 61
 TYPE = 13
 KEY = 377
-DIALECT = 453
+DIALECT = 456
 BACKWARDS = 33
 
 # [test-reach] — the BACKWARDS class broken out per plane crate (bare plane key, matching

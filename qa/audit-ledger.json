@@ -3150,7 +3150,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md",
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
    "auditor": "opus-test-auditor-root",
    "fixed_at": null,
    "rounds": [
@@ -3161,7 +3161,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "bca2460e95de5f9e34f0cd24a839f600df7ddfc6e9be3c676d4d20338b35c87a",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md"
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
     }
    ]
   },
@@ -3176,7 +3176,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md",
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
    "auditor": "opus-test-auditor-root",
    "fixed_at": null,
    "rounds": [
@@ -3187,7 +3187,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "f0e067aa4bd0a8c18f0e2179b468e55f8538b6b02486dc6d8aa5665be37a6f81",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md"
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
     }
    ]
   },
@@ -3202,7 +3202,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md",
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
    "auditor": "opus-test-auditor-root",
    "fixed_at": null,
    "rounds": [
@@ -3213,7 +3213,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "b920f1ddf8fa341026ed3ca50bd55053e16da7d9be7af55750ad4ea05151e66e",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md"
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
     }
    ]
   },
@@ -3248,7 +3248,7 @@
     "MEDIUM": 38,
     "LOW": 13
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md",
+   "report": "busbar-landq-state/gate/audits/tests-root.md",
    "auditor": "opus-test-auditor-root",
    "fixed_at": null,
    "rounds": [
@@ -3263,7 +3263,7 @@
       "MEDIUM": 38,
       "LOW": 13
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-root.md"
+     "report": "busbar-landq-state/gate/audits/tests-root.md"
     }
    ]
   },
@@ -3294,7 +3294,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3305,7 +3305,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "2e229a92f24b87e0d2ed8d317599f593f8a0148c2a3f9a2837f11e1d36624130",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3320,7 +3320,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md",
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
    "rounds": [
@@ -3331,7 +3331,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "23ce9e4d68053fc3f7cb30591dc94ab5ada43903b7191d1706622b67d059b506",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md"
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
    ]
   },
@@ -3346,7 +3346,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md",
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
    "rounds": [
@@ -3357,7 +3357,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "e8145960243ab7a5428878e0c03b2d853477894cd90b7ee124c978774221e852",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md"
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
    ]
   },
@@ -3376,7 +3376,7 @@
     "MEDIUM": 4,
     "LOW": 9
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md",
+   "report": "busbar-landq-state/gate/audits/tests-core.md",
    "auditor": "opus-test-auditor-core",
    "fixed_at": null,
    "rounds": [
@@ -3391,7 +3391,7 @@
       "MEDIUM": 4,
       "LOW": 9
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md"
+     "report": "busbar-landq-state/gate/audits/tests-core.md"
     }
    ]
   },
@@ -3406,7 +3406,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md",
+   "report": "busbar-landq-state/gate/audits/tests-core.md",
    "auditor": "opus-test-auditor-core",
    "fixed_at": null,
    "rounds": [
@@ -3417,7 +3417,7 @@
      "audited_at": "759280973a9075e8c1197116643156290af970a0",
      "tree_hash": "e0a9e1f71f4cdc38d7463cc25f3b347db57b2544453401ff020805deb0e4321e",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md"
+     "report": "busbar-landq-state/gate/audits/tests-core.md"
     }
    ]
   },
@@ -3432,7 +3432,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md",
+   "report": "busbar-landq-state/gate/audits/tests-core.md",
    "auditor": "opus-test-auditor-core",
    "fixed_at": null,
    "rounds": [
@@ -3443,7 +3443,7 @@
      "audited_at": "759280973a9075e8c1197116643156290af970a0",
      "tree_hash": "28ea7fb4572361032187d5d346b1edbc47aecf0c1829e5b2a91cb88122d37427",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-core.md"
+     "report": "busbar-landq-state/gate/audits/tests-core.md"
     }
    ]
   },
@@ -3458,7 +3458,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md",
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
    "rounds": [
@@ -3469,7 +3469,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "d3c391149ca3217a2e2f010833994294e78b771a450f93ce15222093e0604192",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md"
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
    ]
   },
@@ -3488,7 +3488,7 @@
     "MEDIUM": 12,
     "LOW": 5
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md",
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
    "rounds": [
@@ -3503,7 +3503,7 @@
       "MEDIUM": 12,
       "LOW": 5
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md"
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
    ]
   },
@@ -3518,7 +3518,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md",
+   "report": "busbar-landq-state/gate/audits/tests-llm-codec.md",
    "auditor": "opus-test-auditor-llm-codec",
    "fixed_at": null,
    "rounds": [
@@ -3529,7 +3529,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "e0546e3be8ac02b761616d7f49db247566e4556b95a7adbafd4d4d62d12b0f0e",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md"
+     "report": "busbar-landq-state/gate/audits/tests-llm-codec.md"
     }
    ]
   },
@@ -3548,7 +3548,7 @@
     "MEDIUM": 25,
     "LOW": 9
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md",
+   "report": "busbar-landq-state/gate/audits/tests-llm-codec.md",
    "auditor": "opus-test-auditor-llm-codec",
    "fixed_at": null,
    "rounds": [
@@ -3563,7 +3563,7 @@
       "MEDIUM": 25,
       "LOW": 9
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-llm-codec.md"
+     "report": "busbar-landq-state/gate/audits/tests-llm-codec.md"
     }
    ]
   },
@@ -3582,7 +3582,7 @@
     "MEDIUM": 6,
     "LOW": 5
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-legacy-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md",
    "auditor": "opus-test-auditor-legacy-planes",
    "fixed_at": null,
    "rounds": [
@@ -3597,7 +3597,7 @@
       "MEDIUM": 6,
       "LOW": 5
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-legacy-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-legacy-planes.md"
     }
    ]
   },
@@ -3612,7 +3612,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3623,7 +3623,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "bae2bdf74469067ef3206f018819f6a2427638c08ece9559d2505d0aed7b0bcb",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3653,7 +3653,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3664,7 +3664,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "b9e93945fae157395cd4f3d0124da766887c2b0ad6d6cf501bcf4a1cedbd8217",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3694,7 +3694,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3705,7 +3705,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "de96fdf3ddb0bab81363dcf97ba0e9f8f937f7276de4e69a8df1a8ee93341997",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3739,7 +3739,7 @@
     "MEDIUM": 3,
     "LOW": 5
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3754,7 +3754,7 @@
       "MEDIUM": 3,
       "LOW": 5
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3769,7 +3769,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3780,7 +3780,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "3409918ca80cf53dccde9639bc85f3c67b74f07ac86f18372892e0802ae18d1d",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3795,7 +3795,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3806,7 +3806,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "1288699d61795d4c4cce8c37ed6cc29bd2bd00ebc2573f60673105df178833a7",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3821,7 +3821,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3832,7 +3832,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "ca963de88b5595f90b883824ad626048e13c6e6caf3ec8c86ec81ef429f95a78",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3847,7 +3847,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md",
+   "report": "busbar-landq-state/gate/audits/tests-planes.md",
    "auditor": "opus-test-auditor-planes",
    "fixed_at": null,
    "rounds": [
@@ -3858,7 +3858,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "e140bce4e2785ab92dccb81e5145b3a4a5af8d1a1252556085d6373052be57bf",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-planes.md"
+     "report": "busbar-landq-state/gate/audits/tests-planes.md"
     }
    ]
   },
@@ -3877,7 +3877,7 @@
     "MEDIUM": 3,
     "LOW": 3
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md",
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
    "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
    "rounds": [
@@ -3892,7 +3892,7 @@
       "MEDIUM": 3,
       "LOW": 3
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md"
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
   },
@@ -3907,7 +3907,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md",
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
    "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
    "rounds": [
@@ -3918,7 +3918,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "e8dc6d23cd79cd96eb3e18e814daa8b5cdfecea0ddf0bd5c097ffb9c5ac1d1c5",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md"
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
   },
@@ -3933,7 +3933,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md",
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
    "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
    "rounds": [
@@ -3944,7 +3944,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "e18a92c4987b7569403354b28fef78ef97b4b5ed368b74c37bf8ab31174ad9dc",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md"
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
   },
@@ -3959,7 +3959,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md",
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
    "rounds": [
@@ -3970,7 +3970,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "ca9931f8ebc935c7c753f11cd32d04a9f0a83fcb59c6fde2383c4f8eaff82a67",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md"
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
    ]
   },
@@ -3985,7 +3985,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md",
+   "report": "busbar-landq-state/gate/audits/tests-kernel.md",
    "auditor": "opus-test-auditor-kernel",
    "fixed_at": null,
    "rounds": [
@@ -3996,7 +3996,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "226b72072791fd504e8bb9ff868b1fedb29827178dfa4eeecdc1d439698354c5",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-kernel.md"
+     "report": "busbar-landq-state/gate/audits/tests-kernel.md"
     }
    ]
   },
@@ -4011,7 +4011,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md",
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
    "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
    "rounds": [
@@ -4022,7 +4022,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "192afb06e04c29f8932f69d8e75fad27ce7a9eb29fb24426bcee87d7543b299d",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md"
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
   },
@@ -4067,7 +4067,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md",
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
    "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
    "rounds": [
@@ -4078,7 +4078,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "1af4fcc0e10064e63cb8808098017deb0d5dd400ef15dd1531c0b841d6ca482d",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md"
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
   },
@@ -4093,7 +4093,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md",
+   "report": "busbar-landq-state/gate/audits/tests-substrate.md",
    "auditor": "opus-test-auditor-substrate",
    "fixed_at": null,
    "rounds": [
@@ -4104,7 +4104,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "8d0147627162eb221bf70a0af23f81f0898b77c4acce7f399a19c1f8ad640fbc",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-substrate.md"
+     "report": "busbar-landq-state/gate/audits/tests-substrate.md"
     }
    ]
   },
@@ -4123,7 +4123,7 @@
     "MEDIUM": 16,
     "LOW": 13
    },
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4138,7 +4138,7 @@
       "MEDIUM": 16,
       "LOW": 13
      },
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4153,7 +4153,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4164,7 +4164,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "b50906b18350833559aa70818a1723c3ba1f49a23ee907a4418d777c1601632f",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4179,7 +4179,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4190,7 +4190,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "8041cbc11a6bd88d2ff31a4d1286b55f78905c08e42f88e21f11f21e48bf9dfa",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4220,7 +4220,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4231,7 +4231,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "4116e5a07beb8821ac23737692b363165892a5807d26e9ee6a0d2a8275a7ad48",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4246,7 +4246,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4257,7 +4257,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "68f2b1307472249369cc3bb49c01faddc3d6b6892ae6e18c13c0200b5a523769",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4272,7 +4272,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4283,7 +4283,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "84ddc13107340567621751ebecfed66af3f65c8fe89daa91d44deb62682117dc",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4298,7 +4298,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4309,7 +4309,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "5eae17594fb58fc1ec321e5fe308e21dd4be86526ff5cfc43b65a90dff3888de",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4324,7 +4324,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4335,7 +4335,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "99fbe9adde51aaa97d36b9a230f9e6efc042ee10493aa72f6270ef6be843cf7c",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4350,7 +4350,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4361,7 +4361,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "3465d8043bdd22d492d3e4c6de31b7f25e05ff4556191e2ae503ac785f600b68",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4376,7 +4376,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4387,7 +4387,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "e41b5b9fc6f4e5f18a8c07d67dfeea9eb1a39aac3585ca42b7244973e279b4f7",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4402,7 +4402,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4413,7 +4413,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "3e8c8f152d742a0eca7d119bfe165d20707141d118140f4e99edef9a36c2ebdd",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4428,7 +4428,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4439,7 +4439,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "35fbb9f9df27762183c4cd404dceb4595b29976835bedbb8bd8d8252866f8233",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
@@ -4454,7 +4454,7 @@
    "round": 1,
    "result": "findings",
    "counts": {},
-   "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md",
+   "report": "busbar-landq-state/gate/audits/tests-units.md",
    "auditor": "opus-test-auditor-units",
    "fixed_at": null,
    "rounds": [
@@ -4465,7 +4465,7 @@
      "audited_at": "64b54387c4f177667ba688f7680877455579b293",
      "tree_hash": "4d7a9bc6d5de8dd5737fbf82d132ff3d80fd56f86d9b75c10938b2bb569ef552",
      "counts": {},
-     "report": "/Users/matthew/Developer/GetBusbar/busbar-landq-state/gate/audits/tests-units.md"
+     "report": "busbar-landq-state/gate/audits/tests-units.md"
     }
    ]
   },
