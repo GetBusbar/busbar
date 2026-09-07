@@ -164,6 +164,91 @@ fn alloc_gate_translate_write_stable() {
     );
 }
 
+/// GATE 1b — the SEAM itself, for ALL SIX dialects, not just the one the surgical gate routes.
+///
+/// The surgical gate above measures an openai lane, so it only catches a resolution allocation in
+/// the OPENAI dialect. The allocation it caught was not openai's, though: it was the neutral
+/// forwarder's, which resolved a whole `Protocol` (two `Box`es) to ask one writer one stateless
+/// question — and it went unseen for as long as the openai writer happened to be zero-sized. Every
+/// writer now carries per-stream state, so the same question asked of any of the six would have cost
+/// the same allocation. This asserts the seam is allocation-free for each dialect BY NAME, so a
+/// future field on any writer cannot re-open the hole in a dialect the routed gate never exercises.
+#[test]
+fn alloc_gate_dialect_seam_resolution_is_free_for_every_dialect() {
+    use crate::proto_codec::ProtocolWriter;
+
+    /// Ask ONE dialect the SAME stateless question twice — once through the neutral seam
+    /// (`decl_for(name).dialect()`), once on the writer directly — and require the two to allocate
+    /// the SAME number of times. Comparing the two isolates the SEAM's cost from the QUESTION's
+    /// (some writers answer this one by walking a JSON pointer, which allocates in `serde_json`
+    /// itself); the difference is exactly what resolving the dialect costs, and it must be nothing.
+    fn seam_costs_what_the_writer_costs<W: ProtocolWriter>(
+        name: &'static str,
+        mint: impl Fn() -> W,
+        body: &serde_json::Value,
+    ) {
+        let dialect = busbar_substrate::proto::decl_for(name)
+            .and_then(|d| d.dialect())
+            .unwrap_or_else(|| panic!("{name} declares a codec"));
+        // WARM both sides outside the measured windows: a first touch of the registry or of a lazy
+        // static a writer reads is a per-process cost, not a per-request one.
+        let _ = dialect.requested_candidate_count(body);
+        let _ = mint().requested_candidate_count(body);
+
+        let _ = CountingJemalloc::reset();
+        let _ = mint().requested_candidate_count(body);
+        let direct = CountingJemalloc::count();
+
+        let _ = CountingJemalloc::reset();
+        let _ = dialect.requested_candidate_count(body);
+        let seam = CountingJemalloc::count();
+
+        eprintln!("[alloc-gate] {name} seam allocations = {seam}, direct = {direct}");
+        assert_eq!(
+            seam, direct,
+            "ASKING THE `{name}` DIALECT ONE STATELESS QUESTION COST {seam} ALLOCATION(S) THROUGH \
+             THE NEUTRAL SEAM BUT {direct} ON THE WRITER ITSELF. The difference is the seam's own \
+             per-call cost, and the seam contract is that it has none: `decl_for(..).dialect()` is a \
+             pure-memory `&'static dyn` borrow and the forwarder builds its writer on the STACK. A \
+             difference here means something behind the seam went back to boxing a codec per call — \
+             which the request hot path then pays on EVERY request, for this dialect."
+        );
+    }
+
+    crate::testkit::install_test_seams();
+    let body = json!({ "model": "m", "messages": [] });
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_ANTHROPIC,
+        || crate::anthropic::AnthropicWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_BEDROCK,
+        || crate::bedrock::BedrockWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_COHERE,
+        || crate::cohere::CohereWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_GEMINI,
+        || crate::gemini::GeminiWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_OPENAI,
+        || crate::openai_chat::OpenAiWriter,
+        &body,
+    );
+    seam_costs_what_the_writer_costs(
+        crate::proto_codec::PROTO_RESPONSES,
+        || crate::openai_responses::ResponsesWriter,
+        &body,
+    );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // GATE 2 (coarse / whole-path): one openai>openai request end-to-end through forward_with_pool.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
