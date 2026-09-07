@@ -19,7 +19,7 @@
 #
 # Every check appends exactly one TSV row to $LEDGER:
 #
-#     <id> <TAB> PASS|FAIL|SKIP <TAB> <title> <TAB> <detail> <TAB> <version>
+#     <id> <TAB> PASS|FAIL|SKIP <TAB> <title> <TAB> <detail> <TAB> <version> <TAB> <qa-sha>
 #
 # and NEVER exits on failure. Aggregation happens once, in gate.sh, against the list of ids the
 # contract says MUST be reported (scripts/release-gate/expected-ids.sh). That inversion is the
@@ -50,6 +50,43 @@ export LEDGER
 mkdir -p "$(dirname "$LEDGER")"
 [ -f "$LEDGER" ] || : > "$LEDGER"
 
+# ── EVERY ROW SAYS WHICH RELEASE IT IS ABOUT ────────────────────────────────────────────────────
+#
+# A ledger row was `<id> PASS <title> <detail>` and nothing in it named the release. The gate then
+# collected every *.tsv it found under LEDGER_DIR and diffed the union against the ids owed for the
+# version on its command line. Nothing checked that the rows and the version were about the same
+# thing.
+#
+# They can easily not be. LEDGER defaults to a path under RUNNER_TEMP and the file is opened with
+# `[ -f ] || : >` — it is APPENDED TO, never truncated — so a re-run on a persisted temp dir, a
+# self-hosted runner, or a workflow_dispatch of the fan-out at a second version on the same
+# machine leaves the previous release's rows sitting in the file. Download-artifact merges every
+# ledger it is handed into one directory, so a stale artifact does the same thing across jobs. In
+# every one of those cases the gate reads a full set of green rows about a release it was not
+# asked about, reports "Every one of the N contracted checks for <version> ran and passed", and is
+# right about the count and wrong about the subject.
+#
+# So each row carries the version and the qa sha it was produced against, and gate.sh refuses a
+# ledger whose rows name a different release. The two together, not just the version: the version
+# is the name and the sha is the commit that name was staged from, and a re-cut of the same version
+# from a different commit is exactly the confusion the record exists to prevent.
+#
+# Resolved AT CALL TIME, not when this file is sourced. Every check script sources lib.sh on line
+# one and assigns VERSION on the line after, so reading it at source time would stamp every row in
+# the fan-out with the empty string — the version column would exist, always be blank, and the
+# refusal below would then reject every real ledger while a stale one is just as blank.
+gate_version() {
+  printf '%s' "${GATE_VERSION:-${BUSBAR_GATE_VERSION:-${VERSION:-}}}"
+}
+
+# staged_qa_sha -> the commit the record was staged from, or the empty string.
+staged_qa_sha() {
+  if [ -n "${STAGED_SHA:-}" ]; then printf '%s' "$STAGED_SHA"; return 0; fi
+  local rec; rec="$(printf '%s' "${STAGED_RECORD:-}")"
+  [ -n "$rec" ] && [ -f "$rec" ] || return 0
+  jq -r '.qa_sha // empty' "$rec" 2>/dev/null
+}
+
 # record <id> <PASS|FAIL|SKIP> <title> <detail>
 # Tabs and newlines are stripped from the free-text fields: the ledger is TSV and a check whose
 # detail contains a tab would silently corrupt every downstream column, which is precisely the
@@ -67,13 +104,12 @@ mkdir -p "$(dirname "$LEDGER")"
 # was asked to gate, and a row that names anything else (or nothing) is reported and is RED — a
 # check that verified some other release is not a check that verified this one.
 record() {
-  local id="$1" status="$2" title="$3" detail="${4:-}"
-  # Read at CALL time, not at source time: lib.sh is sourced before each check script assigns
-  # VERSION from its own argv, and the value that matters is the one the check actually ran against.
-  local ver="${VERSION:-}"
+  local id="$1" status="$2" title="$3" detail="${4:-}" ver sha
   title="$(printf '%s' "$title" | tr '\t\n' '  ')"
   detail="$(printf '%s' "$detail" | tr '\t\n' '  ')"
-  printf '%s\t%s\t%s\t%s\t%s\n' "$id" "$status" "$title" "$detail" "$ver" >> "$LEDGER"
+  ver="$(gate_version | tr -d '\t\n ')"
+  sha="$(staged_qa_sha | tr -d '\t\n ')"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$id" "$status" "$title" "$detail" "$ver" "$sha" >> "$LEDGER"
   case "$status" in
     PASS) printf 'PASS  %-46s %s\n' "$id" "$title" ;;
     FAIL)
@@ -210,6 +246,32 @@ ledger_status_for() {  # ledger_status_for <ledger-file> <id>
       if (!seen) exit 0
       print (conflict ? "CONFLICT" : last)
     }' "$1"
+}
+
+# ledger_foreign_rows <ledger-file> <version>
+# Prints one `id=<version-the-row-names>` per row that is NOT about <version>, including rows that
+# name no version at all — a row that cannot say which release it is about cannot be counted toward
+# one. Empty output means every row in the file agrees it is about this release.
+#
+# Column 5 and not a grep over the whole line: a version string appears in plenty of titles and
+# details ("expected 1.5.4, observed 1.5.40"), and a check that reads the free text would find the
+# release it wants inside a row saying the opposite.
+ledger_foreign_rows() {  # ledger_foreign_rows <ledger-file> <version>
+  awk -F'\t' -v want="$2" '
+    NF == 0 { next }
+    $5 != want { printf "%s=%s ", $1, ($5 == "" ? "<no version>" : $5) }
+  ' "$1"
+}
+
+# ledger_sha_disagreements <ledger-file>
+# The same fact one level down: the distinct qa shas the rows name, when there is more than one.
+# One version can be staged twice from two commits, and the two stagings are different releases
+# wearing one name — which is the whole reason the promote consumes a record and not a version.
+ledger_sha_disagreements() {  # ledger_sha_disagreements <ledger-file>
+  awk -F'\t' 'NF { if ($6 != "") seen[$6] = 1 }
+    END { n = 0; for (s in seen) { n++; printf "%s ", s }
+          if (n < 2) printf "" }' "$1" \
+  | awk '{ if (NF > 1) print; }'
 }
 
 # The rows behind an id, for the detail line when they disagree.
