@@ -650,16 +650,22 @@ def cmd_selftest():
     if not covered_ids:
         print("SELFTEST FAIL: no id is currently \"covered\" — cannot prove the mechanism reacts")
         return 1
-    target = covered_ids[0]
-    passing_cell_id = next(cid for cid in coverage[target]["citers"] if ledger.get(cid) == "PASS")
-    cells_without = [c for c in cells if c.get("id") != passing_cell_id]
+    # The target is an id with exactly ONE passing citer where one exists (so a single removal is
+    # the whole of its coverage); otherwise every passing citer of the first covered id goes, which
+    # proves the same thing without assuming a cardinality the corpus does not promise.
+    def passing_citers(rid):
+        return [cid for cid in coverage[rid]["citers"] if ledger.get(cid) == "PASS"]
+    single = [rid for rid in covered_ids if len(passing_citers(rid)) == 1]
+    target = single[0] if single else covered_ids[0]
+    removed = passing_citers(target)
+    cells_without = [c for c in cells if c.get("id") not in removed]
     coverage_without = compute_coverage(ids, cells_without, ledger)
     if coverage_without[target]["status"] == "covered":
-        print("SELFTEST FAIL: removing the only PASS-ing cell for %s (%s) did not turn it red"
-              % (target, passing_cell_id))
+        print("SELFTEST FAIL: removing every PASS-ing cell for %s (%s) did not turn it red"
+              % (target, ", ".join(removed)))
         return 1
-    print("SELFTEST ok: removing cell %r turned %s from covered -> %s (in-memory only, no file touched)"
-          % (passing_cell_id, target, coverage_without[target]["status"]))
+    print("SELFTEST ok: removing %d cell(s) %r turned %s from covered -> %s (in-memory only, no file touched)"
+          % (len(removed), removed, target, coverage_without[target]["status"]))
 
     # (b) an id already named in qa/inventory-gaps.json must still satisfy --check-style logic
     # (i.e. adding it to the named set makes an otherwise-red "none" id green), proving the check
