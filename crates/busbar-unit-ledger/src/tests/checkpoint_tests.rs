@@ -5,6 +5,8 @@
 
 use std::collections::BTreeMap;
 
+use busbar_unit_cost::HistorySeq;
+
 use crate::checkpoint::{
     AnchorError, ChainHead, Checkpoint, CheckpointAnchor, CheckpointSecret, SelfAttestingAnchor,
     SignError, Signature,
@@ -307,4 +309,123 @@ fn a_node_sequence_that_goes_backwards_is_found() {
         other => panic!("expected one sequence finding, got {other:?}"),
     }
     assert!(sequences_are_monotonic(&earlier, &earlier).is_empty());
+}
+
+/// A checkpoint sealed before the history existed keeps its own bytes, forever.
+///
+/// This is the compatibility claim, stated as arithmetic rather than as a promise: the body a
+/// pre-history deployment digested carries no snapshot field at all, so the digest over it is the
+/// digest it always was. Every checkpoint already sealed and already anchored still verifies.
+#[test]
+fn a_checkpoint_sealed_before_the_history_still_verifies_under_its_own_encoding() {
+    let checkpoint = seal(&book_with_a_settlement(), 1);
+    assert_eq!(checkpoint.history_seq, None);
+    assert!(checkpoint.body_hash_verifies());
+    // And the bytes are literally the old ones: nothing named `history_seq` is in them.
+    let body = checkpoint.signed_body();
+    let field = b"history_seq";
+    assert!(
+        !body.windows(field.len()).any(|w| w == field),
+        "a pre-history body must not grow a field it never had"
+    );
+}
+
+/// A checkpoint sealed AS OF a snapshot carries it, and the digest covers it.
+///
+/// The figures a checkpoint seals are a materialised view of a lookup, so on their own they say
+/// what the totals were without saying what they were true of. The number has to be inside the
+/// signature or it is a claim anybody could swap afterwards.
+#[test]
+fn a_checkpoint_sealed_as_of_a_snapshot_carries_it_and_the_digest_covers_it() {
+    let ledger = book_with_a_settlement();
+    let cut = |seq: u64| {
+        Checkpoint::seal_as_of(
+            1,
+            1,
+            1_700_000_000,
+            vec![ChainHead {
+                node: 1,
+                node_seq: 10,
+                hash: [7u8; 32],
+            }],
+            ledger.book().snapshot(),
+            5,
+            99,
+            HistorySeq(seq),
+            Some(&StampSigner),
+        )
+        .unwrap()
+    };
+
+    let at_seven = cut(7);
+    assert_eq!(at_seven.history_seq, Some(HistorySeq(7)));
+    assert!(at_seven.body_hash_verifies());
+
+    // The same totals at a different snapshot are a different body and a different signature. If
+    // they were not, "these totals, at that history" would be a sentence the digest did not cover.
+    let at_eight = cut(8);
+    assert_ne!(at_seven.body_hash, at_eight.body_hash);
+    assert_ne!(at_seven.signature, at_eight.signature);
+
+    // And a snapshot swapped after sealing is caught, exactly as an edited figure is.
+    let mut tampered = at_seven.clone();
+    tampered.history_seq = Some(HistorySeq(8));
+    assert!(!tampered.body_hash_verifies());
+
+    // The pre-history body and the at-a-snapshot body are different bodies, so a checkpoint that
+    // named a history cannot be read back as one that did not.
+    assert_ne!(seal(&ledger, 1).body_hash, cut(0).body_hash);
+}
+
+/// The body is re-encoded deterministically with the heads sorted, snapshot or no snapshot.
+///
+/// The property the module already had, re-asserted across the new field: two verifiers holding the
+/// same checkpoint produce the same bytes whatever order they received the heads in, and a
+/// signature that depended on iteration order would verify only on the machine that made it.
+#[test]
+fn the_body_re_encodes_deterministically_with_the_heads_sorted_at_a_snapshot_too() {
+    let ledger = book_with_a_settlement();
+    let one_way = vec![
+        ChainHead {
+            node: 2,
+            node_seq: 5,
+            hash: [1u8; 32],
+        },
+        ChainHead {
+            node: 1,
+            node_seq: 9,
+            hash: [2u8; 32],
+        },
+    ];
+    // The SAME two heads, collected in the other order — which is what two nodes gathering the same
+    // facts actually differ by.
+    let other_way: Vec<ChainHead> = one_way.iter().rev().cloned().collect();
+    let cut = |heads: Vec<ChainHead>| {
+        Checkpoint::seal_as_of(
+            1,
+            1,
+            10,
+            heads,
+            ledger.book().snapshot(),
+            0,
+            0,
+            HistorySeq(3),
+            Some(&StampSigner),
+        )
+        .unwrap()
+    };
+    let one = cut(one_way);
+    let two = cut(other_way);
+    assert_eq!(one.body_hash, two.body_hash);
+    assert_eq!(one.signed_body(), two.signed_body());
+    assert!(one.body_hash_verifies() && two.body_hash_verifies());
+
+    // Re-encoding twice is the same bytes twice, which is what makes a verifier's answer stable.
+    assert_eq!(one.signed_body(), one.signed_body());
+
+    // And a checkpoint whose heads were stored out of order still verifies, because the encoder
+    // sorts before it digests rather than trusting the order it was handed.
+    let mut shuffled = one.clone();
+    shuffled.heads.reverse();
+    assert!(shuffled.body_hash_verifies());
 }
