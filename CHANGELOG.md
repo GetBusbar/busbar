@@ -95,6 +95,17 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   truncated-body recovery alike. Totals are unchanged; what moves is which tier the tokens are
   attributed to, and a Responses-backed response reaching a Bedrock client now carries the
   `cacheWriteInputTokens` member the backend reported. See [Spec fidelity](#spec-fidelity).
+- **Gemini's `toolUsePromptTokenCount` is billed as input on a truncated body too.** The pinned
+  discovery document makes `toolUsePromptTokenCount` its own top-level `UsageMetadata` member
+  ("Output only. Number of tokens present in tool-use prompt(s)") while `promptTokenCount` folds in
+  exactly one other member — the cached content — so on a tool turn it is an additive input bucket.
+  1.6.0 read it on the buffered and streamed paths but not on the head-truncated-body recovery, so
+  the same Gemini response billed two different amounts depending only on whether it fit the
+  reassembly cap, and a tool turn's transcript is exactly the shape large enough to overflow it. The
+  truncated path now applies the same add and the same `totalTokenCount` cross-check the buffered
+  path applies — an upstream whose own total leaves no room for the bucket has already folded it in,
+  and is not charged twice — and records the same `tool_use_prompt_tokens` attribution. A response
+  with no tool use is unchanged. See [Spec fidelity](#spec-fidelity).
 - **Bedrock text blocks no longer open with an empty `contentBlockStart`.** On the ConverseStream
   wire a text block starts with its first `contentBlockDelta`; `contentBlockStart` is emitted for
   tool-use blocks only, as AWS does. See [Spec fidelity](#spec-fidelity).
