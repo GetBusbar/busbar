@@ -130,6 +130,9 @@ declare -a CARGO_LOCAL=(
   # make this list a second place a conversion has to be remembered. One invocation per gate, from
   # the one list that reads the call site.
   "cargo build -p xtask --locked"
+  # NOT here: `cargo xtask gate audit-ledger`. This table is "what CI runs, run locally", and the
+  # audit register has never been a CI job — it is the release-time DONE claim in
+  # verify-1.6.0-done.sh. Adding it here would make this list stop meaning what its name says.
   # Not a gate over text: this COMPILES the binary crate with all five root legs on and EXECUTES
   # every loop cell the matrix names. It is the slowest row here and it earns it — no other local
   # invocation builds that feature combination, and a matrix verified against itself is a
