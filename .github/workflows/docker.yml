@@ -145,6 +145,19 @@ env:
   # the two in sync when re-pinning.
   HEADROOM_HOOK_REF: dev
 
+# THE CEILING, NOT THE GRANT. Every job below states its own `permissions:`, and a job-level block
+# REPLACES this one rather than adding to it, so what a job holds is what it names.
+#
+# The narrowing that matters is `build-binaries`. It checks out an EXTERNAL repository
+# (headroom-hook, at HEADROOM_HOOK_REF above) and runs `cargo build --release` on it, which is to
+# say it executes that repo's build.rs and proc macros on our runner. While this block was the only
+# one in the file, that job also held `id-token: write` -- the capability to mint an OIDC token in
+# this repository's name, which is exactly what keyless Sigstore signing consumes -- plus GHCR push
+# and the ability to record a build-provenance attestation. A bad commit in a repo we do not own
+# therefore had, in principle, a signing identity rather than merely a bad cdylib. It compiles; it
+# does not sign, and now it cannot.
+#
+# Only `publish` signs, so only `publish` keeps the full set.
 permissions:
   contents: read
   packages: write      # push to GHCR
@@ -176,6 +189,11 @@ jobs:
     name: promote ${{ inputs.promote_from || inputs.promote_to }} -> ${{ inputs.promote_to }} + latest
     if: ${{ inputs.promote_to != '' }}
     runs-on: ubuntu-latest
+    # Copies manifests between tags on GHCR (and Docker Hub, under its own login). It signs nothing
+    # and attests nothing -- the attestation is recorded against the DIGEST and carries over with it.
+    permissions:
+      contents: read
+      packages: write
     timeout-minutes: 20
     steps:
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
@@ -345,6 +363,10 @@ jobs:
     name: musl ${{ matrix.arch }}
     if: ${{ inputs.promote_to == '' }}
     runs-on: ${{ matrix.os }}
+    # It compiles, including an external repository's build.rs. It does not push and it does not
+    # sign; the artifacts it produces are handed to `publish`, which does both under its own grant.
+    permissions:
+      contents: read
     timeout-minutes: 120
     strategy:
       fail-fast: true
@@ -658,6 +680,13 @@ jobs:
     name: build & push image
     needs: build-binaries
     runs-on: ubuntu-latest
+    # The only job that signs. `id-token: write` mints the OIDC identity keyless cosign consumes,
+    # `attestations: write` records the build provenance, `packages: write` pushes the image.
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     timeout-minutes: 90
     outputs:
       digest: ${{ steps.push.outputs.digest }}
@@ -865,6 +894,10 @@ jobs:
     needs: publish
     if: ${{ inputs.promote_to == '' }}
     runs-on: ubuntu-24.04-arm
+    # A verifier must never be able to move what it is verifying. It pulls two public tags back from
+    # the registry and interrogates them; it pushes nothing and signs nothing.
+    permissions:
+      contents: read
     timeout-minutes: 20
     steps:
       - name: Pull both staged arm64 images and assert their ISA variants
