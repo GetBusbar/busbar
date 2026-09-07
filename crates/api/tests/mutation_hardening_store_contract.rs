@@ -56,7 +56,12 @@ impl Store for Bare {
     fn get_usage(&self, _bucket_id: &str, _window_start: u64) -> StoreResult<UsageLedger> {
         Ok(UsageLedger::default())
     }
-    fn put_usage(&self, _bucket_id: &str, _window_start: u64, _ledger: &UsageLedger) -> StoreResult<()> {
+    fn put_usage(
+        &self,
+        _bucket_id: &str,
+        _window_start: u64,
+        _ledger: &UsageLedger,
+    ) -> StoreResult<()> {
         Ok(())
     }
     fn add_metering(&self, _delta: &MeteringDelta) -> StoreResult<()> {
@@ -116,7 +121,9 @@ fn sample_audit(seq: u64) -> AuditRecord {
 #[test]
 fn scrub_key_default_is_a_loud_error() {
     let s = Bare::default();
-    let err = s.scrub_key("vk_1").expect_err("default must error, never silently no-op");
+    let err = s
+        .scrub_key("vk_1")
+        .expect_err("default must error, never silently no-op");
     assert!(!err.to_string().is_empty());
 }
 
@@ -130,9 +137,9 @@ fn put_credential_default_is_a_loud_error() {
 #[test]
 fn revoke_credential_default_is_a_loud_error() {
     let s = Bare::default();
-    let err = s
-        .revoke_credential("cred_1", "leaked")
-        .expect_err("default must error: an operator must never believe a leaked secret was killed");
+    let err = s.revoke_credential("cred_1", "leaked").expect_err(
+        "default must error: an operator must never believe a leaked secret was killed",
+    );
     let _ = err;
 }
 
@@ -183,7 +190,10 @@ fn list_audit_default_is_empty() {
 #[test]
 fn list_plane_record_parents_default_is_empty() {
     let s = Bare::default();
-    assert_eq!(s.list_plane_record_parents("task").unwrap(), Vec::<String>::new());
+    assert_eq!(
+        s.list_plane_record_parents("task").unwrap(),
+        Vec::<String>::new()
+    );
 }
 
 // ── No-op / zero-count defaults ──────────────────────────────────────────────────────────────────
@@ -242,7 +252,9 @@ fn put_key_with_credential_default_calls_put_key_then_surfaces_the_credential_er
     let key = sample_key();
     let err = s
         .put_key_with_credential(&key, &sample_credential())
-        .expect_err("Bare has no credential support: the default must surface put_credential's error");
+        .expect_err(
+            "Bare has no credential support: the default must surface put_credential's error",
+        );
     let _ = err;
     // put_key ran (and its effect stuck) even though the overall call failed at the credential step.
     assert_eq!(s.put_key_calls.load(Ordering::SeqCst), 1);
