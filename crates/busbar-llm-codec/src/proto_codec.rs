@@ -879,6 +879,76 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
     }
 }
 
+/// Call `f` with this dialect's WRITER, built ON THE STACK — the allocation-free twin of
+/// `protocol_for(name).writer()`.
+///
+/// SAME SEMANTICS, NO HEAP. `protocol_for` bundles a reader AND a writer behind two `Box`es, so
+/// resolving a dialect just to ask a writer one stateless question costs a heap allocation for every
+/// writer that is not zero-sized — and every writer now carries per-stream state (`OpenAiWriter`'s
+/// stream-long `chunk_id`, the block-index sets, the responses sequence counter), so that is all six.
+/// The neutral seam below asks exactly such stateless questions on the REQUEST HOT PATH
+/// (`rewrite_model_if_needed`, `reshape_for_path_base` run on every same-protocol passthrough), which
+/// is where the per-request `Box` showed up as a live allocation regression. A fresh writer value
+/// bound to a LOCAL is still a fresh instance per call — the per-stream state stays unshared, exactly
+/// as a `Box`ed one would — it simply lives on the caller's stack for the duration of the one call.
+///
+/// The writer is bound to a local rather than borrowed straight from the `const` on purpose: `&CONST`
+/// on an interior-mutable type is `clippy::borrow_interior_mutable_const`, and the local makes the
+/// per-call instance explicit (the same reason `openai_writer()` returns a value).
+///
+/// `None` for a name no protocol declares, and for a protocol that declares no codec (MCP) — the same
+/// domain [`protocol_for`] answers.
+fn with_writer<R>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> R) -> Option<R> {
+    // Same test-registry priming `protocol_for` does, for the same reason: a writer resolves protocol
+    // facts through `decl_for`. Once-guarded, prod-free.
+    #[cfg(any(test, feature = "test-support"))]
+    crate::ensure_test_protocols_registered();
+    match name {
+        PROTO_ANTHROPIC => {
+            let w = super::anthropic::AnthropicWriter;
+            Some(f(&w))
+        }
+        PROTO_BEDROCK => {
+            let w = super::bedrock::BedrockWriter;
+            Some(f(&w))
+        }
+        PROTO_COHERE => {
+            let w = super::cohere::CohereWriter;
+            Some(f(&w))
+        }
+        PROTO_GEMINI => {
+            let w = super::gemini::GeminiWriter;
+            Some(f(&w))
+        }
+        PROTO_OPENAI => {
+            let w = super::openai_chat::OpenAiWriter;
+            Some(f(&w))
+        }
+        PROTO_RESPONSES => {
+            let w = super::openai_responses::ResponsesWriter;
+            Some(f(&w))
+        }
+        _ => None,
+    }
+}
+
+/// Call `f` with this dialect's READER, built ON THE STACK — the reader twin of [`with_writer`], and
+/// allocation-free for the same reason (the readers are zero-sized today, so this costs nothing at
+/// all, and it stays free if one ever gains state).
+fn with_reader<R>(name: &str, f: impl FnOnce(&dyn ProtocolReader) -> R) -> Option<R> {
+    #[cfg(any(test, feature = "test-support"))]
+    crate::ensure_test_protocols_registered();
+    match name {
+        PROTO_ANTHROPIC => Some(f(&super::anthropic::AnthropicReader)),
+        PROTO_BEDROCK => Some(f(&super::bedrock::BedrockReader)),
+        PROTO_COHERE => Some(f(&super::cohere::CohereReader)),
+        PROTO_GEMINI => Some(f(&super::gemini::GeminiReader)),
+        PROTO_OPENAI => Some(f(&super::openai_chat::OpenAiReader)),
+        PROTO_RESPONSES => Some(f(&super::openai_responses::ResponsesReader)),
+        _ => None,
+    }
+}
+
 /// The sole [`DialectCodec`] implementor today: a name-keyed forwarder to this protocol's in-core
 /// `Protocol` writer/reader (a fresh instance per call, exactly as every driver call site did before
 /// — these neutral methods carry no per-stream state). At A4b it relocates to busbar-llm alongside
@@ -898,13 +968,13 @@ pub fn protocol_error(
     status: u16,
     body: &[u8],
 ) -> busbar_substrate_values::breaker::RawUpstreamError {
-    match protocol_for(name) {
-        Some(p) => p.reader().extract_error(
+    with_reader(name, |r| {
+        r.extract_error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             body,
-        ),
-        None => busbar_substrate_values::breaker::RawUpstreamError::from_status(status),
-    }
+        )
+    })
+    .unwrap_or_else(|| busbar_substrate_values::breaker::RawUpstreamError::from_status(status))
 }
 
 pub struct DialectRef(&'static str);
@@ -920,9 +990,7 @@ pub const fn dialect_ref(name: &'static str) -> DialectRef {
 
 impl DialectCodec for DialectRef {
     fn probe_body(&self, model: &str) -> Vec<u8> {
-        protocol_for(self.0)
-            .map(|p| p.writer().probe_body(model))
-            .unwrap_or_default()
+        with_writer(self.0, |w| w.probe_body(model)).unwrap_or_default()
     }
     fn apply_rewrite_to_ingress_body(
         &self,
@@ -930,49 +998,43 @@ impl DialectCodec for DialectRef {
         messages: &[serde_json::Value],
         tools: &[serde_json::Value],
     ) -> bool {
-        protocol_for(self.0)
-            .map(|p| {
-                p.writer()
-                    .apply_rewrite_to_ingress_body(obj, messages, tools)
-            })
-            .unwrap_or(false)
+        with_writer(self.0, |w| {
+            w.apply_rewrite_to_ingress_body(obj, messages, tools)
+        })
+        .unwrap_or(false)
     }
     fn recover_truncated_usage(
         &self,
         tail: &[u8],
     ) -> Option<busbar_substrate_values::billing::TokenUsage> {
-        protocol_for(self.0).and_then(|p| p.reader().recover_truncated_usage(tail))
+        with_reader(self.0, |r| r.recover_truncated_usage(tail)).flatten()
     }
     fn ingress_response_request_id(
         &self,
         upstream_request_id: Option<&str>,
     ) -> Option<(&'static str, String)> {
-        protocol_for(self.0)
-            .and_then(|p| p.writer().ingress_response_request_id(upstream_request_id))
+        with_writer(self.0, |w| {
+            w.ingress_response_request_id(upstream_request_id)
+        })
+        .flatten()
     }
     fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
-        protocol_for(self.0)
-            .map(|p| p.writer().write_error(status, kind, message))
-            .unwrap_or_default()
+        with_writer(self.0, |w| w.write_error(status, kind, message)).unwrap_or_default()
     }
     fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64> {
-        protocol_for(self.0).and_then(|p| p.writer().requested_candidate_count(body))
+        with_writer(self.0, |w| w.requested_candidate_count(body)).flatten()
     }
     fn write_response_exception(&self, err: &IrError) -> Option<(String, String)> {
-        protocol_for(self.0).and_then(|p| p.writer().write_response_exception(err))
+        with_writer(self.0, |w| w.write_response_exception(err)).flatten()
     }
     fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
-        protocol_for(self.0).and_then(|p| p.writer().write_error_frame(err))
+        with_writer(self.0, |w| w.write_error_frame(err)).flatten()
     }
     fn wants_array_stream(&self, body: &serde_json::Value) -> bool {
-        protocol_for(self.0)
-            .map(|p| p.writer().wants_array_stream(body))
-            .unwrap_or(false)
+        with_writer(self.0, |w| w.wants_array_stream(body)).unwrap_or(false)
     }
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
-        if let Some(p) = protocol_for(self.0) {
-            p.writer().inject_response_metrics(value, elapsed_ms);
-        }
+        with_writer(self.0, |w| w.inject_response_metrics(value, elapsed_ms));
     }
     fn attach_error_response_headers(
         &self,
@@ -980,41 +1042,34 @@ impl DialectCodec for DialectRef {
         kind: &str,
         envelope: &serde_json::Value,
     ) {
-        if let Some(p) = protocol_for(self.0) {
-            p.writer()
-                .attach_error_response_headers(headers, kind, envelope);
-        }
+        with_writer(self.0, |w| {
+            w.attach_error_response_headers(headers, kind, envelope)
+        });
     }
     fn extract_error(
         &self,
         status: u16,
         body: &[u8],
     ) -> busbar_substrate_values::breaker::RawUpstreamError {
-        match protocol_for(self.0) {
-            Some(p) => p.reader().extract_error(
+        with_reader(self.0, |r| {
+            r.extract_error(
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
                 body,
-            ),
-            None => busbar_substrate_values::breaker::RawUpstreamError::from_status(status),
-        }
+            )
+        })
+        .unwrap_or_else(|| busbar_substrate_values::breaker::RawUpstreamError::from_status(status))
     }
     fn make_array_stream_framer(&self) -> Option<Box<dyn ArrayStreamFramer>> {
-        protocol_for(self.0).and_then(|p| p.writer().make_array_stream_framer())
+        with_writer(self.0, |w| w.make_array_stream_framer()).flatten()
     }
     fn upstream_path_for_stream(&self, model: &str, stream: bool) -> String {
-        protocol_for(self.0)
-            .map(|p| p.writer().upstream_path_for_stream(model, stream))
-            .unwrap_or_default()
+        with_writer(self.0, |w| w.upstream_path_for_stream(model, stream)).unwrap_or_default()
     }
     fn rewrite_model_if_needed(&self, body: &mut serde_json::Value, model: &str) -> bool {
-        protocol_for(self.0)
-            .map(|p| p.writer().rewrite_model_if_needed(body, model))
-            .unwrap_or(false)
+        with_writer(self.0, |w| w.rewrite_model_if_needed(body, model)).unwrap_or(false)
     }
     fn reshape_for_path_base(&self, body: &mut serde_json::Value) -> bool {
-        protocol_for(self.0)
-            .map(|p| p.writer().reshape_for_path_base(body))
-            .unwrap_or(false)
+        with_writer(self.0, |w| w.reshape_for_path_base(body)).unwrap_or(false)
     }
 }
 
