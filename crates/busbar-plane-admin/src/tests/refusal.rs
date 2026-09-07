@@ -97,7 +97,13 @@ fn every_reason_maps_to_one_of_the_ten_frozen_codes() {
 /// source, and the rendered code is read out of `code_for` for the very same reason value.
 #[test]
 fn every_ratified_row_is_documented_and_rendered() {
-    let source = include_str!("refusal.rs");
+    // `../refusal.rs`, not `refusal.rs`: this file is reached through `#[path = "tests/refusal.rs"]`
+    // from `src/refusal.rs`, so `include_str!` resolves against `src/tests/` — the directory THIS
+    // file lives in — and the bare name reads this test file back into itself. The ratified table is
+    // in the IMPLEMENTATION module's header, one directory up. Read against itself the split still
+    // found the marker (the marker is spelled out just below, in this file's own source) and handed
+    // back this file's tail, so the check ran against a haystack that can never contain a table row.
+    let source = include_str!("../refusal.rs");
     let table = source
         .split("//! | `RefusalReason` | `code` | Why |")
         .nth(1)
