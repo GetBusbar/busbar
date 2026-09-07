@@ -392,3 +392,5 @@ pub fn approve(held: Grants, needed: Scope) -> Result<(), Refused> {
 mod tests;
 #[cfg(test)]
 mod tests_bitset;
+#[cfg(test)]
+mod tests_narrowing;

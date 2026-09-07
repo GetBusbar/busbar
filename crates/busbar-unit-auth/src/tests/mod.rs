@@ -8,6 +8,7 @@ mod carrier_tests;
 mod chain_tests;
 mod exchange_tests;
 mod hardening;
+mod invariants;
 mod unit_tests;
 
 use crate::chain::{ChainEntry, ResolvedKey};
