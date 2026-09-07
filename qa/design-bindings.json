@@ -3906,14 +3906,14 @@
     },
     {
      "kind": "lint",
-     "ref": "scripts/blocking-ffi-lint.sh",
+     "ref": "xtask/src/gates/blocking_ffi.rs",
      "proves": "every plugin transport call is made from a blocking context",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline, test:dlopen_slow_gate_hits_the_deadline, test:dlopen_plugin_panic_is_fail_closed_err, lint:scripts/blocking-ffi-lint.sh"
+   "verdict_detail": "test:hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline, test:dlopen_slow_gate_hits_the_deadline, test:dlopen_plugin_panic_is_fail_closed_err, lint:xtask/src/gates/blocking_ffi.rs"
   },
   {
    "id": "PB-82",
