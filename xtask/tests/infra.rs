@@ -1077,3 +1077,99 @@ fn the_code_of_a_line_keeps_a_slash_slash_that_lives_inside_a_string_literal() {
         "a line holding no literal loses its trailer"
     );
 }
+
+// ── structure-lint ────────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn structure_lint_emits_exactly_the_rows_it_owes_and_owes_each_of_them_once() {
+    use xtask::gates::structure_lint::{StructureLintGate, OWED};
+    let gate = StructureLintGate::new();
+    let owed: BTreeSet<String> = gate.owed().into_iter().collect();
+    assert_eq!(
+        owed.len(),
+        OWED.len(),
+        "an id owed twice is an id whose second rule nobody notices"
+    );
+
+    let rows = gates::execute(&gate, &cx()).rows;
+    let emitted: BTreeSet<String> = rows.iter().map(|r| r.id.clone()).collect();
+    assert_eq!(
+        emitted, owed,
+        "every rule this gate carries is a row somebody reconciles, in both directions"
+    );
+}
+
+#[test]
+fn every_pattern_in_every_structure_lint_table_compiles() {
+    // A pattern that will not compile is a rule that scans nothing, and nothing found is a ban's
+    // pass — so the tables are proven READABLE here rather than at the moment somebody violates one.
+    use xtask::gates::structure_lint::{roots, Tables};
+    let mut f = xtask::gates::structure_lint::Findings::default();
+    let t = Tables::real(&roots::resolve(&cx(), &mut f));
+
+    let mut n = 0usize;
+    for r in &t.choke_points {
+        for rule in &r.rules {
+            xtask::ere::Ere::new(&rule.pattern).unwrap_or_else(|e| panic!("{}: {e}", r.id));
+            n += 1;
+        }
+    }
+    for r in t.request_path.iter().chain(t.decision_input.iter()) {
+        for rule in &r.rules {
+            xtask::ere::Ere::new(&rule.pattern).unwrap_or_else(|e| panic!("{}: {e}", r.id));
+            n += 1;
+        }
+    }
+    for r in &t.axis_branch {
+        for rule in &r.rules {
+            xtask::ere::Ere::new(&rule.pattern).unwrap_or_else(|e| panic!("{}: {e}", r.axis));
+            n += 1;
+        }
+    }
+    for r in &t.census {
+        xtask::ere::Ere::new(&r.pattern).unwrap_or_else(|e| panic!("{}: {e}", r.id));
+        n += 1;
+    }
+    assert!(
+        n >= 30,
+        "the tables shrank to {n} patterns, which is a rule set that quietly stopped asking things"
+    );
+}
+
+#[test]
+fn the_structure_lint_translator_refuses_a_finding_it_cannot_classify() {
+    // An unclassified finding dropped on the floor is how a rewrite gets proven faithful to a
+    // script nobody read.
+    use xtask::gates::structure_lint::StructureLintGate;
+    let gate = StructureLintGate::new();
+    let run = parity::LegacyRun {
+        argv: vec!["scripts/structure-lint.sh".to_string()],
+        code: Some(1),
+        stdout: "== a header ==\n  BRAND-NEW-FINDING: something nobody taught this to read\n"
+            .to_string(),
+        stderr: String::new(),
+    };
+    let err = gate
+        .legacy_rows(&run)
+        .expect("this gate translates its legacy's own output")
+        .expect_err("an unrecognised finding is an error, never a line dropped");
+    assert!(err.contains("BRAND-NEW-FINDING"), "{err}");
+}
+
+#[test]
+fn the_structure_lint_translator_refuses_output_it_recognised_nothing_in() {
+    use xtask::gates::structure_lint::StructureLintGate;
+    let gate = StructureLintGate::new();
+    let run = parity::LegacyRun {
+        argv: vec!["scripts/structure-lint.sh".to_string()],
+        code: Some(0),
+        stdout: String::new(),
+        stderr: String::new(),
+    };
+    assert!(
+        gate.legacy_rows(&run)
+            .expect("this gate translates")
+            .is_err(),
+        "silence read as a clean tree is the exact defect this gate exists for"
+    );
+}

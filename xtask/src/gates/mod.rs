@@ -35,6 +35,7 @@ pub mod response_header;
 pub mod segregation;
 pub mod service_images;
 pub mod settings_leak;
+pub mod structure_lint;
 pub mod tracing;
 pub mod workspace_deps;
 
@@ -374,6 +375,83 @@ pub fn prove_red(
     }
 }
 
+/// The red arm, NARROWED TO THE ROWS THE CASE IS ABOUT — the counterpart of [`prove_rows_green`],
+/// and the STRONGER of the two proofs.
+///
+/// [`prove_red`] accepts any RED that names the planted offender, which is exactly right when the
+/// gate has three rows. Over a gate with thirty-six, on a tree that carries real debt in some of
+/// them, "the gate went red and something in the report said the word" is satisfiable by a row the
+/// case is not about. Reading only the covered rows makes the case say what it means: THIS rule
+/// went red, and it named the offender that was planted for it.
+pub fn prove_rows_red(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    name: impl Into<String>,
+    covers: &[&str],
+    overlay: Overlay,
+    naming: &[&str],
+) -> Case {
+    let planted = cx.with_overlay(overlay);
+    let verdict = execute(gate, &planted);
+    let reported: Vec<String> = verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != crate::ledger::Status::Pass && covers.contains(&r.id.as_str()))
+        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
+        .collect();
+    Case {
+        name: name.into(),
+        covers: covers.iter().map(|s| (*s).to_string()).collect(),
+        expected: Expect::Red {
+            naming: naming.iter().map(|s| (*s).to_string()).collect(),
+        },
+        got: if reported.is_empty() {
+            Expect::Green
+        } else {
+            Expect::Red { naming: reported }
+        },
+    }
+}
+
+/// The green arm, NARROWED TO THE ROWS THE CASE IS ABOUT.
+///
+/// [`prove_green`] asks whether the WHOLE gate is green, which is the right question for a gate
+/// with three rows over a tree that satisfies all three. It is the wrong question for a gate with
+/// thirty-six: "a grandfathered file over the cap is not a fresh violation" is a claim about ONE
+/// row, and demanding the other thirty-five be clean to make it would hold every case in the file
+/// hostage to whatever debt the tree happens to carry today — which is how a selftest ends up
+/// deleted rather than fixed.
+///
+/// So this reads the covered rows and nothing else. It is not a weaker proof of the same claim, it
+/// is the proof of a narrower and more honest one, and the row ids it reads are the same ones the
+/// case must declare in `covers` anyway.
+pub fn prove_rows_green(
+    cx: &Ctx,
+    gate: &dyn Gate,
+    name: impl Into<String>,
+    covers: &[&str],
+    overlay: Overlay,
+) -> Case {
+    let planted = cx.with_overlay(overlay);
+    let verdict = execute(gate, &planted);
+    let offenders: Vec<String> = verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != crate::ledger::Status::Pass && covers.contains(&r.id.as_str()))
+        .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
+        .collect();
+    Case {
+        name: name.into(),
+        covers: covers.iter().map(|s| (*s).to_string()).collect(),
+        expected: Expect::Green,
+        got: if offenders.is_empty() {
+            Expect::Green
+        } else {
+            Expect::Red { naming: offenders }
+        },
+    }
+}
+
 /// The other arm: the unplanted tree must be GREEN, or every RED above proves only that the gate
 /// is broken.
 pub fn prove_green(cx: &Ctx, gate: &dyn Gate, name: impl Into<String>, covers: &[&str]) -> Case {
@@ -530,6 +608,13 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(plane_abi_neutrality::PlaneAbiNeutralityGate),
         summary:
             "the plane ABI's hot lane is derived from the taxonomy, not named after a protocol",
+    },
+    Registration {
+        name: "structure-lint",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(structure_lint::StructureLintGate::new()),
+        summary: "the code-layout invariants, the choke-point registry and the declaration census",
     },
     Registration {
         name: "duplex-ws-default-edge",
