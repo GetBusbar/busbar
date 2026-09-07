@@ -96,7 +96,10 @@ fn populated_bag_is_not_empty() {
 #[test]
 fn get_finds_by_signal_key_and_none_when_absent() {
     let mut bag = SignalBag::new();
-    bag.push(Signal::RequestedModel, SignalValue::Str(Cow::Borrowed("gpt")));
+    bag.push(
+        Signal::RequestedModel,
+        SignalValue::Str(Cow::Borrowed("gpt")),
+    );
     bag.push(Signal::RequestTotalChars, SignalValue::U64(42));
 
     assert_eq!(
@@ -140,5 +143,8 @@ fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
     }
     assert!(!bag.spilled(), "within inline capacity (4) must not spill");
     bag.push(Signal::RequestedModel, SignalValue::Bool(true));
-    assert!(bag.spilled(), "past inline capacity (4) must spill to the heap");
+    assert!(
+        bag.spilled(),
+        "past inline capacity (4) must spill to the heap"
+    );
 }
