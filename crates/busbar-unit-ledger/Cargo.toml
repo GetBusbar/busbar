@@ -9,10 +9,13 @@
 # posting exists here because a hold was settled, and a hold exists because the door said yes — the
 # capability crate makes both of those statements enforceable rather than conventional.
 #
-# DEPENDENCIES. `busbar-caps`, and `sha2` because a checkpoint's body is digested before it is
-# signed and a digest is not a thing to hand-roll. Nothing else: the identity is integer arithmetic
-# and the totals are a map, so a serializer or a decimal library would only be a second opinion
-# about what a number is.
+# DEPENDENCIES. `busbar-caps`; `sha2` because a checkpoint's body is digested before it is signed
+# and a digest is not a thing to hand-roll; and `busbar-unit-cost` because money is a lookup over
+# quantities against a dated rate-card history, and the ledger performs that lookup. The cost unit
+# is the ONE place the multiply-and-sum lives, so the alternative to depending on it is a second
+# copy of the arithmetic here — which is how a request comes to be judged at one figure and billed
+# at another. Nothing else: the identity is integer arithmetic and the totals are a map, so a
+# serializer or a decimal library would only be a second opinion about what a number is.
 [package]
 name = "busbar-unit-ledger"
 version = "1.6.0"
@@ -28,4 +31,5 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-caps = { path = "../busbar-caps" }
+busbar-unit-cost = { path = "../busbar-unit-cost" }
 sha2 = { workspace = true }
