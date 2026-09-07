@@ -143,11 +143,13 @@ jobs:
       # The lint's `#[cfg(test)]` scope scanner decides which lines are EXEMPT from every
       # choke-point bypass rule, so a scanner that can be lied to reports "no bypass" while the
       # bypass sits in production. Its self-test runs FIRST: never trust the lint's verdict before
-      # proving the lint still works.
+      # proving the lint still works. The self-test now plants a violation for EVERY ONE of the
+      # gate's owed rows and requires the run to name it, so "the lint still works" is a claim about
+      # twenty rules rather than about the five fixtures the shell happened to carry.
       - name: Structure lint self-test
-        run: scripts/structure-lint.sh --selftest
+        run: cargo xtask gate structure-lint --selftest
       - name: Structure lint
-        run: scripts/structure-lint.sh
+        run: cargo xtask gate structure-lint
       # RELEASE-SCRIPT lint — durable guard against the 1.5.2 gate's 2h31m hang: a backgrounded
       # server (serve_forever) whose stdout was NOT redirected, captured via `$(...)`, held the
       # substitution's pipe open until the job timeout. Self-test runs FIRST (never trust the lint's
@@ -1456,7 +1458,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       # SELF-TESTS FIRST: never trust a gate's GREEN before proving it still goes RED on a bad input
-      # (same discipline as structure-lint.sh et al).
+      # (same discipline as `cargo xtask gate <name> --selftest` et al).
       - name: profile-lock self-test
         run: scripts/profile-lock.sh --selftest
       - name: build-provenance gate self-test

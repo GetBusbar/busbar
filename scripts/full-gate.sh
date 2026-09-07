@@ -392,7 +392,13 @@ if [ "${1:-}" = "--selftest" ]; then
   # registry matched neither the script pattern nor the cargo capture, so switching a call site
   # would have made it absent from both lists exactly like the `.mjs` was -- the parser narrowing
   # back by a different route. Naming one registry invocation here is what keeps that closed.
-  for must in scripts/structure-lint.sh scripts/public-hygiene-lint.py \
+  #
+  # `structure-lint.sh` used to head this list and came off it the day it became
+  # `cargo xtask gate structure-lint`: a MUST entry naming a script ci.yml no longer runs would fail
+  # for the one reason this case is not about. `release-script-lint.sh` takes its place as the shell
+  # witness -- the list needs one of each LANGUAGE, and it keeps needing one for as long as any gate
+  # is still shell.
+  for must in scripts/release-script-lint.sh scripts/public-hygiene-lint.py \
               "cargo xtask gate workspace-deps" \
               scripts/check-proof-manifest-public.mjs; do
     if printf '%s\n' "${DISCOVERED[@]}" | grep -q "$must"; then
