@@ -455,20 +455,20 @@ if ! assert_bless_env_empty >/tmp/done-parity-env.$$ 2>&1; then
   sed 's/^/          /' /tmp/done-parity-env.$$
   rm -f /tmp/done-parity-env.$$
   CUR_RED=1; CUR_FIRST_NOTE="bless/repoint env not empty (parity)"
-elif [ -x testing/shadow-oracle/replay.sh ]; then
+elif [ -x bin/oracle ]; then
   rm -f /tmp/done-parity-env.$$
   printf '  \033[32m[ok]\033[0m   bless/repoint env is empty — the golden is the pinned 1.5.5 recording, not an operator-chosen path\n'
-  step "replay-selftest (the differ can see a diff)" bash testing/shadow-oracle/replay-selftest.sh
+  step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
   # --write for, would make this whole group measure a cell set that was never reviewed.
   step "enumerate-cells --check (cells.json is what the generator derives)" python3 testing/shadow-oracle/enumerate-cells.py --check
-  step "fetch-golden --check (1.5.5 by pinned digest)" bash testing/shadow-oracle/fetch-golden.sh --check
+  step "fetch-golden --check (1.5.5 by pinned digest)" ./bin/oracle fetch-golden --check
   ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
   GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"
   CAND="$ORACLE_DIR/recordings/candidate"
   if [ ! -s "$GOLDEN/ledger.tsv" ]; then
-    step "record the golden (1.5.5)" bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"
+    step "record the golden (1.5.5)" ./bin/oracle record --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out "$GOLDEN"
   fi
   rm -rf "$CAND"
   # BUILD THE THING THE ORACLE IS ABOUT TO DIFF. The candidate recording is taken from
@@ -478,10 +478,10 @@ elif [ -x testing/shadow-oracle/replay.sh ]; then
   # worse — records a STALE binary from some earlier checkout and calls the resulting zero
   # divergences a parity proof of HEAD. This step makes the candidate HEAD's by construction.
   step "cargo build -p busbar --release --locked" cargo build -p busbar --release --locked
-  step "record the candidate (target/release/busbar)" bash testing/shadow-oracle/record.sh --bin target/release/busbar --plane all --out "$CAND"
-  step "replay: candidate vs golden" bash testing/shadow-oracle/replay.sh --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
+  step "record the candidate (target/release/busbar)" ./bin/oracle record --bin target/release/busbar --plane all --out "$CAND"
+  step "replay: candidate vs golden" ./bin/oracle replay --golden "$GOLDEN" --candidate "$CAND" --out "$ORACLE_DIR/reports/latest"
 else
-  absent_step "shadow oracle" "testing/shadow-oracle/replay.sh"
+  absent_step "shadow oracle" "bin/oracle"
 fi
 end_group
 

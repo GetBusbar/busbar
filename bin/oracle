@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# The shadow oracle is a separate product now (GetBusbar/busbar-oracle). This is the ONE piece of
+# glue busbar keeps: it installs the PINNED tool into target/oracle/tool and runs it against this
+# checkout's data. The pin (tag + sha256 of the release archive) is testing/shadow-oracle/oracle.pin;
+# a tool whose archive does not hash to the pin is refused, because an unpinned judge is not a judge.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+pin="$here/testing/shadow-oracle/oracle.pin"
+tag="$(awk -F= '$1=="tag"{print $2}' "$pin")"; sha="$(awk -F= '$1=="sha256"{print $2}' "$pin")"
+root="$here/target/oracle/tool/$tag"
+if [ ! -x "$root/bin/busbar-oracle" ]; then
+  mkdir -p "$root"; tgz="$here/target/oracle/$tag.tar.gz"
+  curl -fsSL -o "$tgz" "https://github.com/GetBusbar/busbar-oracle/archive/refs/tags/$tag.tar.gz"
+  got="$( (command -v sha256sum >/dev/null && sha256sum "$tgz" || shasum -a 256 "$tgz") | cut -d' ' -f1)"
+  [ "$got" = "$sha" ] || { echo "oracle: $tag archive is $got, pinned $sha" >&2; exit 1; }
+  tar -xzf "$tgz" -C "$root" --strip-components=1
+  # --no-cache-dir IS THE PIN. Without it pip happily reuses a wheel it built earlier for the same
+  # name+version, so a digest-verified download can be silently shadowed by whatever "busbar-oracle
+  # 0.1.0" happened to be on this machine first — which is exactly the substitution the pin exists
+  # to prevent. Observed, not theoretical: it served a stale judge on the first run of this shim.
+  python3 -m venv "$root/.venv" && "$root/.venv/bin/pip" -q install --no-cache-dir "$root" && ln -sfn "$root/.venv/bin" "$root/bin"
+fi
+# The pin IS the harness's tool half: harness-rev hashes this digest instead of the tool's files.
+export BUSBAR_ORACLE_TOOL_DIGEST="$tag@$sha"
+# Defaults, not overrides. The tool's own self-tests prove the harness revision MOVES when a file
+# that decides a verdict changes, which they do by editing a throwaway copy of the data and re-asking
+# — impossible if this shim forced every run at busbar's real directory.
+export BUSBAR_ORACLE_PRODUCT_ROOT="${BUSBAR_ORACLE_PRODUCT_ROOT:-$here}"
+export BUSBAR_ORACLE_DATA="${BUSBAR_ORACLE_DATA:-$here/testing/shadow-oracle}"
+exec "$root/bin/busbar-oracle" "$@"
