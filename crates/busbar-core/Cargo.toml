@@ -241,6 +241,14 @@ busbar-mcp = { path = "../busbar-mcp", features = ["test-support", "auth-admin-t
 # cells) is reached by `cargo test --workspace` only through this edge; the plane's feature does
 # not forward it on purpose, so without this line CI never ran those tests.
 busbar-a2a-codec = { path = "../busbar-a2a-codec", features = ["test-support"] }
+# THE MCP CODEC'S OWN test-support SUITE, ON THE SAME EDGE AND FOR THE SAME REASON. The sanitizer
+# cells and the structured-output schema check carry `#[cfg(all(test, feature = "test-support"))]`,
+# and `busbar-mcp-codec/test-support` was activated by NOTHING in this workspace: `busbar-mcp` and
+# `busbar-plane-mcp` both take the codec on default features, and the codec's own `test-support`
+# forwards only DOWN to `busbar-substrate-values`, never up to itself. So those suites compiled to
+# nothing under `cargo test --workspace` — the same hole the a2a line above closes, left open on the
+# sibling crate when the codec split created a second gate with the same name.
+busbar-mcp-codec = { path = "../busbar-mcp-codec", features = ["test-support"] }
 # THE LLM PLANE crate, on the SAME dev-dependency back-edge as MCP/A2A above: core's own test binary
 # names `busbar_llm::PLANE_DECL` (the `#[cfg(test)]` row in `plane::registry::BUILTIN_PLANE_DECLS`) so
 # the process plane list its registry/plane tests drive is the same `[llm, mcp, a2a]` the shipped
