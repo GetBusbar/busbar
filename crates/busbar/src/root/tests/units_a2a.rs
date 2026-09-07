@@ -1143,6 +1143,17 @@ impl busbar_api::Store for RecordingStore {
         self.note("redeem", kind);
         Ok(true)
     }
+
+    fn plane_token_live(
+        &self,
+        kind: &str,
+        _token: &str,
+        _expires_at: u64,
+        _now: u64,
+    ) -> busbar_api::StoreResult<bool> {
+        self.note("verify_live", kind);
+        Ok(true)
+    }
 }
 
 /// A store that refuses everything, so a failure on the record path is a testable event.
@@ -1159,6 +1170,275 @@ impl busbar_api::Store for RefusingStore {
             "the store is unavailable".to_string(),
         ))
     }
+}
+
+/// A store that keeps a real push-callback capability table, so the liveness rules are exercised
+/// against something that can actually answer `false`.
+///
+/// The three columns are the three the rule needs and nothing else: whether the row is there,
+/// whether it is still `Active`, and — compared against the `now` and `expires_at` the leg
+/// passes — whether it has lapsed. The body is never decoded, exactly as a real backend never
+/// decodes one, so nothing here can pass by reading a state out of the bytes that the typed
+/// columns were supposed to carry.
+#[derive(Default)]
+struct CapabilityStore {
+    tokens: Mutex<Vec<(String, busbar_api::PlaneDisposition)>>,
+}
+
+impl CapabilityStore {
+    /// Register a live callback token, the way the create-push-config plan does.
+    fn register(&self, id: &str) {
+        self.tokens
+            .lock()
+            .expect("tokens lock")
+            .push((id.to_string(), busbar_api::PlaneDisposition::Active));
+    }
+
+    fn holds(&self, id: &str) -> bool {
+        self.tokens
+            .lock()
+            .expect("tokens lock")
+            .iter()
+            .any(|(t, _)| t == id)
+    }
+}
+
+impl busbar_api::Store for CapabilityStore {
+    no_governance_rows!();
+
+    fn upsert_plane_record(&self, record: &busbar_api::PlaneRecord) -> busbar_api::StoreResult<()> {
+        if record.kind == records::SCHEMA_PUSH_CONFIG.as_str() {
+            let mut tokens = self.tokens.lock().expect("tokens lock");
+            match tokens.iter_mut().find(|(t, _)| *t == record.id) {
+                Some(existing) => existing.1 = record.disposition,
+                None => tokens.push((record.id.clone(), record.disposition)),
+            }
+        }
+        Ok(())
+    }
+
+    fn append_plane_record(
+        &self,
+        _record: &busbar_api::PlaneRecord,
+    ) -> busbar_api::StoreResult<()> {
+        Ok(())
+    }
+
+    fn delete_plane_record(&self, kind: &str, id: &str) -> busbar_api::StoreResult<()> {
+        if kind == records::SCHEMA_PUSH_CONFIG.as_str() {
+            self.tokens
+                .lock()
+                .expect("tokens lock")
+                .retain(|(t, _)| t != id);
+        }
+        Ok(())
+    }
+
+    fn plane_token_live(
+        &self,
+        kind: &str,
+        token: &str,
+        expires_at: u64,
+        now: u64,
+    ) -> busbar_api::StoreResult<bool> {
+        if kind != records::SCHEMA_PUSH_CONFIG.as_str() {
+            return Ok(false);
+        }
+        Ok(self
+            .tokens
+            .lock()
+            .expect("tokens lock")
+            .iter()
+            .any(|(t, d)| {
+                t == token && matches!(d, busbar_api::PlaneDisposition::Active) && now <= expires_at
+            }))
+    }
+}
+
+/// The key one push callback arrives on.
+fn push_key<'a>(id: &'a str, now: u64, expires_at: u64, terminal: bool) -> LegKey<'a> {
+    LegKey {
+        id,
+        parent: Some(id),
+        seq: 1,
+        ts: now,
+        expires_at,
+        terminal,
+    }
+}
+
+/// The record legs of the push-event plan, in the plane's own order.
+fn push_event_legs() -> Vec<Leg> {
+    vec![
+        leg_record(records::SCHEMA_PUSH_CONFIG, records::OP_VERIFY_LIVE),
+        leg_record(records::SCHEMA_TASK, records::OP_PUT),
+        leg_record(records::SCHEMA_TASK_EVENT, records::OP_APPEND),
+        leg_record(records::SCHEMA_PUSH_CONFIG, records::OP_REVOKE),
+    ]
+}
+
+/// Whether the plan's liveness leg said the token was live.
+fn was_live(results: &[LegResult]) -> bool {
+    results.first().expect("the liveness leg runs first").live
+}
+
+/// **THE REPLAY, CLOSED.** A token captured off one callback is refused once its task has ended.
+///
+/// This is the defect stated as the customer sees it. The leg used to pass one timestamp as both
+/// the deadline and the clock — "is now past now" — which is false for every token ever
+/// presented, so the expiry test could not refuse anything; underneath it the neutral verb's
+/// default answered `true` unconditionally. A backend agent, or anyone who read one callback off
+/// the wire, could keep addressing a finished task with the same bearer indefinitely.
+///
+/// The sequence is the real one and not a shortcut: a live token carries a non-terminal update,
+/// then carries the update that ends the task, and only then is replayed. The replay is asserted
+/// to answer NOT LIVE — which is what stops the legs after it from touching the task at all.
+#[test]
+fn a_captured_callback_token_is_refused_once_its_task_has_ended() {
+    let store = Arc::new(CapabilityStore::default());
+    store.register("t-1");
+    let legs = RecordLegs::new(store.clone());
+
+    // Still running: the token works, and survives the update.
+    let working = legs
+        .run_plan(
+            &push_event_legs(),
+            &push_key("t-1", 100, 3_700, false),
+            b"{}",
+        )
+        .expect("the legs run");
+    assert!(was_live(&working), "a live token must carry a live task");
+    assert!(store.holds("t-1"), "a task still running keeps its token");
+
+    // The ending: the same token is still good FOR THIS CALLBACK, and is revoked by it.
+    let completed = legs
+        .run_plan(
+            &push_event_legs(),
+            &push_key("t-1", 200, 3_700, true),
+            b"{}",
+        )
+        .expect("the legs run");
+    assert!(
+        was_live(&completed),
+        "the callback that ENDS a task is the last honest use of its token, not the first \
+         refused one"
+    );
+    assert!(
+        !store.holds("t-1"),
+        "the update that made the task terminal must revoke the token, not leave it lying live"
+    );
+
+    // And the replay, which is the whole point.
+    let replayed = legs
+        .run_plan(
+            &push_event_legs(),
+            &push_key("t-1", 300, 3_700, false),
+            b"{}",
+        )
+        .expect("the legs run");
+    assert!(
+        !was_live(&replayed),
+        "a token captured off a finished task's callback still verified — this is the replay"
+    );
+}
+
+/// **One task, several callbacks, one token.** The check spends nothing.
+///
+/// The other half of the same bug, and the reason a single-use `redeem` could not simply have
+/// been pointed at real arguments: A2A backends report `working`, then `input-required`, then
+/// `completed`, so a token spent on the first callback would refuse the two honest ones after it
+/// and the customer would lose exactly the notifications push exists to deliver. Three
+/// non-terminal updates, one token, three acceptances.
+#[test]
+fn one_token_carries_every_callback_of_a_task_that_is_still_running() {
+    let store = Arc::new(CapabilityStore::default());
+    store.register("t-1");
+    let legs = RecordLegs::new(store.clone());
+
+    for (nth, now) in [100_u64, 200, 300].into_iter().enumerate() {
+        let results = legs
+            .run_plan(
+                &push_event_legs(),
+                &push_key("t-1", now, 3_700, false),
+                b"{}",
+            )
+            .expect("the legs run");
+        assert!(
+            was_live(&results),
+            "callback {} of a task that is still running was refused; the check spent the token",
+            nth + 1
+        );
+    }
+    assert!(
+        store.holds("t-1"),
+        "nothing terminal happened, so nothing should have been revoked"
+    );
+}
+
+/// **A deadline that is a real deadline.** The lapsed token is refused.
+///
+/// Terminal revocation alone would leave a token live forever for a task whose backend accepted
+/// the work and then went silent — there is no ending to revoke on. So the token is dead at
+/// whichever comes first, and this is the other one. The two keys differ ONLY in the clock, so a
+/// pass here cannot come from anything but the expiry comparison actually being made.
+#[test]
+fn a_callback_token_past_its_deadline_is_refused() {
+    let store = Arc::new(CapabilityStore::default());
+    store.register("t-1");
+    let legs = RecordLegs::new(store.clone());
+
+    let inside = legs
+        .run_plan(
+            &push_event_legs(),
+            &push_key("t-1", 3_600, 3_700, false),
+            b"{}",
+        )
+        .expect("the legs run");
+    assert!(was_live(&inside), "a token inside its deadline is live");
+
+    let lapsed = legs
+        .run_plan(
+            &push_event_legs(),
+            &push_key("t-1", 3_701, 3_700, false),
+            b"{}",
+        )
+        .expect("the legs run");
+    assert!(
+        !lapsed.first().expect("the liveness leg runs first").live,
+        "a token past its deadline still verified; the deadline and the clock are the same \
+         number again"
+    );
+}
+
+/// **The neutral verb's default REFUSES.** A store that cannot answer must not be read as saying
+/// yes.
+///
+/// `RefusingStore` overrides nothing but the upsert, so the liveness verb here is the trait's own
+/// default — which is the posture every deployment whose store predates this verb runs on. For a
+/// read, "this store remembers nothing" and "there is nothing to remember" are the same answer;
+/// for a capability check they are opposites, and this asserts which one the default takes. The
+/// sibling `redeem_plane_token` default is deliberately `Ok(true)` and stays that way — a store
+/// that keeps no ledger genuinely has spent nothing — so the two are asserted apart here rather
+/// than assumed to agree.
+#[test]
+fn the_default_liveness_answer_is_a_refusal() {
+    use busbar_api::Store as _;
+
+    let store = RefusingStore;
+    assert!(
+        !store
+            .plane_token_live(records::SCHEMA_PUSH_CONFIG.as_str(), "t-1", u64::MAX, 0)
+            .expect("the default answers rather than erroring"),
+        "the default answered LIVE for a store that keeps no capability rows at all; every \
+         deployment on an older store would accept a replayed callback"
+    );
+    assert!(
+        store
+            .redeem_plane_token("ask", "n-1", u64::MAX, 0)
+            .expect("the default answers"),
+        "the single-use redeem's default is the opposite one on purpose, and moving it would \
+         break approvals rather than fix a replay"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────

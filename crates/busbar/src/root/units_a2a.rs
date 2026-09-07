@@ -1148,7 +1148,10 @@ impl<S: CellStore> Units for A2aUnits<'_, S> {
             // because a deployment configuring an enormous TTL should get "effectively never" rather
             // than a wrapped instant already in the past — which would be a deadline that refuses
             // everything, the failure mode this whole change exists to avoid the mirror image of.
-            expires_at: self.bindings.now.saturating_add(self.bindings.task_ttl_secs),
+            expires_at: self
+                .bindings
+                .now
+                .saturating_add(self.bindings.task_ttl_secs),
             terminal: matches!(
                 self.draft.finish,
                 FinishClass::Complete | FinishClass::Error
