@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2309,
+    "total": 2316,
     "by_plane": {
       "a2a": 468,
-      "core": 781,
+      "core": 788,
       "llm": 148,
       "mcp": 912
     },
@@ -66,11 +66,12 @@
       "a2a": 468,
       "admin.ops": 240,
       "auth.lifecycle": 3,
-      "billing": 13,
+      "billing": 14,
       "boot.refusal": 205,
       "boot.warning": 31,
       "cli": 14,
       "concurrency": 3,
+      "config": 1,
       "config.migrate": 138,
       "cooldown": 1,
       "crosscut.traps": 5,
@@ -78,6 +79,7 @@
       "hazard": 2,
       "hooks": 10,
       "http.crosscut": 23,
+      "ledger": 5,
       "llm.wire": 141,
       "mcp": 912,
       "neutrality": 18,
@@ -10670,6 +10672,21 @@
       "config_variant": "rate-card-epoch"
     },
     {
+      "id": "billing|rate-card|history-mid-window",
+      "plane": "core",
+      "family": "billing",
+      "driver": "script",
+      "script": {
+        "name": "rate-card-history.sh"
+      },
+      "outcome": "ok",
+      "weight": 10,
+      "bindings": [
+        "PB-103"
+      ],
+      "why": "TWO complete rate cards written into ONE window (10x, then 100x + a 3-cent per_request_fee), with a chat before the first, between the two and after the second, and GET /api/v1/admin/usage read after EACH write. RECORDED TRUTH from the published 1.5.5 binary: every read prices the ENTIRE window at the card in force at READ time, so the first request is reported at three different prices over the life of one window and no row is ever left at what it was earned under. This is the cell the 1.6.0 divergence is judged on (PB-103): under the dated history the two pre-edit requests keep the boot and 10x cards and only the final read moves. The script driver, not `pre`, because a `pre` request's response is never recorded (record.sh run_pre_request checks only that busbar ANSWERED) and this cell's finding is the relation between the three reads, not any one of them."
+    },
+    {
       "id": "boot.refusal|BOOT-001|validate",
       "plane": "core",
       "family": "boot.refusal",
@@ -17341,6 +17358,28 @@
       "why": "the migrated document under --validate"
     },
     {
+      "id": "config|rate-card|append-not-replace",
+      "plane": "core",
+      "family": "config",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/config/settings",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"rate_card\":{\"m-openai-chat\":{\"input_utok\":10000000,\"output_utok\":20000000}}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "a PARTIAL rate card (one model of the nine) through PUT /config/settings. RECORDED: the 400 that 1.5.5 answers \u2014 'rate_card is AUTHORITATIVE and COMPLETE: you either price nothing or price everything' \u2014 as bytes rather than as a quotation from the source. This is the refusal an earlier pass at the epoch cell tripped over WITHOUT seeing it (a `pre` need only be answered, not 2xx, so a refused write was recorded as a pricing epoch), and it is the precondition for \u00a74.1: a config PUT can APPEND a dated entry to the history precisely because the thing it carries is always a whole card. Under 1.6.0 this stays a 400 and the accepted sibling appends instead of overwriting, which /ledger/rate-history is what shows.",
+      "config_variant": "rate-card-partial",
+      "bindings": [
+        "PB-103"
+      ]
+    },
+    {
       "id": "cooldown|trip-then-serve",
       "plane": "core",
       "family": "cooldown",
@@ -18575,6 +18614,167 @@
         "listener": "data"
       },
       "why": "second carrier, invalid"
+    },
+    {
+      "id": "ledger|amend|adjusting-entries",
+      "plane": "core",
+      "family": "ledger",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/amend-rate-history",
+        "headers": {
+          "Content-Type": "application/json",
+          "X-Busbar-Signature": "ed25519:oracle-operator-signature"
+        },
+        "body": "{\"effective_from\":1,\"rate_card\":{\"m-anthropic\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-bedrock\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cd-lane\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cohere\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-gemini\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-lane-c1\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-chat\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-responses\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-queue-lane\":{\"input_utok\":10000000,\"output_utok\":20000000}},\"reason\":\"oracle: back-date the window\",\"window\":{\"day\":\"2020-01-01\"}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "POST /api/v1/admin/ledger/amend-rate-history, SIGNED, against the binary that has no ledger route table. RECORDED: 1.5.5's refusal, verbatim \u2014 which code, which body, and (the distinction that matters) whether it is a 404 `not_found` from the router or a 405 from a path that exists for some other method. That refusal is the proof the 1.6.0 verb is ADDITIVE: no 1.5.5 operator can be relying on an answer here, because there is no answer here. Recorded before the verb is built, so the claim is a diff rather than an assertion.",
+      "config_variant": "rate-card-amend",
+      "bindings": [
+        "PB-103"
+      ]
+    },
+    {
+      "id": "ledger|amend|refused-unsigned",
+      "plane": "core",
+      "family": "ledger",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "POST",
+        "path": "/api/v1/admin/ledger/amend-rate-history",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"effective_from\":1,\"rate_card\":{\"m-anthropic\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-bedrock\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cd-lane\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cohere\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-gemini\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-lane-c1\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-chat\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-responses\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-queue-lane\":{\"input_utok\":10000000,\"output_utok\":20000000}},\"reason\":\"oracle: back-date the window\",\"window\":{\"day\":\"2020-01-01\"}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "the same amend call with NO operator signature. Its value is the PAIR: 1.5.5 must refuse this identically to the signed one, because it is refusing the ROUTE and knows nothing about signatures. If the two goldens ever differ, the premise that this verb is new is false. Under 1.6.0 the two separate \u2014 signed proceeds, unsigned is refused AND journalled \u2014 and this cell is where that separation first becomes visible against a recorded baseline.",
+      "config_variant": "rate-card-amend-unsigned",
+      "bindings": [
+        "PB-103"
+      ]
+    },
+    {
+      "id": "ledger|currency|minor-unit-rounding",
+      "plane": "core",
+      "family": "ledger",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/usage",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "PUT",
+            "path": "/api/v1/admin/config/settings",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"rate_card\":{\"m-anthropic\":{\"input_utok\":1,\"output_utok\":1},\"m-bedrock\":{\"input_utok\":1,\"output_utok\":1},\"m-cd-lane\":{\"input_utok\":1,\"output_utok\":1},\"m-cohere\":{\"input_utok\":1,\"output_utok\":1},\"m-gemini\":{\"input_utok\":1,\"output_utok\":1},\"m-lane-c1\":{\"input_utok\":1,\"output_utok\":1},\"m-openai-chat\":{\"input_utok\":1,\"output_utok\":1},\"m-openai-responses\":{\"input_utok\":1,\"output_utok\":1},\"m-queue-lane\":{\"input_utok\":1,\"output_utok\":1}}}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "a complete card priced at ONE micro-unit per token \u2014 a whole request costs 18 micro-units against a USD minor unit of 10,000 \u2014 then GET /admin/usage. RECORDED: 1.5.5's sub-minor-unit arithmetic, exactly. Whether the per-key rows, the per-model rows and the total each truncate independently or the projection happens once decides whether \u00a73.3's 'divide by 10^(9-exp) ONCE per row, truncating' is a restatement of today's behaviour (byte-identical, as the identity test's statement 2 requires) or a change to it. Recorded on the currency 1.5.5 already has, so the zero-exponent (JPY) and three-exponent (BHD) arms 1.6.0 adds have a USD baseline to be identical to.",
+      "config_variant": "rate-card-minor-unit",
+      "bindings": [
+        "PB-103"
+      ]
+    },
+    {
+      "id": "ledger|currency|native",
+      "plane": "core",
+      "family": "ledger",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "PUT",
+        "path": "/api/v1/admin/config/settings",
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"rate_card\":{\"m-anthropic\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-bedrock\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-cd-lane\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-cohere\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-gemini\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-lane-c1\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-chat\":{\"currency\":\"JPY\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-responses\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000},\"m-queue-lane\":{\"currency\":\"USD\",\"input_utok\":10000000,\"output_utok\":20000000}}}",
+        "auth": "admin",
+        "listener": "admin"
+      },
+      "why": "a complete card that prices ONE lane in a second currency natively (m-openai-chat in JPY, the rest USD) \u2014 the shape \u00a73.1 requires and the shape 1.5.5 has no field for. RECORDED: whether 1.5.5 REFUSES the unknown per-entry `currency` key or ACCEPTS and silently drops it. The second answer is the one worth having a golden for: a card that says JPY while /usage keeps labelling the money USD is a mislabelled invoice, and the recorded write is what makes 1.6.0's honouring of the field a registered improvement rather than a change of meaning under the same bytes.",
+      "config_variant": "rate-card-currency",
+      "bindings": [
+        "PB-103"
+      ]
+    },
+    {
+      "id": "ledger|rate-history|as-of",
+      "plane": "core",
+      "family": "ledger",
+      "driver": "http",
+      "outcome": "ok",
+      "request": {
+        "method": "GET",
+        "path": "/api/v1/admin/usage?as_of=1",
+        "headers": {},
+        "body": null,
+        "auth": "admin",
+        "listener": "admin",
+        "pre": [
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          },
+          {
+            "method": "PUT",
+            "path": "/api/v1/admin/config/settings",
+            "listener": "admin",
+            "auth": "admin",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"per_request_fee\":3,\"rate_card\":{\"m-anthropic\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-bedrock\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cd-lane\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-cohere\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-gemini\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-lane-c1\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-chat\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-openai-responses\":{\"input_utok\":10000000,\"output_utok\":20000000},\"m-queue-lane\":{\"input_utok\":10000000,\"output_utok\":20000000}}}"
+          },
+          {
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "listener": "data",
+            "auth": "ok",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": "{\"model\":\"m-openai-chat\",\"messages\":[{\"role\":\"user\",\"content\":\"ping\"}]}"
+          }
+        ]
+      },
+      "why": "a mid-window 100x card, then GET /admin/usage?as_of=1 \u2014 the snapshot selector 1.6.0 gives every ledger read, sent to the binary that has no history to select from. RECORDED: what 1.5.5 does with an UNKNOWN query parameter on a money endpoint. The response's own `as_of` field already exists in 1.5.5 and is 0; if the request-side parameter is dropped silently, the answer is the CURRENT-card reprice under a name that promises a snapshot \u2014 which is the reading this cell pins so that 1.6.0's honouring of it is a visible, registered change and not a quietly different number under the same URL.",
+      "config_variant": "rate-card-as-of",
+      "bindings": [
+        "PB-103"
+      ]
     },
     {
       "id": "llm|anthropic|anthropic|request|malformed",
