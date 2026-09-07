@@ -1017,7 +1017,7 @@ verdict = "real"
 because = "the open door the assembly starts from, which the mount replaces with the deployment's own chain"
 
 [rules.no-test-doubles-in-production.known_sites.legacy-rows-read]
-file = "crates/busbar/src/root/units_admin.rs"
+file = "crates/busbar/src/root/units_admin/mod.rs"
 symbol = "RecordingRows"
 verdict = "real"
 because = "the read half's impl on the previous release's rows type; an impl constructs nothing"

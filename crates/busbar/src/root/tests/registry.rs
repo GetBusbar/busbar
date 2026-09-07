@@ -198,8 +198,7 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
             let (a, b) = (&left.claim.selector, &right.claim.selector);
             if ends_in_tail(a) || ends_in_tail(b) {
                 tail += 1;
-            } else if (has_variable(a) && is_fragment(b)) || (has_variable(b) && is_fragment(a))
-            {
+            } else if (has_variable(a) && is_fragment(b)) || (has_variable(b) && is_fragment(a)) {
                 variable += 1;
             } else if is_fragment(a) && is_fragment(b) {
                 fragments += 1;
@@ -400,8 +399,7 @@ fn the_one_answer_form_names_both_planes() {
         plane: "impostor",
         claim: admin.claim,
     };
-    let conflict =
-        check_claims(&[admin, impostor]).expect_err("two planes cannot own one path");
+    let conflict = check_claims(&[admin, impostor]).expect_err("two planes cannot own one path");
     let planes = [conflict.left.plane, conflict.right.plane];
     assert!(planes.contains(&"admin"));
     assert!(planes.contains(&"impostor"));

@@ -432,8 +432,8 @@ async fn the_sealed_end_is_the_taps_where_there_is_one_and_the_status_where_ther
             FinishClass::TurnComplete,
             "{why}: this plane opens no session, so no unit of it ends a turn of one"
         );
-        let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX)
-            .await;
+        let _ =
+            axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
     }
 }
 
@@ -632,8 +632,7 @@ async fn every_refusal_class_renders_byte_identically_on_both_paths() {
         for proto in dialects {
             // The legacy door: `ingress_error` with the three values, then the refusal's own
             // headers stamped over the envelope — the order every live arm stamps them in.
-            let mut legacy =
-                busbar_substrate::proxy::ingress_error(proto, status, kind, message);
+            let mut legacy = busbar_substrate::proxy::ingress_error(proto, status, kind, message);
             for (n, v) in &own {
                 legacy.headers_mut().insert(n.clone(), v.clone());
             }

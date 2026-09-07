@@ -106,7 +106,7 @@
       "note": "the voice plane switched over: a live session as a sequence of ordinary units -- the handshake, the per-frame turns and the metering lease"
     },
     "root-admin": {
-      "file": "crates/busbar/src/root/tests/units_admin.rs",
+      "file": "crates/busbar/src/root/units_admin/tests/units_admin.rs",
       "columns": [],
       "note": "the admin plane is NOT one of the doctrine's seven protocol columns -- it carries no protocol and no upstream target -- so it owns no cell in this matrix. Its root leg is judged, step by step, by the admin row of qa/teller-steps.json. Zero columns here is that statement, not an omission."
     }

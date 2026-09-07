@@ -318,8 +318,7 @@ fn a_dropped_posting_names_its_row_and_its_amount() {
     // second posting on it, so the row does not vanish — it comes up SHORT, which is the
     // failure a missed posting actually produces.
     let dropped = 3;
-    let expected_row =
-        RowKey::new(s[dropped].bucket, DAY, s[dropped].lane, s[dropped].provider);
+    let expected_row = RowKey::new(s[dropped].bucket, DAY, s[dropped].lane, s[dropped].provider);
 
     let (whole, legacy, _) = drive(&s, None);
     assert!(

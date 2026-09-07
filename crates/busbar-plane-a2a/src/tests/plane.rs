@@ -123,7 +123,8 @@ fn who_ended_it_decides_how_it_ended() {
 /// The rewrite replaces every spelling of the identifier and leaves everything else alone.
 #[test]
 fn the_rewrite_replaces_every_spelling() {
-    let body = br#"{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"id":"ours","other":"kept"}}"#;
+    let body =
+        br#"{"jsonrpc":"2.0","id":1,"method":"tasks/get","params":{"id":"ours","other":"kept"}}"#;
     let out = rewrite_task_id(body, "theirs").expect("the rewrite writes");
     let value: serde_json::Value = serde_json::from_slice(&out).expect("it is a document");
     assert_eq!(value["params"]["id"], "theirs");

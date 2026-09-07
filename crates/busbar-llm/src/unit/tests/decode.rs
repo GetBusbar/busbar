@@ -185,8 +185,7 @@ fn a_multipart_body_takes_the_live_form_field_model() {
         None,
     );
     // The live arm, run here on the same bytes.
-    let live =
-        crate::native_ingress::multipart_model("multipart/form-data; boundary=zz", &body);
+    let live = crate::native_ingress::multipart_model("multipart/form-data; boundary=zz", &body);
     assert_eq!(
         step.as_deref().ok(),
         live.as_deref(),
@@ -426,13 +425,8 @@ fn the_body_entry_point_answers_the_handler_miss_before_the_parse_miss() {
 fn the_path_model_entry_point_answers_the_parse_miss_first() {
     registered();
     let malformed = Bytes::from_static(b"{ not json");
-    let step0 = crate::unit::arrival::arrival_path_model(
-        &malformed,
-        "m",
-        false,
-        false,
-        "no-such-protocol",
-    );
+    let step0 =
+        crate::unit::arrival::arrival_path_model(&malformed, "m", false, false, "no-such-protocol");
     assert_eq!(
         step0.map(|_| ()).expect_err("must refuse"),
         ArrivalRefusal::BodyParse

@@ -2,7 +2,6 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -124,9 +123,7 @@ impl Fixture {
             },
             // The same cut with nothing relayed first: 2xx headers, then the transfer fails
             // before the first byte of the answer.
-            Fixture::StreamFailedTransfer => {
-                MockResponse::SseTransportError { ok_events: vec![] }
-            }
+            Fixture::StreamFailedTransfer => MockResponse::SseTransportError { ok_events: vec![] },
             Fixture::UpstreamFailure => MockResponse::ServerError {
                 status: reqwest::StatusCode::BAD_GATEWAY,
                 body: serde_json::json!({"error": {"message": "upstream refused the transfer",
@@ -343,8 +340,7 @@ fn normalize(s: &str) -> String {
             serde_json::Value::Object(map) => {
                 for (k, val) in map.iter_mut() {
                     let is_id = k.ends_with("id") || k.ends_with("Id") || k.ends_with("ID");
-                    let is_clock =
-                        matches!(k.as_str(), "created" | "created_at" | "createTime");
+                    let is_clock = matches!(k.as_str(), "created" | "created_at" | "createTime");
                     if is_id && val.is_string() {
                         *val = serde_json::Value::String("<id>".to_string());
                     } else if (is_clock || k == "latencyMs") && val.is_number() {
@@ -744,9 +740,10 @@ async fn drive(
         let token: UnitToken<Authenticate> = UnitToken::mint(seal);
         let decision = authenticate::authenticate(&token, gov);
         match decision.into_result(seal) {
-            Ok(facts) => facts.principal().cloned().expect(
-                "this plane opens no handshake unit, so the challenge arm is unreachable",
-            ),
+            Ok(facts) => facts
+                .principal()
+                .cloned()
+                .expect("this plane opens no handshake unit, so the challenge arm is unreachable"),
             Err(_) => unreachable!("the authenticate step's refusal set is empty"),
         }
     };
@@ -1140,8 +1137,8 @@ async fn a_stream_audited_at_its_end_seals_the_class_the_tap_reported() {
             FinishClass::TurnComplete,
             "{fixture:?}: no dialect on this plane ends a turn of a continuing session"
         );
-        let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX)
-            .await;
+        let _ =
+            axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
         rig.server.shutdown().await;
     }
 }
@@ -1680,8 +1677,7 @@ async fn route_and_audit_are_on_the_token_seam() {
         true,
     );
     let status = audited.response.as_response().status().as_u16();
-    let _ =
-        axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
+    let _ = axum::body::to_bytes(audited.response.into_response().into_body(), usize::MAX).await;
     let facts: AuditFacts = audited
         .decision
         .into_result(&seal)

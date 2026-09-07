@@ -106,8 +106,7 @@ fn a_fallback_pool_the_key_may_not_reach_is_the_same_403_as_the_requested_one() 
         fallbacks: vec![("a".into(), "b".into())],
         ..Default::default()
     };
-    let refusal =
-        destination_guard(&view, "a").expect_err("a falls over to b, and b is denied");
+    let refusal = destination_guard(&view, "a").expect_err("a falls over to b, and b is denied");
     assert_eq!(refusal, VerifyRefusal::NotAuthorized);
 
     let live = envelope(

@@ -4,9 +4,7 @@
 
 use super::*;
 use busbar_unit_ledger::legacy::{LegacyHead, LegacyMigrationSource};
-use busbar_unit_ledger::migration::{
-    LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords,
-};
+use busbar_unit_ledger::migration::{LegacyFamily, LegacyFigure, LegacyFigures, NodeLocalRecords};
 use busbar_unit_ledger::totals::CapDimension;
 
 /// Rows a test seeded, counting the reads so "the second boot touched nothing" is an assertion
@@ -70,8 +68,7 @@ fn rows() -> SeededRows {
 fn the_first_boot_seals_the_opening() {
     let rows = rows();
     let mut records = NodeLocalRecords::new();
-    let outcome =
-        seal_opening(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("seals");
+    let outcome = seal_opening(&rows, &mut records, &cfg(), 1_700_000_000, None).expect("seals");
     let Outcome::Sealed(opening) = outcome else {
         panic!("the first boot seals");
     };
