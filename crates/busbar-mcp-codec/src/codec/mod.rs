@@ -428,3 +428,12 @@ impl McpNotification {
 #[cfg(test)]
 #[path = "tests/mcp_tests.rs"]
 mod tests;
+
+// THE DIALECT VOCABULARY'S OWN CELLS — the error codes against the conformance rig's pinned table,
+// the name-pointer rule, and the two paths. A separate file from `mcp_tests.rs` because these are
+// SPECIFICATION PINS rather than codec behaviour: the numbers are transcribed from
+// `testing/mcp-conformance/src/core/jsonrpc.mjs`, and what they assert is that this crate and that
+// rig still agree.
+#[cfg(test)]
+#[path = "tests/dialect_vocabulary_tests.rs"]
+mod dialect_vocabulary_tests;
