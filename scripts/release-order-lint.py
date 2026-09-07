@@ -729,10 +729,16 @@ MUTATIONS = [
         "R9",
     ),
     (
+        # `needs: [plan, branch-green]` appears TWICE in release-stage.yml (`gate` and `targets`), so
+        # this mutation does need to say which one it means -- but it used to say so by naming the
+        # two lines that happened to follow it (`runs-on:` then `services:`), which stopped matching
+        # the moment a `timeout-minutes:` was added to the job. Anchoring on the JOB ID and taking
+        # the first `needs:` inside it says the same thing and cannot be broken by adding a key to
+        # the job, which is the whole failure mode R11 and the other R9 mutation just hit.
         "R9 the staging build stops depending on the red-branch gate",
         "release-stage.yml",
-        lambda t: t.replace("    needs: [plan, branch-green]\n    runs-on: ubuntu-latest\n    services:",
-                            "    needs: [plan]\n    runs-on: ubuntu-latest\n    services:"),
+        lambda t: re.sub(r"(\n  gate:\n(?:.*?\n)*?    needs: \[plan), branch-green\]",
+                         r"\1]", t, count=1),
         "R9",
     ),
     (
