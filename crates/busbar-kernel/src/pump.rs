@@ -338,8 +338,19 @@ impl NestedPool {
 
     /// Give a permit back. It returns the permit and nothing else: a permit coming back does not
     /// un-refuse a parent the pool already turned away.
+    ///
+    /// CLAMPED AT THE SIZE THE POOL WAS BUILT WITH, because a plain increment is not a return. A
+    /// [`NestedPermit`] is `Copy` and its depth is public, so the value handed out is duplicated by
+    /// reading it and forged by writing one; a count that adds one per value it is shown is a pool
+    /// that grows every time a permit is returned twice, retried, or made up. The bound the design
+    /// gives nesting is the size, so the size is what the count is held under — no sequence of
+    /// returns can put more children in the air than the pool has room for.
     pub fn leave(&self, _permit: NestedPermit) {
-        self.permits.fetch_add(1, Ordering::AcqRel);
+        let _ = self
+            .permits
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                Some((n + 1).min(self.size))
+            });
     }
 }
 

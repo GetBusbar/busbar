@@ -735,9 +735,19 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
         // for a tenant an operator had already frozen. The steps run; what they run FOR is the
         // arrival subject the design names, an anonymous principal with no bucket.
         //
-        // The door's sizing is read and discarded: whatever a real door would reserve for an
-        // established caller, a handshake reaches no destination and holds nothing. What the door
-        // is asked for is its REFUSAL, not its reservation.
+        // The door's SIZING is read and discarded: whatever a real door would reserve for an
+        // established caller, a handshake reaches no destination and holds nothing of its own. What
+        // the door is asked for is its REFUSAL, not its reservation.
+        //
+        // Its ANSWER is not discarded with it. The door's answer is one of three shapes and only one
+        // of them is a reservation this round may decline. Collapsing all three to the zero hold
+        // dropped the other two on the floor: a reservation of the round's own went away without
+        // reaching a cell or an exit, which is the one escape this whole design forbids, and an
+        // accrual went away AFTER the door had already spent it against a parent's still-open hold
+        // and counted it there — a parent carrying a spend that nothing ever posts against. So a
+        // spend taken from a parent is kept and settles into that parent like any other child's, and
+        // only a hold of the round's own is let go, through the named consumer, where a reader can
+        // see it happen.
         .and_then(|authenticated| match authenticated {
             Authenticated::Challenge(_) => {
                 let anonymous = PrincipalId::anonymous();
@@ -776,7 +786,14 @@ pub async fn run_unit_async<U: Units, R: RouteAwait>(
                             )
                             .into_result(seal)
                     })
-                    .map(|_| Admission::ZeroHold)
+                    .map(|admission| match admission {
+                        Admission::Accrual(accrual) => Admission::Accrual(accrual),
+                        Admission::Own(hold) => {
+                            drop_arrival(hold);
+                            Admission::ZeroHold
+                        }
+                        Admission::ZeroHold => Admission::ZeroHold,
+                    })
             }
             Authenticated::Principal(principal) => units
                 .verify(
@@ -1142,9 +1159,14 @@ async fn under_hold<U: Units, R: RouteAwait>(
     }
 }
 
-/// A hold the cell handed back. It has been superseded by the admitted one and carries no spend of
-/// its own; taking it by value here is what makes "the arrival hold is consumed by the swap" a fact
-/// about ownership rather than a comment.
+/// THE ONE PLACE A HOLD IS LET GO WITHOUT A POSTING, and the three holds that come here.
+///
+/// The arrival hold the cell handed back at the swap, the loser's hold when the cell refused a
+/// second admission, and the reservation a door sized for a challenge round that reaches no
+/// destination. Each has been superseded by, or stands beside, the hold the exit actually settles,
+/// and none carries a spend of its own. Taking them by value here is what makes "this hold is
+/// consumed" a fact about ownership rather than a comment, and naming the function is what keeps a
+/// hold from going away anywhere a reader is not looking.
 fn drop_arrival(_hold: Hold) {}
 
 /// THE LOOP'S SIDE OF THE HOLD CELL: the take, and the leases going back in the same breath.
