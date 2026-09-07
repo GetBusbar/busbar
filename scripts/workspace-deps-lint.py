@@ -54,7 +54,26 @@ def _dep_tables(manifest: dict):
 
 
 def _is_path_dep(spec) -> bool:
-    return isinstance(spec, dict) and ("path" in spec or "git" in spec)
+    """A sibling crate in this workspace.  It carries no external version, so rule 1 does not reach
+    it.  `git` is deliberately NOT in here: see `_is_git_dep`."""
+    return isinstance(spec, dict) and "path" in spec
+
+
+def _is_git_dep(spec) -> bool:
+    """A dependency fetched from a git remote.
+
+    This used to be lumped in with path dependencies and skipped as "workspace-internal; carries no
+    external version".  It is neither.  A git dependency is as external as a registry one, it names
+    its own source and its own revision, and skipping it meant a member could write
+
+        some_crate = { git = "https://example.com/x.git", rev = "deadbeef" }
+
+    and hold a version opinion that the workspace table neither states nor can override -- while
+    this lint printed "every external dependency inherits".  Planted exactly that and the run
+    reported the tree clean.  There are no git dependencies in this workspace, so naming them is
+    free today; the point is that the day one appears it is not silently exempt from the one rule
+    this file exists to state."""
+    return isinstance(spec, dict) and "git" in spec
 
 
 def _inherits(spec) -> bool:
@@ -90,6 +109,16 @@ def check(root: Path) -> list[str]:
 
         for label, deps in _dep_tables(manifest):
             for name, spec in deps.items():
+                if _is_git_dep(spec):
+                    failures.append(
+                        f"{member} [{label}]: `{name}` is a git dependency "
+                        f"({spec.get('git')!r}). A git dependency is external -- it names its own "
+                        f"source and revision, which is a version opinion "
+                        f"[workspace.dependencies] neither states nor can override. Depend on the "
+                        f"published crate through the workspace table, or vendor it as a path "
+                        f"member."
+                    )
+                    continue
                 if _is_path_dep(spec):
                     continue  # workspace-internal; carries no external version
                 if _inherits(spec):
@@ -226,6 +255,28 @@ def selftest() -> int:
         {**CLEAN_MEMBERS,
          "crates/m6": CLEAN_MEMBERS["crates/m6"] + '\n\n[target.\'cfg(unix)\'.dependencies]\ndep9 = "3"'},
         "states its own version",
+    )
+
+    bad3 = dict(CLEAN_MEMBERS)
+    bad3["crates/m4"] = CLEAN_MEMBERS["crates/m4"] + (
+        '\n\n[dependencies.some_external_crate]\ngit = "https://example.com/x.git"\nrev = "deadbeef"'
+    )
+    case(
+        "a git dependency",
+        "a git dep is external and names its own revision; it was skipped as though it were a "
+        "sibling path crate, so a member could hold a version opinion the table cannot override "
+        "while this lint called the tree clean",
+        CLEAN_TABLE, bad3, "is a git dependency",
+    )
+    bad4 = dict(CLEAN_MEMBERS)
+    bad4["crates/m7"] = CLEAN_MEMBERS["crates/m7"] + (
+        '\n\n[dependencies.sibling]\npath = "../m0"'
+    )
+    case(
+        "a path dependency is still exempt",
+        "the companion control: closing the git hole must not start rejecting the sibling crates "
+        "this workspace is made of",
+        CLEAN_TABLE, bad4, None,
     )
 
     bad_count = 0
