@@ -14,7 +14,7 @@ use crate::selftest;
 
 const USAGE: &str = "\
 usage:
-  cargo xtask gate <name> [--selftest] [--report] [--format=tsv]
+  cargo xtask gate <name> [--selftest] [--report] [--write] [--format=tsv]
   cargo xtask gate --list
   cargo xtask gate --all [--format=tsv]
   cargo xtask gate <name> --parity -- <legacy argv...>
@@ -74,7 +74,9 @@ fn gate(args: &[String]) -> i32 {
     }
 
     let cx = match open_ctx() {
-        Ok(cx) => cx.report_only(report_only),
+        Ok(cx) => cx
+            .report_only(report_only)
+            .write_mode(args.iter().any(|a| a == "--write")),
         Err(code) => return code,
     };
 

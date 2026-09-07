@@ -229,6 +229,10 @@ pub struct Env {
     pub github_step_summary: Option<PathBuf>,
     pub runner_temp: Option<PathBuf>,
     pub report_only: bool,
+    /// `--write`: the gate REGENERATES the artefact it otherwise only diffs. A generator's write
+    /// arm and its drift arm are the same derivation, so they cannot disagree; what the flag
+    /// changes is whether the answer is compared or committed.
+    pub write: bool,
 }
 
 impl Env {
@@ -237,6 +241,7 @@ impl Env {
             github_step_summary: std::env::var_os("GITHUB_STEP_SUMMARY").map(PathBuf::from),
             runner_temp: std::env::var_os("RUNNER_TEMP").map(PathBuf::from),
             report_only: false,
+            write: false,
         }
     }
 }
@@ -312,6 +317,11 @@ impl Ctx {
 
     pub fn report_only(mut self, yes: bool) -> Ctx {
         self.env.report_only = yes;
+        self
+    }
+
+    pub fn write_mode(mut self, yes: bool) -> Ctx {
+        self.env.write = yes;
         self
     }
 

@@ -24,6 +24,7 @@ pub mod changelog_register;
 pub mod ci_umbrella;
 pub mod denylist_gate;
 pub mod duplex_ws_default_edge;
+pub mod field_inventory;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod no_deferral;
@@ -665,6 +666,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(structure_lint::StructureLintGate::new()),
         summary: "the code-layout invariants, the choke-point registry and the declaration census",
+    },
+    Registration {
+        name: "field-inventory",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(field_inventory::FieldInventoryGate),
+        summary: "every dialect field is enumerated from a schema that carries its provenance",
     },
     Registration {
         name: "no-deferral",
