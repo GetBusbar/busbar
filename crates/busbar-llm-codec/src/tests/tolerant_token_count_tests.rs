@@ -175,6 +175,123 @@ fn openai_chat_bills_a_double_typed_count_at_every_usage_site() {
     assert_eq!(streamed.detail.rejected_prediction_tokens, Some(2));
 }
 
+/// Every OpenAI-Responses usage site: the buffered response, the stream terminal, and the
+/// truncated-tail recovery.
+#[test]
+fn responses_bills_a_double_typed_count_at_every_usage_site() {
+    use crate::proto_codec::ProtocolReader as _;
+    let reader = crate::openai_responses::ResponsesReader;
+    let usage = json!({
+        "input_tokens": 1200.0,
+        "input_tokens_details": { "cached_tokens": 200.0, "cache_write_tokens": 100.0 },
+        "output_tokens": 340.0,
+        "output_tokens_details": { "reasoning_tokens": 7.0 },
+        "total_tokens": 1540.0
+    });
+
+    // 1. Buffered. `input_tokens` is a TOTAL including both cache slices: 1200 - 200 - 100 = 900.
+    let ir = reader
+        .read_response(&json!({
+            "status": "completed",
+            "output": [{"type": "message", "role": "assistant",
+                        "content": [{"type": "output_text", "text": "hi"}]}],
+            "usage": usage.clone()
+        }))
+        .expect("reads");
+    assert_eq!(ir.usage.input_tokens, 900, "buffered uncached input");
+    assert_eq!(ir.usage.output_tokens, 340, "buffered output");
+    assert_eq!(ir.usage.cache_read_input_tokens, Some(200));
+    assert_eq!(ir.usage.cache_creation_input_tokens, Some(100));
+    assert_eq!(ir.usage.detail.reasoning_tokens, Some(7));
+
+    // 2. The stream terminal.
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = reader.read_response_events(
+        "response.completed",
+        &json!({ "response": { "status": "completed", "output": [], "usage": usage.clone() } }),
+        &mut state,
+    );
+    let streamed = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("the terminal carries usage");
+    assert_eq!(streamed.input_tokens, 900, "streamed uncached input");
+    assert_eq!(streamed.output_tokens, 340, "streamed output");
+    assert_eq!(streamed.cache_read_input_tokens, Some(200));
+    assert_eq!(streamed.cache_creation_input_tokens, Some(100));
+
+    // 3. The truncated-tail recovery.
+    let tail = format!(r#","usage":{}}}"#, serde_json::to_string(&usage).unwrap());
+    let recovered = reader
+        .recover_truncated_usage(tail.as_bytes())
+        .expect("recovers");
+    assert_eq!(recovered.input, 900, "truncated-tail uncached input");
+    assert_eq!(recovered.output, 340, "truncated-tail output");
+    assert_eq!(recovered.cache_read, Some(200));
+    assert_eq!(recovered.cache_creation, Some(100));
+}
+
+/// Every Bedrock Converse usage site: the buffered response, the streamed `metadata` frame, and
+/// the truncated-tail recovery.
+#[test]
+fn bedrock_bills_a_double_typed_count_at_every_usage_site() {
+    use crate::proto_codec::ProtocolReader as _;
+    let reader = crate::bedrock::BedrockReader;
+    let usage = json!({
+        "inputTokens": 1200.0,
+        "outputTokens": 340.0,
+        "cacheWriteInputTokens": 100.0,
+        "cacheReadInputTokens": 200.0,
+        "totalTokens": 1840.0
+    });
+
+    // 1. Buffered. Bedrock's cache counts are ADDITIVE to `inputTokens`, not slices of it.
+    let ir = reader
+        .read_response(&json!({
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": usage.clone()
+        }))
+        .expect("reads");
+    assert_eq!(ir.usage.input_tokens, 1200, "buffered input");
+    assert_eq!(ir.usage.output_tokens, 340, "buffered output");
+    assert_eq!(ir.usage.cache_creation_input_tokens, Some(100));
+    assert_eq!(ir.usage.cache_read_input_tokens, Some(200));
+
+    // 2. The streamed `metadata` frame — the one that carries a Bedrock stream's whole usage.
+    let mut state = crate::ir::StreamDecodeState::default();
+    let events = reader.read_response_events(
+        "metadata",
+        // This reader dispatches off the frame body's own `type`.
+        &json!({ "type": "metadata", "usage": usage.clone() }),
+        &mut state,
+    );
+    let streamed = events
+        .iter()
+        .find_map(|e| match e {
+            crate::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+            _ => None,
+        })
+        .expect("the metadata frame carries usage");
+    assert_eq!(streamed.input_tokens, 1200, "streamed input");
+    assert_eq!(streamed.output_tokens, 340, "streamed output");
+    assert_eq!(streamed.cache_creation_input_tokens, Some(100));
+    assert_eq!(streamed.cache_read_input_tokens, Some(200));
+
+    // 3. The truncated-tail recovery.
+    let tail = format!(r#","usage":{}}}"#, serde_json::to_string(&usage).unwrap());
+    let recovered = reader
+        .recover_truncated_usage(tail.as_bytes())
+        .expect("recovers");
+    assert_eq!(recovered.input, 1200, "truncated-tail input");
+    assert_eq!(recovered.output, 340, "truncated-tail output");
+    assert_eq!(recovered.cache_creation, Some(100));
+    assert_eq!(recovered.cache_read, Some(200));
+}
+
 /// An integer-typed count still reads exactly as it always did — the tolerant reader is a
 /// SUPERSET, not a replacement.
 #[test]
