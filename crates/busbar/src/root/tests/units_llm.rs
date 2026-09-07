@@ -675,6 +675,235 @@ const CASES: [Fixture; 6] = [
 /// The unit-arrival epoch this proof pins, so the window a posting lands in is a fixed one.
 const EPOCH: u64 = 1_700_000_000;
 
+// -----------------------------------------------------------------------------------------
+// The lookup at the door
+// -----------------------------------------------------------------------------------------
+
+/// A history of one entry per `(effective_from_ms, output rate)`, built OUTSIDE the process
+/// holder so these proofs name their own instants instead of racing the wall clock.
+///
+/// The first entry is effective from zero for the same reason the holder's is: an instant before
+/// the first entry is a hole and a hole is a refusal.
+fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
+    let mut history = busbar_unit_cost::History::new();
+    for (n, (from, output)) in entries.iter().enumerate() {
+        let card = crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate::billing::RawTierRates {
+                    input: 0.0,
+                    output: *output,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            0,
+            true,
+            crate::root::kernel::node_currency(),
+        );
+        history.append(busbar_unit_cost::CardEntryDraft {
+            effective_from: if n == 0 { 0 } else { *from },
+            effective_until: None,
+            card,
+            appended_at: *from,
+            author: busbar_unit_cost::Author::Config {
+                policy_epoch: n as u64,
+            },
+        });
+    }
+    crate::root::kernel::PinnedHistory::for_test(
+        std::sync::Arc::new(history),
+        busbar_unit_cost::HistorySeq((entries.len() - 1) as u64),
+    )
+}
+
+/// A report of `output` tokens on the lane the histories above price.
+fn report_of(output: u64) -> LateReport {
+    LateReport {
+        usage: busbar_substrate::billing::Usage {
+            usage_units: std::collections::BTreeMap::from([(
+                busbar_api::UNIT_OUTPUT.to_string(),
+                output,
+            )]),
+        },
+        fee_count: 0,
+        lane: "lane".to_string(),
+        provider: "provider".to_string(),
+    }
+}
+
+/// **THE UNIT PRICES AT THE INSTANT IT ARRIVED**, not at the instant the question is asked.
+///
+/// Two units, one snapshot, one call each: the one that arrived before the second entry took
+/// effect prices at the first entry's rate and the one that arrived after prices at the
+/// second's. Both readings are taken from the SAME history at the SAME moment, so the only thing
+/// that can be producing two answers is the arrival instant — which is the whole of rule 3.
+///
+/// A node that priced against "the current card" answers the later figure for both, which is
+/// exactly the recorded 1.5.5 behaviour and exactly what this replaces.
+#[test]
+fn a_unit_prices_at_the_entry_in_force_when_it_arrived_and_not_at_the_head() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = history_of(&[(0, 1.0), (5_000, 100.0)]);
+
+    let early = priced_amount(&history, Arrived::at(4_999, 1), &token, &report_of(1_000));
+    let late = priced_amount(&history, Arrived::at(5_000, 2), &token, &report_of(1_000));
+
+    assert_eq!(
+        early, 1_000_000,
+        "a unit that arrived before the appended entry was re-priced at it"
+    );
+    assert_eq!(
+        late, 100_000_000,
+        "a unit that arrived after the appended entry was priced at the entry it superseded"
+    );
+}
+
+/// **THE PIN HOLDS.** A snapshot taken at admission cannot see an entry appended after it, so an
+/// apply landing mid-body does not reprice a request halfway through.
+///
+/// The pinned reader and the head are both asked about the SAME instant, and they answer
+/// differently — which is only possible because the pin stops the snapshot's slice short of the
+/// later entry. A holder that handed out the whole history and a live head would answer the new
+/// figure to a request that was admitted under the old one.
+#[test]
+fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let holder = crate::root::kernel::RootHistory::default();
+    holder.apply(
+        crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate::billing::RawTierRates {
+                    input: 0.0,
+                    output: 1.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            0,
+            true,
+            crate::root::kernel::node_currency(),
+        ),
+        1_000,
+    );
+    let admitted = holder
+        .pin()
+        .expect("the boot resolution put an entry in place");
+
+    // The apply that lands while the body is still draining.
+    holder.apply(
+        crate::root::kernel::card_from_config(
+            [(
+                "lane",
+                busbar_substrate::billing::RawTierRates {
+                    input: 0.0,
+                    output: 100.0,
+                    cache_read: 0.0,
+                    cache_write: 0.0,
+                },
+            )],
+            0,
+            true,
+            crate::root::kernel::node_currency(),
+        ),
+        2_000,
+    );
+    let next = holder.pin().expect("the apply put a second entry in place");
+
+    let at = Arrived::at(9_000, 1);
+    assert_eq!(
+        priced_amount(&admitted, at, &token, &report_of(1_000)),
+        1_000_000,
+        "the pinned snapshot saw an entry appended after the unit was admitted"
+    );
+    assert_eq!(
+        priced_amount(&next, at, &token, &report_of(1_000)),
+        100_000_000,
+        "the next admission did not see the appended entry"
+    );
+}
+
+/// **THE PIN IS A SEQ, NOT ONLY AN `Arc`.** A reader holding the same history at a lower
+/// snapshot reads it as it stood at that snapshot.
+///
+/// The `Arc` alone is not the pin: an amendment, and a copy-on-write apply that a second reader
+/// already took, both leave one history holding entries a reader was never admitted under. The
+/// seq is what stops the slice short of them, and this asks the SAME history at two snapshots to
+/// prove the stopping is real rather than an accident of when the `Arc` was cloned.
+#[test]
+fn a_pin_below_the_head_reads_the_history_as_it_stood_at_that_seq() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let head = history_of(&[(0, 1.0), (5_000, 100.0)]);
+    let earlier =
+        crate::root::kernel::PinnedHistory::for_test_at(&head, busbar_unit_cost::HistorySeq(0));
+
+    let at = Arrived::at(9_000, 1);
+    assert_eq!(
+        priced_amount(&earlier, at, &token, &report_of(1_000)),
+        1_000_000,
+        "a snapshot at seq 0 resolved an entry that was appended after it"
+    );
+    assert_eq!(
+        priced_amount(&head, at, &token, &report_of(1_000)),
+        100_000_000,
+        "the head snapshot did not resolve the entry appended onto it"
+    );
+}
+
+/// **THE CACHE IS WRITTEN AND IS NEVER AUTHORITATIVE.**
+///
+/// The posting the pricing builds carries a cache — the head it settled at, the entry it
+/// resolved to, the currency and both figures — so a reader has something to compare a
+/// re-derivation against. Corrupt every one of those figures and ask again: the answer is
+/// unchanged, because the lookup does not read them. A node that fell back to the cache would
+/// answer the corrupted number and call it money.
+#[test]
+fn the_cached_price_rides_the_posting_and_is_never_read_back_for_money() {
+    let kernel = busbar_kernel::teller::Kernel::new();
+    let token = kernel.usage_token();
+    let history = history_of(&[(0, 1.0)]);
+    let at = Arrived::at(4_000, 7);
+
+    let (mut posting, priced) = priced_posting(&history, at, &token, &report_of(1_000));
+    let priced = priced.expect("a card in force at the instant prices the report");
+    let cached = posting
+        .cached
+        .expect("the pricing left its cache on the posting");
+    assert_eq!(cached.priced_nanos, priced.priced_nanos);
+    assert_eq!(cached.card_seq, priced.card_seq);
+    assert_eq!(cached.history_seq, history.seq());
+    assert_eq!(cached.currency, crate::root::kernel::node_currency());
+    assert_eq!(
+        posting.arrived_ms, 4_000,
+        "the posting kept its own instant"
+    );
+    assert_eq!(posting.arrived_mono, 7);
+
+    // The tamper. Every figure a reader could be tempted to trust, made a lie.
+    posting.cached = Some(busbar_unit_cost::CachedPrice {
+        history_seq: busbar_unit_cost::HistorySeq(u64::MAX),
+        card_seq: busbar_unit_cost::HistorySeq(u64::MAX),
+        currency: crate::root::kernel::node_currency(),
+        pre_tier_nanos: 1,
+        priced_nanos: 1,
+    });
+    assert_eq!(
+        posting
+            .priced_nanos(&history.view(), crate::root::kernel::node_currency())
+            .expect("the lookup still answers"),
+        priced.priced_nanos,
+        "the money moved when the cache was corrupted, so the cache was on the money path"
+    );
+    assert!(
+        posting.cache_diverges(&priced),
+        "a corrupted cache went unnoticed"
+    );
+}
+
 /// **THE EXIT ARM, END TO END.** The reservation the door opened reaches the journal.
 ///
 /// The loop's exit path is where a hold stops existing, and what it hands back is a POSTING that

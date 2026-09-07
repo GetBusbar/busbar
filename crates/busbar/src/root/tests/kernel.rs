@@ -36,7 +36,9 @@ fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() 
         30_000_000,
         "a reader that pinned before the apply was repriced by it, at every instant of its life"
     );
-    let next = holder.pin().expect("the second apply put an entry in place");
+    let next = holder
+        .pin()
+        .expect("the second apply put an entry in place");
     assert_eq!(
         fee_at(&next, 5_000),
         110_000_000,
@@ -154,11 +156,8 @@ fn every_config_apply_records_the_generation_that_wrote_it() {
     holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
     let head = holder.pin().expect("two applies put a head in place");
     let view = head.view();
-    let epochs: Vec<busbar_unit_cost::Author> = view
-        .entries()
-        .iter()
-        .map(|e| e.author().clone())
-        .collect();
+    let epochs: Vec<busbar_unit_cost::Author> =
+        view.entries().iter().map(|e| e.author().clone()).collect();
     assert_eq!(
         epochs,
         vec![

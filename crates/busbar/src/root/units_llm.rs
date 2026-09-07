@@ -265,8 +265,8 @@ pub struct LlmNode {
     /// the end: there is no step of the unit whose token could stand in, which is the same reason
     /// the verbs unit's and the transport-key unit's are minted outside it.
     durability_token: busbar_caps::DurabilityToken,
-    // THE CARD THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
-    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is swappable rather than
+    // THE RATE-CARD HISTORY THIS NODE PRICES AGAINST is NOT a field here. It belongs to the root
+    // (`crate::root::kernel::ROOT_CARD`) rather than to this node, and it is appended to rather than
     // bound once, because a rate is a statement about a deployment and a deployment's rates change
     // while it is running. A cell on the node would have frozen the boot reading: the engine's own
     // spend projection would reprice on a config apply and this ledger would not, and the identity
@@ -277,8 +277,9 @@ pub struct LlmNode {
     // derives from — including the FLAT PER-REQUEST FEE, which the card holds beside the per-token
     // rates so a node that prices through the card cannot post the tokens and forget the fee.
     //
-    // Each unit PINS the card it was admitted under (see `answer_with`) and prices its whole life
-    // against that one, so an apply landing mid-body cannot reprice a request halfway through.
+    // Each unit PINS THE SNAPSHOT it was admitted under (see `answer_with`) and resolves its whole
+    // life against that one, AT ITS OWN ARRIVAL INSTANT — so an apply landing mid-body cannot
+    // reprice a request halfway through, and an entry appended a day later cannot reprice it at all.
     /// The usage record's token, minted from this node's own kernel at construction and lent to the
     /// exit arm for the length of one pricing.
     ///
