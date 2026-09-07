@@ -469,6 +469,49 @@ impl Ctx {
         String::from_utf8(out.stdout).map_err(|e| format!("{program}: non-utf8 stdout: {e}"))
     }
 
+    /// `cargo tree -e no-dev … -f {p}`, overlay-overridable on the same terms as
+    /// [`Ctx::cargo_metadata`].
+    ///
+    /// THE RESOLVE IS SEPARATED FROM THE COUNT, and that separation is the whole point.
+    /// `cargo tree … 2>/dev/null | grep -c` folded four different things into the number 0: the
+    /// crate is absent (the answer a ban wants), cargo is not installed, a feature name in the
+    /// argument list no longer exists, and the workspace does not build. Three of those are
+    /// failures and all three printed the ban's PASS with the diagnostic already discarded. So a
+    /// non-zero status is an `Err`, and so is a tree that resolved and named NO PACKAGE AT ALL —
+    /// "absent" is exactly the claim an unresolved tree fakes.
+    pub fn cargo_tree(&self, args: &[&str]) -> Result<String, String> {
+        let key = format!("cargo-tree:{}", args.join(" "));
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return if out.trim().is_empty() {
+                    Err(format!(
+                        "`cargo tree {}` resolved and named no package at all. A tree with no \
+                         packages in it carries no crate, and carrying no crate is the passing \
+                         answer to every dependency ban.",
+                        args.join(" ")
+                    ))
+                } else {
+                    Ok(out.clone())
+                };
+            }
+        }
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        let mut argv: Vec<String> = vec!["tree".into(), "-e".into(), "no-dev".into()];
+        argv.extend(args.iter().map(|a| (*a).to_string()));
+        argv.push("-f".into());
+        argv.push("{p}".into());
+        let out = self.run_checked(&cargo, &argv)?;
+        if out.trim().is_empty() {
+            return Err(format!(
+                "`cargo tree {}` resolved and named no package at all. A tree with no packages in \
+                 it carries no crate, and carrying no crate is the passing answer to every \
+                 dependency ban.",
+                args.join(" ")
+            ));
+        }
+        Ok(out)
+    }
+
     /// `cargo metadata` for one manifest, overlay-overridable so a self-test can plant a dependency
     /// closure without a fixture workspace.
     pub fn cargo_metadata(&self, manifest_rel: &str) -> Result<String, String> {
