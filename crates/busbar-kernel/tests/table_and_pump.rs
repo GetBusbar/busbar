@@ -618,6 +618,114 @@ fn k_parents_blocked_on_children_wait_rather_than_deadlock() {
     assert_eq!(pool.refusals(), 2);
 }
 
+/// A session id already open is not a slot to take either, and the connection asking is refused.
+///
+/// The unit table's own cell one screen below says the session table "already answers this". It did
+/// not: `open` claimed a slot, built a fresh `SessionSlot`, INSERTED it over whatever was there and
+/// handed the surplus claim back. The count came out right and the session did not. What is
+/// displaced is not a number — it is the slot that owns the one-open-unit-per-direction map, the
+/// upstream pairing count, the cached principal, the run of asks and the closed flag. Displaced:
+///
+/// - the direction map is empty again, so the unit relaying a direction under a hold is no longer
+///   holding it as far as anything can see, and the next `Open` on it is admitted. Two units, one
+///   direction, two holds — the one thing the open slot exists to prevent.
+/// - the paired upstreams are forgotten, so the ninth is admitted.
+/// - the run of "not yet" is forgotten, so a stalling peer resets its own ceiling by reconnecting
+///   on the id it is already stalling on.
+/// - and the displaced slot is never `close`d, so everything still holding it reads a live session
+///   for the rest of the node's life while the tick's snapshot can no longer see it.
+#[test]
+fn a_session_id_already_open_is_refused_rather_than_displacing_the_session_holding_it() {
+    let kernel = Kernel::new();
+    let sessions = Sessions::new(4);
+    let id = kernel.session_id(31);
+    let live = sessions
+        .open(id, Binding::Bound, 0)
+        .expect("the first connection takes the slot");
+    live.remember(principal());
+    live.claim_open(
+        StreamId(1),
+        Direction::Inbound,
+        busbar_caps::UnitKey::new(1),
+    )
+    .expect("the direction was free");
+    live.add_upstream().expect("the first pairing");
+
+    assert_eq!(
+        sessions.open(id, Binding::Bound, 0).err(),
+        Some(ReasonCode::OpenSlotBusy),
+        "not the budget — the table has room; this id does not"
+    );
+    assert_eq!(
+        sessions.len(),
+        1,
+        "the refused connection's claim went back: a duplicate must not ratchet the count"
+    );
+
+    let found = sessions.get(id).expect("the id is still in the table");
+    assert!(
+        std::sync::Arc::ptr_eq(&found, &live),
+        "the session that was already holding the id is the one the tick still reaches"
+    );
+    assert_eq!(
+        found.open_unit(StreamId(1), Direction::Inbound),
+        Some(busbar_caps::UnitKey::new(1)),
+        "the direction is still claimed, so no second unit relays it under a second hold"
+    );
+    assert_eq!(found.upstreams(), 1, "and its pairings are still counted");
+    assert_eq!(found.principal(), Some(principal()));
+    assert!(
+        !live.is_closed(),
+        "the live session was never closed behind its own back"
+    );
+
+    // The claim really did come back: the table still opens up to its budget.
+    for id in 32..35 {
+        sessions
+            .open(kernel.session_id(id), Binding::Bound, 0)
+            .map(|_| ())
+            .expect("three more fit under a budget of four");
+    }
+}
+
+/// A permit given back twice does not make the pool bigger than the pool.
+///
+/// `NestedPermit` is `Copy` and its depth is public, so the value the pool handed out is trivially
+/// duplicated — by reading it, by passing it, by a caller that keeps one and returns another. And
+/// `leave` added one to the count for every value it was handed, with nothing above it: two returns
+/// of one permit are two increments, and a pool sized at N ends up running N+1 children. The bound
+/// the design gives nesting is then a number that only goes up, which is not a bound. The count is
+/// the pool's own and it is clamped at the size the pool was built with, so no sequence of returns —
+/// duplicated, forged, or simply repeated by a retry — can raise it.
+#[test]
+fn a_permit_given_back_twice_does_not_grow_the_pool() {
+    let pool = NestedPool::new(2, 4);
+    let permit = pool.enter(0).expect("a permit");
+    assert_eq!(pool.available(), 1);
+
+    pool.leave(permit);
+    assert_eq!(pool.available(), 2, "the permit came back");
+
+    // The same permit again — the copy the type hands out for free.
+    pool.leave(permit);
+    assert_eq!(
+        pool.available(),
+        pool.size(),
+        "a pool with more permits than it was built with is a nesting bound that is not one"
+    );
+
+    // And the pool still refuses at its own size rather than at the inflated one.
+    let first = pool.enter(0).expect("a permit");
+    let second = pool.enter(0).expect("a permit");
+    assert_eq!(
+        pool.enter(0),
+        Err(ReasonCode::InFlightCap),
+        "a third child would be one past the size the pool was built at"
+    );
+    pool.leave(first);
+    pool.leave(second);
+}
+
 #[test]
 fn a_discarded_frame_changes_no_state() {
     let kernel = Kernel::new();

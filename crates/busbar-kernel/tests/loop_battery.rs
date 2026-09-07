@@ -124,6 +124,81 @@ fn a_challenge_round_reaches_no_destination_and_opens_no_reservation() {
     );
 }
 
+/// AND WHAT THE DOOR HANDED THE ROUND IS NOT DROPPED ON THE FLOOR.
+///
+/// Running the three steps means the door now ANSWERS a challenge round, and the door's answer is
+/// one of three shapes. The round collapsed all three to the zero hold with `map(|_| ZeroHold)`,
+/// which reads as "a handshake reserves nothing" and is true of exactly one of them. The other two
+/// are values that have already moved money by the time they reach that line:
+///
+/// - an ACCRUAL has been taken. `accrue_child` spent it against the parent's still-open hold and
+///   counted it on the parent's cell inside the same guard. Dropped here, the parent carries a spend
+///   with no posting anywhere against it, the accrual count says a child spent and no settlement
+///   answers for it, and the child ends with a clean posting for nothing at all.
+/// - a HOLD of the round's own is a hold that never reaches a cell and never reaches the exit, which
+///   is the one escape the whole capability crate exists to make impossible.
+///
+/// So the round keeps what the door gave it: an accrual settles into the parent, exactly as any
+/// other child's does, and only a reservation of the round's OWN is discarded — through the named
+/// consumer, because a hold that goes away has to go away somewhere a reader can see it. The round
+/// still opens no reservation of its own, which is the cell above.
+#[test]
+fn a_challenge_round_settles_the_accrual_its_door_took_from_the_parent() {
+    let kernel = Kernel::new();
+    let canary = Canary::new();
+
+    // A parent through the door and still open, with a child's spend to give. Its admission is the
+    // arrival subject's, because that is who a challenge round runs as and an accrual is sealed to
+    // its parent's principal: a round nested under a pre-authentication parent is where the door
+    // has a parent's hold to spend against at all.
+    let parent = std::sync::Arc::new(cell(&kernel));
+    let admitted = busbar_caps::Hold::open(
+        &kernel.admit_token(),
+        busbar_caps::PrincipalId::anonymous(),
+        5_000,
+    );
+    let _arrival = parent
+        .admit(admitted, &kernel.admit_token())
+        .expect("the parent's cell was fresh");
+
+    let units = TestUnits {
+        challenge: true,
+        door: Door::Accrual(std::sync::Arc::clone(&parent), 250),
+        ..TestUnits::passing()
+    };
+    let cell = cell(&kernel);
+    let ended = run(&units, &kernel, &cell, &canary);
+
+    assert_eq!(
+        parent.accruals(),
+        1,
+        "the door took the spend out of the parent before the round ever saw it"
+    );
+    match ended {
+        Ended::Settled { end, .. } => {
+            let posted = end.posted().expect("the round posts once, like any unit");
+            assert_eq!(
+                posted.settled(),
+                250,
+                "the spend the door took from the parent is the spend the round posts"
+            );
+            assert_eq!(
+                posted.reserved(),
+                0,
+                "the reservation behind it is the parent's; the round opens none of its own"
+            );
+        }
+        other => panic!("the round still ends once, through the one exit: {other:?}"),
+    }
+    let counts = canary.counts();
+    assert_eq!(
+        (counts.drafts, counts.holds, counts.accruals, counts.settlements),
+        (1, 0, 1, 1),
+        "a spend taken from a parent is counted where a hold would be, and answered by one settlement"
+    );
+    assert_eq!(canary.balanced(), Ok(()));
+}
+
 #[test]
 fn a_refusal_stops_the_chain_at_the_step_that_raised_it() {
     for (index, step) in ORDER.iter().enumerate().take(6) {

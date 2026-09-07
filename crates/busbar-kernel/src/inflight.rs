@@ -714,12 +714,22 @@ impl Sessions {
         self.len() == 0
     }
 
-    /// Open a session, at unit zero. Refused when the node's session budget is spent.
+    /// Open a session, at unit zero. Refused when the node's session budget is spent, and refused
+    /// again when the id is one the table is already holding a session under.
     ///
     /// The slot is CLAIMED in one atomic step, exactly as the in-flight table claims its own: two
     /// connections that both read "there is room" and then both opened is how a node ends up
-    /// holding more sessions than the budget it computes its exposure from. An id already in the
-    /// table takes no new slot, so the claim is handed straight back rather than leaked.
+    /// holding more sessions than the budget it computes its exposure from.
+    ///
+    /// An id already in the table is REFUSED, and the claim it took goes straight back — the same
+    /// answer the unit table gives a key it is already holding, and for the same reason. This used
+    /// to insert over whatever was there and hand back only the surplus claim, on the reading that a
+    /// session slot is a number. It is not. Displaced, the live session loses the map that says
+    /// which unit owns each direction — so the next open on a direction somebody is relaying under a
+    /// hold is admitted, which is two units and two holds over one conversation — along with its
+    /// upstream pairings, its cached principal and its run of unfinished frames, and it is never
+    /// closed: everything still holding it reads a live session while the tick's snapshot can no
+    /// longer reach it.
     pub fn open(
         &self,
         id: SessionId,
@@ -735,25 +745,27 @@ impl Sessions {
         {
             return Err(ReasonCode::SessionBudget);
         }
-        let slot = Arc::new(SessionSlot {
-            id,
-            binding,
-            principal: Mutex::new(None),
-            open: Mutex::new(HashMap::new()),
-            upstreams: AtomicUsize::new(0),
-            last_non_tick: AtomicU64::new(now),
-            needmore: AtomicUsize::new(0),
-            closed: AtomicBool::new(false),
-        });
-        let displaced = self
-            .shard(id)
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, Arc::clone(&slot));
-        if displaced.is_some() {
-            self.count.fetch_sub(1, Ordering::AcqRel);
+        let mut shard = self.shard(id).lock().unwrap_or_else(|e| e.into_inner());
+        match shard.entry(id) {
+            std::collections::hash_map::Entry::Occupied(_) => {
+                self.count.fetch_sub(1, Ordering::AcqRel);
+                Err(ReasonCode::OpenSlotBusy)
+            }
+            std::collections::hash_map::Entry::Vacant(vacant) => {
+                let slot = Arc::new(SessionSlot {
+                    id,
+                    binding,
+                    principal: Mutex::new(None),
+                    open: Mutex::new(HashMap::new()),
+                    upstreams: AtomicUsize::new(0),
+                    last_non_tick: AtomicU64::new(now),
+                    needmore: AtomicUsize::new(0),
+                    closed: AtomicBool::new(false),
+                });
+                vacant.insert(Arc::clone(&slot));
+                Ok(slot)
+            }
         }
-        Ok(slot)
     }
 
     /// Find a session.
