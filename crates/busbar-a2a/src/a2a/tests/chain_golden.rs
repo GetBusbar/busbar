@@ -72,6 +72,9 @@ impl PlaneStore for FrozenStore {
     fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
         Ok(false)
     }
+    fn plane_token_live(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+        Ok(false)
+    }
 }
 
 #[test]
@@ -254,6 +257,9 @@ impl PlaneStore for PartlyUnreadableStore {
         Ok(())
     }
     fn redeem_plane_token(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
+        Ok(false)
+    }
+    fn plane_token_live(&self, _k: &str, _t: &str, _e: u64, _n: u64) -> StoreResult<bool> {
         Ok(false)
     }
 }

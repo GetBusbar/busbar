@@ -37,6 +37,23 @@ streaming, failover, billing, `/metrics`, and the published store plugins — 1.
 config, request and plugin exactly as 1.5.5 did, apart from the improvements and breaking changes
 named next.
 
+### Security
+
+- **The A2A push-notification callback token was replayable; it is not any more.** Busbar registers
+  its own callback with a backend agent under a per-task bearer token, and the composition root's
+  check of that token passed a single timestamp as both the deadline and the clock — asking whether
+  now is past now, which is false for every token ever presented — over a neutral store verb whose
+  default answered yes unconditionally. Nothing could refuse a token. Anyone holding one, including
+  a backend that had legitimately been given it and anyone who read one off a callback, could keep
+  moving that task indefinitely, including after it had finished.
+
+  The token is now a per-task capability with a real lifetime: live while the task is non-terminal
+  and inside its TTL, revoked by the update that ends the task, and refused from that moment on. The
+  same token still carries every callback of a task that is still running, which is what push
+  notifications are for. The check runs against a new neutral store verb whose default is
+  **fail-closed**, so a deployment on a store that cannot answer refuses the callback rather than
+  accepting it. A refused callback meters nothing; the endpoint's answers to a caller are unchanged.
+
 ### Improvements
 
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
