@@ -482,12 +482,18 @@ fn test_signature_verbatim() {
     }
     assert!(found_thinking);
     let roundtrip = writer.write_request(&ir);
+    // The write side needs the same found-flag the read side above uses. Without it, a writer that
+    // dropped assistant `thinking` blocks (or emitted them as `"type":"reasoning"`) reached ZERO
+    // iterations of the assert and this test — whose whole subject is signature survival ON WRITE —
+    // passed green. A lost thinking signature is a hard Anthropic 400 on the next turn.
+    let mut wrote_thinking = false;
     if let Some(msgs) = roundtrip.get("messages").and_then(|v| v.as_array()) {
         for msg_val in msgs {
             if let Some(content_arr) = msg_val.get("content").and_then(|v| v.as_array()) {
                 for block_val in content_arr {
                     if let Some(block_obj) = block_val.as_object() {
                         if block_obj.get("type").and_then(|t| t.as_str()) == Some("thinking") {
+                            wrote_thinking = true;
                             assert_eq!(
                                 block_obj.get("signature").and_then(|s| s.as_str()),
                                 Some("sig_abc123xyz")
@@ -498,6 +504,11 @@ fn test_signature_verbatim() {
             }
         }
     }
+    assert!(
+        wrote_thinking,
+        "the writer must emit the assistant thinking block back, or its signature cannot survive: \
+         {roundtrip}"
+    );
 }
 
 #[test]
@@ -510,26 +521,43 @@ fn test_cache_control_preserved() {
         .read_request(&j)
         .expect("read_request should succeed");
     assert!(!ir.system.is_empty());
-    if let crate::ir::IrBlock::Text {
+    // `else { panic }` both halves. As guards, a reader returning the system prompt as some other
+    // block variant skipped the read-side check, and — worse — a writer that stopped emitting
+    // `system`, or emitted it as a bare string instead of an array (a legal Anthropic shape),
+    // skipped the write-side check entirely. The test then passed while every prompt-cache
+    // breakpoint was silently dropped on the wire: the system prompt is re-billed in full each turn.
+    let crate::ir::IrBlock::Text {
         text: _,
         cache_control,
         citations: _,
     } = &ir.system[0]
-    {
-        assert!(cache_control.is_some());
-        match cache_control.as_ref().unwrap().kind {
-            crate::ir::CacheKind::Ephemeral => {}
-        };
-    }
+    else {
+        panic!(
+            "the anthropic reader must carry the system prompt as a Text block, got {:?}",
+            ir.system[0]
+        );
+    };
+    assert!(cache_control.is_some());
+    match cache_control.as_ref().unwrap().kind {
+        crate::ir::CacheKind::Ephemeral => {}
+    };
     let roundtrip = writer.write_request(&ir);
-    if let Some(system_arr) = roundtrip.get("system").and_then(|v| v.as_array()) {
-        if let Some(first_block) = system_arr.first() {
-            assert!(first_block
-                .as_object()
-                .unwrap()
-                .contains_key("cache_control"));
-        }
-    }
+    let system_arr = roundtrip
+        .get("system")
+        .and_then(|v| v.as_array())
+        .unwrap_or_else(|| {
+            panic!("the writer must emit `system` as an array to carry cache_control: {roundtrip}")
+        });
+    let first_block = system_arr
+        .first()
+        .unwrap_or_else(|| panic!("the written `system` array must not be empty: {roundtrip}"));
+    assert!(
+        first_block
+            .as_object()
+            .expect("system block object")
+            .contains_key("cache_control"),
+        "the system prompt's cache breakpoint must survive the write: {roundtrip}"
+    );
 }
 
 /// An Anthropic `cache_control`
@@ -1856,12 +1884,20 @@ mod ir_property_tests {
             .expect("read_request should succeed");
         let roundtrip = writer.write_request(&ir);
 
+        // BOTH halves need a found-flag. As three nested guards with no flag, a writer that emitted
+        // the assistant call under the legacy `function_call` key (or dropped the `id`) reached no
+        // assertion; a writer that dropped the tool-result message entirely reached neither half's
+        // body. A writer that dropped BOTH sides passed a test named "correlation survives write".
+        let mut saw_assistant_call = false;
+        let mut saw_tool_result = false;
+
         // Verify assistant tool_calls[0].id == "call_123"
         if let Some(msgs) = roundtrip.get("messages").and_then(|v| v.as_array()) {
             for msg_val in msgs {
                 if let Some(tc_arr) = msg_val.get("tool_calls").and_then(|v| v.as_array()) {
                     for tc_val in tc_arr {
                         if let Some(id) = tc_val.get("id").and_then(|i| i.as_str()) {
+                            saw_assistant_call = true;
                             assert_eq!(id, "call_123", "assistant tool_call id must survive write");
                         }
                     }
@@ -1875,6 +1911,7 @@ mod ir_property_tests {
                 if msg_val.get("role").and_then(|r| r.as_str()) == Some("tool") {
                     if let Some(tool_call_id) = msg_val.get("tool_call_id").and_then(|i| i.as_str())
                     {
+                        saw_tool_result = true;
                         assert_eq!(
                             tool_call_id, "call_123",
                             "tool message correlation must survive"
@@ -1885,6 +1922,17 @@ mod ir_property_tests {
                 }
             }
         }
+
+        assert!(
+            saw_assistant_call,
+            "the writer must emit the assistant tool_call with an id — there is no correlation to \
+             survive otherwise: {roundtrip}"
+        );
+        assert!(
+            saw_tool_result,
+            "the writer must emit the tool-result message — the other half of the correlation: \
+             {roundtrip}"
+        );
     }
 
     #[test]

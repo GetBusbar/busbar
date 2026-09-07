@@ -34,6 +34,7 @@ fn a_mid_stream_error() -> CanonicalSignal {
 #[test]
 fn every_declared_writer_frames_a_stream_error_in_band() {
     let err = a_mid_stream_error();
+    let mut checked = 0usize;
     for decl in DECLS {
         // A protocol without a cross-dialect codec (none today; MCP would be one) has no writer.
         if decl.codec.is_none() {
@@ -46,5 +47,13 @@ fn every_declared_writer_frames_a_stream_error_in_band() {
              dialect-free frame instead of this protocol's native stream-error shape",
             decl.name
         );
+        checked += 1;
     }
+    // The sweep asserts nothing if it iterates nothing. `DECLS` shrinking, or every row losing its
+    // `codec`, would `continue` past every assertion and report this battery green over ZERO
+    // protocols — the silent downgrade it exists to catch, on all six at once.
+    assert_eq!(
+        checked, 6,
+        "all six codec dialects must be swept for a native stream-error frame; swept {checked}"
+    );
 }
