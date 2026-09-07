@@ -78,6 +78,8 @@ mod billing_parity_tests;
 mod context_length_tests;
 #[path = "cross_protocol_extra_tests.rs"]
 mod cross_protocol_extra_tests;
+#[path = "error_class_hardening_tests.rs"]
+mod error_class_hardening_tests;
 #[path = "gemini_integration_tests.rs"]
 mod gemini_integration_tests;
 #[path = "gemini_tests.rs"]
