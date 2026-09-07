@@ -76,8 +76,27 @@ def newest_section(changelog_text: str):
     return m.group("ver"), changelog_text[m.start(): nxt.start() if nxt else len(changelog_text)]
 
 
-def check(register_path: Path, changelog_path: Path):
-    """Return (rows, ok) where rows is a list of (id, status, detail) and ok is overall pass/fail."""
+def check(register_path: Path, changelog_path: Path, require_version: str | None = None):
+    """Return (rows, ok) where rows is a list of (id, status, detail) and ok is overall pass/fail.
+
+    `require_version` mirrors changelog-lint.py's flag of the same name and closes the same hole
+    from the other side.
+
+    THE SECTION THIS SCRIPT SEARCHES IS "THE NEWEST ONE", WHICH IS NOT THE SAME AS "THIS RELEASE'S".
+    Anchoring to the top section was itself a fix -- an unanchored search over an append-only file
+    was satisfied by prose written for 1.5.0. But the anchor names no version, so it is satisfied by
+    whatever happens to be at the top. Stage 1.6.0 with CHANGELOG.md's newest section still reading
+    `## [1.5.9]` -- a rollover that did not run, a merge that reordered it, notes written under
+    `## [Unreleased]` and never promoted -- and every accepted difference is validated against the
+    PREVIOUS release's notes. Rows go green naming lines that ship in a section this release does
+    not publish, and the register's whole promise ("named in the CHANGELOG") is discharged against
+    the wrong file contents.
+
+    changelog-lint.py already refuses that from the file's side, and it refuses it in exactly these
+    words: the newest entry must BE the version being tagged. The two scripts run at different
+    moments on different inputs, and the register check is the one that decides whether an accepted
+    difference has been named, so it must not be able to answer yes about another release.
+    """
     rows = []
     try:
         register = json.loads(register_path.read_text())
@@ -119,6 +138,19 @@ def check(register_path: Path, changelog_path: Path):
             f"{changelog_path.name} has no `## [x.y.z]` section heading -- there is no release "
             f"section to search, and an unanchored search over the whole file would be satisfied "
             f"by any older release's prose",
+        )], False
+    # Before a single entry is judged. A wrong-section verdict is not a weaker answer than no
+    # verdict, it is a confident one about another release, so it stops here rather than colouring
+    # rows that would otherwise read as ordinary passes.
+    if require_version is not None and section_version != require_version:
+        return [(
+            "<changelog>", "FAIL",
+            f"the newest section of {changelog_path.name} is `## [{section_version}]`, but "
+            f"{require_version} is the version being released. Every `changelog` line below would "
+            f"be looked for in {section_version}'s notes -- a section this release does not "
+            f"publish -- so an accepted difference could be reported as named while this release's "
+            f"notes never mention it. Fix: roll `## [Unreleased]` over into "
+            f"`## [{require_version}]` (prepare-release.yml does this) before staging.",
         )], False
     normalized_changelog = _normalize(section_text)
     for entry in entries:
@@ -393,6 +425,45 @@ def selftest() -> int:
             "line wrapped across two source lines -> still PASS",
         )
 
+        # --require-version: the section that gets searched must BE the release being staged.
+        # RED on every way the top section can name another version, GREEN on the twin that
+        # differs only in that.
+        rv_register = tmp / "rv.json"
+        rv_register.write_text(
+            json.dumps(
+                {"accepted": [{"id": "X-6", "kind": "breaking",
+                               "changelog": "the sky is now green"}]}
+            )
+        )
+        stale_changelog = tmp / "stale.md"
+        # The line IS present -- in the previous release's section. Without --require-version this
+        # register is fully discharged by notes 1.6.0 does not publish.
+        stale_changelog.write_text("## [1.5.9]\n\n- the sky is now green\n")
+        rows, ok = check(rv_register, stale_changelog)
+        say(ok, "without --require-version, a stale top section still discharges the register "
+                "(the hole, stated)")
+        rows, ok = check(rv_register, stale_changelog, require_version="1.6.0")
+        say(
+            not ok and rows and rows[0][0] == "<changelog>" and "1.5.9" in rows[0][2],
+            "--require-version: the newest section naming 1.5.9 while 1.6.0 stages -> RED, by name",
+        )
+        fresh_changelog = tmp / "fresh.md"
+        fresh_changelog.write_text("## [1.6.0]\n\n- the sky is now green\n")
+        rows, ok = check(rv_register, fresh_changelog, require_version="1.6.0")
+        say(
+            ok and rows == [("X-6", "PASS",
+                             "changelog line present verbatim in the 1.6.0 section")],
+            "--require-version: the twin whose top section IS the staged version -> PASS",
+        )
+        # And the flag must not paper over a missing line: right section, absent line, still RED.
+        empty_section = tmp / "empty-section.md"
+        empty_section.write_text("## [1.6.0]\n\n- something else entirely\n")
+        rows, ok = check(rv_register, empty_section, require_version="1.6.0")
+        say(
+            not ok and rows and rows[0][0] == "X-6",
+            "--require-version does not excuse an unnamed difference in the right section",
+        )
+
     print()
     if fails == 0:
         print(f"changelog-register-check selftest: GREEN ({cases} cases)")
@@ -406,12 +477,18 @@ def main() -> int:
     parser.add_argument("--register", type=Path, default=DEFAULT_REGISTER)
     parser.add_argument("--changelog", type=Path, default=DEFAULT_CHANGELOG)
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument(
+        "--require-version", default=None, metavar="X.Y.Z",
+        help="additionally require that the newest `## [x.y.z]` section IS this version - the "
+             "version being tagged. Mirrors changelog-lint.py's flag of the same name: without "
+             "it, every accepted difference is checked against whatever section happens to be at "
+             "the top, which need not be this release's.")
     args = parser.parse_args()
 
     if args.selftest:
         return selftest()
 
-    rows, ok = check(args.register, args.changelog)
+    rows, ok = check(args.register, args.changelog, require_version=args.require_version)
     if not rows:
         print("changelog-register-check: 0 register entries -- nothing owed")
         return 0

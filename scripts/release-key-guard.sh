@@ -31,6 +31,7 @@
 # Usage:
 #   scripts/release-key-guard.sh require
 #   scripts/release-key-guard.sh assert-embedded busbar-<target>.tar.gz
+#   scripts/release-key-guard.sh --selftest      # prove both halves discriminate, offline
 #
 # Reads BUSBAR_RELEASE_PUBKEY from the environment. In CI that is the org variable
 # BUSBAR_RELEASE_PUBKEY (visibility: all) -- the PUBLIC half; the private half is the
@@ -47,6 +48,116 @@ MODE="${1:-}"
 key_is_valid() {
   printf '%s' "${BUSBAR_RELEASE_PUBKEY:-}" | grep -Eq '^[0-9a-fA-F]{64}$'
 }
+
+# ── --selftest ──────────────────────────────────────────────────────────────────────────────────
+#
+# THIS GUARD IS RELIED ON BY TWO OTHER CHECKS AND WAS ITSELF UNEXERCISED.
+#
+# platform-checks' `pubkey:<target>` row runs `assert-embedded` against every published archive and
+# reports the verdict as its own — deliberately, so the build-time and publish-time halves are one
+# assertion and not two copies of it. release-stage.yml calls `require` before a compiler starts.
+# So a guard that had quietly stopped discriminating would take BOTH of those green with it, and
+# the failure it exists to catch is invisible by construction: a missing key produces a binary that
+# compiles, links, tests and ships.
+#
+# Every case below is one where a broken guard says the comfortable thing:
+#
+#   * `hits` empty — a python that could not run — takes the `-eq 0` branch, so an archive nobody
+#     could search must not report as searched. (`[ "" -eq 0 ]` is a bash ERROR under `set -e`,
+#     which is why the code says `${hits:-0}`; the case pins the intent, not the spelling.)
+#   * a key that is present but truncated, padded, or the wrong length embeds and then fails every
+#     verification at runtime, which is the same user-visible outcome as embedding nothing.
+#   * `assert-embedded` with no usable key would search for an empty needle, and an empty needle is
+#     found in every binary — the exact shape verify-artifact.py's tarball row already refuses.
+#
+# Offline, seconds, no release: the archives are built here out of two byte strings.
+if [ "${MODE}" = "--selftest" ]; then
+  st_bad=0
+  ok()   { printf '  [ok]     %s\n' "$1"; }
+  nope() { printf '  [FAILED] %s\n' "$1"; st_bad=1; }
+  st_tmp="$(mktemp -d "${TMPDIR:-/tmp}/relkeyguard-selftest-XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$st_tmp'" EXIT
+  self="$0"
+  GOOD_KEY="$(printf 'a%.0s' $(seq 1 63))b"
+
+  echo "release-key-guard selftest"
+
+  # `require`, both directions and every near-miss. A near-miss is the interesting half: the
+  # variable being SET is not the property, the value being a real key is.
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_KEY" "$self" require >/dev/null 2>&1; then
+    ok "require accepts a well-formed 64-hex key"
+  else
+    nope "require REJECTED a well-formed key — the guard would stop every release"
+  fi
+  for bad_label in "unset:" "empty:" "short:abc123" "long:${GOOD_KEY}ff" "padded: ${GOOD_KEY} " "nonhex:${GOOD_KEY%??}zz"; do
+    label="${bad_label%%:*}"; val="${bad_label#*:}"
+    if [ "$label" = "unset" ]; then
+      if (unset BUSBAR_RELEASE_PUBKEY; "$self" require >/dev/null 2>&1); then
+        nope "require accepted an UNSET key"
+      else
+        ok "require refuses an unset key"
+      fi
+      continue
+    fi
+    if BUSBAR_RELEASE_PUBKEY="$val" "$self" require >/dev/null 2>&1; then
+      nope "require accepted the ${label} case ('${val}') — it would embed and then fail every verification at runtime"
+    else
+      ok "require refuses the ${label} case"
+    fi
+  done
+
+  # `assert-embedded`, against real archives built here. The tar carries the key verbatim, exactly
+  # as `option_env!`'s `&'static str` puts it in the binary's read-only data; the other does not.
+  mkdir -p "$st_tmp/with" "$st_tmp/without"
+  printf 'ELF-ish padding %s more padding\n' "$GOOD_KEY" > "$st_tmp/with/busbar"
+  printf 'ELF-ish padding and no key at all here\n'       > "$st_tmp/without/busbar"
+  (cd "$st_tmp/with"    && tar -czf "$st_tmp/with.tar.gz" busbar)
+  (cd "$st_tmp/without" && tar -czf "$st_tmp/without.tar.gz" busbar)
+
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_KEY" "$self" assert-embedded "$st_tmp/with.tar.gz" >/dev/null 2>&1; then
+    ok "assert-embedded passes an archive that really carries the key"
+  else
+    nope "assert-embedded REJECTED an archive containing the key — every release would be red"
+  fi
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_KEY" "$self" assert-embedded "$st_tmp/without.tar.gz" >/dev/null 2>&1; then
+    nope "assert-embedded PASSED a keyless archive — this is #52 walking through the check written to catch it"
+  else
+    ok "assert-embedded refuses a keyless archive (the 1.5.3 aarch64 shape)"
+  fi
+  # A key that is merely SIMILAR must not match. The search is for the exact 64 bytes.
+  if BUSBAR_RELEASE_PUBKEY="${GOOD_KEY%b}c" "$self" assert-embedded "$st_tmp/with.tar.gz" >/dev/null 2>&1; then
+    nope "assert-embedded matched an archive carrying a DIFFERENT key"
+  else
+    ok "an archive carrying a different key does not satisfy this key"
+  fi
+  # No usable key: the search would be for an empty needle, which every binary contains.
+  if (unset BUSBAR_RELEASE_PUBKEY; "$self" assert-embedded "$st_tmp/without.tar.gz" >/dev/null 2>&1); then
+    nope "assert-embedded ran with NO key to look for — an empty needle is found in every binary"
+  else
+    ok "assert-embedded refuses to run without a key rather than searching for nothing"
+  fi
+  if BUSBAR_RELEASE_PUBKEY="$GOOD_KEY" "$self" assert-embedded "$st_tmp/there-is-no-archive.tar.gz" >/dev/null 2>&1; then
+    nope "assert-embedded passed on an archive that does not exist"
+  else
+    ok "an archive that is not there is a failure, not an empty search"
+  fi
+  # An unknown mode must not look like a pass: a typo'd invocation in a workflow would otherwise
+  # switch the guard off silently.
+  if "$self" verify-please >/dev/null 2>&1; then
+    nope "an unrecognised mode exited 0 — a typo in a workflow would switch this guard off"
+  else
+    ok "an unrecognised mode is a usage error, not a pass"
+  fi
+
+  echo
+  if [ "$st_bad" = 0 ]; then
+    echo "release-key-guard selftest: both halves discriminate"
+    exit 0
+  fi
+  echo "release-key-guard selftest: FAILED"
+  exit 1
+fi
 
 case "$MODE" in
   require)
