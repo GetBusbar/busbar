@@ -946,11 +946,18 @@ impl ProtocolReader for OpenAiReader {
         // (via the trailing-usage branch below) emit a spurious mid-stream `MessageDelta` per chunk.
         // Filter to a real usage OBJECT so `usage: null` reads as `None`.
         let chunk_usage = data.get("usage").filter(|u| u.is_object()).map(|u| {
-            let prompt_tokens = u.get("prompt_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+            // Every count here reads through the double-tolerant reader, for the reason
+            // `read_cache_write_tokens` states: an OpenAI-COMPATIBLE backend is free to serialize a
+            // count as `1200.0`, which `as_u64` answers `None` for — ledgering a real billed count
+            // as zero. See `usage_tail::token_count`.
+            let prompt_tokens = u
+                .get("prompt_tokens")
+                .and_then(super::super::usage_tail::token_count)
+                .unwrap_or(0);
             let cached = u
                 .get("prompt_tokens_details")
                 .and_then(|d| d.get("cached_tokens"))
-                .and_then(|v| v.as_u64());
+                .and_then(super::super::usage_tail::token_count);
             // The terminal `include_usage` chunk carries the identical `usage` object the buffered
             // response does, so the cache-WRITE slice is tiered here exactly as it is there. Reading
             // it only on the buffered path made one request price its cache-writing turn two
@@ -967,7 +974,7 @@ impl ProtocolReader for OpenAiReader {
                     .saturating_sub(cache_write.unwrap_or(0)),
                 output_tokens: u
                     .get("completion_tokens")
-                    .and_then(|v| v.as_u64())
+                    .and_then(super::super::usage_tail::token_count)
                     .unwrap_or(0),
                 cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
@@ -980,7 +987,7 @@ impl ProtocolReader for OpenAiReader {
                     reasoning_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("reasoning_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(super::super::usage_tail::token_count),
                     // Align the streaming usage sub-buckets with the buffered path: the trailing
                     // `include_usage` chunk carries the identical `usage` object, so the audio /
                     // predicted-outputs attribution slices are present on the stream too. Reading only
@@ -989,19 +996,19 @@ impl ProtocolReader for OpenAiReader {
                     input_audio_tokens: u
                         .get("prompt_tokens_details")
                         .and_then(|d| d.get("audio_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(super::super::usage_tail::token_count),
                     output_audio_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("audio_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(super::super::usage_tail::token_count),
                     accepted_prediction_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("accepted_prediction_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(super::super::usage_tail::token_count),
                     rejected_prediction_tokens: u
                         .get("completion_tokens_details")
                         .and_then(|d| d.get("rejected_prediction_tokens"))
-                        .and_then(|v| v.as_u64()),
+                        .and_then(super::super::usage_tail::token_count),
                     ..Default::default()
                 },
             }
@@ -1293,7 +1300,7 @@ impl ProtocolReader for OpenAiReader {
         let cache_read_input_tokens = usage_val
             .and_then(|u| u.get("prompt_tokens_details"))
             .and_then(|d| d.get("cached_tokens"))
-            .and_then(|v| v.as_u64());
+            .and_then(super::super::usage_tail::token_count);
         // `prompt_tokens_details.cache_write_tokens` — the OTHER slice of `prompt_tokens`, and the
         // one that prices at the cache-WRITE tier. See `read_cache_write_tokens`.
         let cache_write_input_tokens = usage_val.and_then(super::read_cache_write_tokens);
@@ -1305,13 +1312,13 @@ impl ProtocolReader for OpenAiReader {
             // The cache-WRITE slice is subtracted for the same reason and from the same total.
             input_tokens: usage_val
                 .and_then(|u| u.get("prompt_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(super::super::usage_tail::token_count)
                 .unwrap_or(0)
                 .saturating_sub(cache_read_input_tokens.unwrap_or(0))
                 .saturating_sub(cache_write_input_tokens.unwrap_or(0)),
             output_tokens: usage_val
                 .and_then(|u| u.get("completion_tokens"))
-                .and_then(|v| v.as_u64())
+                .and_then(super::super::usage_tail::token_count)
                 .unwrap_or(0),
             cache_creation_input_tokens: cache_write_input_tokens,
             cache_read_input_tokens,
@@ -1324,7 +1331,7 @@ impl ProtocolReader for OpenAiReader {
                 reasoning_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("reasoning_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(super::super::usage_tail::token_count),
                 // OpenAI multimodal / predicted-outputs attribution sub-buckets (all SLICES of the
                 // totals above, never additions). Unread, they arrived as absent on every
                 // cross-protocol / pool-alias-re-serialize OpenAI response even though the totals were
@@ -1332,19 +1339,19 @@ impl ProtocolReader for OpenAiReader {
                 input_audio_tokens: usage_val
                     .and_then(|u| u.get("prompt_tokens_details"))
                     .and_then(|d| d.get("audio_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(super::super::usage_tail::token_count),
                 output_audio_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("audio_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(super::super::usage_tail::token_count),
                 accepted_prediction_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("accepted_prediction_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(super::super::usage_tail::token_count),
                 rejected_prediction_tokens: usage_val
                     .and_then(|u| u.get("completion_tokens_details"))
                     .and_then(|d| d.get("rejected_prediction_tokens"))
-                    .and_then(|v| v.as_u64()),
+                    .and_then(super::super::usage_tail::token_count),
                 ..Default::default()
             },
         };
