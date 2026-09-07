@@ -580,9 +580,19 @@ assert t["AuthDeployCfg"]["fields"]["policy"]["type"] == "AuthPolicyCfg", t["Aut
   # written to any branch — rather than the repository's root commit, because a CI checkout can be
   # shallow and the root commit is then whatever the shallow boundary happens to be. This one is a
   # commit that resolves and provably contains no files at all, on any clone depth.
+  #
+  # The identity is supplied INLINE and thrown away. `git commit-tree` needs an author and a
+  # committer, and it will invent one from `user@hostname` only when the hostname looks like a
+  # domain. A CI runner has neither a configured `user.email` nor a dotted hostname, so the object
+  # never got built there and this arm reported itself unproven on every CI run while passing on
+  # every developer laptop. Nothing is written: no config is touched, no ref is created, and the
+  # variables live for the length of this one command.
   local empty_tree probe_ref probe_out probe_rc
   empty_tree="$(git mktree </dev/null 2>/dev/null)"
-  probe_ref="$(printf 'config-stability selftest probe\n' | git commit-tree "$empty_tree" 2>/dev/null)"
+  probe_ref="$(printf 'config-stability selftest probe\n' |
+    GIT_AUTHOR_NAME='config-stability selftest' GIT_AUTHOR_EMAIL='selftest@invalid' \
+    GIT_COMMITTER_NAME='config-stability selftest' GIT_COMMITTER_EMAIL='selftest@invalid' \
+    git commit-tree "$empty_tree" 2>/dev/null)"
   if [ -z "$probe_ref" ]; then
     red "  FAIL  could not build an empty-tree probe commit — the missing-baseline arm is unproven"
     fails=$((fails + 1)); cases=$((cases + 1))
