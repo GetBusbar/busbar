@@ -17,7 +17,7 @@
    "reason": "resolved lockfile -- governed by the build gates, not a code audit"
   },
   {
-   "glob": "crates/*/fixtures/*",
+   "glob": "crates/*/fixtures/**",
    "reason": "fixture inputs a crate's own gate reads; not shipped code"
   },
   {
@@ -25,8 +25,108 @@
    "reason": "crate manifest -- governed by workspace-deps-lint, not a code audit"
   },
   {
-   "glob": "xtask/fixtures/*",
+   "glob": "xtask/fixtures/**",
    "reason": "fixture trees the workspace-deps gate builds against"
+  },
+  {
+   "glob": "docs/**",
+   "reason": "design and reference prose -- governed by the doc gates, not a code audit"
+  },
+  {
+   "glob": "*.md",
+   "reason": "top-level project prose -- governed by the doc and changelog gates"
+  },
+  {
+   "glob": "LICENSE",
+   "reason": "licence text"
+  },
+  {
+   "glob": "NOTICE",
+   "reason": "attribution notice"
+  },
+  {
+   "glob": "Cargo.toml",
+   "reason": "workspace manifest -- governed by workspace-deps-lint"
+  },
+  {
+   "glob": "Cargo.lock",
+   "reason": "resolved lockfile -- governed by the build gates"
+  },
+  {
+   "glob": "deny.toml",
+   "reason": "cargo-deny policy -- governed by the supply-chain gate"
+  },
+  {
+   "glob": "rust-toolchain.toml",
+   "reason": "pinned toolchain -- governed by the build gates"
+  },
+  {
+   "glob": "rustfmt.toml",
+   "reason": "formatter settings -- governed by `cargo fmt --check`"
+  },
+  {
+   "glob": "codecov.yml",
+   "reason": "coverage service settings"
+  },
+  {
+   "glob": ".cargo/**",
+   "reason": "cargo invocation settings"
+  },
+  {
+   "glob": ".editorconfig",
+   "reason": "editor settings"
+  },
+  {
+   "glob": ".gitignore",
+   "reason": "vcs settings"
+  },
+  {
+   "glob": ".gitattributes",
+   "reason": "vcs settings"
+  },
+  {
+   "glob": ".dockerignore",
+   "reason": "container build context settings"
+  },
+  {
+   "glob": ".github/ISSUE_TEMPLATE/**",
+   "reason": "issue forms -- prose"
+  },
+  {
+   "glob": ".github/*.md",
+   "reason": "contribution prose"
+  },
+  {
+   "glob": "Dockerfile",
+   "reason": "container recipe -- governed by the image build gate"
+  },
+  {
+   "glob": "docker/**",
+   "reason": "container-local sample config"
+  },
+  {
+   "glob": "assets/*.png",
+   "reason": "brand images"
+  },
+  {
+   "glob": "org-profile/**",
+   "reason": "the GitHub org profile -- prose and brand images"
+  },
+  {
+   "glob": "tests/migration-corpus/**",
+   "reason": "captured historical configs the migration gate replays; inputs, not code"
+  },
+  {
+   "glob": "config.yaml",
+   "reason": "the shipped sample deployment config"
+  },
+  {
+   "glob": "plugins.yaml",
+   "reason": "the shipped sample plugin manifest"
+  },
+  {
+   "glob": "providers.yaml",
+   "reason": "the shipped sample provider table"
   }
  ],
  "scopes": [
@@ -2354,6 +2454,86 @@
    "report": "hand-back 2026-09-06 scripts+shadow-oracle+workflows",
    "auditor": "opus",
    "fixed_at": null
+  },
+  {
+   "id": ".githooks",
+   "kind": "instrument",
+   "paths": [
+    ".githooks"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github/scripts",
+   "kind": "instrument",
+   "paths": [
+    ".github/scripts"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "assets/readme",
+   "kind": "instrument",
+   "paths": [
+    "assets/readme"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "examples",
+   "kind": "instrument",
+   "paths": [
+    "examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".github",
+   "kind": "instrument",
+   "paths": [
+    ".github"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    ".github/workflows",
+    ".github/scripts",
+    ".github/ISSUE_TEMPLATE"
+   ]
   },
   {
    "id": "testing/a2a-governance",
