@@ -1,6 +1,6 @@
 {
  "_comment": [
-  "GENERATED scope list -- `scripts/audit-ledger.py sync --write` derives it from the tree.",
+  "GENERATED scope list -- `cargo xtask ledger sync --write` derives it from the tree.",
   "Audit records (round/result/report/auditor/fixed_at/tree_hash) are hand-stamped by",
   "`record` and `fixed` and are preserved across sync.",
   "tree_hash = sha256 over the sorted `path<TAB>blob-oid` list of the scope's tracked files at",
