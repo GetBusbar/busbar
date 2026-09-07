@@ -150,12 +150,34 @@ pub enum PostingOrigin {
 /// of lines on every request would be a different performance profile, and a stored figure to
 /// compare the lookup against is what makes a hand edit detectable at all. Where it disagrees with
 /// the lookup, the lookup wins and this is corrected in place.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// It says what it is true OF as well as what it is, and that is the point: a figure that named no
+/// snapshot would be a number with no way to tell "computed under an older history" from "wrong".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedPrice {
+    /// The history head the figure was computed under.
+    pub history_seq: HistorySeq,
+    /// The entry that head resolved to at the line's instant.
+    pub card_seq: HistorySeq,
     /// The amount before the tier was applied.
     pub pre_tier_nanos: i128,
     /// The amount after it.
     pub priced_nanos: i128,
+}
+
+impl Default for DerivedPrice {
+    /// Nothing, at the opening entry.
+    ///
+    /// The opening entry rather than an invented sentinel, because [`HistorySeq::OPENING`] is a
+    /// real snapshot belonging to a real card: a migrated row's price genuinely is current as of
+    /// entry zero, so the default is the honest answer for one rather than a placeholder.
+    fn default() -> Self {
+        DerivedPrice {
+            history_seq: HistorySeq::OPENING,
+            card_seq: HistorySeq::OPENING,
+            pre_tier_nanos: 0,
+            priced_nanos: 0,
+        }
+    }
 }
 
 /// One booked ledger line, as the journal holds it.
@@ -184,14 +206,10 @@ pub struct Posting {
     pub tier_bp: u32,
     /// The instant it happened, in wall-clock milliseconds. The scale the history resolves at.
     pub arrived_ms: u64,
-    /// The history HEAD at settlement — the snapshot the cache was computed under.
-    pub history_seq: HistorySeq,
-    /// The entry `card_at(arrived_ms)` resolved to under that head. Recorded rather than re-derived
-    /// so that a resolution somebody later out-ranked is still visible as what was used at the time.
-    pub card_seq: HistorySeq,
     /// The currency the bucket is denominated in. Two currencies never sum.
     pub currency: CurrencyCode,
-    /// The cached lookup. Derived, correctable, and never the record.
+    /// The cached lookup, and the two history numbers it is current as of. Derived, correctable,
+    /// and never the record.
     pub cached: DerivedPrice,
     /// Whether the fee line applies.
     pub origin: PostingOrigin,
@@ -203,6 +221,21 @@ impl Posting {
         (self.node, self.node_seq)
     }
 
+    /// The history snapshot the line's price is current as of.
+    ///
+    /// It travels with the price rather than beside it because it is a fact ABOUT the price. What
+    /// the line was ORIGINALLY priced under, once an amendment has moved it, is not lost either —
+    /// it is on the adjusting entry, which carries both card numbers and both figures and is never
+    /// collapsed into the lines it describes.
+    pub fn history_seq(&self) -> HistorySeq {
+        self.cached.history_seq
+    }
+
+    /// The dated entry that snapshot resolves to at this line's instant.
+    pub fn card_seq(&self) -> HistorySeq {
+        self.cached.card_seq
+    }
+
     /// Whether this line predates the history — a row migrated from the previous release.
     ///
     /// Such a row was earned under the one card the migration sealed, so it reads as priced under
@@ -210,7 +243,8 @@ impl Posting {
     /// with no end, so it covers every instant a legacy row could carry, and there is no earlier
     /// snapshot it could have meant.
     pub fn is_pre_history(&self) -> bool {
-        self.history_seq == HistorySeq::OPENING && self.card_seq == HistorySeq::OPENING
+        self.cached.history_seq == HistorySeq::OPENING
+            && self.cached.card_seq == HistorySeq::OPENING
     }
 }
 
@@ -535,18 +569,24 @@ fn signed(nanos: u128) -> i128 {
     i128::try_from(nanos).unwrap_or(i128::MAX)
 }
 
-/// Price one line again by lookup, and report every way the record disagrees with it.
+/// Price one line again by lookup **at the archive's head**, and report every way the cache
+/// disagrees with it.
 ///
-/// The order is deliberate: a missing snapshot or an unpriceable line short-circuits, because there
+/// At the head, not at the snapshot the cache names, and that is the whole of the arbitration. The
+/// head is what the history says today; the cache is what it said when the line was settled. Asking
+/// the cache's own snapshot would only ever confirm the cache, which is a check that cannot fail.
+///
+/// The order is deliberate: an empty archive or an unpriceable line short-circuits, because there
 /// is nothing to compare against and reporting a pre-tier mismatch of "everything" would bury the
 /// real finding.
 pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
     // The verdict is decided from the head alone, BEFORE anything is priced, so that it cannot be
     // influenced by what the comparison happens to find. A head that has moved past the snapshot
-    // this line was settled under is consent for its cache to be behind; a head that has not moved
-    // is not.
-    let verdict = match archive.head() {
-        Some(head) if head > posting.history_seq => Verdict::Stale,
+    // this line's price is current as of is consent for that price to be behind; a head that has
+    // not moved is not.
+    let head = archive.head();
+    let verdict = match head {
+        Some(head) if head > posting.cached.history_seq => Verdict::Stale,
         _ => Verdict::Alarm,
     };
     let refuse = |divergence: Divergence| Recheck {
@@ -555,10 +595,21 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
         verdict,
     };
 
-    let Some(view) = archive.view_at(posting.history_seq) else {
+    // Two ways to have no history to check against, and they are the same finding: an archive that
+    // holds nothing, and a line whose price claims a snapshot the archive has never reached. The
+    // second is a line asserting a history nobody kept, which is exactly what this variant names.
+    let Some(head) = head else {
         return refuse(Divergence::HistoryMissing {
-            seq: posting.history_seq,
+            seq: posting.cached.history_seq,
         });
+    };
+    if posting.cached.history_seq > head {
+        return refuse(Divergence::HistoryMissing {
+            seq: posting.cached.history_seq,
+        });
+    }
+    let Some(view) = archive.view_at(head) else {
+        return refuse(Divergence::HistoryMissing { seq: head });
     };
 
     let sealed_tier = archive.tier_bp(&posting.key);
@@ -568,9 +619,9 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
     };
 
     let mut divergences = Vec::new();
-    if priced.card_seq != posting.card_seq {
+    if priced.card_seq != posting.cached.card_seq {
         divergences.push(Divergence::CardSeq {
-            posted: posting.card_seq,
+            posted: posting.cached.card_seq,
             resolved: priced.card_seq,
         });
     }
@@ -601,6 +652,8 @@ pub fn recheck(posting: &Posting, archive: &dyn HistoryArchive) -> Recheck {
     Recheck {
         divergences,
         corrected: Some(DerivedPrice {
+            history_seq: head,
+            card_seq: priced.card_seq,
             pre_tier_nanos: pre_tier,
             priced_nanos: final_nanos,
         }),
