@@ -185,16 +185,27 @@ pub const CODE_REFUSED: i64 = -32000;
 /// The server this call would have reached could not be reached — the call NEVER HAPPENED, which
 /// is why it is an extension rather than `-32603` (busbar broke) or `-32602` (the caller erred).
 ///
-/// The SECOND code in JSON-RPC's implementation-defined server-error range, immediately beside
-/// [`CODE_REFUSED`], and chosen for the same reason that one was: the MCP specification reserves
-/// the `-32099..=-32020` sub-range for codes IT defines, so a node's own extension placed in there
-/// is a collision waiting for the next revision. It previously sat at `-32030`, inside that
-/// sub-range and not one of the three codes the specification has defined in it (`-32020`,
-/// `-32021`, `-32022`) — which the pinned conformance battery reports as a `BASE.ERR.RESERVED-RANGE`
-/// failure the moment a probe provokes an unreachable upstream. `-32001` is outside the reserved
-/// sub-range, still inside JSON-RPC 2.0 section 5.1's `-32768..=-32000` band, and adjacent to the
-/// refusal it sits next to on the wire.
-pub const CODE_UPSTREAM_UNAVAILABLE: i64 = -32001;
+/// IN JSON-RPC'S IMPLEMENTATION-DEFINED SERVER-ERROR RANGE, for the same reason [`CODE_REFUSED`]
+/// is: the MCP specification reserves the `-32099..=-32020` sub-range for codes IT defines, so a
+/// node's own extension placed in there is a collision waiting for the next revision. This code
+/// previously sat at `-32030`, inside that sub-range and not one of the three codes the
+/// specification has defined in it (`-32020`, `-32021`, `-32022`) — which the pinned conformance
+/// battery reports as a `BASE.ERR.RESERVED-RANGE` failure the moment a probe provokes an
+/// unreachable upstream.
+///
+/// THE VALUE IS THE FIRST FREE ONE, AND THE THREE IT SKIPS ARE EACH SKIPPED FOR A REASON:
+///
+///   * `-32000` is [`CODE_REFUSED`], "a policy said no".
+///   * `-32001` is what busbar's CLIENT half answers an authority ask it will not satisfy
+///     (`mcp::client::peer::ASK_REFUSED`). It travels in the other direction, to a different peer,
+///     so there is no wire on which the two could be confused — but one number carrying two of a
+///     node's own meanings is a footgun for anyone reading a log, and the range is not scarce.
+///   * `-32002` is RETIRED (see [`RETIRED_CODES`]). A retired code is worse than an unknown one: a
+///     peer that still recognises it acts on a meaning this node did not intend.
+///
+/// So `-32003`: outside MCP's reserved sub-range, inside JSON-RPC 2.0 section 5.1's
+/// `-32768..=-32000` band, and unambiguous across both of busbar's legs.
+pub const CODE_UPSTREAM_UNAVAILABLE: i64 = -32003;
 
 /// EVERY CODE THIS DIALECT DEFINES. The plane asserts the set it may write is a subset of this, so
 /// a code invented on one side of the seam is a red test rather than a wire nobody recognises.

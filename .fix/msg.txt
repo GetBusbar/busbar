@@ -1,0 +1,42 @@
+mcp conformance: the probe that judges the upstream-unavailable code now reaches the path that emits it
+
+The probe as first written passed while proving nothing, and the way it
+did is worth keeping in the file rather than only in a commit message.
+
+It armed an upstream that DESTROYED EVERY CONNECTION, on the reasoning
+that "unreachable" is the condition the code names. It is not the
+condition busbar emits it for. A gateway that cannot reach an upstream at
+all cannot re-verify the surface it is about to call either, so
+verify-on-call refused every probe call fail-closed, BEFORE dispatch: the
+answer was a policy refusal, the breaker cell was never fed an outcome,
+and the code under test never reached the wire. The run was green and the
+observed code was `-32000`. Rebuilt on the OLD `-32030` it would have
+stayed green — which is the definition of a probe that exercises nothing.
+
+Two changes, and both are the same correction from different sides.
+
+The mode is `half-answer`: the peer answers `tools/list` HONESTLY, so
+verification succeeds and the call is DISPATCHED, then dies mid-frame on
+the `tools/call` itself. That is a dispatch outcome, it lands on the cell,
+and it arrives immediately rather than after a deadline — so a series of
+them trips the cell inside one test. The connection-destroying HTTP mode
+added alongside it is removed: hostility nothing provokes is hostility
+nobody maintains.
+
+And `verify_ttl: 1h` on the `breaker` registration, so the honest snapshot
+taken at boot is reused and re-verification does not pre-empt the dispatch
+the test needs. A downgrade said out loud, confined to the one
+registration nothing else calls.
+
+The probe now also runs `requireUpstreamWasReached` — the subject must
+have DIALLED, not merely answered — beside the guard that there is a code
+to judge at all.
+
+PROVEN BOTH WAYS on the in-house battery against a busbar built from this
+tree: green on `-32001`, and red on `-32030` naming the exact calls
+(6, 7, 8 — the fast-failed ones after the cell tripped on the fifth):
+
+    the subject named an unreachable upstream with a code inside the
+    sub-range the specification reserves for its own codes
+    (-32099..-32020, of which only [-32020,-32021,-32022] are defined):
+    [{"call":6,"code":-32030},{"call":7,"code":-32030},{"call":8,"code":-32030}]

@@ -106,7 +106,7 @@ async fn a_hard_down_http_server_trips_and_the_second_call_fast_fails_without_to
         "a breaker refusal must NEVER be an isError tool result: {b2}"
     );
     let error = b2.get("error").expect("a JSON-RPC error object");
-    assert_eq!(error["code"], serde_json::json!(-32001), "{b2}");
+    assert_eq!(error["code"], serde_json::json!(-32003), "{b2}");
     assert_eq!(error["data"]["reason"], "upstream_unavailable", "{b2}");
     assert_eq!(
         error["data"]["server"], "fs",
@@ -183,7 +183,7 @@ async fn a_tripped_server_refuses_before_a_task_id_is_minted() {
         b2.get("result").is_none(),
         "no task id for refused work: {b2}"
     );
-    assert_eq!(b2["error"]["code"], serde_json::json!(-32001), "{b2}");
+    assert_eq!(b2["error"]["code"], serde_json::json!(-32003), "{b2}");
 }
 
 /// KILL-THE-UPSTREAM, stdio transport: a child that dies on arrival records into the SAME core
@@ -297,7 +297,7 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
     assert_eq!(s2, 503, "{b2}");
     assert!(headers.get(axum::http::header::RETRY_AFTER).is_some());
     assert!(b2.get("result").is_none(), "never an isError result: {b2}");
-    assert_eq!(b2["error"]["code"], serde_json::json!(-32001), "{b2}");
+    assert_eq!(b2["error"]["code"], serde_json::json!(-32003), "{b2}");
     assert_eq!(b2["error"]["data"]["server"], "sh", "{b2}");
 }
 
@@ -310,7 +310,7 @@ async fn a_dead_stdio_child_trips_the_same_core_cell_and_the_second_call_fast_fa
 /// refused, never rerouted". So the sub-threshold cooldown, which on an LLM pool means "prefer a
 /// sibling for 15s", meant "refuse EVERY caller of this server for 15-120s" here — minted by ONE
 /// transient blip, on a cell whose own `should_trip` had just declined to trip, and announced to
-/// the caller as `-32001` ... "its circuit breaker is open after repeated failures".
+/// the caller as `-32003` ... "its circuit breaker is open after repeated failures".
 ///
 /// It is not an abstraction. The in-house MCP conformance battery went red on it for five commits:
 /// one stalled upstream in an early hostile scenario refused every later scenario that dispatched
@@ -355,7 +355,7 @@ async fn one_transient_failure_does_not_refuse_the_next_caller() {
     assert_eq!(s2, 200, "{b2}");
     assert!(
         b2.get("error").is_none(),
-        "an untripped server must not answer -32001 upstream_unavailable: {b2}"
+        "an untripped server must not answer -32003 upstream_unavailable: {b2}"
     );
 }
 
@@ -398,7 +398,7 @@ async fn a_transient_server_that_breaches_the_error_rate_trips_and_then_fast_fai
     );
     assert_eq!(s, 503, "{b}");
     assert!(b.get("result").is_none(), "never an isError result: {b}");
-    assert_eq!(b["error"]["code"], serde_json::json!(-32001), "{b}");
+    assert_eq!(b["error"]["code"], serde_json::json!(-32003), "{b}");
     assert_eq!(b["error"]["data"]["reason"], "upstream_unavailable", "{b}");
     assert_eq!(
         peer.mcp_hits(),
