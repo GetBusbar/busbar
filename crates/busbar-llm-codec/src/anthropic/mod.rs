@@ -222,6 +222,30 @@ const EVT_CONTENT_BLOCK_STOP: &str = "content_block_stop";
 const EVT_MESSAGE_DELTA: &str = "message_delta";
 const EVT_MESSAGE_STOP: &str = "message_stop";
 
+/// WHICH STREAM EVENT THIS FRAME IS.
+///
+/// The pinned Anthropic document types the stream as `MessageStreamEvent`, a `oneOf` whose
+/// `discriminator` is `{propertyName: "type"}` over exactly the six names above. THE BODY'S OWN
+/// `type` IS THE SPEC'S IDENTITY FOR THE EVENT; the SSE `event:` line is a transport convenience
+/// that repeats it, and every `MessageStreamEvent` body carries `type` as a required property.
+///
+/// The reader dispatched on the `event:` line alone, so a frame that arrives as a bare `data:` —
+/// what an upstream, gateway or SDK relay emits when it does not repeat the name on its own line,
+/// and what `parse_sse_frame` reports as an empty event type — matched nothing and produced zero IR
+/// events. `message_delta` is the frame that carries `usage.output_tokens`, so a whole stream
+/// relayed that way billed zero.
+///
+/// The transport's name still WINS when it is present: it is the outer envelope's statement about
+/// the frame, and honouring the body only as a FALLBACK keeps every existing stream byte-identical.
+fn event_name<'a>(event_type: &'a str, data: &'a serde_json::Value) -> &'a str {
+    if !event_type.is_empty() {
+        return event_type;
+    }
+    data.get("type")
+        .and_then(|t| t.as_str())
+        .unwrap_or(event_type)
+}
+
 /// `content_block_delta` sub-type values (`delta.type` field).
 const DELTA_TYPE_TEXT: &str = "text_delta";
 const DELTA_TYPE_THINKING: &str = "thinking_delta";
@@ -2252,3 +2276,7 @@ mod reasoning_carry_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/event_discriminator_tests.rs"]
+mod event_discriminator_tests;
