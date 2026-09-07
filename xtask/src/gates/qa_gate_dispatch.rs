@@ -135,11 +135,7 @@ impl QaGateDispatchGate {
     /// A gate that judges as `branch`, reading the promoted copy from `default_ref` unless `remote`
     /// supplies it. Reached only through [`Gate::run`], exactly like the registered gate — the
     /// self-test never gets a second path to the predicate.
-    pub fn judging_as(
-        branch: &str,
-        default_ref: &str,
-        remote: Option<&str>,
-    ) -> QaGateDispatchGate {
+    pub fn judging_as(branch: &str, default_ref: &str, remote: Option<&str>) -> QaGateDispatchGate {
         QaGateDispatchGate {
             branch: Some(branch.to_string()),
             default_ref: default_ref.to_string(),
@@ -157,7 +153,10 @@ impl QaGateDispatchGate {
         if let Some(b) = &self.branch {
             return b.clone();
         }
-        if let Some(b) = std::env::var("GITHUB_REF_NAME").ok().filter(|b| !b.is_empty()) {
+        if let Some(b) = std::env::var("GITHUB_REF_NAME")
+            .ok()
+            .filter(|b| !b.is_empty())
+        {
             return b;
         }
         cx.git(&["rev-parse", "--abbrev-ref", "HEAD"])
@@ -486,7 +485,10 @@ impl Gate for QaGateDispatchGate {
                     "a needs: edge is removed from the dispatcher",
                     &[ROW_DECLARED_CURRENT],
                     ov,
-                    &["jobs.slow.needs", "does not match the shape this branch declares"],
+                    &[
+                        "jobs.slow.needs",
+                        "does not match the shape this branch declares",
+                    ],
                 )
             }
             None => unplantable(
@@ -863,7 +865,11 @@ mod tests {
         if let Err(errs) = gates::verify_report(&gate, &report) {
             panic!("qa-gate-dispatch selftest: {errs:#?}");
         }
-        assert_eq!(report.skipped(), 0, "every case must have had something to plant");
+        assert_eq!(
+            report.skipped(),
+            0,
+            "every case must have had something to plant"
+        );
     }
 
     /// THE WRITER IS THE FILE. If regenerating the declared shape produced different bytes, every
@@ -872,7 +878,9 @@ mod tests {
     fn the_writer_reproduces_the_committed_declared_shape_byte_for_byte() {
         let cx = cx();
         let workflow = cx.read(WORKFLOW).expect("the dispatcher must be readable");
-        let committed = cx.read(DECLARED).expect("the declared shape must be readable");
+        let committed = cx
+            .read(DECLARED)
+            .expect("the declared shape must be readable");
         let shape = yaml_lite::parse_structure(&workflow).expect("the dispatcher must parse");
         let regenerated = canonical(&shape);
         assert_eq!(
@@ -920,7 +928,8 @@ mod tests {
     /// on every branch, and on a development branch it says which arm ran and why.
     #[test]
     fn the_promotion_arm_reports_a_row_on_a_branch_that_cannot_answer_it() {
-        let gate = QaGateDispatchGate::judging_as("integration/some-branch", DEFAULT_BRANCH_REF, None);
+        let gate =
+            QaGateDispatchGate::judging_as("integration/some-branch", DEFAULT_BRANCH_REF, None);
         let verdict = gates::execute(&gate, &cx());
         let row = verdict
             .rows

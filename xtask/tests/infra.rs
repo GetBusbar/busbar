@@ -503,14 +503,20 @@ fn the_real_ci_workflow_parses_and_its_gate_call_sites_are_discoverable() {
         "every job's `run:` steps must be visible to the discovery"
     );
 
-    // No call site has been switched yet — the per-gate batches do that as each gate lands. What
-    // this pins is that the discovery reads the file rather than a cached list, so the first
-    // switched call site shows up without a second edit here.
-    assert_eq!(
-        yaml_lite::xtask_gate_invocations(&text),
-        Vec::<String>::new(),
-        "ci.yml calls no `cargo xtask gate` yet; a name here means a call site was switched"
-    );
+    // EVERY NAME `ci.yml` CALLS IS A REGISTERED GATE. The per-gate batches switch call sites one at
+    // a time, so this cannot pin a fixed list — but it can pin the direction that actually breaks a
+    // release: a call site naming a gate the registry does not have is a step that exits 2 on every
+    // push, and it is the typo a rename leaves behind. The other direction (a registered gate ci.yml
+    // does not call yet) is deliberately allowed while the conversion is in flight; `gate full`
+    // closes it by set equality once every batch has landed.
+    let called = yaml_lite::xtask_gate_invocations(&text);
+    for name in &called {
+        assert!(
+            gates::find(name).is_some(),
+            "ci.yml runs `cargo xtask gate {name}`, which is not in the registry: {:?}",
+            gates::names()
+        );
+    }
     assert_eq!(
         yaml_lite::xtask_gate_invocations("    run: |\n      cargo xtask gate plane-purity --selftest\n      cargo xtask gate plane-purity\n"),
         vec!["plane-purity".to_string()]

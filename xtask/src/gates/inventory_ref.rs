@@ -568,7 +568,10 @@ mod tests {
     #[test]
     fn the_binding_floor_rejects_alone() {
         assert_eq!(
-            failed_ids(bindings_json(&repeat_binding("routes-admin LST-001", 3), None)),
+            failed_ids(bindings_json(
+                &repeat_binding("routes-admin LST-001", 3),
+                None
+            )),
             vec![ROW_FLOOR.to_string()]
         );
     }
