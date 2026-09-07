@@ -14,12 +14,14 @@
 #   over- AND under-count are both RED.
 #
 # TWO ORTHOGONAL DETECTORS:
-#   Class A — deferral MACRO invocations a caller can reach. Matched only as a STATEMENT at line
-#             start (after optional leading whitespace / `pub …`), on COMMENT-STRIPPED code, so a
-#             `// … unimplemented!() …` prose mention (the busbar-core/plane_host anti-markers that
-#             assert the ABSENCE of a stub) does NOT count. `unreachable!()` is deliberately NOT
-#             banned — it asserts an invariant, not a deferral.
-#               regex:  ^\s*(pub\s+\S+\s+)?(unimplemented|todo|unreachable_placeholder)!\s*\(
+#   Class A — deferral MACRO invocations a caller can reach. Matched ANYWHERE on the line, on
+#             COMMENT-STRIPPED code, so a `// … unimplemented!() …` prose mention (the
+#             busbar-core/plane_host anti-markers that assert the ABSENCE of a stub) does NOT count.
+#             It is the comment strip that excludes prose, never a position anchor: an anchor at
+#             line start also excluded `_ => todo!(…)` and `let v = unimplemented!()`, which are
+#             reachable deferrals and are how most of them are actually written.
+#             `unreachable!()` is deliberately NOT banned — it asserts an invariant, not a deferral.
+#               regex:  (^|[^A-Za-z0-9_.])(unimplemented|todo|unreachable_placeholder)!\s*\(
 #   Class B — deferral PHRASE labels the author self-declares, usually in comments (so matched on the
 #             RAW line, comments included — that is the whole point):
 #               SKELETON          (CASE-SENSITIVE, word-boundary — the uppercase debt label; the
@@ -58,7 +60,18 @@
 #
 # bash 3.2 + POSIX awk (macOS/Linux), the same bare-runner posture as plane-purity-lint.sh.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# An unchecked `cd` is the cheapest way to reach the vacuous pass this file guards against below:
+# there is no `set -e`, so a failed cd would leave the scan pointed at whatever directory the caller
+# happened to be in, find no crates/*/src, and report a clean tree.
+cd "$(dirname "$0")/.." || { echo "no-deferral gate: cannot cd to the repository root" >&2; exit 2; }
+
+# THE DISCOVERY FLOOR. A scan of zero files is not a clean tree, it is an unproven one. The self-test
+# has asserted this floor on the real tree since it was written — but only in the self-test, and the
+# self-test is not the mode CI and verify-1.6.0-done.sh run. `--check` and `--strict-done` scanned
+# whatever discovery handed them, so an empty (or wrongly-rooted) tree with an empty waivers file
+# printed PASS, and --strict-done went on to certify "the tree carries ONLY the permanent hot/*
+# foundation fixtures" over nothing at all. Both modes share the floor now.
+DISCOVERY_FLOOR=50
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -115,8 +128,20 @@ scan() {
       nopen = gsub(/[{]/, "{", code); nclose = gsub(/[}]/, "}", code)
 
       # ── #[cfg(test)] mod { … } block tracking (unit-test scaffolding excluded from BOTH classes) ──
-      lc = tolower(code)
-      is_cfgtest = (code ~ /#\[cfg\(/ && (lc ~ /[^a-z0-9_]test[^a-z0-9_]/))
+      # THE PREDICATE IS MATCHED EXACTLY, NOT AS A SUBSTRING. This was a substring hunt for the word
+      # "test" anywhere inside any `#[cfg(...)]`, which made `#[cfg(not(test))]` — the attribute
+      # whose entire meaning is "this is the code that SHIPS" — look like test scaffolding and
+      # excluded the whole module from both classes. `#[cfg(feature = "test-util")]` matched too. A
+      # module carrying a line-start todo!() and a raw SKELETON label under `not(test)` scanned to
+      # zero markers and the gate printed PASS. Only a bare `test` predicate, alone or as a member of
+      # an all()/any() list, is scaffolding.
+      # A BARE `test` predicate token, in any all()/any() nesting, is scaffolding — unless it is
+      # NEGATED, in which case the block is the shipped arm. `#[cfg(all(test, not(target_env=…)))]`
+      # is still scaffolding: what disqualifies is `not(` wrapping the TEST predicate itself.
+      bare_test = (code ~ /#\[cfg\(/ && code ~ /[(,][[:space:]]*test[[:space:]]*[,)]/)
+      neg_test  = (code ~ /not\([[:space:]]*test[[:space:]]*\)/ \
+                || code ~ /not\((any|all)\([[:space:]]*test[[:space:]]*[,)]/)
+      is_cfgtest = (bare_test && !neg_test)
       has_mod    = (code ~ /(^|[^A-Za-z0-9_])mod([^A-Za-z0-9_])/)
       entered = 0
       if (is_cfgtest && has_mod) {
@@ -131,8 +156,13 @@ scan() {
       if (is_cfgtest && !has_mod) pend = 1
       if (testdepth > 0 || entered) next          # inside a cfg(test) block — skip both classes
 
-      # ── Class A: deferral MACRO invocation as a line-start statement, on stripped code ──
-      if (code ~ /^[[:space:]]*(pub[[:space:]]+[A-Za-z0-9_]+[[:space:]]+)?(unimplemented|todo|unreachable_placeholder)![[:space:]]*\(/)
+      # ── Class A: a deferral MACRO invocation ANYWHERE in the stripped code ──
+      # This used to be anchored to the start of the line. The anchor bought nothing the comment
+      # strip above does not already provide, and it hid the most ordinary way a reachable deferral
+      # is actually written: `_ => todo!("not wired yet"),`, `let v = unimplemented!();`,
+      # `fn f() -> u8 { todo!() }`. A file carrying all three scanned to zero markers and the gate
+      # printed PASS. The word-boundary prefix keeps `my_todo!()` and `x.todo!()` from matching.
+      if (code ~ /(^|[^A-Za-z0-9_.])(unimplemented|todo|unreachable_placeholder)![[:space:]]*\(/)
         emit("A", code)
 
       # ── Class B: deferral PHRASE labels, on the RAW line (comments included). SKELETON is
@@ -213,6 +243,26 @@ RED
     fail=1; note "RED FAILED: Class-B SKELETON not flagged (got: $out)"
   fi
 
+  # ── RED: a deferral macro that is NOT at the start of its line is still reachable. ──
+  # Every one of these compiles, ships, and panics when a caller gets there. The scanner used to
+  # anchor Class A to line start and reported this whole file as zero markers.
+  cat >"$tmp/red_inline.rs" <<'RED'
+pub fn dispatch(kind: u8) -> u8 {
+    match kind {
+        0 => 1,
+        _ => todo!("the duplex dialect is not wired yet"),
+    }
+}
+pub fn other() -> u8 { let v = unimplemented!(); v }
+pub fn third() -> u8 { todo!() }
+RED
+  out="$(scan "$tmp/red_inline.rs")"
+  if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="A"{n++} END{print n+0}')" -ge 3 ]; then
+    note "RED inline: a match arm, an initialiser and a one-line fn body all flag as Class A"
+  else
+    fail=1; note "RED inline FAILED: a deferral macro away from line start was not flagged (got: $out)"
+  fi
+
   # ── GREEN (comment): the SAME Class-A tokens inside a `//` / block comment (the plane_host
   #    anti-markers that DENY a stub) must NOT flag; a lowercase domain "skeleton" must NOT flag. ──
   cat >"$tmp/green_comment.rs" <<'GREEN'
@@ -242,6 +292,46 @@ GREEN
     fail=1; note "GREEN cfg(test) FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
+  # ── RED: `#[cfg(not(test))]` is the code that SHIPS, so it is scanned, not excluded. ──
+  # Same for a feature whose NAME merely contains "test". The cfg(test) exclusion above is for
+  # scaffolding; a substring hunt for "test" turned it into a way to hide a deferral in plain sight.
+  cat >"$tmp/red_notcfgtest.rs" <<'RED'
+#[cfg(not(test))]
+mod production {
+    // SKELETON: the real duplex session is not implemented
+    pub fn q() -> u8 {
+        todo!("dev-only until DoD")
+    }
+}
+#[cfg(feature = "test-util")]
+mod shipped_helper {
+    pub fn r() -> u8 { todo!() }
+}
+RED
+  out="$(scan "$tmp/red_notcfgtest.rs")"
+  if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="A"{n++} END{print n+0}')" -ge 2 ] \
+  && [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="B"{n++} END{print n+0}')" -ge 1 ]; then
+    note "RED not(test): a cfg(not(test)) module and a test-NAMED feature module are both scanned"
+  else
+    fail=1; note "RED not(test) FAILED: shipped code was excluded as test scaffolding (got: $out)"
+  fi
+
+  # ── GREEN: `#[cfg(all(test, unix))]` IS scaffolding and stays excluded (the rule did not widen
+  #    into "scan everything"). ──
+  cat >"$tmp/green_cfgtest_all.rs" <<'GREEN'
+#[cfg(all(test, unix))]
+mod tests {
+    // SKELETON fixture
+    fn f() { todo!() }
+}
+GREEN
+  out="$(scan "$tmp/green_cfgtest_all.rs")"
+  if [ -z "$out" ]; then
+    note "GREEN cfg(all(test,…)): a genuine test module is still excluded"
+  else
+    fail=1; note "GREEN cfg(all(test,…)) FAILED: expected 0, got:"; printf '%s\n' "$out" | sed 's/^/    /'
+  fi
+
   # ── GREEN (tests file): the discovery step EXCLUDES a tests/ path and a *_tests.rs file. ──
   mkdir -p "$tmp/crates/x/src/tests"
   printf 'fn f() { todo!() } // SKELETON\n' > "$tmp/crates/x/src/tests/foo.rs"
@@ -256,10 +346,67 @@ GREEN
 
   # ── Discovery must find a non-trivial file set on the real tree (unknown is not green). ──
   local realn; realn="$(src_files | grep -c . || true)"
-  if [ "$realn" -ge 50 ]; then
-    note "discovery: $realn shipped source files found on the real tree (floor 50)"
+  if [ "$realn" -ge "$DISCOVERY_FLOOR" ]; then
+    note "discovery: $realn shipped source files found on the real tree (floor $DISCOVERY_FLOOR)"
   else
     fail=1; note "discovery FAILED: only $realn source files found — the scan would pass vacuously"
+  fi
+
+  # ── THE FLOOR IS ON THE RUN PATH, NOT JUST HERE. The assertion above proves the REAL tree is big
+  #    enough; it says nothing about what --check does when discovery comes back empty, and for a
+  #    long time the answer was "prints PASS". Drive the real run_check and --strict-done against a
+  #    tree with no crates/ at all and require a refusal from BOTH. ──
+  local vt="$tmp/vacuous"
+  mkdir -p "$vt/scripts" "$vt/docs/design"
+  cp "$0" "$vt/scripts/no-deferral-gate.sh"
+  : >"$vt/scripts/no-deferral.waivers"
+  : >"$vt/docs/design/1.6.0-TRACKER.md"
+  local vrc vout
+  vout="$( (cd "$vt" && bash scripts/no-deferral-gate.sh --check) 2>&1 )"; vrc=$?
+  if [ "$vrc" -ne 0 ] && printf '%s' "$vout" | grep -q "UNPROVEN"; then
+    note "VACUOUS: --check over a tree with zero shipped source files refuses ($vrc), it does not PASS"
+  else
+    fail=1; note "VACUOUS FAILED: --check reported rc=$vrc over an EMPTY tree: $vout"
+  fi
+  vout="$( (cd "$vt" && bash scripts/no-deferral-gate.sh --strict-done) 2>&1 )"; vrc=$?
+  if [ "$vrc" -ne 0 ]; then
+    note "VACUOUS: --strict-done cannot certify '1.6.0 done' over an empty tree ($vrc)"
+  else
+    fail=1; note "VACUOUS FAILED: --strict-done certified done over an EMPTY tree: $vout"
+  fi
+
+  # ── THE EXPIRY. A waiver that cannot expire is a permanent unreviewed exemption, and one glob
+  # with no expiry covered a whole directory's 52 markers. Each case drives the REAL `load_waivers`.
+  printf 'crates/x/src/a.rs:1\ta reason with no expiry at all\n' >"$tmp/no-expiry.waivers"
+  if ( WAIVERS_FILE="$tmp/no-expiry.waivers" load_waivers ) >/dev/null 2>&1; then
+    fail=1; note "EXPIRY FAILED: a waiver row carrying no [retires: …] was accepted"
+  else
+    note "EXPIRY: a waiver row that names no expiry is refused"
+  fi
+  printf 'crates/x/src/a.rs:1\ta reason [retires: ZZ999]\n' >"$tmp/bad-expiry.waivers"
+  if ( WAIVERS_FILE="$tmp/bad-expiry.waivers" load_waivers ) >/dev/null 2>&1; then
+    fail=1; note "EXPIRY FAILED: an expiry naming a tracker row that does not exist was accepted"
+  else
+    note "EXPIRY: an expiry naming a tracker row that does not exist is refused"
+  fi
+  printf 'crates/x/src/a.rs:1\ta reason [retires: H5]\n' >"$tmp/good-expiry.waivers"
+  if ( WAIVERS_FILE="$tmp/good-expiry.waivers" load_waivers ) >/dev/null 2>&1; then
+    note "EXPIRY: an expiry naming a real tracker row is accepted (the rule is not 'refuse everything')"
+  else
+    fail=1; note "EXPIRY FAILED: a waiver naming a real tracker row was refused"
+  fi
+  # And the committed file itself: every row carries an expiry that resolves, and no row is a glob.
+  local globrows
+  globrows="$(grep -vE '^[[:space:]]*(#|$)' "$WAIVERS_FILE" | grep -cvE '^[^[:space:]]+:[0-9]+[[:space:]]' || true)"
+  if [ "$globrows" -eq 0 ]; then
+    note "EXPIRY: every committed waiver row is an exact file:line, not a directory glob"
+  else
+    fail=1; note "EXPIRY FAILED: $globrows committed waiver row(s) are globs — a glob absorbs new markers in silence"
+  fi
+  if ( load_waivers ) >/dev/null 2>&1; then
+    note "EXPIRY: every committed waiver row's expiry resolves to a tracker row"
+  else
+    fail=1; note "EXPIRY FAILED: the committed waivers file does not load (a row's expiry does not resolve)"
   fi
 
   if [ "$fail" -ne 0 ]; then
@@ -277,6 +424,16 @@ run_check() {
 
   local tmp; tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' RETURN
   local files; files="$(src_files)"
+
+  # UNPROVEN, NOT PASS. See DISCOVERY_FLOOR at the top of this file.
+  local nfiles; nfiles="$(printf '%s\n' "$files" | grep -c . || true)"
+  if [ "$nfiles" -lt "$DISCOVERY_FLOOR" ]; then
+    red "no-deferral gate: discovery found only $nfiles shipped source file(s) (floor $DISCOVERY_FLOOR)"
+    note "Broken discovery reports a clean tree. This verdict is UNPROVEN, not PASS."
+    note "Expected crates/*/src/**/*.rs under $(pwd)."
+    return 2
+  fi
+
   : >"$tmp/markers"
   # shellcheck disable=SC2086
   [ -n "$files" ] && scan $files >"$tmp/markers"
