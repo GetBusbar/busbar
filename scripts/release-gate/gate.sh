@@ -214,6 +214,48 @@ STUB
     ok "a record that names one asset twice with different digests has no answer for it"
   fi
 
+  # ── CASE 5c: the registry names are compared to the RECORD, not to each other ─────────────────
+  #
+  # docker-checks resolved `:<version>` on Docker Hub and then measured `:latest`, ghcr's
+  # `:<version>` and ghcr's `:latest` against THAT digest — a value the same run had just fetched.
+  # Four names agreeing with each other is what those rows proved, and four names all pointing at
+  # bytes qa never staged satisfies every one of them: a promote that rebuilt instead of retagging
+  # pushes one image under every name. The case below is exactly that release.
+  local staged_img="sha256:$(printf '%064d' 1 | tr 0 b)"
+  local rebuilt_img="sha256:$(printf '%064d' 1 | tr 0 c)"
+  jq -n --arg d "$staged_img" --arg c "$rebuilt_img" '{digest:$d, compat_digest:$c}' > "$sdir/img.json"
+  if digest_matches "$rebuilt_img" "$rebuilt_img"; then
+    ok "two registry names agreeing with each other still compare equal — which is why that was never the question"
+  else
+    nope "the comparison no longer sees two identical digests as equal"
+  fi
+  if digest_matches "$rebuilt_img" "$(STAGED_RECORD="$sdir/img.json" staged_image_digest)"; then
+    nope "a rebuilt image that every registry name agrees on matched the STAGED record — a promote that recompiled would ship green on all four docker rows"
+  else
+    ok "an image every registry name agrees on is still not the staged image"
+  fi
+  if digest_matches "$staged_img" "$(STAGED_RECORD="$sdir/img.json" staged_image_digest)"; then
+    ok "and the genuinely staged image matches its recorded digest"
+  else
+    nope "the staged image did not match its own recorded digest — the fix broke the pass path"
+  fi
+  if [ "$(STAGED_RECORD="$sdir/img.json" staged_compat_digest)" = "$rebuilt_img" ]; then
+    ok "the armv8.0-compat image is anchored on its OWN recorded digest, not the default manifest's"
+  else
+    nope "staged_compat_digest did not return .compat_digest"
+  fi
+  # An anchor that is not a digest is no anchor. A registry answers `sha256:<hex>`; a record that
+  # lost the prefix, or carries a tag name, or is empty, must not become an expectation everything
+  # is then compared to.
+  local bogus
+  for bogus in "" "latest" "1.5.4" "sha256:abc" "deadbeef"; do
+    printf '{"digest":"%s"}\n' "$bogus" > "$sdir/bogus.json"
+    if [ -n "$(STAGED_RECORD="$sdir/bogus.json" staged_image_digest || true)" ]; then
+      nope "a staged record whose digest is '${bogus}' was accepted as an anchor"
+    fi
+  done
+  ok "a record whose digest is empty, a tag, or a truncated hash yields no anchor at all"
+
   # ── CASE 6: a version match cannot be satisfied by a LONGER version ───────────────────────────
   # `grep -q "1.5.2"` matches "1.5.20". install:e2e (the row proving the documented first command
   # installs THIS release) and helm:render (the row proving the published chart deploys THIS image

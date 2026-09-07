@@ -513,15 +513,49 @@ def row_pgo_applied(ctx) -> str:
 # =================================================================================================
 
 
+# `repo@sha256:<64 hex>`. Anything else is a NAME, and a name is a pointer somebody can move.
+_DIGEST_REF = re.compile(r"^[^@\s]+@sha256:[0-9a-f]{64}$")
+
+
+def is_digest_ref(ref: str) -> bool:
+    """True only for a reference that pins the image by content, not by name.
+
+    THE FILE HEADER SAID "ADDRESSED BY DIGEST, NEVER BY TAG" AND NOTHING ENFORCED IT.
+
+    `_image_ref` returned whatever string arrived on `--image`, so `--image getbusbar/busbar:1.5.4`
+    ran all five rows against whatever that tag resolved to at the instant of the pull. Every row
+    then passed or failed about an image the caller never named: the staged one if the tag still
+    pointed at it, a re-push if it did not, and the two are indistinguishable in the output. That
+    is the whole property an immutable-tag policy exists to provide, given away by the one program
+    whose job is to prove it.
+
+    It matters most in the case the rows exist for. A promote that rebuilt instead of retagging
+    leaves `:<version>` pointing at bytes qa never staged; boot the tag and the image boots, and
+    the release is green on a container nobody soaked. Pinning to `sha256:` makes the reference
+    the artifact, so "the image under test" and "the image that was staged" are the same sentence
+    or the row is red.
+    """
+    return bool(_DIGEST_REF.match((ref or "").strip()))
+
+
 def _image_ref(ctx) -> str:
     """The digest-pinned reference for the platform under test, or a hard failure."""
-    if not getattr(ctx, "image", ""):
+    ref = (getattr(ctx, "image", "") or "").strip()
+    if not ref:
         raise AssertionError(
             "no image reference was passed to the verifier (--image), so the image rows could not "
             "run. A row that cannot run is RED, never skipped: these are the rows that would have "
             "caught the release whose image did not boot at all."
         )
-    return ctx.image
+    if not is_digest_ref(ref):
+        raise AssertionError(
+            "--image %r is not digest-pinned. Every image row must address the artifact as "
+            "`<repo>@sha256:<64 hex>`; a tag is a moving pointer, so verifying one proves something "
+            "about whatever that name meant at the instant of the pull, and a promote that rebuilt "
+            "instead of retagging is invisible to it. Pass the digest release-stage.yml recorded "
+            "for the staged image, not the tag it also wears." % ref
+        )
+    return ref
 
 
 def _docker(ctx, args: list, timeout: int = 120):
@@ -763,7 +797,64 @@ def _assert_contract_is_whole(contract: dict) -> list:
     return rows
 
 
-def row_coverage(rows: list, targets: dict) -> dict:
+WORKFLOW_DIR = os.path.join(ROOT, ".github", "workflows")
+
+
+def targets_named_by_a_verifier_leg(specs: list, workflow_dir: str = None) -> set:
+    """Target names that some workflow leg really invokes THIS verifier against.
+
+    "Verified" used to mean `published == true`, on the reasoning that the publish flag is exactly
+    what release-stage.yml's `targets` job turns into the verify matrix. That was true of the
+    matrix and it was never the whole pipeline: a job can name a target directly, and one now
+    does — release-stage.yml's `verify-image` leg runs this file with `--target image-linux-amd64`
+    / `image-linux-arm64` against the digest `stage-image` just pushed. Reading coverage off the
+    publish flag alone reports those five rows as executed by nothing while a release executes
+    them every time, and a report that is wrong in the pessimistic direction gets `continue-on-
+    error`'d, which is how it stops being read at all.
+
+    So coverage is derived from the pipeline in BOTH of the ways the pipeline provides it: the
+    published matrix, plus any target a workflow that runs this verifier names by hand. The second
+    half is deliberately textual — the target name appearing anywhere in a workflow that invokes
+    `verify-artifact.py`. `--target "${{ matrix.target }}"` means the name is never on the same
+    line as the flag, so a stricter parse would find nothing, and the direction of the looseness is
+    the safe one: it can only be satisfied by the name being PRESENT in a file that runs the
+    verifier, so deleting the leg deletes the coverage and the gap comes back red.
+
+    COMMENTS DO NOT CONFER COVERAGE, and that is not a nicety. release-stage.yml explains, in a
+    comment, that `x86_64-unknown-linux-musl` feeds `image-linux-amd64` — so the first version of
+    this scan reported both musl binaries as verified on the strength of a sentence describing why
+    they are not. A prose mention is the opposite of a leg. Comment lines are stripped before the
+    search; stripping slightly too much can only lose coverage, which shows up as a red gap, which
+    is the direction that gets looked at.
+    """
+    wf_dir = workflow_dir or WORKFLOW_DIR
+    declared = {t["target"] for t in specs}
+    named = set()
+    if not os.path.isdir(wf_dir):
+        return named
+    for fn in sorted(os.listdir(wf_dir)):
+        if not fn.endswith((".yml", ".yaml")):
+            continue
+        try:
+            with open(os.path.join(wf_dir, fn), encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError:
+            continue
+        text = "\n".join(ln for ln in text.splitlines()
+                         if not ln.lstrip().startswith("#"))
+        if "verify-artifact.py" not in text:
+            continue
+        # A leg that does not pass --target cannot be naming one; requiring the flag keeps a
+        # workflow that merely runs --selftest or --coverage from conferring coverage on anything.
+        if "--target" not in text:
+            continue
+        for name in declared:
+            if re.search(r"(?<![\w.-])%s(?![\w.-])" % re.escape(name), text):
+                named.add(name)
+    return named
+
+
+def row_coverage(rows: list, targets: dict, named: set = None) -> dict:
     """Which declared rows does anything actually EXECUTE, and against which targets?
 
     THE THIRD WAY A CONTRACT CAN LIE, AFTER "declared but unimplemented" AND "implemented but
@@ -791,16 +882,26 @@ def row_coverage(rows: list, targets: dict) -> dict:
     this report cannot drift into claiming coverage the pipeline does not provide.
     """
     specs = targets.get("targets") or []
-    verified_specs = [t for t in specs if t.get("published") is True]
+    if named is None:
+        named = targets_named_by_a_verifier_leg(specs)
+    verified_specs = [t for t in specs
+                      if t.get("published") is True or t["target"] in named]
     out = {
         "verified_targets": [t["target"] for t in verified_specs],
-        # The TARGET-level half of the same gap. The two musl binaries are `published: false` and
-        # `packaged_into` an image: they are built by the release, they are the bytes that end up
-        # inside the container a user runs, and no leg of the verify matrix ever opens one. They do
-        # not show up in the row list below, because their rows (archive_shape, release_pubkey, …)
-        # are covered on the six published targets — which is exactly the confusion worth naming:
-        # a row being covered SOMEWHERE is not that row being covered on THESE bytes.
-        "unverified_targets": [t["target"] for t in specs if t.get("published") is not True],
+        "named_by_workflow": sorted(named),
+        # The TARGET-level half of the same gap, and it is derived from the SAME verified set the
+        # rows are, so the two halves of this report can never disagree. It used to be spelled
+        # `published is not True`, which was the same sentence as the verified set only for as long
+        # as the publish flag was the whole pipeline; it stopped being that the moment a job named
+        # a target by hand, and the report would then have listed image-linux-amd64 as opened by
+        # nothing in the same breath as marking its five rows COVERED.
+        #
+        # The two musl binaries are what is left: `published: false`, `packaged_into` an image,
+        # built by the release, the bytes inside the container a user runs, and no leg opens one.
+        # They do not show up in the row list below, because their rows (archive_shape,
+        # release_pubkey, …) are covered on the published targets — which is exactly the confusion
+        # worth naming: a row being covered SOMEWHERE is not that row being covered on THESE bytes.
+        "unverified_targets": [t["target"] for t in specs if t not in verified_specs],
         "rows": {},
         "gaps": [],
     }
@@ -818,10 +919,10 @@ def print_coverage_gaps(cov: dict, contract_path: str) -> None:
     if cov["unverified_targets"]:
         print("\nUNVERIFIED TARGETS — declared in the targets file, opened by no contract run: %s"
               % ", ".join(cov["unverified_targets"]))
-        print("  The musl entries are the bytes that go INSIDE the published container image, and the")
-        print("  image entries are that image. Nothing runs the verifier against either, so every")
-        print("  property proven below is proven about the tarballs and about nothing a container user")
-        print("  ever executes. `packaged_into` says which image each musl binary feeds.")
+        print("  These are the bytes that go INSIDE the published container image. Nothing runs the")
+        print("  verifier against them, so every property proven below is proven about the tarballs and")
+        print("  about the image, and not about the binary the image is assembled from.")
+        print("  `packaged_into` says which image each musl binary feeds.")
     if not cov["gaps"]:
         print("coverage: every declared contract row is executed by at least one verified target.")
         return
@@ -831,7 +932,8 @@ def print_coverage_gaps(cov: dict, contract_path: str) -> None:
         info = cov["rows"][rid]
         where = ", ".join(info["applies_to"]) or "<no declared target at all>"
         print("  GAP  %-36s applies to: %s" % (rid, where))
-        print("       ...none of which is verified (verified = published:true in the targets file)")
+        print("       ...none of which any leg verifies (verified = published:true in the targets")
+        print("       file, or named by a workflow that invokes this verifier with --target)")
     print(
         "\nThese rows are declared in %s and implemented in this file, so set equality is satisfied\n"
         "and nothing else in the pipeline can tell they never ran. A row that never executes is not\n"
@@ -1015,10 +1117,69 @@ def selftest() -> int:
     cov = row_coverage(real_rows, real_targets)
     image_rows = sorted(r["id"] for r in real_rows
                         if (r.get("applies_when") or {}).get("kind") == "image")
-    check("the image rows are named as gaps",
-          set(image_rows) <= set(cov["gaps"]) and image_rows,
-          "declared+implemented, applicable only to published:false image targets, executed by nothing: %s"
-          % ", ".join(cov["gaps"]))
+    # THE IMAGE ROWS NOW RUN, AND THIS IS THE CASE THAT SAYS SO RATHER THAN ASSUMING IT.
+    #
+    # They were declared, implemented, covered by set equality, and executed by nothing — and the
+    # case here asserted exactly that, so the report and the case agreed about a gap forever. Now
+    # release-stage.yml's verify-image leg runs them against the staged digest on a native runner
+    # per platform, so the gap is closed, and what has to be proven is the DISCRIMINATION: covered
+    # while the leg exists, a named gap the moment it does not.
+    check("the image rows are covered by a real verifier leg",
+          not (set(image_rows) & set(cov["gaps"])) and image_rows
+          and all(cov["rows"][r]["covered_by"] for r in image_rows),
+          "release-stage.yml names image-linux-amd64/arm64 and runs this verifier against them")
+    empty_wf = tempfile.mkdtemp(prefix="busbar-verify-nowf-")
+    try:
+        no_leg = row_coverage(
+            real_rows, real_targets,
+            named=targets_named_by_a_verifier_leg(real_targets["targets"], empty_wf))
+        check("delete the leg and the image rows are gaps again",
+              set(image_rows) <= set(no_leg["gaps"]),
+              "coverage is derived from the pipeline, so it goes red when the pipeline stops: %s"
+              % ", ".join(no_leg["gaps"]))
+    finally:
+        shutil.rmtree(empty_wf, ignore_errors=True)
+    prose_wf = tempfile.mkdtemp(prefix="busbar-verify-prosewf-")
+    try:
+        with open(os.path.join(prose_wf, "prose.yml"), "w", encoding="utf-8") as fh:
+            fh.write("jobs:\n  a:\n    steps:\n"
+                     "      # someday run scripts/verify-artifact.py --target image-linux-amd64\n"
+                     "      - run: echo nothing\n")
+        prose = targets_named_by_a_verifier_leg(real_targets["targets"], prose_wf)
+        check("a comment describing a leg is not a leg",
+              not prose,
+              "a workflow that only MENTIONS a target in prose confers no coverage on it")
+    finally:
+        shutil.rmtree(prose_wf, ignore_errors=True)
+
+    # ── AN IMAGE IS ADDRESSED BY DIGEST, OR THE ROWS DO NOT RUN ──────────────────────────────────
+    # The file header said "addressed by digest, never by tag" and _image_ref returned whatever
+    # string arrived, so `--image getbusbar/busbar:1.5.4` ran all five rows against whatever the
+    # tag happened to point at. A promote that rebuilt instead of retagging is invisible to that.
+    class _C:
+        pass
+    for bad, why in (
+        ("getbusbar/busbar:1.5.4", "a version tag is a moving pointer"),
+        ("getbusbar/busbar:latest", "`latest` has already served a stale release for six days"),
+        ("getbusbar/busbar", "a bare repo name is the same pointer with the default tag"),
+        ("getbusbar/busbar@sha256:abc", "a truncated digest is not a digest"),
+        ("getbusbar/busbar@md5:%s" % ("0" * 64), "only sha256 addresses these bytes"),
+    ):
+        c = _C(); c.image = bad
+        refused = False
+        try:
+            _image_ref(c)
+        except AssertionError:
+            refused = True
+        check("--image %s is refused" % bad[:34], refused, why)
+    c = _C(); c.image = "getbusbar/busbar@sha256:" + ("a" * 64)
+    accepted = False
+    try:
+        accepted = _image_ref(c) == c.image
+    except AssertionError:
+        accepted = False
+    check("a digest-pinned --image is still accepted", accepted,
+          "the fix must not close the path a real release takes")
     check("a covered row is NOT named as a gap",
           "release_pubkey" not in cov["gaps"] and cov["rows"]["release_pubkey"]["covered_by"],
           "release_pubkey runs on %d verified target(s)" % len(cov["rows"]["release_pubkey"]["covered_by"]))
@@ -1075,7 +1236,9 @@ def coverage_main(argv) -> int:
     rows = _assert_contract_is_whole(contract)
     cov = row_coverage(rows, targets)
     print("=== artifact-contract coverage ===")
-    print("verified targets (published:true): %s\n" % ", ".join(cov["verified_targets"]))
+    print("verified targets (published:true, or named by a verifier leg): %s" % ", ".join(cov["verified_targets"]))
+    print("named by a workflow leg rather than the published matrix: %s\n"
+          % (", ".join(cov["named_by_workflow"]) or "-"))
     for rid in [r["id"] for r in rows]:
         info = cov["rows"][rid]
         verdict = "COVERED" if info["covered_by"] else "GAP"
