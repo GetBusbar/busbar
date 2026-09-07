@@ -66,6 +66,21 @@ cd "$(dirname "$0")/.." || exit 1
 #   BUSBAR_RELEASE_PUBKEY=$(printf '0%.0s' {1..64}) scripts/pgo-build.sh
 scripts/release-key-guard.sh require || exit 1
 
+# ── THE FLAG CHANNEL, BEFORE ANY PHASE USES IT ─────────────────────────────────────────────────
+# Every phase below carries its instructions to rustc in RUSTFLAGS: -Cprofile-generate in phase 1,
+# -Cprofile-use in phase 3. Cargo gives CARGO_ENCODED_RUSTFLAGS PRECEDENCE over RUSTFLAGS, so a
+# caller that exports it silently discards BOTH - no instrumentation, no profile-use, and (before
+# the output-side assertion at the end of phase 3) a proof marker written anyway. Refuse it rather
+# than merge into it: this script's whole contract is that the flags it names are the flags the
+# compiler got, and there is no correct build that needs a caller to override them.
+if [ -n "${CARGO_ENCODED_RUSTFLAGS:-}" ]; then
+  echo "[pgo-build] CARGO_ENCODED_RUSTFLAGS is set in the environment." >&2
+  echo "[pgo-build] Cargo gives it precedence over RUSTFLAGS, so every PGO flag this script sets" >&2
+  echo "[pgo-build] (-Cprofile-generate, -Cprofile-use, the BOLT and LSE flags) would be discarded" >&2
+  echo "[pgo-build] without a word. Unset it and re-run; do not merge into it." >&2
+  exit 1
+fi
+
 REQS="${PGO_REQS:-2000}"
 STREAMS="${PGO_STREAMS:-200}"
 CONC="${PGO_CONC:-32}"
@@ -273,13 +288,22 @@ PY
 # proportional, so concurrency loses nothing and gains the contended paths). FAIL-CLOSED: any
 # response with an unexpected status exits non-zero - the old curl loop never checked status, so
 # a trainer that silently 4xx'd every request would have profiled the refusal path as "success".
-#   argv: port conc total expected-status path [header=value ...]; body on stdin
+#   argv: port conc total expected-status path; body on stdin
+#   env:  PGO_LOADGEN_HEADERS - newline-separated header=value lines
+# CREDENTIALS TRAVEL IN THE ENVIRONMENT, NOT ON ARGV. Every shape below authenticates with the run's
+# minted bbk_* key, and an argv is world-readable via `ps` for the whole life of the process - on a
+# shared or developer box that is the trainer's live credential on display for the duration of a
+# multi-thousand-request run. The HEADERS THEMSELVES ARE UNCHANGED: same names, same values, same
+# request bytes on the wire, so the profile this trains is identical. Only the shell-to-python
+# transport moved.
 cat > "$WORK/loadgen.py" <<'PY'
-import http.client, sys, threading, time
+import http.client, os, sys, threading, time
 PORT, CONC, TOTAL = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
 EXPECT, PATH = int(sys.argv[4]), sys.argv[5]
 HDRS = {"content-type": "application/json"}
-for kv in sys.argv[6:]:
+for kv in os.environ.get("PGO_LOADGEN_HEADERS", "").splitlines():
+    if not kv.strip():
+        continue
     k, _, v = kv.partition("="); HDRS[k] = v
 BODY = sys.stdin.buffer.read()
 lock, errs, first = threading.Lock(), [0], [None]
@@ -452,46 +476,63 @@ for RUN in $(seq 1 "$TRAIN_RUNS"); do
   # Mint the run's client key on the admin listener (per run - the key store is in-memory, so it
   # dies with the run's gateway). This also trains the admin plane (admin chain, scope check,
   # mutation limiter, audit) - one warm request on an otherwise-cold surface, now once per run.
+  # The admin bearer goes in a mktemp'd header file inside $WORK (removed by the EXIT trap), not on
+  # curl's argv, which `ps` shows to every user on the box for the life of the process. Same header,
+  # same request bytes, same admin-plane path trained.
+  printf 'authorization: Bearer %s\n' "$PGO_ADMIN_TOKEN" > "$WORK/admin-hdr"
   CLIENT_TOKEN="$(curl -sS -X POST "http://127.0.0.1:$((RUN_PORT + 1))/api/v1/admin/keys" \
-    -H "authorization: Bearer $PGO_ADMIN_TOKEN" -H "content-type: application/json" \
+    -H @"$WORK/admin-hdr" -H "content-type: application/json" \
     -d '{"name":"pgo","group":"bench","expires_in":"1h"}' \
     | python3 -c 'import sys,json;print(json.load(sys.stdin)["token"])')" \
     || pgo_fail "run $RUN/$TRAIN_RUNS: key mint on the admin listener failed"
-  case "$CLIENT_TOKEN" in bbk_*) ;; *) pgo_fail "run $RUN/$TRAIN_RUNS: minted client token malformed: '$CLIENT_TOKEN'" ;; esac
+  # The malformed-token message reports the SHAPE, never the value. The old message interpolated
+  # $CLIENT_TOKEN verbatim: it fires when the value is not bbk_-prefixed, which is normally an error
+  # body, but the day that prefix changes it would print a live credential into the build log.
+  case "$CLIENT_TOKEN" in
+    bbk_*) ;;
+    *) pgo_fail "run $RUN/$TRAIN_RUNS: minted client token malformed (${#CLIENT_TOKEN} chars, starts '$(printf '%.4s' "$CLIENT_TOKEN")', expected a bbk_ prefix) - the admin mint returned something that is not a key" ;;
+  esac
+
+  # The per-shape header sets, carried to the loadgen in the environment rather than on its argv
+  # (see the loadgen's header note). Identical header names and values to before, so every shape
+  # sends byte-identical requests and trains exactly what it trained.
+  BEARER_HDRS="authorization=Bearer $CLIENT_TOKEN"
+  ANTH_HDRS="$(printf 'x-api-key=%s\nanthropic-version=2023-06-01' "$CLIENT_TOKEN")"
+  BOGUS_HDRS="authorization=Bearer bbk_bogus.bogus"
 
   # warmup (uncounted): ramp the reqwest egress pool and let reliability state learn the lane
   # healthy BEFORE the volume shape, so training measures steady state, not cold-start ramp.
-  printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_WARMUP" 200 \
-    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+  printf '%s' "$OPENAI_BODY" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
+    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_WARMUP" 200 /v1/chat/completions \
     || pgo_fail "run $RUN/$TRAIN_RUNS: training warmup failed"
   # shape 1: openai chat passthrough at 10x weight - THE volume path; its share of the merged
   # profile's counts should match its share of production load, so branch statistics and the
   # hot/cold split are decided by this shape.
-  printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_VOLUME" 200 \
-    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+  printf '%s' "$OPENAI_BODY" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
+    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_VOLUME" 200 /v1/chat/completions \
     || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 1 (openai chat) failed"
   log "  run $RUN/$TRAIN_RUNS: shape 1 (openai chat x$RUN_VOLUME) done"
-  printf '%s' "$OPENAI_BODY_LARGE" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 \
-    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+  printf '%s' "$OPENAI_BODY_LARGE" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
+    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 /v1/chat/completions \
     || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 1b (openai chat, large body) failed"
   log "  run $RUN/$TRAIN_RUNS: shape 1b (openai chat, large body) done"
   # shape 2: anthropic ingress -> openai upstream (the translation path). x-api-key, not Bearer:
   # that is what real anthropic-dialect clients send, and it trains the second extractor branch.
-  printf '%s' "$ANTH_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 \
-    /v1/messages "x-api-key=$CLIENT_TOKEN" "anthropic-version=2023-06-01" \
+  printf '%s' "$ANTH_BODY" | PGO_LOADGEN_HEADERS="$ANTH_HDRS" \
+    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REQS" 200 /v1/messages \
     || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 2 (anthropic translation) failed"
   log "  run $RUN/$TRAIN_RUNS: shape 2 (anthropic translation) done"
   # shape 3: SSE streaming relay (the loadgen's read() drains the chunked event stream to
   # completion, so the relay's full write-flush-finish path trains, not just the headers).
-  printf '%s' "$STREAM_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_STREAMS" 200 \
-    /v1/chat/completions "authorization=Bearer $CLIENT_TOKEN" \
+  printf '%s' "$STREAM_BODY" | PGO_LOADGEN_HEADERS="$BEARER_HDRS" \
+    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_STREAMS" 200 /v1/chat/completions \
     || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 3 (SSE streaming) failed"
   log "  run $RUN/$TRAIN_RUNS: shape 3 (SSE streaming) done"
   # shape 4: refusal sliver (~1% of the mix, expects 401): biases the verify branch correctly
   # (valid overwhelmingly likely) while still giving the reject/finish_rejected arms real counts
   # instead of zero - small enough that refusal code is not promoted into the hot layout.
-  printf '%s' "$OPENAI_BODY" | python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REFUSALS" 401 \
-    /v1/chat/completions "authorization=Bearer bbk_bogus.bogus" \
+  printf '%s' "$OPENAI_BODY" | PGO_LOADGEN_HEADERS="$BOGUS_HDRS" \
+    python3 "$WORK/loadgen.py" "$RUN_PORT" "$CONC" "$RUN_REFUSALS" 401 /v1/chat/completions \
     || pgo_fail "run $RUN/$TRAIN_RUNS: training shape 4 (auth refusal) failed"
   log "  run $RUN/$TRAIN_RUNS: shape 4 (auth refusal) done"
 
@@ -533,19 +574,44 @@ MERGED="$PROF_DIR/merged.profdata"
 [ -s "$MERGED" ] || pgo_fail "merged profile is empty/missing at $MERGED (training produced no usable coverage)"
 MERGED_SIZE="$(wc -c < "$MERGED" | tr -d ' ')"
 
-# BUSBAR_PGO=1 stamps the BUILD-PROVENANCE record (crates/busbar/build.rs) so the shipped binary
-# self-reports `pgo=true` via `busbar --build-info` / `--version`. This is belt-and-suspenders: the
-# build script ALSO detects `-Cprofile-use` in CARGO_ENCODED_RUSTFLAGS, so PGO is recorded even if
-# this env is ever dropped — but the explicit signal is the contract. A plain `cargo build --release`
-# sets neither and correctly reports `pgo=false`, which is the whole point of the stamp.
+# BUSBAR_PGO=1 IS DELIBERATELY NOT SET HERE ANY MORE. crates/busbar/build.rs stamps the
+# build-provenance record `pgo=` from EITHER that env var OR the presence of `-Cprofile-use` in
+# CARGO_ENCODED_RUSTFLAGS — the flags cargo ACTUALLY applied — and it is an OR, so the explicit env
+# var always won and the stamp could only ever repeat this script's intention back to it. Dropping
+# the env var turns the stamp into an INDEPENDENT WITNESS: it now says pgo=true only when the flag
+# genuinely reached the compiler. Verified: a build with `-Cprofile-use` in RUSTFLAGS and BUSBAR_PGO
+# unset reports `pgo=true`; a plain build reports `pgo=false`, which ci.yml's build-provenance gate
+# already asserts. build.rs declares rerun-if-env-changed for both signals, so the stamp cannot go
+# stale across this switch.
 # $EMIT_RELOCS rides along on Linux targets only — the BOLT prerequisite documented at its
 # definition near the top of this file. $LSE_FLAG (arm64 default only; see its definition) joins
 # here exactly as it joined the instrumented build, and BOLT's emit-relocs path is unchanged by it.
 # shellcheck disable=SC2086  # TARGET_FLAG is deliberately unquoted (see its definition)
-BUSBAR_PGO=1 RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" \
+RUSTFLAGS="-Cprofile-use=$MERGED${EMIT_RELOCS:+ $EMIT_RELOCS}${LSE_FLAG:+ $LSE_FLAG}" \
   cargo build --release --locked -p busbar $TARGET_FLAG --target-dir target/pgo \
   || pgo_fail "optimized (-Cprofile-use) build failed"
 [ -x "$OUT" ] || pgo_fail "optimized binary missing at $OUT"
+
+# ── OUTPUT-SIDE PGO PROOF: ASK THE ARTIFACT, NOT THE BUILD ────────────────────────────────────
+# Everything above this line asserts that -Cprofile-use was PASSED. Nothing asserted it was
+# APPLIED, and `[ -x "$OUT" ]` cannot tell the difference: cargo exiting 0 with a binary at the
+# expected path is equally consistent with a full PGO build, with rustc declining an unusable
+# profile (a warning, not an error), and with cargo judging a PREVIOUS run's non-PGO artifact
+# up-to-date and rebuilding nothing — `target/pgo` is never cleaned and this RUSTFLAGS string is
+# byte-identical between runs. Proven by construction: a toolchain that ignored RUSTFLAGS produced
+# a non-PGO binary and this script printed "PGO VERIFIED", exited 0, and wrote the marker.
+#
+# Two assertions close it, both about the bytes that will ship:
+#   FRESHNESS - the artifact must post-date the profile it claims to be built from. A no-op build
+#               leaves $OUT older than the merge that just ran.
+#   THE STAMP - the binary must self-report pgo=true (plus profile=release, opt-level=3,
+#               debug-assertions=false). With BUSBAR_PGO no longer set, that bit is derived from
+#               cargo's own CARGO_ENCODED_RUSTFLAGS, so it is the compiler's account of what it
+#               was given rather than this script's account of what it sent.
+[ "$OUT" -nt "$MERGED" ] \
+  || pgo_fail "$OUT is not newer than the merged profile at $MERGED - the optimized build was a no-op and this run would have stamped a previous build's bytes as PGO-verified"
+scripts/build-provenance-gate.sh "$OUT" release true \
+  || pgo_fail "the optimized binary does not self-report an optimized PGO release build (-Cprofile-use did not reach the compiler, or the release profile was weakened). The build-provenance stamp is read from the flags cargo actually applied, so this is the artifact disagreeing with the build - never write a proof marker over that."
 
 # POSITIVE VERIFICATION: write the proof marker only now - after a non-empty merged profile was
 # fed to a successful -Cprofile-use build. Its existence (checked by the workflow) is proof the
