@@ -237,8 +237,14 @@ def run_named_root_cells(cells, label):
     carries, then execute exactly the cells the caller names -- and refuse a run where a named cell
     did not execute, because a filter that selected nothing is a green that proves nothing.
 
-    `cells` is [(leg, repo-relative file, test fn)]. THE ONE RUNNER: `scripts/teller-steps-check.py`
-    imports this rather than restating it, so "the cell RAN" has one definition in the tree.
+    `cells` is [(leg, repo-relative file, test fn)].
+
+    THIS IS NO LONGER THE ONE RUNNER. `scripts/teller-steps-check.py` used to import it; that check
+    is now `cargo xtask teller-steps --root-legs`, which carries its own copy of this sequence
+    (`xtask/src/gates/teller_steps.rs::run_root_legs`) including all three floors. Two copies is the
+    cost of the conversion being incremental, and it is a NAMED cost: this printer folds into
+    `cargo xtask full-gate`, and the second copy goes when it does. Until then, a change to the
+    refusals here owes the same change there.
     """
     if not cells:
         print(f"{label}: NO root cell was named to run", file=sys.stderr)
