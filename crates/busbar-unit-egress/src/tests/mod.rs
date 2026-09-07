@@ -13,6 +13,7 @@ mod harness;
 mod allocation_tests;
 mod deadline_tests;
 mod exhaustion_tests;
+mod lane_seal_tests;
 mod pick_order_tests;
 mod pool_tests;
 mod ports_tests;
@@ -50,8 +51,8 @@ pub(crate) struct Node {
     pub affinity: Option<u64>,
     pub preference: Option<Vec<DestinationId>>,
     pub wants_stream: bool,
-    /// The envelope field the lane name is carried in, for the lane cross-check. `None` by
-    /// default: most tests have no lane field to check and the cross-check is a no-op for them.
+    /// The envelope field the lane name is read out of, where the deployment names one. `None` is
+    /// a deployment whose envelope carries no lane, and the cross-check then has nothing to check.
     pub lane_field: Option<&'static str>,
 }
 
