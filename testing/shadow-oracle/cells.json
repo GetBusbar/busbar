@@ -31330,7 +31330,7 @@
         "PB-37",
         "PB-93"
       ],
-      "needs_fixture": true
+      "needs_fixture": "BUSBAR_TEST_MYSQL_URL"
     },
     {
       "id": "plugins.store-persist|store-postgres",
@@ -31350,7 +31350,7 @@
         "PB-37",
         "PB-93"
       ],
-      "needs_fixture": true
+      "needs_fixture": "BUSBAR_TEST_POSTGRES_URL"
     },
     {
       "id": "plugins.store-persist|store-sqlite",
@@ -31389,7 +31389,7 @@
         "PB-37",
         "PB-93"
       ],
-      "needs_fixture": true
+      "needs_fixture": "VALKEY_URL"
     },
     {
       "id": "queue|serve|n3",
