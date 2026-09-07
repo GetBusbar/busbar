@@ -418,13 +418,33 @@ def classify(text, target_name=None):
 
 
 # ── extractor 1/2: heredocs, in workflow `run:` blocks and in shell scripts ─────────────────────────
+# THE REDIRECT DOES NOT HAVE TO COME FIRST. This pattern required `> file` BEFORE `<<DELIM`, which
+# is one of three ordinary POSIX spellings of the same act:
+#     cat > config.yaml <<'EOF'      … matched
+#     cat <<'EOF' > config.yaml      … not matched
+#     cat <<'EOF' | tee config.yaml  … not matched (and `| tee` is how you write a root-owned file)
+# The last two extracted NOTHING, so a workflow step or install script that writes a whole config the
+# second way was invisible to a lint whose subject is "every busbar config a machine actually runs".
+# Both sides of the opener are read now; the FILENAME is still the kind signal, and a heredoc with no
+# redirect target at all (`python3 - <<'PY'`) is still not a document, as before.
 HEREDOC = re.compile(
     r"""(?P<indent>[ \t]*)          # leading indent (already dedented by the YAML parser for run:)
         (?:[^\n]*?)                 # the command: `cat > "$X"`, `tee -a x`, `install …`, …
-        (?P<op>>>?)\s*             # `>` creates a whole document; `>>` APPENDS a fragment
-        (?P<target>[^\s<>|;&]+)     # the redirect target — the FILENAME, our best kind signal
-        [^\n<]*
-        <<(?P<dash>-?)\s*(?P<q>['"]?)(?P<delim>[A-Za-z_][A-Za-z0-9_]*)(?P=q)[ \t]*$""",
+        (?:                         # the redirect, when it precedes the opener
+          (?P<op>>>?)\s*           # `>` creates a whole document; `>>` APPENDS a fragment
+          (?P<target>[^\s<>|;&]+)   # the redirect target — the FILENAME, our best kind signal
+          [^\n<]*
+        )?
+        <<(?P<dash>-?)\s*(?P<q>['"]?)(?P<delim>[A-Za-z_][A-Za-z0-9_]*)(?P=q)
+        (?:                         # …or when it follows it, by redirect or by pipe into tee
+          [ \t]*
+          (?:
+            \|[ \t]*(?:sudo[ \t]+)?tee[ \t]+(?P<tee_append>-a[ \t]+|--append[ \t]+)?
+          | (?P<op2>>>?)[ \t]*
+          )
+          (?P<target2>[^\s<>|;&]+)
+        )?
+        [ \t]*$""",
     re.X | re.M,
 )
 
@@ -445,9 +465,16 @@ def extract_heredocs(text, origin, scratch):
             i += 1
             continue
         delim, dash, quoted = m.group("delim"), m.group("dash") == "-", m.group("q") != ""
+        # The redirect target, from whichever side of the opener carried it. No target at all
+        # (`python3 - <<'PY'`) is not a document and never was.
+        target = m.group("target") or m.group("target2")
+        if not target:
+            i += 1
+            continue
         # `cat >> file` appends a FRAGMENT to a document written elsewhere; on its own it is not a
-        # config and validating it as one produces a guaranteed "missing field `providers`".
-        append = m.group("op") == ">>"
+        # config and validating it as one produces a guaranteed "missing field `providers`". Same for
+        # the two append spellings on the far side of the opener.
+        append = ">>" in (m.group("op") or m.group("op2") or "") or bool(m.group("tee_append"))
         opener = i  # `i` is advanced past the body below; the allow marker sits above the OPENER
         body, j = [], i + 1
         while j < len(lines):
@@ -466,9 +493,9 @@ def extract_heredocs(text, origin, scratch):
 
         record = []
         rendered = raw if quoted else substitute(raw, scratch, record)
-        kind = classify(rendered, m.group("target"))
+        kind = classify(rendered, target)
         if kind and not append:
-            out.append(Doc(origin, os.path.basename(m.group("target").strip('"\'')),
+            out.append(Doc(origin, os.path.basename(target.strip('"\'')),
                            kind, rendered, record,
                            gate=allow_marker(lines, opener)))
     return out
