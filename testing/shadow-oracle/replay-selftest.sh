@@ -446,6 +446,30 @@ else
   say FAIL "the shipped accepted-differences.json was REFUSED against the shipped cells.json: $(tail -3 "$W/out-w4.log")"
 fi
 
+# NO READINESS WAIT IN THE RECORDER MAY CARRY ITS OWN HARD-CODED CEILING. record.sh documents ONE
+# boot bound, ORACLE_BOOT_BOUND_SECS, "so a host slow enough to blow one bound blows both
+# consistently instead of the harness inventing a second, independently-drifting hard-code" — and
+# then the exec `boot` cell's own /healthz poll counted to a literal 100 at 0.1 s, a private 10-second
+# ceiling nothing could raise. That one matters more than the others, because blowing it does not
+# read as a failure to record: the cell is captured with rc=124 and a PASS row, so a warning-boot
+# whose golden is `exit 0` records `exit 124` on a loaded machine — the harness's stopwatch frozen
+# into the cell as if it were the binary's answer. STATIC, over the file, so the next wait somebody
+# adds is held to the same rule. `${BOOT_BOUND_RE}` is deliberately loose: any arithmetic naming the
+# knob counts.
+rec_sh="${here}/record.sh"
+bad_wait=""
+while IFS= read -r ln; do
+  # a `while [ $x -lt <literal> ]` guarding a /healthz poll is the shape being refused
+  bad_wait="${bad_wait} ${ln}"
+done < <(awk '
+  /_max=\$\(\( *[a-zA-Z_]+ *\* *[0-9]+ *\)\)/ { next }
+  /while \[ \$[a-z]+ -lt [0-9]+ \]/ { line=NR; buf=$0; getline nxt; getline nxt2;
+    if (buf ~ /healthz/ || nxt ~ /healthz/ || nxt2 ~ /healthz/) print line": "buf }
+' "$rec_sh")
+[ -z "$(printf '%s' "$bad_wait" | tr -d ' ')" ] \
+  && say PASS "no /healthz readiness wait in record.sh carries a hard-coded ceiling (all derive from ORACLE_BOOT_BOUND_SECS)" \
+  || say FAIL "record.sh has a /healthz readiness wait with a private hard-coded ceiling, so a slow host records its own stopwatch as the cell's exit status:${bad_wait}"
+
 # EVERY `mock_control` A CELL DECLARES MUST RESOLVE TO A VERB THE MOCK IMPLEMENTS. The control file
 # is the ONLY way a cell orders an outage, and the mock's fallback for a control it cannot resolve is
 # a healthy 200 — so a cell whose control the mock does not understand records the SUCCESS path, with
