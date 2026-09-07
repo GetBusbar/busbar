@@ -839,6 +839,11 @@ pub struct TestApp {
     >,
     /// The ALL-POOLS `upstream_credentials:` default installed onto the built `App`.
     upstream_credentials: crate::auth::UpstreamCreds,
+    /// The operator's `limits.upstream_request_timeout_secs`, as the built plane's client settings
+    /// carry it. Zero is the historical stamp and means "leave it to the send site's floor"; a test
+    /// that wants the deadline to fire at a NAMED second sets it with
+    /// [`TestApp::upstream_request_timeout_secs`].
+    upstream_request_timeout_secs: u64,
     fallback_pools: std::collections::HashMap<String, Vec<(usize, u32)>>,
     on_exhausted_cfgs: std::collections::HashMap<String, crate::config::OnExhausted>,
     hook_registry: std::collections::HashMap<String, crate::config::HookCfg>,
@@ -933,6 +938,7 @@ impl TestApp {
         Self {
             mcp_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
+            upstream_request_timeout_secs: 0,
             lanes: Vec::new(),
             pools: std::collections::HashMap::new(),
             auth: None,
@@ -1223,6 +1229,16 @@ impl TestApp {
     /// overrides go on the pool's own `PoolRuntime` (see `.pool_runtime(...)`).
     pub fn upstream_creds(mut self, uc: crate::auth::UpstreamCreds) -> Self {
         self.upstream_credentials = uc;
+        self
+    }
+    /// Set the operator's `limits.upstream_request_timeout_secs` on the built plane.
+    ///
+    /// The fixture's historical stamp is 0, which the send site raises to its one-second floor, so a
+    /// deadline that fired at the FLOOR and a deadline that read the operator's number were
+    /// indistinguishable on this harness. A test that means to prove the deadline fires at the
+    /// CONFIGURED second names one here.
+    pub fn upstream_request_timeout_secs(mut self, secs: u64) -> Self {
+        self.upstream_request_timeout_secs = secs;
         self
     }
     /// Override the ADMIN auth chain. `vec![]` is the explicit OPEN admin posture — the only way
@@ -1694,7 +1710,7 @@ impl TestApp {
                 allow_all_metadata: false,
                 blocked_metadata_hosts: Vec::new(),
                 client_settings: busbar_substrate::plane_host::ClientSettingsInput {
-                    upstream_request_timeout_secs: 0,
+                    upstream_request_timeout_secs: self.upstream_request_timeout_secs,
                     pool_max_idle_per_host: 4,
                     pool_idle_timeout_secs: 300,
                     http1_only: false,
