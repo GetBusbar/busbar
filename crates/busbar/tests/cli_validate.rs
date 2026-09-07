@@ -1021,7 +1021,7 @@ fn the_operator_visible_protocol_order_is_exactly_the_shipped_one() {
     let all = format!("{out}{err}");
     assert_ne!(code, 0, "an unknown protocol must fail validation: {all}");
     assert!(
-        all.contains("must be one of: anthropic, gemini, openai, bedrock, responses, cohere"),
+        all.contains("must be one of: anthropic, openai, gemini, bedrock, responses, cohere"),
         "the operator-visible protocol order changed. It is a metric-family index as well as a \
          config-error string, so this is not cosmetic — see this test's doc. Got: {all}"
     );
