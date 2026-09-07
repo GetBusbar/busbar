@@ -152,6 +152,59 @@ impl RootCard {
 /// report arriving that early should be priced in — it isn't.
 pub static ROOT_CARD: LazyLock<RootCard> = LazyLock::new(RootCard::default);
 
+/// The configured rates, in the cost unit's own card.
+///
+/// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is the root's;
+/// turning those figures into a card is the cost unit's, on
+/// [`busbar_unit_cost::RateCard::from_config`] — so the class fan-out, the absent/present branch and
+/// the fee's clamp all happen where the card lives, and there is no arithmetic here to disagree with
+/// it. No plane sees a rate at all.
+///
+/// THE ROOT'S, NOT A PLANE'S. The card this builds is the one every plane's exit prices against —
+/// the holder above is the process's, reached by mcp, a2a, voice and admin exactly as it is by llm —
+/// so the relay belongs beside the holder and the repricer rather than in one plane's unit file. It
+/// lived in `units_llm` while llm was the only leg switched over, and a plane's unit file is
+/// compiled out with its plane: any build without that plane's feature lost the root's ability to
+/// price a card at all. The deletability of a plane is the whole point of the feature, so the thing
+/// that must survive every deletion lives on the ungated side of the seam.
+///
+/// A deployment with no `rate_card:` builds an ABSENT card rather than no card at all, and the
+/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
+/// exactly what the previous release bills for that deployment.
+///
+/// The version is a constant name rather than a hash of the configuration, and that is a stated
+/// limit rather than an oversight: the postings this card prices are read back at the width the node
+/// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
+/// day the books grow that column, this is the one line that fills it. The NAME stays `root-llm`
+/// because a version string is a recorded value, not a label: changing it here would move every
+/// posting's card version in the books for a code move that computes the same card.
+fn card_from_config<'r>(
+    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
+    per_request_fee: i64,
+    present: bool,
+) -> busbar_unit_cost::RateCard {
+    // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
+    // across a crate boundary, in the same canonical order, with nothing computed on the way.
+    let lanes = present.then(|| {
+        rates.into_iter().map(|(lane, raw)| {
+            (
+                lane,
+                busbar_unit_cost::TierRates {
+                    input: raw.input,
+                    output: raw.output,
+                    cache_read: raw.cache_read,
+                    cache_write: raw.cache_write,
+                },
+            )
+        })
+    });
+    busbar_unit_cost::RateCard::from_config(
+        busbar_unit_cost::RateCardVersion::new("root-llm"),
+        lanes,
+        per_request_fee,
+    )
+}
+
 /// The root, answering the engine's rate-apply seam.
 ///
 /// The whole of the wiring: the engine resolved the deployment's rates — at boot or on a live apply —
@@ -162,7 +215,7 @@ pub struct CardRepricer;
 
 impl busbar_substrate::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply(Arc::new(crate::root::units_llm::card_from_config(
+        ROOT_CARD.apply(Arc::new(card_from_config(
             rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
             rates.fee_cents,
             rates.present,
