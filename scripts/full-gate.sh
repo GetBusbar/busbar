@@ -80,7 +80,7 @@ declare -a SKIP_REASON=(
   # ── THE `testing/` HARNESS GATES ────────────────────────────────────────────────────────────────
   # Newly VISIBLE, not newly skipped: discovery could not see a `testing/` path at all until now, so
   # these were neither run nor named. The hermetic ones DO run here and are absent from this list on
-  # purpose — testing/shadow-oracle/enumerate-cells.py --check, `bin/oracle harness-rev`,
+  # purpose — `bin/oracle cells --check`, `bin/oracle harness-rev`,
   # `bin/oracle replay-selftest` and testing/llm-conformance/selftest.sh each take seconds.
   # THE ORACLE IS ONE ENTRY NOW, NOT FIVE. Its scripts left this tree for GetBusbar/busbar-oracle,
   # pinned by testing/shadow-oracle/oracle.pin and run through bin/oracle. Discovery can only see
@@ -254,7 +254,7 @@ ci_logical_lines() {
 # THE DIRECTORY SET IS NOT `scripts/`, AND IT WAS — the same shape of hole as the extension set, one
 # axis over. `ci.yml` makes ELEVEN gate invocations under `testing/`: the whole shadow-oracle harness
 # (`replay-selftest.sh`, `selftest.sh`, `fetch-golden.sh`, `record.sh`, `replay.sh`,
-# `enumerate-cells.py`, `harness-rev.sh`) and the llm-conformance suite (`selftest.sh`, `run.sh`).
+# `cells`, `harness-rev.sh`) and the llm-conformance suite (`selftest.sh`, `run.sh`).
 # Those are gates by every definition this file uses — CI reds when they red — and discovery could
 # not see any of them because the pattern began with the literal `scripts/`. Four of the eleven run
 # perfectly well on a laptop and were simply never run; the other seven need a golden binary, a
@@ -412,7 +412,7 @@ if [ "${1:-}" = "--selftest" ]; then
 
   # And the real ones: the shadow-oracle harness and the llm-conformance suite, by name, so the
   # directory set cannot narrow back to `scripts/` without this going red.
-  for must in bin/oracle testing/shadow-oracle/enumerate-cells.py testing/llm-conformance/run.sh; do
+  for must in bin/oracle testing/llm-conformance/run.sh; do
     if printf '%s\n' "${DISCOVERED[@]}" | grep -q "$must"; then
       printf '  [ok]     %s is discovered\n' "$must"
     else

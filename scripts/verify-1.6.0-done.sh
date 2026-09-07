@@ -462,7 +462,7 @@ elif [ -x bin/oracle ]; then
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
   # the parity verdict below is a count over it. A hand edit, or a generator change nobody ran
   # --write for, would make this whole group measure a cell set that was never reviewed.
-  step "enumerate-cells --check (cells.json is what the generator derives)" python3 testing/shadow-oracle/enumerate-cells.py --check
+  step "enumerate-cells --check (cells.json is what the generator derives)" ./bin/oracle cells --check
   step "fetch-golden --check (1.5.5 by pinned digest)" ./bin/oracle fetch-golden --check
   ORACLE_DIR="${SHADOW_ORACLE_DIR:-target/oracle}"
   GOLDEN="${SHADOW_ORACLE_GOLDEN:-$ORACLE_DIR/recordings/golden}"
