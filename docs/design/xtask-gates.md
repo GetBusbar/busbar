@@ -35,7 +35,7 @@ tree with no build, no network and no service container — which is exactly why
 
 | Script | Purpose | Callers | ST | Gate name | Batch |
 | --- | --- | --- | --- | --- | --- |
-| `structure-lint.sh` | code-layout invariants from `docs/code-layout.md` plus the behavioural invariants only a structural read can catch (choke-point bypasses, plane duplicate tables/modules, per-crate file census) | ci, sh | yes | `structure-lint` | 1 |
+| ~~`structure-lint.sh`~~ **DELETED** | code-layout invariants from `docs/code-layout.md` plus the behavioural invariants only a structural read can catch (choke-point bypasses, plane duplicate tables/modules, per-crate file census) | ci, sh | yes | `structure-lint` **(converted; see 6.1)** | 1 |
 | `release-script-lint.sh` | durable guard on the release harness `release-check*.sh` (incl. the 1.5.2 watchdog `timeout` re-exec) | ci | yes | `release-script-lint` | 1 |
 | `release-order-lint.py` | the release-ordering rules, including the one that keeps every workflow off a protected branch; `--prove` arm asserts a failure leaves nothing public | ci (`--selftest`, `--root .`, `--prove`), sh | yes | `release-order` | 1 |
 | `duplex-ws-default-edge.sh` | no WebSocket crate in the default money-path dependency closure | ci | yes | `duplex-ws-default-edge` | 1 |
@@ -922,3 +922,72 @@ shell and Python plus their embedded selftests, and deleting `scripts/plane-keys
 Suggested order within the batch: shared infrastructure → `segregation` (it guards everything after it)
 → the six small text scanners (15–20) → the mid-sized lints (6–14) → `plane-purity` → `structure-lint`
 last, since it is the one that most benefits from a settled `WalkSpec` and `production_lines`.
+
+### 6.1 `structure-lint`: the row split, and the deltas it carries
+
+**The shell had ONE exit status for twenty rules.** `structure-lint.sh` printed its findings PER
+LOCATION under nine `== header ==` blocks and exited 0 or 1, so "structure-lint failed" never said
+which invariant, and a rule that stopped running was indistinguishable from a rule that passed. The
+gate owes **one row per RULE** — thirty-six of them — and the parity harness compares the two on the
+hit sets, so this section is the record of how each shell tag became a row id.
+
+| shell tag / block | row id(s) | why the split |
+| --- | --- | --- |
+| `PROTO-ROOTS-MISSING` | `structure-lint:proto-roots` | — |
+| `PLANE-ROOT-{MISSING,AMBIGUOUS}`, `PLANE-ROOTS-EMPTY` | `structure-lint:plane-roots` | one rule, three ways to fail it |
+| the denominator `FAIL:` block | `structure-lint:candidate-floor` | — |
+| `HYBRID` | `structure-lint:hybrid-modules` | — |
+| `OVERSIZED` | `structure-lint:oversized` | the grandfathered lines were informational and stay informational: they are not offenders on either side |
+| `INLINE-TEST` / `ALLOW-WITHOUT-REASON` | `structure-lint:inline-tests` / `…:inline-test-allow-reason` | two rules, and the second is the one a bare allow breaks. Folding them would let "there are no inline tests" be reported by a run in which every one of them carried an unreasoned allow |
+| `MALFORMED-ROW` (choke points) | `structure-lint:choke-point:row-integrity` | the three tables share one tag; the row id is resolved from the id the shell printed |
+| `MISSING-CLASS-TEST` | `structure-lint:choke-point:class-test` | — |
+| `ALLOWED-PATH-MISSING` | `structure-lint:choke-point:allowed-path` **or** `structure-lint:axis:allowed-path` | one tag, two tables. The shell's own sentence disambiguates: "the owner's new home" is the registry, "the arm's new home" is the axis ledger |
+| `ZERO-SCAN` | `structure-lint:choke-point:scan-set` | — |
+| `DURABLE-BYPASS`, `EXPORT-BYPASS`, `MUTATION-BYPASS`, `ASK-NOT-OPERATOR-AUTHORED`, `TRUST-COMPARISON-BYPASS` | `structure-lint:choke-point:bypass` | five tags, one rule: "a hazard class was re-implemented outside its owner". The tag stays inside the offender string, so the hit set is unchanged |
+| `SUBJECT-MISSING` (function-scoped) | `structure-lint:request-path:subject` / `structure-lint:decision-input:subject` | one runner, two tables — and a renamed `try_admit` is a different fact from a renamed `resolve` |
+| `STORE-ON-REQUEST-PATH`, `ALLOC-ON-PROTOCOL-LOOKUP` | `structure-lint:request-path:purity` | — |
+| `DESCRIPTION-ON-ROUTING-PATH` | `structure-lint:decision-input:purity` | — |
+| `PLANE-DUPLICATE` | `structure-lint:plane-dup:unledgered` | — |
+| `MALFORMED-LEDGER` | `structure-lint:plane-dup:ledger-integrity` **or** `structure-lint:axis:row-integrity` | one tag, two ledgers; the axis form quotes `` `axis|file` `` and the plane form quotes a bare name |
+| `STALE-LEDGER` | `structure-lint:plane-dup:stale-ledger` **or** `structure-lint:axis:stale-ledger` | same tag, two ledgers, two different "delete this row" instructions |
+| `SCOPE-MISSING` | `structure-lint:axis:scope` **or** `structure-lint:census:scope` | "the axis's new root" vs "the subject's new root" |
+| `NO-SUBJECT` | `structure-lint:axis:scan-set` **or** `structure-lint:census:scan-set` | "the allowed prefixes cover…" vs "holds no production source" |
+| `SCAN FAILED on the … axis` | `structure-lint:axis:row-integrity` | an aborted scan returns no hits, and no hits is the rule's pass |
+| `OPERATION-BRANCH`, `TRANSPORT-BRANCH` | `structure-lint:axis:purity` | — |
+| `NO-ROWS` | `structure-lint:census:row-integrity` / the two `…:subject` rows | an empty table is an unarmed rule, reported under the rule it disarmed |
+| census `SUBJECT-MISSING` | `structure-lint:census:subject` | the shell reused the function-scoped tag for a different failure with a different remedy; the sentence ("occurs NOWHERE") is what tells them apart |
+| every census `*-RESPELT` / `*-FORKED` / `THIRD-CATALOGUE-WALK` tag | `structure-lint:census:count` | nine tags, one rule: the count is not the declared one |
+| `PLANE-SINK-SCOPE-MISSING`, `NO-PLANE-SINK` | `structure-lint:plane-sink:scan-set` | both are "this rule scanned nothing" |
+| `PLANE-SINK-NOT-NARROWED` / `PLANE-SINK-WIDENED` | `structure-lint:plane-sink:not-narrowed` / `…:widened` | a sink that names neither trait and a sink that names the wrong one are two edits away from each other |
+| `BOOTCTX-MISSING` / `-NOT-NARROWED` / `-WIDENED` | `structure-lint:boot-ctx:subject` / `…:not-narrowed` / `…:widened` | — |
+
+**Two documented deltas in the offender STRINGS**, both because the shell's own text could not be
+reconstructed from what it printed:
+
+1. **`BOOTCTX-WIDENED` names the FIELD, not a line number.** The shell ran `grep -n` over the
+   extracted struct BODY, so its numbers count from the `pub struct BootCtx` line rather than from
+   the top of the file. A number that means one thing on one side and another on the other is a
+   parity diff about counting, so the offender is the field text — which is what a reader has to
+   change anyway.
+2. **`PLANE-SINK-*` sites are normalised** from `grep -rn`'s `path:line:content` to
+   `path:line: content`. Same three facts, one spelling.
+
+**Three documented deltas in what a rule ASKS:**
+
+1. **The protocol crates and the plane roots are derived from the WALK, not from `[ -d ]`.** The
+   shell asked the filesystem whether a directory existed, which no overlay can answer, so the two
+   "the tree stopped answering" rules were unprovable. A directory holding no source contributes
+   nothing to any scan below it — which is the question `plane-roots.sh` already had to add for its
+   own ownership test — so asking "does it hold a source file" is the same question asked honestly,
+   and it is the question a self-test can plant against.
+2. **`structure-lint:candidate-floor` no longer exits.** The shell exited 1 on a corpus below its
+   floor, leaving every rule below it unreported. Here the corpus-dependent rows are emitted as
+   `DID NOT RUN`, which is the same verdict said out loud: the reader is told which rules the empty
+   scan set took down with it.
+3. **The candidate walk honours `.gitignore`.** `find` does not, so the shell's scan set included
+   whatever a build or an editor left in the tree. See `Ctx::drop_ignored`; the floor is applied
+   after the filter, so an ignore rule that swallowed a scan set trips the floor rather than reading
+   as a clean tree.
+
+**`STRUCTURE_LINT_CANDIDATE_FLOOR` is gone.** Floors are `const`s and there is no environment
+override: the only way to lower one is a reviewable source edit.

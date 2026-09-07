@@ -207,7 +207,7 @@ Patterns this enables:
 # The remediation contract
 
 This is the part of the strategy that decides **what a fix looks like**. It is
-enforced by `scripts/structure-lint.sh` (the choke-point registry), not by
+enforced by `cargo xtask gate structure-lint` (the choke-point registry), not by
 review discipline alone.
 
 ## The three rules
@@ -227,7 +227,7 @@ review discipline alone.
 
 ## The choke-point registry
 
-`scripts/structure-lint.sh` carries a declarative `CHOKE_POINTS` table: one row
+`xtask/src/gates/structure_lint/choke_points.rs` carries a declarative table: one row
 per choke point, with the owner, the class-level test, the patterns that bypass
 it, and the allowed exceptions. **The table is the complete map**: if a hazard
 class has a single point of truth in this tree, it is a row. Adding the next one
@@ -252,16 +252,27 @@ proves, so `MISSING-CLASS-TEST` fails the build.
 
 ### Adding a choke point
 
-Append one row to `CHOKE_POINTS` in `scripts/structure-lint.sh`:
+Append one row to the table in `xtask/src/gates/structure_lint/choke_points.rs`:
 
-```
-'<id>|<TAG>|<owner file (what)>|<path>::<class test fn>|<remedy line>|<ere>>><what it is>>><allowed,paths>;<more rules>|<one-line rationale>'
+```rust
+ChokeRow {
+    id: "<id>".into(),
+    tag: "<TAG>".into(),                       // the label printed on a bypass
+    owner: "<owner file (what it owns)>".into(),
+    class_test: "<path>::<class test fn>".into(),
+    remedy: "<the one-line 'route through X' instruction>".into(),
+    rules: vec![BanRule::new(r"<ere>", "<what it is>", &["<allowed>".into()])],
+    why: "<one line: why this class needs a single point of truth>".into(),
+}
 ```
 
-Use `-` for the rules field when the choke point is enforced by the compiler or
-at runtime rather than by grep (row D). Then plant a violation, confirm the lint
-fails with your `TAG`, and remove it. A rule nobody has seen fire is a rule
-that may not work.
+Leave `rules` EMPTY when the choke point is enforced by the compiler or at
+runtime rather than by a pattern (row D). The ERE in a `BanRule` is still an
+ERE — it is read by `xtask::ere`, not rewritten as a predicate, so the row you
+write is the rule that runs. Then plant a violation, confirm the gate fails with
+your `TAG`, and remove it. A rule nobody has seen fire is a rule that may not
+work — and the gate's own self-test will refuse the row anyway if no case covers
+the ledger row it feeds.
 
 ## Checker rigor: R1 / R2 / R3
 
