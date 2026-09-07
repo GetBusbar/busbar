@@ -369,6 +369,7 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(first); self.wfile.flush()
+            self._egress_response(status)
             try:
                 self.connection.shutdown(1)
             except OSError:
@@ -380,6 +381,7 @@ class H(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+        self._egress_response(status)
 
     def _capture_egress(self, method, path, raw_body):
         # See the module docstring for the on-disk contract. Best-effort: a capture failure must
@@ -397,12 +399,55 @@ class H(BaseHTTPRequestHandler):
                 body = "base64:" + base64.b64encode(raw_body).decode()
             record = {"path": path, "method": method, "headers": headers, "body": body}
             name = f"{time.time_ns()}-{os.getpid()}-{next(_capture_seq)}.json"
-            tmp_path = os.path.join(cap_dir, f".{name}.tmp")
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(record, f, separators=(",", ":"), sort_keys=True)
-            os.replace(tmp_path, os.path.join(cap_dir, name))  # atomic: no half-written file is ever "newest"
+            self._eg_record = record
+            self._eg_path = os.path.join(cap_dir, name)
+            self._eg_t0 = time.monotonic()
+            self._eg_write()
         except OSError:
             pass
+
+    # ── THE ATTEMPT'S OWN ANSWER IS PART OF THE ATTEMPT ──────────────────────────────────────────
+    # `effects.egress` recorded only what busbar SENT. For a failover cell that is half the evidence:
+    # `route.failover|fo|primary-429` is named for a 429 carrying a Retry-After, and `|primary-slow`
+    # for an attempt that ran past busbar's cap — and NEITHER was observable in the golden. The cell
+    # could keep its name while the mock served a plain 500, or served the 429 with no Retry-After at
+    # all, or answered instantly where the point is that it did not, and every recorded byte would be
+    # identical. What a cell NAMES has to be in what it RECORDS, or the name is the only evidence.
+    #
+    # So each entry now also carries the upstream's own answer: the status, the Retry-After it did or
+    # did not send, and how long the attempt took. The duration is captured RAW here (`elapsed_ms`)
+    # and BUCKETED by normalize.py's `egress.elapsed` rule, not here — a recorder that buckets has
+    # thrown the measurement away before renormalize.sh can ever re-read it, and the boundary between
+    # "what happened" and "what is stable enough to compare" belongs on the normalizer's side of the
+    # line, where it is one named, reviewable rule instead of a constant buried in the mock.
+    def _egress_response(self, status, headers=None):
+        if not getattr(self, "_eg_path", None) or getattr(self, "_eg_done", False):
+            return
+        try:
+            hdrs = {k.lower(): v for k, v in (headers or {}).items()}
+            self._eg_record["response"] = {
+                "status": status,
+                # Present-or-absent is the contract PB-4 rides on, so the key is ALWAYS written:
+                # null records "the upstream sent none", which is a different fact from "this
+                # recorder did not look" and must not be spelled the same way.
+                "retry_after": hdrs.get("retry-after"),
+                "elapsed_ms": int((time.monotonic() - self._eg_t0) * 1000),
+            }
+            self._eg_done = True
+            self._eg_write()
+        except (OSError, AttributeError):
+            pass
+
+    def _eg_write(self):
+        # Atomic: no half-written file is ever "newest". Rewritten in place when the response lands,
+        # so a request that never got one keeps its request-only record rather than vanishing.
+        # The scratch name is DOT-PREFIXED: record.sh discovers these with a plain `ls`, which hides
+        # dotfiles, so a half-written file can never be collected as an egress record.
+        d, name = os.path.split(self._eg_path)
+        tmp_path = os.path.join(d, f".{name}.tmp")
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(self._eg_record, f, separators=(",", ":"), sort_keys=True)
+        os.replace(tmp_path, self._eg_path)
 
     def do_GET(self):
         # Readiness only (fleet-fixtures wait_for_http probes with GET /). Every dialect is POST.
@@ -554,7 +599,11 @@ class H(BaseHTTPRequestHandler):
         if ctl == "429":
             self.send_response(429); self.send_header("Content-Type", "application/json"); self.send_header("Retry-After", "7")
             body = j({"error": {"type": "rate_limit_error", "message": "oracle: upstream rate limited"}})
-            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body); return
+            self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+            # The one response path that does not go through _send, and the ONLY one that carries a
+            # Retry-After -- which is the whole point of `route.failover|fo|primary-429`.
+            self._egress_response(429, {"Retry-After": "7"})
+            return
         if ctl == "5xx":
             return self._send(500, j({"error": {"type": "server_error", "message": "oracle: upstream exploded"}}))
         if ctl == "401":

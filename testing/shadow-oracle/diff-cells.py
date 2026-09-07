@@ -116,10 +116,46 @@ CONTENT_RULES = {"hdr.date", "hdr.retry-after", "hdr.etag", "hdr.length", "id.wi
                  "ts.unix", "ts.usage-window", "info.uptime", "ver.string", "key.id",
                  "metrics.timing", "metrics.cooldown", "metrics.shape", "metrics.absolute",
                  "body.keep-lines", "keep.header", "keep.header-min", "keep.json_key",
-                 "keep.text_regex", "egress.cred", "egress.host", "egress.body", "text.port"}
+                 "keep.text_regex", "egress.cred", "egress.host", "egress.body", "text.port",
+                 "stderr.platform-capability", "egress.elapsed"}
 assert not (ORDER_RULES & CONTENT_RULES), \
     ("a rule that drops/blanks/rewrites content may never be exempted from norm.rules: "
      f"{sorted(ORDER_RULES & CONTENT_RULES)}")
+
+# ── A RULE ABOUT THE HOST IS NOT A RULE ABOUT BUSBAR, AND IS NOT SILENT EITHER ───────────────────
+# `stderr.platform-capability` drops lines that report what the RECORDING MACHINE can do (see
+# normalize.py). Such a rule is ASYMMETRIC BY CONSTRUCTION: the golden is recorded on darwin, where
+# jemalloc cannot start its purge thread, and the CI candidate runs on linux, where the same binary
+# never prints the line. The rule therefore fires on the golden side and not the candidate side on
+# every cell that carries a boot log — which is the correct outcome, and which `norm.rules` would
+# report as 56 divergences about the difference between two laptops.
+#
+# It is NOT put in ORDER_RULES. ORDER_RULES means "changes no content", and this rule removes a line;
+# the disjointness assert above exists precisely so that a stripping rule cannot be smuggled into the
+# exemption, and quietly reclassifying this one to buy silence is the move that assert is there to
+# stop. So it gets its own category, with a different and weaker promise: its one-sided firing does
+# not make a cell RED, and is REPORTED on the cell's row regardless — including on a cell that is
+# otherwise green, which is the case the ordinary `detail` channel drops on the floor.
+#
+# The bar for adding a name here is not "this is noisy". It is: the line is emitted by the host's
+# capabilities and not in response to anything a request did, so 1.5.5 and 1.6.0 CANNOT disagree
+# about it. Anything a request can influence belongs in norm.rules where it can be red.
+HOST_RULES = {"stderr.platform-capability"}
+assert HOST_RULES <= CONTENT_RULES, \
+    f"a host rule still removes content and must be declared as such: {sorted(HOST_RULES - CONTENT_RULES)}"
+assert not (HOST_RULES & ORDER_RULES), \
+    f"a host rule is not a re-sort and may not take the norm.rules exemption: {sorted(HOST_RULES & ORDER_RULES)}"
+
+
+def host_rule_skew(g: dict, c: dict) -> dict | None:
+    """Which HOST_RULES fired on one side only. Reported on the row whether or not the cell diverges,
+    so "this cell is green because a host-capability line was dropped from the golden" is a sentence
+    the ledger actually contains rather than one a reader has to infer."""
+    ga = {r for r in g.get("applied", [])} & HOST_RULES
+    ca = {r for r in c.get("applied", [])} & HOST_RULES
+    if ga == ca:
+        return None
+    return {"only_golden": sorted(ga - ca), "only_candidate": sorted(ca - ga)}
 
 
 def allowed_classes(kind: str, classes: set) -> set:
@@ -331,8 +367,9 @@ def compare(g: dict, c: dict) -> tuple[list, dict]:
         detail["effects.script"] = {"keys": moved,
                                     "paths": json_paths_diff({k: ge.get(k) for k in moved},
                                                              {k: ce.get(k) for k in moved})}
-    ga = [r for r in g.get("applied", []) + (g.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
-    ca = [r for r in c.get("applied", []) + (c.get("effects") or {}).get("exec_rules", []) if r not in ORDER_RULES]
+    _exempt = ORDER_RULES | HOST_RULES
+    ga = [r for r in g.get("applied", []) + (g.get("effects") or {}).get("exec_rules", []) if r not in _exempt]
+    ca = [r for r in c.get("applied", []) + (c.get("effects") or {}).get("exec_rules", []) if r not in _exempt]
     if sorted(ga) != sorted(ca):
         classes.append("norm.rules")
         detail["norm.rules"] = {"only_golden": sorted(set(ga) - set(ca)), "only_candidate": sorted(set(ca) - set(ga))}
@@ -655,6 +692,10 @@ def main() -> int:
                         # different, larger one; the reader of the ledger is the person who has to
                         # know the row is narrow.
                         **({"narrowed": compare_narrowed(c["compare"])} if c.get("compare") else {}),
+                        # A host-capability rule that fired on one side only is stated on the row even
+                        # when the cell is green — that is the whole point of it having its own
+                        # category rather than sitting in the norm.rules exemption unremarked.
+                        **({"platform": _skew} if (_skew := host_rule_skew(g, cc)) else {}),
                         **({"accepted": {"id": acc["id"], "kind": acc["kind"], "rationale": acc["rationale"], "by": acc["by"]}} if acc else {})})
 
     fam_table = {}
