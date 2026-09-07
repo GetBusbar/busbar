@@ -77,7 +77,6 @@ declare -a SKIP_REASON=(
   "scripts/txn-fence.sh|compiles a module that MUST FAIL to type-check, in its own target dir. Correct, but it inverts the exit code and confuses a batch runner; run it directly."
   "scripts/build-provenance-gate.sh|asserts the provenance stamp of a BUILT release binary ('… target/release/busbar release false'). Needs the release artifact the release build produces, exactly as verify-artifact.py does; a bare local run has no binary to inspect. The --selftest form runs here — it is the local mirror that proves the stamp discriminates."
   "scripts/proof-manifest.py|the Build-Proof-Dashboard collator, run ONLY on the dev/qa/main promotion branches (it needs --version/--out and re-emits docs/proof/<branch>.json). By its own contract it CHANGES NO GATE — it re-runs the cheap grep gates and records their verdicts — so there is nothing to prove locally on an integration branch."
-  "scripts/release-order-lint.py|release-graph shape; included via its own entries below, see RELEASE_ORDER."
   # ── THE `testing/` HARNESS GATES ────────────────────────────────────────────────────────────────
   # Newly VISIBLE, not newly skipped: discovery could not see a `testing/` path at all until now, so
   # these were neither run nor named. Four of the eleven invocations DO run here and are absent from
@@ -93,9 +92,10 @@ declare -a SKIP_REASON=(
   "scripts/construction-gate.sh|RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceilings) while the construction work it measures is in flight; ci.yml runs its --check report-only (continue-on-error, verdict printed by the umbrella, not counted). Running it here would red the whole local gate on a fact CI does not score. Its --selftest DOES run here (the rule above). Run 'scripts/construction-gate.sh --check' directly for the report; DELETE this entry when the CI job is flipped to blocking."
 )
 
-# `release-order-lint.py` IS locally runnable and IS included -- named here only so the skip loop
-# above does not swallow it by prefix.
-RELEASE_ORDER=1
+# The release-order gate is now `cargo xtask gate release-order`. It was named in SKIP_REASON only
+# so the prefix loop below would not swallow it; a registry invocation has no script path to be
+# swallowed by, so both the entry and the special case it needed are gone rather than kept as a
+# waiver that excuses nothing.
 
 MIN_GATES=8
 
@@ -346,8 +346,6 @@ for inv in "${DISCOVERED[@]}"; do
   # most worth having locally: `verify-artifact.py --selftest` proves the artifact contract
   # discriminates without a single artifact existing.
   case "$inv" in *--selftest*) RUN+=("$inv"); continue ;; esac
-  # `release-order-lint.py` is runnable; everything else in SKIP_REASON is not.
-  if [ "$script" = "scripts/release-order-lint.py" ]; then RUN+=("$inv"); continue; fi
   if skip_reason_for "$script" >/dev/null; then SKIP+=("$inv"); else RUN+=("$inv"); fi
 done
 
