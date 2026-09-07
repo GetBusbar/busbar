@@ -6916,3 +6916,56 @@ fn test_writer_open_tools_capped_in_entry_count() {
         "open_tools must admit exactly the cap and refuse past it, got {held}"
     );
 }
+
+/// The writer's two existing `open_tools` caps bound each axis ALONE and leave their PRODUCT
+/// unbounded: `MAX_GEMINI_TOOL_FRAMES` (4096) distinct blocks may each accumulate up to
+/// `max_translate_body_bytes()` (32 MiB by default) of arguments, so one stream could hold 128 GiB
+/// of upstream-controlled bytes and nothing summed them. The cap that matters for memory is the
+/// TOTAL held across every open block, and it is the same operator-tunable line one buffered body
+/// gets — a translate holds one response's worth of arguments, not one per block.
+///
+/// Driven with two blocks, each fed past the cap on its own. Unfixed the two buffers sum to ~2x the
+/// cap; fixed, the total stops at the cap and the overflow degrades exactly as the per-block cap
+/// already degrades (fragments dropped whole, the call and its name still flushed on `BlockStop`).
+#[test]
+fn test_writer_open_tools_bounded_in_total_bytes() {
+    let cap = busbar_substrate_values::proxy::max_translate_body_bytes();
+    let writer = GeminiWriter;
+    for index in [1usize, 2usize] {
+        writer.write_response_event(&IrStreamEvent::BlockStart {
+            index,
+            block: IrBlockMeta::ToolUse {
+                id: String::new(),
+                name: "big_tool".to_string(),
+            },
+        });
+    }
+    let fragment = "a".repeat(1024 * 1024);
+    // Enough fragments to drive EACH block past the cap on its own.
+    let per_block = (cap / fragment.len()) + 4;
+    for _ in 0..per_block {
+        for index in [1usize, 2usize] {
+            writer.write_response_event(&IrStreamEvent::BlockDelta {
+                index,
+                delta: IrDelta::InputJsonDelta(fragment.clone()),
+            });
+        }
+    }
+    let held: usize = writer
+        .open_tools
+        .lock()
+        .expect("lock held only by this test")
+        .iter()
+        .map(|(_, name, args)| name.len() + args.len())
+        .sum();
+    assert!(
+        held <= cap,
+        "the TOTAL bytes held across every open tool block must stop at \
+         max_translate_body_bytes() ({cap}), got {held}"
+    );
+    // And the test must actually have driven it to the line, not stopped early on some other guard.
+    assert!(
+        held > cap / 2,
+        "the accumulation must reach the aggregate cap, got {held} against a cap of {cap}"
+    );
+}
