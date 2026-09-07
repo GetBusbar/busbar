@@ -61,10 +61,22 @@ models:
     .unwrap();
 }
 
+/// The variable `validate_notes_unset_interpolated_env_vars_by_name` relies on being ABSENT. Named
+/// here because [`run_busbar`] is what has to guarantee that, per child.
+const UNSET_INTERPOLATION_VAR: &str = "BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR";
+
 /// Run the real busbar binary with the fixture's config env; returns (exit_code, stdout, stderr).
 fn run_busbar(dir: &Path, args: &[&str]) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
         .args(args)
+        // The unset-interpolation test needs its var genuinely absent in the CHILD regardless of the
+        // ambient environment. Cleared per-child rather than with `std::env::remove_var` in the
+        // parent: libtest runs this binary's ~20 tests on concurrent threads and every one of them
+        // sits inside `Command::output()`, which reads `environ`. Mutating the process environment
+        // while a sibling spawns is the documented-unsound setenv/getenv race, and its symptom is
+        // not a clean failure -- it is a child that silently never received MOCK_KEY or
+        // BUSBAR_CONFIG. Per-child it is ordered, and harmless: no other test sets this var.
+        .env_remove(UNSET_INTERPOLATION_VAR)
         // `--validate` RESOLVES built-in secret refs, so the fixture's referenced var must be set.
         .env("MOCK_KEY", "test-key-value")
         .env(
@@ -149,16 +161,15 @@ fn validate_ok_on_valid_config_without_plugins() {
 #[test]
 fn validate_notes_unset_interpolated_env_vars_by_name() {
     let dir = fixture_dir("unsetenv");
-    // Defensive: ensure the var is genuinely unset regardless of the ambient environment (this test
-    // never sets it, only relies on its absence).
-    std::env::remove_var("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR");
+    // The var is guaranteed absent in the child by `run_busbar`'s `.env_remove` -- see the comment
+    // there for why this must not be a `std::env::remove_var` in this shared-process parent.
     // `${VAR}` interpolation runs on the RAW config text before YAML parsing (see
     // config::interpolate_env_with), so a reference inside a COMMENT is still recorded as
     // referenced/unset while being guaranteed structurally harmless -- no risk of the substituted
     // (empty) value landing in a real field and failing config validation for an unrelated reason.
     write_configs(
         &dir,
-        "# smoke-tests unset-env-var interpolation: ${BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR}\n",
+        &format!("# smoke-tests unset-env-var interpolation: ${{{UNSET_INTERPOLATION_VAR}}}\n"),
     );
     let (code, stdout, stderr) = run_busbar(&dir, &["--validate"]);
     assert_eq!(
@@ -167,7 +178,7 @@ fn validate_notes_unset_interpolated_env_vars_by_name() {
     );
     assert!(
         stdout.contains("1 env var(s) referenced but unset here")
-            && stdout.contains("BUSBAR_CLI_VALIDATE_TEST_UNSET_VAR"),
+            && stdout.contains(UNSET_INTERPOLATION_VAR),
         "expected the unset-var note naming the variable, got: {stdout}"
     );
     let _ = std::fs::remove_dir_all(&dir);
