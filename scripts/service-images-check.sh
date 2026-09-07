@@ -44,8 +44,15 @@
 #   SERVICE_IMAGES_TSV=<file>  WORKFLOW_DIR=<dir>   override both inputs (used by --selftest)
 set -uo pipefail
 
-here="$(cd "$(dirname "$0")" && pwd)"
-repo="$(cd "${here}/.." && pwd)"
+# Both roots are checked, not assumed. `set -u` does NOT fire on an assignment whose command
+# substitution failed — the variable is assigned, to the empty string — so a failed `cd` here would
+# leave `repo` empty and make run_check's `rm -rf "${repo}/.qa-work/..."` operate on `/.qa-work/...`
+# while every input path resolved against `/`. That is a destructive operation and a vacuous scan
+# arrived at by silence, so both substitutions fail closed instead.
+here="$(cd "$(dirname "$0")" && pwd)" || { echo "cannot resolve the script directory" >&2; exit 2; }
+repo="$(cd "${here}/.." && pwd)" || { echo "cannot resolve the repo root from ${here}" >&2; exit 2; }
+[ -n "$repo" ] && [ -d "${repo}/testing/fleet-fixtures" ] \
+  || { echo "repo root '${repo}' does not look like a busbar checkout (no testing/fleet-fixtures)" >&2; exit 2; }
 
 IMAGES="${SERVICE_IMAGES_TSV:-${repo}/testing/fleet-fixtures/service-images.tsv}"
 WORKFLOW_DIR="${WORKFLOW_DIR:-${repo}/.github/workflows}"
@@ -98,7 +105,15 @@ for name in sorted(os.listdir(wf_dir)):
                 if ref in pinned_names or f"{ref}@" in value:
                     continue
                 print(f"{name}:{n}\t{ref}\tFLOATING")
-            if not found and not FLOATING.search(value) and "${{" not in value and value not in ("", "''"):
+            # A value carrying NO pinned reference is reported, expression or not. There used to be
+            # a `"${{" not in value` escape hatch here for plugin-ci.yml's ternaries — but those
+            # lines DO carry a pinned reference, so `found` is non-empty and this branch is never
+            # reached for them. The clause therefore only ever fired on the one case it must catch:
+            # a `${{ }}` value with no digest in it at all, e.g. `image: ${{ inputs.svc_image }}`.
+            # That produced NO ledger row — not FAIL, not "did not run" — so a fully unpinned,
+            # caller-controlled image left the gate GREEN. An expression the lint cannot resolve to
+            # a digest is precisely an image whose bytes are not pinned.
+            if not found and not FLOATING.search(value) and value not in ("", "''"):
                 print(f"{name}:{n}\t{value}\tFLOATING")
 PY
 }
@@ -276,12 +291,24 @@ jobs:
 EOF
   probe "red: a scan that found no image at all (discovery floor)" expect-red
 
-  # RED 6: a table whose own digest is malformed.
+  # RED 6: an `image:` whose value is a `${{ }}` EXPRESSION carrying no digest. This is the case the
+  # scanner used to drop on the floor entirely — no ledger row at all, so not FAIL and not even "did
+  # not run", and a fully unpinned caller-controlled image left the gate GREEN. Planted here because
+  # the defect was invisible by construction: every OTHER rule announces itself with a red row, and
+  # this one announced nothing. The two real pins stay correct so the failure can only be this rule.
+  write_wf "postgres:16@${pin_pg}" "valkey/valkey:8@${pin_vk}"
+  cat >>"$work/wf/fixture.yml" <<'EOF'
+      mysql:
+        image: ${{ inputs.mysql_image }}
+EOF
+  probe "red: an image: value that is an unresolved \${{ }} expression" expect-red
+
+  # RED 7: a table whose own digest is malformed.
   write_wf "postgres:16@${pin_pg}" "valkey/valkey:8@${pin_vk}"
   printf 'mysql\tmysql:8\tlatest\tmysqladmin ping\t3306\t13306\t120\n' >>"$tbl"
   probe "red: a table row that is not pinned by a sha256 digest" expect-red
 
-  # RED 7: ZERO ROWS IS RED, against the REAL verdict.sh on a genuinely empty ledger. Every gate in
+  # RED 8: ZERO ROWS IS RED, against the REAL verdict.sh on a genuinely empty ledger. Every gate in
   # this tree owes this proof; a gate that cannot demonstrate it has not adopted the inversion, only
   # its shape.
   : >"$work/empty.tsv"
