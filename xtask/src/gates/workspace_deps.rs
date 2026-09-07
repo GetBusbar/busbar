@@ -569,15 +569,49 @@ impl Gate for WorkspaceDepsGate {
     fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
         plants(cx)
             .into_iter()
-            .map(|p| crate::gates::ParityProbe {
-                label: p.label,
-                overlay: p.overlay,
-                materialize: p.materialize,
-                expect_rule: Some(p.rule.to_string()),
-                legacy_names: None,
-                divergence: None,
+            .map(|p| {
+                let probe = crate::gates::ParityProbe::red(
+                    p.label,
+                    p.overlay,
+                    p.materialize,
+                    p.rule.to_string(),
+                );
+                match legacy_wording(p.rule) {
+                    Some(w) => probe.named_by(w),
+                    // The one rule with no legacy counterpart at all. The Python walks the DECLARED
+                    // member list and never looks at `crates/`, so a layout change the root
+                    // manifest was edited to match is invisible to it — there is no denominator
+                    // floor to fall below because there is no denominator.
+                    None => probe.diverges(crate::gates::Divergence::LegacyGreen {
+                        reason: "the legacy walks the declared member list and never reads \
+                                 `crates/`, so a directory that moved out from under the workspace \
+                                 is not something it can see. This gate's walk carries a floor, and \
+                                 a scan that collapsed is a named failure rather than a clean tree."
+                            .to_string(),
+                    }),
+                }
             })
             .collect()
+    }
+}
+
+/// What the LEGACY script calls each rule this gate owes.
+///
+/// The two vocabularies differ because the row ids here are namespaced and the Python prints prose,
+/// so a parity probe that compared only this gate's id would be asserting nothing about the legacy
+/// half. `None` means the rule has no legacy counterpart at all, which is a declared divergence
+/// rather than a missing mapping — the difference matters, so it is a distinct return value and not
+/// an empty string.
+fn legacy_wording(rule: &str) -> Option<&'static str> {
+    match rule {
+        ROW_TABLE => Some("there is no source of truth to check"),
+        ROW_INHERITANCE => Some("states its own version"),
+        ROW_INHERIT_TARGET => Some("to inherit FROM"),
+        ROW_ORPHANS => Some("no member inherits it"),
+        ROW_SET_EQUALITY => Some("has no Cargo.toml"),
+        ROW_MEMBER_FLOOR => Some("member manifests were discovered (floor 8)"),
+        ROW_INHERITED_FLOOR => Some("inherited declarations were found (floor 40)"),
+        _ => None,
     }
 }
 
