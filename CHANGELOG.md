@@ -112,6 +112,18 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   truncated-body recovery alike. Totals are unchanged; what moves is which tier the tokens are
   attributed to, and a Responses-backed response reaching a Bedrock client now carries the
   `cacheWriteInputTokens` member the backend reported. See [Spec fidelity](#spec-fidelity).
+- **Chat Completions `prompt_tokens_details.cache_write_tokens` is read, and prices at the
+  cache-write tier.** The pinned OpenAI schema declares it on `CompletionUsage.prompt_tokens_details`
+  — "the unadjusted number of prompt tokens written to cache" — making it a slice of `prompt_tokens`
+  exactly as `cached_tokens` is. Busbar read the sibling slice but not this one, so a cache-writing
+  turn's tokens stayed inside the plain input total and were priced at the input rate, and the count
+  vanished on a cross-protocol hop. It now maps to the same additive cache-creation bucket
+  Anthropic's `cache_creation_input_tokens`, Bedrock's `cacheWriteInputTokens` and this provider's
+  own `/v1/responses` `input_tokens_details.cache_write_tokens` populate — on the buffered path, the
+  streamed terminal and the truncated-body recovery alike — and is re-emitted in its own declared
+  member so the published total and parts reconcile. `prompt_tokens` and `total_tokens` are
+  unchanged; what moves is which tier the tokens are attributed to. A response with no cache write is
+  unchanged. See [Spec fidelity](#spec-fidelity).
 - **Gemini's `toolUsePromptTokenCount` is billed as input on a truncated body too.** The pinned
   discovery document makes `toolUsePromptTokenCount` its own top-level `UsageMetadata` member
   ("Output only. Number of tokens present in tool-use prompt(s)") while `promptTokenCount` folds in

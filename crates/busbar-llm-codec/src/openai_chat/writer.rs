@@ -747,11 +747,33 @@ impl ProtocolWriter for OpenAiWriter {
                             "completion_tokens": completion_tokens,
                             "total_tokens": prompt_tokens.saturating_add(completion_tokens),
                         });
-                        if usage.cache_read_input_tokens.is_some() {
+                        // Emit a `prompt_tokens_details` object when EITHER cache slice is present.
+                        // The cache-WRITE slice the reader lifted out of `prompt_tokens` is put back
+                        // in its own declared member, by the same rule the buffered writer applies:
+                        // only when the source reported it — an absent member is not `Some(0)`, and
+                        // claiming a zero cache write is a statement the upstream never made. A
+                        // stream that reports only a cache read still answers `{"cached_tokens": N}`,
+                        // byte for byte.
+                        if usage.cache_read_input_tokens.is_some()
+                            || usage.cache_creation_input_tokens.is_some()
+                        {
                             if let Some(uo) = usage_obj.as_object_mut() {
+                                let mut ptd = serde_json::Map::new();
+                                if usage.cache_read_input_tokens.is_some() {
+                                    ptd.insert(
+                                        "cached_tokens".to_string(),
+                                        serde_json::json!(cache_read),
+                                    );
+                                }
+                                if let Some(cw) = usage.cache_creation_input_tokens {
+                                    ptd.insert(
+                                        "cache_write_tokens".to_string(),
+                                        serde_json::json!(cw),
+                                    );
+                                }
                                 uo.insert(
                                     "prompt_tokens_details".to_string(),
-                                    serde_json::json!({ "cached_tokens": cache_read }),
+                                    serde_json::Value::Object(ptd),
                                 );
                             }
                         }
@@ -1125,6 +1147,13 @@ impl ProtocolWriter for OpenAiWriter {
             let mut ptd = serde_json::Map::new();
             if resp.usage.cache_read_input_tokens.is_some() {
                 ptd.insert("cached_tokens".to_string(), serde_json::json!(cache_read));
+            }
+            // The cache-WRITE slice the reader lifted out of `prompt_tokens` is put back in its own
+            // declared member, so the total above and the parts below reconcile the way the schema
+            // says they do. Emitted only when the source reported it — an absent member is not
+            // `Some(0)`, and claiming a zero cache write is a statement the upstream never made.
+            if let Some(cw) = resp.usage.cache_creation_input_tokens {
+                ptd.insert("cache_write_tokens".to_string(), serde_json::json!(cw));
             }
             if let Some(a) = resp.usage.detail.input_audio_tokens {
                 ptd.insert("audio_tokens".to_string(), serde_json::json!(a));
