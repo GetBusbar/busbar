@@ -460,9 +460,24 @@ record_exec_cell() {  # <id> <cell-json> <raw-dir> <safe>
         [ -n "$envname" ] && envs+=("${envname}=$(printf 'a%.0s' {1..64})")
       done < <(grep -o 'env:[[:space:]]*[A-Za-z0-9_]\+' "$cfgfile" | sed -E 's/env:[[:space:]]*//' | sort -u) ;;
     mutation:*) ensure_baseline_config || { record "$id" FAIL "could not restore the baseline oracle config" ""; return; }
+      # A NAMED GAP AND A BROKEN TOOL ARE NOT THE SAME ROW. apply-mutation.py has two failure
+      # vocabularies and they mean opposite things: exit 3 is the mutation DECLARING itself
+      # unavailable ("needs a fixture" — a gap the register already knows about, correctly a SKIP),
+      # and exit 2 is the tool failing — no such mutation id, an unknown op, a mutation that changed
+      # NOTHING, or PyYAML missing from the interpreter. Every non-zero exit was folded into the
+      # same SKIP, so a HARNESS failure was written into the ledger as a named gap: the cell claims
+      # to be a gap the owner accepted rather than one the recorder could not run, it is owed by
+      # nobody, and on a host without PyYAML all 242 `mutation:` cells go that way at once — on both
+      # binaries, agreeing, with nothing red anywhere. Exit 3 keeps the SKIP; anything else is FAIL.
       python3 "${here}/apply-mutation.py" --baseline "$WORK/config.yaml" --providers "$WORK/providers.yaml" \
-        --mutation "${cfg#mutation:}" --out "$xwork" >"$xwork/mutation.env" 2>"$xwork/mutation.err" \
-        || { record "$id" SKIP "UNSUPPORTED: $(tr '\n' ' ' <"$xwork/mutation.err" | cut -c1-200)" "mutation could not be applied (named gap)"; return; }
+        --mutation "${cfg#mutation:}" --out "$xwork" >"$xwork/mutation.env" 2>"$xwork/mutation.err"
+      local mut_rc=$?
+      if [ "$mut_rc" = 3 ]; then
+        record "$id" SKIP "UNSUPPORTED: $(tr '\n' ' ' <"$xwork/mutation.err" | cut -c1-200)" "mutation declares itself unavailable (named gap)"; return
+      elif [ "$mut_rc" != 0 ]; then
+        record "$id" FAIL "apply-mutation.py failed (exit ${mut_rc}) on ${cfg#mutation:}" \
+          "$(tr '\n' ' ' <"$xwork/mutation.err" | cut -c1-200); a tool failure is not a named gap — this cell was not recorded"; return
+      fi
       cfgfile="$xwork/config.yaml"
       while IFS= read -r envkv; do [ -n "$envkv" ] && envs+=("$envkv"); done <"$xwork/mutation.env"
       while IFS= read -r a; do [ -n "$a" ] && args+=("$a"); done < <(jq -r '.args[]? // empty' "$xwork/mutation-args.json" 2>/dev/null) ;;
