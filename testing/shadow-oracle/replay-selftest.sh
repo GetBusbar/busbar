@@ -536,6 +536,53 @@ else
   say FAIL "a shipped cell's 'compare' was refused: $(tail -3 "$W/out-x-ship.log")"
 fi
 
+# (aa) THE `norm.rules` EXEMPTION IS THE ONLY WAY A NORMALIZER RULE ESCAPES BEING COMPARED, so it is
+# held to normalize.py rather than trusted to have been copied correctly. diff-cells.ORDER_RULES
+# drops a rule name out of the one-sided-firing check; the ONLY rules that may be in it are pure
+# RE-SORTS, which change no content. Two ways it can be wrong, and this case catches both:
+#   * a re-sort rule normalize.py emits is MISSING from the set -> that rule counts as one-sided and
+#     the differ reports a divergence about nothing (this had already happened: normalize.py grew a
+#     third sort_runs call, `boot.exhaustion-order`, and the set was never told);
+#   * a rule that DROPS or BLANKS content is ADDED to the set -> its one-sided firing goes
+#     invisible, which is how content leaves a cell with no class saying so. diff-cells.py asserts
+#     that direction at import (ORDER_RULES vs CONTENT_RULES); this case proves the assert bites.
+# normalize.py's re-sort rules are read out of the source: the three `sort_runs(...)` calls plus the
+# two in-place sorts (`boot.pair-order`, `keys.order`), so a fourth one added tomorrow is red here
+# the day it lands rather than the day someone remembers this set exists.
+n_sort="$(grep -oE 'sort_runs\([^,]+, [^,]+, "[^"]+"' "${here}/normalize.py" | sed 's/.*"\(.*\)"/\1/' | LC_ALL=C sort -u)"
+n_inplace="$(grep -oE 'applied\.add\("(boot\.pair-order|keys\.order)"\)' "${here}/normalize.py" | sed 's/.*"\(.*\)".*/\1/' | LC_ALL=C sort -u)"
+printf '%s\n%s\n' "$n_sort" "$n_inplace" | grep -v '^$' | LC_ALL=C sort -u >"$W/resort-rules.txt"
+python3 - "$W/order-rules.txt" <<PY
+import sys
+sys.path.insert(0, "${here}")
+import importlib.util
+spec = importlib.util.spec_from_file_location("dc", "${here}/diff-cells.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+open(sys.argv[1], "w").write("\n".join(sorted(m.ORDER_RULES)) + "\n")
+PY
+if diff -u "$W/resort-rules.txt" "$W/order-rules.txt" >"$W/order-rules.diff" 2>&1; then
+  say PASS "diff-cells' norm.rules exemption is exactly normalize.py's re-sort rules ($(wc -l <"$W/resort-rules.txt" | tr -d ' ') of them)"
+else
+  say FAIL "diff-cells.ORDER_RULES has drifted from normalize.py's re-sort rules (- normalize.py, + diff-cells): $(tail -n +4 "$W/order-rules.diff" | tr '\n' ' ')"
+fi
+# …and a CONTENT rule may never be smuggled into the exemption: the assert must fire.
+if python3 - <<PY >"$W/order-assert.log" 2>&1
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("dc", "${here}/diff-cells.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+# the guard is the disjointness the module asserts at import; prove it is not vacuous
+assert m.CONTENT_RULES, "CONTENT_RULES is empty, so the disjointness assert forbids nothing"
+bad = m.ORDER_RULES | {"metrics.timing"}
+if bad & m.CONTENT_RULES:
+    sys.exit(0)
+sys.exit("metrics.timing is not in CONTENT_RULES, so adding it to the exemption would be allowed")
+PY
+then
+  say PASS "a content-dropping rule cannot be exempted from norm.rules (the disjointness guard is not vacuous)"
+else
+  say FAIL "the ORDER_RULES/CONTENT_RULES guard does not forbid exempting a content-dropping rule: $(tail -2 "$W/order-assert.log")"
+fi
+
 # (y) THE HARNESS REVISION MUST COVER EVERY FILE THAT DECIDES A RECORDING OR A VERDICT. harness_rev
 # is the ONE fact that lets diff-cells refuse a golden and a candidate made under different rules,
 # and four files that decide exactly that were outside it: testing/fleet-fixtures/lib.sh (record.sh
