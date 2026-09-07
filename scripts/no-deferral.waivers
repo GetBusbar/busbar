@@ -1,15 +1,15 @@
-# no-deferral.waivers — the committed allowlist for scripts/no-deferral-gate.sh.
+# no-deferral.waivers — the committed allowlist for `cargo xtask gate no-deferral`.
 #
 # FORMAT:  <MATCHER><whitespace><reason> [retires: <TRACKER-ID>]
-#   MATCHER is either an EXACT `path:line`, or a PATH GLOB (any matcher with no trailing `:<digits>`).
-#   A marker (file:line) is WAIVED when an exact row equals it, or a glob row matches its file.
+#   MATCHER is an EXACT `path:line`. A matcher without a trailing `:<digits>` is REFUSED at load —
+#   see "ONE GLOB USED TO STAND HERE" below. A marker (file:line) is WAIVED when a row equals it.
 #   Every row must end in `[retires: <ID>]` naming the row of docs/design/1.6.0-TRACKER.md that
 #   retires it. A row with no such tag, or one naming a tracker row that does not exist, is RED.
 # The allowlist is a FLOOR CHECKED BOTH WAYS: a marker not waived is RED (over-count); a waiver that
-# matches no marker is RED (stale — the marker was resolved). See scripts/no-deferral-gate.sh header
+# matches no marker is RED (stale — the marker was resolved). See xtask/src/gates/no_deferral.rs
 # and docs/design/playbook/gate-no-deferral.md.
 #
-# --strict-done (what scripts/verify-1.6.0-done.sh runs) additionally FAILS if ANY row below is not a
+# no-deferral-strict-done (what scripts/verify-1.6.0-done.sh runs) additionally FAILS if ANY row below is not a
 # */hot/* row: the hot/* foundation fixtures are the ONE permanent exemption; the voice skeleton rows
 # are TRACKED 1.6.0 debt that MUST be gone before 1.6.0 is done.
 #

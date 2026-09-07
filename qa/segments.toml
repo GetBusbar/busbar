@@ -394,15 +394,16 @@ run    = "cargo xtask gate kernel-token-wire-purity --selftest && cargo xtask ga
 id     = "no-deferral"
 status = "active"
 tier   = "fast"
-# THE NO-DEFERRAL GATE (scripts/no-deferral-gate.sh) — nothing known-and-deferred in shipped source:
+# THE NO-DEFERRAL GATE (cargo xtask gate no-deferral) — nothing known-and-deferred in shipped source:
 # every reachable `unimplemented!()`/`todo!()` (Class A) and every self-declared debt label
 # (Class B, e.g. SKELETON) must be a floor-checked entry in the committed scripts/no-deferral.waivers
 # allowlist. verify-1.6.0-done.sh runs the stricter `--strict-done` form as part of its DONE claim;
 # the per-push posture that keeps a NEW unwaived deferral from landing in the first place is this
-# `--check`, which no workflow and no segment ran. The --selftest (a planted Class-A macro and a
-# Class-B label each flagged, the anti-marker prose / cfg(test) / tests-file fixtures each left
-# clean, plus a discovery floor over the real tree) runs FIRST.
-run    = "scripts/no-deferral-gate.sh --selftest && scripts/no-deferral-gate.sh --check"
+# check, which no workflow and no segment ran. The --selftest (a planted Class-A macro and a
+# Class-B label each flagged, the anti-marker prose / cfg(all(test,…)) / cfg(not(test)) fixtures each
+# proven, the three waiver-shape refusals driven through the real loader, and the discovery floor
+# planted on the RUN path) runs FIRST.
+run    = "cargo xtask gate no-deferral --selftest && cargo xtask gate no-deferral"
 
 [[segment]]
 id     = "inventory-ref-lint"

@@ -145,6 +145,8 @@ declare -a CARGO_LOCAL=(
   "cargo xtask gate plane-transport-neutrality"
   "cargo xtask gate plane-abi-neutrality --selftest"
   "cargo xtask gate plane-abi-neutrality"
+  "cargo xtask gate no-deferral --selftest"
+  "cargo xtask gate no-deferral"
   "cargo xtask gate duplex-ws-default-edge --selftest"
   "cargo xtask gate duplex-ws-default-edge"
 )
