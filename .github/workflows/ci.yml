@@ -882,9 +882,9 @@ jobs:
           cargo fetch --locked
           cargo check -p rmcp --locked
       - name: field-inventory self-test (derivation cannot be lied to)
-        run: python3 scripts/field-inventory.py --selftest
+        run: cargo xtask gate field-inventory --selftest
       - name: field-inventory drift (committed == fresh derivation)
-        run: python3 scripts/field-inventory.py --check
+        run: cargo xtask gate field-inventory
       - name: method-inventory self-test (derivation cannot be lied to)
         run: python3 scripts/method-inventory.py --selftest
       - name: method-inventory drift (committed == fresh derivation)
