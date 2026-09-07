@@ -20,6 +20,7 @@ use busbar_contract::unit::{
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 
 use busbar_llm_codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
+use busbar_llm_codec::proto_codec::{with_reader, with_writer};
 
 use crate::dialect::{self, Dialect};
 use crate::meta;
@@ -323,30 +324,25 @@ fn event_payload(bytes: &[u8]) -> Option<(&str, serde_json::Value)> {
 /// The stream state is a fresh one because a usage frame states its own figures: this step reads
 /// one frame and returns what that frame reported, and it holds nothing across frames the way the
 /// decode step, which owns the kernel's state, does.
-fn reported_usage(
-    protocol: &busbar_llm_codec::proto_codec::Protocol,
-    r: &Response<'_>,
-) -> Option<busbar_llm_codec::ir::IrUsage> {
+fn reported_usage(dialect: &str, r: &Response<'_>) -> Option<busbar_llm_codec::ir::IrUsage> {
     let bytes = r.ir.body();
     if !is_streamed(r) {
         let value: serde_json::Value = sonic_rs::from_slice(bytes).ok()?;
-        return protocol
-            .reader()
-            .read_response(&value)
+        return with_reader(dialect, |rd| rd.read_response(&value))?
             .ok()
             .map(|r| r.usage);
     }
     let (name, value) = event_payload(bytes)?;
     let mut state = StreamDecodeState::default();
-    protocol
-        .reader()
-        .read_response_events(name, &value, &mut state)
-        .into_iter()
-        .find_map(|event| match event {
-            IrStreamEvent::MessageStart { usage, .. } => usage,
-            IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
-            _ => None,
-        })
+    with_reader(dialect, |rd| {
+        rd.read_response_events(name, &value, &mut state)
+    })?
+    .into_iter()
+    .find_map(|event| match event {
+        IrStreamEvent::MessageStart { usage, .. } => usage,
+        IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
+        _ => None,
+    })
 }
 
 /// The per-connection codec state a streamed answer needs.
@@ -445,11 +441,8 @@ impl Plane for LlmPlane {
         // The codec's own reader is what says whether these bytes are this dialect's shape. A
         // second opinion here would be a second dialect.
         let value = parse(bytes)?;
-        let protocol = busbar_llm_codec::proto_codec::protocol_for(d.name)
-            .ok_or(Decode::UnsupportedOperation)?;
-        let request = protocol
-            .reader()
-            .read_request(&value)
+        let request = with_reader(d.name, |r| r.read_request(&value))
+            .ok_or(Decode::UnsupportedOperation)?
             .map_err(|_| Decode::Malformed)?;
 
         let body = ctx
@@ -503,8 +496,6 @@ impl Plane for LlmPlane {
         let egress = dialect::dialect(upstream.dialect).ok_or(Encode::Unrepresentable)?;
         let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
 
-        let egress_protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
-            .ok_or(Encode::Unrepresentable)?;
         let bytes = u.body().body();
         // Both quantities the hop needs from the REQUEST document were read once, at decode, and
         // sealed into the draft: whether the client asked for a stream, and which model it named.
@@ -531,10 +522,11 @@ impl Plane for LlmPlane {
             // Same dialect, but the model may have to change. Only this arm needs the document.
             let mut value: serde_json::Value =
                 sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
-            if egress_protocol
-                .writer()
-                .rewrite_model_if_needed(&mut value, upstream.model)
-            {
+            let rewritten = with_writer(egress.name, |w| {
+                w.rewrite_model_if_needed(&mut value, upstream.model)
+            })
+            .ok_or(Encode::Unrepresentable)?;
+            if rewritten {
                 put(ctx, &serialize(&value)?)?
             } else {
                 ArenaBytes::new(bytes)
@@ -542,11 +534,8 @@ impl Plane for LlmPlane {
         } else {
             let value: serde_json::Value =
                 sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
-            let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
-                .ok_or(Encode::Unrepresentable)?;
-            let mut request = ingress_protocol
-                .reader()
-                .read_request(&value)
+            let mut request = with_reader(ingress.name, |r| r.read_request(&value))
+                .ok_or(Encode::Unrepresentable)?
                 .map_err(|_| Encode::Unrepresentable)?;
             // Two normalizations the crossing needs that neither the reader nor the writer does
             // for itself. Both are rules of the crossing, not of either dialect, which is why they
@@ -562,17 +551,27 @@ impl Plane for LlmPlane {
             // vendor's request, where at best they are ignored and at worst they are rejected —
             // and a control that survives the crossing by accident is a control nobody chose.
             request.extra.clear();
-            let mut written = egress_protocol.writer().write_request(&request);
-            egress_protocol
-                .writer()
-                .rewrite_model_if_needed(&mut written, upstream.model);
+            // Two calls, ONE writer: what the second rewrites is what the first wrote, so the pair
+            // is a single question asked of a single instance — which is what the closure form
+            // gives, without either call reaching the heap for the writer that answers it.
+            let written = with_writer(egress.name, |w| {
+                let mut written = w.write_request(&request);
+                w.rewrite_model_if_needed(&mut written, upstream.model);
+                written
+            })
+            .ok_or(Encode::Unrepresentable)?;
             put(ctx, &serialize(&written)?)?
         };
 
         let mut envelope = TransportEnvelope::default();
-        let path = egress_protocol
-            .writer()
-            .upstream_path_for_stream(upstream.model, stream);
+        // The request target is a stateless question — this model, streamed or not — and asking it
+        // through a resolved `Protocol` was a `Box` of a writer this call never otherwise touches.
+        // On the passthrough arm above that box was the WHOLE of what the hop allocated beyond its
+        // envelope, and the allocation gate counted it.
+        let path = with_writer(egress.name, |w| {
+            w.upstream_path_for_stream(upstream.model, stream)
+        })
+        .ok_or(Encode::Unrepresentable)?;
         let _ = envelope.fields.push(EnvelopeField {
             name: "method",
             value: put(ctx, b"POST")?,
@@ -619,8 +618,6 @@ impl Plane for LlmPlane {
         };
         let upstream = upstream_for(self, dest).ok_or(Decode::UnsupportedOperation)?;
         let egress = dialect::dialect(upstream.dialect).ok_or(Decode::UnsupportedOperation)?;
-        let protocol = busbar_llm_codec::proto_codec::protocol_for(egress.name)
-            .ok_or(Decode::UnsupportedOperation)?;
         let bytes = frame.bytes.as_slice();
         let body = ctx
             .arena()
@@ -645,9 +642,13 @@ impl Plane for LlmPlane {
                 });
             }
             let value = parse(data)?;
+            // The reader holds nothing across frames — the state it reads against is the kernel's,
+            // borrowed for the length of the call — so this is a stateless question and the writer
+            // a resolved `Protocol` would box alongside it is never touched.
             let events = with_decode_state(st, |state| {
-                protocol.reader().read_response_events(name, &value, state)
-            });
+                with_reader(egress.name, |r| r.read_response_events(name, &value, state))
+            })
+            .ok_or(Decode::UnsupportedOperation)?;
             let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("event"));
             let terminal = events
                 .iter()
@@ -681,9 +682,8 @@ impl Plane for LlmPlane {
         }
 
         let value = parse(bytes)?;
-        let response = protocol
-            .reader()
-            .read_response(&value)
+        let response = with_reader(egress.name, |r| r.read_response(&value))
+            .ok_or(Decode::UnsupportedOperation)?
             .map_err(|_| Decode::Malformed)?;
         let _ = facts.set(meta::FACT_FRAME_KIND, FactValue::Str("body"));
         response_facts(ctx, &response, &mut facts);
@@ -719,17 +719,18 @@ impl Plane for LlmPlane {
             if data == b"[DONE]" {
                 return put(ctx, bytes);
             }
-            let source_protocol = busbar_llm_codec::proto_codec::protocol_for(source)
-                .ok_or(Encode::Unrepresentable)?;
+            // The one resolution in this plane that is NOT a stateless question, so the one that
+            // stays a `Protocol`: the ingress WRITER below is asked once per event of this frame,
+            // and every open block it tracks is a fact about the events it has already written. One
+            // instance has to see all of them, so it is held across the loop rather than rebuilt.
             let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
                 .ok_or(Encode::Unrepresentable)?;
             let value: serde_json::Value =
                 sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
             let events = with_decode_state(st, |state| {
-                source_protocol
-                    .reader()
-                    .read_response_events(name, &value, state)
-            });
+                with_reader(source, |r| r.read_response_events(name, &value, state))
+            })
+            .ok_or(Encode::Unrepresentable)?;
             let mut out = Vec::new();
             for event in events {
                 for (kind, payload) in ingress_protocol.writer().write_response_events(&event) {
@@ -755,15 +756,10 @@ impl Plane for LlmPlane {
             // the same move on the side that carries more bytes. An allocation gate holds it.
             return put(ctx, bytes);
         }
-        let source_protocol =
-            busbar_llm_codec::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
-        let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
-            .ok_or(Encode::Unrepresentable)?;
         let value: serde_json::Value =
             sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
-        let mut response = source_protocol
-            .reader()
-            .read_response(&value)
+        let mut response = with_reader(source, |r| r.read_response(&value))
+            .ok_or(Encode::Unrepresentable)?
             .map_err(|_| Encode::Unrepresentable)?;
         // THE ANSWER-NORMALIZATION PASS. The reference forward path runs exactly this between
         // reading an answer and writing it, and the four members this plane used to get wrong were
@@ -780,10 +776,14 @@ impl Plane for LlmPlane {
             ingress.name,
             ctx.clock().unix_secs,
         );
-        let mut written = ingress_protocol.writer().write_response(&response);
-        ingress_protocol
-            .writer()
-            .inject_response_metrics(&mut written, elapsed_ms(ctx));
+        // Two calls, one writer, for the same reason the crossing's request side has two: what the
+        // second stamps is what the first wrote.
+        let written = with_writer(ingress.name, |w| {
+            let mut written = w.write_response(&response);
+            w.inject_response_metrics(&mut written, elapsed_ms(ctx));
+            written
+        })
+        .ok_or(Encode::Unrepresentable)?;
         put(ctx, &serialize(&written)?)
     }
 
@@ -826,13 +826,10 @@ impl Plane for LlmPlane {
             return Ok(None);
         };
         let ingress = unit_dialect(u).ok_or(Encode::Unrepresentable)?;
-        let protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
-            .ok_or(Encode::Unrepresentable)?;
-        let envelope = protocol.writer().write_error(
-            500,
-            KIND_API_ERROR,
-            "The request could not be completed.",
-        );
+        let envelope = with_writer(ingress.name, |w| {
+            w.write_error(500, KIND_API_ERROR, "The request could not be completed.")
+        })
+        .ok_or(Encode::Unrepresentable)?;
         Ok(Some(put(ctx, &serialize(&envelope)?)?))
     }
 
@@ -925,10 +922,7 @@ impl Plane for LlmPlane {
         }) else {
             return locators;
         };
-        let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source.name) else {
-            return locators;
-        };
-        let Some(usage) = reported_usage(&protocol, r) else {
+        let Some(usage) = reported_usage(source.name, r) else {
             return locators;
         };
         // The quantities come back already normalized: a dialect that reports its cached count
@@ -1017,9 +1011,6 @@ impl Plane for LlmPlane {
             Some(FactValue::Str(name)) => name,
             _ => return ContentFacts { facts },
         };
-        let Some(protocol) = busbar_llm_codec::proto_codec::protocol_for(source) else {
-            return ContentFacts { facts };
-        };
         if is_streamed(r) {
             // A streamed frame states what the frame states \u2014 the stream's identity and model on
             // the opening event, how it stopped on the closing one \u2014 and nothing about the frames
@@ -1029,10 +1020,11 @@ impl Plane for LlmPlane {
                 return ContentFacts { facts };
             };
             let mut state = StreamDecodeState::default();
-            for event in protocol
-                .reader()
-                .read_response_events(name, &value, &mut state)
-            {
+            let events = with_reader(source, |rd| {
+                rd.read_response_events(name, &value, &mut state)
+            })
+            .unwrap_or_default();
+            for event in events {
                 stream_event_facts(ctx, &event, &mut facts);
             }
             return ContentFacts { facts };
@@ -1040,7 +1032,7 @@ impl Plane for LlmPlane {
         let Ok(value) = sonic_rs::from_slice::<serde_json::Value>(r.ir.body()) else {
             return ContentFacts { facts };
         };
-        let Ok(response) = protocol.reader().read_response(&value) else {
+        let Some(Ok(response)) = with_reader(source, |rd| rd.read_response(&value)) else {
             return ContentFacts { facts };
         };
         response_facts(ctx, &response, &mut facts);
