@@ -288,7 +288,9 @@ providers_file: /etc/busbar/providers.yaml
     );
 }
 
-fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<(), String> {
+/// Run `--validate` over a migrated config. `Ok` carries the validator's own stderr, which is
+/// where every boot WARNING lands and is what the corpus warning count below is measured on.
+fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<String, String> {
     std::fs::write(tmp, yaml).map_err(|e| format!("write temp config: {e}"))?;
     // `--validate` RESOLVES built-in secret references, so every env var a corpus config names must
     // be set or the gate fails on this machine's environment rather than on the migration. The
@@ -333,7 +335,7 @@ fn validate(yaml: &str, tmp: &Path, providers: &Path) -> Result<(), String> {
         .output()
         .map_err(|e| format!("could not run busbar --validate: {e}"))?;
     if out.status.success() {
-        return Ok(());
+        return Ok(String::from_utf8_lossy(&out.stderr).into_owned());
     }
     Err(format!(
         "--- validate stdout ---\n{}\n--- validate stderr ---\n{}",
@@ -448,5 +450,145 @@ fn a_migration_with_nothing_to_decide_emits_no_comment_banner() {
         "{} migration(s) that needed no decision still emitted a comment banner:\n\n{}",
         dirty.len(),
         dirty.join("\n\n")
+    );
+}
+
+// ── THE BOOT-WARNING COUNT ──────────────────────────────────────────────────────────────────────
+// ARCHITECTURE.md Appendix B binds the boot warnings of a migrated 1.5.5 deployment: none beyond
+// what 1.5.5 itself emitted, unless a 1.6.0-additive key is written into the config.
+//
+// WHY THIS TEST AND NOT THE ONE THAT WAS THERE. That binding is a COUNT, and the only checks it
+// carried were an ABSENCE tripwire -- "no ledger/journal/hold/WAL metric series on a config with no
+// data_dir". That asserts a different thing about a different surface: a tripwire proves a named
+// series is missing, and says nothing whatever about how many lines the binary printed. The
+// `boot.warning` oracle cells have the mirrored blind spot -- each proves ONE warning is PRESENT,
+// and none totals them. A binary that grew a new warning on every config in the corpus would have
+// passed every one of those checks.
+//
+// SO THIS COUNTS. For each config the corpus holds it migrates, validates, and counts the warning
+// lines the CURRENT binary emits, against the count the published 1.5.5 binary emitted on the SAME
+// config -- read out of the pinned shadow-oracle golden, which recorded exactly that stderr for
+// every corpus config under `config.migrate|<tag>|validate-migrated`. The baseline is a RECORDING,
+// not a number typed into this file: nothing here can drift from what 1.5.5 did without the golden
+// moving first, and no count is asserted that was not measured from the shipped binary.
+//
+// THE COMPARISON IS `<=`, AND THAT IS THE BINDING, NOT A WEAKENING. "None beyond 1.5.5's" bounds
+// the warnings ABOVE. A migrated config that warns LESS is 1.6.0 retiring a deprecation, which is
+// the direction of travel and is what the corpus shows today: 1.5.5 warned once per config about
+// the deprecated `BUSBAR_PROVIDERS` env var, and the current binary, which no longer reads that
+// variable at all, does not. A warning that APPEARS is what this test exists to catch, and it is
+// reported with the config that produced it and the text of the new line, never as a bare count.
+
+/// The warning lines in one captured stderr. `[warn]` is the prefix the binary writes and the
+/// prefix the golden recorded; counting LINES rather than occurrences keeps a warning whose own
+/// message quotes the marker from counting twice.
+fn warning_lines(stderr: &str) -> Vec<&str> {
+    stderr.lines().filter(|l| l.contains("[warn]")).collect()
+}
+
+/// The corpus tag the shadow oracle names this config by. Mirrors `enumerate-cells.py`'s
+/// `migrate_cells()`: the file name with a trailing `_config.yaml` removed, and left whole when it
+/// has no such suffix (`v1.3.1_bench_latency_config.anthropic.yaml` is its own tag).
+fn oracle_tag(corpus_file: &Path) -> String {
+    let name = corpus_file
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .to_string();
+    name.strip_suffix("_config.yaml")
+        .map(str::to_string)
+        .unwrap_or(name)
+}
+
+/// How many warning lines the PUBLISHED 1.5.5 binary emitted validating this migrated config, read
+/// from the pinned golden's own recording of it. `None` when the golden holds no such cell.
+fn recorded_1_5_5_warning_count(tag: &str) -> Option<usize> {
+    let cell = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/golden/1.5.5/cells")
+        .join(format!("config.migrate__{tag}__validate-migrated.json"));
+    let text = std::fs::read_to_string(cell).ok()?;
+    let doc: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let stderr = doc.get("effects")?.get("stderr")?.as_str()?;
+    Some(warning_lines(stderr).len())
+}
+
+/// No migrated 1.5.5 config makes the current binary warn more than 1.5.5 warned on it.
+///
+/// Reports every config that gained a warning, with the lines it gained, rather than dying on the
+/// first: a warning added to a shared boot path shows up on the whole corpus at once, and the set
+/// is the diagnosis.
+#[test]
+fn no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did() {
+    if !cfg!(feature = "auth-admin-tokens") {
+        eprintln!(
+            "SKIP: built without `auth-admin-tokens`, so a migrated config naming `keys` cannot be \
+             given a valid admin mint path. The default-features build covers this."
+        );
+        return;
+    }
+    let files = corpus_files();
+    let tmp = std::env::temp_dir().join(format!("busbar-warncount-{}.yaml", std::process::id()));
+    let mut regressions: Vec<String> = Vec::new();
+    let mut compared = 0usize;
+    let (mut recorded_total, mut current_total) = (0usize, 0usize);
+
+    for f in &files {
+        let name = f
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        // A config the golden holds no recording for has no baseline to compare against. Skipped
+        // here and counted below, so a golden that loses its corpus recordings makes this test
+        // vacuous LOUDLY rather than quietly.
+        let Some(recorded) = recorded_1_5_5_warning_count(&oracle_tag(f)) else {
+            continue;
+        };
+        let Ok((migrated, _)) = migrate(f) else {
+            continue;
+        };
+        let ready = apply_deferred_decisions(&migrated);
+        // Whether a migrated config validates AT ALL is the sibling test's assertion; duplicating
+        // its failure here would report one regression as two.
+        let Ok(stderr) = validate(&ready, &tmp, &providers_for(f)) else {
+            continue;
+        };
+        let current = warning_lines(&stderr);
+        compared += 1;
+        recorded_total += recorded;
+        current_total += current.len();
+        if current.len() > recorded {
+            regressions.push(format!(
+                "[{name}] 1.5.5 warned {recorded} time(s) here; this binary warns {}:\n{}",
+                current.len(),
+                current
+                    .iter()
+                    .map(|l| format!("      {}", l.trim()))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+
+    // A run that compared nothing must never read as green. Without this, a renamed golden
+    // directory or a corpus that stopped migrating would silently turn the whole test into a
+    // no-op -- which is precisely what the binding's old absence-tripwire citation already was.
+    assert!(
+        compared >= 20,
+        "only {compared} of {} corpus configs were compared against a recorded 1.5.5 warning \
+         count, so this test verified almost nothing. Either the pinned golden lost its \
+         config.migrate|<tag>|validate-migrated recordings, or the corpus stopped migrating.",
+        files.len()
+    );
+    assert!(
+        regressions.is_empty(),
+        "{} migrated config(s) now emit MORE boot warnings than the published 1.5.5 binary did on \
+         the same config. The binding is that a migrated 1.5.5 deployment sees no boot warning \
+         beyond 1.5.5's own unless it writes a 1.6.0-additive key; every line below is one it did \
+         not ask for.\n\n{}\n\n(corpus totals: 1.5.5 {recorded_total} warning(s) over {compared} \
+         configs, this binary {current_total})",
+        regressions.len(),
+        regressions.join("\n\n")
     );
 }

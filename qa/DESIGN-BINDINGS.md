@@ -17,10 +17,10 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **104**  (PB-0 master rule + 103 table rows)
-- mapped (proven): **98**
-- unproven (cited, but nothing compared): **4**
+- mapped (proven): **99**
+- unproven (cited, but nothing compared): **3**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 56, oracle-family 5, test 426
+- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 57, oracle-family 5, test 428
 
 ## Bindings
 
@@ -43,7 +43,7 @@ The three words are not interchangeable:
 | PB-14 | store outage, peerless node | mapped | PASS |  | test: `test_metering_accumulator_is_bounded_and_lossless_under_sustained_store_outage` |
 | PB-15 | WAL high-water | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir` |
 | PB-16 | `/usage` and every legacy admin response | mapped | PASS |  | oracle-cell: `billing\|key-usage\|after-upstream-down`<br>test: `test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx`<br>test: `test_pre_routing_failure_does_not_refund_prior_charge`<br>test: `finish_admitted_does_not_refund_an_uncharged_admit` |
-| PB-17 | boot warnings | unproven | FAIL | UNPROVEN, by the ledger's own note: The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's. | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir` |
+| PB-17 | boot warnings | mapped | PASS |  | oracle-cell: `ops.scrape\|metrics\|no-ledger-series`<br>test: `no_ledger_series_and_no_keyset_lines_without_data_dir`<br>test: `crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did` |
 | PB-18 | arrival budgets | mapped | PASS |  | test: `test_inbound_concurrency_layer_added_only_when_positive`<br>oracle-cell: `boot.refusal\|BOOT-089e\|validate` |
 | PB-19 | `MissingGroup` | mapped | PASS |  | test: `test_missing_group_fails_closed_at_ingress`<br>test: `test_missing_group_fails_closed`<br>test: `govern_admit_reason_reason_bytes_match_direct_try_admit` |
 | PB-20 | admin audit chain | mapped | PASS |  | test: `the_admin_audit_digest_is_unchanged_by_the_unification`<br>test: `crates/busbar-core/src/admin/tests/audit_tests.rs::hash_chain_links_and_verifies`<br>test: `crates/busbar-core/src/admin/tests/audit_tests.rs::export_load_roundtrip_resumes_chain`<br>test: `admin_audit_chain_boot_verifies_from_frozen_bytes`<br>oracle-cell: `admin.ops\|GetAudit\|ok` |
@@ -137,7 +137,6 @@ Each of these names one or more checks and is still proof of nothing. A binding 
 red under `scripts/design-bindings.sh --check`; it is fixed by making the citation real,
 or it is demoted to a named gap. It is never waived.
 
-- **PB-17** (boot warnings): UNPROVEN, by the ledger's own note: The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's.
 - **PB-48** (stall sweep on `http`/`sse`): UNPROVEN, by the ledger's own note: max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.
 - **PB-58** (admitted units and money): UNPROVEN, by the ledger's own note: OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.
 - **PB-61** (chunked bodies): UNPROVEN, by the ledger's own note: MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.
@@ -151,7 +150,7 @@ A green test that asserts the opposite of a binding is not a proof. These need a
 - **PB-11** (plugin trust and ABI windows): CONTRADICTED in part by green tests: crates/plugin-loader/src/tests/registry_tests.rs store_abi_below_or_above_the_range_is_refused_naming_v2_to_v4 and supported_abi_store_floor_admits_v2 pin a store window of v2..=v4, where the binding requires v2..=v2 and refuses ABI 3/4. The plugins.load cells prove the trust/skip half only.
 - **PB-13** (`data_dir`): data_dir, DataDirNotWritable, KeysetMissing and wal_capacity do not exist in crates/ yet; the tripwire is armed anyway: no_data_dir_neutrality.rs boots a 1.5.5-shaped config and asserts no ledger/journal/hold/WAL series and no keyset/data-dir boot line, and the ops.scrape no-ledger-series cell records the same absence against 1.5.5.
 - **PB-15** (WAL high-water): No WAL or high-water concept exists in crates/ yet; the neutrality tripwire (no_data_dir_neutrality.rs + the ops.scrape no-ledger-series cell) turns red the day a WAL series or boot line appears on a config without data_dir.
-- **PB-17** (boot warnings): The binding is a COUNT (no boot warning beyond 1.5.5's own). The only checks on this row are the absence tripwire PB-13/PB-15/PB-41/PB-70 also cite, which asserts that certain metric SERIES are absent on a config with no data_dir -- a different surface, and not a count. The boot.warning cells assert that individual warnings are PRESENT; none totals them. The check that would prove it: count the boot warning lines the binary emits on each 1.5.5 corpus config and compare the total against the pinned golden's.
+- **PB-17** (boot warnings): Resolved 2026-09-06: the binding is a COUNT, and it is now counted. crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did migrates and validates each of the 69 shipped configs in tests/migration-corpus/from-tags and compares the warning lines the current binary emits, per config, against the number the PUBLISHED 1.5.5 binary emitted on the same config -- read out of the pinned golden's own config.migrate\|<tag>\|validate-migrated recordings, so the baseline is measured and not typed in. 1.5.5 warned 69 times over the 69 configs; this binary warns fewer, having retired the BUSBAR_PROVIDERS deprecation, and a warning that APPEARS is reported with its config and its text. The absence tripwire it used to cite is kept: it proves a different, still-wanted thing about metric series.
 - **PB-48** (stall sweep on `http`/`sse`): max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.
 - **PB-58** (admitted units and money): OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.
 - **PB-60** (oversize body): oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.
