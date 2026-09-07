@@ -91,6 +91,23 @@ DIALECTS = {
 }
 STREAM_CT = {"sse": "text/event-stream", "eventstream": "application/vnd.amazon.eventstream"}
 
+# WHICH SIDE OF 2xx EACH OUTCOME MUST LAND ON. A cell's outcome is the thing it exists to prove, and
+# the schema cannot see it: an `unauthenticated` cell answered HTTP 200 with the happy path's own
+# body is a perfectly valid response body, and a check that only asks "does this parse against the
+# schema for the status that was sent" calls it conformant. So does the mirror — an `ok` cell
+# answered with a well-formed refusal envelope. Both were green. The status CLASS the outcome
+# implies is asserted here; the body is then still judged against the schema for the status that was
+# actually sent, so a run says both what was wrong and what the bytes were.
+#
+# The line is 2xx / not-2xx and nothing finer, because it has to hold across six dialects that
+# disagree about the code (Gemini answers an absent key with 400 where OpenAI answers 401). Which
+# code within the class is the shadow oracle's diff against the golden, not this gate's.
+OUTCOME_REFUSES = {"malformed", "unauthenticated", "out_of_scope", "over_budget", "over_budget_total",
+                   "upstream_down"}
+# `stream_upstream_error` is exempt in both directions: the upstream fails PART WAY THROUGH, so the
+# response legitimately opens 2xx and carries the failure as an in-band event.
+OUTCOME_STATUS_EXEMPT = {"stream_upstream_error"}
+
 
 # ── ledger (same TSV contract as testing/fleet-fixtures/lib.sh `record`) ─────────────────────────
 class Ledger:
@@ -751,6 +768,7 @@ class Judge:
         ck = self.checker(dialect)
         ct = (headers.get("content-type") or "").split(";")[0].strip().lower()
         out = []
+        self.judge_outcome_status(outcome, status, out)
         if 200 <= status < 300:
             want_stream = outcome == "ok_stream"
             want_stream_array = outcome == "ok_stream_array"
@@ -801,6 +819,27 @@ class Judge:
             return out, f"{status} {ct}", f"no error schema for {dialect} {status}"
         eck.check(inst, sch, "", out)
         return out, f"{status} {ct}: {note}", None
+
+    @staticmethod
+    def judge_outcome_status(outcome, status, out):
+        """The cell's outcome names which side of 2xx the answer had to land on (see OUTCOME_REFUSES).
+
+        An outcome this rig has never been taught is a violation of its own, not a pass: the whole
+        point of the check is that a cell cannot be answered with something other than what it was
+        asked for, and an unclassified outcome is a cell nothing is asserted about. Adding a cell
+        kind therefore has to say, once, which side it belongs on.
+        """
+        if outcome in OUTCOME_STATUS_EXEMPT:
+            return
+        ok = 200 <= status < 300
+        if outcome.startswith("ok"):
+            if not ok:
+                out.append(Violation("/", "outcome.status", f"a '{outcome}' cell — an authenticated, in-scope, in-budget request against a healthy upstream — was answered {status}"))
+        elif outcome in OUTCOME_REFUSES:
+            if ok:
+                out.append(Violation("/", "outcome.status", f"a '{outcome}' cell — the request this cell exists to see REFUSED — was answered {status}"))
+        else:
+            out.append(Violation("/", "outcome.status", f"outcome '{outcome}' is not classified as a success or a refusal, so nothing is asserted about the status it was answered with; classify it in OUTCOME_REFUSES / OUTCOME_STATUS_EXEMPT"))
 
     @staticmethod
     def parse_json(b):
