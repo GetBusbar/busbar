@@ -136,12 +136,26 @@ while :; do
   # loop exists to prevent, just moved one step earlier. ssh's own exit code distinguishes the two:
   # 255 is ssh's OWN connection-failure signal (never returned by a remote command, which can use
   # any code 0-254); capture it separately and treat ONLY a real ssh failure as "unknown", not "0".
+  #
+  # AND SPECIAL-CASING 255 IS ONLY HALF OF IT. That argument is about a probe whose answer is not
+  # trustworthy, and ssh's connection failure is not the only way to get one. `pgrep` missing from
+  # PATH, a shell that dies before it runs, an OOM kill — each returns a non-255 status with EMPTY
+  # stdout, and `${ssh_out:-0}` turned every one of them into "zero cargo-mutants processes", which
+  # is the completion signal. The loop broke, the cleanup trap terminated the box mid-run, and if
+  # mutants.out already held a partial outcomes.json the pull below SUCCEEDED and printed "report in
+  # $OUT" over a truncated run: the same silent-data-loss the 255 fix was written to prevent.
+  # The trustworthy signal is the OUTPUT SHAPE, not the exit status: `pgrep -c` exits 1 on a zero
+  # count while still printing "0", so a status test alone would reject the very answer this loop
+  # is waiting for and poll forever. A confirmed count is stdout that is entirely digits; a probe
+  # that could not run says nothing at all. ssh's own 255 stays an explicit unknown because ssh
+  # can fail after the remote command has already printed.
   ssh_out="$(ssh $SSHOPT "ubuntu@$IP" 'pgrep -c cargo-mutants' 2>/dev/null)"
   ssh_status=$?
-  if [[ "$ssh_status" -eq 255 ]]; then
-    running_now="?"
+  ssh_out="${ssh_out%%[[:space:]]}"
+  if [[ "$ssh_status" -ne 255 && "$ssh_out" =~ ^[0-9]+$ ]]; then
+    running_now="$ssh_out"
   else
-    running_now="${ssh_out:-0}"
+    running_now="?"
   fi
   tail_now="$(ssh $SSHOPT "ubuntu@$IP" 'tail -1 ~/mutants.log 2>/dev/null' 2>/dev/null || true)"
   log "mutants running=$running_now | $tail_now"
