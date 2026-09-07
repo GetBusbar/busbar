@@ -27,11 +27,15 @@ pub const ROW_REVERSE: &str = "segregation:no-reverse-dep";
 pub const ROW_ORACLE: &str = "segregation:oracle-clean";
 pub const ROW_ORACLE_DATA: &str = "segregation:oracle-data-allow";
 
-/// The three oracle outputs a gate may legitimately read AS DATA: `design-bindings` and
-/// `inventory-coverage` resolve against the golden ledger, and `full` reads the golden digests.
+/// The oracle outputs a gate may legitimately read AS DATA: `design-bindings` and
+/// `inventory-coverage` resolve against the golden ledger, `full` reads the golden digests, and
+/// `changelog-register` reads the accepted-differences register — the owner's own sign-off list,
+/// parsed as JSON. Reading a data file the oracle wrote is data; running the oracle's code is not,
+/// and this list is where that distinction is written down rather than assumed.
 pub const ORACLE_DATA_ALLOW: &[&str] = &[
     "testing/shadow-oracle/golden/1.5.5/ledger.tsv",
     "testing/shadow-oracle/golden/1.5.5/golden-digests.tsv",
+    "testing/shadow-oracle/accepted-differences.json",
 ];
 
 /// The `xtask/src/**` walk's denominator floor. An emptied or moved `src/` scans nothing, and zero

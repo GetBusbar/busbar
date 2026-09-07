@@ -135,6 +135,33 @@ fn gate(args: &[String]) -> i32 {
             eprintln!("xtask gate {name} --parity: no legacy command after `--`");
             return 2;
         }
+        // A LINT THAT WRITES NO LEDGER IS COMPARED ON ITS VERDICT, over planted trees.
+        // Most of the scripts being converted print findings and set an exit code; they never
+        // learned the ledger's TSV, and teaching it to a script whose next commit deletes it is
+        // work spent on the wrong side of the seam. The probes are what keep that comparison from
+        // being one green against another.
+        if !gate.parity_probes(&cx).is_empty() {
+            let root_flag = args
+                .iter()
+                .find_map(|a| a.strip_prefix("--root-flag="))
+                .map(str::to_string);
+            return match crate::parity::check_lint(
+                &cx,
+                gate.as_ref(),
+                &legacy,
+                root_flag.as_deref(),
+            ) {
+                Ok(outcome) => {
+                    crate::parity::print_lint_outcome(reg.name, &outcome);
+                    i32::from(!outcome.at_parity())
+                }
+                Err(e) => {
+                    eprintln!("xtask gate {name} --parity: {e}");
+                    3
+                }
+            };
+        }
+
         return match crate::parity::check(&cx, gate.as_ref(), &legacy, LEGACY_LEDGER_ENV) {
             Ok(outcome) => {
                 crate::parity::print_outcome(reg.name, cx.scratch(), &outcome);

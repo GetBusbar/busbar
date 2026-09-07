@@ -1427,6 +1427,56 @@ impl Gate for ReleaseOrderGate {
         Verdict::of(rows)
     }
 
+    /// THE SAME MUTATIONS, DRIVEN THROUGH BOTH IMPLEMENTATIONS.
+    ///
+    /// The legacy lint reads a tree on disk and takes a root, so each probe materializes the
+    /// overlaid workflow directory into scratch and points the Python at it. Comparing on the real
+    /// tree alone would compare one green against another; comparing on a violation the legacy
+    /// script is known to catch is what proves the Rust caught the same thing for the same reason.
+    ///
+    /// The graph-proof probe is deliberately absent: the legacy script answers that question under
+    /// a different flag, and a probe whose two sides are asking different questions is not a parity
+    /// probe.
+    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        let names = workflow_names(cx).unwrap_or_default();
+        let materialize: Vec<String> = names
+            .iter()
+            .map(|n| format!("{WORKFLOWS}/{n}"))
+            .collect::<Vec<_>>();
+        let mut out = Vec::new();
+        for m in mutations() {
+            if m.rule == PROVE_ROW {
+                continue;
+            }
+            let rel = format!("{WORKFLOWS}/{}", m.file);
+            let mut ov = Overlay::new();
+            let mut touched = materialize.clone();
+            if m.creates {
+                if cx.exists(&rel) {
+                    continue;
+                }
+                ov.set(&rel, (m.apply)(""));
+                touched.push(rel);
+            } else {
+                let Ok(original) = cx.read(&rel) else {
+                    continue;
+                };
+                let mutated = (m.apply)(&original);
+                if mutated == original {
+                    continue;
+                }
+                ov.set(&rel, mutated);
+            }
+            out.push(crate::gates::ParityProbe {
+                label: m.label.to_string(),
+                overlay: ov,
+                materialize: touched,
+                expect_rule: Some(m.rule.to_string()),
+            });
+        }
+        out
+    }
+
     fn selftest(&self, cx: &Ctx) -> Report {
         let mut report = Report::new();
         report.push(prove_green(
