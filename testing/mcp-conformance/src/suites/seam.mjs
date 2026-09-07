@@ -359,6 +359,24 @@ const BREAKER_TOOL = 'breaker_echo';
 // thirty-second window; nothing here depends on those numbers being busbar's, because EVERY answer
 // is judged rather than only the last.
 const BREAKER_PROBE_CALLS = 8;
+// `half-answer`, AND NOT A DEAD SOCKET, AND THAT CHOICE IS THE WHOLE TEST.
+//
+// The obvious way to provoke "the upstream could not be reached" is to make the upstream
+// unreachable — refuse the connection, destroy the socket before a status line. That was written
+// first and it does not work, for a reason worth recording: a gateway that cannot reach an upstream
+// AT ALL cannot re-verify the surface it is about to call either, and busbar refuses such a call
+// fail-closed BEFORE it dispatches. The answer is a policy refusal (`-32000`), the call never
+// reaches the dispatch path, the breaker cell is never fed an outcome, and the code this test
+// exists to judge is never emitted. A probe that passes without reaching the condition is the
+// vacuity this suite refuses everywhere else. (The `breaker` registration's `verify_ttl` is the
+// other half of that fix — see the launcher.)
+//
+// `half-answer` is the condition that does reach it: the peer answers `tools/list` HONESTLY, so
+// verification succeeds and the call is DISPATCHED, and then dies mid-frame on the `tools/call`
+// itself. That is a dispatch outcome, it is recorded against the cell, and it arrives immediately
+// rather than after a deadline — so a series of them trips the cell inside one test. The fast-fail
+// arm of an open cell is the one place a gateway names an upstream it will not reach.
+const BREAKER_PROBE_MODE = 'half-answer';
 
 test({
   id: 'SEAM.UPSTREAM-UNAVAILABLE-CODE',
@@ -376,7 +394,7 @@ test({
     // extension belongs BELOW this sub-range, in the part of JSON-RPC 2.0 section 5.1's
     // implementation-defined band the specification has not claimed.
     const [lo, hi] = SPEC_RESERVED_RANGE;
-    const peer = startSeam(ctx, 'unreachable');
+    const peer = startSeam(ctx, BREAKER_PROBE_MODE);
     try {
       const answers = [];
       for (let i = 1; i <= BREAKER_PROBE_CALLS; i += 1) {
@@ -388,24 +406,26 @@ test({
       }
 
       // THE OBSERVATION CHANNEL, PROVEN LIVE BEFORE THE ABSENCE IS BELIEVED — the same guard
-      // `requireUpstreamWasReached` applies to the transcript, applied here to the front door
-      // instead. This test cannot read the upstream transcript, because in `unreachable` mode the
-      // upstream is never spoken to at all: that IS the condition. So the channel it must prove
-      // carried something is the subject's own answer. It THROWS rather than asserting, because an
-      // empty answer list is a finding about this RUN and not a spec violation by the subject, and
-      // the runner records a throw as ERROR alongside every failure. What it must never be is a
-      // pass — "no code was in the reserved sub-range" is satisfied vacuously by no code at all.
+      // `requireUpstreamWasReached` applies to the transcript, in both of its halves.
+      //
+      // FIRST HALF, the transcript: the subject must have DIALLED. `truncate` only bites a call
+      // that was dispatched, and an answer produced without dispatching (an "unknown tool", a
+      // policy refusal before the wire) is an answer to a different question that would satisfy
+      // every clause below while proving nothing.
+      requireUpstreamWasReached(peer, readUpstream(peer));
+      // SECOND HALF, the front door: there must be a CODE to judge. "No code was in the reserved
+      // sub-range" is satisfied vacuously by no code at all. It THROWS rather than asserting,
+      // because an empty answer list is a finding about this RUN and not a spec violation by the
+      // subject, and the runner records a throw as ERROR alongside every failure. What it must
+      // never be is a pass.
       if (answers.length === 0) {
         throw new Error(
           `VACUOUS: ${BREAKER_PROBE_CALLS} calls to \`${BREAKER_TOOL}\` against an upstream that `
-          + 'destroys every connection produced no JSON-RPC error at all, so there is no code to '
-          + 'judge and the reserved-range clause below would pass on an empty set. TWO CAUSES:\n'
-          + '  1. THE TOOL DID NOT RESOLVE. Check that the launcher registered the `breaker` '
-          + `upstream and published \`${BREAKER_TOOL}\`; an "unknown tool" answer is an answer to `
-          + 'a different question and would otherwise pass this test while proving nothing.\n'
-          + '  2. The subject answered every call with a tool RESULT and never surfaces an '
-          + 'unreachable upstream as a protocol error at all — in which case this clause has '
-          + 'nothing to say about it, and the test should be retired rather than left green.',
+          + 'dies mid-frame on every dispatch produced no JSON-RPC error at all, so there is no '
+          + 'code to judge and the reserved-range clause below would pass on an empty set. The '
+          + 'subject answered every call with a tool RESULT and never surfaces a failing upstream '
+          + 'as a protocol error at all — in which case this clause has nothing to say about it, '
+          + 'and the test should be retired rather than left green.',
         );
       }
 

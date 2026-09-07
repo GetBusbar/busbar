@@ -987,6 +987,20 @@ YAML
     url: "$MCP_SEAM_UPSTREAM_URL"
     allow_private: true
     timeout: 10s
+    # \`verify_ttl\` IS THE LINE THAT LETS THIS PROBE REACH THE DISPATCH PATH AT ALL, and it is set
+    # HERE, on this registration only, rather than anywhere a real deployment would feel it.
+    #
+    # verify-on-call re-verifies an upstream's advertised surface before dispatching to it and
+    # REFUSES fail-closed when it cannot. Against a peer that is failing every call that refusal
+    # fires first, every time: the answer is a policy refusal, the call never reaches the dispatch
+    # path, the breaker cell is never fed an outcome, and the fast-fail code the battery is here to
+    # judge is never emitted. The probe passed while reaching nothing — which is exactly the
+    # vacuity this whole arrangement exists to refuse.
+    #
+    # A long TTL means the snapshot taken at boot, from the HONEST peer, is reused for the length
+    # of the run, so the eight probe calls dispatch and their failures land on the cell. It is a
+    # downgrade said out loud, and it is confined to the one registration nothing else calls.
+    verify_ttl: 1h
     pin:
       # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
       # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
