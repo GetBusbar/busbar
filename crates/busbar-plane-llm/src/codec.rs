@@ -708,10 +708,6 @@ impl Plane for LlmPlane {
             Some(FactValue::Str(name)) => name,
             _ => ingress.name,
         };
-        let source_protocol =
-            busbar_llm_codec::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
-        let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
-            .ok_or(Encode::Unrepresentable)?;
         let bytes = r.ir.body();
 
         let is_event = matches!(
@@ -723,6 +719,10 @@ impl Plane for LlmPlane {
             if data == b"[DONE]" {
                 return put(ctx, bytes);
             }
+            let source_protocol = busbar_llm_codec::proto_codec::protocol_for(source)
+                .ok_or(Encode::Unrepresentable)?;
+            let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
+                .ok_or(Encode::Unrepresentable)?;
             let value: serde_json::Value =
                 sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
             let events = with_decode_state(st, |state| {
@@ -743,12 +743,24 @@ impl Plane for LlmPlane {
             return put(ctx, &out);
         }
 
-        let value: serde_json::Value =
-            sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
         if source == ingress.name {
             // Same dialect: the upstream's own bytes are already what the client reads.
+            //
+            // ASKED BEFORE THE DOCUMENT IS BUILT, and the order is the whole of it. This arm needs
+            // nothing out of the answer — it says so in one line — so a parse taken above it is a
+            // full `serde_json::Value` of the upstream's answer built and dropped on the next
+            // statement. An answer is the larger of the two documents on every request this plane
+            // serves, so it was the more expensive of the two copies the relay used to make; the
+            // request direction stopped making its one when the relay became a borrow, and this is
+            // the same move on the side that carries more bytes. An allocation gate holds it.
             return put(ctx, bytes);
         }
+        let source_protocol =
+            busbar_llm_codec::proto_codec::protocol_for(source).ok_or(Encode::Unrepresentable)?;
+        let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
+            .ok_or(Encode::Unrepresentable)?;
+        let value: serde_json::Value =
+            sonic_rs::from_slice(bytes).map_err(|_| Encode::Unrepresentable)?;
         let mut response = source_protocol
             .reader()
             .read_response(&value)
