@@ -144,6 +144,77 @@ STUB
     nope "probe_expectations_absent did not name an empty expect_status"
   fi
 
+  # ── CASE 5b: the published archive is bound to the STAGED record, or the row is red ───────────
+  #
+  # Before this, nothing downstream of the build ever compared a published byte to the record qa
+  # wrote. Six per-target rows asserted properties the archive can have while being an archive
+  # nobody staged. The case that proves it is the one no release can stage: two DIFFERENT archives
+  # that both pass every other row.
+  local sdir; sdir="$tmp/staged"
+  mkdir -p "$sdir"
+  printf 'the bytes qa staged\n'            > "$sdir/staged-archive"
+  printf 'a different archive, uploaded later\n' > "$sdir/other-archive"
+  local staged_hash other_hash
+  staged_hash="$(sha256_file "$sdir/staged-archive")"
+  other_hash="$(sha256_file "$sdir/other-archive")"
+  jq -n --arg h "$staged_hash" \
+    '{version:"9.9.9", assets:[{name:"busbar-x86_64-unknown-linux-gnu.tar.gz", size:19, sha256:$h}]}' \
+    > "$sdir/staged.json"
+
+  if [ "$staged_hash" = "$other_hash" ]; then
+    nope "sha256_file returned the same digest for two different files — the whole row is decorative"
+  else
+    ok "sha256_file distinguishes two archives that differ by one line"
+  fi
+  local looked_up
+  looked_up="$(STAGED_RECORD="$sdir/staged.json" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)"
+  if [ "$looked_up" = "$staged_hash" ]; then
+    ok "the staged record's digest for a named asset is read back out of it"
+  else
+    nope "staged_asset_sha256 did not return the recorded digest (got '${looked_up:-<none>}')"
+  fi
+  if digest_matches "$other_hash" "$looked_up"; then
+    nope "an archive that is NOT the staged one compared EQUAL to the staged record — a rebuilt or hand-uploaded asset would ship green"
+  else
+    ok "an archive that is not the staged one does not match the staged record"
+  fi
+  if digest_matches "$staged_hash" "$looked_up"; then
+    ok "and the genuinely staged archive still matches (the fix did not break the pass path)"
+  else
+    nope "the staged archive did not match its own recorded digest — the fix broke the pass path"
+  fi
+  # THE VACUOUS CASE, which is the reason digest_matches exists as a function rather than as `=`.
+  # `[ "$got" = "$want" ]` is TRUE when both sides are empty, and both sides are empty in every
+  # way this lookup can fail: no STAGED_RECORD on the runner, a record whose assets lost this name,
+  # a jq that is not installed. A bare string compare would have called all of those a match.
+  if [ -n "$(STAGED_RECORD="$sdir/staged.json" staged_asset_sha256 busbar-aarch64-apple-darwin.tar.gz || true)" ]; then
+    nope "staged_asset_sha256 answered for an asset the record does not name"
+  else
+    ok "an asset the staged record does not name has no digest, rather than a blank one"
+  fi
+  if [ -n "$(STAGED_RECORD="$sdir/nonexistent.json" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)" ]; then
+    nope "staged_asset_sha256 answered from a record file that does not exist"
+  else
+    ok "a missing staged record yields no digest at all"
+  fi
+  if digest_matches "" ""; then
+    nope "two EMPTY digests compared equal — every way the lookup can fail would read as 'the bytes match'"
+  else
+    ok "two empty digests are not a match: a record that could not answer cannot bind anything"
+  fi
+  if digest_matches "$staged_hash" ""; then
+    nope "a real archive matched an ABSENT expectation"
+  else
+    ok "a real archive does not match an absent expectation"
+  fi
+  printf '{"assets":[{"name":"a.tar.gz","sha256":"%s"},{"name":"a.tar.gz","sha256":"%s"}]}\n' \
+    "$staged_hash" "$other_hash" > "$sdir/dup.json"
+  if [ -n "$(STAGED_RECORD="$sdir/dup.json" staged_asset_sha256 a.tar.gz || true)" ]; then
+    nope "a record naming one asset twice with two digests still produced AN answer — first-row-wins, in another file"
+  else
+    ok "a record that names one asset twice with different digests has no answer for it"
+  fi
+
   # ── CASE 6: a version match cannot be satisfied by a LONGER version ───────────────────────────
   # `grep -q "1.5.2"` matches "1.5.20". install:e2e (the row proving the documented first command
   # installs THIS release) and helm:render (the row proving the published chart deploys THIS image

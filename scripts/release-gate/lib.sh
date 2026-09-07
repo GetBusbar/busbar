@@ -123,6 +123,94 @@ is_cloudflare_block() {  # is_cloudflare_block <http-code>
   case "$1" in 403|503|000) return 0 ;; *) return 1 ;; esac
 }
 
+# ── THE STAGED RECORD, AND WHY A DOWNLOAD THAT SUCCEEDS PROVES ALMOST NOTHING ───────────────────
+#
+# The release rule this repository runs on is one build: qa stages from ONE commit, writes ONE
+# record naming the bytes it staged, and main promotes that record without a compiler. Everything
+# a user is then handed is supposed to be those exact bytes.
+#
+# "Supposed to be" was the whole of it. The gate downloaded each archive from the Release and then
+# asserted things ABOUT the download — it extracts, it says the right --version, it is the right
+# object format, it embeds the key — every one of which is a property the archive can have while
+# being a DIFFERENT archive than the one qa staged and soaked. A re-run of a build leg that
+# re-uploaded an asset, an asset attached by hand, a promote that rebuilt instead of retagging:
+# each of those produces bytes that pass all six per-target rows and were never the staged bytes.
+# The record already carries the answer — release-stage.yml pins every draft asset by name, size
+# and sha256 before it will write staged.json — and nothing downstream was reading it.
+#
+# So the archive is hashed and compared to the record, and the two failure directions are the SAME
+# verdict:
+#
+#   * the hashes differ                 — the published bytes are not the staged bytes. FAIL.
+#   * the record has no digest for it   — nothing binds the published bytes to anything. FAIL.
+#
+# The second is the one that has to be stated out loud. An absent expectation is the shape every
+# other vacuous green in this gate took: no record on the runner, a record whose `assets` lost this
+# name, a jq that could not run — all of them yield the empty string, and comparing a real hash to
+# the empty string is trivially "we did not check". A row that cannot bind is a row that verified
+# nothing, and "we could not check whether these are the staged bytes" must never read as "they
+# are". It is a FAIL and not a SKIP for the same reason the pubkey row is.
+
+# sha256_file <path> -> the lowercase hex digest on stdout; non-zero if it cannot be computed.
+# Three spellings because this runs on ubuntu, macos and windows runners: `sha256sum` is coreutils,
+# `shasum` is what macOS ships, and python3 is on every GitHub-hosted image as the last resort.
+sha256_file() {
+  local f="$1"
+  [ -f "$f" ] || return 1
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$f" | awk '{print tolower($1)}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$f" | awk '{print tolower($1)}'
+  else
+    local py=python3; command -v python3 >/dev/null 2>&1 || py=python
+    "$py" -c 'import hashlib,sys
+h=hashlib.sha256()
+with open(sys.argv[1],"rb") as fh:
+    for b in iter(lambda: fh.read(1 << 20), b""):
+        h.update(b)
+print(h.hexdigest())' "$f"
+  fi
+}
+
+# staged_record_path -> the path to the staged record, or the empty string.
+# The caller passes it in; there is no default guess. A gate that fell back to "some staged.json
+# somewhere on the runner" would bind the release to whatever file happened to be lying around,
+# which is a worse answer than none.
+staged_record_path() { printf '%s' "${STAGED_RECORD:-}"; }
+
+# staged_asset_sha256 <asset-name> -> the sha256 the staged record binds to that asset name.
+# Prints nothing and returns non-zero whenever the answer is not a real 64-hex digest, which
+# deliberately collapses every "we could not look it up" case into one: no record path, no such
+# file, unparseable JSON, no `assets` array, no entry for this name, an entry whose sha256 is ""
+# or `null`. The caller reports all of them as the same FAIL, because they are the same fact.
+staged_asset_sha256() {
+  local name="$1" rec want
+  rec="$(staged_record_path)"
+  [ -n "$rec" ] || return 1
+  [ -f "$rec" ] || return 1
+  want="$(jq -r --arg n "$name" '(.assets // [])[] | select(.name == $n) | .sha256 // empty' "$rec" 2>/dev/null)" || return 1
+  # jq prints every match; a record naming one asset twice with two digests does not have AN answer
+  # for it, and picking the first would be the ledger's own first-row-wins defect in another file.
+  case "$(printf '%s' "$want" | awk 'NF{n++} END{print n+0}')" in
+    1) ;;
+    *) return 1 ;;
+  esac
+  want="$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+  printf '%s' "$want" | grep -Eq '^[0-9a-f]{64}$' || return 1
+  printf '%s' "$want"
+}
+
+# digest_matches <observed> <expected> -> 0 only when both are real 64-hex digests AND equal.
+# Written as a named function for the same reason probe_row_matches is: the comparison it replaces
+# was the kind that says "equal" when both sides are empty, and the case that proves it is one no
+# release can stage.
+digest_matches() {
+  local got="${1:-}" want="${2:-}"
+  printf '%s' "$got"  | grep -Eq '^[0-9a-fA-F]{64}$' || return 1
+  printf '%s' "$want" | grep -Eq '^[0-9a-fA-F]{64}$' || return 1
+  [ "$(printf '%s' "$got" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$want" | tr '[:upper:]' '[:lower:]')" ]
+}
+
 # ── Version matching ────────────────────────────────────────────────────────────────────────────
 #
 # ANCHORED ON BOTH SIDES, IN ONE PLACE. `grep -q "1.5.2"` matches "1.5.20", so a gate looking for
