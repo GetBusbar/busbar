@@ -515,10 +515,10 @@ max_sites = 0
 # seals cannot move onto a token until the contract offers a seal a plane is allowed to name. That is
 # debt this rule now PINS rather than debt it hides.
 known_sites = [
-  "crates/busbar-plane-admin/src/tests.rs",
+  "crates/busbar-plane-admin/src/tests/mod.rs",
   "crates/busbar-plane-voice/src/tests/harness.rs",
   "crates/busbar-transport-grpc/src/tests/battery.rs",
-  "crates/busbar-transport-http/src/tests.rs",
+  "crates/busbar-transport-http/src/tests/mod.rs",
   "crates/busbar-transport-stdio/src/tests/battery.rs",
   "crates/busbar-transport-tcp/src/tests.rs",
   "crates/busbar-transport-tls/src/tests.rs",
