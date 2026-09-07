@@ -428,13 +428,19 @@ spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py"
 m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
 shipped = set(m.UNPROVEN_BY_NOTE)
 bad = []
-# PB-17 left this set when a check that COUNTS boot warning lines landed; the three below are the
-# rows whose own note still says the surface they bind does not exist in crates/.
-for want in ("PB-48", "PB-58", "PB-61"):
-    if want not in shipped:
-        bad.append(f"{want} is not carried as unproven-by-note")
-    if not m.UNPROVEN_BY_NOTE[want].strip() if want in shipped else False:
-        bad.append(f"{want} carries no reason")
+# The set is EMPTY on this tree. PB-17 left it when a check that counts boot warning lines landed,
+# and PB-48/PB-58/PB-61 left it when each got a check that drives the surface its note claimed did
+# not exist. An entry here is a row admitting nothing was compared, so an empty set is the state to
+# hold: a row added back must arrive with its reason, and the RULE below is what keeps the entry
+# meaningful rather than this census.
+for held, reason in sorted(m.UNPROVEN_BY_NOTE.items()):
+    if not reason.strip():
+        bad.append(f"{held} is carried as unproven-by-note with no reason")
+if shipped:
+    bad.append(
+        "a row is carried as unproven-by-note: " + ", ".join(sorted(shipped))
+        + " -- either prove it, or record it in qa/design-bindings-gaps.json as a named gap"
+    )
 # The rule itself: a real, existing test ref does NOT rescue a row the note disqualifies.
 ctx = m.check_context({"cells": []}, m.CRATES, m.ROOT, m.GOLDEN_LEDGER)
 real = sorted(k for k, v in ctx["idx"].items() if len(v) == 1)[0]
