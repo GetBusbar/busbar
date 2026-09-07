@@ -2298,6 +2298,8 @@ fn a_panicking_close_during_reclaim_does_not_take_the_engine_down() {
 
 #[path = "abi2_store_ops_tests.rs"]
 mod abi2_store_ops_tests;
+#[path = "ffi_guard_tests.rs"]
+mod ffi_guard_tests;
 #[path = "legacy_default_tests.rs"]
 mod legacy_default_tests;
 #[path = "legacy_usage_tests.rs"]
