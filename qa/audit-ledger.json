@@ -346,7 +346,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-a2a/src",
@@ -364,7 +365,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-a2a/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/busbar-a2a-codec/src",
@@ -833,7 +835,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-llm/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/busbar-llm-codec/src",
@@ -1352,7 +1355,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plugin/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/busbar-substrate/src",
@@ -2816,7 +2820,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/export-example-plugin/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/hook-test-plugin/src",
@@ -2834,7 +2839,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/hook-test-plugin/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/hooks-ranking/src",
@@ -2852,7 +2858,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/hooks-ranking/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/plane-abi-spike/src",
@@ -2870,7 +2877,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/plane-abi-spike/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/plane-abi-spike-plugin/src",
@@ -2888,7 +2896,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/plane-abi-spike-plugin/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/plugin-loader/src",
@@ -2955,7 +2964,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/plugin-pack/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/plugin-sdk/src",
@@ -3012,7 +3022,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/plugin-sign/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/plugin-testkit/src",
@@ -3030,7 +3041,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/plugin-testkit/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/secret-example-plugin/src",
@@ -3048,7 +3060,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/secret-example-plugin/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/secret-ref/src",
@@ -3066,7 +3079,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/secret-ref/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/store-example-plugin/src",
@@ -3084,7 +3098,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/store-example-plugin/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/store-memory/src",
@@ -3102,7 +3117,8 @@
    "fixed_at": null,
    "exclude": [
     "crates/store-memory/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "xtask/src",
@@ -3120,7 +3136,8 @@
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "crates/api/src/tests",
@@ -3135,7 +3152,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/auth-admin-tokens/src/tests",
@@ -3150,7 +3168,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/auth-static-plugin/src/tests",
@@ -3165,7 +3184,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar/src/tests",
@@ -3180,7 +3200,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar/tests",
@@ -3195,7 +3216,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar/benches",
@@ -3210,7 +3232,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-a2a-codec/src/tests",
@@ -3225,7 +3248,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-contract/tests",
@@ -3240,7 +3264,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-contract-transport/tests",
@@ -3255,7 +3280,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-core/src/tests",
@@ -3270,7 +3296,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-core/tests",
@@ -3285,7 +3312,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-core/benches",
@@ -3300,7 +3328,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-grammar/tests",
@@ -3315,7 +3344,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-kernel/tests",
@@ -3330,7 +3360,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-llm/src/tests",
@@ -3345,7 +3376,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-llm-codec/src/tests",
@@ -3360,7 +3392,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-mcp/src/tests",
@@ -3375,7 +3408,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-mcp-codec/src/tests",
@@ -3390,7 +3424,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-plane-a2a/tests",
@@ -3405,7 +3440,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-plane-llm/tests",
@@ -3420,7 +3456,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-plane-mcp/tests",
@@ -3435,7 +3472,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-plane-voice/src/tests",
@@ -3450,7 +3488,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-plane-voice/tests",
@@ -3465,7 +3504,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-plugin/src/tests",
@@ -3480,7 +3520,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-plugin/tests",
@@ -3495,7 +3536,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-substrate/src/tests",
@@ -3510,7 +3552,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-substrate/tests",
@@ -3525,7 +3568,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-substrate-values/src/tests",
@@ -3540,7 +3584,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-timing/src/tests",
@@ -3555,7 +3600,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-timing/tests",
@@ -3570,7 +3616,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-transport-grpc/src/tests",
@@ -3585,7 +3632,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-transport-stdio/src/tests",
@@ -3600,7 +3648,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-transport-ws/src/tests",
@@ -3615,7 +3664,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-admission/src/tests",
@@ -3630,7 +3680,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-audit/src/tests",
@@ -3645,7 +3696,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-auth/src/tests",
@@ -3660,7 +3712,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-cost/src/tests",
@@ -3675,7 +3728,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-cost/tests",
@@ -3690,7 +3744,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-egress/src/tests",
@@ -3705,7 +3760,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-egress/tests",
@@ -3720,7 +3776,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-ledger/src/tests",
@@ -3735,7 +3792,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-trust/src/tests",
@@ -3750,7 +3808,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-trust/tests",
@@ -3765,7 +3824,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-usage/src/tests",
@@ -3780,7 +3840,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-verbs/src/tests",
@@ -3795,7 +3856,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-unit-wal/src/tests",
@@ -3810,7 +3872,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-voice/src/tests",
@@ -3825,7 +3888,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/busbar-voice-codec/tests",
@@ -3840,7 +3904,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/hooks-ranking/src/tests",
@@ -3855,7 +3920,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plane-abi-spike/src/tests",
@@ -3870,7 +3936,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plane-abi-spike/benches",
@@ -3885,7 +3952,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plugin-loader/src/tests",
@@ -3900,7 +3968,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plugin-loader/tests",
@@ -3915,7 +3984,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plugin-pack/src/tests",
@@ -3930,7 +4000,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plugin-sdk/src/tests",
@@ -3945,7 +4016,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plugin-sdk/tests",
@@ -3960,7 +4032,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plugin-sign/src/tests",
@@ -3975,7 +4048,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/plugin-testkit/src/tests",
@@ -3990,7 +4064,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/secret-ref/src/tests",
@@ -4005,7 +4080,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/store-memory/src/tests",
@@ -4020,7 +4096,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "crates/store-memory/tests",
@@ -4035,7 +4112,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "scripts",
@@ -4043,17 +4121,17 @@
    "paths": [
     "scripts"
    ],
-   "tree_hash": "0083555d424a52c8e13439a9a7a207e99e5b92c3e52f2a5a66490ef9c32e76a2",
-   "audited_at": "0e6759696e1af41dfcc81e7b3e22625818749b88",
-   "round": 2,
+   "tree_hash": "b38a2c9ccaed8cbd1bfb71dd0a04e13fe1f30935c3a1ac8f962b08e56390cfda",
+   "audited_at": "954d85924c0205dd9bca7e92765149caeb6ec26f",
+   "round": 4,
    "result": "findings",
    "counts": {
     "HIGH": 8,
-    "MEDIUM": 10,
-    "NIT": 1
+    "MEDIUM": 2,
+    "LOW": 5
    },
-   "report": "lint and deletion gates fresh eyes: the purity lint knew one spelling per violation and an include macro laundered a dual-compile under a frozen-wire pragma (two real includes moved), teller-steps could not tell fifty cells from one, the config lint missed the redirect-after-heredoc form; provenance gate, delete-test, exec-config-lint and teller-steps carry named gaps",
-   "auditor": "opus-instr-p3-lints",
+   "report": "release and landing scripts fresh eyes: the done gate's floor was one below its group count and env-overridable, the no-extras check flagged two contracted assets on every healthy release and accepted zero assets, the release gate read only the first ledger row per id, channel checks guessed the pointer they were meant to verify, the script lint's producers failed open; digests are never re-bound after promote (report)",
+   "auditor": "opus-instr-p3-release",
    "fixed_at": null,
    "rounds": [
     {
@@ -4106,6 +4184,19 @@
       "NIT": 1
      },
      "report": "lint and deletion gates fresh eyes: the purity lint knew one spelling per violation and an include macro laundered a dual-compile under a frozen-wire pragma (two real includes moved), teller-steps could not tell fifty cells from one, the config lint missed the redirect-after-heredoc form; provenance gate, delete-test, exec-config-lint and teller-steps carry named gaps"
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-instr-p3-release",
+     "audited_at": "954d85924c0205dd9bca7e92765149caeb6ec26f",
+     "tree_hash": "b38a2c9ccaed8cbd1bfb71dd0a04e13fe1f30935c3a1ac8f962b08e56390cfda",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 2,
+      "LOW": 5
+     },
+     "report": "release and landing scripts fresh eyes: the done gate's floor was one below its group count and env-overridable, the no-extras check flagged two contracted assets on every healthy release and accepted zero assets, the release gate read only the first ledger row per id, channel checks guessed the pointer they were meant to verify, the script lint's producers failed open; digests are never re-bound after promote (report)"
     }
    ]
   },
@@ -4230,7 +4321,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": ".github/scripts",
@@ -4245,7 +4337,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "assets/readme",
@@ -4260,7 +4353,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": "examples",
@@ -4275,7 +4369,8 @@
    "counts": {},
    "report": null,
    "auditor": null,
-   "fixed_at": null
+   "fixed_at": null,
+   "rounds": []
   },
   {
    "id": ".github",
@@ -4295,7 +4390,8 @@
     ".github/workflows",
     ".github/scripts",
     ".github/ISSUE_TEMPLATE"
-   ]
+   ],
+   "rounds": []
   },
   {
    "id": "testing/a2a-governance",
@@ -4665,17 +4761,18 @@
    "paths": [
     "testing/shadow-oracle"
    ],
-   "tree_hash": "37a4efc29daca4e9dab7910d8bffb6449e2f2e5757f3f3387e0081a3434eec6c",
-   "audited_at": "4ea31e7d20e55da7ab65b5d647fa61a28b25fb8c",
-   "round": 3,
+   "tree_hash": "e1742a86af4a748780a18dc7fffdcc7e197f4e95f0fe8cdc615b7cd126924ead",
+   "audited_at": "44c5c8a18a890a14a90cc3c20e648dcdfe4172e6",
+   "round": 5,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 3,
-    "LOW": 5
+    "HIGH": 3,
+    "MEDIUM": 6,
+    "LOW": 3,
+    "NIT": 1
    },
-   "report": "judge and normalizer fresh eyes: the shipped register could not load (seven waivers without widths), the order-rule exemption had drifted, the harness rev missed the comparison driver and verdict, the re-normalizer was faithful by luck; 21 plants all red with the right class",
-   "auditor": "opus-instr-p3-judge",
+   "report": "recorder fresh eyes: the mock resolved two shipped control shapes to no verb and served healthy, a broken mutation tool wrote itself into the ledger as a named gap, the outage clear was never checked, a boot cell had a private ten-second bound; two cells cannot observe what they name without a new capture; 14 plants, 2 survivors",
+   "auditor": "opus-instr-p3-recorder",
    "fixed_at": null,
    "rounds": [
     {
@@ -4742,6 +4839,20 @@
       "LOW": 5
      },
      "report": "judge and normalizer fresh eyes: the shipped register could not load (seven waivers without widths), the order-rule exemption had drifted, the harness rev missed the comparison driver and verdict, the re-normalizer was faithful by luck; 21 plants all red with the right class"
+    },
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus-instr-p3-recorder",
+     "audited_at": "44c5c8a18a890a14a90cc3c20e648dcdfe4172e6",
+     "tree_hash": "e1742a86af4a748780a18dc7fffdcc7e197f4e95f0fe8cdc615b7cd126924ead",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 6,
+      "LOW": 3,
+      "NIT": 1
+     },
+     "report": "recorder fresh eyes: the mock resolved two shipped control shapes to no verb and served healthy, a broken mutation tool wrote itself into the ledger as a named gap, the outage clear was never checked, a boot cell had a private ten-second bound; two cells cannot observe what they name without a new capture; 14 plants, 2 survivors"
     }
    ]
   },
@@ -4826,7 +4937,8 @@
     "testing/mcp-conformance",
     "testing/shadow-oracle",
     "testing/voice-conformance"
-   ]
+   ],
+   "rounds": []
   }
  ]
 }
