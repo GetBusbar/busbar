@@ -1273,45 +1273,6 @@ impl Store for DynStore {
             Err(e) => Err(StoreError(e.message)),
         }
     }
-
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreResult<bool> {
-        // FAIL-CLOSED for the same reason `redeem_plane_token` above is, and it is worth saying
-        // separately because the question is the opposite one. That verb asks "has nobody spent this
-        // yet"; this one asks "is this capability still live". A store too OLD to answer must not be
-        // read as answering YES: this token is the credential on Busbar's own `/a2a/push` callback,
-        // and reading an unimplemented verb as "still live" restores exactly the replay this verb was
-        // added to close — a backend that captured a token keeps moving a finished task with it.
-        match self.call_raw_status(StoreRequest::PlaneTokenLive {
-            kind: kind.to_string(),
-            token: token.to_string(),
-            expires_at,
-            now,
-        }) {
-            Ok(StoreResponse::TokenLive(live)) => Ok(live),
-            Ok(other) => Err(unexpected(other)),
-            Err(e) if e.is_unsupported() => {
-                tracing::error!(
-                    store = %self.raw.path,
-                    "store plugin does not implement plane_token_live (multi-use capability check); \
-                     REFUSING the callback rather than failing open — a store that cannot say whether \
-                     a token is still live must not be read as saying it is. Upgrade the store plugin \
-                     to a build that persists the plane-record disposition."
-                );
-                Err(StoreError(
-                    "store plugin does not support plane_token_live (multi-use capability check); \
-                     refusing to fail open"
-                        .to_string(),
-                ))
-            }
-            Err(e) => Err(StoreError(e.message)),
-        }
-    }
 }
 
 impl std::fmt::Debug for DynStore {

@@ -1349,39 +1349,6 @@ pub trait Store: Send + Sync + 'static {
     ) -> StoreResult<bool> {
         Ok(true)
     }
-
-    /// IS THIS TOKEN STILL LIVE? A MULTI-USE, TIME-AND-STATE-BOUNDED CAPABILITY, and deliberately
-    /// NOT [`Store::redeem_plane_token`]'s single-use test-and-set.
-    ///
-    /// Answers `true` while the record identified by `(kind, token)` is present, its disposition is
-    /// still [`PlaneDisposition::Active`], and `now` has not passed `expires_at`. It SPENDS NOTHING:
-    /// asking twice answers the same both times, because the capability this expresses is "the work
-    /// this token names is still in flight", not "nobody has used this yet".
-    ///
-    /// The A2A push callback is the case it exists for. A backend agent calls Busbar's own
-    /// `/a2a/push` several times for one task — `working`, then `input-required`, then `completed` —
-    /// so a token spent by the first call would refuse every honest call after it, and a `redeem`
-    /// that answered `true` every time would let a captured token replay forever. The honest verb is
-    /// this one: live until the task reaches a terminal state (which flips the record's disposition)
-    /// or until its deadline passes, and refused from that moment on.
-    ///
-    /// # The default is FAIL-CLOSED, and that is the whole point
-    ///
-    /// `Ok(false)`, NOT `Ok(true)`. Every other defaulted neutral verb here tolerates a backend that
-    /// keeps no rows by answering empty or `Ok(())`, because "this store remembers nothing" and "there
-    /// is nothing to remember" are the same answer for a read. For a capability check they are
-    /// opposites: a store that cannot say whether a token is still live must not be read as saying it
-    /// is, or a backend that captured one replays it against a finished task on every deployment whose
-    /// store predates this verb. A store that means to accept these callbacks implements it.
-    fn plane_token_live(
-        &self,
-        _kind: &str,
-        _token: &str,
-        _expires_at: u64,
-        _now: u64,
-    ) -> StoreResult<bool> {
-        Ok(false)
-    }
 }
 
 /// The per-request context a plane handler receives: the resolved caller identity attached to each

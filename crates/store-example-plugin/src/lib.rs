@@ -91,13 +91,6 @@ struct Durable {
     /// The spent-approval ledger: nonce -> the instant past which the entry is meaningless.
     #[serde(default)]
     spent_ask_states: Vec<(String, u64)>,
-    /// The push-notification configurations, kept as OPAQUE envelope rows keyed by `id` — the same
-    /// `(id, ts, disposition, body)` shape a task row has, because the column that matters here is
-    /// the same one: `disposition`. A push callback token is LIVE while its row is `Active` and goes
-    /// dead the moment the write that made its task terminal flipped the row to `Terminal`, which is
-    /// a typed column this fixture reads without ever decoding the body.
-    #[serde(default)]
-    push_configs: Vec<TaskRecord>,
 }
 
 /// One persisted A2A task: the `PlaneRecord`'s `id` primary key plus the OPAQUE body the seam wrote,
@@ -524,48 +517,6 @@ impl FileStore {
             true
         })
     }
-
-    // ── the multi-use one: the push-callback capability ──────────────────────────────────────
-    fn upsert_push_config(&self, record: &PlaneRecord) -> StoreResult<()> {
-        let row = TaskRecord {
-            id: record.id.clone(),
-            ts: record.ts,
-            disposition: record.disposition,
-            body: record.body.clone(),
-        };
-        self.mutate(
-            move |d| match d.push_configs.iter_mut().find(|r| r.id == row.id) {
-                Some(existing) => *existing = row.clone(),
-                None => d.push_configs.push(row),
-            },
-        )
-    }
-
-    fn get_push_config_body(&self, id: &str) -> StoreResult<Option<Vec<u8>>> {
-        self.read(|d| {
-            d.push_configs
-                .iter()
-                .find(|r| r.id == id)
-                .map(|r| r.body.clone())
-        })
-    }
-
-    fn delete_push_config(&self, id: &str) -> StoreResult<()> {
-        self.mutate(|d| d.push_configs.retain(|r| r.id != id))
-    }
-
-    /// LIVE means all three, and the `&&` is the point: present, still `Active`, and inside its
-    /// deadline. A missing row is not live (there is no capability), a `Terminal` row is not live
-    /// (the task it named has finished, so the token is revoked), and a lapsed one is not live even
-    /// if nothing has finished. Nothing is written: asking twice answers the same twice, which is
-    /// what makes this usable for the several callbacks one task legitimately receives.
-    fn push_config_live(&self, id: &str, expires_at: u64, now: u64) -> StoreResult<bool> {
-        self.read(|d| {
-            d.push_configs.iter().any(|r| {
-                r.id == id && matches!(r.disposition, PlaneDisposition::Active) && now <= expires_at
-            })
-        })
-    }
 }
 
 impl Store for FileStore {
@@ -613,7 +564,6 @@ impl Store for FileStore {
         match record.kind.as_str() {
             "task" => self.upsert_task(record),
             "demotion" => self.upsert_demotion(record),
-            "push_config" => self.upsert_push_config(record),
             _ => Ok(()),
         }
     }
@@ -621,7 +571,6 @@ impl Store for FileStore {
     fn get_plane_record(&self, kind: &str, id: &str) -> StoreResult<Option<Vec<u8>>> {
         match kind {
             "task" => self.get_task_body(id),
-            "push_config" => self.get_push_config_body(id),
             _ => Ok(None),
         }
     }
@@ -669,7 +618,6 @@ impl Store for FileStore {
     fn delete_plane_record(&self, kind: &str, id: &str) -> StoreResult<()> {
         match kind {
             "demotion" => self.clear_demotion(id),
-            "push_config" => self.delete_push_config(id),
             _ => Ok(()),
         }
     }
@@ -684,24 +632,6 @@ impl Store for FileStore {
         match kind {
             "ask" => self.redeem_ask_state(token, expires_at, now),
             _ => Ok(true),
-        }
-    }
-
-    /// A kind this fixture does not keep a capability table for falls through to `false`, NOT to
-    /// `true` — the same direction the trait's own default takes, and for the same reason. The
-    /// fall-through on `redeem_plane_token` just above goes the other way because the two verbs ask
-    /// opposite questions; a store that keeps no ledger has spent nothing, but a store that keeps no
-    /// capability rows holds no live capability either.
-    fn plane_token_live(
-        &self,
-        kind: &str,
-        token: &str,
-        expires_at: u64,
-        now: u64,
-    ) -> StoreResult<bool> {
-        match kind {
-            "push_config" => self.push_config_live(token, expires_at, now),
-            _ => Ok(false),
         }
     }
 }
