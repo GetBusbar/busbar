@@ -38,6 +38,45 @@ const MANIFEST_REL: &str = "crates/busbar/Cargo.toml";
 /// override on purpose: the only way to lower a floor is a reviewable source edit.
 const MIN_ROOT_NOTE: usize = 60;
 
+// ── THE FLOOR, AND WHY IT IS NOT IN THE LEDGER ───────────────────────────────────────────────────
+//
+// Everything the structural rules enforce is a SHAPE rule: every declared step has a `gating` flag,
+// every matrix row covers every declared step, every cell has a status. Not one of them constrains
+// HOW MANY steps are declared, and that list lives in the file being judged. So the ledger could
+// shrink and stay green: delete a step from `steps` and from all five rows and every structural
+// rule still passes over a smaller question.
+//
+// Worse, the RED RULE itself is self-declared: the only thing that can turn `--check` red is a
+// `"none"` cell on a step whose `gating` is true, and `gating` is read straight out of the same
+// file. Flipping seven booleans disarms the gate completely while every structural rule still
+// passes.
+//
+// So the two sets that decide how much this instrument is looking at are pinned OUTSIDE the ledger:
+// the ten Teller steps and the seven gating ones are named here. The plane set is anchored to
+// crates/busbar/Cargo.toml's `default` line through [`default_root_legs`] -- the same manifest fact
+// the root column already treats as authoritative -- so a row may not leave the matrix without
+// leaving the shipped binary first, and a step may not stop gating because an editor typed `false`.
+const TELLER_STEPS: [&str; 10] = [
+    "arrival",
+    "decode",
+    "authenticate",
+    "verify",
+    "approve",
+    "admit",
+    "route",
+    "meter",
+    "audit",
+    "exit",
+];
+const GATING_STEPS: [&str; 7] = [
+    "admit",
+    "audit",
+    "authenticate",
+    "exit",
+    "meter",
+    "route",
+    "verify",
+];
 const STATUSES: [&str; 3] = ["mapped", "new", "none"];
 const ROOT_STATES: [&str; 2] = ["none", "proven"];
 
@@ -126,6 +165,31 @@ pub fn load(cx: &Ctx) -> Result<Matrix, String> {
                 "{LEDGER_REL}: steps.{step} has no 'gating' boolean"
             ));
         }
+    }
+
+    // THE FLOOR, before any row is read (see TELLER_STEPS/GATING_STEPS above). A shorter step list
+    // is a smaller question, and a `gating` flag flipped to false is the RED RULE switched off.
+    let listed: Vec<&str> = steps_obj.keys().collect();
+    if listed != TELLER_STEPS {
+        return Err(format!(
+            "{LEDGER_REL}: steps are {}, but the Teller walk is {} -- a step may not leave this \
+             matrix by being deleted from it",
+            py_list(listed.into_iter()),
+            py_list(TELLER_STEPS.into_iter())
+        ));
+    }
+    let declared_gating: BTreeSet<&str> = steps_obj
+        .keys()
+        .filter(|s| steps.get(s).get("gating").truthy())
+        .collect();
+    let expected_gating: BTreeSet<&str> = GATING_STEPS.into_iter().collect();
+    if declared_gating != expected_gating {
+        return Err(format!(
+            "{LEDGER_REL}: the gating steps are {}, not {} -- `gating` is the only thing that can \
+             turn this gate red, so the ledger does not get to choose it",
+            py_list(declared_gating.into_iter()),
+            py_list(expected_gating.into_iter())
+        ));
     }
 
     let declared: BTreeSet<String> = steps_obj.keys().map(str::to_string).collect();
