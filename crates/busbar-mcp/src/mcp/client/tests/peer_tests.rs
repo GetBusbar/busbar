@@ -315,3 +315,43 @@ fn only_the_change_notifications_trigger_a_refresh() {
         "progress is the one notification a caller is entitled to see relayed"
     );
 }
+
+/// THE TWO LEGS DO NOT SHARE A NUMBER, AND THAT IS A SEAM CLAIM RATHER THAN A STYLE ONE.
+///
+/// `busbar_mcp_codec::codec::CODES` is the vocabulary busbar's SERVER half writes to its own
+/// callers. The refusal built above is written by busbar's CLIENT half, to an upstream, and its
+/// code is a local constant in `peer.rs` that no list holds — so nothing stopped the two halves
+/// from picking the same number for two unrelated conditions. One did: the upstream-unavailable
+/// extension was moved out of the specification's reserved sub-range and the obvious landing spot,
+/// `-32001`, was already this refusal's.
+///
+/// The directions differ, so no single peer could be confused by it. What it costs is READING: one
+/// number carrying two of a node's own meanings turns every log line and every support question
+/// into a question about which leg emitted it. This cell is the check that would have caught it,
+/// and it goes red on the next author who reaches for a value the other half already spends.
+#[test]
+fn the_refused_ask_code_is_not_a_code_the_server_half_already_writes() {
+    let reply = answer(
+        &serde_json::json!(1),
+        ServerRequestVerb::RootsList,
+        &ServerRequestGrants::default(),
+        "fs",
+    );
+    let code = reply["error"]["code"]
+        .as_i64()
+        .expect("a refused ask carries a JSON-RPC code");
+    assert!(
+        !busbar_mcp_codec::codec::CODES.contains(&code),
+        "the client leg answers a refused ask with {code}, which the server leg already writes for \
+         something else: one number, two meanings, and no way to tell them apart in a log"
+    );
+    assert!(
+        !busbar_mcp_codec::codec::RETIRED_CODES.contains(&code),
+        "the client leg answers a refused ask with {code}, which this revision retired"
+    );
+    assert!(
+        (-32019..=-32000).contains(&code),
+        "{code} is outside the -32019..=-32000 range left to a node's own extensions once MCP's \
+         reserved -32099..=-32020 sub-range is taken out"
+    );
+}

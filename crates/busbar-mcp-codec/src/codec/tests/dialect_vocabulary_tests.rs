@@ -7,7 +7,7 @@
 //! Mutation testing over this crate left thirteen survivors that are all one sentence: **deleting
 //! the minus sign from an error-code constant changed nothing any test could see.** `-32700`
 //! became `+32700`, and so did `-32601`, `-32602`, `-32020`, `-32021`, `-32022`, `-32000`,
-//! `-32001` and both retired codes. A JSON-RPC code is exactly the kind of value that reads
+//! `-32003` and both retired codes. A JSON-RPC code is exactly the kind of value that reads
 //! plausibly while being wrong: a peer receiving `32601` does not recognise "method not found", it
 //! recognises nothing, and the client library's error branch for an unknown code is usually
 //! "retry", which is the worst possible answer to a method that will never exist.
@@ -133,8 +133,9 @@ fn the_spec_defined_codes_and_this_nodes_own_extensions_do_not_share_a_range() {
 ///
 /// `CODE_REFUSED` showed the shape: `-32000`, the FIRST code in JSON-RPC's implementation-defined
 /// server-error range, placed there "because every reserved code is wrong for a specific reason".
-/// `CODE_UPSTREAM_UNAVAILABLE` is the second, `-32001`, chosen for that same reason and adjacent to
-/// the refusal it sits beside on the wire.
+/// `CODE_UPSTREAM_UNAVAILABLE` is `-32003`, chosen for that same reason: the FIRST value in that
+/// range not already spoken for. `-32001` is what busbar's client half answers a refused authority
+/// ask with, and `-32002` is retired — see the constant's own doc comment.
 ///
 /// The band checked here is JSON-RPC 2.0 section 5.1's implementation-defined `-32099..=-32000`
 /// MINUS the sub-range MCP reserves, i.e. `-32019..=-32000`. A code outside it is either not a

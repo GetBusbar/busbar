@@ -2536,7 +2536,7 @@ fn refuse_upstream_unavailable(
 }
 
 /// Render a routed admission refusal. The availability shapes (`Empty`/`NoneAdmissible`) keep the
-/// EXACT rendering the degenerate cell decided — 503 + `Retry-After` + `-32001` with structured
+/// EXACT rendering the degenerate cell decided — 503 + `Retry-After` + `-32003` with structured
 /// `data`, never an `isError` result — with `server` naming the pool when one is configured (the
 /// pool is the unit the operator declared and the unit that has nothing left). A pin mismatch
 /// (`NotInterchangeable`) is NOT an availability fact: it is the operator's same-deployment claim

@@ -1,0 +1,30 @@
+mcp codec: the upstream-unavailable code takes the first value the other leg is not already spending, not the next one along
+
+`-32001` was the obvious landing spot and it was already taken. busbar's
+CLIENT half answers an authority ask it will not satisfy with `-32001`
+(`mcp::client::peer::ASK_REFUSED`), a local constant no list holds, so
+nothing stopped the two halves from picking one number for two unrelated
+conditions — and the move out of the specification's reserved sub-range
+did exactly that.
+
+The directions differ, so no single peer could have been confused by it.
+What it costs is READING: one number carrying two of a node's own
+meanings turns every log line and every support question into a question
+about which leg emitted it, and the implementation-defined range is not
+scarce.
+
+So `-32003`, which is the FIRST free value and not merely the next one:
+`-32000` is the policy refusal, `-32001` is the client leg's ask refusal,
+`-32002` is RETIRED — and a retired code is worse than an unknown one,
+because a peer that still recognises it acts on a meaning this node did
+not intend. The constant's doc comment now names all three.
+
+AND THE CHECK THAT WOULD HAVE CAUGHT IT. The collision was found by
+reading, which is not a method. `peer_tests` now asserts that the code
+the client leg answers a refused ask with is in none of
+`busbar_mcp_codec::codec::CODES`, in none of `RETIRED_CODES`, and inside
+the `-32019..=-32000` range left to a node's own extensions. It goes red
+on `-32001`, which is how it was proven.
+
+The conformance probe re-run against a busbar built from this tree
+observes `-32003` and passes; 64 pass, 0 fail, 0 error, 0 skip.

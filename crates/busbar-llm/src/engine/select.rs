@@ -413,7 +413,7 @@ pub(crate) async fn pick_among(
         // `None` has always meant here: the caller falls through to `on_exhausted`, which renders the
         // operator-facing answer from `excluded_reasons` above. The model plane therefore adds no
         // second refusal vocabulary — `Refusal` is rendered by the planes that have somewhere to
-        // render it (MCP's `-32001`, A2A's task refusal).
+        // render it (MCP's `-32003`, A2A's task refusal).
         Err(_) => None,
     }
 }
