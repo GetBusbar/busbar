@@ -889,6 +889,7 @@ version = "1.5.0"
 dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
+ "busbar-plugin-testkit",
  "busbar-store-memory",
  "libc",
  "serde",

@@ -653,6 +653,120 @@ pub fn assert_plane_demotion_upsert_list_delete(store: &dyn Store, ns: &str) {
         .expect("deleting an absent demotion is an idempotent no-op, not an error");
 }
 
+/// **`purge_plane_records_before` (kind `call`) HONOURS THE CUTOFF.** The retention sweep drops rows
+/// STRICTLY OLDER than `before` and leaves everything at or after it alone, and it reports how many
+/// it actually dropped.
+///
+/// The eighth neutral verb, and the only one whose failure mode is destruction rather than a wrong
+/// answer. Both directions are wrong and both are checked here, because a suite that only asked
+/// "did anything go?" would accept either:
+///
+/// - a backend that IGNORES `before` and truncates the kind deletes live plane state on the first
+///   sweep an operator ever runs, and nothing downstream can tell it apart from a quiet node;
+/// - a backend that returns `Ok(0)` and purges nothing conforms to the trait signature perfectly
+///   while the plane log grows without bound.
+///
+/// So the assertions are on the SURVIVORS and on the COUNT together: the older row must be gone, the
+/// newer row must still be readable, and the reported number must be the number that actually went.
+pub fn assert_plane_purge_honours_the_cutoff(store: &dyn Store, ns: &str) {
+    let parent = format!("{ns}_purgeprin");
+    // Two rows under one parent, one either side of the cutoff. Appended newest-first so a backend
+    // that drops "the first N" rather than "the ones older than `before`" cannot pass by accident.
+    for (seq, ts) in [(2u64, 1_000u64), (1u64, 10u64)] {
+        store
+            .append_plane_record(&plane_call(&parent, seq, ts))
+            .expect("append a call plane record");
+    }
+
+    let purged = store
+        .purge_plane_records_before("call", 100)
+        .expect("purge the call plane records older than the cutoff");
+
+    let survivors: Vec<u64> = store
+        .list_plane_records("call", &PlaneSelector::Parent(parent.clone()))
+        .expect("list the calls for the parent")
+        .iter()
+        .map(|b| {
+            serde_json::from_slice::<SampleCall>(b)
+                .expect("decode call")
+                .seq
+        })
+        .collect();
+    assert_eq!(
+        survivors,
+        vec![2],
+        "purge_plane_records_before must drop ONLY the rows older than `before`: seq 1 (ts 10) had \
+         to go and seq 2 (ts 1000) had to stay, got {survivors:?}"
+    );
+    assert_eq!(
+        purged, 1,
+        "the sweep must report the number of rows it actually dropped"
+    );
+
+    // And a second sweep at the same cutoff finds nothing left to do, so a backend cannot report a
+    // constant.
+    assert_eq!(
+        store
+            .purge_plane_records_before("call", 100)
+            .expect("re-purge at the same cutoff"),
+        0,
+        "a repeated sweep at the same cutoff has nothing older left to drop"
+    );
+}
+
+/// **`purge_plane_records_before` (kind `task`) drops only TERMINAL rows.** Age alone is not the
+/// task table's retention rule: an interrupted task waiting on a human is exactly the row that sits
+/// still longest, and dropping it loses the work. Terminality is the envelope's
+/// [`PlaneDisposition`] sidecar — a backend never has to decode the opaque body to honour this.
+///
+/// The cutoff still applies on top: a TERMINAL row newer than `before` stays. So the three rows
+/// below separate the two axes, and a backend that honours only one of them fails.
+pub fn assert_plane_purge_task_keeps_active_rows(store: &dyn Store, ns: &str) {
+    let mut old_active = plane_task(ns, "input-required");
+    old_active.ts = 10;
+    let mut old_terminal = plane_task(ns, "completed");
+    old_terminal.ts = 10;
+    old_terminal.disposition = PlaneDisposition::Terminal;
+    let mut fresh_terminal = plane_task(ns, "canceled");
+    fresh_terminal.ts = 1_000;
+    fresh_terminal.disposition = PlaneDisposition::Terminal;
+    for record in [&old_active, &old_terminal, &fresh_terminal] {
+        store
+            .upsert_plane_record(record)
+            .expect("upsert a task plane record");
+    }
+
+    let purged = store
+        .purge_plane_records_before("task", 100)
+        .expect("purge the task plane records older than the cutoff");
+    assert_eq!(
+        purged, 1,
+        "exactly the one OLD TERMINAL task may go: the old ACTIVE task is the interrupted work \
+         this rule exists to keep, and the fresh terminal one is not old enough"
+    );
+
+    let ids: Vec<String> = store
+        .list_plane_records("task", &PlaneSelector::All)
+        .expect("list the tasks")
+        .iter()
+        .filter_map(|b| serde_json::from_slice::<SampleTask>(b).ok())
+        .map(|t| t.task_id)
+        .collect();
+    assert!(
+        ids.contains(&old_active.id),
+        "an ACTIVE task older than the cutoff was purged — an interrupted task waiting on a human \
+         is exactly the row that sits still longest, and the work is now gone: {ids:?}"
+    );
+    assert!(
+        ids.contains(&fresh_terminal.id),
+        "a TERMINAL task NEWER than the cutoff was purged — the sweep ignored `before`: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&old_terminal.id),
+        "the old terminal task the sweep reported dropping is still readable: {ids:?}"
+    );
+}
+
 /// **`redeem_plane_token` (kind `ask`) is a single-use test-and-set.** The FIRST redemption of a
 /// nonce is `true`, every later one is `false` — the durable ledger that makes a confirm-once tool
 /// execute once across a restart and across two nodes. A different nonce is still redeemable.

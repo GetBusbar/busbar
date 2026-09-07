@@ -73,6 +73,16 @@ fn plane_demotion_upsert_list_delete() {
 }
 
 #[test]
+fn plane_purge_honours_the_cutoff() {
+    conf::assert_plane_purge_honours_the_cutoff(&MemoryStore::new(), "conf");
+}
+
+#[test]
+fn plane_purge_task_keeps_active_rows() {
+    conf::assert_plane_purge_task_keeps_active_rows(&MemoryStore::new(), "conf");
+}
+
+#[test]
 fn plane_token_is_single_use() {
     conf::assert_plane_token_is_single_use(&MemoryStore::new(), "conf");
 }

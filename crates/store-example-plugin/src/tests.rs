@@ -334,6 +334,31 @@ fn s_get(s: &FileStore, id: &str) -> Option<Vec<u8>> {
     s.get_plane_record("task", id).unwrap()
 }
 
+// ── THE SHARED CROSS-BACKEND RETENTION CONFORMANCE ───────────────────────────────────────────────
+//
+// The purge cells below this comment are THIS fixture's own, written against its own tables. The two
+// here are the SHARED ones every backend answers identically (`busbar-plugin-testkit`), and they are
+// wired separately on purpose: a ruling added to the shared suite has to reach this plugin on its
+// next dependency bump rather than be hand-copied here and then drift, which is the exact failure
+// the testkit exists to prevent. A fresh store per check is already an empty namespace, so `ns` only
+// has to be stable.
+
+/// The retention sweep drops rows older than the cutoff and NOTHING else — the eighth neutral verb,
+/// held to the same ruling as every other backend.
+#[test]
+fn conformance_plane_purge_honours_the_cutoff() {
+    busbar_plugin_testkit::store_conformance::assert_plane_purge_honours_the_cutoff(&store(), "cf");
+}
+
+/// The task table's retention rule is terminality AND age, not age alone.
+#[test]
+fn conformance_plane_purge_task_keeps_active_rows() {
+    busbar_plugin_testkit::store_conformance::assert_plane_purge_task_keeps_active_rows(
+        &store(),
+        "cf",
+    );
+}
+
 #[test]
 fn purge_plane_records_before_task_drops_only_terminal_rows() {
     let s = store();
