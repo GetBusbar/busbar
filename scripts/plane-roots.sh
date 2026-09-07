@@ -15,7 +15,7 @@
 #                               only the SCOPE moves out from under it.
 #   * blocking-ffi-lint.sh    — the planes are 71 of 238 scanned files and the scan floor is 100, so
 #     settings-leak gate       dropping them leaves the floor comfortably cleared and the lint
-#     response-header-lint.sh   reporting `ok` over a tree it no longer reads. The floor catches a
+#     response-header gate     reporting `ok` over a tree it no longer reads. The floor catches a
 #                               root that MOVED. Nothing caught a root that SPLIT.
 #
 # Four copies of the same guess is four things to remember on the day the planes move, which is the
