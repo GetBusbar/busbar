@@ -1812,15 +1812,31 @@ fn mutations() -> Vec<Mutation> {
             creates: false,
         },
         Mutation {
+            // `needs: [plan, branch-green]` appears TWICE in release-stage.yml (`gate` and
+            // `targets`), so this mutation does need to say which one it means -- but it used to
+            // say so by naming the two lines that happened to follow it (`runs-on:` then
+            // `services:`), which stopped matching the moment a `timeout-minutes:` was added to the
+            // job. Anchoring on the JOB ID and taking the first `needs:` inside it says the same
+            // thing and cannot be broken by adding a key to the job, which is the whole failure
+            // mode R11 and the other R9 mutation just hit.
             label: "R9 the staging build stops depending on the red-branch gate",
             file: "release-stage.yml",
             rule: "R9",
             apply: |t| {
-                replace_once(
-                    t,
-                    "    needs: [plan, branch-green]\n    runs-on: ubuntu-latest\n    services:",
-                    "    needs: [plan]\n    runs-on: ubuntu-latest\n    services:",
-                )
+                const NEEDS: &str = "    needs: [plan, branch-green]\n";
+                match t
+                    .find("\n  gate:\n")
+                    .and_then(|g| t[g..].find(NEEDS).map(|n| n + g))
+                {
+                    Some(at) => {
+                        let mut out = String::with_capacity(t.len());
+                        out.push_str(&t[..at]);
+                        out.push_str("    needs: [plan]\n");
+                        out.push_str(&t[at + NEEDS.len()..]);
+                        out
+                    }
+                    None => t.to_string(),
+                }
             },
             creates: false,
         },

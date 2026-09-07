@@ -63,6 +63,7 @@ jobs:
   gate-selftest:
     name: gate self-test (the coverage assertion cannot be lied to)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
@@ -424,6 +425,7 @@ jobs:
   verdict:
     name: MCP conformance verdict
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: always()
     needs:
       - gate-selftest

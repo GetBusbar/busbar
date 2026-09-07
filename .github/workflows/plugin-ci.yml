@@ -110,6 +110,7 @@ jobs:
   refs:
     name: resolve the busbar refs this plugin must be proven against
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       matrix: ${{ steps.build.outputs.matrix }}
     steps:
@@ -152,6 +153,7 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.refs.outputs.matrix) }}
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     services:
     # SERVICE IMAGES ARE DIGEST-PINNED. A floating tag means a third party can change what this
     # workflow tests against, overnight, with no commit here. That matters more in THIS file than
@@ -886,6 +888,7 @@ jobs:
     if: github.event_name == 'push'
     continue-on-error: true
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout the plugin
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

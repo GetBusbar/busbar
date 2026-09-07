@@ -82,6 +82,7 @@ jobs:
   harness-selftest:
     name: harness selftest (before believing any verdict)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -121,6 +122,7 @@ jobs:
   control-a2a-go:
     name: control a2a-go (${{ matrix.binding }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -250,6 +252,7 @@ jobs:
   negative-control:
     name: negative control (a broken peer MUST be red)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -396,6 +399,7 @@ jobs:
   swap-proof:
     name: swap proof (six states the gate must tell apart)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -415,6 +419,7 @@ jobs:
   tz-is-load-bearing:
     name: the timezone pin still changes the answer
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -431,6 +436,7 @@ jobs:
   tck-control:
     name: official TCK vs control (${{ matrix.leg }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -455,6 +461,7 @@ jobs:
   governance-probe:
     name: governance probe (NOT a conformance result)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -606,6 +613,7 @@ jobs:
   verdict:
     name: A2A conformance verdict
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: always()
     needs:
       - harness-selftest
