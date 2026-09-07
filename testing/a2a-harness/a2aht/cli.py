@@ -202,6 +202,38 @@ def cmd_baseline(args):
         rep = json.load(fh)
     with open(args.baseline) as fh:
         base = json.load(fh)
+    # TWO EMPTY FILES AGREE ABOUT NOTHING, AND USED TO PRINT "MATCHED".
+    #
+    # `compare_to_baseline` compares the UNION of the two id sets, so a report
+    # that ran nothing against a populated baseline is correctly 85 rows of
+    # `<not run>` -- that direction is sound. The direction with no floor is the
+    # one where the BASELINE is the empty side: a baseline truncated by a failed
+    # write, a partial checkout, an `--record` against a run that produced
+    # nothing, or simply `{"results": []}` compares clean against ANY report,
+    # including an empty one, and this leg printed
+    #
+    #     CONTROL BASELINE MATCHED: 0 tests, all outcomes identical
+    #
+    # and returned 0. This is the verdict step of both `control-a2a-go` legs and
+    # of `control-a2a-python`; the workflow reads nothing but its exit code, and
+    # "the control still produces its pinned verdict" is the sentence the whole
+    # run's credibility rests on. A comparison with nothing on either side is
+    # not a match, it is an absence, and an absence is red.
+    n_now = len(rep.get("results") or [])
+    n_base = len(base.get("results") or [])
+    if n_now == 0 or n_base == 0:
+        print("\nCONTROL BASELINE CANNOT BE CHECKED\n")
+        print("report rows: %d, baseline rows: %d. A side with no rows cannot "
+              "disagree with anything, so 'identical' would be a statement "
+              "about two absences rather than about the control.\n"
+              % (n_now, n_base))
+        if n_base == 0:
+            print("  the BASELINE is empty: it was truncated, half-written, or "
+                  "recorded from a run that itself executed nothing.")
+        if n_now == 0:
+            print("  the REPORT is empty: this run executed nothing.")
+        print("")
+        return 1
     changes = runner.compare_to_baseline(rep, base)
     if not changes:
         print("\nCONTROL BASELINE MATCHED: %d tests, all outcomes identical "
