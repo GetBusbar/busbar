@@ -45,7 +45,7 @@
     "LOW": 6,
     "NIT": 4
    },
-   "report": "pass 1: foreign wire field bricks a VirtualKey row (fixed c03edabc); redeem_plane_token defaulted to first-redemption (fixed 51e73174); put_key tombstone precondition unenforceable (ABI, post-1.6.0); all 10 production files read",
+   "report": "pass 1: foreign wire field bricks a VirtualKey row (fixed); redeem_plane_token defaulted to first-redemption (fixed); put_key tombstone precondition unenforceable (ABI, post-1.6.0); all 10 production files read",
    "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
@@ -258,7 +258,7 @@
     "LOW": 6,
     "NIT": 3
    },
-   "report": "pass 2 of the remainder (migrate, config_validate, overlay, preflight, governance, store, oauth_as, metrics, hooks read): rotate_key unbounded id (fixed 9171b866), auth.mode replaced the chain (fixed a123ac33), malformed pools/export replaced with empty (fixed d3ef203a, 133d31ad), consent decoder panic (fixed b2e21a7a); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported",
+   "report": "pass 2 of the remainder (migrate, config_validate, overlay, preflight, governance, store, oauth_as, metrics, hooks read): rotate_key unbounded id (fixed), auth.mode replaced the chain (fixed), malformed pools/export replaced with empty (fixed d3ef203a, 133d31ad), consent decoder panic (fixed); validate cannot see boot-only checks, inferred pool knobs discarded, oauth_as task leak per apply, overlay no interpolation reported",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -280,7 +280,7 @@
     "LOW": 1,
     "NIT": 2
    },
-   "report": "pass 2 fresh eyes: span not readable back from the journal (fixed 4750d7ef); skip_container punctuation; read fully",
+   "report": "pass 2 fresh eyes: span not readable back from the journal (fixed); skip_container punctuation; read fully",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -362,7 +362,7 @@
     "MEDIUM": 11,
     "LOW": 12
    },
-   "report": "pass 1 of the legacy plane excluding method/tasks/config/peer/stdio_serve/callerask (all other files read): bare-host format carried a url past the ssrf guard (fixed c255df20), handshake id collided with round 0 (fixed 2b0b91a6), call-log dispatched for calls that never left (fixed 1294ed4b), token endpoint body unbounded (fixed e549bfdd), secret sources leaked to callers (fixed b45c979f); notify not cancel-safe, supervisor reset never fires, listen ungated, sampling input unbounded, demotion row skipped silently reported",
+   "report": "pass 1 of the legacy plane excluding method/tasks/config/peer/stdio_serve/callerask (all other files read): bare-host format carried a url past the ssrf guard (fixed), handshake id collided with the opening handshake (fixed), call-log dispatched for calls that never left (fixed), token endpoint body unbounded (fixed), secret sources leaked to callers (fixed); notify not cancel-safe, supervisor reset never fires, listen ungated, sampling input unbounded, demotion row skipped silently reported",
    "auditor": "opus-pass1",
    "fixed_at": null,
    "exclude": [
@@ -402,7 +402,7 @@
     "LOW": 1,
     "NIT": 1
    },
-   "report": "pass 3 fresh eyes (all src and tests read): push-config create decoded before its body arrived (fixed 01bfd6bb); DELETE /a2a/tasks/{id} decodes as a read",
+   "report": "pass 3 fresh eyes (all src and tests read): push-config create decoded before its body arrived (fixed); DELETE /a2a/tasks/{id} decodes as a read",
    "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
@@ -424,7 +424,7 @@
     "MEDIUM": 1,
     "NIT": 4
    },
-   "report": "pass 2 fresh eyes: unauthenticated admin caller answered 403 not 401 (fixed 7013d093, root arm); split envelope never decodes (fixed efb41039); all src read fully",
+   "report": "pass 2 fresh eyes: unauthenticated admin caller answered 403 not 401 (fixed 7013d093, root arm); split envelope never decodes (fixed); all src read fully",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -469,7 +469,7 @@
     "LOW": 1,
     "NIT": 2
    },
-   "report": "pass 3 fresh eyes (all src and tests read): caller could send server notices into the catalogue write (fixed cc3fa3ed), server notices never reached their route (fixed e701cab6), non-object result lost the discriminator (fixed ce52e15d)",
+   "report": "pass 3 fresh eyes (all src and tests read): caller could send server notices into the catalogue write (fixed), server notices never reached their route (fixed), non-object result lost the discriminator (fixed)",
    "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
@@ -492,7 +492,7 @@
     "LOW": 1,
     "NIT": 4
    },
-   "report": "pass 2 fresh eyes: second turn of a call never a unit (fixed 3f37a9df), downlink frames named no turn (fixed 2ebe8746), telephony frames carried an empty stream id (fixed 7ccd4eca), style check read half the source (fixed 9135db9a); every file read fully",
+   "report": "pass 2 fresh eyes: second turn of a call never a unit (fixed), downlink frames named no turn (fixed), telephony frames carried an empty stream id (fixed), style check read half the source (fixed); every file read fully",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -531,7 +531,7 @@
     "MEDIUM": 1,
     "LOW": 5
    },
-   "report": "pass 2 of ingress/egress/egress_auth/teller/config (35 files read fully): inbound ws acceptor had no message or frame ceiling (fixed 16a81c3d); outbound ws mirror, limits install ordering, retry header restore reported; test files unread",
+   "report": "pass 2 of ingress/egress/egress_auth/teller/config (35 files read fully): inbound ws acceptor had no message or frame ceiling (fixed); outbound ws mirror, limits install ordering, retry header restore reported; test files unread",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -553,7 +553,7 @@
     "LOW": 1,
     "NIT": 5
    },
-   "report": "pass 2 fresh eyes: interned-name pointer match without length (fixed 1f857ff8); base64 trailing bits; all production files read, diagnostics catalogue checked mechanically, unit tests unread",
+   "report": "pass 2 fresh eyes: interned-name pointer match without length (fixed); base64 trailing bits; all production files read, diagnostics catalogue checked mechanically, unit tests unread",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -614,7 +614,7 @@
     "MEDIUM": 1,
     "LOW": 1
    },
-   "report": "pass 2 fresh eyes: 100-continue answered before the body cap (fixed 947f56ab); misplaced test doc (fixed 7c92721c); all files read fully",
+   "report": "pass 2 fresh eyes: 100-continue answered before the body cap (fixed); misplaced test doc (fixed); all files read fully",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -653,7 +653,7 @@
     "MEDIUM": 1,
     "NIT": 2
    },
-   "report": "pass 3 fresh eyes: write never refused a payload spelling the frame delimiter (fixed fe75ded8); all files read fully",
+   "report": "pass 3 fresh eyes: write never refused a payload spelling the frame delimiter (fixed); all files read fully",
    "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
@@ -694,7 +694,7 @@
     "HIGH": 1,
     "MEDIUM": 1
    },
-   "report": "pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed f376a5e1); tcp connect has no timeout on tcp and tls dial; tests.rs read fully",
+   "report": "pass 3 fresh eyes on the batteries: tls dial handshake unbounded (fixed); tcp connect has no timeout on tcp and tls dial; tests.rs read fully",
    "auditor": "opus-pass3",
    "fixed_at": null,
    "exclude": [
@@ -732,7 +732,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -771,7 +771,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -789,7 +789,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -807,7 +807,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -825,7 +825,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -843,7 +843,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -882,7 +882,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -918,7 +918,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -936,7 +936,7 @@
    "round": 5,
    "result": "in_progress",
    "counts": {},
-   "report": "round 5 report pending; the round is in flight",
+   "report": "report pending; the pass is in flight",
    "auditor": "round-5 finder fleet",
    "fixed_at": null,
    "exclude": [
@@ -1019,7 +1019,7 @@
     "LOW": 4,
     "NIT": 2
    },
-   "report": "pass 2 fresh eyes: mulaw admitted as pcm (fixed 127b00a4), null tool result (fixed dc64c1b6), totals without breakdown metered free (fixed 52d3e873), nested argument lost the call (fixed de225dad); gemini uplink labelled with the output format reported (DecodeState seam); every production file read fully",
+   "report": "pass 2 fresh eyes: mulaw admitted as pcm (fixed), null tool result (fixed), totals without breakdown metered free (fixed), nested argument lost the call (fixed); gemini uplink labelled with the output format reported (DecodeState seam); every production file read fully",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -1130,7 +1130,7 @@
     "MEDIUM": 6,
     "LOW": 5
    },
-   "report": "pass 2 (loader, sdk, timing, api read): read_buf no isize bound, publish_handle drop after catch_unwind, replay cache on wall clock, shim cannot say in-flight (ABI), key_bucket_plan double-count, staging dir via symlink reported; hold-escapes fixed (4e4c5cdd); stale waivers red (2c43e1f4)",
+   "report": "pass 2 (loader, sdk, timing, api read): read_buf no isize bound, publish_handle drop after catch_unwind, replay cache on wall clock, shim cannot say in-flight (ABI), key_bucket_plan double-count, staging dir via symlink reported; hold-escapes fixed; stale waivers red",
    "auditor": "opus-pass2",
    "fixed_at": null,
    "exclude": [
@@ -2228,7 +2228,7 @@
     "HIGH": 20,
     "MEDIUM": 12
    },
-   "report": "pass 1 (all 121 files read): done-oracle floor slack by one group (fixed b8ff2f2f), construction selftest ALL GREEN on zero plants (fixed a65e837c), qa-segments GREEN on zero segments (fixed bd380b8c); verify-artifact image rows unexecuted, rules.py rename-to-pass and EXPECTED_IDS self-derived, release-check gate var never set, expected-ids jq failure, root guards missing, audit-ledger --check green at 0% clean, proof-manifest moved paths reported; fix agents dispatched",
+   "report": "pass 1 (all 121 files read): done-oracle floor slack by one group (fixed), construction selftest ALL GREEN on zero plants (fixed), qa-segments GREEN on zero segments (fixed); verify-artifact image rows unexecuted, rules.py rename-to-pass and EXPECTED_IDS self-derived, release-check gate var never set, expected-ids jq failure, root guards missing, audit-ledger --check green at 0% clean, proof-manifest moved paths reported; fix agents dispatched",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2265,7 +2265,7 @@
     "MEDIUM": 9,
     "LOW": 8
    },
-   "report": "pass 1 (all 30 files read): deletion-test matrix outside the umbrella (fixed 8bda6d3d), branch-name spliced into run (fixed e1399597), promote re-check masked by unique_by (fixed cfb71b7e), missing permissions blocks (fixed 9dffc06b), voice verdict not required (fixed a7d43b11); release-fleet gates N on N-1, cargo-deny required but path-filtered, headroom-hook built from a moving branch, no action pinned by sha reported",
+   "report": "pass 1 (all 30 files read): deletion-test matrix outside the umbrella (fixed), branch-name spliced into run (fixed), promote re-check masked by unique_by (fixed), missing permissions blocks (fixed), voice verdict not required (fixed); release-fleet gates N on N-1, cargo-deny required but path-filtered, headroom-hook built from a moving branch, no action pinned by sha reported",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2299,7 +2299,7 @@
     "LOW": 2,
     "NIT": 1
    },
-   "report": "pass 1 (all files read): unrun deviation record printed red but exited 0 (fixed b7af0f50); _last_peer_requests always 0",
+   "report": "pass 1 (all files read): unrun deviation record printed red but exited 0 (fixed); _last_peer_requests always 0",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2318,7 +2318,7 @@
     "LOW": 1,
     "NIT": 1
    },
-   "report": "pass 1 (all files read): zero demonstrated exited 0 and plan drifted from the registry (fixed 46930729)",
+   "report": "pass 1 (all files read): zero demonstrated exited 0 and plan drifted from the registry (fixed)",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2335,7 +2335,7 @@
    "counts": {
     "HIGH": 1
    },
-   "report": "pass 1 (all files read): subject gate had no execution floor (fixed e47b802e)",
+   "report": "pass 1 (all files read): subject gate had no execution floor (fixed)",
    "auditor": "opus-pass1",
    "fixed_at": null
   },
@@ -2388,7 +2388,7 @@
     "LOW": 3,
     "NIT": 1
    },
-   "report": "pass 2 (all 26 files read): unimported suite left scenarios out of every number (fixed 9d97221b); literal-true adversarial row, differential missing never gates, name-collision seam unguarded reported",
+   "report": "pass 2 (all 26 files read): unimported suite left scenarios out of every number (fixed); literal-true adversarial row, differential missing never gates, name-collision seam unguarded reported",
    "auditor": "opus-pass2",
    "fixed_at": null
   },
@@ -2407,7 +2407,7 @@
     "MEDIUM": 2,
     "LOW": 4
    },
-   "report": "pass 2 of the 23 drivers and fixtures (all read): hazard driver recorded a harness failure as a pass (fixed 55dd518e), wall clocks in effects (fixed ddcc6324), golden pass outside the owed ratchet (fixed 7c65e247); teller failover evidence non-discriminating; plugin-list ports hardcoded",
+   "report": "pass 2 of the 23 drivers and fixtures (all read): hazard driver recorded a harness failure as a pass (fixed), wall clocks in effects (fixed), golden pass outside the owed ratchet (fixed); teller failover evidence non-discriminating; plugin-list ports hardcoded",
    "auditor": "opus-pass2",
    "fixed_at": null
   },
@@ -2427,7 +2427,7 @@
     "LOW": 2,
     "NIT": 2
    },
-   "report": "pass 2 (runner, 14 legs, 40 fixtures, voice-conform.rs read): harness dying after PASS lines read green (fixed d503a797), asymmetry rows deferred by all pairs (fixed e2434f4f), literal-true rows (fixed 181f5f52), missing map fixtures silent (fixed 3a2c9625); no sample-rate or timing assertion exists in the rig",
+   "report": "pass 2 (runner, 14 legs, 40 fixtures, voice-conform.rs read): harness dying after PASS lines read green (fixed), asymmetry rows deferred by all pairs (fixed), literal-true rows (fixed), missing map fixtures silent (fixed); no sample-rate or timing assertion exists in the rig",
    "auditor": "opus-pass2",
    "fixed_at": null
   },
