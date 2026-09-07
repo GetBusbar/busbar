@@ -150,6 +150,61 @@ def check(root: str) -> Finding:
     docker = read("docker.yml")
     verify = read("verify-deploy.yml")
 
+    # R14. EVERY THIRD-PARTY ACTION RUNS FROM A COMMIT SHA, AND A TAG IS NOT A SHA.
+    #
+    # .github/dependabot.yml states this as a rule, at length: "EVERY `uses:` IN .github/workflows
+    # IS PINNED TO A COMMIT SHA, and this entry is what keeps that true instead of freezing it. A
+    # tag is not a pin: `actions/checkout@v7` is a ref the owner can force-move, so a compromised or
+    # simply changed action reaches our runners -- which hold `packages: write`, `id-token: write`
+    # and `attestations: write` -- with no diff on our side."
+    #
+    # Nothing checked it. Every `uses:` in the tree really is a 40-hex sha today, and reverting any
+    # one of them to `@v4` was proven green against actionlint, release-order-lint and
+    # ci-umbrella-lint alike -- a rule written down in a config file's comment and enforced nowhere
+    # is a rule that survives exactly as long as nobody is in a hurry. The scopes named in that
+    # comment are the reason this is a release-order rule and not a style rule: an action that can
+    # be force-moved under a name we already trust can push an image and mint an attestation, which
+    # is to say it can put a user-facing name on bytes nothing in this repository ever built.
+    #
+    # LOCAL `uses:` IS EXEMPT, AND ONLY LOCAL. `./.github/workflows/x.yml` resolves inside this
+    # repository at the caller's own commit; there is no third party and nothing to force-move.
+    # A `docker://` reference is refused outright rather than exempted: it is a registry tag by
+    # another spelling.
+    #
+    # THE TRAILING TAG COMMENT IS PART OF THE PIN, per the same dependabot note: without `# v7`
+    # Dependabot cannot tell what the sha stands for and silently stops updating it, so the pin rots
+    # into a permanently stale, unpatched version. A missing comment is therefore reported too.
+    uses_re = re.compile(r"^\s*(?:-\s+)?uses:\s*(\S+)\s*(#.*)?$", re.M)
+    for name in sorted(os.listdir(wf)) if os.path.isdir(wf) else []:
+        if not name.endswith((".yml", ".yaml")):
+            continue
+        for m in uses_re.finditer(strip_comments(read(name) or "")):
+            ref, comment = m.group(1), m.group(2)
+            if ref.startswith("./"):
+                continue
+            if "@" not in ref:
+                bad.append(
+                    "R14 %s: `uses: %s` names no ref at all, so it runs whatever the default "
+                    "branch holds today." % (name, ref)
+                )
+                continue
+            at = ref.rsplit("@", 1)[1]
+            if not re.fullmatch(r"[0-9a-f]{40}", at):
+                bad.append(
+                    "R14 %s: `uses: %s` is pinned to '%s', which is a ref the action's owner can "
+                    "force-move, not a commit. Our runners hold packages/id-token/attestations "
+                    "write; the bytes that run must be the bytes that were reviewed. Pin the sha "
+                    "and keep the tag as a trailing comment so Dependabot can still bump it."
+                    % (name, ref, at)
+                )
+            elif comment is None:
+                bad.append(
+                    "R14 %s: `uses: %s` is a bare sha with no trailing `# <tag>` comment. "
+                    "Dependabot reads that comment to learn which version the sha stands for; "
+                    "without it the pin stops being updated and rots into a stale, unpatched "
+                    "version." % (name, ref)
+                )
+
     # R1. NO WORKFLOW MAY BE TRIGGERED BY A VERSION TAG.
     # This is the root of the old order. If a `v*` tag push causes a build, then the tag has to
     # exist before the build, and the name is public before anything has verified it. Under the
@@ -620,6 +675,28 @@ def check(root: str) -> Finding:
 # ---------------------------------------------------------------------------------------------
 
 MUTATIONS = [
+    (
+        # THE REGRESSION AS IT WOULD ACTUALLY ARRIVE: someone copies a snippet out of an action's
+        # README, which is always written with the tag, and nothing anywhere notices. Proven against
+        # the signing installer on purpose -- that is the action whose bytes decide what a busbar
+        # release is signed with.
+        "R14 an action reverts from a sha to a force-movable tag",
+        "docker.yml",
+        lambda t: t.replace(
+            "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3",
+            "sigstore/cosign-installer@v3", 1),
+        "R14",
+    ),
+    (
+        # The quieter half. The sha stays a sha, so it still looks pinned; the tag comment goes, so
+        # Dependabot stops bumping it and the pin rots in place at whatever version it froze on.
+        "R14 a pin loses the trailing tag comment Dependabot reads",
+        "docker.yml",
+        lambda t: t.replace(
+            "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3",
+            "sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac", 1),
+        "R14",
+    ),
     (
         "R1 a v* tag trigger comes back on release.yml",
         "release.yml",
