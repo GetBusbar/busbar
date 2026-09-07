@@ -6,6 +6,70 @@
 use super::merge_trailing_usage;
 use crate::ir::IrUsage;
 
+/// A DUPLICATE TERMINAL DELTA REPORTS THE SAME TURN TWICE — IT DOES NOT ADD A SECOND ONE.
+///
+/// This fold is the only thing standing between "a provider repeated its terminal `message_delta`"
+/// and a doubled invoice. Every existing test here pairs a NON-ZERO accumulator with a ZERO
+/// trailing value or the reverse, so the fold's assignment (`acc.input_tokens = trailing…`) and an
+/// accumulation (`+=`) produce the identical answer in all of them: adding to zero and assigning
+/// over zero are the same number. Nothing pinned which one this function does, and the difference
+/// between them is exactly a double charge.
+///
+/// A duplicate terminal — the shape the fold's own call site names ("some providers repeat the
+/// terminal message_delta") — with real counts on BOTH copies is the case that separates them.
+/// The counts are the SAME turn restated, so the merged accumulator must report ONE turn.
+#[test]
+fn a_duplicate_terminal_delta_bills_one_turn_not_two() {
+    let reported = usage(1200, 340, Some(100), Some(200));
+    let mut acc = reported.clone();
+    // The upstream repeats the terminal frame, counts and all.
+    merge_trailing_usage(&mut acc, &reported);
+    assert_eq!(
+        acc, reported,
+        "a restated terminal is the same turn: an accumulating fold would bill it twice"
+    );
+    assert_eq!(
+        acc.billable_tokens(),
+        1840,
+        "1200 + 340 + 100 + 200 — not 3680"
+    );
+
+    // And a SECOND repeat is still one turn: the fold is idempotent, not cumulative.
+    merge_trailing_usage(&mut acc, &reported);
+    assert_eq!(acc, reported, "the fold must stay idempotent under repeats");
+
+    // The detail sub-buckets ride the same rule — a restated attribution slice is not doubled.
+    let mut acc = IrUsage {
+        detail: crate::ir::IrUsageDetail {
+            reasoning_tokens: Some(64),
+            web_search_requests: Some(3),
+            ..Default::default()
+        },
+        ..usage(10, 20, None, None)
+    };
+    let restated = acc.clone();
+    merge_trailing_usage(&mut acc, &restated);
+    assert_eq!(acc.detail.reasoning_tokens, Some(64));
+    assert_eq!(acc.detail.web_search_requests, Some(3));
+    assert_eq!((acc.input_tokens, acc.output_tokens), (10, 20));
+}
+
+/// The other half of the same distinction: when the trailing chunk restates a count the
+/// accumulator already holds at a DIFFERENT value, the trailing one wins outright — it is the
+/// upstream's latest statement of the same turn, not an addition to it.
+#[test]
+fn a_restated_count_replaces_it_rather_than_adding_to_it() {
+    let mut acc = usage(100, 10, Some(1), Some(2));
+    merge_trailing_usage(&mut acc, &usage(1200, 340, Some(100), Some(200)));
+    assert_eq!(
+        (acc.input_tokens, acc.output_tokens),
+        (1200, 340),
+        "the trailing statement replaces the earlier one (an add would give 1300/350)"
+    );
+    assert_eq!(acc.cache_creation_input_tokens, Some(100));
+    assert_eq!(acc.cache_read_input_tokens, Some(200));
+}
+
 fn usage(i: u64, o: u64, cc: Option<u64>, cr: Option<u64>) -> IrUsage {
     IrUsage {
         input_tokens: i,
