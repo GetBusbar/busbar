@@ -146,6 +146,9 @@ can be trusted. Re-align it with mcp::client::catalogue::tool_digest and the pin
     node scripts/mcp-subject/tool-digest.mjs "$MCP_SEAM_UPSTREAM_URL" \
       | sed "s/^/probe /" >> "$SUBJECT_DIGESTS" \
       || die "could not digest the seam peer's honest tool list for the probe registration."
+    node scripts/mcp-subject/tool-digest.mjs "$MCP_SEAM_UPSTREAM_URL" \
+      | sed "s/^/breaker /" >> "$SUBJECT_DIGESTS" \
+      || die "could not digest the seam peer's honest tool list for the breaker registration."
   fi
   say "   fixture digests recorded: $(wc -l < "$SUBJECT_DIGESTS" | tr -d ' ') approvals in $SUBJECT_DIGESTS"
 }
@@ -962,8 +965,46 @@ YAML
       echo:
         schema_hash: "$(dg probe echo)"
         description: "Returns the string it was given."
+
+  # ── THE BREAKER PROBE: a registration whose circuit breaker is MEANT to be tripped ─────────────
+  #
+  # \`SEAM.UPSTREAM-UNAVAILABLE-CODE\` drives repeated failing calls until this registration's cell
+  # trips, then reads the JSON-RPC code busbar answers the NEXT call with. That code is the one the
+  # conformance battery's reserved-range clause judges, and it cannot be observed without an OPEN
+  # cell — the fast-fail path is the only path that emits it.
+  #
+  # A REGISTRATION OF ITS OWN, and the separation is the whole point, for the same reason \`probe\`
+  # has one. The battery shares ONE busbar across every seam test, and an open cell refuses every
+  # later call through that registration for the length of its cooldown. Tripping \`seam\`'s cell
+  # would poison every SEAM.* clause that ran afterwards with a failure that is the harness's own
+  # doing — which \`requireUpstreamWasReached\` calls out by name as the cause that costs the most
+  # time. Nothing else dispatches through \`breaker\`, so its open cell costs nothing.
+  #
+  # \`publish_as: breaker_echo\` keeps the front-door name distinct from \`seam\`'s \`echo\`: two
+  # registrations publishing one name is a collision, and the test must be able to say WHICH cell
+  # it is tripping.
+  breaker:
+    url: "$MCP_SEAM_UPSTREAM_URL"
+    allow_private: true
+    timeout: 10s
+    pin:
+      # pinned_pubkey, NOT cert_spki: this hop is plaintext loopback, so there is no served cert to
+      # observe an SPKI from. See the header — cert_spki here quarantines under 1.6.0 enforcement.
+      mechanism: pinned_pubkey
+      key: "sha256/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+    tools_allow:
+      echo:
+        publish_as: breaker_echo
+        schema_hash: "$(dg breaker echo)"
+        description: "Returns the string it was given."
+        input_schema:
+          type: object
+          properties:
+            text:
+              type: string
+              description: "The text to echo."
 YAML
-    say "   seam upstream registered: $MCP_SEAM_UPSTREAM_URL (published as echo, 10s deadline; refresh probe: probe)"
+    say "   seam upstream registered: $MCP_SEAM_UPSTREAM_URL (published as echo, 10s deadline; refresh probe: probe; breaker probe: breaker/breaker_echo)"
   fi
 }
 

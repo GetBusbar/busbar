@@ -51,7 +51,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { test } from '../core/runner.mjs';
-import { request } from '../core/jsonrpc.mjs';
+import {
+  request, SPEC_RESERVED_RANGE, SPEC_DEFINED_CODES, RETIRED_ERROR_CODES,
+} from '../core/jsonrpc.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const FAKE = resolve(HERE, '../../fakepeer/fake-server.mjs');
@@ -342,6 +344,82 @@ test({
       const res = await peer.waitForId('after-crash', 12000);
       ctx.assert('VER.DISCOVER-REQUIRED', Boolean(res.result),
         'the subject stopped serving its own clients after an upstream server died mid-frame');
+    } finally { await peer.stop(); }
+  },
+});
+
+// The subject's tool for the breaker probe below, and its own registration: `scripts/mcp-subject/
+// boot.sh` mounts the hostile peer a SECOND time as `breaker` and publishes its `echo` under this
+// name. The separation is deliberate — see the comment on that registration — because this test
+// deliberately leaves a circuit-breaker cell OPEN, and an open cell on the shared `seam`
+// registration would refuse every later seam call for the length of its cooldown.
+const BREAKER_TOOL = 'breaker_echo';
+// Enough calls to satisfy any reasonable trip predicate, then more to be fast-failed by the open
+// cell. The published busbar predicate is `error_rate >= 0.5` over at least five outcomes in a
+// thirty-second window; nothing here depends on those numbers being busbar's, because EVERY answer
+// is judged rather than only the last.
+const BREAKER_PROBE_CALLS = 8;
+
+test({
+  id: 'SEAM.UPSTREAM-UNAVAILABLE-CODE',
+  title: 'the error code for an unreachable upstream stays out of the spec-reserved sub-range',
+  role: 'seam', area: 'seam', tier: 'pr', peer: 'real',
+  catches: "A gateway naming its own 'upstream unavailable' condition with a code from -32099..-32020, which a later revision of the specification may define for something else entirely — so a conformant client acts on a meaning this node never intended.",
+  // RUNS LAST IN THIS FILE ON PURPOSE. The battery drives ONE long-lived subject across every seam
+  // test, and this is the only test here whose purpose requires leaving something broken behind: a
+  // tripped breaker cell, held open for its cooldown. It is confined to a registration nothing else
+  // dispatches through, so the blast radius is already nil — running it last keeps that true even
+  // if those registrations are ever folded back together.
+  run: async (ctx) => {
+    // The spec-reserved sub-range and the codes the specification has defined inside it, read from
+    // `src/core/jsonrpc.mjs` — the same two facts `SRV.ERR.NO-RETIRED-CODES` reads. A node's own
+    // extension belongs BELOW this sub-range, in the part of JSON-RPC 2.0 section 5.1's
+    // implementation-defined band the specification has not claimed.
+    const [lo, hi] = SPEC_RESERVED_RANGE;
+    const peer = startSeam(ctx, 'unreachable');
+    try {
+      const answers = [];
+      for (let i = 1; i <= BREAKER_PROBE_CALLS; i += 1) {
+        peer.send(request(i, 'tools/call', { name: BREAKER_TOOL, arguments: { text: 'hi' } }));
+        let res = null;
+        // eslint-disable-next-line no-await-in-loop -- the point is a SERIES of failures in order
+        try { res = await peer.waitForId(i, 15000); } catch { continue; }
+        if (res.error) answers.push({ call: i, code: res.error.code });
+      }
+
+      // THE OBSERVATION CHANNEL, PROVEN LIVE BEFORE THE ABSENCE IS BELIEVED — the same guard
+      // `requireUpstreamWasReached` applies to the transcript, applied here to the front door
+      // instead. This test cannot read the upstream transcript, because in `unreachable` mode the
+      // upstream is never spoken to at all: that IS the condition. So the channel it must prove
+      // carried something is the subject's own answer. It THROWS rather than asserting, because an
+      // empty answer list is a finding about this RUN and not a spec violation by the subject, and
+      // the runner records a throw as ERROR alongside every failure. What it must never be is a
+      // pass — "no code was in the reserved sub-range" is satisfied vacuously by no code at all.
+      if (answers.length === 0) {
+        throw new Error(
+          `VACUOUS: ${BREAKER_PROBE_CALLS} calls to \`${BREAKER_TOOL}\` against an upstream that `
+          + 'destroys every connection produced no JSON-RPC error at all, so there is no code to '
+          + 'judge and the reserved-range clause below would pass on an empty set. TWO CAUSES:\n'
+          + '  1. THE TOOL DID NOT RESOLVE. Check that the launcher registered the `breaker` '
+          + `upstream and published \`${BREAKER_TOOL}\`; an "unknown tool" answer is an answer to `
+          + 'a different question and would otherwise pass this test while proving nothing.\n'
+          + '  2. The subject answered every call with a tool RESULT and never surfaces an '
+          + 'unreachable upstream as a protocol error at all — in which case this clause has '
+          + 'nothing to say about it, and the test should be retired rather than left green.',
+        );
+      }
+
+      const reserved = answers.filter((a) => a.code <= hi && a.code >= lo
+        && !SPEC_DEFINED_CODES.includes(a.code));
+      ctx.assert('BASE.ERR.RESERVED-RANGE', reserved.length === 0,
+        'the subject named an unreachable upstream with a code inside the sub-range the '
+        + `specification reserves for its own codes (${lo}..${hi}, of which only `
+        + `${JSON.stringify(SPEC_DEFINED_CODES)} are defined): ${JSON.stringify(reserved)}`);
+      const retired = answers.filter((a) => RETIRED_ERROR_CODES.includes(a.code));
+      ctx.assert('BASE.ERR.NO-RETIRED-CODES', retired.length === 0,
+        `retired codes emitted for an unreachable upstream: ${JSON.stringify(retired)}`);
+      ctx.variance('seam.upstreamUnavailableCodes',
+        [...new Set(answers.map((a) => a.code))].sort((a, b) => a - b));
     } finally { await peer.stop(); }
   },
 });
