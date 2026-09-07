@@ -421,7 +421,7 @@ run    = "python3 scripts/inventory-ref-lint.py --selftest && python3 scripts/in
 id     = "changelog-register"
 status = "active"
 tier   = "fast"
-# THE CHANGELOG REGISTER GATE (scripts/changelog-register-check.sh) — every `kind: breaking` entry in
+# THE CHANGELOG REGISTER GATE (cargo xtask gate changelog-register) — every `kind: breaking` entry in
 # the shadow-oracle accepted-differences register names a CHANGELOG.md line that is present VERBATIM.
 # This is the second half of the register's money rule: diff-cells.py refuses at LOAD time to let an
 # `improvement` entry forgive a status or a billing figure (only a `breaking` entry with a changelog
@@ -431,7 +431,7 @@ tier   = "fast"
 # with no changelog field FAILs, zero breaking entries is zero rows not a false green, a missing
 # register file FAILs rather than crashes, a line wrapped across two source lines still PASSes)
 # runs FIRST.
-run    = "scripts/changelog-register-check.sh --selftest && scripts/changelog-register-check.sh --check"
+run    = "cargo xtask gate changelog-register --selftest && cargo xtask gate changelog-register"
 
 [[segment]]
 id     = "teller-steps"

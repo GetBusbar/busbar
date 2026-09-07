@@ -429,15 +429,19 @@ impl Gate for ChangelogRegisterGate {
             // harness refuses the run rather than reporting a green nobody produced.
             "scripts/changelog-register-check.py".to_string(),
         ];
-        let probe =
-            |label: &str, reg: String, changelog: &str, rule: &str| crate::gates::ParityProbe {
-                label: label.to_string(),
-                overlay: plant(&reg, changelog),
-                materialize: materialize.clone(),
-                expect_rule: Some(rule.to_string()),
-                legacy_names: None,
-                divergence: None,
-            };
+        // The legacy prints one line per REGISTER ENTRY, keyed by that entry's id; this gate owes
+        // one row per RULE, because an id that moves with a data file cannot be a `Gate::owed` set.
+        // Each probe therefore carries the legacy's own wording, so the comparison stays about the
+        // same rule across that rename instead of decaying into "both went red somehow".
+        let probe = |label: &str, reg: String, changelog: &str, rule: &str, legacy: &str| {
+            crate::gates::ParityProbe::red(
+                label,
+                plant(&reg, changelog),
+                materialize.clone(),
+                rule,
+            )
+            .named_by(legacy)
+        };
         let named = r#"{"id":"X-1","kind":"improvement","changelog":"the grass is now greener"}"#;
         vec![
             // legacy names it: `FAIL    X-2  changelog line not found verbatim`
@@ -449,6 +453,7 @@ impl Gate for ChangelogRegisterGate {
                 ]),
                 "## [1.6.0]\n\n- the grass is now greener\n",
                 ROW_PRESENT,
+                "changelog line not found verbatim in the",
             ),
             // legacy names it: the same `not found verbatim in the 1.6.0 section` line, which is
             // what makes the anchor visible on both sides.
@@ -458,6 +463,7 @@ impl Gate for ChangelogRegisterGate {
                 "## [1.6.0], unreleased\n\n- an unrelated note\n\n## [1.5.0], 2026-08-01\n\n\
                  - the grass is now greener\n",
                 ROW_PRESENT,
+                "changelog line not found verbatim in the",
             ),
             // legacy names it: `carries no `changelog` key at all`
             probe(
@@ -468,6 +474,7 @@ impl Gate for ChangelogRegisterGate {
                 ]),
                 GOOD_CHANGELOG,
                 ROW_DECLARED,
+                "carries no `changelog` key at all",
             ),
             // legacy names it: `no `changelog_reason` says why no line is owed`
             probe(
@@ -475,6 +482,7 @@ impl Gate for ChangelogRegisterGate {
                 register(&[r#"{"id":"X-8","kind":"improvement","changelog":null}"#]),
                 GOOD_CHANGELOG,
                 ROW_DECLARED,
+                "no `changelog_reason` says why no line is owed",
             ),
             // legacy names it: `kind=breaking may not waive its CHANGELOG line`
             probe(
@@ -483,6 +491,7 @@ impl Gate for ChangelogRegisterGate {
                         "changelog_reason":"we would rather not say"}"#]),
                 GOOD_CHANGELOG,
                 ROW_BREAKING,
+                "kind=breaking may not waive its CHANGELOG line",
             ),
             // legacy names it: `has no `accepted` key`
             probe(
@@ -491,6 +500,7 @@ impl Gate for ChangelogRegisterGate {
                     .to_string(),
                 GOOD_CHANGELOG,
                 ROW_REGISTER,
+                "has no `accepted` key",
             ),
             // legacy names it: ``accepted` is dict, not a list`
             probe(
@@ -498,6 +508,7 @@ impl Gate for ChangelogRegisterGate {
                 r#"{"accepted":{"X-7":{"kind":"breaking"}}}"#.to_string(),
                 GOOD_CHANGELOG,
                 ROW_REGISTER,
+                "`accepted` is dict, not a list",
             ),
             // legacy names it: `has no `## [x.y.z]` section heading`
             probe(
@@ -505,6 +516,7 @@ impl Gate for ChangelogRegisterGate {
                 register(&[named]),
                 "- the grass is now greener\n",
                 ROW_SECTION,
+                "has no `## [x.y.z]` section heading",
             ),
             // THE DELTA. The legacy calls an empty register `0 register entries -- nothing owed`
             // and exits 0; this gate calls it a gate with no input. The probe exists to measure
@@ -514,7 +526,15 @@ impl Gate for ChangelogRegisterGate {
                 register(&[]),
                 GOOD_CHANGELOG,
                 ROW_REGISTER,
-            ),
+                "",
+            )
+            .diverges(crate::gates::Divergence::LegacyGreen {
+                reason: "the legacy reads an empty accepted list as nothing owed and exits 0, so a \
+                         renamed key or a truncated write is indistinguishable from a clean \
+                         register. Zero rows against a non-empty owed set is this crate's oldest \
+                         refusal and it applies to the register's own input too."
+                    .to_string(),
+            }),
         ]
     }
 }

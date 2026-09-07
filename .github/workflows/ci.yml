@@ -348,9 +348,9 @@ jobs:
       # a string nobody ever read: it must appear VERBATIM in CHANGELOG.md. Without it an accepted
       # breaking difference could cite a line that was reworded, or never written at all.
       - name: Changelog register self-test
-        run: scripts/changelog-register-check.sh --selftest
+        run: cargo xtask gate changelog-register --selftest
       - name: Changelog register (BLOCKING — every accepted `breaking` names a real CHANGELOG line)
-        run: scripts/changelog-register-check.sh --check
+        run: cargo xtask gate changelog-register
       # THE REGISTRY GATE (plugins.yaml is the single source of truth for first-party plugins):
       # red when a registered plugin lacks coverage anywhere — no qa-gate checkout, no
       # release-check phase, no published release (or a phantom release with zero assets) — or
