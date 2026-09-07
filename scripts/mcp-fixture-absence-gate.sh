@@ -68,10 +68,28 @@ die()  { fail "$*"; exit 1; }
 # out of a release build by `#[cfg(test)]` anyway. What must never ship is a fixture whose name is
 # DATA -- a tool name, a metric name, a route -- because data is what crosses the wire and what a
 # caller can reach for.
+#
+# THE SEPARATOR IS `[-_]`, NOT `_`, AND THE CASE IS NOT FIXED. This used to read
+# `"test_[a-z0-9_]+"`, i.e. snake_case only. But the names that cross the wire — the ones this gate
+# says are the dangerous kind, "a tool name, a metric name, a route" — are conventionally
+# hyphenated, and MCP tool names especially so. Widening the separator takes the discovered set from
+# 6 identifiers to 42: `test-hook`, `test-key`, `test-lane`, `test-model`, `test-provider`,
+# `test-principal`, `test-transport` and thirty more were fixture names in this tree that NEITHER
+# axis was looking for. The header's promise that "the day a `test_echo` tool is registered on the
+# MCP plane it is already watching for it" was true of `test_echo` and false of `test-echo`, which is
+# the spelling an MCP tool would actually use.
 discover_forbidden() {
-  grep -rhoE '"test_[a-z0-9_]+"' crates/*/src 2>/dev/null \
+  grep -rhoE '"test[-_][A-Za-z0-9_-]+"' crates/*/src 2>/dev/null \
     | tr -d '"' \
     | sort -u
+}
+
+# The one place the fixture-name SHAPE is written down, so the filter below cannot drift away from
+# the discovery above. It matched `test_*` while discovery matched `test_*` too; the moment
+# discovery widened, a second hard-coded shape here would have silently dropped every hyphenated
+# name back out of the set and left the widening inert.
+is_fixture_name() {
+  case "$1" in test_*|test-*) return 0 ;; *) return 1 ;; esac
 }
 
 # THE FLOOR IS CHECKED IN THE PARENT SHELL, and it was not.
@@ -113,7 +131,7 @@ load_forbidden_set() {
     || die "the forbidden set did not meet its floor, so there is nothing to assert absence of."
   FORBIDDEN=()
   while IFS= read -r line; do
-    case "$line" in test_*) FORBIDDEN+=("$line") ;; esac
+    if is_fixture_name "$line"; then FORBIDDEN+=("$line"); fi
   done <<<"$set"
   # And the floor again on what actually survived into the array — the two are the same number only
   # as long as nothing between them drops a line.
@@ -387,8 +405,24 @@ run_selftest() {
     failures=$((failures+1))
   fi
 
+  # RED 6: A HYPHENATED FIXTURE NAME. The dangerous names are the ones that cross the wire, and those
+  # are conventionally hyphenated — an MCP tool is `test-echo`, not `test_echo`. Discovery and the
+  # filter both used to insist on an underscore, so every such name was outside the forbidden set and
+  # neither axis ever looked for it. Both halves are asserted here, because a widened discovery with
+  # an un-widened filter would silently drop them straight back out.
+  printf 'harmless\ntest-echo\nmore\n' >"$tmp/hyphen.bin"
+  if ( axis_artifact "$tmp/hyphen.bin" test-echo ) >/dev/null 2>&1; then
+    say "  MISS: axis 1 accepted a binary containing a hyphenated planted fixture"; failures=$((failures+1))
+  elif ! is_fixture_name "test-echo"; then
+    say "  MISS: a hyphenated fixture name is discarded before it reaches the axes"; failures=$((failures+1))
+  elif ! discover_forbidden | grep -qx -- 'test-hook'; then
+    say "  MISS: discovery does not find the hyphenated fixture names this tree carries"; failures=$((failures+1))
+  else
+    say "  ok: a hyphenated fixture name is discovered, kept, and caught by axis 1"
+  fi
+
   [ "$failures" -eq 0 ] || die "$failures self-test fixture(s) did not behave as declared"
-  say "  self-test: 8 fixture(s) passed"
+  say "  self-test: 9 fixture(s) passed"
 }
 
 case "${1:---help}" in
