@@ -519,6 +519,7 @@
       "changelog": "1.6.0 Improvements: rotate refuses an overlong key id like its siblings.",
       "by": "owner (Matthew Jackson), 2026-09-06 oracle overlong-id coverage",
       "cells": "^admin\\.ops\\|PostKeysIdRotate\\|overlong-id$",
+      "expected_cells": 1,
       "classes": [
         "status",
         "body",
@@ -532,6 +533,7 @@
       "changelog": "1.6.0 Changed: a rate-card edit prices what happens after it, not what happened before it.",
       "by": "owner (Matthew Jackson), 2026-09-06 rate-card history decision",
       "cells": "^(billing\\|rate-card\\|(epoch|history)-mid-window|ledger\\|rate-history\\|as-of)$",
+      "expected_cells": 3,
       "classes": [
         "effects.usage",
         "body"
@@ -545,6 +547,7 @@
       "changelog": "The 1.6.0 ledger endpoints read money as of a rate-card history snapshot.",
       "by": "owner (Matthew Jackson), 2026-09-06 rate-card history decision",
       "cells": "^(ledger\\|(amend|currency)\\||config\\|rate-card\\|append-not-replace$)",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
