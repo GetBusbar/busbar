@@ -5,13 +5,13 @@
 //! projection still reprices at read time. Quantities are the truth; the amount is derived.
 
 use super::*;
-use crate::{derive_spend_cents, derive_spend_micros, LaneClass, RateCard, RateCardVersion};
+use crate::{derive_spend_cents, derive_spend_micros, LaneClass, RateCard};
 
 /// With NO card, quantities derive to nothing and only the flat fee counts. This is the
 /// all-or-nothing switch in its off position.
 #[test]
 fn an_absent_card_prices_quantities_at_zero() {
-    let c = RateCard::absent(RateCardVersion::new("none"), 3);
+    let c = RateCard::absent(3);
     let l = lines(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]);
     assert_eq!(
         derive_spend_cents(&c, [("anything", l.as_slice())].into_iter(), 5, true),
@@ -136,7 +136,6 @@ fn the_cent_derivation_truncates_toward_zero() {
 #[test]
 fn sub_cent_contributions_across_lanes_sum_before_flooring() {
     let c = RateCard::from_micro_rates(
-        RateCardVersion::new("v1"),
         [
             (LaneClass::new("a", INPUT), 5.0),
             (LaneClass::new("b", INPUT), 5.0),
@@ -204,7 +203,7 @@ fn a_partial_card_prices_the_known_lane_and_zeroes_the_missing_one() {
 /// fee negative, which the floor would then turn into a free bucket.
 #[test]
 fn the_flat_fee_saturates_and_is_gated_by_the_flag() {
-    let c = RateCard::absent(RateCardVersion::new("v"), i64::MAX);
+    let c = RateCard::absent(i64::MAX);
     let l = lines(&[]);
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), u64::MAX, true),
@@ -221,9 +220,9 @@ fn the_flat_fee_saturates_and_is_gated_by_the_flag() {
 /// crediting the bucket back toward headroom.
 #[test]
 fn a_negative_fee_can_never_credit_a_bucket() {
-    let c = RateCard::absent(RateCardVersion::new("v"), -5);
+    let c = RateCard::absent(-5);
     let l = lines(&[]);
-    assert_eq!(c.per_request_fee_cents(), 0);
+    assert_eq!(c.per_request_fee(CurrencyCode::USD), 0);
     assert_eq!(
         derive_spend_cents(&c, [("m", l.as_slice())].into_iter(), 100, true),
         0
@@ -234,7 +233,7 @@ fn a_negative_fee_can_never_credit_a_bucket() {
 /// can never drift apart on the fee.
 #[test]
 fn the_micro_projection_fee_is_ten_thousand_times_the_cent_fee() {
-    let c = RateCard::absent(RateCardVersion::new("v"), 3);
+    let c = RateCard::absent(3);
     let l = lines(&[]);
     assert_eq!(
         derive_spend_micros(&c, [("m", l.as_slice())].into_iter(), 5, true),
