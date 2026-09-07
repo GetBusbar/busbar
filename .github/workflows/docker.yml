@@ -194,6 +194,7 @@ jobs:
     name: promote ${{ inputs.promote_from || inputs.promote_to }} -> ${{ inputs.promote_to }} + latest
     if: ${{ inputs.promote_to != '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4
       - name: Log in to Docker Hub
@@ -362,6 +363,7 @@ jobs:
     name: musl ${{ matrix.arch }}
     if: ${{ inputs.promote_to == '' }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: true
       matrix:
@@ -674,6 +676,7 @@ jobs:
     name: build & push image
     needs: build-binaries
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     outputs:
       digest: ${{ steps.push.outputs.digest }}
       digest_armv8: ${{ steps.push-armv8.outputs.digest }}
@@ -880,6 +883,7 @@ jobs:
     needs: publish
     if: ${{ inputs.promote_to == '' }}
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
     steps:
       - name: Pull both staged arm64 images and assert their ISA variants
         env:

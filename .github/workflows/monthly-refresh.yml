@@ -30,6 +30,7 @@ permissions:
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     steps:
       # `ref: dev` EXPLICITLY. A `schedule:` run checks out the DEFAULT branch, which is `main`, and
       # the PR below is based on `dev`. Sweeping main's lockfile onto a dev-based PR would put every

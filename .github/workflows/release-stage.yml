@@ -137,6 +137,7 @@ jobs:
   plan:
     name: plan (version, staging name, is this name still free)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       version: ${{ steps.p.outputs.version }}
       tag: ${{ steps.p.outputs.tag }}
@@ -468,6 +469,7 @@ jobs:
     # of the pipeline never starts on one either.
     needs: [plan, branch-green]
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     services:
       # PINNED BY DIGEST, NOT BY TAG. `postgres:16` and `valkey/valkey:8` are MOVING tags: Docker Hub
       # re-points them at every patch, so the same commit gets different bytes on different days and
@@ -611,6 +613,7 @@ jobs:
     name: draft the release (invisible, no tag, real assets)
     needs: [plan, gate]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # THE BODY NAMES WHAT CHANGED. `--generate-notes` alone produced a one-line compare link, so
@@ -694,6 +697,7 @@ jobs:
     needs: [plan, draft]
     name: sbom (cyclonedx)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
@@ -723,6 +727,7 @@ jobs:
     needs: [plan, draft]
     name: openapi (3.1 document)
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       TAG: ${{ needs.plan.outputs.tag }}
     steps:
@@ -769,6 +774,7 @@ jobs:
     name: release target matrix (single source of truth)
     needs: [plan, branch-green]
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       matrix: ${{ steps.emit.outputs.matrix }}
       assets: ${{ steps.emit.outputs.assets }}
@@ -950,6 +956,7 @@ jobs:
     name: image contract ${{ matrix.target }}
     needs: [plan, stage-image]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
     if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
     strategy:
       fail-fast: false
@@ -1006,6 +1013,7 @@ jobs:
     name: the draft owes every asset the manifest names
     needs: [plan, targets, upload-assets, sbom, openapi]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # `!cancelled()` IS THE POINT OF THIS LINE, and it is the second half of the 1.5.3 defect.
     # `upload-assets` runs `fail-fast: false`, so when two of its five legs failed the JOB failed --
     # and a `needs:` on a failed job SKIPS the dependent by default. So the one guard that existed to
@@ -1111,6 +1119,7 @@ jobs:
     name: contract ${{ matrix.target }}
     needs: [plan, targets, upload-assets]
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.targets.outputs.matrix) }}
@@ -1217,6 +1226,7 @@ jobs:
     name: the set built and the set verified must be identical
     needs: [plan, targets, upload-assets, verify-artifact]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: ${{ !cancelled() && needs.plan.outputs.release == '1' }}
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -1357,6 +1367,7 @@ jobs:
     name: record the staged digest (the promote's only input)
     needs: [plan, stage-image, verify-staged]
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       # -- PIN THE DRAFT'S BYTES, NOT JUST THE IMAGE'S ------------------------------------------
       #
