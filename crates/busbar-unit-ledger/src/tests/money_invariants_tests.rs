@@ -17,12 +17,18 @@
 use busbar_caps::MeterClassId;
 
 use super::fixtures::{hold, key, ledger_token, usage};
-use crate::checkpoint::{ChainHead, Checkpoint, CheckpointSecret, SignError, Signature};
+use crate::checkpoint::{
+    AnchorError, ChainHead, Checkpoint, CheckpointSecret, SignError, Signature,
+};
 use crate::identity::{
     attribution_holds, closed_window_is_settled, holds, residual, ClosedWindowMoved, Imbalance,
     Residual,
 };
 use crate::legacy::{opening_balances, LegacyHead, LegacyPosting, LegacyRows, RecordingRows};
+use crate::legacy::{LegacyMigrationSource, LegacyWriteError};
+use crate::migration::{
+    migrate, LegacyFigures, LegacyLedgerRows, MigrationError, NodeLocalRecords, Outcome,
+};
 use crate::recompute::{
     Divergence, Finding, Posting, PostingOrigin, PricedLine, RateCard, Watermark,
 };
@@ -638,4 +644,99 @@ fn the_starting_watermark_is_behind_everything() {
     assert_eq!(marked.mark_for(2), None);
     assert_ne!(marked, Watermark::start());
     assert_eq!(marked.to_string(), "1/10");
+}
+
+/// A legacy source over a head a test states, reading no figures at all.
+struct HeadOnlyRows(LegacyHead);
+
+impl LegacyMigrationSource for HeadOnlyRows {
+    fn read_head(&self) -> LegacyHead {
+        self.0.clone()
+    }
+}
+
+impl LegacyLedgerRows for HeadOnlyRows {
+    fn read_figures(&self) -> LegacyFigures {
+        LegacyFigures::default()
+    }
+}
+
+/// **A HEAD WITH EITHER HALF PRESENT IS CROSS-LINKED**, and only a head with neither is not.
+///
+/// The two halves are joined with AND on purpose. A previous release that recorded a sequence
+/// number but no hash — or a hash but no number — still has a head, and dropping the cross-link
+/// would leave the opening checkpoint with nothing tying it to what came before it.
+#[test]
+fn a_head_is_cross_linked_unless_both_its_halves_are_absent() {
+    let sealed_with = |head: LegacyHead| {
+        let source = HeadOnlyRows(head);
+        let mut records = NodeLocalRecords::new();
+        match migrate(&source, &mut records, 1, 1_700_000_000, 3, None)
+            .expect("an unsigned opening seals")
+        {
+            Outcome::Sealed(opening) => opening.checkpoint.heads.clone(),
+            Outcome::AlreadySealed(_) => panic!("a fresh record has no marker"),
+        }
+    };
+
+    // Neither half: nothing to cross-link, and the honest answer is no head at all.
+    assert!(sealed_with(LegacyHead::empty()).is_empty());
+
+    // The sequence number alone is still a head.
+    let seq_only = sealed_with(LegacyHead {
+        seq: Some(41),
+        ..LegacyHead::empty()
+    });
+    assert_eq!(seq_only.len(), 1, "a numbered head is cross-linked");
+    assert_eq!(seq_only[0].node_seq, 41);
+
+    // The hash alone is still a head, at sequence number zero.
+    let hash_only = sealed_with(LegacyHead {
+        hash: Some("deadbeef".to_string()),
+        ..LegacyHead::empty()
+    });
+    assert_eq!(hash_only.len(), 1, "a hashed head is cross-linked");
+    assert_eq!(hash_only[0].node_seq, 0);
+    // The hash is DIGESTED rather than parsed, so it is the digest of the text that was read.
+    assert_eq!(hash_only[0].hash, crate::digest::sha256(b"deadbeef"));
+    assert_ne!(hash_only[0].hash, seq_only[0].hash);
+}
+
+/// The refusals an operator reads say which refusal they are, and carry the reason with them.
+///
+/// Every one of these is the only thing an operator gets when a ledger will not seal, will not
+/// anchor, or will not write the previous release's rows. A message that rendered as nothing is a
+/// failure with no explanation attached to it.
+#[test]
+fn the_ledgers_refusals_say_what_they_are() {
+    let sign = SignError::KeyUnavailable("hsm offline".to_string());
+    let text = sign.to_string();
+    assert!(text.contains("hsm offline"), "{text}");
+    assert!(!text.is_empty());
+
+    let unavailable = AnchorError::Unavailable("sink down".to_string());
+    let text = unavailable.to_string();
+    assert!(text.contains("sink down"), "{text}");
+    let read_back = AnchorError::ReadBackDiffers.to_string();
+    assert!(!read_back.is_empty());
+    assert_ne!(read_back, text, "the two anchor refusals do not read alike");
+
+    let legacy = LegacyWriteError::Unavailable("rows locked".to_string()).to_string();
+    assert!(legacy.contains("rows locked"), "{legacy}");
+
+    let records = MigrationError::RecordsUnavailable("no disk".to_string()).to_string();
+    assert!(records.contains("no disk"), "{records}");
+    let not_sealed = MigrationError::NotSealed(SignError::KeyUnavailable("hsm".into())).to_string();
+    assert!(not_sealed.contains("hsm"), "{not_sealed}");
+    let overflow = MigrationError::FigureOverflow {
+        key: "bucket-a/nano-units/all".to_string(),
+        window: 1_700_000_000,
+    }
+    .to_string();
+    assert!(overflow.contains("bucket-a"), "{overflow}");
+    assert!(overflow.contains("1700000000"), "{overflow}");
+    assert_ne!(
+        overflow, records,
+        "the three migration refusals do not read alike"
+    );
 }
