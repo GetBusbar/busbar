@@ -473,7 +473,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled", "no route headers for the SWRR floor even when enabled"),
         ("test", "route_policy_headers_present_only_when_both_gates_open", "route headers only when route_policy and a non-default ordering"),
         ("test", "test_emit_server_timing_moved_to_advanced_response_headers", "both flags default false"),
-        ("lint", "scripts/response-header-lint.sh", "every injected response header is an opt-in advanced.response_headers toggle from one site"),
+        ("lint", "xtask/src/gates/response_header.rs", "every injected response header is an opt-in advanced.response_headers toggle from one site"),
     ],
     "PB-74": [
         ("test", "reserved_hook_names_are_frozen", "RESERVED_HOOK_NAMES equals its frozen membership and a frozen word fails boot"),

@@ -137,6 +137,8 @@ declare -a CARGO_LOCAL=(
   "cargo xtask gate tracing"
   "cargo xtask gate settings-leak --selftest"
   "cargo xtask gate settings-leak"
+  "cargo xtask gate response-header --selftest"
+  "cargo xtask gate response-header"
 )
 
 declare -a CARGO_CI_ONLY=(
