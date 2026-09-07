@@ -148,7 +148,14 @@ impl PlaneRoots {
             .into_iter()
             .filter(|d| declares_here(d, &self.grammar))
             .collect();
+        self.judge(plane, owned)
+    }
 
+    /// The three-answers rule, over candidates somebody else located. THE SAME judgement the disk
+    /// resolver reaches, called from both — a gate reading the tree through an overlay cannot use
+    /// the `std::fs` walk above, and a second copy of "zero homes and two homes are both failures"
+    /// is exactly the drift this module exists to end.
+    pub fn judge(&self, plane: &str, owned: Vec<PathBuf>) -> Result<PathBuf, PlaneRootError> {
         match owned.len() {
             1 => Ok(owned.into_iter().next().expect("len == 1")),
             0 => Err(PlaneRootError::Missing {
