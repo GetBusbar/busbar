@@ -868,6 +868,7 @@ plugins.load|store-postgres
 plugins.load|store-sqlite
 plugins.load|store-valkey
 plugins.load|webrequest-hook
+plugins.store-persist|store-postgres
 plugins.store-persist|store-sqlite
 queue|serve|n3
 queue|timeout|n2
