@@ -706,6 +706,40 @@ def cmd_selftest():
         return 1
     print("SELFTEST ok: losing even ONE %s row is REFUSED" % victim)
 
+    # ── THE PER-FAMILY FLOOR, ON ITS OWN ──────────────────────────────────────────────────────────
+    # Both cases above also move the WHOLE-INVENTORY total down, and check_floor's second rule
+    # catches that by itself — so `if got < want` (the per-family rule, the one that actually names
+    # which file stopped being read) was carried by its neighbour and never driven. Planted with the
+    # per-family comparison cut out, this self-test stayed green.
+    #
+    # The case the aggregate cannot see: one family SHRINKS while another GROWS by as much. The
+    # inventory looks the same size and one whole file has stopped being parsed. That is precisely
+    # the shape of a retitled `| ID |` header column in one file while another file gained rows.
+    donors = [f for f in sorted(recorded) if f != victim]
+    if not donors:
+        print("SELFTEST FAIL: only one family is recorded — the per-family floor cannot be isolated")
+        return 1
+    donor = donors[0]
+    traded = {f: dict(c) for f, c in summary.items()}
+    traded[victim]["total"] -= 1
+    traded[donor]["total"] += 1
+    problems = check_floor(traded)
+    if not any(("family %s:" % victim) in p for p in problems):
+        print("SELFTEST FAIL: a family that SHRANK while another GREW by as much was accepted — the "
+              "whole-inventory total is unchanged, so only the per-family floor can see it, and it "
+              "did not. One inventory file could stop being parsed with nothing to say so.")
+        return 1
+    print("SELFTEST ok: %s losing a row is REFUSED BY NAME even when %s gains one and the "
+          "inventory total is unchanged" % (victim, donor))
+
+    # ...and the per-family floor does not fire on GROWTH, or it would refuse every real addition.
+    grown = {f: dict(c) for f, c in summary.items()}
+    grown[victim]["total"] += 3
+    if check_floor(grown):
+        print("SELFTEST FAIL: a family that GREW was refused — the floor is a floor, not a pin")
+        return 1
+    print("SELFTEST ok: a family that grew is accepted; the floor is a floor, not a pin")
+
     # (d) PARTIAL IS OWED. An id cited only by SKIP/needs_fixture cells was in neither list; prove
     # it is now in the owed set that --check measures.
     partial_ids = [rid for rid, c in coverage.items() if c["status"] == "partial"]
