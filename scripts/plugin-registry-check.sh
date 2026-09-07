@@ -85,8 +85,59 @@ if [ "$MODE" = "--selftest" ]; then
   mk_stub '    python3 -c "import json;print(json.dumps([{\"name\":\"r\"+str(i)} for i in range(40)]))"'
   probe "a clean listing produces no sweep finding" want-absent "matches plugin naming but is not in plugins.yaml"
 
+  # ── CHECK 2, FAIL-INJECTED. A COMMENT MENTIONING THE LOOP IS NOT THE LOOP ──────────────────────
+  # Check 2 asserted only that the string `plugin-registry-check.sh --list` appeared SOMEWHERE in
+  # the qa-gate surface, and scripts/qa-gate-run.sh's header documents that loop in prose. Deleting
+  # the real invocation from cmd_siblings therefore left the gate green on the strength of the
+  # sentence describing what had just been removed -- the sibling fan-out would have cloned nothing
+  # while this gate reported it registry-driven. Proven by OBSERVATION against a throwaway tree in
+  # which the invocation is deleted and only the comment remains, with the unmutated tree as the
+  # control so the case cannot pass by having broken check 2 outright.
   echo
-  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays"; exit 0; }
+  echo "plugin-registry-check selftest (check 2, the registry-driven sibling loop)"
+  c2="$tmp/c2"
+  mkdir -p "$c2/scripts" "$c2/.github/workflows"
+  cp plugins.yaml "$c2/plugins.yaml"
+  cp scripts/plugin-registry-check.sh scripts/release-check.sh "$c2/scripts/"
+  [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c2/scripts/"
+  [ -f .github/workflows/qa-gate.yml ] && cp .github/workflows/qa-gate.yml "$c2/.github/workflows/"
+
+  # Capture, never `producer | grep -q`. Under `pipefail` grep -q exits on its first match, the
+  # producer takes SIGPIPE, and the pipeline reports failure whether or not the text was there --
+  # which inverts both arms of this case. (Same trap plugin-ci-refs.sh's selftest documents.)
+  c2_says() {  # c2_says <needle>  -> 0 when the gate's output contains it
+    local out; out="$( (cd "$c2" && ./scripts/plugin-registry-check.sh --offline) 2>&1 || true)"
+    case "$out" in *"$1"*) return 0 ;; *) return 1 ;; esac
+  }
+  C2_NEEDLE='does not clone siblings via the registry'
+
+  # CONTROL: the unmutated copy must still pass check 2, so a RED below is the mutation talking.
+  cp scripts/qa-gate-run.sh "$c2/scripts/qa-gate-run.sh"
+  if c2_says "$C2_NEEDLE"; then
+    printf '  [FAILED] %s\n' "control: the UNMUTATED tree failed check 2 (the check is broken, not the subject)"; rc=1
+  else
+    printf '  [ok]     %s\n' "control: the unmutated tree passes check 2"
+  fi
+
+  # MUTATION: delete the real invocation, keep every comment that mentions it.
+  python3 - "$c2/scripts/qa-gate-run.sh" <<'MUT'
+import re, sys
+p = sys.argv[1]
+out = []
+for ln in open(p, encoding="utf-8"):
+    if "plugin-registry-check.sh --list" in ln and not ln.lstrip().startswith("#"):
+        ln = re.sub(r'\./scripts/plugin-registry-check\.sh --list', 'echo', ln)
+    out.append(ln)
+open(p, "w", encoding="utf-8").write("".join(out))
+MUT
+  if c2_says "$C2_NEEDLE"; then
+    printf '  [ok]     %s\n' "deleting the loop but keeping the comment that describes it is RED"
+  else
+    printf '  [FAILED] %s\n' "check 2 passed with the registry-driven loop DELETED — a comment satisfied it"; rc=1
+  fi
+
+  echo
+  [ "$rc" = 0 ] && { echo "plugin-registry-check selftest: the org sweep fails loud and still finds strays, and a comment cannot stand in for the registry loop"; exit 0; }
   echo "plugin-registry-check selftest: FAILED"; exit 1
 fi
 
@@ -183,16 +234,32 @@ if list_mode:
 # loads the workflow file from the default branch). This check follows the code rather than the
 # filename: the loop must exist in one of the two files, and it must not be satisfied by a mere
 # comment mentioning the string, so the whole qa-gate surface is scanned as one unit.
-devgate = ""
-for _f in (".github/workflows/qa-gate.yml", "scripts/qa-gate-run.sh"):
-    if os.path.exists(_f):
-        devgate += open(_f, encoding="utf-8").read()
+#
+# A COMMENT MENTIONING THE LOOP IS NOT THE LOOP. This scanned the raw file text, and
+# scripts/qa-gate-run.sh's own header documents the registry-driven checkout in prose -- the exact
+# string `plugin-registry-check.sh --list` appears there as commentary. So deleting the real
+# invocation from cmd_siblings left this check GREEN on the strength of the sentence describing the
+# thing that had just been removed: the gate would have reported a registry-driven sibling fan-out
+# while every plugin sibling silently went un-cloned. The comment two paragraphs up already claimed
+# this could not happen. Strip whole-line comments before scanning so the claim is true.
+def _code(path):
+    """A file's contents with whole-line comments removed."""
+    if not os.path.exists(path):
+        return ""
+    return "".join(ln for ln in open(path, encoding="utf-8")
+                   if not ln.lstrip().startswith(("#", "//")))
+
+
+devgate = _code(".github/workflows/qa-gate.yml") + _code("scripts/qa-gate-run.sh")
 if "plugin-registry-check.sh --list" not in devgate:
     fail.append("the qa gate does not clone siblings via the registry (expected qa-gate.yml or "
                 "scripts/qa-gate-run.sh to iterate `scripts/plugin-registry-check.sh --list`)")
 
 # ── 3. release-check.sh coverage, per each entry's declared gate kind.
-relcheck = open("scripts/release-check.sh", encoding="utf-8").read()
+# Comment-stripped for the same reason check 2 is: release-check.sh's own prose names both the
+# registry loop and several `../<dir>` sibling paths, so a phase deleted from the code would still
+# have been "found" in the sentence that described it.
+relcheck = _code("scripts/release-check.sh")
 suite_loop_present = "plugin-registry-check.sh --list" in relcheck
 for p in plugins:
     d = p.get("checkout_dir") or p["repo"]
@@ -217,10 +284,7 @@ for p in plugins:
 # whether the loop lives in release-check.sh or the sourced 1.5.2 script.
 tokenx = ""
 for _f in ("scripts/release-check.sh", "scripts/release-check-1.5.2.sh"):
-    try:
-        tokenx += "\n" + open(_f, encoding="utf-8").read()
-    except FileNotFoundError:
-        pass
+    tokenx += "\n" + _code(_f)  # comment-stripped: see check 2
 tokenx_loop_present = "plugin-registry-check.sh --list" in tokenx and "auth_plugin_flows" in tokenx
 for p in plugins:
     if p["kind"] != "auth":
