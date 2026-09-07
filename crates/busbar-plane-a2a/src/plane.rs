@@ -774,22 +774,12 @@ impl Plane for A2aPlane {
             }
             ops::OP_AGENT_CARD => leg(Self::record_leg(rec::SCHEMA_PIN, rec::OP_GET)),
             ops::OP_PUSH_EVENT => {
-                // FIRST, and it is first so that nothing below it runs for a token that is dead: the
-                // token the agent presented must still be LIVE — its configuration present, its task
-                // not yet terminal, its deadline not yet passed. A backend reports one task several
-                // times, so this asks and spends nothing; what ends the token is the task finishing,
-                // which the last leg records.
-                leg(Self::record_leg(
-                    rec::SCHEMA_PUSH_CONFIG,
-                    rec::OP_VERIFY_LIVE,
-                ));
+                // The token the agent presented is spent exactly once, and spending it is what says
+                // which task the push is about.
+                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_REDEEM));
                 leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_GET));
                 leg(Self::record_leg(rec::SCHEMA_TASK, rec::OP_PUT));
                 leg(Self::record_leg(rec::SCHEMA_TASK_EVENT, rec::OP_APPEND));
-                // LAST, and only bites when the write above made the task terminal: a token outlives
-                // no task it was minted for. On any other update this leg is inert, which is what
-                // lets the same token carry the next callback.
-                leg(Self::record_leg(rec::SCHEMA_PUSH_CONFIG, rec::OP_REVOKE));
             }
             // An operation class this plane does not carry gets no legs, which is an empty plan and
             // a refusal at the routing step. Not a panic, and not a guess.

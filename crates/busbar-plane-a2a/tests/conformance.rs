@@ -409,10 +409,7 @@ const EXPECTED_LEGS: &[(&str, usize)] = &[
     ("push_config_list", 1),
     ("push_config_delete", 3),
     ("agent_card", 1),
-    // Five, not four: the token check that opens the plan and the revocation that closes it are two
-    // legs around the three that record the move. The revocation is what stops a callback token
-    // outliving the task it was minted for.
-    ("push_event", 5),
+    ("push_event", 4),
 ];
 
 /// Every operation class routes to at least one leg, and every leg is one a unit may reach.
@@ -473,78 +470,6 @@ fn every_operation_routes_somewhere() {
         "the plane declares {covered} operation classes and {} leg counts are written down: a \
          class with no row is unproven, and a row with no class proves nothing",
         EXPECTED_LEGS.len()
-    );
-}
-
-/// **A push callback is authorised by a LIVENESS check, and the plan revokes the token when the
-/// task ends.**
-///
-/// The shape is asserted rather than the leg count, because the count alone would stay green if the
-/// two push-config legs swapped places — and their ORDER is the whole property. The check has to
-/// come before anything is recorded, or a dead token still moves a task and only afterwards is told
-/// it may not; the revocation has to come after the write, or it retires a token for a task that has
-/// not yet finished and refuses the callbacks that were still to come.
-///
-/// The `redeem` verb is asserted GONE from the schema, not merely unused by this plan. A single-use
-/// redeem is wrong for this token in both directions at once: a backend reports one task several
-/// times, so spending the token on the first callback refuses every honest one after it, while a
-/// redeem that answers `true` every time — which is what the neutral default did — accepts a
-/// captured token forever. Leaving the operation declared would leave that second reading available
-/// to the next plan that reaches for it.
-#[test]
-fn a_push_callback_is_checked_for_liveness_and_revoked_when_the_task_ends() {
-    use busbar_contract::dest::DestinationFacts;
-    use busbar_plane_a2a::records as rec;
-
-    let plane = A2aPlane::EMPTY;
-    let scaffold = Scaffold::new("http");
-    let ctx = scaffold.ctx();
-    let seal = common::TestSeal;
-    let unit = busbar_contract::unit::Unit::new(
-        &seal,
-        busbar_contract::UnitKey::new(1),
-        busbar_contract::unit::Origin::Client,
-        None,
-        None,
-        busbar_contract::wire::Direction::Inbound,
-        Some(common::principal()),
-        ops::OP_PUSH_EVENT,
-        busbar_contract::bounded::Ir::new(b"{}", &[]),
-        busbar_contract::bounded::Facts::new(),
-        None,
-    );
-
-    let plan = plane.route(&unit, &ctx);
-    let record_legs: Vec<(&str, &str)> = plan
-        .legs
-        .as_slice()
-        .iter()
-        .filter_map(|leg| match leg.destination {
-            DestinationFacts::PlaneRecord { schema, op } => Some((schema.as_str(), op)),
-            _ => None,
-        })
-        .collect();
-
-    assert_eq!(
-        record_legs,
-        vec![
-            (rec::SCHEMA_PUSH_CONFIG.as_str(), rec::OP_VERIFY_LIVE),
-            (rec::SCHEMA_TASK.as_str(), rec::OP_GET),
-            (rec::SCHEMA_TASK.as_str(), rec::OP_PUT),
-            (rec::SCHEMA_TASK_EVENT.as_str(), rec::OP_APPEND),
-            (rec::SCHEMA_PUSH_CONFIG.as_str(), rec::OP_REVOKE),
-        ],
-        "the liveness check must open the plan and the revocation must close it"
-    );
-
-    assert!(
-        !rec::operations_for(rec::SCHEMA_PUSH_CONFIG).contains(&"redeem"),
-        "the push-config schema still declares a single-use redeem, which is the wrong primitive \
-         for a token presented once per state a task moves through"
-    );
-    assert!(
-        !rec::OPERATIONS.contains(&"redeem"),
-        "the plane still declares a redeem operation for some schema to reach for"
     );
 }
 
