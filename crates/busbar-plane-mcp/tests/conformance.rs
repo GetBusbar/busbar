@@ -42,9 +42,13 @@ fn battery() -> PathBuf {
 fn battery_methods() -> Vec<String> {
     let mut found = Vec::new();
     let mut walk = |dir: PathBuf| {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            return;
-        };
+        // A directory that is not there is NOT "no methods here". The three below are the three
+        // places the battery keeps the names this plane is checked against, and a missing one used
+        // to return quietly: the surviving two still filled `found`, the non-empty floor below
+        // still held, and the coverage this test claims silently shrank to whatever was left. If
+        // the battery moves a directory, that must be a red here rather than a smaller test.
+        let entries = std::fs::read_dir(&dir)
+            .unwrap_or_else(|e| panic!("the battery's {} is readable ({e})", dir.display()));
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().is_some_and(|e| e == "mjs") {
@@ -319,18 +323,35 @@ fn the_error_codes_are_the_batterys_own() {
         jsonrpc::CODE_UNSUPPORTED_PROTOCOL_VERSION,
     ] {
         assert!(
-            source.contains(&format!("{code}")),
+            names_the_number(&source, code),
             "the battery no longer names the code {code}"
         );
     }
     // And the two the battery calls RETIRED are two this plane cannot write.
     for retired in jsonrpc::RETIRED_CODES {
         assert!(
-            source.contains(&format!("{retired}")),
+            names_the_number(&source, *retired),
             "the battery no longer names the retired code {retired}"
         );
         assert!(!jsonrpc::CODES.contains(retired));
     }
+}
+
+/// Whether a source file names EXACTLY this number, rather than merely containing its digits.
+///
+/// A bare substring search answers yes for a code that is a prefix of a longer one — `-32700` is
+/// inside `-327001` — and yes for the digits of a code that appears in a version string, a byte
+/// count or a comment. Either way the check would report the battery still names a code it had
+/// dropped. Requiring a non-digit on each side is what makes the match the number itself.
+fn names_the_number(source: &str, code: i64) -> bool {
+    let needle = code.to_string();
+    let bytes = source.as_bytes();
+    source.match_indices(&needle).any(|(at, _)| {
+        let before_ok = at == 0 || !bytes[at - 1].is_ascii_digit();
+        let after = at + needle.len();
+        let after_ok = after == bytes.len() || !bytes[after].is_ascii_digit();
+        before_ok && after_ok
+    })
 }
 
 /// The metadata keys are the ones the battery actually sends.
