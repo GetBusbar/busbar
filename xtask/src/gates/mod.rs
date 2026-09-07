@@ -26,6 +26,7 @@ pub mod denylist_gate;
 pub mod duplex_ws_default_edge;
 pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
+pub mod no_deferral;
 pub mod no_self_filed_issues;
 pub mod plane_abi_neutrality;
 pub mod plane_purity;
@@ -664,6 +665,20 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(structure_lint::StructureLintGate::new()),
         summary: "the code-layout invariants, the choke-point registry and the declaration census",
+    },
+    Registration {
+        name: "no-deferral",
+        batch: 2,
+        tier: Tier::Fast,
+        build: || Box::new(no_deferral::NoDeferralGate::check()),
+        summary: "every deferral marker in shipped source is a floor-checked, expiring waiver",
+    },
+    Registration {
+        name: "no-deferral-strict-done",
+        batch: 2,
+        tier: Tier::Full,
+        build: || Box::new(no_deferral::NoDeferralGate::strict_done()),
+        summary: "the same, plus: the only surviving waivers are the permanent hot/* fixtures",
     },
     Registration {
         name: "duplex-ws-default-edge",

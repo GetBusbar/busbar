@@ -1188,3 +1188,63 @@ fn the_structure_lint_translator_refuses_output_it_recognised_nothing_in() {
         "silence read as a clean tree is the exact defect this gate exists for"
     );
 }
+
+// ── no-deferral ─────────────────────────────────────────────────────────────────────────────────
+
+/// PARITY ON THE RED PATH. The `--parity` run over the committed tree compares two GREEN verdicts,
+/// which proves the two implementations agree about a tree with nothing to find. This drives both
+/// over an allowlist that waives NONE of the tree's 52 markers and carries one row matching
+/// nothing, and requires the same rows out of both — the offender SET, not the exit status. The
+/// shell is run for real, through its documented waivers override; nothing here restates what it
+/// printed.
+#[test]
+fn no_deferral_and_its_shell_name_the_same_offenders_when_the_tree_is_red() {
+    let planted =
+        "crates/busbar-core/src/no-such-file.rs:1\tplanted, matches nothing [retires: H5]\n";
+    let dir = tmpdir("no-deferral-red");
+    let waivers = dir.join("planted.waivers");
+    std::fs::write(&waivers, planted).unwrap();
+
+    let out = std::process::Command::new("bash")
+        .arg("scripts/no-deferral-gate.sh")
+        .arg("--check")
+        .current_dir(repo_root())
+        .env("NO_DEFERRAL_WAIVERS", &waivers)
+        .output()
+        .expect("the legacy gate runs");
+    assert_ne!(
+        out.status.code(),
+        Some(0),
+        "an allowlist that waives none of the tree's markers must be RED"
+    );
+
+    let reg = gates::find("no-deferral").expect("the gate is registered");
+    let gate = (reg.build)();
+    let legacy = gate
+        .legacy_rows(
+            &cx(),
+            std::slice::from_ref(&parity::LegacyRun {
+                argv: vec!["scripts/no-deferral-gate.sh".into(), "--check".into()],
+            code: out.status.code(),
+            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
+            scratch: std::env::temp_dir(),
+            }),
+        )
+        .expect("this gate translates its legacy's output")
+        .expect("the translator reads the shell's findings");
+
+    let mut ov = Overlay::new();
+    ov.set("scripts/no-deferral.waivers", planted);
+    let rust = gates::execute(gate.as_ref(), &cx().with_overlay(ov)).rows;
+
+    assert!(
+        rust.iter().any(|r| r.status == Status::Fail),
+        "the planted allowlist must make the Rust gate RED too, or the comparison is vacuous"
+    );
+    let diffs = parity::compare(&legacy, &rust);
+    assert!(
+        diffs.is_empty(),
+        "the shell and the gate must name the same offenders: {diffs:?}"
+    );
+}
