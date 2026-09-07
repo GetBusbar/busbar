@@ -889,7 +889,19 @@ pub fn protocol_for(name: &str) -> Option<Protocol> {
 /// instance, the empty sets and `None` slots allocate nothing, and the value is dropped at the
 /// closing brace. Per-call fresh state, exactly as before — minus the two boxes. `None` for a name
 /// that declares no codec (MCP), as `protocol_for` answers.
-fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> Option<T> {
+///
+/// **THIS IS THE ALLOCATION-FREE WAY TO ASK A DIALECT WRITER A STATELESS QUESTION**, and it is
+/// public so callers outside this crate — the plane, above all — can ask one without paying for a
+/// `Protocol`. Resolving a `Protocol` to ask "what request target does this dialect use for this
+/// model?" boxes a writer that carries per-stream state nobody in that call is going to use, and the
+/// box is a real malloc on the request hot path. Ask through here instead. Every call the closure
+/// makes sees ONE writer, so a question that takes two calls to state (write the request, then
+/// rewrite the model in what was written) is still one instance and still nothing on the heap.
+///
+/// A caller that genuinely keeps per-stream state ACROSS closures — a stream translator that must
+/// see the same writer on frame after frame — must not come here: it wants a resolution it can hold,
+/// which is [`protocol_for`].
+pub fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> Option<T> {
     match name {
         PROTO_ANTHROPIC => {
             let w = super::anthropic::AnthropicWriter;
@@ -921,7 +933,12 @@ fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> Optio
 
 /// The reader twin of [`with_writer`]: the named dialect's READER on the stack (the readers are
 /// unit structs, so this is a pure dispatch).
-fn with_reader<T>(name: &str, f: impl FnOnce(&dyn ProtocolReader) -> T) -> Option<T> {
+///
+/// Public for the same reason [`with_writer`] is: a reader question asked through `protocol_for`
+/// costs the writer's box even though no writer is wanted. The readers hold nothing — a streamed
+/// answer's state is the caller's `StreamDecodeState`, handed in — so every reader question is a
+/// stateless question and belongs here.
+pub fn with_reader<T>(name: &str, f: impl FnOnce(&dyn ProtocolReader) -> T) -> Option<T> {
     match name {
         PROTO_ANTHROPIC => Some(f(&super::anthropic::AnthropicReader)),
         PROTO_BEDROCK => Some(f(&super::bedrock::BedrockReader)),
