@@ -454,7 +454,10 @@ pub fn adjusting_entries<'a>(
         .into_values()
         .filter_map(|mut entry| {
             entry.delta = entry.new_nanos - entry.old_nanos;
-            entry.quantities.sort_by(|a, b| a.class.cmp(&b.class));
+            // Class order, because the entry is journalled and signed and a batch whose field order
+            // came out of an insertion sequence would digest differently on two nodes that saw the
+            // same lines in a different order.
+            entry.quantities.sort_by_key(|q| q.class);
             (entry.delta != 0).then_some(entry)
         })
         .collect()
