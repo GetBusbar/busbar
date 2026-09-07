@@ -42,3 +42,11 @@ pub use event::{IrClientEvent, IrServerEvent};
 pub use media::{truncate_point_ms, AudioFormat, IrAudioFrame, UpDown};
 pub use tool::{CallRef, IrDuplexTool};
 pub use usage::IrDuplexUsage;
+
+// THE SESSION VOCABULARY'S OWN CELLS — the tool-call dialect id every reply correlates on, the VAD
+// defaults an omitted knob lands on, and the `"inf"` ceiling sentinel. Hung off the IR root rather
+// than off one module because the three live in `tool`, `control` and `config` and are one subject:
+// values every session reads and no test asserted.
+#[cfg(test)]
+#[path = "tests/session_vocabulary_tests.rs"]
+mod session_vocabulary_tests;
