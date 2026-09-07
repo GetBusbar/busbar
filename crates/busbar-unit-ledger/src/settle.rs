@@ -25,9 +25,13 @@
 //! decision. A crate that knew the shape of those rows would be a crate that has to change every
 //! time they do.
 
+use std::collections::BTreeMap;
+
 use busbar_caps::{Hold, LedgerToken, Posted, Usage};
+use busbar_unit_cost::{CurrencyCode, HistorySeq, HistoryView};
 
 use crate::legacy::{LegacyPosting, LegacyRows};
+use crate::recompute::{price_line, Posting, PricedLine};
 use crate::totals::{Book, TotalsKey, WindowStart};
 
 /// An internal record of value delivered with no reservation behind it.
@@ -299,4 +303,159 @@ impl Ledger {
         figures.unreconciled += amount;
         figures.settled -= amount;
     }
+
+    /// Book one adjusting entry: **the only way a history amendment moves money.**
+    ///
+    /// A booked line is never rewritten, so `settled` does not move — not by a nano-unit, not on
+    /// the line the amendment repriced and not on any other. What moves is the delta, and it moves
+    /// on two columns at once:
+    ///
+    /// - `adjustments`, which is the cell the identity already carries, so no term is added to it
+    ///   and nothing that reads a residual has to learn a new name;
+    /// - `drawn`, by the same figure, because a bill that went up by `delta` is `delta` more value
+    ///   that has to have come out of the store, and a bill that went down is that much handed back.
+    ///
+    /// Both sides of the identity therefore move by exactly the same amount and the residual is
+    /// unchanged: zero before the amendment, zero after it. That is the whole reason an amendment
+    /// is expressed FORWARD as an adjusting entry rather than backward as an edit — a window sealed
+    /// into a signed checkpoint cannot be rewritten, and it does not have to be.
+    pub fn record_repricing(&mut self, entry: &Repricing) {
+        let figures = self.book.entry(entry.key.clone(), entry.window);
+        figures.adjustments += entry.delta;
+        figures.drawn += entry.delta;
+    }
+}
+
+/// One adjusting entry: what a history amendment did to one balance in one window.
+///
+/// It is the permanent record of a correction, and it is never collapsed into the lines it
+/// describes. Both figures are on it — what the balance was under the old history and what it is
+/// under the new — so the original bill and the correction are both readable forever, which is the
+/// property that makes an invoice sent last month reproducible this month.
+///
+/// **Per `(window, balance)` rather than per line, deliberately.** A day's lines for one principal
+/// are one line on an invoice, and the correction has to be legible beside that line. Per-line
+/// records would be correct and unreadable, and would multiply the journal by the traffic rate
+/// rather than by the number of balances. [`Repricing::postings`] carries how many lines the entry
+/// covers, so the granularity it summarises is stated rather than assumed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repricing {
+    /// Which balance.
+    pub key: TotalsKey,
+    /// Which window.
+    pub window: WindowStart,
+    /// The currency both figures are in. Two currencies never sum, so one entry names exactly one.
+    pub currency: CurrencyCode,
+    /// The history head BEFORE the amendment.
+    pub from_seq: HistorySeq,
+    /// The history head AFTER it.
+    pub to_seq: HistorySeq,
+    /// The entry the lines resolved to under `from_seq`.
+    pub old_card_seq: HistorySeq,
+    /// The entry they resolve to under `to_seq`. An amendment does not delete what it corrects; it
+    /// out-ranks it, which is why both numbers are worth keeping.
+    pub new_card_seq: HistorySeq,
+    /// The quantities, summed over the lines the entry covers, per class.
+    pub quantities: Vec<PricedLine>,
+    /// The request fees those lines carry between them.
+    pub fee_count: u64,
+    /// What the balance came to under the old history.
+    pub old_nanos: i128,
+    /// What it comes to under the new one.
+    pub new_nanos: i128,
+    /// `new_nanos - old_nanos`: **the only figure that moves a balance.** Positive when the
+    /// amendment raised the bill.
+    pub delta: i128,
+    /// Who signed the amendment.
+    pub operator_fingerprint: String,
+    /// The hash of the reason they gave. The reason is free text and is hashed into the record
+    /// rather than being the record.
+    pub reason_hash: [u8; 32],
+    /// How many lines the entry covers.
+    pub postings: u64,
+}
+
+/// Work out the adjusting entries an amendment owes, without moving anything.
+///
+/// The affected set is DERIVED rather than declared: a line is affected when the entry it resolves
+/// to under `after` is not the entry it resolved to under `before`. That is the same set as "every
+/// line whose instant falls in the amended interval", computed from the histories themselves, so a
+/// caller cannot name an interval and an affected set that disagree.
+///
+/// It reads no clock, no store and no configuration, and it moves nothing. The caller signs the
+/// entries, journals them, and only then hands each to [`Ledger::record_repricing`] — which is what
+/// lets an amendment be refused after its effects are known and before any of them have happened.
+///
+/// Balances whose figure did not move produce no entry: an amendment that repriced a window nobody
+/// used is a history append and nothing else, and emitting a zero-delta record for it would put
+/// noise in the one journal an auditor reads line by line.
+pub fn adjusting_entries<'a>(
+    before: &HistoryView<'_>,
+    after: &HistoryView<'_>,
+    operator_fingerprint: &str,
+    reason_hash: [u8; 32],
+    lines: impl IntoIterator<Item = &'a Posting>,
+) -> Vec<Repricing> {
+    // Grouped in key order, because the entries are journalled and signed and a batch whose order
+    // depended on a hash map's iteration would verify on the node that made it and nowhere else.
+    let mut groups: BTreeMap<(TotalsKey, WindowStart, CurrencyCode), Repricing> = BTreeMap::new();
+    for line in lines {
+        let (Ok(old), Ok(new)) = (
+            price_line(line, before, line.tier_bp),
+            price_line(line, after, line.tier_bp),
+        ) else {
+            // A line that cannot be priced under one of the two histories is not something an
+            // adjusting entry can describe: there is no old figure or no new one to state. It is a
+            // finding for the recompute, which reports holes as refusals rather than as zeros.
+            continue;
+        };
+        if old.card_seq == new.card_seq {
+            continue;
+        }
+        let entry = groups
+            .entry((line.key.clone(), line.window_start, line.currency))
+            .or_insert_with(|| Repricing {
+                key: line.key.clone(),
+                window: line.window_start,
+                currency: line.currency,
+                from_seq: before.seq(),
+                to_seq: after.seq(),
+                old_card_seq: old.card_seq,
+                new_card_seq: new.card_seq,
+                quantities: Vec::new(),
+                fee_count: 0,
+                old_nanos: 0,
+                new_nanos: 0,
+                delta: 0,
+                operator_fingerprint: operator_fingerprint.to_string(),
+                reason_hash,
+                postings: 0,
+            });
+        for line in &line.lines {
+            match entry
+                .quantities
+                .iter_mut()
+                .find(|held| held.class == line.class)
+            {
+                Some(held) => held.quantity = held.quantity.saturating_add(line.quantity),
+                None => entry.quantities.push(line.clone()),
+            }
+        }
+        entry.fee_count = entry.fee_count.saturating_add(old.fee_count);
+        entry.old_nanos = entry
+            .old_nanos
+            .saturating_add(i128::try_from(old.priced_nanos).unwrap_or(i128::MAX));
+        entry.new_nanos = entry
+            .new_nanos
+            .saturating_add(i128::try_from(new.priced_nanos).unwrap_or(i128::MAX));
+        entry.postings += 1;
+    }
+    groups
+        .into_values()
+        .filter_map(|mut entry| {
+            entry.delta = entry.new_nanos - entry.old_nanos;
+            entry.quantities.sort_by(|a, b| a.class.cmp(&b.class));
+            (entry.delta != 0).then_some(entry)
+        })
+        .collect()
 }
