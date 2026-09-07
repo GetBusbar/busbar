@@ -16,19 +16,28 @@
 # --gate      construction-gate rows (an egrep over the FAIL column) that must not be red after.
 set -uo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
-tests=""; families=""; gate=""; prove=0
+tests=""; families=""; gate=""; prove=0; selftest=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --tests) tests="$2"; shift 2 ;;
     --families) families="$2"; shift 2 ;;
     --gate) gate="$2"; shift 2 ;;
-    # --prove: pick nothing; prove the tip as it stands (a landing whose picks are already on
-    # the tree but whose legs were never run to green).
+    # --prove: pick nothing; prove commits that are ALREADY on the tree (a landing whose picks
+    # landed but whose legs were never run to green). Any hashes given name WHAT to prove — they are
+    # not picked. With none, the tip commit alone is the subject.
     --prove) prove=1; shift ;;
+    --selftest) selftest=1; shift ;;
+    # AN UNRECOGNISED FLAG IS REFUSED, NOT CHERRY-PICKED. `*) break` sent anything that was not a
+    # known flag to the pick loop as a REVISION, so a typo (`--familes`), a flag from a newer copy of
+    # this script, or `--selftest` before it existed all reached `git cherry-pick -x --familes`.
+    # That fails, and it fails saying "cherry-pick … conflicted; resolve, then re-run with the
+    # remaining hashes" — a message about a conflict there is no conflict in, pointing the reader at
+    # the commits instead of at their own command line.
+    --*) echo "land.sh: unknown option '$1' (see the header for the flags this script takes)" >&2; exit 2 ;;
     *) break ;;
   esac
 done
-[ $# -gt 0 ] || [ "$prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
+[ "$selftest" = 1 ] || [ $# -gt 0 ] || [ "$prove" = 1 ] || { echo "land.sh: no hashes" >&2; exit 2; }
 
 # ONE STAMP FOR EVERY PATH THIS RUN WRITES, and it carries the date and the pid.
 #
@@ -42,6 +51,81 @@ done
 # The pid is there for the second collision: two worktrees landing in the same second.
 stamp="$(date +%Y%m%d-%H%M%S)-$$"
 
+# ── --selftest ────────────────────────────────────────────────────────────────────────────────────
+# THIS SCRIPT IS THE ONE GATE SCRIPT ITS OWN GATE-TREE LEG COULD NOT PROVE. That leg parses every
+# touched shell file and runs the self-test of every touched script that advertises one — and
+# land.sh advertised none, so a landing that touched land.sh proved that land.sh still PARSED and
+# nothing else. The script whose job is to decide whether other people's changes are proven was the
+# one change nobody could prove.
+#
+# What is proven here is what can be proven without picking a commit: the argument contract (an
+# unknown flag is refused rather than treated as a revision, `--prove` picks nothing), and the
+# advertisement grep the gate-tree leg leans on — the check that decides, for every gate script in
+# the tree, whether its self-test runs at all. A grep that stopped matching would silently reduce
+# every landing to a parse check, which is the state this file was in.
+if [ "$selftest" = 1 ]; then
+  bad=0
+  tmp="$(mktemp -d)"
+
+  # THE ADVERTISEMENT GREP, driven over fixtures rather than asserted. A script ADVERTISES a
+  # self-test when it HANDLES the flag, not when its prose mentions one.
+  advertises() { grep -qE -- "(--selftest\)|[\"']--selftest[\"'])" "$1"; }
+  printf '%s\n' 'case "$1" in' '  --selftest) run ;;' 'esac' >"$tmp/has-arm.sh"
+  printf '%s\n' 'if [ "$1" = "--selftest" ]; then run; fi' >"$tmp/has-compare.sh"
+  printf '%s\n' '# run this with --selftest before believing it' 'echo hi' >"$tmp/only-prose.sh"
+  printf '%s\n' 'echo "usage: foo.sh [--selftest]"' >"$tmp/only-usage.sh"
+  for f in has-arm has-compare; do
+    if advertises "$tmp/$f.sh"; then echo "land.sh selftest: ok — $f is detected as advertising a self-test"
+    else echo "land.sh selftest: FAILED — $f handles --selftest and was NOT detected; its self-test would never run" >&2; bad=1; fi
+  done
+  for f in only-prose only-usage; do
+    if advertises "$tmp/$f.sh"; then echo "land.sh selftest: FAILED — $f only MENTIONS --selftest and was detected; landing it would run a flag it does not handle" >&2; bad=1
+    else echo "land.sh selftest: ok — $f only mentions a self-test and is not detected"; fi
+  done
+  # …and against the real tree, which is the number that decides something: every shipped script
+  # this grep claims advertises a self-test must actually accept the flag, and the count must not be
+  # zero — a grep that matched nothing would turn every landing into a parse check in silence.
+  n_adv=0
+  for f in "$here"/scripts/*.sh "$here"/testing/*/*.sh; do
+    [ -f "$f" ] && advertises "$f" && n_adv=$((n_adv + 1))
+  done
+  if [ "$n_adv" -ge 10 ]; then echo "land.sh selftest: ok — $n_adv shipped script(s) advertise a self-test (floor 10)"
+  else echo "land.sh selftest: FAILED — only $n_adv shipped script(s) matched the advertisement grep; a landing would run almost no self-test" >&2; bad=1; fi
+
+  # THE ARGUMENT CONTRACT. Both cases used to end at `git cherry-pick -x <the flag>`.
+  # THIS script, not the one at the well-known path: a cell that always launches
+  # `$here/scripts/land.sh` proves whatever is committed there rather than whatever is being run,
+  # so the argument contract could be edited away and these cells would still pass off the shipped
+  # copy. (Proven by removing the unknown-option arm from a copy and watching the cell go red.)
+  case "$0" in /*) self="$0" ;; *) self="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")" ;; esac
+  if (cd "$here" && bash "$self" --familes 'x' >"$tmp/typo.log" 2>&1); then
+    echo "land.sh selftest: FAILED — a mistyped flag was accepted" >&2; bad=1
+  elif grep -q "unknown option" "$tmp/typo.log"; then
+    echo "land.sh selftest: ok — a mistyped flag is refused by name, not cherry-picked as a revision"
+  else
+    echo "land.sh selftest: FAILED — a mistyped flag was refused, but not as an unknown option: $(head -1 "$tmp/typo.log")" >&2; bad=1
+  fi
+  if (cd "$here" && bash "$self" >"$tmp/noargs.log" 2>&1); then
+    echo "land.sh selftest: FAILED — a bare invocation with no hashes was accepted" >&2; bad=1
+  else
+    echo "land.sh selftest: ok — no hashes and no --prove is refused"
+  fi
+  # `--prove` must not move HEAD. Run it against a subject that proves nothing, so it stops at the
+  # bottom refusal rather than building anything, and check the tip is where it was.
+  head_before="$(git -C "$here" rev-parse HEAD)"
+  (cd "$here" && bash "$self" --prove --tests '' >"$tmp/prove.log" 2>&1) || true
+  if [ "$(git -C "$here" rev-parse HEAD)" = "$head_before" ]; then
+    echo "land.sh selftest: ok — --prove left HEAD where it found it"
+  else
+    echo "land.sh selftest: FAILED — --prove moved HEAD; it picked something" >&2; bad=1
+  fi
+
+  rm -rf "$tmp"
+  [ "$bad" = 0 ] || { echo "land.sh selftest: FAILED" >&2; exit 1; }
+  echo "land.sh selftest: PASS"
+  exit 0
+fi
+
 # THE PORTS ARE DEFAULTS, NOT PINS. The landing queue relies on this triple, so it stays the
 # default; but two worktrees recording at once on one host would both bind it, and record.sh's own
 # occupied-port guard would turn that collision into a RED attributed to whichever commits happened
@@ -51,16 +135,24 @@ ORACLE_LISTEN_PORT="${ORACLE_LISTEN_PORT:-49901}"
 ORACLE_ADMIN_PORT="${ORACLE_ADMIN_PORT:-49902}"
 ORACLE_MOCK_PORT="${ORACLE_MOCK_PORT:-49911}"
 
-# The lock file drifts between worktrees; a pick must never fail on it.
-git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
-for h in "$@"; do
-  git -C "$here" cherry-pick -x "$h" >/dev/null || {
-    echo "land.sh: RED — cherry-pick $h conflicted; resolve, then re-run with the remaining hashes" >&2
-    git -C "$here" status --short | head -20 >&2
-    exit 1
-  }
-done
-echo "land.sh: picked $# commit(s); tip $(git -C "$here" rev-parse --short HEAD)"
+# `--prove` PICKS NOTHING, WHICH IS WHAT IT SAYS. The pick loop ran unconditionally, so
+# `land.sh --prove <hash>` — the obvious way to say "prove these commits, they are already here" —
+# picked them a second time. The contract in the header ("pick nothing; prove the tip as it stands")
+# was true only when no hash was given.
+if [ "$prove" = 0 ]; then
+  # The lock file drifts between worktrees; a pick must never fail on it.
+  git -C "$here" checkout -- Cargo.lock 2>/dev/null || true
+  for h in "$@"; do
+    git -C "$here" cherry-pick -x "$h" >/dev/null || {
+      echo "land.sh: RED — cherry-pick $h conflicted; resolve, then re-run with the remaining hashes" >&2
+      git -C "$here" status --short | head -20 >&2
+      exit 1
+    }
+  done
+  echo "land.sh: picked $# commit(s); tip $(git -C "$here" rev-parse --short HEAD)"
+else
+  echo "land.sh: --prove: picking nothing; proving $([ $# -gt 0 ] && echo "$# named commit(s)" || echo "the tip commit") at $(git -C "$here" rev-parse --short HEAD)"
+fi
 
 # The plugin batteries refuse to skip when their cdylib is absent, so the example plugins are
 # built before any test leg; a green here must mean the ABI-crossing cells actually ran.
@@ -72,9 +164,21 @@ fi
 
 # WHAT THE PICKS ACTUALLY TOUCHED. Used twice: to pick the cargo packages, and — the part that was
 # missing — to prove the picks that touch NO crate at all.
-picked_range="HEAD~$#"
-[ "$#" -gt 0 ] || picked_range="HEAD~1"
-touched="$(git -C "$here" diff --name-only "$picked_range" HEAD 2>/dev/null || true)"
+#
+# UNDER `--prove`, THE SUBJECT IS THE COMMITS NAMED, NOT `HEAD~1`. `--prove` exists for a landing
+# whose picks are already on the tree — plural — and the range was `HEAD~1..HEAD` whatever was
+# named, so `--prove h1 h2 h3` measured the last commit and reported green over the other two. The
+# crates the first two touched were never tested and no line said so; the GREEN line at the bottom
+# named the legs that ran without naming how much of the landing they covered. Naming the hashes now
+# means what it reads as: the union of what those commits touched is the subject.
+if [ "$prove" = 1 ] && [ $# -gt 0 ]; then
+  touched="$(for h in "$@"; do git -C "$here" show --name-only --pretty=format: "$h" 2>/dev/null; done | grep . | sort -u)"
+  [ -n "$touched" ] || { echo "land.sh: RED — --prove named $# commit(s) and none of them names a file this repository has; a landing proved over an empty file set is a landing proved by nothing" >&2; exit 1; }
+else
+  picked_range="HEAD~$#"
+  [ "$#" -gt 0 ] || picked_range="HEAD~1"
+  touched="$(git -C "$here" diff --name-only "$picked_range" HEAD 2>/dev/null || true)"
+fi
 
 if [ -z "$tests" ] && [ $# -gt 0 ]; then
   tests="$(printf '%s\n' "$touched" | grep -o '^crates/[^/]*' | sort -u \
@@ -229,5 +333,12 @@ if [ -z "$proved" ]; then
   echo "land.sh:       name what should have proven it, or say why the picks need proving by nothing." >&2
   exit 1
 fi
-echo "land.sh: GREEN — landed $# commit(s) at $(git -C "$here" rev-parse --short HEAD)"
+# "landed" is what the pick loop did. Under `--prove` it picked nothing, and saying it landed N
+# commits is the one sentence an integrator reads as "these are now on the branch because of this
+# run".
+if [ "$prove" = 1 ]; then
+  echo "land.sh: GREEN — proved $([ $# -gt 0 ] && echo "$# already-landed commit(s)" || echo "the tip commit") at $(git -C "$here" rev-parse --short HEAD); nothing was picked"
+else
+  echo "land.sh: GREEN — landed $# commit(s) at $(git -C "$here" rev-parse --short HEAD)"
+fi
 echo "land.sh: proven by:$proved and nothing else. A green here is exactly that list."
