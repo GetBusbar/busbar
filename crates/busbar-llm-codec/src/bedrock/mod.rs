@@ -1852,3 +1852,7 @@ mod input_hardening_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/model_stream_error_tests.rs"]
+mod model_stream_error_tests;

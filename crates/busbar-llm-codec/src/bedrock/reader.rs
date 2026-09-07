@@ -1203,11 +1203,82 @@ impl ProtocolReader for BedrockReader {
                         StatusClass::ServerError
                     }
                 };
+                // Carry the exception the upstream NAMED, verbatim, alongside the lossy class.
+                // `internalServerException` and `modelStreamErrorException` share a StatusClass, so
+                // a writer deriving the name from the class alone answered every model-stream
+                // failure as a generic `InternalServerException`. The event-type key is the
+                // union member's lowerCamel form; the exception NAME on the wire is its UpperCamel
+                // twin, which is what a Bedrock SDK matches on.
+                let exception_name = {
+                    let mut c = exc.chars();
+                    c.next()
+                        .map(|f| f.to_ascii_uppercase().to_string() + c.as_str())
+                };
+                // THE MODEL'S OWN STATUS DECIDES THE CLASS. `ModelStreamErrorException` is
+                // Bedrock's envelope for a failure the MODEL raised mid-stream, and the service
+                // model shapes it with `originalStatusCode` ("The original status code", a
+                // `StatusCode` bounded 100..599) and `originalMessage` ("The original message")
+                // beside the envelope's own boilerplate `message`. Discarding them pinned every
+                // one of these to `ServerError` — the breaker's PENALIZE-THE-LANE disposition — so
+                // a model-side 429, the throttle Bedrock relays verbatim under this envelope, was
+                // recorded as a lane fault: the breaker penalized (and would eventually open on) a
+                // perfectly healthy lane, and the client never saw the 429 or the model's own
+                // sentence. Classify through the SAME universal status ladder every other upstream
+                // error goes through, so the disposition is decided in one place.
+                //
+                // Out of the shape's declared range is not a status at all: ignored rather than
+                // classified, so a hostile frame cannot pick the breaker's disposition with an
+                // out-of-range number, and the envelope's own class stands.
+                //
+                // Read ONLY on the exception whose shape declares them. The other four union
+                // members have no `original*` members at all, so an `originalStatusCode` on one of
+                // those is a field the service model does not define — honouring it would let a
+                // crafted frame flip a `throttlingException` off RateLimit.
+                let is_model_stream_error = exc == "modelStreamErrorException";
+                let original_status = data
+                    .get("originalStatusCode")
+                    .filter(|_| is_model_stream_error)
+                    .and_then(|v| v.as_u64())
+                    .filter(|s| (100..600).contains(s))
+                    .map(|s| s as u16);
+                let original_message = data
+                    .get("originalMessage")
+                    .filter(|_| is_model_stream_error)
+                    .and_then(|m| m.as_str())
+                    .map(String::from);
+                let class = match original_status {
+                    Some(status) => {
+                        busbar_substrate_values::breaker::normalize_raw_error(
+                            &busbar_substrate_values::breaker::RawUpstreamError {
+                                http_status: status,
+                                provider_code: None,
+                                structured_type: None,
+                                retry_after_secs: None,
+                            },
+                            &std::collections::HashMap::new(),
+                        )
+                        .class
+                    }
+                    None => class,
+                };
+                // The model's OWN sentence is the one a caller needs; the envelope's boilerplate
+                // ("An error occurred while streaming the response. Retry your request.") says
+                // nothing about what went wrong. Fall back to it when the model sent none.
+                let message = original_message.or(message);
                 out.push(IrStreamEvent::Error(
                     busbar_substrate_values::proto::IrError {
                         class,
                         provider_signal: message.or_else(|| Some(exc.to_string())),
                         retry_after: None,
+                        detail: busbar_substrate_values::breaker::ProviderErrorDetail {
+                            // A stream exception event carries no HTTP status OF ITS OWN — the
+                            // whole stream is a 200 — but a `ModelStreamErrorException` carries the
+                            // status the MODEL returned, and that is a real status the client
+                            // should see.
+                            http_status: original_status,
+                            status_name: exception_name,
+                            message,
+                        },
                     },
                 ));
             }
