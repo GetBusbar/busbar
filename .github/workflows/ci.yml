@@ -322,9 +322,9 @@ jobs:
       # that a provider's wire vocabulary stops short of the kernel, and this is the only thing that
       # checks it.
       - name: Kernel token-wire purity self-test (the scanner cannot be lied to)
-        run: scripts/kernel-token-wire-purity-lint.sh --selftest
+        run: cargo xtask gate kernel-token-wire-purity --selftest
       - name: Kernel token-wire purity (BLOCKING — no raw provider wire token field reaches the kernel)
-        run: scripts/kernel-token-wire-purity-lint.sh --check
+        run: cargo xtask gate kernel-token-wire-purity
       # NO-DEFERRAL: every reachable unimplemented!()/todo!() (Class A) and every self-declared debt
       # label (Class B) in shipped source must be a floor-checked entry in the committed
       # scripts/no-deferral.waivers allowlist. verify-1.6.0-done.sh runs the stricter --strict-done
