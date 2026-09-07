@@ -389,3 +389,11 @@ fn xml_escape(s: &str) -> String {
 #[cfg(test)]
 #[path = "tests/twilio_tests.rs"]
 mod twilio_tests;
+
+// THE TwiML ESCAPE AND THE FORMAT REFUSAL, in their own file. Separate from `twilio_tests.rs`
+// because these are BOUNDARY cells rather than frame round-trips: what they assert is that a
+// caller-influenced URL cannot reach the markup around it and that the locked carrier's three
+// conjuncts are each load-bearing.
+#[cfg(test)]
+#[path = "tests/twiml_escape_tests.rs"]
+mod twiml_escape_tests;
