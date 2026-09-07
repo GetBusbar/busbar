@@ -229,8 +229,25 @@ pub fn write_embeddings_response(r: &EmbeddingsResp) -> WireBody {
     if let Some(texts) = &r.input_echo {
         body["texts"] = json!(texts);
     }
+    // The write twin of the billed-bucket read: `input_tokens`/`image_tokens`/`images` go back out
+    // where they came from. `usage.input` is the SUM of the two token buckets (the total the ledger
+    // prices), so the text bucket is the total minus the image slice — and when no image slice was
+    // reported the emitted bytes are exactly the pre-image-bucket ones.
+    let mut billed_units = serde_json::Map::new();
     if let Some(u) = &r.usage {
-        body["meta"] = json!({ "billed_units": { "input_tokens": u.input } });
+        let text_in = u.input.saturating_sub(u.input_image.unwrap_or(0));
+        if u.input_image.is_none() || text_in > 0 {
+            billed_units.insert("input_tokens".to_string(), json!(text_in));
+        }
+        if let Some(it) = u.input_image {
+            billed_units.insert("image_tokens".to_string(), json!(it));
+        }
+    }
+    if let Some(imgs) = r.billed_images {
+        billed_units.insert("images".to_string(), json!(imgs));
+    }
+    if !billed_units.is_empty() {
+        body["meta"] = json!({ "billed_units": Value::Object(billed_units) });
     }
     WireBody::json(Bytes::from(serde_json::to_vec(&body).unwrap_or_default()))
 }
@@ -366,6 +383,10 @@ pub fn read_rerank_results(v: Option<&Value>) -> Vec<crate::ir::rerank::RerankRe
 #[path = "tests/rerank_tests.rs"]
 mod rerank_tests;
 
+#[cfg(test)]
+#[path = "tests/embed_billing_tests.rs"]
+mod embed_billing_tests;
+
 /// Wire -> concrete `EmbeddingsReq` parse, extracted from the `OperationHandler::read_request`
 /// body so a dissolved leaf-op handle and the `(op,proto)` `leaf_codec` read dispatch (G6 A4b,
 /// owner ruling b) can recover the concrete IR without a downcast. Byte-identical parse.
@@ -479,20 +500,36 @@ pub fn read_embeddings_response(
             item
         })
         .collect();
-    let usage = v
-        .get("meta")
-        .and_then(|m| m.get("billed_units"))
-        .and_then(|b| b.get("input_tokens"))
-        // Cohere types its billed counts as `number`; read the double form too.
-        .and_then(super::super::usage_tail::token_count)
-        .map(|n| busbar_substrate_values::billing::TokenUsage {
-            input: n,
+    // `meta.billed_units` is Cohere's SEPARATELY-METERED billed bucket (`ApiMetaBilledUnits` in the
+    // pinned document): `input_tokens`, `image_tokens` and `images` are the three an embed call is
+    // invoiced on. Reading only `input_tokens` billed an image embed at zero — the spec's own
+    // `/v2/embed` image example answers `billed_units: {images: 1}` with no `input_tokens` at all.
+    // Every count there is typed `number`, not `integer`, so each is read through the tolerant
+    // `token_count` (a `1200.0` is 1200, not zero).
+    let billed = v.get("meta").and_then(|m| m.get("billed_units"));
+    let billed_u64 = |k: &str| -> Option<u64> {
+        billed
+            .and_then(|b| b.get(k))
+            .and_then(super::super::usage_tail::token_count)
+    };
+    let input_tokens = billed_u64("input_tokens");
+    // "The number of billed image tokens" — a BILLED TOKEN count, so it belongs in the input total
+    // the ledger prices, and in the per-modality slice that partitions that total.
+    let image_tokens = billed_u64("image_tokens");
+    let usage = (input_tokens.is_some() || image_tokens.is_some()).then(|| {
+        busbar_substrate_values::billing::TokenUsage {
+            input: input_tokens
+                .unwrap_or(0)
+                .saturating_add(image_tokens.unwrap_or(0)),
+            input_image: image_tokens,
             ..Default::default()
-        });
+        }
+    });
     Ok(EmbeddingsResp {
         id: v.get("id").and_then(Value::as_str).map(str::to_string),
         embeddings,
         usage,
+        billed_images: billed_u64("images"),
         ..Default::default()
     })
 }
