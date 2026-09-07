@@ -1488,25 +1488,23 @@ async fn run(data_workers: usize) {
     #[cfg(any(feature = "root-admin", feature = "root-llm"))]
     if let Some(gov) = app_handle.load().governance.clone() {
         let migration = {
-            let token = busbar_caps::DurabilityToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
+            let token =
+                busbar_caps::DurabilityToken::mint(&busbar_caps::KernelSeal::acquire_for_kernel());
             let mut durability = book.durability.lock().unwrap_or_else(|e| e.into_inner());
-            let mut records =
-                durability.migration_records(&token, busbar_caps::StepName::Meter);
+            let mut records = durability.migration_records(&token, busbar_caps::StepName::Meter);
             root::migration::run(
                 &busbar_plugin_loader::store_adapter::StoreAdapter::native(gov.store()),
                 &mut records,
-                &root::policy::migration_config(
-                    &root::policy::MigrationPlan {
-                        // The node identity the journal's records carry. One node, numbering from
-                        // its own counter, exactly as the book above was built for.
-                        node: 0,
-                        now: root::policy::wall_now(),
-                        // The card the resolution above put in place. A deployment that configured
-                        // none opens with an ABSENT card — every class prices at nothing and the
-                        // flat fee still posts — which is exactly what such a deployment is billed.
-                        card: root::kernel::ROOT_CARD.pin(),
-                    },
-                ),
+                &root::policy::migration_config(&root::policy::MigrationPlan {
+                    // The node identity the journal's records carry. One node, numbering from
+                    // its own counter, exactly as the book above was built for.
+                    node: 0,
+                    now: root::policy::wall_now(),
+                    // The card the resolution above put in place. A deployment that configured
+                    // none opens with an ABSENT card — every class prices at nothing and the
+                    // flat fee still posts — which is exactly what such a deployment is billed.
+                    card: root::kernel::ROOT_CARD.pin(),
+                }),
                 root::policy::wall_now(),
                 None,
             )

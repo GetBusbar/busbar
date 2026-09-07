@@ -26,7 +26,7 @@ use busbar_api::{
     StoreResult, UsageLedger, VirtualKey,
 };
 use busbar_unit_ledger::migration::{
-    migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ,
+    migrate, LegacyFamily, MigrationRecords, Outcome, OPENING_CHECKPOINT_SEQ, OPENING_HISTORY_SEQ,
 };
 use busbar_unit_ledger::totals::{BucketId, BucketScope, CapDimension, Totals, TotalsKey};
 use std::sync::{Arc, Mutex};
@@ -389,7 +389,7 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
     let rows = adapter.legacy_ledger_rows(plan);
     let mut records = adapter.migration_records();
     let Outcome::Sealed(opening) =
-        migrate(&rows, &mut records, 1, 1_700_000_000, 3, None).expect("the migration seals")
+        migrate(&rows, &mut records, 1, 1_700_000_000, None).expect("the migration seals")
     else {
         panic!("the first boot seals");
     };
@@ -506,15 +506,16 @@ fn the_opening_figures_equal_the_seeded_legacy_rows() {
             busbar_unit_ledger::legacy::OpeningBalance {
                 bucket: "vk_a".to_string(),
                 amount: 9_000,
-                rate_card_version: 3,
+                rate_card_version: OPENING_HISTORY_SEQ,
             },
             busbar_unit_ledger::legacy::OpeningBalance {
                 bucket: "vk_b".to_string(),
                 amount: 40,
-                rate_card_version: 3,
+                rate_card_version: OPENING_HISTORY_SEQ,
             },
         ],
-        "one opening entry per bucket, at the card version the migration was told to name"
+        "one opening entry per bucket, under the ONE history entry a migration seals — not a \
+         version the caller named"
     );
 }
 
@@ -529,7 +530,7 @@ fn the_migration_never_writes_to_the_rows_it_read() {
         .expect("the key rows list");
     let rows = adapter.legacy_ledger_rows(plan);
     let mut records = adapter.migration_records();
-    migrate(&rows, &mut records, 1, 1, 1, None).expect("the migration seals");
+    migrate(&rows, &mut records, 1, 1, None).expect("the migration seals");
 
     let requests = store.requests();
     let writes: Vec<&String> = requests
@@ -572,14 +573,14 @@ fn a_second_boot_issues_no_request_to_the_store() {
         .expect("the key rows list");
     let first = adapter.legacy_ledger_rows(plan.clone());
     let mut records = adapter.migration_records();
-    let sealed = migrate(&first, &mut records, 1, 1_700_000_000, 3, None).expect("seals");
+    let sealed = migrate(&first, &mut records, 1, 1_700_000_000, None).expect("seals");
     assert!(sealed.sealed_now());
     let after_first = store.requests().len();
     assert!(after_first > 0);
 
     // The same node, booting again: a fresh source over the same plan, the same records.
     let second_rows = adapter.legacy_ledger_rows(plan);
-    let second = migrate(&second_rows, &mut records, 1, 1_700_000_100, 3, None).expect("no-op");
+    let second = migrate(&second_rows, &mut records, 1, 1_700_000_100, None).expect("no-op");
     assert!(!second.sealed_now(), "the second boot must not seal again");
     assert_eq!(
         store.requests().len(),
@@ -614,8 +615,8 @@ fn a_store_with_no_legacy_rows_opens_at_zero_and_still_seals() {
     };
     let rows = adapter.legacy_ledger_rows(plan);
     let mut records = adapter.migration_records();
-    let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1_700_000_000, 1, None)
-        .expect("an empty store still seals")
+    let Outcome::Sealed(opening) =
+        migrate(&rows, &mut records, 1, 1_700_000_000, None).expect("an empty store still seals")
     else {
         panic!("an empty store seals an opening at zero");
     };
@@ -645,8 +646,7 @@ fn a_plan_naming_nothing_seals_an_empty_opening() {
     let adapter = adapter_over(store.clone());
     let rows = adapter.legacy_ledger_rows(LegacyReadPlan::nothing());
     let mut records = adapter.migration_records();
-    let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1, 1, None).expect("seals")
-    else {
+    let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1, None).expect("seals") else {
         panic!("seals");
     };
     assert!(opening.checkpoint.totals.is_empty());
@@ -694,8 +694,7 @@ fn the_window_and_metering_views_of_one_consumption_do_not_fold() {
             .expect("the key rows list"),
     );
     let mut records = adapter.migration_records();
-    let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1, 1, None).expect("seals")
-    else {
+    let Outcome::Sealed(opening) = migrate(&rows, &mut records, 1, 1, None).expect("seals") else {
         panic!("seals");
     };
     assert_eq!(
@@ -847,7 +846,7 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
     let rows = read_only.legacy_ledger_rows(plan);
     let mut records = read_only.migration_records();
     let Outcome::Sealed(opening) =
-        migrate(&rows, &mut records, 1, 1_700_000_000, 2, None).expect("the migration seals")
+        migrate(&rows, &mut records, 1, 1_700_000_000, None).expect("the migration seals")
     else {
         panic!("the first boot seals");
     };
@@ -895,7 +894,6 @@ fn an_opening_sealed_off_the_published_sqlite_store() {
         &mut records,
         1,
         1_700_000_100,
-        2,
         None,
     )
     .expect("the second boot is fine");
