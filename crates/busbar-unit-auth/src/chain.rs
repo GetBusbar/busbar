@@ -267,6 +267,15 @@ impl AuthChain {
     /// The gate is deliberately not inside the walk: an in-flight unit re-running some part of the
     /// chain must not be torn down by a revocation that landed after it started. Only the arrival
     /// of a new unit asks this question.
+    ///
+    /// What the gate withdraws is an IDENTIFICATION, so it is asked only when the walk produced one.
+    /// The two shapes it is therefore never asked about are the ones where there is no identification
+    /// to withdraw: the open front door, where the admission is the anonymous principal and no member
+    /// ever looked at the string; and a walk that already denied, where the answer cannot change.
+    /// Consulting it there could only ever subtract, but it made the revocation set answerable to a
+    /// caller nobody identified — a probe learns whether a string it chose is in the set by presenting
+    /// it against an open door and watching the anonymous admission turn into a refusal — and it put a
+    /// denylist lookup on every unauthenticated request.
     pub fn run_chain_for_new_unit(
         &self,
         candidate: Option<&str>,
@@ -277,6 +286,9 @@ impl AuthChain {
         revocations: Option<&dyn RevocationView>,
     ) -> ChainVerdict {
         let verdict = self.run_chain_cached(candidate, cache, keys, now, expected_aud);
+        if !matches!(verdict, ChainVerdict::Identified { .. }) {
+            return verdict;
+        }
         if let (Some(r), Some(cred)) = (revocations, candidate) {
             if r.is_revoked(cred) {
                 return ChainVerdict::Denied;
