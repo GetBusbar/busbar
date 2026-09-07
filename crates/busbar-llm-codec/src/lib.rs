@@ -203,3 +203,10 @@ mod relocated_proto_tests;
 #[cfg(test)]
 #[path = "tests/bedrock_eventstream_tests.rs"]
 mod bedrock_eventstream_tests;
+
+/// THE ONE READING FOR A TOKEN COUNT: every dialect's usage sites answer a double-serialized count
+/// with the count it names, not with zero. Crate-level because the rule is the crate's, not one
+/// dialect's.
+#[cfg(test)]
+#[path = "tests/tolerant_token_count_tests.rs"]
+mod tolerant_token_count_tests;

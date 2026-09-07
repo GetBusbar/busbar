@@ -698,18 +698,18 @@ fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::I
         cache_creation_5m_input_tokens: usage_val
             .and_then(|u| u.get("cache_creation"))
             .and_then(|c| c.get("ephemeral_5m_input_tokens"))
-            .and_then(|v| v.as_u64()),
+            .and_then(crate::usage_tail::token_count),
         cache_creation_1h_input_tokens: usage_val
             .and_then(|u| u.get("cache_creation"))
             .and_then(|c| c.get("ephemeral_1h_input_tokens"))
-            .and_then(|v| v.as_u64()),
+            .and_then(crate::usage_tail::token_count),
         // `usage.server_tool_use.web_search_requests` — count of server-side web-search invocations,
         // a separately-metered bucket (see the IR field). Read alongside the cache tiers so the
         // buffered AND streaming usage sites all surface it.
         web_search_requests: usage_val
             .and_then(|u| u.get("server_tool_use"))
             .and_then(|s| s.get("web_search_requests"))
-            .and_then(|v| v.as_u64()),
+            .and_then(crate::usage_tail::token_count),
         // `usage.service_tier` — which tier served/billed the turn (`standard`/`priority`/`batch`).
         service_tier: usage_val
             .and_then(|u| u.get("service_tier"))
@@ -721,7 +721,7 @@ fn read_cache_tier_detail(usage_val: Option<&serde_json::Value>) -> crate::ir::I
         reasoning_tokens: usage_val
             .and_then(|u| u.get("output_tokens_details"))
             .and_then(|d| d.get("thinking_tokens"))
-            .and_then(|v| v.as_u64()),
+            .and_then(crate::usage_tail::token_count),
         ..Default::default()
     }
 }
