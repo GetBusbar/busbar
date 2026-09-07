@@ -607,10 +607,20 @@ MUTATIONS = [
     (
         # `git push origin main:main` — the refspec form promote.sh documents, which R11's
         # `HEAD:<dst>` test and its no-refspec test both walked past.
+        #
+        # THE ANCHOR IS `steps:`, NOT A `uses:` LINE, AND THAT IS THE POINT. This mutation used to
+        # splice itself in front of `      - uses: actions/checkout@v7`. When every action in the
+        # repo was re-pinned from a tag to a commit sha, that literal stopped existing in
+        # release.yml, the mutation edited nothing, the mutated text was identical to the real file
+        # — and a mutation that changes nothing produces no RED, so `--selftest` reported R11
+        # UNPROVEN and exited 1. ci.yml runs `--selftest` before it trusts the verdict, so the whole
+        # release-order lint sat behind a standing red that said nothing about release order.
+        # `    steps:` is a structural feature of every job in every workflow: it cannot be
+        # renamed by a pin bump, an action major, or a formatting pass.
         "R11 a workflow pushes a refspec straight to main (git push origin main:main)",
         "release.yml",
-        lambda t: t.replace("      - uses: actions/checkout@v7",
-                            "      - run: git push origin main:main\n      - uses: actions/checkout@v7", 1),
+        lambda t: t.replace("    steps:\n",
+                            "    steps:\n      - run: git push origin main:main\n", 1),
         "R11",
     ),
     (
