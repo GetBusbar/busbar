@@ -143,6 +143,39 @@ if ! plane_roots_resolve mcp a2a; then
   printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
   exit 1
 fi
+# ── THE ROOT GUARD — a root that is not on disk is RED, never a smaller number ────────────────────
+# `find A B C` complains about a missing A on stderr, goes on listing B and C, and its exit status is
+# lost to the `< <(…)` this loop reads from. Three of the five roots happen to be covered by
+# something else — `$SRC_DIR` and `$LLM` each own a file the sanctioned-site check below insists on,
+# and the two plane roots are resolved by `plane_roots_resolve` — but `$BIN` is covered by nothing.
+# It is the thin binary: the composition root, and the most natural place for someone to hand-roll a
+# `.header("server-timing", …)`. Renaming it dropped the scan from 277 files to 259, cleared a floor
+# of 100 without coming close, and printed `response-header-lint passed`. Every root is checked here,
+# on its own, so no root's coverage depends on a rule that happens to name a file inside it.
+require_roots() {
+  local r missing="" empty="" n
+  for r in "$@"; do
+    if [ ! -d "$r" ]; then
+      missing="${missing:+$missing }$r"
+      continue
+    fi
+    n="$(find "$r" -name '*.rs' -not -path '*/tests/*' | grep -c . || true)"
+    if [ "$n" -eq 0 ]; then
+      empty="${empty:+$empty }$r"
+    fi
+  done
+  if [ -z "$missing" ] && [ -z "$empty" ]; then
+    return 0
+  fi
+  hdr "result"
+  note "response-header-lint FAILED — SCAN ROOT UNUSABLE"
+  if [ -n "$missing" ]; then note "not on disk: $missing"; fi
+  if [ -n "$empty" ];   then note "on disk but holds no non-test .rs: $empty"; fi
+  note "A root that is missing or drained is scanned as ZERO files, and zero files inject no header."
+  note "If the layout moved, point the root at its new home in a reviewed diff that says so."
+  exit 1
+}
+require_roots "$SRC_DIR" "$BIN" "$LLM" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a"
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$SRC_DIR" "$BIN" "$LLM" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — every rule below is "for each candidate file, assert the header has ONE gated
@@ -289,7 +322,21 @@ GREEN
     fail=1; note "GREEN FAILED: comment/test exemption did not hold: $hits"
   fi
 
-  note "self-test: ${pass}/3 fixture groups passed"
+  # INSTRUMENT: the ways this lint scans a smaller tree than it says and still prints `passed`.
+  # Renaming the thin binary root took 18 files out of the scan silently — find said so on stderr and
+  # nothing read its status.
+  mkdir -p "${tmp}/drained"
+  if ( require_roots "${tmp}/no-such-root" ) >/dev/null 2>&1; then
+    fail=1; note "ROOT-GUARD FAILED: a scan root that is not on disk was accepted"
+  elif ( require_roots "${tmp}/drained" ) >/dev/null 2>&1; then
+    fail=1; note "ROOT-GUARD FAILED: a scan root holding no non-test .rs was accepted"
+  elif ! ( require_roots "$BIN" ) >/dev/null 2>&1; then
+    fail=1; note "ROOT-GUARD FAILED: the guard refuses this tree's own binary root"
+  else
+    pass=$((pass+1)); note "ROOT-GUARD: a missing root and a drained root are each refused on their own, and the real binary root is accepted"
+  fi
+
+  note "self-test: ${pass}/4 fixture groups passed"
   if [ "$fail" -ne 0 ]; then
     note "response-header-lint SELF-TEST FAILED — the scanner would let a bypass through"
     return 1
