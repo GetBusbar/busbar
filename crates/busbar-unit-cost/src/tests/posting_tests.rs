@@ -4,9 +4,7 @@
 //! Clause two, three and five: what a posting stores, how it projects, and the tier multiplier.
 
 use super::*;
-use crate::{
-    apply_tier, cents_of, micros_of, LaneClass, RateCard, FEE_CLASS, STANDARD_TIER_BP,
-};
+use crate::{apply_tier, cents_of, micros_of, LaneClass, RateCard, FEE_CLASS, STANDARD_TIER_BP};
 
 /// The stored pre-tier amount is the sum over the posting's lines INCLUDING the fee line, and each
 /// line records the rate it was priced at. Three input tokens at two thousand nano-units and four
@@ -14,7 +12,9 @@ use crate::{
 #[test]
 fn pre_tier_amount_is_the_sum_of_the_lines_including_the_fee() {
     let c = card("m", 2.0, 5.0, 3);
-    let posted = priced(&c, "m",
+    let posted = priced(
+        &c,
+        "m",
         &usage(&[(INPUT, 3), (OUTPUT, 4)]),
         1,
         STANDARD_TIER_BP,
@@ -31,8 +31,7 @@ fn pre_tier_amount_is_the_sum_of_the_lines_including_the_fee() {
     assert_eq!(posted.pre_tier_nanos, 30_026_000);
     assert_eq!(posted.fee_count, 1);
     assert_eq!(
-        posted.priced_nanos,
-        posted.pre_tier_nanos,
+        posted.priced_nanos, posted.pre_tier_nanos,
         "the neutral tier changes nothing"
     );
 }
@@ -56,16 +55,14 @@ fn the_fee_line_is_always_present_even_at_zero() {
 #[test]
 fn with_no_card_every_class_prices_at_zero_and_the_fee_still_posts() {
     let c = RateCard::absent(3);
-    let posted = priced(&c, "anything",
+    let posted = priced(
+        &c,
+        "anything",
         &usage(&[(INPUT, 1_000_000), (OUTPUT, 1_000_000)]),
         5,
         STANDARD_TIER_BP,
     );
-    assert_eq!(
-        posted.pre_tier_nanos,
-        150_000_000,
-        "five fees of 3 cents"
-    );
+    assert_eq!(posted.pre_tier_nanos, 150_000_000, "five fees of 3 cents");
     assert_eq!(posted.minor(), 15);
     assert!(!posted.lane_unpriced, "no card means no missing lane");
     assert!(
@@ -80,14 +77,15 @@ fn with_no_card_every_class_prices_at_zero_and_the_fee_still_posts() {
 #[test]
 fn a_class_a_present_card_does_not_name_prices_at_zero_and_is_flagged() {
     let c = card("m", 2.0, 0.0, 0);
-    let posted = priced(&c, "m",
+    let posted = priced(
+        &c,
+        "m",
         &usage(&[(INPUT, 3), ("web_search", 3)]),
         0,
         STANDARD_TIER_BP,
     );
     assert_eq!(
-        posted.pre_tier_nanos,
-        6_000,
+        posted.pre_tier_nanos, 6_000,
         "the unnamed class adds nothing"
     );
     assert_eq!(posted.unpriced_classes(), vec!["web_search"]);
@@ -104,15 +102,16 @@ fn a_class_a_present_card_does_not_name_prices_at_zero_and_is_flagged() {
 #[test]
 fn a_lane_absent_from_a_present_card_prices_at_zero_and_reports_it() {
     let c = card("known", 5.0, 5.0, 2);
-    let posted = priced(&c, "mystery",
+    let posted = priced(
+        &c,
+        "mystery",
         &usage(&[(INPUT, 1_000_000)]),
         1,
         STANDARD_TIER_BP,
     );
     assert!(posted.lane_unpriced);
     assert_eq!(
-        posted.pre_tier_nanos,
-        20_000_000,
+        posted.pre_tier_nanos, 20_000_000,
         "only the flat fee remains"
     );
 }
@@ -129,7 +128,9 @@ fn an_adversarial_class_name_cannot_collide_with_the_fee_line() {
         ],
         3,
     );
-    let posted = priced(&c, "m",
+    let posted = priced(
+        &c,
+        "m",
         &usage(&[(INPUT, 3), (FEE_CLASS, 5)]),
         1,
         STANDARD_TIER_BP,
@@ -149,7 +150,9 @@ fn an_adversarial_class_name_cannot_collide_with_the_fee_line() {
 #[test]
 fn each_class_bills_against_its_own_rate() {
     let c = card4("quad", [1.0, 2.0, 0.5, 4.0], 0);
-    let posted = priced(&c, "quad",
+    let posted = priced(
+        &c,
+        "quad",
         &usage(&[
             (INPUT, 10_000_000),
             (OUTPUT, 1_000_000),
@@ -170,16 +173,14 @@ fn each_class_bills_against_its_own_rate() {
 fn the_oracle_rate_card_reproduces_its_pinned_figure() {
     // A tenth of a cost unit is a hundred thousand micro-units per token.
     let c = card("oracle", 100_000.0, 200_000.0, 0);
-    let posted = priced(&c, "oracle",
+    let posted = priced(
+        &c,
+        "oracle",
         &usage(&[(INPUT, 11), (OUTPUT, 7)]),
         0,
         STANDARD_TIER_BP,
     );
-    assert_eq!(
-        posted.pre_tier_nanos,
-        2_500_000_000,
-        "two and a half units"
-    );
+    assert_eq!(posted.pre_tier_nanos, 2_500_000_000, "two and a half units");
     assert_eq!(posted.minor(), 250);
     assert_eq!(posted.micros(), 2_500_000);
 }
@@ -190,14 +191,7 @@ fn the_oracle_rate_card_reproduces_its_pinned_figure() {
 #[test]
 fn the_cent_projection_truncates_toward_zero() {
     let c = card("m", 1.0, 0.0, 0);
-    let at = |tokens: u64| {
-        priced(&c, "m",
-            &usage(&[(INPUT, tokens)]),
-            0,
-            STANDARD_TIER_BP,
-        )
-        .minor()
-    };
+    let at = |tokens: u64| priced(&c, "m", &usage(&[(INPUT, tokens)]), 0, STANDARD_TIER_BP).minor();
     assert_eq!(at(19_999), 1, "just under two cents floors to one");
     assert_eq!(at(20_000), 2, "exactly two cents is two");
     assert_eq!(at(20_001), 2, "just over two cents still floors to two");
@@ -211,11 +205,7 @@ fn both_projections_saturate_rather_than_wrap() {
     assert_eq!(cents_of(u128::MAX), i64::MAX);
     assert_eq!(micros_of(u128::MAX), i64::MAX);
     let c = card("m", 1e15, 0.0, 0);
-    let posted = priced(&c, "m",
-        &usage(&[(INPUT, u64::MAX)]),
-        0,
-        STANDARD_TIER_BP,
-    );
+    let posted = priced(&c, "m", &usage(&[(INPUT, u64::MAX)]), 0, STANDARD_TIER_BP);
     assert_eq!(posted.minor(), i64::MAX);
     assert_eq!(posted.micros(), i64::MAX);
 }
@@ -239,7 +229,9 @@ fn an_explicit_zero_rate_is_known_and_bills_nothing() {
     let c = card4("freebie", [0.0, 0.0, 0.0, 0.0], 0);
     assert!(c.pricing_enabled());
     assert!(!c.lane_unpriced("freebie"));
-    let posted = priced(&c, "freebie",
+    let posted = priced(
+        &c,
+        "freebie",
         &usage(&[
             (INPUT, u64::MAX),
             (OUTPUT, u64::MAX),
@@ -296,8 +288,7 @@ fn the_tier_is_a_single_divide_not_a_sum_of_per_line_floors() {
     let posted = priced(&c, "m", &usage(&[("a", 1), ("b", 1)]), 0, 5_000);
     assert_eq!(posted.pre_tier_nanos, 10);
     assert_eq!(
-        posted.priced_nanos,
-        5,
+        posted.priced_nanos, 5,
         "one divide of the summed ten, never two floors of two and a half"
     );
     assert_eq!(apply_tier(10, 5_000), 5);
@@ -318,7 +309,9 @@ fn the_tier_saturates_rather_than_wrapping() {
 fn the_estimated_mark_travels_onto_the_posting() {
     let c = card("m", 1.0, 0.0, 0);
     let reported = priced(&c, "m", &usage(&[(INPUT, 10)]), 0, STANDARD_TIER_BP);
-    let floored = priced(&c, "m",
+    let floored = priced(
+        &c,
+        "m",
         &estimated_usage(&[(INPUT, 10)]),
         0,
         STANDARD_TIER_BP,

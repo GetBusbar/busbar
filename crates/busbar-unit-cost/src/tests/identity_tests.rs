@@ -18,9 +18,7 @@
 //! someone else's seed is not a property.
 
 use super::*;
-use crate::{
-    cents_of, derive_spend_cents, derive_spend_micros, micros_of, STANDARD_TIER_BP,
-};
+use crate::{cents_of, derive_spend_cents, derive_spend_micros, micros_of, STANDARD_TIER_BP};
 use crate::{LaneClass, RateCard, FEE_CLASS, NANOS_PER_CENT};
 
 /// A deterministic sequence. Same numbers everywhere, forever.
