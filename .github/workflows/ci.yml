@@ -187,9 +187,9 @@ jobs:
       # `# non-gating:` / `# report-only:` line names it WITH a reason. Self-test runs FIRST, and its
       # last case re-plants exactly that historical defect in this very file and requires a red.
       - name: ci-umbrella membership self-test (the historical omission re-planted, proven RED)
-        run: python3 scripts/ci-umbrella-lint.py --selftest
+        run: cargo xtask gate ci-umbrella --selftest
       - name: ci-umbrella membership (no job is outside the required check by accident)
-        run: python3 scripts/ci-umbrella-lint.py --root .
+        run: cargo xtask gate ci-umbrella
       # NO-SELF-FILED-ISSUES lint: this repository must not open issues against itself. It used to —
       # verify-deploy.yml filed #51 when a published release was broken — and that was wrong three
       # ways: a robot's issue is indistinguishable from a user's in the queue a human triages, the

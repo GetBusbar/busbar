@@ -362,6 +362,164 @@ impl Gate for CiUmbrellaGate {
 
         report
     }
+
+    /// THE SAME PLANTS, DRIVEN THROUGH BOTH IMPLEMENTATIONS.
+    ///
+    /// Every probe below is the overlay one self-test case already builds, so the tree the parity
+    /// harness compares over is the tree the gate is proven on and not a second description of it.
+    /// The legacy lint is pointed at the planted tree with `--root`, and reads exactly one file, so
+    /// `materialize` is exactly that file.
+    ///
+    /// ON THE RULE NAME. `expect_rule` is checked against the LEGACY SCRIPT'S OUTPUT as well as the
+    /// gate's problems, and `ci-umbrella-lint.py` prints prose findings and never a row id — it has
+    /// no ledger at all, which is why this gate's ids are new rather than inherited. So these
+    /// probes prove the two agree on the VERDICT for each planted violation, and the rule-name half
+    /// of the harness's contract cannot be met by a legacy lint that names no rules. That is
+    /// reported rather than dodged: the ids stay the gate's real owed ids.
+    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        let mut out = Vec::new();
+        // Each probe carries the LEGACY's own wording for the same rule. The Python prints prose
+        // and never a row id, so without this the comparison would degrade into "both went red
+        // somehow" -- which two implementations can do for two different reasons.
+        let mut push = |label: &str, rule: &str, legacy: &str, overlay: Result<Overlay, String>| {
+            if let Ok(overlay) = overlay {
+                out.push(
+                    crate::gates::ParityProbe::red(
+                        label,
+                        overlay,
+                        vec![WORKFLOW.to_string()],
+                        rule,
+                    )
+                    .named_by(legacy),
+                );
+            }
+        };
+
+        push(
+            "ci.yml is empty",
+            ROW_WORKFLOW,
+            "has no `jobs:` mapping -- refusing to report a clean file from an unread one",
+            Ok(overlay_of(String::new())),
+        );
+        push(
+            "the umbrella job is renamed away",
+            ROW_UMBRELLA,
+            "the single required check is gone",
+            subst_overlay(cx, &format!("\n  {UMBRELLA}:\n"), "\n  not-the-umbrella:\n"),
+        );
+        push(
+            "a job outside needs, undeclared",
+            ROW_MEMBERSHIP,
+            "is not declared non-gating",
+            cx.read(WORKFLOW).map(|text| {
+                overlay_of(format!(
+                    "{text}\n  planted-ungated-job:\n    runs-on: ubuntu-latest\n    steps:\n      \
+                     - run: true\n"
+                ))
+            }),
+        );
+        push(
+            "a needs entry with no RESULTS row",
+            ROW_SCORED,
+            "but has no RESULTS row",
+            subst_overlay(
+                cx,
+                "        teller-steps|full|${{ needs.teller-steps.result }}\n",
+                "",
+            ),
+        );
+        push(
+            "an exemption for a job that no longer exists",
+            ROW_DECL_LIVE,
+            "names a job that does not exist in ci.yml",
+            subst_overlay(
+                cx,
+                "# non-gating: coverage --",
+                "# non-gating: coverage-ghost --",
+            ),
+        );
+        push(
+            "an exemption with no reason",
+            ROW_DECL_REASON,
+            "-character reason (floor",
+            subst_overlay(
+                cx,
+                "# non-gating: coverage -- a REPORTING job (it uploads to Codecov and asserts no \
+                 threshold here);",
+                "# non-gating: coverage -- brief",
+            ),
+        );
+        push(
+            "a RESULTS line that is not jobkey|tier|result",
+            ROW_ROW_SHAPE,
+            "RESULTS row is not `jobkey|tier|",
+            subst_overlay(
+                cx,
+                "gate-tier|fast|${{ needs.gate-tier.result }}",
+                "gate-tier|${{ needs.gate-tier.result }}",
+            ),
+        );
+        push(
+            "a label that scores a different job",
+            ROW_LABEL,
+            "the label and the job it scores disagree",
+            subst_overlay(
+                cx,
+                "structure-lint|fast|${{ needs.structure-lint.result }}",
+                "structure-lint|fast|${{ needs.check.result }}",
+            ),
+        );
+        push(
+            "a RESULTS row that scores a job that does not exist",
+            ROW_REF_JOB,
+            "which is not a job in ci.yml.",
+            subst_overlay(
+                cx,
+                "design-bindings|fast|${{ needs.design-bindings.result }}",
+                "design-bindings|fast|${{ needs.ghost-job.result }}",
+            ),
+        );
+        push(
+            "a RESULTS row for a job the umbrella does not wait for",
+            ROW_REF_NEEDS,
+            "is the empty string there, not a verdict",
+            subst_overlay(
+                cx,
+                "design-bindings|fast|${{ needs.design-bindings.result }}",
+                "design-bindings|fast|${{ needs.design-bindings.result }}\n        \
+                 proof-manifest|fast|${{ needs.proof-manifest.result }}",
+            ),
+        );
+        push(
+            "the JOBS floor bites on its own",
+            ROW_JOBS_FLOOR,
+            "job(s) parsed (floor",
+            Ok(overlay_of(synthetic(MIN_JOBS - 1, MIN_NEEDS, MIN_RESULTS))),
+        );
+        push(
+            "the NEEDS floor bites on its own",
+            ROW_NEEDS_FLOOR,
+            "job(s) (floor",
+            Ok(overlay_of(synthetic(
+                MIN_JOBS,
+                MIN_NEEDS - 1,
+                MIN_NEEDS - 1,
+            ))),
+        );
+        push(
+            "the RESULTS floor bites on its own",
+            ROW_RESULTS_FLOOR,
+            "row(s) (floor",
+            Ok(overlay_of(synthetic(MIN_JOBS, MIN_NEEDS, MIN_RESULTS - 1))),
+        );
+
+        // THE TIER RULE HAS NO LEGACY HALF. The conversion introduced it: `ci-umbrella-lint.py`
+        // asserts only that a RESULTS row carries `fast` or `full`, never that the tier agrees with
+        // the job's guard. A probe for it would assert that the legacy script reds on something it
+        // was never taught, which is a false parity failure rather than a finding — so the rule is
+        // proven by [`Gate::selftest`] alone and named here as the one rule parity cannot cover.
+        out
+    }
 }
 
 /// Every row id this gate can emit, in the order it emits them.
@@ -886,26 +1044,23 @@ fn plant_subst(
     with: &str,
     naming: &[&str],
 ) -> Case {
-    let text = match cx.read(WORKFLOW) {
-        Ok(t) => t,
-        Err(e) => return unplantable(name, covers, naming, e),
-    };
-    if !text.contains(needle) {
-        return unplantable(
-            name,
-            covers,
-            naming,
-            format!("`{needle}` is not in {WORKFLOW} to plant over"),
-        );
+    match subst_overlay(cx, needle, with) {
+        Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
+        Err(e) => unplantable(name, covers, naming, e),
     }
-    plant(
-        cx,
-        gate,
-        name,
-        covers,
-        Edit::Replace(text.replacen(needle, with, 1)),
-        naming,
-    )
+}
+
+/// The overlay ONE substitution into the real `ci.yml` produces. Shared by [`Gate::selftest`] and
+/// [`Gate::parity_probes`] so a probe and its self-test case are the same planted tree, not two
+/// descriptions of one that drift apart.
+fn subst_overlay(cx: &Ctx, needle: &str, with: &str) -> Result<Overlay, String> {
+    let text = cx.read(WORKFLOW)?;
+    if !text.contains(needle) {
+        return Err(format!("`{needle}` is not in {WORKFLOW} to plant over"));
+    }
+    let mut ov = Overlay::new();
+    ov.set(WORKFLOW, text.replacen(needle, with, 1));
+    Ok(ov)
 }
 
 fn overlay_of(text: String) -> Overlay {

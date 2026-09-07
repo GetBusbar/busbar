@@ -92,8 +92,79 @@ pub struct ParityProbe {
     /// Every path the legacy script must be shown, relative to the workspace root. The harness
     /// materializes the OVERLAID view of each one into a scratch tree.
     pub materialize: Vec<String>,
-    /// The row id both implementations must report. Empty means "both must be green".
+    /// The row id THIS GATE must report. `None` means "both must be green".
     pub expect_rule: Option<String>,
+    /// The substring that identifies the SAME rule in the legacy script's output, when the two
+    /// spell it differently.
+    ///
+    /// Two gates could not keep their legacy row ids, because those ids were not a fixed set: one
+    /// keyed rows by file-and-line, the other by data-file entry. A `Gate::owed` set has to be
+    /// predictable — that is the whole mechanism by which a rule that stopped being emitted is
+    /// detectable — so the rule became the id and the moving part moved into the row detail. This
+    /// field is how a probe still proves the two are red about the SAME THING across that rename,
+    /// rather than merely both being red.
+    pub legacy_names: Option<String>,
+    /// A DECLARED difference between the two implementations, with the reason written down.
+    ///
+    /// The point of declaring one is that it is reviewable and that it EXPIRES: the harness checks
+    /// the difference still exists, so a declaration the legacy has since grown out of is RED
+    /// rather than a line nobody re-reads. That is the stale-waiver rule applied to parity.
+    pub divergence: Option<Divergence>,
+}
+
+impl ParityProbe {
+    /// A probe that plants a violation both implementations must report.
+    pub fn red(
+        label: impl Into<String>,
+        overlay: Overlay,
+        materialize: Vec<String>,
+        rule: impl Into<String>,
+    ) -> ParityProbe {
+        ParityProbe {
+            label: label.into(),
+            overlay,
+            materialize,
+            expect_rule: Some(rule.into()),
+            legacy_names: None,
+            divergence: None,
+        }
+    }
+
+    /// The same, where the legacy names the rule with a different string.
+    pub fn named_by(mut self, legacy: impl Into<String>) -> ParityProbe {
+        self.legacy_names = Some(legacy.into());
+        self
+    }
+
+    /// The same, where the two genuinely differ and the difference is deliberate.
+    pub fn diverges(mut self, d: Divergence) -> ParityProbe {
+        self.divergence = Some(d);
+        self
+    }
+}
+
+/// The two ways a converted gate is allowed to differ from the script it replaces. Both carry a
+/// reason, and [`Divergence::reason`] is refused when it is too short to be one.
+pub enum Divergence {
+    /// The legacy script does not see this violation AT ALL — it reports green where this gate
+    /// reports a named failure. Every instance is the zero-is-not-clean rule applied where the
+    /// legacy had no equivalent.
+    LegacyGreen { reason: String },
+    /// The legacy reaches the right VERDICT by crashing rather than by reporting a rule. An
+    /// interpreter traceback and a considered refusal leave the same exit code, so without naming
+    /// this the harness would read a crashed gate as a gate that ran.
+    LegacyCrashes { reason: String },
+}
+
+impl Divergence {
+    pub fn reason(&self) -> &str {
+        match self {
+            Divergence::LegacyGreen { reason } | Divergence::LegacyCrashes { reason } => reason,
+        }
+    }
+
+    /// A declaration shorter than this is a shrug, not a reason.
+    pub const MIN_REASON: usize = 40;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

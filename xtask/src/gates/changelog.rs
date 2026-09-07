@@ -455,6 +455,97 @@ impl Gate for ChangelogGate {
 
         report
     }
+
+    /// THE PARITY PROBES, one per rule the ordinary (branch) invocation of the legacy lint can
+    /// report. They are the SAME overlays the selftest plants — a probe that plants something the
+    /// selftest does not would be proving a rule nothing else proves.
+    ///
+    /// The legacy script prints its rule id and this gate uses that id as its row id, so one string
+    /// identifies the rule on both sides and `expect_rule` compares them directly.
+    ///
+    /// The two release arms have no probes here on purpose: parity runs ONE legacy invocation, and
+    /// the one being compared is the ordinary run every branch makes. `--require-dated-top` and
+    /// `--require-version` would each need their own invocation of both implementations, so they
+    /// are proven by the selftest and remain unproven by parity.
+    fn parity_probes(&self, _cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        let probe = |label: &str, text: String, rule: &str| crate::gates::ParityProbe {
+            label: label.to_string(),
+            overlay: plant(&text),
+            materialize: vec!["CHANGELOG.md".to_string()],
+            expect_rule: Some(rule.to_string()),
+            legacy_names: None,
+            divergence: None,
+        };
+        vec![
+            probe(
+                "a dash separator instead of the canonical comma",
+                GOOD.replace("## [1.5.4], 2026-08-14", "## [1.5.4] - 2026-08-14"),
+                ROW_CANONICAL,
+            ),
+            probe(
+                "a date-shaped placeholder instead of the literal word",
+                GOOD.replace("## [1.5.4], 2026-08-14", "## [1.5.4], TBD"),
+                ROW_CANONICAL,
+            ),
+            probe(
+                "the newest entry stamped with a version but NO date",
+                GOOD.replace("## [1.5.4], 2026-08-14", "## [1.5.4]"),
+                ROW_TOP_ENTRY_DATED,
+            ),
+            probe(
+                "the newest entry with neither a version nor a date",
+                GOOD.replace("## [1.5.4], 2026-08-14", "## [Next release]"),
+                ROW_TOP_ENTRY_DATED,
+            ),
+            probe(
+                "an Unreleased block buried below a shipped release",
+                GOOD.replace("## [Unreleased]\n", "").replace(
+                    "## [1.5.3], 2026-08-08",
+                    "## [Unreleased]\n\n## [1.5.3], 2026-08-08",
+                ),
+                ROW_UNRELEASED_FIRST,
+            ),
+            probe(
+                "one version number used by two entries",
+                GOOD.replace("## [1.5.3], 2026-08-08", "## [1.5.4], 2026-08-08"),
+                ROW_NO_DUPLICATE_VERSION,
+            ),
+            probe(
+                "a newer version listed below an older one",
+                GOOD.replace("## [1.5.3], 2026-08-08", "## [1.5.5], 2026-08-08"),
+                ROW_DESCENDING,
+            ),
+            probe(
+                "a date that increases as you read down the file",
+                GOOD.replace("## [1.5.3], 2026-08-08", "## [1.5.3], 2026-08-20"),
+                ROW_DESCENDING,
+            ),
+            probe(
+                "the ordering rule still reaches a named-but-undated entry",
+                staged().replace("## [1.5.3], 2026-08-08", "## [1.5.6], 2026-08-08"),
+                ROW_DESCENDING,
+            ),
+            probe(
+                "a release dated in the future",
+                GOOD.replace("## [1.5.4], 2026-08-14", "## [1.5.4], 2099-01-01"),
+                ROW_NO_FUTURE_DATE,
+            ),
+            probe(
+                "an empty changelog names no version anywhere",
+                "# Changelog\n\nnothing has ever shipped.\n".to_string(),
+                ROW_SHAPE,
+            ),
+            // A DOCUMENTED DELTA, probed rather than hidden. A shape-valid date naming a day that
+            // does not exist is a named failure here and an unhandled exception in the legacy — it
+            // exits 1 with a traceback, which the harness reads as red for the right verdict and
+            // the wrong reason. The verdicts agree; the naming does not, and that is the finding.
+            probe(
+                "a date that is shaped right and names no real day",
+                GOOD.replace("## [1.5.4], 2026-08-14", "## [1.5.4], 2026-02-30"),
+                ROW_NO_FUTURE_DATE,
+            ),
+        ]
+    }
 }
 
 impl ChangelogGate {

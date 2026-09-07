@@ -1472,6 +1472,8 @@ impl Gate for ReleaseOrderGate {
                 overlay: ov,
                 materialize: touched,
                 expect_rule: Some(m.rule.to_string()),
+                legacy_names: None,
+                divergence: None,
             });
         }
         out

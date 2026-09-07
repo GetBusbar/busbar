@@ -543,6 +543,97 @@ impl Gate for QaGateDispatchGate {
 
         report
     }
+
+    /// The planted trees `--parity` drives the legacy script and this gate over together.
+    ///
+    /// WHICH ARM PARITY CAN REACH, AND WHY IT IS ONLY ONE.
+    ///
+    /// The harness materializes an overlaid view of named paths into a scratch directory and points
+    /// the legacy script at it with `--root`. Two consequences fall straight out of that, and both
+    /// are properties of this gate's subject rather than gaps to be papered over:
+    ///
+    /// * [`ROW_DEFAULT_BRANCH`] IS NOT COVERED. The legacy reads the promoted copy with
+    ///   `git show origin/main:…`, and a scratch directory is not a repository. Manufacturing one
+    ///   there would be building a fake default branch to satisfy a comparison whose entire point is
+    ///   that the real one is what fires — and an unfetched `origin/main` must stay the named
+    ///   failure it is. The arm keeps its two selftest cases, which prove it end to end with an
+    ///   injected copy and with real `git` against a ref that cannot exist.
+    /// * ONLY THE LEGACY'S EXIT-1 PATHS ARE PROBEABLE. Its "could not run" paths — a missing
+    ///   workflow, a missing or unparseable declared shape — exit 2, and the harness refuses an exit
+    ///   above 1 as neither the script's green nor its red. Those are exactly the rows
+    ///   [`ROW_WORKFLOW`] and [`ROW_DECLARED_READABLE`] cover, so they too stay proven by selftest
+    ///   rather than by parity. That refusal is right: reading an undocumented exit code as a
+    ///   verdict is how a crashed gate reports a clean tree.
+    ///
+    /// What is left is [`ROW_DECLARED_CURRENT`] — the arm that runs on every branch and the one that
+    /// catches a run-graph change at the commit that makes it. Three shapes of structural drift are
+    /// planted, plus the property that makes this lint viable at all: a prose-only edit must move
+    /// NEITHER implementation, because a byte comparison would deadlock every comment change until
+    /// the next release.
+    ///
+    /// No probe can reach [`Self::write_declared`]. `run` reads and never writes, and the only paths
+    /// any probe touches are the two materialized into the harness's scratch tree.
+    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        let Ok(text) = cx.read(WORKFLOW) else {
+            // The subject is absent, so there is nothing to plant INTO. An empty probe list is
+            // refused by the harness, which is the right answer: parity is unproven here.
+            return Vec::new();
+        };
+
+        let mut probes = Vec::new();
+        let mut push = |label: &str, planted: String, expect_rule: Option<&str>| {
+            let mut overlay = Overlay::new();
+            overlay.set(WORKFLOW, planted);
+            probes.push(crate::gates::ParityProbe {
+                label: label.to_string(),
+                overlay,
+                materialize: vec![WORKFLOW.to_string(), DECLARED.to_string()],
+                expect_rule: expect_rule.map(str::to_string),
+                legacy_names: None,
+                divergence: None,
+            });
+        };
+
+        // A prose edit changes no structure, so both implementations must stay GREEN. This is the
+        // discriminating half: an implementation that compared bytes would pass every probe below
+        // and fail this one.
+        push(
+            "a comment-only edit to the dispatcher",
+            format!("# a comment that changes nothing GitHub executes\n{text}"),
+            None,
+        );
+
+        // Three different parts of the run graph, so parity is not asserted over one key. A gate
+        // that only noticed `needs:` would agree with the legacy on every probe but the others.
+        for (label, needle, replacement) in [
+            (
+                "a needs: edge is removed from the run graph",
+                "needs: [build, fast]",
+                "needs: [build]",
+            ),
+            (
+                "the trigger's workflow list changes",
+                "workflows: [\"CI\"]",
+                "workflows: [\"CI\", \"Other\"]",
+            ),
+            (
+                "a job's timeout is removed",
+                "\n    timeout-minutes: 15\n",
+                "\n",
+            ),
+        ] {
+            if !text.contains(needle) {
+                continue;
+            }
+            push(
+                label,
+                text.replacen(needle, replacement, 1),
+                Some(ROW_DECLARED_CURRENT),
+            );
+        }
+
+        probes
+    }
 }
 
 /// The hermetic dispatcher used by the promotion-arm cases. Small on purpose: the arm being proven
@@ -870,6 +961,45 @@ mod tests {
             0,
             "every case must have had something to plant"
         );
+    }
+
+    /// The probes must actually plant something, and each must move the gate the way it claims.
+    /// The harness proves the two IMPLEMENTATIONS agree; this proves the probe list is not a set of
+    /// plants that leave this side green, which would make the agreement vacuous on our half.
+    #[test]
+    fn every_parity_probe_moves_this_gate_the_way_it_declares() {
+        let cx = cx();
+        let gate = QaGateDispatchGate::new();
+        let probes = gate.parity_probes(&cx);
+        assert_eq!(probes.len(), 4, "the probe list lost an entry");
+        for probe in &probes {
+            assert!(
+                probe.materialize.contains(&WORKFLOW.to_string())
+                    && probe.materialize.contains(&DECLARED.to_string()),
+                "{}: a path the legacy is not shown is a path it reads out of the real repository",
+                probe.label
+            );
+            let verdict = gates::execute(&gate, &cx.with_overlay(probe.overlay.clone()));
+            match &probe.expect_rule {
+                Some(rule) => {
+                    assert!(verdict.red, "{}: expected RED", probe.label);
+                    assert!(
+                        verdict
+                            .problems
+                            .iter()
+                            .any(|p| p.starts_with(rule.as_str())),
+                        "{}: went red without naming {rule} ({:?})",
+                        probe.label,
+                        verdict.problems
+                    );
+                }
+                None => assert!(
+                    !verdict.red,
+                    "{}: expected green, got {:?}",
+                    probe.label, verdict.problems
+                ),
+            }
+        }
     }
 
     /// THE WRITER IS THE FILE. If regenerating the declared shape produced different bytes, every

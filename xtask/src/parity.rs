@@ -20,7 +20,7 @@
 use std::path::{Path, PathBuf};
 
 use crate::ctx::Ctx;
-use crate::gates::{self, Gate};
+use crate::gates::{self, Divergence, Gate};
 use crate::ledger::{self, Row};
 
 /// Every way the two row sets differ, one line each, id-first so the message names its subject.
@@ -159,6 +159,7 @@ pub fn check_lint(
     }
 
     let mut diffs: Vec<String> = Vec::new();
+    let mut declared: Vec<String> = Vec::new();
     let mut compared = 0usize;
 
     // The real tree first: both must agree on the verdict everybody actually reads.
@@ -194,6 +195,60 @@ pub fn check_lint(
         compared += 1;
 
         let want_red = probe.expect_rule.is_some();
+
+        // A DECLARED divergence is checked for STILL BEING TRUE, not merely accepted. A
+        // declaration the legacy has since grown out of is a waiver that excuses nothing, and this
+        // crate refuses those everywhere else.
+        if let Some(d) = &probe.divergence {
+            if d.reason().len() < Divergence::MIN_REASON {
+                diffs.push(format!(
+                    "{}: its declared divergence carries a {}-character reason. A difference \
+                     between the two implementations may be deliberate; it may not be unexplained.",
+                    probe.label,
+                    d.reason().len()
+                ));
+                continue;
+            }
+            let stale = match d {
+                Divergence::LegacyGreen { .. } if legacy.red => Some(
+                    "declared as a violation the legacy script cannot see, but the legacy went RED \
+                     over it. The declaration is stale -- delete it and let the probe compare \
+                     normally.",
+                ),
+                Divergence::LegacyCrashes { .. } if !looks_like_a_crash(&legacy.output) => Some(
+                    "declared as a case the legacy only survives by crashing, but it produced no \
+                     interpreter traceback. The declaration is stale.",
+                ),
+                _ => None,
+            };
+            if let Some(why) = stale {
+                diffs.push(format!("{}: {why}", probe.label));
+                continue;
+            }
+            // A declared divergence excuses the LEGACY half only. This gate is still held to its
+            // claim, or the declaration would be a way to stop proving the Rust as well.
+            if rust.red != want_red {
+                diffs.push(format!(
+                    "{}: the RUST gate is {} over the planted tree ({:?})",
+                    probe.label,
+                    verdict_word(rust.red),
+                    rust.problems
+                ));
+                continue;
+            }
+            if let Some(rule) = &probe.expect_rule {
+                if !rust.problems.iter().any(|p| p.starts_with(rule.as_str())) {
+                    diffs.push(format!(
+                        "{}: the rust gate went red without naming `{rule}` ({:?})",
+                        probe.label, rust.problems
+                    ));
+                    continue;
+                }
+            }
+            declared.push(format!("{}: {}", probe.label, d.reason()));
+            continue;
+        }
+
         if legacy.red != want_red {
             diffs.push(format!(
                 "{}: the LEGACY script is {} over the planted tree, but the plant is a real \
@@ -213,10 +268,16 @@ pub fn check_lint(
             ));
         }
         if let Some(rule) = &probe.expect_rule {
-            if !legacy.output.contains(rule.as_str()) {
+            // The legacy is asked for whatever IT calls this rule. Two gates could not keep their
+            // legacy row ids because those ids were not a fixed set, and several legacy lints name
+            // no rule at all — they print prose. Carrying the legacy's own string keeps the
+            // comparison about RULE IDENTITY instead of letting it decay into "both went red
+            // somehow", which two implementations can do for two different reasons.
+            let legacy_needle = probe.legacy_names.as_deref().unwrap_or(rule.as_str());
+            if !legacy.output.contains(legacy_needle) {
                 diffs.push(format!(
-                    "{}: the legacy script went red without naming `{rule}`, so the two are red \
-                     about different things",
+                    "{}: the legacy script went red without naming `{legacy_needle}`, so the two \
+                     are red about different things",
                     probe.label
                 ));
             }
@@ -229,7 +290,11 @@ pub fn check_lint(
         }
     }
 
-    Ok(LintParityOutcome { compared, diffs })
+    Ok(LintParityOutcome {
+        compared,
+        diffs,
+        declared,
+    })
 }
 
 fn verdict_word(red: bool) -> &'static str {
@@ -353,6 +418,16 @@ fn run_lint(
 pub struct LintParityOutcome {
     pub compared: usize,
     pub diffs: Vec<String>,
+    /// The deliberate, reasoned differences — printed rather than hidden, and each one re-proved
+    /// on this run to still apply.
+    pub declared: Vec<String>,
+}
+
+/// An interpreter traceback. A crashed lint and a lint that considered the tree and refused it
+/// leave the SAME exit code, so without reading for this the harness would credit a crash as a
+/// verdict.
+fn looks_like_a_crash(output: &str) -> bool {
+    output.contains("Traceback (most recent call last)")
 }
 
 impl LintParityOutcome {
@@ -366,6 +441,9 @@ pub fn print_lint_outcome(name: &str, outcome: &LintParityOutcome) {
         "parity {name}: {} tree(s) compared — the real one plus one per planted violation",
         outcome.compared
     );
+    for d in &outcome.declared {
+        println!("  DECLARED DELTA  {d}");
+    }
     for d in &outcome.diffs {
         println!("  DIFF  {d}");
     }
