@@ -26,7 +26,9 @@
 #
 # No external deps beyond bash 3.2 + POSIX awk (macOS/Linux) — same bare-runner posture as the sibling gates.
 set -uo pipefail
-cd "$(dirname "$0")/.."
+# There is no `set -e` here (the checks accumulate), so a failed `cd` would leave the gate scanning
+# whatever directory the caller happened to be in. Refuse instead: every path below is relative.
+cd "$(dirname "$0")/.." || { echo "secret-hygiene gate: FAIL — cannot cd to the repo root" >&2; exit 1; }
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -227,7 +229,7 @@ scan_sinks() {
 
 # Production .rs under the roots, minus test files.
 prod_files() {
-  find $* -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$' | grep -v '^$' | sort
+  find "$@" -name '*.rs' 2>/dev/null | grep -v '/tests/' | grep -Ev '_tests?\.rs$' | grep -v '^$' | sort
 }
 
 # ── SELF-TEST — the scanner cannot be lied to ─────────────────────────────────────────────────────
