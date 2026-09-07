@@ -19,9 +19,17 @@ const FIXTURE: &str = include_str!("../../../../testing/shadow-oracle/fixtures/o
 struct FixtureOp {
     method: String,
     path: String,
-    scope: &'static str,
+    scope: String,
 }
 
+/// The operations the COMMITTED fixture names, with the scope the fixture itself carries.
+///
+/// The scope is READ OUT of `x-busbar-required-scope`, not recomputed here. It used to be derived
+/// by a hand-transcribed second copy of `verb::scope_for`'s rule — which meant the comparison below
+/// ran rule-copy-A against rule-copy-B and could not see a disagreement between the table and the
+/// artifact it is derived from. A corrected fixture row (say `plugins/inspect` becoming `full`)
+/// was then invisible: the test recomputed `read-only`, matched the table's `read-only`, and passed
+/// while the shipped table served a mutating POST to a read-only credential.
 fn fixture_ops() -> Vec<FixtureOp> {
     let doc: serde_json::Value = serde_json::from_str(FIXTURE).expect("fixture is valid JSON");
     let paths = doc["paths"]
@@ -30,21 +38,20 @@ fn fixture_ops() -> Vec<FixtureOp> {
     let mut ops = Vec::new();
     for (path, methods) in paths {
         let methods = methods.as_object().expect("each path is a method map");
-        for (method, _op) in methods {
+        for (method, op) in methods {
             let m = method.to_uppercase();
             if !["GET", "POST", "PUT", "PATCH", "DELETE"].contains(&m.as_str()) {
                 continue;
             }
-            // Reproduce 1.5.5's `required_scope` exactly: every read is `read-only`; the two
-            // stateless dry-run POSTs are `read-only`; everything else is `full`.
-            let is_read = m == "GET" || m == "HEAD";
-            let is_dry_run_post =
-                path == "/api/v1/admin/config/validate" || path == "/api/v1/admin/plugins/inspect";
-            let scope = if is_read || is_dry_run_post {
-                "read-only"
-            } else {
-                "full"
-            };
+            let scope = op["x-busbar-required-scope"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "the fixture operation {m} {path} carries no `x-busbar-required-scope`; \
+                         the scope is read from the artifact, never inferred"
+                    )
+                })
+                .to_string();
             ops.push(FixtureOp {
                 method: m,
                 path: path.clone(),
@@ -61,9 +68,32 @@ fn table_ops() -> Vec<FixtureOp> {
         .map(|r: &LegacyVerbRow| FixtureOp {
             method: r.method.to_string(),
             path: r.path.to_string(),
-            scope: r.scope.as_str(),
+            scope: r.scope.as_str().to_string(),
         })
         .collect()
+}
+
+/// Every fixture operation declares a scope, and it is one of the two the table can express.
+///
+/// Stated separately so that a fixture row losing the key, or growing a third spelling, is reported
+/// as what it is rather than as a mismatch against the table.
+#[test]
+fn every_fixture_operation_declares_a_scope_the_table_can_express() {
+    let ops = fixture_ops();
+    assert_eq!(ops.len(), 66, "the loop has to have something to check");
+    for op in &ops {
+        assert!(
+            op.scope == "read-only" || op.scope == "full",
+            "{} {} declares an unknown scope `{}`",
+            op.method,
+            op.path,
+            op.scope
+        );
+    }
+    // Both scopes are actually present, so a fixture that collapsed to one value everywhere — which
+    // would make the comparison below pass against an equally collapsed table — is caught here.
+    assert!(ops.iter().any(|o| o.scope == "read-only"));
+    assert!(ops.iter().any(|o| o.scope == "full"));
 }
 
 #[test]
