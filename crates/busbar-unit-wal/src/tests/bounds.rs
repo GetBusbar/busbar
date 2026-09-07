@@ -141,3 +141,47 @@ fn a_bounded_idempotence_check_still_suppresses_a_re_offer_from_a_rolled_segment
     assert_eq!(again.already_present, 4);
     assert!(wal.holds(1, 1), "the log still says it holds the identity");
 }
+
+/// A NUMBER BELOW THE MARK THAT WAS NEVER WRITTEN IS ABSENT, AND HAS TO READ AS ABSENT.
+///
+/// The idempotence check is a high-water mark plus a window of the holes below it, and the mark on
+/// its own gets exactly one thing wrong: a number under it that nothing ever wrote. Without the
+/// window that number reads as present, so the record offered under it is passed over and the ack
+/// says `appended: 0` — a record accepted, reported as a duplicate, and on no medium anywhere.
+///
+/// The window's other end is already covered (a hole that has fallen out of it reads as present, on
+/// purpose, because passing over a record is the safe direction). What was not covered is the end
+/// that matters more: while the hole is still IN the window, the log has to admit it does not hold
+/// it, and has to take the record.
+#[test]
+fn a_hole_still_inside_the_window_reads_as_absent_and_the_record_is_taken() {
+    let (factory, _switch, _memory) = FaultyFactory::new();
+    let mut wal = Wal::with_parts(
+        Box::new(factory),
+        Box::new(NullShipper::new()),
+        Mode::OnDisk,
+        CEILING,
+    )
+    .unwrap();
+    let token = durability_token();
+
+    // A writer that skips: the log's mark for node 1 jumps to 5 without 1..=4 ever being written.
+    wal.append_batch(&token, StepName::Meter, &records(1, 5, 1, 40))
+        .expect("the first record lands");
+    assert!(wal.holds(1, 5), "what was written is held");
+    assert!(
+        !wal.holds(1, 3),
+        "a number below the mark that nothing wrote is not held, and the mark alone cannot say so"
+    );
+
+    // And the log has to prove it by taking the record rather than passing it over as a duplicate.
+    let ack = wal
+        .append_batch(&token, StepName::Meter, &records(1, 3, 1, 40))
+        .expect("the skipped number is still free");
+    assert_eq!(
+        ack.appended, 1,
+        "a record under a number nothing wrote was passed over as a duplicate and never landed"
+    );
+    assert_eq!(ack.already_present, 0);
+    assert!(wal.holds(1, 3), "and now it is held");
+}
