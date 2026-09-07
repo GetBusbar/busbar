@@ -320,6 +320,47 @@ fn blank_number_after(s: &str, key: &str) -> String {
     out
 }
 
+/// Keep an AWS event-stream body's FRAME TEXT and drop its binary framing.
+///
+/// A frame is a 12-byte prelude (total length, headers length, prelude CRC), the length-prefixed
+/// headers, the JSON payload, and a 4-byte message CRC. Every one of those framing bytes is a pure
+/// function of the header bytes and payload that stay in the comparison, so none of them carries
+/// identity of its own — but SOME of them land in the printable ASCII range, and dropping "the
+/// binary framing" by filtering non-graphic characters therefore kept whichever framing bytes
+/// happened to be printable. That is a live comparison of a CRC: the metadata frame's payload
+/// carries a MEASURED `latencyMs`, so the two legs racing the same mock produce frames of different
+/// length with different CRCs, and a single stray printable byte (a `|` from one leg's CRC) made an
+/// otherwise identical body compare unequal. Intermittently, and over no behavioral difference at
+/// all — the reading itself is blanked two lines later.
+///
+/// So the framing is dropped STRUCTURALLY instead: each frame runs from its `:event-type` /
+/// `:exception-type` header to the last `}` of its JSON payload, and everything between one frame's
+/// payload and the next frame's headers — the CRC of the one, the prelude of the other — is not
+/// text the frame says and is not compared. What the frame SAYS (its header names and values, its
+/// payload) is kept in full, so a real divergence still fails.
+fn frames_text(text: &str) -> String {
+    const FRAME_STARTS: [&str; 2] = [":event-type", ":exception-type"];
+    let starts: Vec<usize> = text
+        .char_indices()
+        .map(|(i, _)| i)
+        .filter(|i| FRAME_STARTS.iter().any(|m| text[*i..].starts_with(m)))
+        .collect();
+    let mut frames: Vec<&str> = Vec::with_capacity(starts.len());
+    for (n, start) in starts.iter().enumerate() {
+        let end = starts.get(n + 1).copied().unwrap_or(text.len());
+        let frame = &text[*start..end];
+        // The payload is the frame's tail; everything after its last `}` is this frame's message CRC
+        // and the next frame's prelude. A frame with no payload keeps its header text as-is (no
+        // Bedrock frame is payload-less today, and dropping a frame entirely would be worse than
+        // carrying a few framing bytes on one that ever is).
+        frames.push(match frame.rfind('}') {
+            Some(at) => &frame[..=at],
+            None => frame,
+        });
+    }
+    frames.join("\n")
+}
+
 /// Blank the values that are synthesized per response (ids, clocks, measured latency) so byte
 /// comparison is about shape and content, not about a fresh UUID or a real wall-clock reading. JSON
 /// bodies are normalized structurally; SSE bodies line by line on their `data:` payloads; anything
@@ -374,12 +415,12 @@ fn normalize(s: &str) -> String {
     // them that is not also a divergence in what is compared is not representable — and the body
     // reaches here already `from_utf8_lossy`'d, so those bytes were never compared faithfully in the
     // first place.
-    if s.contains(":event-type") {
+    if s.contains(":event-type") || s.contains(":exception-type") {
         let text: String = s
             .chars()
             .filter(|c| c.is_ascii_graphic() || *c == ' ')
             .collect();
-        return blank_number_after(&text, "\"latencyMs\":");
+        return blank_number_after(&frames_text(&text), "\"latencyMs\":");
     }
     s.lines()
         .map(|line| match line.strip_prefix("data: ") {
@@ -645,26 +686,39 @@ const ALLOWED: &[Divergence] = &[
 /// the body, which would make the identity rig above green over nothing.
 #[test]
 fn eventstream_normalization_blanks_the_reading_and_nothing_else() {
-    let frame = |latency: u32, tokens: u32| {
+    // A frame as it reaches `normalize`: binary framing (the lengths and the prelude CRC), the
+    // header text, the JSON payload, and the trailing message CRC. The framing bytes are passed in
+    // because they are precisely what varies between two frames that SAY the same thing: they are
+    // functions of the payload, so a one-digit change in the measured latency moves them, and some
+    // of the bytes they move to are printable ASCII (`|` here, a real one from a real CRC).
+    let frame = |latency: u32, tokens: u32, framing: (&str, &str)| {
         format!(
-            "\u{0}\u{0}\u{0}\u{8c}\u{0}\u{0}\u{0}N*:event-type metadata:content-type \
+            "{}:event-type metadata:content-type \
              application/json:message-type event{{\"metrics\":{{\"latencyMs\":{latency}}},\
-             \"usage\":{{\"inputTokens\":{tokens},\"outputTokens\":2,\"totalTokens\":5}}}}\u{fffd}"
+             \"usage\":{{\"inputTokens\":{tokens},\"outputTokens\":2,\"totalTokens\":5}}}}{}",
+            framing.0, framing.1
         )
     };
+    let framing_a = ("\u{0}\u{0}\u{0}\u{8c}\u{0}\u{0}\u{0}N*", "\u{fffd}");
+    let framing_b = ("\u{0}\u{0}\u{0}\u{8d}\u{0}\u{0}\u{0}N*", "|\u{fffd}");
     assert_eq!(
-        normalize(&frame(0, 3)),
-        normalize(&frame(17, 3)),
-        "the measured latency is not identity-bearing and must normalize away"
+        normalize(&frame(0, 3, framing_a)),
+        normalize(&frame(17, 3, framing_b)),
+        "the measured latency is not identity-bearing, and neither are the length/CRC bytes it \
+         moves — both must normalize away"
     );
     assert_ne!(
-        normalize(&frame(0, 3)),
-        normalize(&frame(0, 4)),
+        normalize(&frame(0, 3, framing_a)),
+        normalize(&frame(0, 4, framing_a)),
         "a real difference in what the frame reports must survive normalization"
     );
     assert!(
-        normalize(&frame(0, 3)).contains(":event-type metadata"),
+        normalize(&frame(0, 3, framing_a)).contains(":event-type metadata"),
         "the frame's own headers stay in the comparison"
+    );
+    assert!(
+        normalize(&frame(0, 3, framing_a)).contains("\"outputTokens\":2"),
+        "the frame's payload stays in the comparison"
     );
 }
 
