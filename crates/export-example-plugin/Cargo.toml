@@ -17,3 +17,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 busbar-plugin-sdk = { path = "../plugin-sdk" }
+
+[dev-dependencies]
+serde_json = { workspace = true }
