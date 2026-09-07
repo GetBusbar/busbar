@@ -195,6 +195,24 @@ impl Gate for SegregationGate {
             &["capture.py"],
         ));
 
+        // THE IGNORED FILE IS NOT PART OF THE TREE. `find` reads whatever a build left behind, and
+        // this rule's walk has no extension filter, so an untracked `__pycache__/*.pyc` under the
+        // oracle made the whole gate red on "the oracle tree could not be scanned" — a verdict
+        // about a byte nobody wrote, on a rule about what the oracle NAMES. The plant carries the
+        // banned token so the case can only stay green by the path being filtered, never by the
+        // content being harmless.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("testing/{}/__pycache__/planted.pyc", "shadow-oracle"),
+            format!("compiled bytecode naming {}\n", "xtask"),
+        );
+        report.push(prove_green(
+            &cx.with_overlay(ov),
+            self,
+            "a gitignored artefact under a walked root is not a finding",
+            &[ROW_ORACLE],
+        ));
+
         report
     }
 }

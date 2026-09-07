@@ -836,3 +836,244 @@ fn parity_refuses_a_legacy_run_that_wrote_no_rows() {
         "zero legacy rows would make every parity comparison vacuous"
     );
 }
+
+#[test]
+fn the_walk_skips_what_the_tree_ignores_and_still_refuses_a_missing_root() {
+    // `find` reads whatever a build left behind. A scan set holding `__pycache__/*.pyc` is a gate
+    // red on a byte nobody wrote, and a gate that reds for a reason unrelated to its rule is how a
+    // runner earns a `|| true`.
+    let c = cx();
+    let ignored = PathBuf::from(format!("testing/{}/__pycache__/probe.pyc", "shadow-oracle"));
+    let mut ov = Overlay::new();
+    ov.set(&ignored, "compiled bytecode\n");
+    let planted = c.with_overlay(ov);
+    let files = planted
+        .walk(&WalkSpec::new([format!("testing/{}", "shadow-oracle")]).min_files(1))
+        .expect("the oracle tree walks");
+    assert!(
+        !files.iter().any(|f| f.rel == ignored),
+        "an ignored path is not part of the tree the gates judge"
+    );
+
+    // The two refusals are evaluated AROUND the filter, never through it.
+    assert!(matches!(
+        c.walk(&WalkSpec::new(["no/such/root"]).ext("rs").min_files(1)),
+        Err(WalkError::MissingRoot { .. })
+    ));
+}
+
+#[test]
+fn check_ignore_reads_a_clean_scan_set_as_none_ignored_rather_than_as_an_error() {
+    // `git check-ignore` exits 1 when NOTHING matched, which is the ordinary answer over a clean
+    // set. A caller that tested `success()` would call every clean tree unreadable.
+    let root = repo_root();
+    let none = xtask::gitp::check_ignore(&root, &["xtask/src/ctx.rs".to_string()])
+        .expect("exit 1 is `nothing matched`, not a failure");
+    assert!(none.is_empty());
+    let some = xtask::gitp::check_ignore(&root, &[".fix/whatever".to_string()])
+        .expect("exit 0 is `something matched`");
+    assert_eq!(some, vec![".fix/whatever".to_string()]);
+}
+
+// ── THE ERE SUBSET MATCHER ────────────────────────────────────────────────────────────────────────
+//
+// The rule tables the structure-lint port drives are EREs, so a matcher that quietly disagrees with
+// one is a rule scanning for something other than what its row says — and a rule that matches
+// nothing is a rule that passed. Every case below drives a pattern taken VERBATIM from a shipped
+// row against a line that must hit and a line that must not.
+
+fn ere(p: &str) -> xtask::ere::Ere {
+    xtask::ere::Ere::new(p).unwrap_or_else(|e| panic!("`{p}` must compile: {e}"))
+}
+
+#[test]
+fn ere_matches_the_choke_point_rows_verbatim() {
+    assert!(ere(r"fs::rename\(").is_match("        std::fs::rename(&tmp, &dst)?;"));
+    assert!(!ere(r"fs::rename\(").is_match("        std::fs::renamed;"));
+
+    assert!(ere("sync_[ad]").is_match("    f.sync_all()?;"));
+    assert!(ere("sync_[ad]").is_match("    f.sync_data()?;"));
+    assert!(!ere("sync_[ad]").is_match("    f.sync_everything()?;"));
+
+    assert!(ere(r"#\[(unsafe\()?no_mangle").is_match("#[no_mangle]"));
+    assert!(ere(r"#\[(unsafe\()?no_mangle").is_match("#[unsafe(no_mangle)]"));
+    assert!(!ere(r"#\[(unsafe\()?no_mangle").is_match("let x = no_mangle;"));
+
+    assert!(ere(r"AskEntryCfg[[:space:]]*\{").is_match("    let a = AskEntryCfg {"));
+    assert!(!ere(r"AskEntryCfg[[:space:]]*\{").is_match("    fn f(a: &AskEntryCfg) -> u8 {"));
+
+    assert!(ere(r"schema_hash[[:space:]]*\.is_some").is_match("if e.schema_hash.is_some() {"));
+    assert!(ere(r"\.pin[[:space:]]*\.is_none").is_match("if approval.pin .is_none() {"));
+}
+
+#[test]
+fn ere_matches_the_axis_rows_verbatim() {
+    let op = ere(r"[Oo]peration(\(\))?[[:space:]]*==");
+    assert!(op.is_match("    if operation == Operation::Chat {"));
+    assert!(op.is_match("    if req.operation() == want {"));
+    assert!(!op.is_match("    let operation = pick();"));
+
+    let m = ere(r"match[[:space:]]+[A-Za-z0-9_.:]*[Tt]ransport(\(\))?[[:space:]]*\{");
+    assert!(m.is_match("        match self.transport {"));
+    assert!(m.is_match("        match Transport {"));
+    assert!(!m.is_match("        match self.other {"));
+
+    let mm = ere(r"matches!\([^)]*OpShape::");
+    assert!(mm.is_match("    if matches!(v, OpShape::Stream) {"));
+    assert!(!mm.is_match("    if matches!(v, Other::Stream) {"));
+
+    let il = ere(r"if[[:space:]]+let[[:space:]]+[A-Za-z0-9_:]*Transport::");
+    assert!(il.is_match("    if let Transport::Stdio = t {"));
+    assert!(il.is_match("    if let busbar::Transport::Stdio = t {"));
+    assert!(!il.is_match("    if let Some(t) = t {"));
+}
+
+#[test]
+fn ere_matches_the_request_path_word_boundaries_the_shell_spelled_by_hand() {
+    let mid = ere("[^A-Za-z0-9_][Ss]tore[^A-Za-z0-9_]");
+    assert!(mid.is_match("        self.store.get(k)"));
+    assert!(mid.is_match("        let s: &dyn Store = x;"));
+    // The whole reason the boundaries are spelled out rather than written `\b`: these must NOT trip.
+    assert!(!mid.is_match("        restore_from_store_id(x)"));
+    assert!(!mid.is_match("        let store_id = 3;"));
+
+    let end = ere("[^A-Za-z0-9_][Ss]tore$");
+    assert!(end.is_match("        let s = self.store"));
+    assert!(!end.is_match("        let s = self.restore"));
+}
+
+#[test]
+fn ere_reads_the_inline_test_attribute_class_with_a_leading_bracket() {
+    // `[]([:space:]]` — a `]` FIRST in a bracket expression is a literal `]`, and reading that
+    // wrong makes the whole inline-test rule match nothing, which is its pass.
+    let attr = ere(
+        r"^[[:space:]]*#\[((tokio|async_std|actix_rt|serial_test)::)?(test|rstest|test_case|bench|proptest)[]([:space:]]",
+    );
+    assert!(attr.is_match("    #[test]"));
+    assert!(attr.is_match("    #[tokio::test]"));
+    assert!(attr.is_match("    #[tokio::test(flavor = \"multi_thread\")]"));
+    assert!(attr.is_match("    #[test_case(1)]"));
+    assert!(attr.is_match("    #[rstest]"));
+    assert!(!attr.is_match("    #[testing]"));
+    assert!(!attr.is_match("    #[derive(Debug)]"));
+}
+
+#[test]
+fn ere_finds_the_declaration_span_the_plane_scanner_reads() {
+    let decl = ere(
+        r"^(pub[[:space:]]*(\([^)]*\)[[:space:]]*)?)?((async|unsafe|const)[[:space:]]+)*fn[[:space:]]+[A-Za-z_][A-Za-z0-9_]*",
+    );
+    assert_eq!(
+        decl.find_str("pub(crate) async fn observed_pin(x: u8) -> u8 {"),
+        Some("pub(crate) async fn observed_pin".to_string())
+    );
+    assert_eq!(decl.find_str("fn judge() {"), Some("fn judge".to_string()));
+    // A METHOD is indented, so the anchor keeps it out of the comparison — the property that makes
+    // the cross-plane duplicate rule usable at all.
+    assert_eq!(decl.find_str("    fn new() -> Self {"), None);
+}
+
+#[test]
+fn ere_refuses_a_pattern_that_does_not_compile_rather_than_matching_nothing() {
+    assert!(xtask::ere::Ere::new("(unclosed").is_err());
+    assert!(xtask::ere::Ere::new("[unclosed").is_err());
+    assert!(xtask::ere::Ere::new("closed)").is_err());
+}
+
+#[test]
+fn ere_terminates_on_a_nullable_group_under_a_star() {
+    // An iteration that consumed nothing ends the repeat; without that guard this hangs forever.
+    assert!(ere("(a?)*b").is_match("xxb"));
+    assert!(!ere("(a?)*b").is_match("xxc"));
+}
+
+#[test]
+fn ere_prefilters_on_a_literal_no_match_can_avoid() {
+    assert_eq!(
+        ere(r"fn[[:space:]]+validate_request[^a-zA-Z0-9_]").required_literal(),
+        Some("validate_request")
+    );
+    assert_eq!(
+        ere(r"[Oo]peration(\(\))?[[:space:]]*==").required_literal(),
+        Some("peration")
+    );
+    // Nothing is mandatory at the top level here: the prefilter must be ABSENT rather than wrong.
+    assert_eq!(ere("(abc|def)").required_literal(), None);
+}
+
+// ── TEST_SCOPE_AWK, PORTED ────────────────────────────────────────────────────────────────────────
+//
+// The two bugs the shell's own self-test proved exploitable, plus the brace-less-item case that
+// made the second one reachable. A line wrongly called "test" is a line exempt from every ban.
+
+fn gated_lines(src: &str) -> Vec<usize> {
+    scan::test_scope(src)
+        .into_iter()
+        .filter(|l| l.gated)
+        .map(|l| l.no)
+        .collect()
+}
+
+#[test]
+fn a_doc_comment_naming_the_test_attribute_does_not_shadow_the_production_item_below_it() {
+    let src = "/// This item is NOT #[cfg(test)] — the comment merely says the words.\n\
+               pub fn production() {\n    std::fs::rename(a, b);\n}\n";
+    assert_eq!(gated_lines(src), Vec::<usize>::new());
+}
+
+#[test]
+fn a_brace_less_cfg_test_item_gates_its_own_line_and_no_more() {
+    let src = "#[cfg(test)]\nmod tests;\n\npub fn production() {\n    std::fs::rename(a, b);\n}\n";
+    // The attribute and the brace-less item it applies to, and nothing after them.
+    assert_eq!(gated_lines(src), vec![1, 2]);
+}
+
+#[test]
+fn a_braced_cfg_test_body_is_gated_to_its_closing_brace_and_not_past_it() {
+    let src = "#[cfg(test)]\nmod tests {\n    fn t() {\n        std::fs::rename(a, b);\n    }\n}\n\
+               pub fn production() {\n    std::fs::rename(a, b);\n}\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4, 5, 6]);
+}
+
+#[test]
+fn cfg_not_test_is_production_and_a_feature_gate_is_not_a_test_gate() {
+    let src = "#[cfg(not(test))]\npub fn only_in_prod() {\n    std::fs::rename(a, b);\n}\n";
+    assert_eq!(gated_lines(src), Vec::<usize>::new());
+    let src =
+        "#[cfg(feature = \"test-utils\")]\npub fn helper() {\n    std::fs::rename(a, b);\n}\n";
+    assert_eq!(gated_lines(src), Vec::<usize>::new());
+}
+
+#[test]
+fn cfg_all_test_arms_and_an_unresolvable_attribute_fails_closed() {
+    assert_eq!(
+        gated_lines("#[cfg(all(test, unix))]\nmod t {\n}\n"),
+        vec![1, 2, 3]
+    );
+    // An attribute that resolves to no item within a handful of lines is DROPPED rather than
+    // latching onto the next braced item, which is production code.
+    let mut src = String::from("#[cfg(test)]\n");
+    for _ in 0..14 {
+        src.push_str("this line resolves nothing\n");
+    }
+    src.push_str("pub fn production() {}\n");
+    let gated = gated_lines(&src);
+    assert!(
+        !gated.contains(&16),
+        "the arm must be dropped, not latched: {gated:?}"
+    );
+}
+
+#[test]
+fn the_code_of_a_line_keeps_a_slash_slash_that_lives_inside_a_string_literal() {
+    let lines = scan::test_scope("let u = \"https://x\"; // trailer\nlet v = 1; // trailer\n");
+    assert!(lines[0].code.contains("https://x"));
+    assert!(
+        lines[0].code.contains("trailer"),
+        "a line holding a literal keeps its raw text"
+    );
+    assert!(
+        !lines[1].code.contains("trailer"),
+        "a line holding no literal loses its trailer"
+    );
+}
