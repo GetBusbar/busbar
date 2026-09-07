@@ -172,12 +172,10 @@ pub static ROOT_CARD: LazyLock<RootCard> = LazyLock::new(RootCard::default);
 /// difference matters: absent prices every class at nothing and still charges the flat fee, which is
 /// exactly what the previous release bills for that deployment.
 ///
-/// The version is a constant name rather than a hash of the configuration, and that is a stated
-/// limit rather than an oversight: the postings this card prices are read back at the width the node
-/// keeps, which carries no card version, so nothing downstream can tell two versions apart yet. The
-/// day the books grow that column, this is the one line that fills it. The NAME stays `root-llm`
-/// because a version string is a recorded value, not a label: changing it here would move every
-/// posting's card version in the books for a code move that computes the same card.
+/// The card carries no version of its own any more. Which card a posting was priced against is the
+/// number of the history entry that holds it, and that number belongs to the history: a card naming
+/// itself would be a second identity that can disagree with the first. This relay builds the card;
+/// appending it to the history is the wave that holds the history.
 fn card_from_config<'r>(
     rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
     per_request_fee: i64,
@@ -198,11 +196,7 @@ fn card_from_config<'r>(
             )
         })
     });
-    busbar_unit_cost::RateCard::from_config(
-        busbar_unit_cost::RateCardVersion::new("root-llm"),
-        lanes,
-        per_request_fee,
-    )
+    busbar_unit_cost::RateCard::from_config(lanes, per_request_fee)
 }
 
 /// The root, answering the engine's rate-apply seam.
