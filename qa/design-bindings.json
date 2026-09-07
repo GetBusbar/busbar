@@ -18,6 +18,7 @@
   "mapped": 97,
   "unproven": 6,
   "unmapped": 0,
+  "gap": 0,
   "checks_by_kind": {
    "gate": 13,
    "lint": 5,
@@ -1918,7 +1919,7 @@
     }
    ],
    "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it)"
   },
   {
    "id": "PB-38",
@@ -4272,7 +4273,7 @@
     }
    ],
    "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-postgres (in cells.json, but the golden never recorded it)"
   },
   {
    "id": "PB-94",
