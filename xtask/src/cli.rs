@@ -141,16 +141,14 @@ fn gate(args: &[String]) -> i32 {
         // work spent on the wrong side of the seam. The probes are what keep that comparison from
         // being one green against another.
         if !gate.parity_probes(&cx).is_empty() {
-            let root_flag = args
-                .iter()
-                .find_map(|a| a.strip_prefix("--root-flag="))
-                .map(str::to_string);
-            return match crate::parity::check_lint(
-                &cx,
-                gate.as_ref(),
-                &legacy,
-                root_flag.as_deref(),
-            ) {
+            // How the legacy half is pointed at a planted tree. A script with a `--root` flag
+            // takes one; the three that anchor on their own path are copied into the plant and
+            // run from there. Guessing between the two would silently judge the real repository.
+            let target = match args.iter().find_map(|a| a.strip_prefix("--root-flag=")) {
+                Some(flag) => crate::parity::LegacyTarget::RootFlag(flag.to_string()),
+                None => crate::parity::LegacyTarget::RelocateScript,
+            };
+            return match crate::parity::check_lint(&cx, gate.as_ref(), &legacy, &target) {
                 Ok(outcome) => {
                     crate::parity::print_lint_outcome(reg.name, &outcome);
                     i32::from(!outcome.at_parity())

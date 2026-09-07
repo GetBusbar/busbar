@@ -17,7 +17,7 @@
 //! If a committed artifact must change, it changes in its own commit with the diff reviewable,
 //! never bundled with the rewrite.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use crate::ctx::Ctx;
 use crate::gates::{self, Gate};
@@ -143,7 +143,7 @@ pub fn check_lint(
     cx: &Ctx,
     gate: &dyn Gate,
     legacy_argv: &[String],
-    root_flag: Option<&str>,
+    target: &LegacyTarget,
 ) -> Result<LintParityOutcome, String> {
     if legacy_argv.is_empty() {
         return Err("parity: no legacy command given".to_string());
@@ -162,7 +162,7 @@ pub fn check_lint(
     let mut compared = 0usize;
 
     // The real tree first: both must agree on the verdict everybody actually reads.
-    let legacy_real = run_lint(cx.root(), cx.root(), legacy_argv, root_flag)?;
+    let legacy_real = run_lint(cx.root(), cx.root(), legacy_argv, target)?;
     let rust_real = gates::execute(gate, cx);
     compared += 1;
     if legacy_real.red != rust_real.red {
@@ -180,10 +180,16 @@ pub fn check_lint(
             .scratch()
             .join(format!("parity-{}-{}", gate.name(), compared));
         let _ = std::fs::remove_dir_all(&scratch);
-        let paths: Vec<&str> = probe.materialize.iter().map(String::as_str).collect();
+        // The script itself is materialized too when it is relocated: a gate whose legacy half
+        // is not IN the planted tree judges the real one and reports a confident green.
+        let mut want: Vec<String> = probe.materialize.clone();
+        want.extend(target.extra_paths(legacy_argv));
+        want.sort();
+        want.dedup();
+        let paths: Vec<&str> = want.iter().map(String::as_str).collect();
         planted_cx.materialize(&scratch, &paths)?;
 
-        let legacy = run_lint(cx.root(), &scratch, legacy_argv, root_flag)?;
+        let legacy = run_lint(cx.root(), &scratch, legacy_argv, target)?;
         let rust = gates::execute(gate, &planted_cx);
         compared += 1;
 
@@ -244,12 +250,68 @@ fn first_line(s: &str) -> String {
         .collect()
 }
 
+/// HOW A LEGACY SCRIPT IS POINTED AT A TREE THAT IS NOT THE REPOSITORY.
+///
+/// The scripts do not agree on this, and the difference is not cosmetic: a probe pointed at the
+/// wrong tree runs the legacy script over the REAL, unplanted repository and reports a confident
+/// green. Both shapes are therefore named rather than guessed.
+pub enum LegacyTarget {
+    /// The script takes a flag naming the root (`--root <dir>`).
+    RootFlag(String),
+    /// The script has no such flag: it anchors on its OWN path (`dirname $0/..`, or
+    /// `Path(__file__).parents[1]`) or on the working directory. The script is copied into the
+    /// planted tree and invoked from there, so its own anchor resolves to the plant.
+    RelocateScript,
+}
+
+impl LegacyTarget {
+    /// The argv and working directory for one run.
+    fn invocation(&self, cwd: &Path, subject: &Path, argv: &[String]) -> (Vec<String>, PathBuf) {
+        match self {
+            LegacyTarget::RootFlag(flag) => {
+                let mut v = argv.to_vec();
+                v.push(flag.clone());
+                v.push(subject.display().to_string());
+                (v, cwd.to_path_buf())
+            }
+            LegacyTarget::RelocateScript => {
+                // The script path is whichever argument looks like one; an interpreter
+                // (`python3`, `bash`) stays as it is.
+                let v: Vec<String> = argv
+                    .iter()
+                    .map(|a| {
+                        if a.contains('/') && !a.starts_with('-') {
+                            subject.join(a).display().to_string()
+                        } else {
+                            a.clone()
+                        }
+                    })
+                    .collect();
+                (v, subject.to_path_buf())
+            }
+        }
+    }
+
+    /// Every path that must exist in the planted tree for this shape to work at all. A relocated
+    /// script has to be IN the tree it is about to judge.
+    pub fn extra_paths(&self, argv: &[String]) -> Vec<String> {
+        match self {
+            LegacyTarget::RootFlag(_) => Vec::new(),
+            LegacyTarget::RelocateScript => argv
+                .iter()
+                .filter(|a| a.contains('/') && !a.starts_with('-'))
+                .cloned()
+                .collect(),
+        }
+    }
+}
+
 struct LintRun {
     red: bool,
     output: String,
 }
 
-/// Run a legacy lint over `root` and read its VERDICT.
+/// Run a legacy lint over a tree and read its VERDICT.
 ///
 /// A non-zero exit is red and a zero exit is green — but a signal, or an exit code the script never
 /// documents, is neither, and reading it as green is how a crashed gate reports a clean tree. Those
@@ -258,15 +320,12 @@ fn run_lint(
     cwd: &Path,
     subject: &Path,
     argv: &[String],
-    root_flag: Option<&str>,
+    target: &LegacyTarget,
 ) -> Result<LintRun, String> {
-    let mut cmd = std::process::Command::new(&argv[0]);
-    cmd.args(&argv[1..]);
-    if let Some(flag) = root_flag {
-        cmd.arg(flag).arg(subject);
-    }
-    let out = cmd
-        .current_dir(cwd)
+    let (argv, cwd) = target.invocation(cwd, subject, argv);
+    let out = std::process::Command::new(&argv[0])
+        .args(&argv[1..])
+        .current_dir(&cwd)
         .output()
         .map_err(|e| format!("parity: {} : {e}", argv[0]))?;
     let code = out
