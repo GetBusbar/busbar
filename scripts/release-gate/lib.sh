@@ -144,3 +144,46 @@ target_field() {  # target_field <target> <field>
   jq -er --arg t "$1" --arg f "$2" \
     '.targets[] | select(.target == $t) | .[$f] // empty' "$CONTRACT"
 }
+
+# ── THE FULL CONTRACTED ASSET LIST, IN ONE PLACE, WITH THE PLACEHOLDER SPELLED AS THE DATA SPELLS IT
+#
+# `contract_asset_names <tag>` prints every file name Release <tag> owes: one per published target,
+# plus the metadata assets. It is the owed side of `release:no-extras`, and it was being built inline
+# there with a jq that CANNOT RUN:
+#
+#     jq -r --arg tag "$TAG" '.metadata_assets[].name | gsub("\\{TAG\\}"; $tag)' "$CONTRACT"
+#
+# `.metadata_assets` is an array of STRINGS ("busbar-{tag}.cdx.json"), not of objects, so `.name`
+# is `Cannot index string with string "name"` — jq exits 5, prints nothing, and because the
+# substitution's status is discarded into a `$( )` the owed list simply came back two names short.
+# The placeholder is lowercase `{tag}` as well; release-stage.yml's `a.replace("{tag}", tag)` reads
+# it correctly, and this one was matching an uppercase spelling that does not appear in the file.
+#
+# The two errors pointed opposite ways and neither was visible: the metadata assets were absent from
+# the OWED set (so nothing owed them) and present in the OBSERVED set (so they were reported as
+# "assets the contract does not account for") on every healthy release. A permanently-red row is how
+# a row gets waived, and the moment that one is waived the extras check is gone with it.
+#
+# A jq that fails here is a hard non-zero, never a short list: an owed set that quietly shrinks is
+# the vacuous-green this gate exists to eliminate.
+contract_asset_names() {  # contract_asset_names <tag>
+  local tag="$1" per_target metadata
+  per_target="$(contract_jq '.targets[] | select(.published == true) | "busbar-\(.target).\(.archive)"')" || {
+    echo "contract_asset_names: cannot read the published targets out of ${CONTRACT}" >&2; return 1; }
+  metadata="$(jq -er --arg tag "$tag" '.metadata_assets[] | gsub("\\{tag\\}"; $tag)' "$CONTRACT")" || {
+    echo "contract_asset_names: cannot read .metadata_assets out of ${CONTRACT}" >&2; return 1; }
+  # A floor, for the same reason every other enumeration in this gate carries one: a contract that
+  # collapsed to nothing must not present as "nothing is owed".
+  local n
+  n="$(printf '%s\n%s\n' "$per_target" "$metadata" | awk 'NF{c++} END{print c+0}')"
+  # A non-numeric count is the floor's own vacuous case: `[ "" -lt 3 ]` is a shell ERROR, not false,
+  # so the `if` is simply not taken and the short list is printed with a zero exit — the floor
+  # defeated by the one input it was put here to catch. Anything that is not a number counts as
+  # zero, which is a refusal.
+  case "$n" in ''|*[!0-9]*) n=0 ;; esac
+  if [ "$n" -lt 3 ]; then
+    echo "contract_asset_names: only ${n} asset name(s) derived from ${CONTRACT}; the contract collapsed" >&2
+    return 1
+  fi
+  printf '%s\n%s\n' "$per_target" "$metadata"
+}
