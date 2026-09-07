@@ -530,6 +530,19 @@ fn the_real_ci_workflow_parses_and_its_gate_call_sites_are_discoverable() {
         "ci.yml calls gate(s) the registry does not answer to: {unknown:?} — every one of those \
          steps exits 2 on every push. Registered: {registered:?}"
     );
+    // And ONE NAME IS PINNED BY HAND, because `!called.is_empty()` above would still hold if every
+    // call site but one were reverted. `plane-purity` is the one the batch that switched it named
+    // here; a `called` set that has lost it is a call site that went back to a script.
+    assert!(
+        called.contains(&"plane-purity".to_string()),
+        "the plane-purity call site is switched; discovery must see it: {called:?}"
+    );
+    for name in &called {
+        assert!(
+            gates::find(name).is_some(),
+            "ci.yml calls `cargo xtask gate {name}`, which no registration answers to"
+        );
+    }
     assert_eq!(
         yaml_lite::xtask_gate_invocations("    run: |\n      cargo xtask gate plane-purity --selftest\n      cargo xtask gate plane-purity\n"),
         vec!["plane-purity".to_string()]
