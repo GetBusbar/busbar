@@ -424,14 +424,14 @@ run    = "scripts/no-deferral-gate.sh --selftest && scripts/no-deferral-gate.sh 
 id     = "inventory-ref-lint"
 status = "active"
 tier   = "fast"
-# THE INVENTORY-REFERENCE LINT (scripts/inventory-ref-lint.py) — every ARCHITECTURE.md Appendix B
+# THE INVENTORY-REFERENCE LINT (cargo xtask gate inventory-ref) — every ARCHITECTURE.md Appendix B
 # binding's `inventory` column names a docs/design inventory file that EXISTS. It is the companion
 # to the design-bindings gate above: design-bindings proves each binding's CHECKS still exist, this
 # proves each binding's INVENTORY citation still resolves, so a renamed or deleted inventory file
 # cannot leave a binding pointing at nothing. Green on the tree today and run by nothing until now.
 # The --selftest (a real prefix clean, an unrecognized prefix exactly one problem, a bare source
 # backtick and a PB-N self-reference correctly not flagged) runs FIRST.
-run    = "python3 scripts/inventory-ref-lint.py --selftest && python3 scripts/inventory-ref-lint.py --check"
+run    = "cargo xtask gate inventory-ref --selftest && cargo xtask gate inventory-ref"
 
 [[segment]]
 id     = "changelog-register"

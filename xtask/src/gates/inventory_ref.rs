@@ -356,19 +356,53 @@ impl Gate for InventoryRefGate {
         let all = readable_inputs(cx);
         plants()
             .into_iter()
-            .map(|p| crate::gates::ParityProbe {
-                label: p.label.to_string(),
-                materialize: all
+            .map(|p| {
+                let materialize: Vec<String> = all
                     .iter()
                     .filter(|path| !p.absent.iter().any(|a| a == *path))
                     .cloned()
-                    .collect(),
-                overlay: p.overlay,
-                expect_rule: Some(p.rule.to_string()),
-                legacy_names: None,
-                divergence: None,
+                    .collect();
+                let probe = crate::gates::ParityProbe::red(
+                    p.label,
+                    p.overlay,
+                    materialize,
+                    p.rule.to_string(),
+                );
+                match legacy_wording(p.label) {
+                    Some(w) => probe.named_by(w),
+                    None => probe.diverges(crate::gates::Divergence::LegacyCrashes {
+                        reason: "the legacy reaches this verdict by raising out of its own file \
+                                 read rather than by reporting a rule, and an interpreter traceback \
+                                 and a considered refusal leave the same exit code."
+                            .to_string(),
+                    }),
+                }
             })
             .collect()
+    }
+}
+
+/// What the LEGACY script calls each planted violation.
+///
+/// Keyed by the PLANT, not by the row id, because two plants that this gate reports under one row
+/// are two different sentences on the legacy's side: a manifest whose `bindings` key was renamed
+/// and a manifest that is not JSON at all both land on `inventory-ref:manifest` here. `None` means
+/// the legacy has no sentence for it at all -- it dies instead -- which is a declared divergence
+/// rather than a gap in this table.
+fn legacy_wording(label: &str) -> Option<&'static str> {
+    match label {
+        "the manifest's binding array was renamed away" => {
+            Some("carries no top-level `bindings` key")
+        }
+        "the binding set collapsed below its floor" => Some("floor 40"),
+        "a binding cites an unrecognized inventory file prefix" => {
+            Some("unrecognized inventory file prefix")
+        }
+        "an inventory file a binding cites was renamed away" => {
+            Some("inventory file missing for")
+        }
+        // The unreadable and not-JSON arms: the legacy raises rather than reporting.
+        _ => None,
     }
 }
 
