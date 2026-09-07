@@ -45,7 +45,7 @@ fn the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_
         1024 * 1024 * 1024,
         "ceiling 1 GiB"
     );
-    assert!(REQUEST_BODY_MAX_BYTES_FLOOR < DEFAULT_REQUEST_BODY_MAX_BYTES);
+    const { assert!(REQUEST_BODY_MAX_BYTES_FLOOR < DEFAULT_REQUEST_BODY_MAX_BYTES) };
 }
 
 /// Neither shipped one-shot transport carries a session, so neither can reach the frame ceiling.
@@ -57,14 +57,20 @@ fn the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_
 /// silently acquiring a cap on its bodies.
 #[test]
 fn the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session() {
-    assert!(
-        !<HttpTransport as TransportMeta>::SESSION,
-        "http carries no session"
-    );
-    assert!(
-        !<SseTransport as TransportMeta>::SESSION,
-        "sse carries no session"
-    );
+    // A compile-time assertion, because the fact is a compile-time one: a transport that grows a
+    // session tomorrow does not fail this run, it fails the build.
+    const {
+        assert!(
+            !<HttpTransport as TransportMeta>::SESSION,
+            "http carries no session"
+        )
+    };
+    const {
+        assert!(
+            !<SseTransport as TransportMeta>::SESSION,
+            "sse carries no session"
+        )
+    };
 
     let table = InFlight::new(8, 0);
     let scheduler = Scheduler::default();
