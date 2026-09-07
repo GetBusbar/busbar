@@ -1099,3 +1099,195 @@ fn budget_spend_never_drives_the_counter_negative() {
     budget.refund();
     assert_eq!(budget.remaining(), Some(1));
 }
+
+// ── The DEFAULT trip mode's decision table ───────────────────────────────────────────────────────
+//
+// Every state-machine case above configures `TripMode::Consecutive`, so the mode a
+// `BreakerCfg::default()` cell actually evaluates — `ErrorRate`, with its `min_requests` floor and
+// its `>=` threshold comparison — was driven by nothing. These three cases walk the table
+// `should_trip`'s `ErrorRate` arm decides from: below the floor, at the floor, at the threshold,
+// below the threshold, and outside the window.
+
+/// The Retry-After ceiling the cases below pass: they supply no upstream Retry-After, so the
+/// ceiling on one is never reached. Named rather than repeated so a reader is not invited to read
+/// meaning into the number.
+const MAX_RETRY_AFTER: u64 = 3_600;
+
+#[test]
+fn the_default_mode_will_not_trip_below_its_minimum_request_count() {
+    let cell = BreakerCell::new();
+    let cfg = BreakerCfg::default();
+    assert_eq!(cfg.trip.mode, TripMode::ErrorRate, "the default mode");
+    assert_eq!(cfg.trip.min_requests, 5, "the floor under test");
+
+    // Four all-error outcomes: the RATIO is 1.0 from the very first one, so the only thing standing
+    // between this cell and a trip is the minimum-request floor.
+    for i in 1..cfg.trip.min_requests {
+        assert_eq!(
+            cell.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+            FailureEffect::Benched,
+            "failure {i} of {} must not trip: the window holds fewer outcomes than the floor",
+            cfg.trip.min_requests
+        );
+        assert!(
+            matches!(cell.state(), BreakerState::Closed),
+            "the cell must still be Closed after failure {i}"
+        );
+    }
+
+    // The one that reaches the floor trips, so the loop above is measuring the floor and not some
+    // other refusal.
+    assert_eq!(
+        cell.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+        FailureEffect::Tripped,
+        "the outcome that reaches min_requests must trip at a 1.0 error rate"
+    );
+}
+
+#[test]
+fn the_default_mode_trips_at_the_threshold_and_not_below_it() {
+    let cfg = BreakerCfg::default();
+    assert!(
+        (cfg.trip.threshold - 0.5).abs() < f64::EPSILON,
+        "the threshold under test"
+    );
+
+    // AT the threshold: five successes then five failures is exactly 5/10 == 0.5. The comparison is
+    // `>=`, so the tenth outcome trips. Each earlier failure is strictly under the threshold
+    // (1/6, 2/7, 3/8, 4/9), so nothing trips early and the assertion below is about the boundary.
+    let at = BreakerCell::new();
+    for _ in 0..5 {
+        at.record_success(NOW);
+    }
+    for i in 1..5 {
+        assert_eq!(
+            at.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+            FailureEffect::Benched,
+            "failure {i} sits strictly below the threshold and must not trip"
+        );
+    }
+    assert_eq!(
+        at.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+        FailureEffect::Tripped,
+        "an error rate exactly AT the threshold must trip: the comparison is >=, not >"
+    );
+
+    // BELOW the threshold: seven successes then three failures is 3/10 == 0.3. The window already
+    // holds more than `min_requests` outcomes, so the floor is not what is refusing here — the
+    // ratio is. A numerator that counted OUTCOMES rather than ERRORS would read 1.0 and trip on the
+    // first failure.
+    let below = BreakerCell::new();
+    for _ in 0..7 {
+        below.record_success(NOW);
+    }
+    for i in 1..=3 {
+        assert_eq!(
+            below.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER),
+            FailureEffect::Benched,
+            "failure {i} of 3 against 7 successes is a 0.3 error rate and must not trip"
+        );
+    }
+    assert!(
+        matches!(below.state(), BreakerState::Closed),
+        "a cell under the threshold stays Closed"
+    );
+}
+
+#[test]
+fn outcomes_that_have_aged_out_of_the_window_do_not_count_toward_a_trip() {
+    let cell = BreakerCell::new();
+    let cfg = BreakerCfg::default();
+
+    // Four failures, then a fifth one placed one second PAST the window's width. The window cut is
+    // `ts >= now - window_s`, so at `NOW + window_s + 1` the four old outcomes are outside it and
+    // the count is 1 — under the floor.
+    for _ in 1..cfg.trip.min_requests {
+        cell.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER);
+    }
+    let later = NOW + cfg.trip.window_s + 1;
+    assert_eq!(
+        cell.record_failure(later, &cfg, None, MAX_RETRY_AFTER),
+        FailureEffect::Benched,
+        "aged-out failures must not be counted toward the trip of a much later one"
+    );
+
+    // The same fifth failure INSIDE the window does trip — so the case above measures the window
+    // cut and not some unrelated refusal.
+    let inside = BreakerCell::new();
+    for _ in 1..cfg.trip.min_requests {
+        inside.record_failure(NOW, &cfg, None, MAX_RETRY_AFTER);
+    }
+    assert_eq!(
+        inside.record_failure(NOW + cfg.trip.window_s, &cfg, None, MAX_RETRY_AFTER),
+        FailureEffect::Tripped,
+        "an outcome at exactly the window's edge is still inside it"
+    );
+}
+
+// ── Backoff saturation at a long failure streak ──────────────────────────────────────────────────
+
+#[test]
+fn a_long_failure_streak_saturates_the_cooldown_instead_of_wrapping_it_to_zero() {
+    // An EVEN base is the whole point: `base << 63` on a u64 discards the set bit and leaves zero,
+    // which is a cell that has failed 63 times in a row re-admitting instantly. The u128 shift plus
+    // `u64::try_from(..).unwrap_or(u64::MAX)` is what turns that into the ceiling instead.
+    let cfg = consecutive_cfg(2, 100);
+    let cell = BreakerCell::new();
+    let mut now = NOW;
+
+    assert_eq!(
+        cell.record_failure(now, &cfg, None, MAX_RETRY_AFTER),
+        FailureEffect::Tripped
+    );
+    let BreakerState::Open { until } = cell.state() else {
+        panic!("expected Open after the first failure of a consecutive_n=1 cell");
+    };
+    // streak == 1: 2 << 1 == 4, +/- a jitter range of max(4/10, 1) == 1, floored at 4/2 == 2.
+    assert!(
+        (3..=5).contains(&(until - now)),
+        "the first cooldown is the un-escalated one; got {}",
+        until - now
+    );
+
+    // Drive the streak past the 63-bit shift cap through the public transitions only: expire the
+    // cooldown, win the single-flight probe, fail it. Each failed probe is a reopen and bumps the
+    // streak by one.
+    const REOPENS: u32 = 70;
+    for i in 0..REOPENS {
+        let BreakerState::Open { until } = cell.state() else {
+            panic!("expected Open before reopen {i}");
+        };
+        now = until;
+        assert!(
+            matches!(cell.acquire(now), ProbeAdmit::ProbeWon(_)),
+            "an expired cooldown must yield the probe at reopen {i}"
+        );
+        assert_eq!(
+            cell.record_failure(now, &cfg, None, MAX_RETRY_AFTER),
+            FailureEffect::Reopened,
+            "a failed probe reopens at reopen {i}"
+        );
+    }
+
+    // The streak is now past the 63 the shift is capped at. The escalated duration saturates to
+    // u64::MAX and is capped at `max_cooldown_secs`, so the armed cooldown sits within one jitter
+    // range (max(100/10, 1) == 10) of the ceiling.
+    let BreakerState::Open { until } = cell.state() else {
+        panic!("expected Open after the last failed probe");
+    };
+    let saturated = until - now;
+    assert!(
+        (90..=100).contains(&saturated),
+        "a lane failing {} times in a row must be held at the cooldown CEILING, not re-admitted \
+         instantly; got {saturated}",
+        REOPENS + 1
+    );
+
+    // Asked directly, the arithmetic gives the same answer — the armed value above is not an
+    // artifact of the transition path.
+    let computed = cell.compute_cooldown_with_retry_after(now, &cfg, None, MAX_RETRY_AFTER);
+    assert!(
+        (90..=100).contains(&computed),
+        "the computed cooldown at a saturating streak must be at the ceiling; got {computed}"
+    );
+}
