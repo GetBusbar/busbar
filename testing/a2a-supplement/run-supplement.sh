@@ -76,27 +76,39 @@ serve_control () {           # serve_control <port> <transport>
 stop_control () { [ -n "${CONTROL_PID:-}" ] && kill "$CONTROL_PID" 2>/dev/null || true; }
 
 run_against () {             # run_against <label> <card-url> [extra args...]
-  local label="$1" card="$2"; shift 2
-  # NOTE THE EXIT CODE IS SWALLOWED. A control leg's job is to REPORT what the checks say about a
-  # peer nobody here wrote; a non-zero from it is the expected and useful outcome, not a gate.
+  local label="$1" card="$2" rc=0; shift 2
   ( cd "$HERE" && PYTHONPATH="$TCK_DIR:${PYTHONPATH:-}" "$TCK_PY" -m a2asup \
       --label "$label" --card-url "$card" \
-      --json "$OUT/$label.json" "$@" ) || true
+      --json "$OUT/$label.json" "$@" ) || rc=$?
+  return "$rc"
 }
+
+# THE CONTROL LEGS REPORT; THE TARGET LEG GATES, AND THE TWO ARE NOT THE SAME CALL.
+#
+# A control leg's job is to REPORT what the checks say about a peer nobody here wrote; a non-zero
+# from it is the expected and useful outcome, not a gate. That reasoning is correct, and it used to
+# be applied by writing `|| true` inside `run_against` itself -- which handed the same amnesty to
+# the ONE mode that is a verdict about a subject. `run-supplement.sh target <card>` therefore
+# exited 0 whatever a2asup said, including exit 3, the code `a2asup/__main__.py` goes to some
+# length to make mean NOTHING WAS TESTED. `set -euo pipefail` at the top of this file was
+# neutralised for the only gating mode in it, and anyone wiring this into CI got a permanent green.
+#
+# So the amnesty is named at the CALL SITE, per leg, and the target leg does not get it.
+report_only () { run_against "$@" || say "  (exit $? -- a control leg reports, it does not gate)"; }
 
 case "${1:-}" in
   control-jsonrpc)
     prepare; install_control
     say "control: a2a-go ${CONTROL_GO_VERSION} / jsonrpc"
     serve_control 9711 jsonrpc; trap stop_control EXIT
-    run_against control-a2a-go-jsonrpc "http://127.0.0.1:9711/.well-known/agent-card.json"
+    report_only control-a2a-go-jsonrpc "http://127.0.0.1:9711/.well-known/agent-card.json"
     stop_control; trap - EXIT ;;
 
   control-http-json)
     prepare; install_control
     say "control: a2a-go ${CONTROL_GO_VERSION} / http_json"
     serve_control 9712 http_json; trap stop_control EXIT
-    run_against control-a2a-go-http-json "http://127.0.0.1:9712/.well-known/agent-card.json"
+    report_only control-a2a-go-http-json "http://127.0.0.1:9712/.well-known/agent-card.json"
     stop_control; trap - EXIT ;;
 
   control-scenario)
@@ -104,11 +116,23 @@ case "${1:-}" in
     say "control: TCK scenario agent (a2a-python), direct"
     "$ROOT/testing/a2a-tck/scenario-agent/serve.sh" 9713 > "$OUT/control-scenario.log" 2>&1 &
     CONTROL_PID=$!; trap stop_control EXIT
+    # READINESS, WITH A FAILURE BRANCH. `serve_control` above already gets this right; this loop
+    # did not. After 150s of failed polling it simply FELL THROUGH and ran the suite anyway
+    # against a port nothing was listening on -- a2asup exits 3 (NOTHING WAS TESTED) and, until
+    # the amnesty moved to the call site, that 3 was erased on the way out. A scenario agent that
+    # never booted produced a transcript indistinguishable from one that booted and passed.
+    ready=0
     for _ in $(seq 1 300); do
-      curl -fsS -m 2 -o /dev/null "http://127.0.0.1:9713/.well-known/agent-card.json" && break
+      curl -fsS -m 2 -o /dev/null "http://127.0.0.1:9713/.well-known/agent-card.json" \
+        && { ready=1; break; }
       sleep 0.5
     done
-    run_against control-scenario-agent "http://127.0.0.1:9713/.well-known/agent-card.json"
+    if [ "$ready" -ne 1 ]; then
+      echo "the scenario agent never served a card on 127.0.0.1:9713. Its own output:" >&2
+      cat "$OUT/control-scenario.log" >&2 || true
+      stop_control; exit 2
+    fi
+    report_only control-scenario-agent "http://127.0.0.1:9713/.well-known/agent-card.json"
     stop_control; trap - EXIT ;;
 
   target)
