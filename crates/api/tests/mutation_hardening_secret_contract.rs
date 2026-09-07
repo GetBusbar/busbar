@@ -208,6 +208,18 @@ fn resolve_builtin_file_malformed_settings_is_a_shape_error_not_unknown_module()
     assert!(!err.contains("is not a built-in"), "{err}");
 }
 
+#[test]
+fn resolve_builtin_file_blank_path_is_also_malformed() {
+    let mut settings = serde_json::Map::new();
+    settings.insert("path".to_string(), serde_json::Value::String("   ".into()));
+    let blank = SecretRef {
+        module: "file".to_string(),
+        settings,
+    };
+    let err = busbar_api::resolve_builtin(&blank).unwrap_err();
+    assert!(err.contains("settings.path"), "{err}");
+}
+
 // ── `resolve_builtin` — unknown module ───────────────────────────────────────────────────────────
 
 #[test]
