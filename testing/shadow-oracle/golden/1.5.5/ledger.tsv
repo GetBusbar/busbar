@@ -2286,7 +2286,7 @@ plugins.load|store-sqlite	PASS	script plugin-list.sh: status 0
 plugins.load|store-valkey	PASS	script plugin-list.sh: status 0	
 plugins.load|webrequest-hook	PASS	script plugin-list.sh: status 0	
 plugins.store-persist|store-mysql	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
-plugins.store-persist|store-postgres	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
+plugins.store-persist|store-postgres	PASS	script store-persist.sh: status 0	
 plugins.store-persist|store-sqlite	PASS	script store-persist.sh: status 0	
 plugins.store-persist|store-valkey	SKIP	UNSUPPORTED: validate, boot, mint, spend, restart, read back (persistence is the job)	named gap: the fixture this cell needs is not in the tree yet
 queue|serve|n3	PASS	N=3; statuses [200,200,200]	
