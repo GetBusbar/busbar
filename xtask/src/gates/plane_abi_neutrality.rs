@@ -101,7 +101,7 @@ fn row_exported(offenders: &[String]) -> Row {
 }
 
 fn row_ratchet(offenders: &[String]) -> Row {
-    if offenders.len() <= TEST_PATH_RATCHET {
+    if offenders.len().saturating_sub(TEST_PATH_RATCHET) == 0 {
         return Row::pass(
             ROW_TEST_RATCHET,
             "test-path declarations carrying a banned noun are at or under their ratchet",
