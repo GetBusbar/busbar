@@ -25,6 +25,12 @@ busbar-core = { path = "../busbar-core", default-features = false }
 # binary backs with core's `CoreHostlessEgress`. Core already depends on substrate; naming it here is
 # the one composition-root edge, not a new leaf.
 busbar-substrate = { path = "../busbar-substrate" }
+# THE PURE HALF OF THE SUBSTRATE, named directly. The value families — the clock readers, the proxy
+# vocabularies, the neutral request handler — were split out of `busbar-substrate` into this crate
+# and are only RE-EXPORTED from their historical paths. The composition root names the definition
+# site rather than the re-export, so the surface `busbar-substrate` still has to carry into the
+# kernel is the part that genuinely lives there and not a name that already moved.
+busbar-substrate-values = { path = "../busbar-substrate-values" }
 # THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
 # PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
 # coverage or none, never a subset), and `busbar-mcp` is a different protocol and therefore a

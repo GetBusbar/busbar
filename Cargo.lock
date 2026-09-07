@@ -350,6 +350,7 @@ dependencies = [
  "busbar-plugin-sign",
  "busbar-store-example-plugin",
  "busbar-substrate",
+ "busbar-substrate-values",
  "busbar-transport-grpc",
  "busbar-transport-http",
  "busbar-transport-sse",

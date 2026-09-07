@@ -341,7 +341,7 @@ impl LlmNode {
     /// audit record and the posting are dated and ordered by — is spelled out of this one value.
     fn arrived(&self) -> Arrived {
         Arrived::at(
-            busbar_substrate::store::now_ms(),
+            busbar_substrate_values::store::now_ms(),
             self.mono.fetch_add(1, Ordering::AcqRel),
         )
     }
@@ -1660,7 +1660,7 @@ fn gemini_path_arrival(
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     // Pinned before the parse, because a parse that rejects accounts its own rejection against them.
     let started = Instant::now();
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_substrate_values::store::now();
     let rest = busbar_llm::arrival::gemini_rest(&a.host, &a.path);
     let parsed = busbar_llm::arrival::gemini_path_parse(
         &a.host, &a.ctx, &rest, &a.uri, &a.body, started, charged_at,
@@ -1680,7 +1680,7 @@ fn bedrock_path_arrival(
     a: ArrivalRequest,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Response> + Send>> {
     let started = Instant::now();
-    let charged_at = busbar_substrate::store::now();
+    let charged_at = busbar_substrate_values::store::now();
     let parsed = busbar_llm::arrival::bedrock_path_parse(
         &a.host, &a.ctx, &a.path, &a.uri, &a.body, started, charged_at,
     );
