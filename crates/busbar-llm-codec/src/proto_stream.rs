@@ -1363,16 +1363,35 @@ fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
     // Fallback. Determine the ORIGINAL terminator so the reframed frame matches the wire shape a direct
     // stream would send (CRLF must stay CRLF; a native OpenAI stream never silently downgrades CRLF to
     // LF, and doing so here would be the very indistinguishability tell the strip exists to remove).
+    //
+    // The grammar's line terminator is CRLF, LF **or a bare CR**, and an event ends with a BLANK
+    // line — the terminator twice. The ladder recognized four of those six shapes: a `\r\r`-framed
+    // event and a bare-`\r`-terminated one both fell to the `\n\n` default, so the strip silently
+    // rewrote the framing under a client that had chosen CR. Longest match first, and CRLF ahead of
+    // LF (a `\r\n` frame also ends with `\n`).
     let terminator: &str = if frame.ends_with(b"\r\n\r\n") {
         "\r\n\r\n"
     } else if frame.ends_with(b"\n\n") {
         "\n\n"
+    } else if frame.ends_with(b"\r\r") {
+        "\r\r"
     } else if frame.ends_with(b"\r\n") {
         "\r\n"
     } else if frame.ends_with(b"\n") {
         "\n"
+    } else if frame.ends_with(b"\r") {
+        "\r"
     } else {
         "\n\n"
+    };
+    // The LINE terminator inside the frame is one half of that pairing — the separator between the
+    // `data:` lines below. A CRLF frame with LF between its own lines is itself a wire-shape tell.
+    let line_terminator: &str = if terminator.starts_with("\r\n") {
+        "\r\n"
+    } else if terminator.starts_with('\r') {
+        "\r"
+    } else {
+        "\n"
     };
 
     // Use the order-preserving byte strip on the extracted payload: it keeps the original key order and
@@ -1380,7 +1399,20 @@ fn rewrite_frame_strip_usage(frame: &[u8], data_str: &str) -> Vec<u8> {
     // frame" case (multi-`data:`-line frames) without reordering keys, reframed with the original
     // terminator so no wire-shape tell is introduced.
     if let Some(stripped) = busbar_substrate_values::proto::strip_top_level_usage_member(data_str) {
-        return format!("data: {stripped}{terminator}").into_bytes();
+        // ONE `data:` LINE PER LINE OF THE PAYLOAD. In the SSE grammar a field's value ENDS at the
+        // line terminator; an event whose value needs a newline sends a SECOND `data:` line, and
+        // the consumer joins the lines with `\n`. `parse_sse_frame` implements that join, so this
+        // payload legitimately CONTAINS `\n` — and writing it back into ONE `data:` line put a RAW
+        // LINE TERMINATOR inside the field's value. On the wire that ended the `data:` field early
+        // and left the rest of the JSON as a line with no field name, which a conforming consumer
+        // IGNORES: the client reassembled a truncated fragment of the JSON, i.e. an unparseable
+        // event. On a same-protocol OpenAI stream that fragment is the delta the caller paid for,
+        // destroyed by the usage strip. Split the payload back into the lines it came from — the
+        // exact inverse of the parser's join. A single-line payload produces byte-for-byte what it
+        // produced before.
+        let sep = format!("{line_terminator}data: ");
+        let body = stripped.split('\n').collect::<Vec<_>>().join(&sep);
+        return format!("data: {body}{terminator}").into_bytes();
     }
 
     // Last resort: the byte scanner could not classify this payload (a non-object, or a shape it does
