@@ -646,3 +646,9 @@ impl BreakerCell {
         was_closed
     }
 }
+
+/// The sliding outcome window, proved directly. Declared here because `OutcomeWindow` is private
+/// to this module and is not widened just to be looked at.
+#[cfg(test)]
+#[path = "cell_window_tests.rs"]
+mod cell_window_tests;
