@@ -393,9 +393,9 @@ jobs:
       # then the tree is scanned in --check (BLOCKING): the neutral crates carry ZERO transport nouns
       # today and any regression that introduces one fails it RED.
       - name: Plane transport-neutrality self-test (the transport/media scanner cannot be lied to)
-        run: scripts/plane-transport-neutrality.sh --selftest
+        run: cargo xtask gate plane-transport-neutrality --selftest
       - name: Plane transport-neutrality gate (BLOCKING — no voice-transport noun in the neutral crates)
-        run: scripts/plane-transport-neutrality.sh --check
+        run: cargo xtask gate plane-transport-neutrality
       # PLANE-ABI NEUTRALITY witness — the plane ABI's capability surface was DERIVED from a primitive
       # taxonomy, not ENUMERATED from one protocol. This greps the busbar-plugin HOT lane for the banned
       # protocol/role nouns and asserts ZERO (with a ban-list self-check of its own). It PASSES today;
