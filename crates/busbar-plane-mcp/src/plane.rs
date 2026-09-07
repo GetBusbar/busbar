@@ -1017,3 +1017,7 @@ impl SessionPlane for McpPlane {
 #[cfg(test)]
 #[path = "tests/plane.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/plane_hardening.rs"]
+mod plane_hardening;
