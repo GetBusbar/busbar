@@ -61,9 +61,7 @@ fn grants_hold_exactly_the_bits_of_the_scopes_put_in_them() {
     assert!(both.contains(Scope::Full));
 
     assert!(
-        Scope::ALL
-            .iter()
-            .all(|s| !Grants::default().contains(*s)),
+        Scope::ALL.iter().all(|s| !Grants::default().contains(*s)),
         "the empty grant holds nothing"
     );
 }
