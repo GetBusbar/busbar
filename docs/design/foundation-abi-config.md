@@ -354,7 +354,7 @@ a frozen 4-name `NAMED_MAP_SECTIONS` tail — so a *registered* plane's section 
 grammar automatically. The gap is the **grep gates**: SEVERAL scripts hard-code the plane list, each
 independently — `scripts/plane-purity-lint.sh:110-111,205,212,236`, `scripts/plane-grep-gate.sh:92-96`,
 and the `plane_roots_resolve mcp a2a` callers (`xtask/src/gates/response_header.rs::scan_roots`, `structure-lint.sh:95`,
-`blocking-ffi-lint.sh:335`, `xtask/src/gates/settings_leak.rs::scan_roots` via `xtask::planes`) — all list
+`xtask/src/gates/blocking_ffi.rs::scan_roots`, `xtask/src/gates/settings_leak.rs::scan_roots` via `xtask::planes`) — all list
 `llm|mcp|a2a` and are **stale for voice**. Only `scripts/plane-abi-neutrality.sh:33` already lists
 `voice/realtime/audio` (proving the pattern: it is self-checked against an identical `mandated` set at
 `:36`). The fix (detailed in §7 item I) is to make ALL these gates derive their plane list from ONE source

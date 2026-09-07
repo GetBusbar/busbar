@@ -294,9 +294,9 @@ jobs:
       # script header). Self-test runs FIRST (never trust the lint's verdict before proving the
       # scanner still catches a real inline call), then it scans crates/busbar-core/src.
       - name: Blocking-FFI lint self-test
-        run: scripts/blocking-ffi-lint.sh --selftest
+        run: cargo xtask gate blocking-ffi --selftest
       - name: Blocking-FFI lint
-        run: scripts/blocking-ffi-lint.sh
+        run: cargo xtask gate blocking-ffi
       # THE FOUR GATES BELOW EACH SHIPPED WITH A --selftest AND A --check AND WERE INVOKED BY
       # NOTHING: no workflow step, no qa/segments.toml row, and so nothing scripts/full-gate.sh could
       # discover. A gate nobody runs measures nothing — it is a script with the SHAPE of a gate, which

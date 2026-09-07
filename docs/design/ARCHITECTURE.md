@@ -122,7 +122,7 @@ Every plugin is passive: the kernel registers it, calls it, consumes what it ret
   `busbar keyset import` (off-node); rotation is a `Policy` entry signed by the retiring key; a boot that finds a journal
   but no keyset refuses with `KeysetMissing` (remedies, all OFF-NODE on a stopped node: `busbar keyset import`, or `busbar chain-break` / `busbar store-restore` / `busbar reseal-epoch-floor` — the disaster-recovery operations are off-node CLI operating on `data_dir`, journaled on the next boot, outside the verb posture; battery cell: keyset lost, journal present).
 - **Deadlines and stalls**: every call into an I/O kind or a store runs on a bounded blocking pool
-  (`spawn_blocking`-class; the threading rule is stated in the contract crate; `scripts/blocking-ffi-lint`
+  (`spawn_blocking`-class; the threading rule is stated in the contract crate; `cargo xtask gate blocking-ffi`
   is in the gate) with a per-kind deadline → `Failed(step, PluginTimeout)` (a hook → `on_failure`). A
   pure plane call that neither returns nor panics is detected by the node Tick ("no step advance AND no frame relayed for
   `max_unit_duration` and not marked") → `Stalled`: alarm, drain, then process abort at a bound so
@@ -1242,7 +1242,7 @@ Breaker: trip/cooldown/fast-fail; half-open probes journaled. Cost/usage: the fi
 rule; lower-evidence table; independent recompute.
 
 **`cargo xtask gate`** (M1; built, not re-pointed): both feature builds; clippy; fmt; manifest
-allow-list; source denylist (pure kinds, transitive); `blocking-ffi-lint`; AST scans (default bodies,
+allow-list; source denylist (pure kinds, transitive); the `blocking-ffi` gate; AST scans (default bodies,
 stub facts, `expose()`/`SecretOnce`/`SecretSlot`, interior mutability, lean core (literal comparison) +
 doc scan, Teller exits, `Hold` capture/forget/leak, task abort, cancellation checks at awaits, `Bytes`
 in the contract, `forbid(unsafe_code)`, feature-invariance, ABI surface); `profile-lock` incl. `panic`;
