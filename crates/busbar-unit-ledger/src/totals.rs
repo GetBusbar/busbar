@@ -22,6 +22,9 @@
 use std::collections::BTreeMap;
 
 use busbar_caps::MeterClassId;
+use busbar_unit_cost::{CurrencyCode, HistorySeq, HistoryView};
+
+use crate::recompute::{price_line, Divergence, Posting};
 
 /// Which pot of budget.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -267,5 +270,116 @@ impl Book {
     /// The book as a plain map, for a checkpoint to seal.
     pub fn snapshot(&self) -> BTreeMap<(TotalsKey, WindowStart), Totals> {
         self.totals.clone()
+    }
+}
+
+/// What one balance came to on a statement, re-derived from the quantities.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatementRow {
+    /// The money, in nano-units of the statement's currency, summed over the balance's lines.
+    pub priced_nanos: i128,
+    /// The request fees the balance's lines carry between them.
+    pub fee_count: u64,
+    /// How many lines the figure covers, so the granularity it summarises is stated.
+    pub lines: u64,
+}
+
+/// A line a statement could not price, and why.
+///
+/// It is listed rather than dropped and rather than counted as zero: a hole in the history, an
+/// unpriced currency and an unpriced lane are all refusals, and a statement that silently omitted
+/// them would read as a smaller bill rather than as an incomplete one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Unpriced {
+    /// Which node wrote the line.
+    pub node: u64,
+    /// That node's sequence number for it.
+    pub node_seq: u64,
+    /// Why it could not be priced.
+    pub why: Divergence,
+}
+
+/// A statement, cut AS OF a history snapshot.
+///
+/// The snapshot is on the face of it, because that is what makes the statement reproducible: name
+/// the two inputs — the quantities and the history at this number — and the same figures come back
+/// forever, whatever has happened to the card since.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Statement {
+    /// The history snapshot the figures were derived against.
+    pub history_seq: HistorySeq,
+    /// The currency they are in. Two currencies never sum, so a statement names exactly one.
+    pub currency: CurrencyCode,
+    /// The window it covers.
+    pub window: WindowStart,
+    /// The balances, in key order.
+    pub rows: BTreeMap<TotalsKey, StatementRow>,
+    /// The lines that could not be priced at all.
+    pub unpriceable: Vec<Unpriced>,
+}
+
+impl Statement {
+    /// One balance's figures, zeros if the statement covers none.
+    pub fn row(&self, key: &TotalsKey) -> StatementRow {
+        self.rows.get(key).copied().unwrap_or_default()
+    }
+
+    /// Everything on the statement, in one figure.
+    pub fn total_nanos(&self) -> i128 {
+        self.rows
+            .values()
+            .fold(0i128, |sum, row| sum.saturating_add(row.priced_nanos))
+    }
+}
+
+/// Cut a statement as of a history snapshot: **re-derived from the quantities, every time**.
+///
+/// This is the read path for money, and the one rule it has is that it never sums a cached price.
+/// The cache on a line is what the node computed at settlement; it is correct until an amendment
+/// makes it stale, and a statement that added those figures up would be a statement whose answer
+/// depended on whether the recompute had got round to that line yet. So the quantities go through
+/// the lookup again, against the view the caller named, and the cache is not read at all — which is
+/// why hand-corrupting every cached figure in a book leaves this function's answer untouched.
+///
+/// The tier is the line's own: a tier is a property of the chain a request was admitted through,
+/// and an amendment to the price of a token is not a re-decision about which chain admitted it.
+///
+/// `lines` comes last because the first three arguments are the statement's identity — which
+/// history, which window, which currency — and the lines are what that identity is applied to.
+/// Only lines in `window` are counted; lines in another window belong on another statement.
+pub fn totals_as_of<'a>(
+    view: &HistoryView<'_>,
+    window: WindowStart,
+    currency: CurrencyCode,
+    lines: impl IntoIterator<Item = &'a Posting>,
+) -> Statement {
+    let mut rows: BTreeMap<TotalsKey, StatementRow> = BTreeMap::new();
+    let mut unpriceable = Vec::new();
+    for line in lines {
+        if line.window_start != window || line.currency != currency {
+            continue;
+        }
+        match price_line(line, view, line.tier_bp) {
+            Ok(priced) => {
+                let row = rows.entry(line.key.clone()).or_default();
+                row.priced_nanos = row
+                    .priced_nanos
+                    .saturating_add(i128::try_from(priced.priced_nanos).unwrap_or(i128::MAX));
+                row.fee_count = row.fee_count.saturating_add(priced.fee_count);
+                row.lines += 1;
+            }
+            Err(why) => unpriceable.push(Unpriced {
+                node: line.node,
+                node_seq: line.node_seq,
+                why: crate::recompute::divergence_of(why),
+            }),
+        }
+    }
+    Statement {
+        history_seq: view.seq(),
+        currency,
+        window,
+        rows,
+        unpriceable,
     }
 }
