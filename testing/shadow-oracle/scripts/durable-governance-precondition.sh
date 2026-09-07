@@ -124,6 +124,13 @@ kid="$(jq -r '.id // empty' <<<"$mint")"
 [ -n "$kid" ] || fail "mint failed: $mint"
 kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
 i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
+# The first boot is killed, and whether it got to remove its plugin staging directory before it
+# died is a matter of signal timing that differed between the recording hosts: darwin's second boot
+# swept an orphan and said so on stderr, linux's found nothing to sweep. That line is the driver's
+# artefact, not the cell's contract, so the driver removes any staging directory the first boot
+# left in the cell's own TMPDIR before the second boot looks. Only the recording's private tmp is
+# touched, and only the prefix busbar stages under.
+rm -rf "${TMPDIR:-/tmp}"/busbar-plugins-* 2>/dev/null || true
 
 # ---- corrupt/reconfigure between the two boots, per mode -------------------------------------------
 DB2="$DB"; cfg2_groups="$GROUPS_ORACLE"; cfg2_chain="keys"; expect_boot=refuse
