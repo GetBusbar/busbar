@@ -50,7 +50,14 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     let snapshot_before: Vec<(HistorySeq, u64, Option<u64>, u64)> = history
         .entries()
         .iter()
-        .map(|e| (e.seq(), e.effective_from(), e.effective_until(), e.appended_at()))
+        .map(|e| {
+            (
+                e.seq(),
+                e.effective_from(),
+                e.effective_until(),
+                e.appended_at(),
+            )
+        })
         .collect();
 
     let seq = history.append(CardEntryDraft {
@@ -66,7 +73,14 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
 
     let snapshot_after: Vec<(HistorySeq, u64, Option<u64>, u64)> = history.entries()[..1]
         .iter()
-        .map(|e| (e.seq(), e.effective_from(), e.effective_until(), e.appended_at()))
+        .map(|e| {
+            (
+                e.seq(),
+                e.effective_from(),
+                e.effective_until(),
+                e.appended_at(),
+            )
+        })
         .collect();
     assert_eq!(
         snapshot_before, snapshot_after,
@@ -77,9 +91,13 @@ fn appending_assigns_the_next_seq_and_rewrites_nothing() {
     // And the rate the first entry holds is still the first entry's rate.
     let at_zero = history.snapshot(HistorySeq(0));
     assert_eq!(
-        price(&at_zero, &posting_at("m", 100, &[(INPUT, 1_000)]), CurrencyCode::USD)
-            .expect("entry zero is open-ended")
-            .pre_tier_nanos,
+        price(
+            &at_zero,
+            &posting_at("m", 100, &[(INPUT, 1_000)]),
+            CurrencyCode::USD
+        )
+        .expect("entry zero is open-ended")
+        .pre_tier_nanos,
         1_000_000,
     );
 }
@@ -140,15 +158,28 @@ fn a_snapshot_answers_the_same_way_forever() {
     let at_one = history.snapshot(HistorySeq(1));
     let at_two = history.snapshot(HistorySeq(2));
     assert_eq!(at_one.seq(), HistorySeq(1));
-    assert_eq!(at_one.entries().len(), 2, "a snapshot cannot see the future");
+    assert_eq!(
+        at_one.entries().len(),
+        2,
+        "a snapshot cannot see the future"
+    );
 
     let older = price(&at_one, &posting, CurrencyCode::USD).expect("covered");
     let newer = price(&at_two, &posting, CurrencyCode::USD).expect("covered");
-    assert_eq!((older.card_seq, older.pre_tier_nanos), (HistorySeq(1), 2_000_000));
-    assert_eq!((newer.card_seq, newer.pre_tier_nanos), (HistorySeq(2), 3_000_000));
+    assert_eq!(
+        (older.card_seq, older.pre_tier_nanos),
+        (HistorySeq(1), 2_000_000)
+    );
+    assert_eq!(
+        (newer.card_seq, newer.pre_tier_nanos),
+        (HistorySeq(2), 3_000_000)
+    );
 
     // Asked again, byte for byte the same.
-    assert_eq!(price(&at_one, &posting, CurrencyCode::USD).expect("covered"), older);
+    assert_eq!(
+        price(&at_one, &posting, CurrencyCode::USD).expect("covered"),
+        older
+    );
 }
 
 /// **A HOLE IS A REFUSAL, NOT A ZERO.** An instant no entry covers cannot be priced, and the
@@ -232,14 +263,8 @@ fn a_back_dated_entry_is_visible_as_one() {
 fn a_corrupted_cache_never_becomes_the_bill() {
     let history = History::opening(card_at(2.0), 0);
     let view = history.current();
-    let mut posting = Posting::from_usage(
-        "m",
-        &usage(&[(INPUT, 1_000)]),
-        0,
-        STANDARD_TIER_BP,
-        0,
-        0,
-    );
+    let mut posting =
+        Posting::from_usage("m", &usage(&[(INPUT, 1_000)]), 0, STANDARD_TIER_BP, 0, 0);
 
     let honest = price(&view, &posting, CurrencyCode::USD).expect("covered");
     assert_eq!(honest.priced_nanos, 2_000_000);
@@ -279,13 +304,19 @@ fn a_corrupted_cache_never_becomes_the_bill() {
 /// it would have returned is the reading posture's, exactly.
 #[test]
 fn the_fail_closed_posture_refuses_an_unpriced_lane_without_a_second_arithmetic() {
-    let history = History::opening(RateCard::from_micro_rates([(LaneClass::new("known", INPUT), 5.0)], 2), 0);
+    let history = History::opening(
+        RateCard::from_micro_rates([(LaneClass::new("known", INPUT), 5.0)], 2),
+        0,
+    );
     let view = history.current();
     let posting = posting_at("mystery", 0, &[(INPUT, 1_000_000)]);
 
     let read = price(&view, &posting, CurrencyCode::USD).expect("a read reports it");
     assert!(read.lane_unpriced);
-    assert_eq!(read.pre_tier_nanos, 0, "the fee count is zero on this posting");
+    assert_eq!(
+        read.pre_tier_nanos, 0,
+        "the fee count is zero on this posting"
+    );
 
     assert_eq!(
         price_fail_closed(&view, &posting, CurrencyCode::USD),
