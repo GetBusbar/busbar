@@ -22,9 +22,20 @@ That specific bug lives in the site repo and is fixed there. This lint guards th
 source file's own shape - because the site can only publish what this file gives it, and every
 downstream renderer in the project keys off the exact heading spelling below.
 
-THE CANONICAL SHAPE, and there is exactly one:
+THE CANONICAL SHAPE of a SHIPPED entry, and there is exactly one:
 
     ## [1.5.1], 2026-08-02
+
+And of a version that is NAMED but has not shipped - the state every branch is in for the length of
+a release cycle - exactly one more:
+
+    ## [1.6.0], unreleased
+
+The literal word, never a date-shaped placeholder, and it is refused at the release path by
+`--require-dated-top` (see RELEASE-TOP-DATED). That pair is what lets the gate stay green on a
+branch without letting a release ship with no ship date; before it existed the file had no spelling
+for a named-but-undated version, so the lint was red on every development branch for weeks at a
+time, and a gate nobody can be green against is a gate nobody reads.
 
 `## [Unreleased]` is permitted as a staging area and must be the first heading if present. Nothing
 else is. A heading that is nearly right is worse than one that is obviously wrong: the site's
@@ -55,6 +66,27 @@ import sys
 
 # The one accepted spelling of a released entry's heading.
 CANONICAL = re.compile(r"^## \[(?P<ver>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\], (?P<date>\d{4}-\d{2}-\d{2})$")
+
+# The one accepted spelling of an entry that is NAMED but has not shipped.
+#
+# A version in flight has a number long before it has a ship date - the number is in Cargo.toml
+# from the first commit of the cycle, and the date is not knowable until the day it is tagged. The
+# rules above had no spelling for that state, so every development branch had to choose between an
+# invented date (a lie that renders as a shipped release on the public page) and a heading the lint
+# refuses. Both were taken at different times; the second is what made `changelog-lint` red on every
+# branch for the whole of a release cycle, and a gate that is red for weeks stops being read.
+#
+# So the state gets a spelling, and the spelling says exactly what is true: the version is named,
+# the date is not yet a fact. It is DELIBERATELY not a date-shaped token, because the failure this
+# whole file exists to stop is a heading that is nearly right - the site's rewriter has an optional
+# date group and would publish `2026-XX-XX` or `TBD` as if it were a date. The literal word cannot
+# be mistaken for one by any renderer.
+#
+#     ## [1.6.0], unreleased
+#
+# What keeps this from being a hole: `--require-dated-top`, which the release path passes and
+# nothing else does. See RELEASE-TOP-DATED below.
+UNDATED = re.compile(r"^## \[(?P<ver>\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\], unreleased$")
 
 # Any level-2 heading at all. Anything matching this and not CANONICAL must be an allowed
 # non-release heading or it is a violation - so a malformed heading cannot be skipped by accident.
@@ -92,12 +124,23 @@ def parse(text: str):
         m = CANONICAL.match(raw)
         if m:
             out.append((i, raw, "release", m.group("ver"), m.group("date")))
-        else:
-            out.append((i, raw, "malformed", None, None))
+            continue
+        m = UNDATED.match(raw)
+        if m:
+            # A version with no date yet. Carries its version so the ordering and duplicate rules
+            # still see it; carries no date, so every date rule skips it rather than inventing one.
+            out.append((i, raw, "staged", m.group("ver"), None))
+            continue
+        out.append((i, raw, "malformed", None, None))
     return out
 
 
-def check(text: str, today: _dt.date | None = None, require_version: str | None = None) -> list[str]:
+def check(
+    text: str,
+    today: _dt.date | None = None,
+    require_version: str | None = None,
+    require_dated_top: bool = False,
+) -> list[str]:
     """Every rule. Returns a list of operator-readable failures; empty means green."""
     today = today or _dt.datetime.now(_dt.timezone.utc).date()
     problems: list[str] = []
@@ -115,10 +158,16 @@ def check(text: str, today: _dt.date | None = None, require_version: str | None 
             problems.append(
                 f"CANONICAL-HEADING: line {lineno}: {raw!r} is not a valid entry heading.\n"
                 f"    Every released entry must read exactly:  ## [X.Y.Z], YYYY-MM-DD\n"
-                f"    (for example: ## [1.5.1], 2026-08-02). The only other headings allowed are "
+                f"    (for example: ## [1.5.1], 2026-08-02). A version that is named but has not\n"
+                f"    shipped reads:  ## [X.Y.Z], unreleased  - the literal word, never a\n"
+                f"    date-shaped placeholder. The only other headings allowed are "
                 f"`{UNRELEASED}` and `## [Early development]`."
             )
 
+    # Entries carrying a VERSION, shipped or not: what the ordering and duplicate rules judge.
+    entries = [(ln, raw, k, v, d) for ln, raw, k, v, d in heads if k in ("release", "staged")]
+    # Entries carrying a DATE: what the date rules judge. A staged entry has no date, so no date
+    # rule may reach it - the alternative is inventing one, which is the bug this file exists over.
     releases = [(ln, raw, v, d) for ln, raw, k, v, d in heads if k == "release"]
 
     # -- UNRELEASED-FIRST ------------------------------------------------------------------
@@ -134,26 +183,47 @@ def check(text: str, today: _dt.date | None = None, require_version: str | None 
     # The newest RELEASED entry is what the site publishes at the top of the page. It must carry
     # both a version and a date. A heading that got a version but no date is the silent case: the
     # site's rewriter has an optional date group and publishes a bare version rather than failing.
-    first_release_idx = next((i for i, h in enumerate(heads) if h[2] == "release"), None)
-    if first_release_idx is None:
+    first_entry_idx = next((i for i, h in enumerate(heads) if h[2] in ("release", "staged")), None)
+    if first_entry_idx is None:
         problems.append(
             "TOP-ENTRY-DATED: the file contains no released entry at all - every heading is "
             "`[Unreleased]` or `[Early development]`. The published changelog would have no "
             "version and no date anywhere on it."
         )
     else:
-        # Anything malformed ABOVE the first good release is what a reader sees at the top.
-        for lineno, raw, kind, _v, _d in heads[:first_release_idx]:
+        # Anything malformed ABOVE the first good entry is what a reader sees at the top.
+        for lineno, raw, kind, _v, _d in heads[:first_entry_idx]:
             if kind == "malformed":
                 problems.append(
                     f"TOP-ENTRY-DATED: line {lineno}: the TOPMOST entry is {raw!r}, which carries "
-                    f"no usable version and date. This is the heading the changelog page shows "
-                    f"first. Stamp it as `## [X.Y.Z], YYYY-MM-DD` before release."
+                    f"no usable version. This is the heading the changelog page shows first. Write "
+                    f"it as `## [X.Y.Z], YYYY-MM-DD`, or `## [X.Y.Z], unreleased` while the ship "
+                    f"date is not yet a fact."
                 )
+
+    # -- RELEASE-TOP-DATED (only with --require-dated-top) ---------------------------------
+    # THE OTHER HALF OF `, unreleased`, AND THE REASON IT IS NOT A HOLE.
+    #
+    # A named-but-undated top entry is the honest state of a branch mid-cycle and a lie on a
+    # published release: the tag exists, the artifacts exist, and the changelog page would show the
+    # shipped version with no ship date - exactly the rendering this whole file was written to
+    # prevent. The two facts differ only in WHEN they are asked, so the rule is a flag rather than a
+    # second spelling: every branch runs the lint without it, and the release path runs it with it.
+    # Fail-closed and unconditional there, because the remedy is to type the date.
+    if require_dated_top:
+        top = entries[0] if entries else None
+        if top is not None and top[2] == "staged":
+            problems.append(
+                f"RELEASE-TOP-DATED: line {top[0]}: the newest entry is {top[1]!r}, which names a "
+                f"version but no ship date, and this is the RELEASE path. `, unreleased` is for a "
+                f"branch mid-cycle; a release that is being staged has a date, and the public "
+                f"changelog page renders the top entry as shipped. Stamp it "
+                f"`## [{top[3]}], YYYY-MM-DD` and push again."
+            )
 
     # -- NO-DUPLICATE-VERSION --------------------------------------------------------------
     seen: dict[str, int] = {}
-    for lineno, _raw, v, _d in releases:
+    for lineno, _raw, _k, v, _d in entries:
         if v in seen:
             problems.append(
                 f"NO-DUPLICATE-VERSION: line {lineno}: version {v} was already used at line "
@@ -163,13 +233,16 @@ def check(text: str, today: _dt.date | None = None, require_version: str | None 
             seen[v] = lineno
 
     # -- DESCENDING ------------------------------------------------------------------------
-    for (ln_a, _ra, va, da), (ln_b, _rb, vb, db) in zip(releases, releases[1:]):
+    # Version ordering covers every entry, staged included: a staged entry in the wrong place is
+    # the same defect. Date ordering is a separate walk over the DATED entries only.
+    for (ln_a, _ra, _ka, va, _da), (ln_b, _rb, _kb, vb, _db) in zip(entries, entries[1:]):
         if semver_key(va) <= semver_key(vb):
             problems.append(
                 f"DESCENDING: line {ln_b}: version {vb} is not older than {va} above it at line "
                 f"{ln_a}. The changelog reads newest-first; an entry added in the wrong place "
                 f"shows a superseded release as the current one."
             )
+    for (ln_a, _ra, va, da), (ln_b, _rb, vb, db) in zip(releases, releases[1:]):
         if da < db:
             problems.append(
                 f"DESCENDING: line {ln_b}: {vb} is dated {db}, which is AFTER {va} above it "
@@ -199,16 +272,19 @@ def check(text: str, today: _dt.date | None = None, require_version: str | None 
     # version in Cargo.toml is not the one this file thinks shipped last, and one of the two is
     # wrong. Version, tag, `busbar --version` and the changelog are then one fact instead of four.
     if require_version is not None:
-        if not releases:
+        if not entries:
             problems.append(
                 f"VERSION-HAS-NOTES: {require_version} is about to be tagged and CHANGELOG.md "
                 f"contains no released entry at all. Write the notes under `{UNRELEASED}` and roll "
                 f"them over (prepare-release.yml does this) before staging."
             )
         else:
-            top_v, top_d = releases[0][2], releases[0][3]
+            # A staged entry counts as HAVING notes - it is the version's section, written. Whether
+            # it may ship undated is RELEASE-TOP-DATED's question, asked by the same flag set, and
+            # answering it here as well would give one defect two names.
+            top_v, top_d = entries[0][3], entries[0][4] or "unreleased"
             if top_v != require_version:
-                where = next((ln for ln, _r, v, _d in releases if v == require_version), None)
+                where = next((ln for ln, _r, _k, v, _d in entries if v == require_version), None)
                 if where is None:
                     problems.append(
                         f"VERSION-HAS-NOTES: CHANGELOG.md has NO `## [{require_version}], "
@@ -267,6 +343,11 @@ CASES = [
         "the newest entry stamped with a version but NO date",
     ),
     (
+        "CANONICAL-HEADING",
+        GOOD.replace("## [1.5.4], 2026-08-14", "## [1.5.4], TBD"),
+        "a date-shaped placeholder instead of the literal word `unreleased`",
+    ),
+    (
         "TOP-ENTRY-DATED",
         GOOD.replace("## [1.5.4], 2026-08-14", "## [Next release]"),
         "the newest entry with neither a version nor a date",
@@ -317,6 +398,10 @@ def selftest() -> int:
         ),
     ]
 
+    # The staged twin: GOOD with its top entry named but not yet dated. Green on a branch, red on
+    # the release path - the same file, judged by who is asking.
+    STAGED = GOOD.replace("## [1.5.4], 2026-08-14", "## [1.5.4], unreleased")
+
     green = check(GOOD, today=today)
     if green:
         print("  [FAIL]   the known-good fixture does not pass. The lint rejects a correct file:")
@@ -335,6 +420,47 @@ def selftest() -> int:
             print(f"  [FAIL]   {rule:22} did NOT fire on {why}")
             print(f"           (what did fire: {[p.split(':')[0] for p in problems] or 'nothing'})")
             failures += 1
+
+    # -- BOTH SIDES OF `, unreleased`, each proven ---------------------------------------------
+    # The branch side: a named-but-undated top entry passes the ordinary run. If this ever goes red
+    # the gate is back to being red for a whole release cycle, which is how it stopped being read.
+    staged_branch = check(STAGED, today=today)
+    if staged_branch:
+        print("  [FAIL]   a `, unreleased` top entry is refused on the ordinary (branch) run:")
+        for s in staged_branch:
+            print("           " + s.splitlines()[0])
+        failures += 1
+    else:
+        print(f"  [ok]     {'RELEASE-TOP-DATED':22} a `, unreleased` top entry passes on a branch")
+
+    # The release side: the same file, with the flag the release path passes, is RED.
+    staged_release = [p for p in check(STAGED, today=today, require_dated_top=True)
+                      if p.startswith("RELEASE-TOP-DATED:")]
+    if staged_release:
+        print(f"  [ok]     {'RELEASE-TOP-DATED':22} fires RED on an undated top entry at release")
+    else:
+        print("  [FAIL]   RELEASE-TOP-DATED did NOT fire on an undated top entry at release")
+        failures += 1
+
+    # And the twin that differs only in the thing the rule is about: dated, the release path passes.
+    dated_release = check(GOOD, today=today, require_dated_top=True)
+    if dated_release:
+        print("  [FAIL]   RELEASE-TOP-DATED fires on a top entry that IS dated:")
+        for d in dated_release:
+            print("           " + d.splitlines()[0])
+        failures += 1
+    else:
+        print(f"  [ok]     {'RELEASE-TOP-DATED':22} passes at release when the top entry is dated")
+
+    # A staged entry is still an ENTRY: the ordering and duplicate rules must reach it, or
+    # `, unreleased` becomes a way to park a misordered version where no rule looks.
+    misordered = [p for p in check(STAGED.replace("## [1.5.3], 2026-08-08", "## [1.5.6], 2026-08-08"),
+                                   today=today) if p.startswith("DESCENDING:")]
+    if misordered:
+        print(f"  [ok]     {'DESCENDING':22} still reaches a `, unreleased` entry")
+    else:
+        print("  [FAIL]   DESCENDING does not reach a `, unreleased` entry - it is an ordering hole")
+        failures += 1
 
     # --require-version: RED on every way the tagged version can lack notes, GREEN on the twin that
     # differs only in which version is being released.
@@ -357,7 +483,7 @@ def selftest() -> int:
         print(f"  [ok]     {'VERSION-HAS-NOTES':22} passes when the newest entry IS the version")
 
     # A rule table that has stopped being reachable reads as green forever. Floor it.
-    covered = {rule for rule, _, _ in CASES} | {"VERSION-HAS-NOTES"}
+    covered = {rule for rule, _, _ in CASES} | {"VERSION-HAS-NOTES", "RELEASE-TOP-DATED"}
     expected = {
         "CANONICAL-HEADING",
         "TOP-ENTRY-DATED",
@@ -366,6 +492,7 @@ def selftest() -> int:
         "DESCENDING",
         "NO-FUTURE-DATE",
         "VERSION-HAS-NOTES",
+        "RELEASE-TOP-DATED",
     }
     missing = expected - covered
     if missing:
@@ -392,6 +519,11 @@ def main() -> int:
                     help="additionally require that the NEWEST released entry is this version - "
                          "the version being tagged. Used by release-stage.yml's plan job so a "
                          "release with no notes cannot stage.")
+    ap.add_argument("--require-dated-top", action="store_true",
+                    help="additionally require that the NEWEST entry carries a real ship date - "
+                         "`## [X.Y.Z], unreleased` is refused. The release path passes this; a "
+                         "branch does not, which is what lets a version be named before it ships "
+                         "without letting it ship undated.")
     args = ap.parse_args()
 
     if args.selftest:
@@ -406,7 +538,14 @@ def main() -> int:
         print("An unreadable changelog is not a clean one.", file=sys.stderr)
         return 1
 
-    problems = check(text, require_version=args.require_version)
+    # `--require-version` is only ever passed by the release path, and the release path is exactly
+    # who may not ship an undated top entry - so it implies the stricter reading. The flag stays
+    # separately spellable so a caller can ask for the date alone.
+    problems = check(
+        text,
+        require_version=args.require_version,
+        require_dated_top=args.require_dated_top or args.require_version is not None,
+    )
     if problems:
         print(f"changelog-lint: {len(problems)} problem(s) in {path}\n", file=sys.stderr)
         for p in problems:
@@ -418,8 +557,11 @@ def main() -> int:
         )
         return 1
 
-    n = sum(1 for h in parse(text) if h[2] == "release")
-    print(f"changelog-lint: ok - {n} released entries, canonical headings, newest first, top entry dated")
+    heads = parse(text)
+    n = sum(1 for h in heads if h[2] == "release")
+    staged = sum(1 for h in heads if h[2] == "staged")
+    top = "top entry dated" if not staged else "top entry named, not yet dated (`, unreleased`)"
+    print(f"changelog-lint: ok - {n} released entries, canonical headings, newest first, {top}")
     return 0
 
 
