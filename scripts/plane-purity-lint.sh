@@ -286,7 +286,12 @@ scan() {
       # A trailing pragma (the line has code) does NOT bleed onto the next line; only a pure-comment
       # pragma line exempts the single code line that follows it. Computed here, before any early
       # `next`, so `prevfz` stays in step across test-scope and reverse-mode skips.
-      curpragma = ($0 ~ /plane-purity:[[:space:]]*frozen-wire/)
+      # A BARE PRAGMA IS NOT A PRAGMA. The contract is "one pragma per excused line, each justifying
+      # itself in the diff" — the <reason> is the whole reviewability of the carve-out. The marker was
+      # matched with nothing required after it, so `// plane-purity: frozen-wire` on its own excused the
+      # line and named no contract, which is an un-reviewable blanket exemption wearing the shape of a
+      # reviewed one. At least one word of reason is now required for the marker to count as a pragma.
+      curpragma = ($0 ~ /plane-purity:[[:space:]]*frozen-wire[[:space:]]+[^[:space:]]/)
       frozen    = (curpragma || prevfz)
       prevfz    = (curpragma && trim(code) == "")           # standalone pragma line ⇒ exempt next line
 
@@ -313,7 +318,18 @@ scan() {
         # No backwards reach: a plane crate must not name busbar_core:: implementation items.
         # testscope=0 (--check/--baseline/--selftest): production only, byte-identical to before.
         # testscope=1 (--strict only): the complementary TEST-scope reach, never both at once.
-        reach = (code ~ /busbar_core::/)
+        # THE CRATE IS NAMED, NOT ONLY ITS PATHS. `busbar_core::` was the whole rule, so the two
+        # spellings that bind the crate WITHOUT a `::` on the same line walked straight through:
+        #   extern crate busbar_core;          — legal in every edition, brings the crate into scope
+        #   use busbar_core as core_impl;      — then every later reach reads `core_impl::…`, a name
+        #                                        this scanner has never heard of
+        # Both are the reverse edge the design forbids, spelled so the old regex could not see them,
+        # and either one re-opens plane→core-internals wholesale. A `::` may also be written with
+        # spaces around it (`busbar_core :: internal`), which rustfmt will not produce but rustc
+        # accepts — so the separator is matched with optional whitespace rather than literally.
+        reach = (code ~ /busbar_core[[:space:]]*::/) \
+             || (code ~ /(^|[^A-Za-z0-9_])extern[[:space:]]+crate[[:space:]]+busbar_core([^A-Za-z0-9_]|$)/) \
+             || (code ~ /(^|[^A-Za-z0-9_])busbar_core[[:space:]]+as[[:space:]]/)
         if (testscope) { if (reach && intest) emit("BACKWARDS", code) }
         else           { if (reach && !intest) emit("BACKWARDS", code) }
         next
@@ -324,7 +340,16 @@ scan() {
       #     frozen-wire pragma below: a witness `#[path]` include is a STRUCTURAL side channel, not a
       #     grammar token, so no config-freeze can justify it. In testscope=1 (--strict) mode this is
       #     restricted to test-scope hits so it is never double-counted against the testscope=0 pass.
-      pathinclude = (code ~ /#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a|voice)\//)
+      #     TWO SPELLINGS, ONE SIDE CHANNEL. `#[path = "…"]` is not the only way to compile plane
+      #     source into a neutral crate: `include!("../../../busbar-mcp/src/witness.rs")` (and its
+      #     _str!/_bytes! siblings, the shape a plane crate test was already caught using) splices the
+      #     same file in with no attribute at all. Only the attribute form was matched, so the macro form
+      #     fell through to the VOCABULARY rules — where the frozen-wire pragma exempts it, and a
+      #     structural dual-compile the header swears no config-freeze can excuse became excusable by one
+      #     trailing comment. Both spellings are the SAME instant fail, and both are decided HERE, above
+      #     the pragma gate, so neither can be laundered.
+      pathinclude = (code ~ /#\[[[:space:]]*path[[:space:]]*=[[:space:]]*"[^"]*busbar-(llm|mcp|a2a|voice)\//) \
+                 || (code ~ /include(_str|_bytes)?![[:space:]]*[({[][^)}\]]*"[^"]*busbar-(llm|mcp|a2a|voice)\//)
       if (pathinclude && (!testscope || intest)) emit("PATH-INCLUDE", code)
 
       if (testscope) { if (!intest) next } else { if (intest) next }  # (b)/(c): which scope this pass reports
@@ -332,7 +357,13 @@ scan() {
       # (b) SYMBOL — a plane-crate symbol path. ALSO never excusable by the frozen-wire pragma: a
       #     frozen config FIELD/TYPE never requires naming `busbar_{llm,mcp,a2a,voice}::` — that is a
       #     backwards reach into plane implementation, orthogonal to the wire grammar.
-      if (code ~ /busbar_(llm|mcp|a2a|voice)::/) emit("SYMBOL", code)
+      #     The SAME three spellings the reverse edge needs (see `reach` above): a `::` path, an
+      #     `extern crate busbar_<plane>;`, and a `use busbar_<plane> as alias;` that renames the crate
+      #     out of the sight of this scanner. A neutral crate that binds a plane crate under ANY name has
+      #     reached around the ABI whether or not a `::` appears on that line.
+      if (code ~ /busbar_(llm|mcp|a2a|voice)[[:space:]]*::/ \
+       || code ~ /(^|[^A-Za-z0-9_])extern[[:space:]]+crate[[:space:]]+busbar_(llm|mcp|a2a|voice)([^A-Za-z0-9_]|$)/ \
+       || code ~ /(^|[^A-Za-z0-9_])busbar_(llm|mcp|a2a|voice)[[:space:]]+as[[:space:]]/) emit("SYMBOL", code)
 
       # ── FROZEN-WIRE CARVE-OUT (the config-stability contract; see header "THE FROZEN-WIRE CARVE-OUT")
       # A neutral-source line bearing a `// plane-purity: frozen-wire <reason>` pragma is EXEMPT from
@@ -350,8 +381,18 @@ scan() {
 
       # (c3) TYPE — the named plane record structs, plus any plane-/dialect-prefixed CamelCase type.
       #      (Checked before the bare-key rule so McpFoo reads as TYPE, not KEY.)
+      #      THE SCREAMING SPELLINGS COUNT TOO. The prefix list was Rust-conventional CamelCase only
+      #      (`Mcp`, `Openai`, `Llm`), which is not how these acronyms are usually written: `MCPClient`,
+      #      `OpenAIClient` and `LLMRouter` carried no prefix this rule knew, and the KEY/DIALECT rules
+      #      could not save them either, because `word_ci` needs the token to end at an identifier
+      #      boundary and in `mcpclient` it does not. A neutral crate could therefore declare
+      #      `struct MCPCallRecord` — the very type this rule names — and the gate reported a clean tree.
+      #      The second alternation adds the screaming/acronym spellings while keeping the deliberate
+      #      SCREAMING_SNAKE carve-out intact: `MCP_RUNTIME_SLOT` is `MCP` followed by `_`, not by an
+      #      uppercase letter, so it still does not match.
       if (code ~ /(^|[^A-Za-z0-9_])(McpCallRecord|McpDemotionRow|TaskRow|TaskEventRow)([^A-Za-z0-9_]|$)/ \
-       || code ~ /(^|[^A-Za-z0-9_])(Mcp|A2a|A2A|Llm|Voice|Openai|Anthropic|Gemini|Bedrock|Cohere|Responses)[A-Z][A-Za-z0-9_]*/)
+       || code ~ /(^|[^A-Za-z0-9_])(Mcp|A2a|A2A|Llm|Voice|Openai|Anthropic|Gemini|Bedrock|Cohere|Responses)[A-Z][A-Za-z0-9_]*/ \
+       || code ~ /(^|[^A-Za-z0-9_])(MCP|LLM|VOICE|OpenAI|OPENAI|ANTHROPIC|GEMINI|BEDROCK|COHERE|RESPONSES)[A-Z][A-Za-z0-9_]*/)
         emit("TYPE", code)
 
       # (c1) KEY — a concrete plane key as a bare token (mcp / a2a / llm / voice). Word-boundary, so it
@@ -497,6 +538,75 @@ FZA
     fail=1; note "frozen-wire ABUSE FAILED: pragma laundered a structural side channel (got: $out)"
   fi
 
+  # ── THE SPELLINGS THAT ARE NOT `::` AND NOT CamelCase ────────────────────────────────────────────
+  # Every RED fixture above writes the violation the way this scanner was first taught to read it: a
+  # `busbar_<plane>::` path, a `McpFoo` CamelCase type, a `#[path]` attribute. Each of those has at
+  # least one other perfectly ordinary spelling that binds the same side channel, and each of those
+  # spellings walked through a clean report. They are fixtures now, so they cannot walk again.
+  cat >"$tmp/neutral_red_spellings.rs" <<'REDS'
+extern crate busbar_mcp;
+use busbar_a2a as plane_alias;
+pub struct MCPCallRecord;
+pub struct OpenAIClient;
+pub struct LLMRouter;
+include!("../../../busbar-voice/src/witness.rs");
+REDS
+  out="$(scan forward 0 "$tmp/neutral_red_spellings.rs")"
+  local spell_ok=1 line
+  spell_check() {  # <category> <line-number> <what>
+    if printf '%s\n' "$out" | awk -F'\t' -v c="$1" -v ln=":$2" '$1==c && index($2,ln)==length($2)-length(ln)+1{n++} END{exit !n}'; then
+      note "RED spelling: flagged $1 on $3"
+    else
+      spell_ok=0; note "RED spelling FAILED: $3 was NOT flagged as $1"
+    fi
+  }
+  spell_check SYMBOL       1 "extern crate busbar_mcp;"
+  spell_check SYMBOL       2 "use busbar_a2a as plane_alias;"
+  spell_check TYPE         3 "struct MCPCallRecord (screaming acronym)"
+  spell_check TYPE         4 "struct OpenAIClient (screaming acronym)"
+  spell_check TYPE         5 "struct LLMRouter (screaming acronym)"
+  spell_check PATH-INCLUDE 6 "include!(\"…/busbar-voice/src/…\")"
+  [ "$spell_ok" -eq 1 ] || { fail=1; note "  (scanner output was:)"; printf '%s\n' "$out" | sed 's/^/    /'; }
+
+  # The SCREAMING_SNAKE carve-out the KEY rule documents must survive the acronym-prefix addition:
+  # `MCP_RUNTIME_SLOT` is a neutral runtime-slot constant, not a plane type.
+  cat >"$tmp/neutral_snake.rs" <<'SNAKE'
+const MCP_RUNTIME_SLOT: usize = 0;
+SNAKE
+  if [ "$(scan forward 0 "$tmp/neutral_snake.rs" | awk -F'\t' '$1=="TYPE"{n++} END{print n+0}')" -eq 0 ]; then
+    note "TYPE carve-out: MCP_RUNTIME_SLOT (screaming SNAKE, not a type) is still not a TYPE hit"
+  else
+    fail=1; note "TYPE carve-out FAILED: the acronym prefixes now match SCREAMING_SNAKE constants"
+  fi
+
+  # ── THE PRAGMA CANNOT LAUNDER AN `include!` EITHER ───────────────────────────────────────────────
+  # The frozen-wire ABUSE fixture above proves the pragma does not excuse `#[path]` or `busbar_<P>::`.
+  # It did excuse the OTHER dual-compile spelling, because `include!` was decided by the VOCABULARY
+  # rules that sit BELOW the pragma gate: one trailing comment and a plane's source was spliced into a
+  # neutral crate with a clean report. Same property, second spelling.
+  cat >"$tmp/frozen_abuse_include.rs" <<'FZAI'
+include!("../../../busbar-mcp/src/witness.rs"); // plane-purity: frozen-wire (abuse: must NOT excuse)
+FZAI
+  out="$(scan forward 0 "$tmp/frozen_abuse_include.rs")"
+  if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="PATH-INCLUDE"{n++} END{print n+0}')" -ge 1 ]; then
+    note "frozen-wire ABUSE (include!): the pragma did NOT launder the macro dual-compile spelling"
+  else
+    fail=1; note "frozen-wire ABUSE (include!) FAILED: a pragma'd include! of plane source was excused (got: $out)"
+  fi
+
+  # ── A PRAGMA WITH NO REASON IS NOT A PRAGMA ──────────────────────────────────────────────────────
+  # "One pragma per excused line, each justifying itself in the diff" is the entire reviewability of
+  # the carve-out; a bare marker excusing a line names no contract and cannot be reviewed.
+  cat >"$tmp/frozen_noreason.rs" <<'FZN'
+    pub(crate) mcp: McpEndpointSection, // plane-purity: frozen-wire
+FZN
+  out="$(scan forward 0 "$tmp/frozen_noreason.rs")"
+  if printf '%s\n' "$out" | awk -F'\t' '$1=="KEY"{k++} $1=="TYPE"{t++} END{exit !(k&&t)}'; then
+    note "frozen-wire REASON: a bare pragma with no reason does NOT exempt (KEY+TYPE still flagged)"
+  else
+    fail=1; note "frozen-wire REASON FAILED: a reasonless pragma excused the line (got: $out)"
+  fi
+
   # ── RED (reverse): (iv) a plane crate reaching BACK into core implementation ──
   cat >"$tmp/plane_red.rs" <<'RRED'
 use busbar_core::internal::foo;
@@ -507,6 +617,22 @@ RRED
     note "RED reverse: flagged the busbar_core:: backwards reach"
   else
     fail=1; note "RED reverse FAILED: backwards reach not flagged (got: $out)"
+  fi
+
+  # ── RED (reverse): the reach spelled WITHOUT a `::` on the line. `extern crate busbar_core;` and
+  # `use busbar_core as c;` bind the whole crate and move every later reach behind a name this
+  # scanner has never heard of; a `::` written with spaces is the same path rustc accepts. All three
+  # are the same forbidden edge, and all three used to read as a clean plane crate. ──
+  cat >"$tmp/plane_red_spellings.rs" <<'RRS'
+extern crate busbar_core;
+use busbar_core as core_impl;
+use busbar_core :: internal :: foo;
+RRS
+  out="$(scan reverse 0 "$tmp/plane_red_spellings.rs")"
+  if [ "$(printf '%s\n' "$out" | awk -F'\t' '$1=="BACKWARDS"{n++} END{print n+0}')" -eq 3 ]; then
+    note "RED reverse (spellings): extern crate / use-as / spaced-:: are all BACKWARDS"
+  else
+    fail=1; note "RED reverse (spellings) FAILED: expected 3 BACKWARDS hits, got:"; printf '%s\n' "$out" | sed 's/^/    /'
   fi
 
   # ── GREEN (reverse): a plane crate naming ONLY the substrate/api ABI is clean ──
@@ -566,22 +692,59 @@ PRT
   # the scanner. A ceiling of 0 for a plane key the fixture's count (1) exceeds must fail; the SAME
   # count against a ceiling that already covers it (>=1) must pass — the ratchet, not a fixed gate.
   local decide_tmp; decide_tmp="$(mktemp -d)"
-  printf 'a2a\t1\n' >"$decide_tmp/crates.tsv"
+  # A FULL ledger, because a short one is now refused (see the floor in strict_decide): every one of
+  # the six categories and every plane key must be present before a ceiling means anything.
+  local ck
   : >"$decide_tmp/cats.tsv"
+  for ck in $STRICT_CAT_ROWS; do printf '%s\t0\n' "$ck" >>"$decide_tmp/cats.tsv"; done
+  : >"$decide_tmp/crates.tsv"
+  for ck in $PLANE_KEYS; do
+    if [ "$ck" = "a2a" ]; then printf 'a2a\t1\n' >>"$decide_tmp/crates.tsv"
+    else printf '%s\t0\n' "$ck" >>"$decide_tmp/crates.tsv"; fi
+  done
   local save_toml="$STRICT_TOML"
   STRICT_TOML="$decide_tmp/ceilings.toml"
-  printf '[test-reach]\na2a = 0\n' >"$STRICT_TOML"
+  strict_ceilings_file() {
+    local a2a_ceiling="$1" c
+    : >"$STRICT_TOML"
+    printf '[categories]\n' >>"$STRICT_TOML"
+    for c in $STRICT_CAT_ROWS; do printf '%s = 0\n' "$c" >>"$STRICT_TOML"; done
+    printf '[test-reach]\n' >>"$STRICT_TOML"
+    for c in $PLANE_KEYS; do
+      if [ "$c" = "a2a" ]; then printf 'a2a = %s\n' "$a2a_ceiling" >>"$STRICT_TOML"
+      else printf '%s = 0\n' "$c" >>"$STRICT_TOML"; fi
+    done
+  }
+  strict_ceilings_file 0
   strict_decide "$decide_tmp/cats.tsv" "$decide_tmp/crates.tsv"
   local red_at_zero="$STRICT_FAIL"
-  printf '[test-reach]\na2a = 1\n' >"$STRICT_TOML"
+  strict_ceilings_file 1
   strict_decide "$decide_tmp/cats.tsv" "$decide_tmp/crates.tsv"
   local green_at_one="$STRICT_FAIL"
-  STRICT_TOML="$save_toml"
-  rm -rf "$decide_tmp"
   if [ "$red_at_zero" -eq 1 ] && [ "$green_at_one" -eq 0 ]; then
     note "STRICT decide: a test-reach above its ceiling is RED; the same count at/under its ceiling is GREEN"
   else
     fail=1; note "STRICT decide FAILED: expected RED-then-GREEN, got fail@ceiling0=$red_at_zero fail@ceiling1=$green_at_one"
+  fi
+
+  # (3b) THE DECISION-LEVEL BLIND SPOT: an EMPTY (or short) ledger used to be GREEN. `strict_decide`
+  # is two `while read` loops over files written by `cp … || true`; over an empty file each loop body
+  # runs zero times, no ceiling is ever compared, and the verdict printed is "every category and every
+  # plane crate's test-reach is within its ceiling" — the blind-scan failure the file-count guard
+  # closes at the scan level, one stage later. The SAME ceilings that just returned GREEN over a full
+  # ledger must return RED over an empty one, and over one missing a single row.
+  : >"$decide_tmp/empty.tsv"
+  strict_decide "$decide_tmp/empty.tsv" "$decide_tmp/empty.tsv"
+  local red_on_empty="$STRICT_FAIL"
+  awk -F'\t' '$1!="DIALECT"' "$decide_tmp/cats.tsv" >"$decide_tmp/short-cats.tsv"
+  strict_decide "$decide_tmp/short-cats.tsv" "$decide_tmp/crates.tsv"
+  local red_on_short="$STRICT_FAIL"
+  STRICT_TOML="$save_toml"
+  rm -rf "$decide_tmp"
+  if [ "$red_on_empty" -eq 1 ] && [ "$red_on_short" -eq 1 ]; then
+    note "STRICT decide: an EMPTY ledger and a ledger missing one category are both RED (an uncompared row is not a met ceiling)"
+  else
+    fail=1; note "STRICT decide FLOOR FAILED: expected RED on both, got empty=$red_on_empty short=$red_on_short"
   fi
 
   # ── THE BLIND-SCAN CASES: the gate must not be able to pass by scanning NOTHING ──────────────────
@@ -856,10 +1019,38 @@ require_integer_ceiling() {
 }
 
 STRICT_FAIL=0
+# THE LEDGER IS COUNTED BEFORE IT IS BELIEVED. Both TSVs are written by `cp … 2>/dev/null || true`,
+# and the decision below is two `while read` loops: an EMPTY file makes each loop body run zero
+# times, no ceiling is compared, STRICT_FAIL stays 0, and `--strict` prints
+# "every category and every plane crate's test-reach is within its ceiling" having compared nothing.
+# That is the same blind-scan failure the file-count guard closes at the scan level, reappearing one
+# stage later at the decision level — so the floor is applied here too: the category ledger must
+# carry every one of the six classes, and the crate ledger one row per plane key. A short ledger is
+# RED, never a met ceiling.
+STRICT_CAT_ROWS="PATH-INCLUDE SYMBOL TYPE KEY DIALECT BACKWARDS"
+require_ledger_rows() {
+  local kind="$1" file="$2" want name got
+  shift 2
+  for name in $*; do
+    got="$(awk -F'\t' -v k="$name" '$1==k{n++} END{print n+0}' "$file" 2>/dev/null)"
+    if [ "${got:-0}" -lt 1 ]; then
+      red "plane-purity strict gate: FAIL — the $kind ledger carries no row for '$name'"
+      note "A row that is absent is a row no ceiling is compared against, and an uncompared row"
+      note "reads as a ceiling met. Every $kind row is required before any verdict is trusted."
+      return 1
+    fi
+  done
+  return 0
+}
+
 strict_decide() {
   local cats="$1" crates="$2"
   STRICT_FAIL=0
   local name n ceiling
+  # shellcheck disable=SC2086  # both are space-separated name lists; splitting is the point
+  require_ledger_rows category  "$cats"   $STRICT_CAT_ROWS || { STRICT_FAIL=1; return 0; }
+  # shellcheck disable=SC2086
+  require_ledger_rows test-reach "$crates" $PLANE_KEYS      || { STRICT_FAIL=1; return 0; }
   while IFS=$'\t' read -r name n; do
     [ -n "$name" ] || continue
     ceiling="$(ceiling_of "$name")"
