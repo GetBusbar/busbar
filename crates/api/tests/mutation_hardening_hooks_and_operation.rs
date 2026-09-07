@@ -10,8 +10,34 @@
 //! public-surface only) — no `mod` line needs adding anywhere.
 
 use busbar_api::operation::{OpShape, Operation};
-use busbar_api::RoutingDecision;
+use busbar_api::{
+    CallerIdentity, HookStatus, PolicyError, PolicyResult, PromptProjection, RoutingContext,
+    RoutingDecision, RoutingPolicy, RoutingRequest,
+};
 use std::collections::HashSet;
+
+/// A minimal, single-poll async executor: every default `RoutingPolicy` method under test here
+/// returns immediately (no real I/O, no real await point), so a no-op waker that never actually
+/// wakes anything is sufficient — this avoids pulling a runtime crate (tokio/futures) into this
+/// crate's dependency tree just to drive three trivial default-method calls.
+fn block_on<F: std::future::Future>(fut: F) -> F::Output {
+    use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+    fn no_op(_: *const ()) {}
+    fn clone_raw(_: *const ()) -> RawWaker {
+        RawWaker::new(std::ptr::null(), &VTABLE)
+    }
+    static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_raw, no_op, no_op, no_op);
+    let raw_waker = RawWaker::new(std::ptr::null(), &VTABLE);
+    let waker = unsafe { Waker::from_raw(raw_waker) };
+    let mut cx = Context::from_waker(&waker);
+    let mut fut = Box::pin(fut);
+    loop {
+        match fut.as_mut().poll(&mut cx) {
+            Poll::Ready(v) => return v,
+            Poll::Pending => std::thread::yield_now(),
+        }
+    }
+}
 
 // ── `RoutingDecision::from_ranked` ────────────────────────────────────────────────────────────────
 
@@ -151,4 +177,103 @@ fn operation_all_excludes_the_llm_verbs() {
     assert!(!Operation::ALL.contains(&Operation::CHAT));
     assert!(!Operation::ALL.contains(&Operation::EMBEDDINGS));
     assert_eq!(Operation::ALL.len(), 6);
+}
+
+// ── `hooks.rs`'s redacting `Debug` impls ─────────────────────────────────────────────────────────
+
+/// `PromptProjection`'s `Debug` must actually WRITE the shape summary (system char count, message
+/// count) — a mutant that turned the whole `fmt` body into a no-op `Ok(())` would produce an EMPTY
+/// debug string, which this catches, while still never emitting the operator-opted-in prompt text
+/// itself.
+#[test]
+fn prompt_projection_debug_writes_shape_not_empty_and_never_the_text() {
+    let proj = PromptProjection {
+        system: Some(std::borrow::Cow::Borrowed("you are a helpful assistant")),
+        messages: vec![
+            (
+                std::borrow::Cow::Borrowed("user"),
+                std::borrow::Cow::Borrowed("what is the capital of France"),
+            ),
+            (
+                std::borrow::Cow::Borrowed("assistant"),
+                std::borrow::Cow::Borrowed("Paris"),
+            ),
+        ],
+    };
+    let dbg = format!("{proj:?}");
+    assert!(!dbg.is_empty(), "a no-op Debug body must be caught");
+    assert!(dbg.contains("system_chars"), "{dbg}");
+    assert!(dbg.contains("message_count"), "{dbg}");
+    assert!(dbg.contains('2'), "message_count must reflect the real count: {dbg}");
+    assert!(
+        !dbg.contains("capital of France") && !dbg.contains("Paris"),
+        "prompt text must never appear in Debug: {dbg}"
+    );
+}
+
+/// `CallerIdentity`'s `Debug` shows the operator-facing key fields but redacts the end-user PII —
+/// same "must not be a no-op" pin as `PromptProjection`, plus the redaction split.
+#[test]
+fn caller_identity_debug_writes_key_fields_and_redacts_user() {
+    let id = CallerIdentity {
+        key_id: Some("vk_1".to_string()),
+        key_name: Some("prod-key".to_string()),
+        user: Some("alice@example.com".to_string()),
+    };
+    let dbg = format!("{id:?}");
+    assert!(!dbg.is_empty());
+    assert!(dbg.contains("vk_1"), "{dbg}");
+    assert!(dbg.contains("prod-key"), "{dbg}");
+    assert!(!dbg.contains("alice@example.com"), "{dbg}");
+    assert!(dbg.contains("redacted"), "{dbg}");
+}
+
+// ── `RoutingPolicy`'s defaulted `configure`/`describe`/`status` ─────────────────────────────────
+
+struct MinimalPolicy;
+
+#[async_trait::async_trait]
+impl RoutingPolicy for MinimalPolicy {
+    async fn decide(
+        &self,
+        _req: &RoutingRequest<'_>,
+        _candidates: &[busbar_api::Candidate<'_>],
+        _ctx: &RoutingContext<'_>,
+        _budget: std::time::Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "minimal"
+    }
+}
+
+#[test]
+fn routing_policy_configure_default_is_a_loud_error() {
+    let p = MinimalPolicy;
+    let settings = serde_json::Map::new();
+    let result: Result<(), PolicyError> = block_on(p.configure(
+        "hook-1",
+        &settings,
+        1,
+        std::time::Duration::from_millis(10),
+    ));
+    assert!(
+        result.is_err(),
+        "a transport that cannot be configured must error, never silently accept"
+    );
+}
+
+#[test]
+fn routing_policy_describe_default_is_none() {
+    let p = MinimalPolicy;
+    let out = block_on(p.describe(std::time::Duration::from_millis(10)));
+    assert_eq!(out, None);
+}
+
+#[test]
+fn routing_policy_status_default_is_none() {
+    let p = MinimalPolicy;
+    let out: Option<HookStatus> = block_on(p.status(std::time::Duration::from_millis(10)));
+    assert_eq!(out, None);
 }
