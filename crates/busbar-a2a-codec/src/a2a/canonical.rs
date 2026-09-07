@@ -170,3 +170,12 @@ fn ecmascript_number(f: f64) -> String {
 #[cfg(all(test, feature = "test-support"))]
 #[path = "tests/canonical_tests.rs"]
 mod canonical_tests;
+
+// THE BOUNDARY CELLS, beside the RFC-vector suite above. Plain `#[cfg(test)]` rather than the
+// `test-support` gate the vector suite carries: these assert the escape rule the Agent Card
+// signature's JWS payload is produced under, and a signature-fidelity pin that only runs when a
+// feature happens to be on is a pin another crate's `Cargo.toml` can switch off. It costs nothing
+// to run unconditionally — the whole file is string comparisons.
+#[cfg(test)]
+#[path = "tests/canonical_boundary_tests.rs"]
+mod canonical_boundary_tests;
