@@ -540,3 +540,80 @@ fn purging_a_terminal_task_cascades_to_its_event_chain() {
         "a retained task's chain is untouched — this is a cascade, not a second retention rule"
     );
 }
+
+/// A push-callback token is LIVE many times over, and dead the moment its task ends.
+///
+/// The verb beside `redeem_plane_token` and deliberately not a second spelling of it. A single-use
+/// redeem is wrong for this token in both directions at once: spent on the first callback it refuses
+/// the `input-required` and `completed` a backend legitimately sends afterwards, and answered `true`
+/// every time it accepts a captured one forever. So the check is asked THREE times here and answers
+/// live all three, then the row is flipped to `Terminal` — the way the plan's revocation leg does —
+/// and the fourth is refused.
+///
+/// Liveness is read off the typed `disposition` column, never decoded out of the body, so this
+/// cannot pass by the fixture peeking at bytes a real backend would never open.
+#[test]
+fn plane_token_live_carries_a_task_and_dies_with_it() {
+    let s = store();
+    let config = |disposition| PlaneRecord {
+        kind: "push_config".to_string(),
+        id: "t-1".to_string(),
+        parent: None,
+        seq: 0,
+        ts: 10,
+        disposition,
+        body: b"{}".to_vec(),
+    };
+
+    s.upsert_plane_record(&config(PlaneDisposition::Active))
+        .unwrap();
+    for nth in 1..=3 {
+        assert!(
+            s.plane_token_live("push_config", "t-1", 100, 20).unwrap(),
+            "callback {nth} of a running task was refused; the check spent the token"
+        );
+    }
+
+    // The ending revokes it, and every later callback is refused.
+    s.upsert_plane_record(&config(PlaneDisposition::Terminal))
+        .unwrap();
+    assert!(
+        !s.plane_token_live("push_config", "t-1", 100, 20).unwrap(),
+        "a token whose task has finished is still live — this is the replay"
+    );
+
+    // And a deleted configuration holds no capability at all.
+    s.upsert_plane_record(&config(PlaneDisposition::Active))
+        .unwrap();
+    s.delete_plane_record("push_config", "t-1").unwrap();
+    assert!(!s.plane_token_live("push_config", "t-1", 100, 20).unwrap());
+}
+
+/// The deadline is a real one, and an unknown kind holds nothing live.
+///
+/// The two calls differ ONLY in the clock, so a pass cannot come from anything but the expiry
+/// comparison being made — the comparison the composition root used to skip by passing one timestamp
+/// as both sides of it. The unknown-kind arm falls to `false`, the opposite direction from
+/// `redeem_plane_token`'s fall-through, because a store that keeps no capability rows holds no live
+/// capability even though it has spent nothing.
+#[test]
+fn plane_token_live_refuses_a_lapsed_token_and_an_unknown_kind() {
+    let s = store();
+    s.upsert_plane_record(&PlaneRecord {
+        kind: "push_config".to_string(),
+        id: "t-1".to_string(),
+        parent: None,
+        seq: 0,
+        ts: 10,
+        disposition: PlaneDisposition::Active,
+        body: b"{}".to_vec(),
+    })
+    .unwrap();
+
+    assert!(s.plane_token_live("push_config", "t-1", 100, 100).unwrap());
+    assert!(
+        !s.plane_token_live("push_config", "t-1", 100, 101).unwrap(),
+        "a token one second past its deadline is still live"
+    );
+    assert!(!s.plane_token_live("ask", "t-1", 100, 20).unwrap());
+}
