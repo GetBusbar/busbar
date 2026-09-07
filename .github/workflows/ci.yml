@@ -190,9 +190,9 @@ jobs:
       # and it includes a comment-only fixture because the workflows now EXPLAIN the ban in prose —
       # a lint its own explanation fails is a lint people learn to skip.
       - name: No-self-filed-issues lint self-test
-        run: scripts/no-self-filed-issues-lint.sh --selftest
+        run: cargo xtask gate no-self-filed-issues --selftest
       - name: No-self-filed-issues lint
-        run: scripts/no-self-filed-issues-lint.sh
+        run: cargo xtask gate no-self-filed-issues
       # AND WATCH IT FAIL. `--prove` fails each job of the release graph in turn and asserts that no
       # name-minting job runs afterwards. It is the executable form of "a failure leaves nothing
       # public", so that property is re-proven on every push rather than argued once in a comment.

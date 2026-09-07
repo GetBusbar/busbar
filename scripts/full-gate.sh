@@ -131,6 +131,8 @@ declare -a CARGO_LOCAL=(
   "cargo build -p xtask --locked"
   "cargo xtask gate kernel-token-wire-purity --selftest"
   "cargo xtask gate kernel-token-wire-purity"
+  "cargo xtask gate no-self-filed-issues --selftest"
+  "cargo xtask gate no-self-filed-issues"
 )
 
 declare -a CARGO_CI_ONLY=(
