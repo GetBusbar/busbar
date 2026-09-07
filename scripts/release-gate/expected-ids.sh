@@ -9,7 +9,7 @@
 # treats every missing id as `did not run` — RED, in its own column, distinct from PASS.
 #
 # It is DERIVED, never typed: the per-target ids come from .github/release-targets.json, so a
-# sixth platform added to the contract automatically owes six more rows and the gate goes red
+# sixth platform added to the contract automatically owes seven more rows and the gate goes red
 # until they are reported. A hand-maintained list would drift the moment a target was added, and
 # would drift SILENTLY toward green — the failure direction that matters.
 #
@@ -27,13 +27,42 @@ emit() {  # emit <id> <description>
   if [ "$DESCRIBE" = 1 ]; then printf '%s\t%s\n' "$1" "$2"; else printf '%s\n' "$1"; fi
 }
 
+# ── THE FLOORS, AND WHY THIS FILE HAS THEM AT ALL ───────────────────────────────────────────────
+#
+# This list is what makes "did not run" detectable, so a list that comes back SHORT is the one
+# failure this file cannot survive: gate.sh diffs the ledger against whatever we print, and an id
+# we never printed is an id nobody is owed. Print nothing and the gate has nothing to miss.
+#
+# The original loop was `done < <(published_targets)`. A process substitution's exit status is not
+# the loop's and is not seen by `set -e`, so a jq that failed for ANY reason — contract absent,
+# malformed after an edit, `.targets[]` renamed, jq not installed — produced an empty stream, the
+# loop body never ran, all 42 per-target ids vanished, and the script exited 0 with a
+# perfectly-formatted 24-line answer. gate.sh (`if ! expected-ids.sh --describe`) checks only the
+# exit code, so it accepted it, and every per-target check that DID report landed in `unexpected`
+# (a ::warning::, not a failure) while every one that did NOT report was owed by nobody. Silent,
+# green, and in the direction that matters.
+#
+# So: capture first and check the status explicitly, then refuse a list that is implausibly short.
+# The floors are deliberately BELOW today's numbers (6 published targets, 60 ids) — they are a
+# tripwire against collapse, not a second copy of the contract, and a target legitimately retired
+# must not have to edit this file. Collapse to zero, or to a fraction, is what they catch.
+: "${EXPECTED_IDS_TARGET_FLOOR:=5}"   # the five platforms the contract's own comment names
+: "${EXPECTED_IDS_TOTAL_FLOOR:=50}"   # 7 per-target rows x 5 + the release/docker/channel rows
+
 # ── Per-target (the matrix legs) ────────────────────────────────────────────────────────────────
-# Six rows per published target, each on a NATIVE runner for that target. They are separate ids
+# Seven rows per published target, each on a NATIVE runner for that target. They are separate ids
 # rather than one composite "the artifact is fine" because a composite hides which property broke,
-# and because #52 broke exactly one of the six (pubkey/plugin) while the other four were perfect.
+# and because #52 broke exactly one of them (pubkey/plugin) while the rest were perfect.
+if ! TARGETS="$(published_targets)"; then
+  echo "::error title=release gate::expected-ids: could not read the published targets out of ${CONTRACT} (jq exited non-zero). The per-target ids cannot be derived, so the list this script would print is SHORT and every 'did not run' verdict derived from it would be vacuous. Refusing to print a partial contract. Fix: check ${CONTRACT} parses as JSON and carries .targets[] with published==true entries, and that jq is installed." >&2
+  exit 1
+fi
+
+n_targets=0
 while read -r t; do
   [ -n "$t" ] || continue
   emit "asset:${t}"   "the named release asset exists, is plausibly sized and is really downloadable"
+  emit "sha256:${t}"  "the published archive hashes to the sha256 the staged record binds to it"
   emit "extract:${t}" "the archive extracts to the declared executable"
   emit "version:${t}" "the shipped binary answers --version with the tagged version"
   emit "binfmt:${t}"  "the shipped binary is the declared architecture and object format"

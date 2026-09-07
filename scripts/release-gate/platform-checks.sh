@@ -12,9 +12,9 @@
 # what is inside it, is green on that release; only executing the ARM binary on an ARM machine and
 # handing it a real signed plugin goes red.
 #
-# So: six independent assertions per target, one runner per target, `fail-fast: false`, and each
+# So: seven independent assertions per target, one runner per target, `fail-fast: false`, and each
 # one records its own ledger row rather than exiting. A target that cannot be checked at all still
-# owes six rows, and their absence is what gate.sh reports as `did not run`.
+# owes seven rows, and their absence is what gate.sh reports as `did not run`.
 #
 # Usage: scripts/release-gate/platform-checks.sh <version> <target>
 #        (BUSBAR_RELEASE_PUBKEY must be in the environment for the pubkey row.)
@@ -83,6 +83,31 @@ else
         "downloading it returns HTTP ${code}. Fix: re-upload the asset on Release ${TAG}."
       ;;
   esac
+fi
+
+# ── sha256: the archive a user downloads IS the archive qa staged ───────────────────────────────
+#
+# Every other row in this file is a property the downloaded bytes can have while being the WRONG
+# bytes. This is the row that says which bytes they are. release-stage.yml pins every draft asset
+# by name, size and sha256 into the staged record before it will write it; main promotes that
+# record without a compiler; so the archive published under the tag must hash to the digest the
+# record already names for that asset. See lib.sh for why a record that cannot answer is a FAIL
+# and not a skip: an absent expectation is how every other vacuous green in this gate started.
+want_sha="$(staged_asset_sha256 "$ASSET" || true)"
+if [ ! -s "${WORK}/${ASSET}" ]; then
+  record "sha256:${TARGET}" FAIL "cannot hash ${ASSET}: it was never downloaded" \
+    "see asset:${TARGET}. Reported as a FAIL rather than skipped because an artifact nobody could bind to the staged record is not an artifact anybody verified."
+elif [ -z "$want_sha" ]; then
+  record "sha256:${TARGET}" FAIL "the staged record binds no sha256 to ${ASSET}" \
+    "STAGED_RECORD='${STAGED_RECORD:-<unset>}'. Without a recorded digest this row can only compare the archive to nothing, and 'we could not check whether these are the staged bytes' must never read as 'they are'. Fix: the caller must pass STAGED_RECORD pointing at release-stage.yml's staged-manifest (staged.json), whose .assets[] carries {name,size,sha256} for every published asset."
+else
+  got_sha="$(sha256_file "${WORK}/${ASSET}" 2>/dev/null || true)"
+  if digest_matches "$got_sha" "$want_sha"; then
+    record "sha256:${TARGET}" PASS "${ASSET} hashes to the digest the staged record names (${want_sha})" ""
+  else
+    record "sha256:${TARGET}" FAIL "${ASSET} is NOT the archive qa staged" \
+      "the staged record binds ${ASSET} to sha256 ${want_sha}; the published asset hashes to '${got_sha:-<could not hash>}'. One build is the rule: qa stages the bytes, main retags them, and what a user downloads is those bytes. A difference here means the asset was rebuilt, re-uploaded or attached after staging, and everything that soaked on qa was a statement about a different artifact. Fix: re-run the promote against the staged record rather than re-uploading assets by hand."
+  fi
 fi
 
 # ── extract: the archive really contains the declared executable ────────────────────────────────

@@ -26,6 +26,274 @@ cd "$(dirname "$0")/../.." || exit 1
 # shellcheck source=scripts/release-gate/lib.sh
 . scripts/release-gate/lib.sh
 
+# ── --selftest ──────────────────────────────────────────────────────────────────────────────────
+#
+# The gate's own machinery, exercised offline. Every case here is one that the code as it stood
+# BEFORE the case existed got WRONG in the green direction — that is the entrance requirement, and
+# it is why these are not "does expected-ids still print things" smoke tests. No network, no
+# release, no runner: each case stages a contract or a ledger and reads the verdict.
+selftest() {
+  local rc_bad=0 tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/relgate-selftest-XXXXXX")"
+  # shellcheck disable=SC2064
+  trap "rm -rf '$tmp'" EXIT
+  local repo; repo="$PWD"
+
+  ok()  { printf '  [ok]     %s\n' "$1"; }
+  nope() { printf '  [FAILED] %s\n' "$1"; rc_bad=1; }
+
+  echo "release-gate selftest"
+
+  # ── CASE 1: a contract jq cannot read must not yield a SHORT list and exit 0 ──────────────────
+  # Was: `done < <(published_targets)`. A process substitution's status is not the loop's and
+  # `set -e` never sees it, so a failed jq dropped all 36 per-target ids and the script exited 0
+  # with a well-formed 24-line answer. gate.sh checked only that exit code.
+  printf 'this is not json\n' > "$tmp/broken.json"
+  if CONTRACT="$tmp/broken.json" scripts/release-gate/expected-ids.sh >"$tmp/broken.out" 2>"$tmp/broken.err"; then
+    nope "expected-ids EXITED 0 on an unparseable contract (printed $(awk 'END{print NR+0}' "$tmp/broken.out") ids) — a short list un-owes every check it dropped"
+  else
+    ok "expected-ids refuses an unparseable contract instead of printing a short list"
+  fi
+
+  # ── CASE 2: a contract that lost platforms trips the target floor ─────────────────────────────
+  # The v1.5.3 defect in contract form: five assets where seven were owed. A count of targets that
+  # quietly shrinks makes the gate owe fewer rows and go green having checked fewer platforms.
+  jq '.targets = [(.targets[] | select(.published == true))][0:1]' .github/release-targets.json \
+    > "$tmp/thin.json" 2>/dev/null || printf '{"targets":[]}\n' > "$tmp/thin.json"
+  if CONTRACT="$tmp/thin.json" scripts/release-gate/expected-ids.sh >"$tmp/thin.out" 2>/dev/null; then
+    nope "expected-ids accepted a contract with ONE published target — the other platforms are owed by nobody"
+  else
+    ok "expected-ids refuses a contract that collapsed to one published target"
+  fi
+
+  # ── CASE 3: the real contract still clears both floors and names every target ─────────────────
+  # The floors must not be tripwires that only ever fire; this is the other half.
+  if scripts/release-gate/expected-ids.sh > "$tmp/real.out" 2>/dev/null; then
+    local n; n="$(awk 'NF{c++} END{print c+0}' "$tmp/real.out")"
+    local ntgt; ntgt="$(grep -c '^plugin:' "$tmp/real.out" || true)"
+    if [ "$n" -ge "$GATE_EXPECTED_FLOOR_DEFAULT" ] && [ "$ntgt" -ge 5 ]; then
+      ok "the real contract yields ${n} ids over ${ntgt} published targets, clearing both floors"
+    else
+      nope "the real contract yields only ${n} ids over ${ntgt} targets — floors are set above reality"
+    fi
+  else
+    nope "expected-ids FAILED on the real contract"
+  fi
+
+  # ── CASE 4: gate.sh floors the expected list on its own side ──────────────────────────────────
+  # Staged with a stub expected-ids that exits 0 and prints three ids, which is precisely what a
+  # jq failure used to look like from here. Before the floor, three passing ledger rows against a
+  # three-id list printed "GREEN. Every one of the 3 contracted checks ran and passed."
+  mkdir -p "$tmp/fake/scripts/release-gate" "$tmp/fake/ledgers"
+  cp "$repo/scripts/release-gate/gate.sh" "$repo/scripts/release-gate/lib.sh" "$tmp/fake/scripts/release-gate/"
+  cat > "$tmp/fake/scripts/release-gate/expected-ids.sh" <<'STUB'
+#!/usr/bin/env bash
+printf 'release:exists\tthe release exists\n'
+printf 'meta:openapi\tthe openapi asset is there\n'
+printf 'docker:label\tthe label matches\n'
+exit 0
+STUB
+  chmod +x "$tmp/fake/scripts/release-gate/expected-ids.sh"
+  {
+    printf 'release:exists\tPASS\tok\t\n'
+    printf 'meta:openapi\tPASS\tok\t\n'
+    printf 'docker:label\tPASS\tok\t\n'
+  } > "$tmp/fake/ledgers/leg.tsv"
+  if LEDGER_DIR="$tmp/fake/ledgers" RUNNER_TEMP="$tmp/fake" GITHUB_STEP_SUMMARY=/dev/null \
+     "$tmp/fake/scripts/release-gate/gate.sh" 9.9.9 >"$tmp/fake/out" 2>&1; then
+    nope "gate.sh printed GREEN against a three-id expected list — a collapsed contract passes the gate"
+  else
+    if grep -q 'expected-check list came back with only 3' "$tmp/fake/out"; then
+      ok "gate.sh goes RED, by name, when the expected-check list collapses"
+    else
+      nope "gate.sh went red against a three-id list but not for the short-list reason: $(tr '\n' ' ' < "$tmp/fake/out" | cut -c1-200)"
+    fi
+  fi
+
+  # ── CASE 5: an EMPTY plugin expectation is refused, not matched ───────────────────────────────
+  # `grep -qw ""` matches any non-empty line, so a contract that lost expect_signature turned the
+  # one functional #52 row into "the alias appeared at all" and recorded PASS on a binary that
+  # refuses every signed plugin. This is the only case in the file whose old behaviour was PASS on
+  # a genuinely broken artifact.
+  local refusing_row="sqlite  1.0.4  sqlite  unsigned  refused  this build embeds no busbar release key"
+  if probe_row_matches "$refusing_row" "" ""; then
+    nope "an EMPTY signature/status expectation still MATCHED a row that says 'unsigned refused' — #52 would ship green"
+  else
+    ok "an empty signature/status expectation is refused rather than matching everything"
+  fi
+  if probe_row_matches "$refusing_row" "null" "null"; then
+    nope "a 'null' expectation (the shape jq -er prints for a key that is GONE) was treated as a real expectation"
+  else
+    ok "a 'null' expectation is refused rather than blamed on the artifact"
+  fi
+  local good_row="sqlite  1.0.4  sqlite  first-party  ready"
+  if probe_row_matches "$good_row" "first-party" "ready"; then
+    ok "a genuinely first-party/ready row still matches its real expectations"
+  else
+    nope "the matcher no longer accepts a real first-party/ready row — the fix broke the pass path"
+  fi
+  if probe_row_matches "$refusing_row" "first-party" "ready"; then
+    nope "an 'unsigned/refused' row matched first-party/ready"
+  else
+    ok "an unsigned/refused row does not match first-party/ready"
+  fi
+  if [ -n "$(probe_expectations_absent sqlite first-party '')" ]; then
+    ok "probe_expectations_absent names the field that went missing"
+  else
+    nope "probe_expectations_absent did not name an empty expect_status"
+  fi
+
+  # ── CASE 5b: the published archive is bound to the STAGED record, or the row is red ───────────
+  #
+  # Before this, nothing downstream of the build ever compared a published byte to the record qa
+  # wrote. Six per-target rows asserted properties the archive can have while being an archive
+  # nobody staged. The case that proves it is the one no release can stage: two DIFFERENT archives
+  # that both pass every other row.
+  local sdir; sdir="$tmp/staged"
+  mkdir -p "$sdir"
+  printf 'the bytes qa staged\n'            > "$sdir/staged-archive"
+  printf 'a different archive, uploaded later\n' > "$sdir/other-archive"
+  local staged_hash other_hash
+  staged_hash="$(sha256_file "$sdir/staged-archive")"
+  other_hash="$(sha256_file "$sdir/other-archive")"
+  jq -n --arg h "$staged_hash" \
+    '{version:"9.9.9", assets:[{name:"busbar-x86_64-unknown-linux-gnu.tar.gz", size:19, sha256:$h}]}' \
+    > "$sdir/staged.json"
+
+  if [ "$staged_hash" = "$other_hash" ]; then
+    nope "sha256_file returned the same digest for two different files — the whole row is decorative"
+  else
+    ok "sha256_file distinguishes two archives that differ by one line"
+  fi
+  local looked_up
+  looked_up="$(STAGED_RECORD="$sdir/staged.json" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)"
+  if [ "$looked_up" = "$staged_hash" ]; then
+    ok "the staged record's digest for a named asset is read back out of it"
+  else
+    nope "staged_asset_sha256 did not return the recorded digest (got '${looked_up:-<none>}')"
+  fi
+  if digest_matches "$other_hash" "$looked_up"; then
+    nope "an archive that is NOT the staged one compared EQUAL to the staged record — a rebuilt or hand-uploaded asset would ship green"
+  else
+    ok "an archive that is not the staged one does not match the staged record"
+  fi
+  if digest_matches "$staged_hash" "$looked_up"; then
+    ok "and the genuinely staged archive still matches (the fix did not break the pass path)"
+  else
+    nope "the staged archive did not match its own recorded digest — the fix broke the pass path"
+  fi
+  # THE VACUOUS CASE, which is the reason digest_matches exists as a function rather than as `=`.
+  # `[ "$got" = "$want" ]` is TRUE when both sides are empty, and both sides are empty in every
+  # way this lookup can fail: no STAGED_RECORD on the runner, a record whose assets lost this name,
+  # a jq that is not installed. A bare string compare would have called all of those a match.
+  if [ -n "$(STAGED_RECORD="$sdir/staged.json" staged_asset_sha256 busbar-aarch64-apple-darwin.tar.gz || true)" ]; then
+    nope "staged_asset_sha256 answered for an asset the record does not name"
+  else
+    ok "an asset the staged record does not name has no digest, rather than a blank one"
+  fi
+  if [ -n "$(STAGED_RECORD="$sdir/nonexistent.json" staged_asset_sha256 busbar-x86_64-unknown-linux-gnu.tar.gz || true)" ]; then
+    nope "staged_asset_sha256 answered from a record file that does not exist"
+  else
+    ok "a missing staged record yields no digest at all"
+  fi
+  if digest_matches "" ""; then
+    nope "two EMPTY digests compared equal — every way the lookup can fail would read as 'the bytes match'"
+  else
+    ok "two empty digests are not a match: a record that could not answer cannot bind anything"
+  fi
+  if digest_matches "$staged_hash" ""; then
+    nope "a real archive matched an ABSENT expectation"
+  else
+    ok "a real archive does not match an absent expectation"
+  fi
+  printf '{"assets":[{"name":"a.tar.gz","sha256":"%s"},{"name":"a.tar.gz","sha256":"%s"}]}\n' \
+    "$staged_hash" "$other_hash" > "$sdir/dup.json"
+  if [ -n "$(STAGED_RECORD="$sdir/dup.json" staged_asset_sha256 a.tar.gz || true)" ]; then
+    nope "a record naming one asset twice with two digests still produced AN answer — first-row-wins, in another file"
+  else
+    ok "a record that names one asset twice with different digests has no answer for it"
+  fi
+
+  # ── CASE 6: a version match cannot be satisfied by a LONGER version ───────────────────────────
+  # `grep -q "1.5.2"` matches "1.5.20". install:e2e (the row proving the documented first command
+  # installs THIS release) and helm:render (the row proving the published chart deploys THIS image
+  # tag) both used the unanchored form; site:download-page, in the same file, used the anchored one
+  # and wrote down why. The failure only appears once the patch number reaches two digits, which is
+  # to say it hides for years and then passes on exactly the release where it matters.
+  if printf 'busbar 1.5.20' | grep -qE "$(version_re 1.5.2)"; then
+    nope "the version matcher accepted 1.5.20 as 1.5.2 — the gate would pass on the wrong release"
+  else
+    ok "1.5.20 is not accepted as 1.5.2 (the right anchor holds)"
+  fi
+  if printf 'busbar 21.5.4' | grep -qE "$(version_re 1.5.4)"; then
+    nope "the version matcher accepted 21.5.4 as 1.5.4 — the LEFT anchor is missing"
+  else
+    ok "21.5.4 is not accepted as 1.5.4 (the left anchor holds)"
+  fi
+  for good in "busbar 1.5.2" "v1.5.2" "busbar 1.5.2 (abcdef)" "1.5.2"; do
+    if printf '%s' "$good" | grep -qE "$(version_re 1.5.2)"; then :; else
+      nope "the version matcher REJECTED a genuine match: '${good}' — the fix broke the pass path"
+    fi
+  done
+  ok "every genuine spelling of the version under test still matches"
+  if printf 'image: "getbusbar/busbar:1.5.20"' | grep -qE "busbar:$(version_re_after 1.5.2)"; then
+    nope "the after-a-prefix matcher accepted busbar:1.5.20 as busbar:1.5.2"
+  else
+    ok "busbar:1.5.20 is not accepted as busbar:1.5.2 after a literal prefix"
+  fi
+  if printf 'image: "getbusbar/busbar:1.5.2"' | grep -qE "busbar:$(version_re_after 1.5.2)"; then
+    ok "and busbar:1.5.2 still matches after that prefix"
+  else
+    nope "version_re_after rejected a genuine busbar:1.5.2 — the left anchor was wrongly added"
+  fi
+
+  # ── CASE 7: a `docker run` that never started is not a boot ───────────────────────────────────
+  # docker-checks' two boot rows were `docker run -d ... >/dev/null 2>&1` with the status thrown
+  # away, and the verdict was a curl at the HOST port. So a `docker run` that failed — "port is
+  # already allocated" being the everyday cause — left the check curling 127.0.0.1:18080 and
+  # PASSING on whatever answered. Driven here against a stubbed docker on PATH: one that refuses to
+  # start, plus a foreign listener already answering `ok` on the port, which is the exact shape.
+  mkdir -p "$tmp/dockerstub"
+  cat > "$tmp/dockerstub/docker" <<'DOCKERSTUB'
+#!/usr/bin/env bash
+case "$1" in
+  rm) exit 0 ;;
+  run) echo 'docker: Error response from daemon: Bind for 0.0.0.0:18080 failed: port is already allocated.' >&2; exit 125 ;;
+  inspect) echo "false" ;;   # nothing of ours is running
+  logs) exit 0 ;;
+esac
+exit 0
+DOCKERSTUB
+  chmod +x "$tmp/dockerstub/docker"
+  # The functions under test, sourced out of docker-checks.sh without running the file (which needs
+  # a real registry). Extracted by name so the selftest drives THE code, never a copy of it.
+  eval "$(awk '/^start_container\(\)/,/^}/' scripts/release-gate/docker-checks.sh)"
+  eval "$(awk '/^is_running\(\)/,/^}/' scripts/release-gate/docker-checks.sh)"
+  ( export PATH="$tmp/dockerstub:$PATH" ANTHROPIC_KEY=x BUSBAR_ADMIN_TOKEN=y
+    if start_container busbar-gate-selftest 18080 "getbusbar/busbar:9.9.9"; then exit 0; fi
+    exit 1 )
+  if [ $? -eq 0 ]; then
+    nope "start_container reported success on a \`docker run\` that exited 125 — a container that never started would read as booted"
+  else
+    ok "a \`docker run\` that failed to start is a failure, not a curl at whatever holds the port"
+  fi
+  if PATH="$tmp/dockerstub:$PATH" is_running busbar-gate-selftest; then
+    nope "is_running said true for a container that was never created"
+  else
+    ok "and the boot rows only believe a healthz probe once OUR container is confirmed running"
+  fi
+
+  echo
+  if [ "$rc_bad" = 0 ]; then echo "release-gate selftest: the gate's floors and the plugin matcher all hold"; return 0; fi
+  echo "release-gate selftest: FAILED"; return 1
+}
+
+# The floor the selftest measures the real contract against. Named separately from the runtime
+# default below so raising one cannot silently un-check the other.
+GATE_EXPECTED_FLOOR_DEFAULT=50
+
+if [ "${1:-}" = "--selftest" ]; then selftest; exit $?; fi
+
 VERSION="${1:-${BUSBAR_GATE_VERSION:-}}"
 LEDGER_DIR="${LEDGER_DIR:-${RUNNER_TEMP:-/tmp}/release-gate-ledgers}"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
