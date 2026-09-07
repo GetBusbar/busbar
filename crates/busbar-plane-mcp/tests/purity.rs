@@ -177,6 +177,14 @@ fn the_decode_step_is_deterministic() {
             .into_bytes()
         })
         .collect();
+    // The bodies are DERIVED — a filter over the declared method table — so a table that lost its
+    // caller-sent rows empties this vector and the loop below runs zero times. A determinism test
+    // that examined nothing would report `ok`, which is the shape this assertion exists to make
+    // impossible.
+    assert!(
+        !bodies.is_empty(),
+        "no request body was derived from the declared caller methods, so nothing was driven twice"
+    );
     for body in &bodies {
         let mut answers = Vec::new();
         for _ in 0..8 {

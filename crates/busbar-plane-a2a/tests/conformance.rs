@@ -423,7 +423,9 @@ fn every_operation_routes_somewhere() {
     let scaffold = Scaffold::new("http");
     let ctx = scaffold.ctx();
     let seal = common::TestSeal;
+    let mut covered = 0usize;
     for op in <A2aPlane as busbar_contract::plane::PlaneMeta>::OP_CLASSES {
+        covered += 1;
         let unit = busbar_contract::unit::Unit::new(
             &seal,
             busbar_contract::UnitKey::new(1),
@@ -463,6 +465,16 @@ fn every_operation_routes_somewhere() {
             }
         }
     }
+    // The loop walks a DECLARED table, so an empty one would walk nothing and report `ok`, and a
+    // class dropped from it would leave its written-down leg count behind unchallenged. The two
+    // tables are pinned equal in size, which makes both of those a failure here.
+    assert_eq!(
+        covered,
+        EXPECTED_LEGS.len(),
+        "the plane declares {covered} operation classes and {} leg counts are written down: a \
+         class with no row is unproven, and a row with no class proves nothing",
+        EXPECTED_LEGS.len()
+    );
 }
 
 /// **A push callback is authorised by a LIVENESS check, and the plan revokes the token when the
