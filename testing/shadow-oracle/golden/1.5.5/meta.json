@@ -3,7 +3,7 @@
   "version": "busbar 1.5.5",
   "recorded": 897,
   "binary_sha256": "48e2800cc1fbf229104d73c23039ba4d4a703c0a8db9e7872e22fec33f9b1e48",
-  "harness_rev": "harness_rev 0ff75ccd32d561bc9d9e7324f1199ec6ed949dc60c7e45f0a3b64874b1159d2c",
+  "harness_rev": "0ff75ccd32d561bc9d9e7324f1199ec6ed949dc60c7e45f0a3b64874b1159d2c",
   "host_triple": "aarch64-apple-darwin",
   "at": "2026-09-06T18:10:32Z",
   "harness_rev_recorded": "a701ad22da39187a7b99b125e12efc332321ed5c50e76bcbb1813fa00c98137d",
