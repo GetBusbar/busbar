@@ -595,3 +595,11 @@ impl<J: JournalSink, D: Diagnostics> Breaker for BreakerUnit<J, D> {
 
 #[cfg(test)]
 mod tests;
+
+/// The cell's own state machine at its thresholds and clock edges.
+#[cfg(test)]
+mod cell_fsm_tests;
+
+/// The unit's budget, probe release and at-capacity wait, asserted where each is decided.
+#[cfg(test)]
+mod unit_surface_tests;

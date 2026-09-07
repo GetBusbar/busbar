@@ -108,7 +108,11 @@ fn re_inserting_a_name_replaces_rather_than_grows() {
     ));
     assert_eq!(table.len(), 1);
     assert_eq!(
-        table.get("primary").expect("the pool is there").members.len(),
+        table
+            .get("primary")
+            .expect("the pool is there")
+            .members
+            .len(),
         1
     );
 }

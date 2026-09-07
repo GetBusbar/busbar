@@ -12,7 +12,7 @@
 
 use super::harness::{Health, TestBreaker};
 use super::{member, Node};
-use crate::ports::{Breaker, DestinationId};
+use crate::ports::DestinationId;
 use crate::select::{ProbeGuard, RequestCtx, WeightedFloor};
 use crate::EgressUnit;
 
@@ -195,9 +195,7 @@ fn an_affinity_member_that_is_refused_is_still_reachable_by_the_floor() {
         "the affinity offer and the floor's offer are two attempts on the same member: {reasons:?}"
     );
     assert!(
-        reasons
-            .iter()
-            .all(|(d, _)| *d == DestinationId::new(0)),
+        reasons.iter().all(|(d, _)| *d == DestinationId::new(0)),
         "both attempts are the same member: {reasons:?}"
     );
     drop(held);
