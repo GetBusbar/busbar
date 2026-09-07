@@ -86,8 +86,7 @@
 
 use busbar_plugin_loader::store_adapter::StoreAdapter;
 use busbar_unit_cost::{
-    price, CurrencyCode, History, HistorySeq, Posting, Quantity, Unpriceable,
-    STANDARD_TIER_BP,
+    price, CurrencyCode, History, HistorySeq, Posting, Quantity, Unpriceable, STANDARD_TIER_BP,
 };
 use busbar_unit_ledger::checkpoint::CheckpointSecret;
 use busbar_unit_ledger::migration::{
@@ -295,7 +294,10 @@ pub fn legacy_row_postings(figures: &[LegacyFigure]) -> Vec<LegacyRowPosting> {
             // Requests are counted, never priced.
             CapDimension::Requests => {}
             other => {
-                debug_assert!(false, "a metering row named an unpriced dimension: {other:?}");
+                debug_assert!(
+                    false,
+                    "a metering row named an unpriced dimension: {other:?}"
+                );
             }
         }
     }
