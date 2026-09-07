@@ -503,20 +503,33 @@ fn the_real_ci_workflow_parses_and_its_gate_call_sites_are_discoverable() {
         "every job's `run:` steps must be visible to the discovery"
     );
 
-    // EVERY NAME `ci.yml` CALLS IS A REGISTERED GATE. The per-gate batches switch call sites one at
-    // a time, so this cannot pin a fixed list — but it can pin the direction that actually breaks a
-    // release: a call site naming a gate the registry does not have is a step that exits 2 on every
-    // push, and it is the typo a rename leaves behind. The other direction (a registered gate ci.yml
-    // does not call yet) is deliberately allowed while the conversion is in flight; `gate full`
-    // closes it by set equality once every batch has landed.
+    // EVERY GATE ci.yml CALLS IS ONE THE RUNNER ANSWERS TO. This replaces the placeholder that
+    // pinned "no call site has been switched yet": that assertion had exactly one job, to prove the
+    // discovery reads the file rather than a cached list, and the first switched call site did the
+    // proving. What survives it is the direction that keeps mattering — a `cargo xtask gate <typo>`
+    // in `ci.yml` is a step that exits 2 on every push, and the registry is what can say so here
+    // rather than in a red run.
+    //
+    // The OTHER direction — a registered gate absent from `ci.yml` — is deliberately not asserted
+    // here. It is `cargo xtask gate full`'s set-equality rule, which owns the SKIP_REASON table
+    // that makes a deliberate absence say why; duplicating half of it here would be a second place
+    // for that reasoning to rot.
     let called = yaml_lite::xtask_gate_invocations(&text);
-    for name in &called {
-        assert!(
-            gates::find(name).is_some(),
-            "ci.yml runs `cargo xtask gate {name}`, which is not in the registry: {:?}",
-            gates::names()
-        );
-    }
+    assert!(
+        !called.is_empty(),
+        "ci.yml calls no `cargo xtask gate` at all — either every call site was reverted or the \
+         discovery stopped reading the file"
+    );
+    let registered = gates::names();
+    let unknown: Vec<&String> = called
+        .iter()
+        .filter(|n| !registered.contains(&n.as_str()))
+        .collect();
+    assert!(
+        unknown.is_empty(),
+        "ci.yml calls gate(s) the registry does not answer to: {unknown:?} — every one of those \
+         steps exits 2 on every push. Registered: {registered:?}"
+    );
     assert_eq!(
         yaml_lite::xtask_gate_invocations("    run: |\n      cargo xtask gate plane-purity --selftest\n      cargo xtask gate plane-purity\n"),
         vec!["plane-purity".to_string()]
