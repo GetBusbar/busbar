@@ -14,14 +14,20 @@ impl ProtocolReader for OpenAiReader {
         let cached = v
             .get("prompt_tokens_details")
             .and_then(|d| d.get("cached_tokens"))
+<<<<<<< HEAD
             .and_then(super::super::usage_tail::token_count);
+=======
+            .and_then(|x| x.as_u64());
+        let cache_write = super::read_cache_write_tokens(&v);
+>>>>>>> f7aa8efca (openai: cache-write tokens price at the cache-write tier, not the input tier)
         Some(
             crate::ir::IrUsage {
                 input_tokens: u64_field("prompt_tokens")
                     .unwrap_or(0)
-                    .saturating_sub(cached.unwrap_or(0)),
+                    .saturating_sub(cached.unwrap_or(0))
+                    .saturating_sub(cache_write.unwrap_or(0)),
                 output_tokens: u64_field("completion_tokens").unwrap_or(0),
-                cache_creation_input_tokens: None,
+                cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail::default(),
             }
@@ -949,17 +955,25 @@ impl ProtocolReader for OpenAiReader {
                 .get("prompt_tokens_details")
                 .and_then(|d| d.get("cached_tokens"))
                 .and_then(|v| v.as_u64());
+            // The terminal `include_usage` chunk carries the identical `usage` object the buffered
+            // response does, so the cache-WRITE slice is tiered here exactly as it is there. Reading
+            // it only on the buffered path made one request price its cache-writing turn two
+            // different ways depending on nothing but `stream`.
+            let cache_write = super::read_cache_write_tokens(u);
             IrUsage {
                 // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a
                 // TOTAL that already INCLUDES the cached prefix, so subtract the cached tokens
                 // to leave only the uncached input. `saturating_sub` guards a hostile/odd
                 // upstream where `cached_tokens > prompt_tokens` (would otherwise underflow).
-                input_tokens: prompt_tokens.saturating_sub(cached.unwrap_or(0)),
+                // The cache-WRITE slice comes out of the same total, for the same reason.
+                input_tokens: prompt_tokens
+                    .saturating_sub(cached.unwrap_or(0))
+                    .saturating_sub(cache_write.unwrap_or(0)),
                 output_tokens: u
                     .get("completion_tokens")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0),
-                cache_creation_input_tokens: None,
+                cache_creation_input_tokens: cache_write,
                 cache_read_input_tokens: cached,
                 // The sub-bucket is on the STREAM's usage chunk too (a `stream_options:
                 // {include_usage: true}` stream's final chunk carries the identical `usage` object
@@ -1284,21 +1298,26 @@ impl ProtocolReader for OpenAiReader {
             .and_then(|u| u.get("prompt_tokens_details"))
             .and_then(|d| d.get("cached_tokens"))
             .and_then(|v| v.as_u64());
+        // `prompt_tokens_details.cache_write_tokens` — the OTHER slice of `prompt_tokens`, and the
+        // one that prices at the cache-WRITE tier. See `read_cache_write_tokens`.
+        let cache_write_input_tokens = usage_val.and_then(super::read_cache_write_tokens);
 
         let usage = crate::ir::IrUsage {
             // NORMALIZE to the additive-cache convention: OpenAI's `prompt_tokens` is a TOTAL that
             // already INCLUDES the cached prefix, so subtract the cached tokens to leave only the
             // uncached input. `saturating_sub` guards an odd upstream where cached > prompt_tokens.
+            // The cache-WRITE slice is subtracted for the same reason and from the same total.
             input_tokens: usage_val
                 .and_then(|u| u.get("prompt_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0)
-                .saturating_sub(cache_read_input_tokens.unwrap_or(0)),
+                .saturating_sub(cache_read_input_tokens.unwrap_or(0))
+                .saturating_sub(cache_write_input_tokens.unwrap_or(0)),
             output_tokens: usage_val
                 .and_then(|u| u.get("completion_tokens"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0),
-            cache_creation_input_tokens: None, // OpenAI doesn't provide this split
+            cache_creation_input_tokens: cache_write_input_tokens,
             cache_read_input_tokens,
             // `completion_tokens_details.reasoning_tokens` is a SUB-BUCKET of `completion_tokens`
             // (never added to it). Unread, every cross-protocol reasoning call reported a hard `0`
