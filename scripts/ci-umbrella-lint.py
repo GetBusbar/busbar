@@ -359,7 +359,7 @@ def selftest(root: Path) -> int:
         f"(a reader that sees almost no jobs reports almost no omissions)",
         f"job(s) parsed (floor {MIN_JOBS})", shrink_jobs)
 
-    # RED BEFORE GREEN, ON THE REAL FILE. Re-plant the historical defect (`deletion-test-matrix`
+    # BOTH VERDICTS, ON THE REAL FILE. Re-plant the historical defect (`deletion-test-matrix`
     # absent from `needs`) in the tree's own ci.yml and require a RED; then require the tree GREEN.
     # ON THE REAL FILE: re-plant the historical defect (`deletion-test-matrix` absent from `needs`)
     # in the tree's own ci.yml and require the lint to refuse it; then require the untouched tree

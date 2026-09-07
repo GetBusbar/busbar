@@ -138,7 +138,7 @@ function checkManifest(file) {
 
 // ── SELF-TEST: a guard that has never been watched refuse is not a guard ─────────────────────────
 // Drives the REAL checkManifest/walk over fixtures whose verdict is known, so the PASS line above is
-// only trusted after the refusals below have been seen to happen. Red before green, both ways: each
+// only trusted after the refusals below have been seen to happen. Both directions are proven: each
 // smell is proven to fire AND the clean twin is proven to stay silent, or a guard that rejected
 // everything would look correct.
 function selftest() {
