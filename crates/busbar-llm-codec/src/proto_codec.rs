@@ -931,6 +931,32 @@ pub fn with_writer<T>(name: &str, f: impl FnOnce(&dyn ProtocolWriter) -> T) -> O
     }
 }
 
+/// BUILD one dialect's WRITER, owned, for a caller that must KEEP it — a stream, and nothing else.
+///
+/// [`with_writer`] is the answer for a stateless question, because the writer it lends out dies at
+/// the closing brace. A streamed answer is the opposite case: every open-block set and minted
+/// identity a writer latches is a fact about the frames it has ALREADY written, so one instance has
+/// to see the whole stream, and a caller that holds a stream needs a writer it can own. That used to
+/// mean [`protocol_for`], which boxes a READER alongside the writer — and a caller holding a writer
+/// for a stream is, by construction, not the caller reading it. This is the same resolution minus
+/// the box nobody asked for: ONE allocation, made ONCE per stream, where the pair was being made per
+/// FRAME.
+///
+/// The instance is pristine — the same empty sets and `None` slots `with_writer` builds on the stack
+/// — so a writer taken from here begins the stream having written nothing. `None` for a name that
+/// declares no codec (MCP), as both siblings answer.
+pub fn writer_for(name: &str) -> Option<Box<dyn ProtocolWriter>> {
+    match name {
+        PROTO_ANTHROPIC => Some(Box::new(super::anthropic::AnthropicWriter)),
+        PROTO_BEDROCK => Some(Box::new(super::bedrock::BedrockWriter)),
+        PROTO_COHERE => Some(Box::new(super::cohere::CohereWriter)),
+        PROTO_GEMINI => Some(Box::new(super::gemini::GeminiWriter)),
+        PROTO_OPENAI => Some(Box::new(super::openai_chat::OpenAiWriter)),
+        PROTO_RESPONSES => Some(Box::new(super::openai_responses::ResponsesWriter)),
+        _ => None,
+    }
+}
+
 /// The reader twin of [`with_writer`]: the named dialect's READER on the stack (the readers are
 /// unit structs, so this is a pure dispatch).
 ///

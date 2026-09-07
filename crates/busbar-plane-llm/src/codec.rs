@@ -20,7 +20,7 @@ use busbar_contract::unit::{
 use busbar_contract::wire::{Decode, Encode, EnvelopeField, Frame, FrameCursor, TransportEnvelope};
 
 use busbar_llm_codec::ir::{IrResponse, IrStopReason, IrStreamEvent, StreamDecodeState};
-use busbar_llm_codec::proto_codec::{with_reader, with_writer};
+use busbar_llm_codec::proto_codec::{with_reader, with_writer, writer_for, ProtocolWriter};
 
 use crate::dialect::{self, Dialect};
 use crate::meta;
@@ -349,10 +349,34 @@ fn reported_usage(dialect: &str, r: &Response<'_>) -> Option<busbar_llm_codec::i
 ///
 /// One value, held by the kernel, handed in and taken back. Nothing about a stream lives in the
 /// plane itself, which is what makes the plane a value rather than an object.
-#[derive(Debug, Default)]
+///
+/// BOTH halves of a stream's codec state live here, because both are per-stream: where the READER
+/// had got to in the upstream's event grammar, and the WRITER that has been producing the client's
+/// bytes. The writer is a value the plane cannot rebuild without losing what it knows — which blocks
+/// it has opened, which identity it minted — so a stream that rebuilt one per frame was paying a
+/// heap allocation per chunk for a value it then had to be careful not to trust.
+#[derive(Default)]
 pub struct LlmSessionState {
     /// Where the reader had got to in the dialect's own event grammar.
     pub decode: StreamDecodeState,
+    /// The writer this stream's frames are written by, and the dialect it writes.
+    ///
+    /// Built at the first frame that needs one and kept for the rest of the stream. The name is
+    /// carried beside it so a state handed a frame of a different dialect than the one it was opened
+    /// for rebuilds rather than writing that frame in the wrong grammar — a case the kernel does not
+    /// produce today, and one this must not answer wrongly if it ever does.
+    encode: Option<(&'static str, Box<dyn ProtocolWriter>)>,
+}
+
+impl core::fmt::Debug for LlmSessionState {
+    /// The writer has no `Debug` and needs none: what a reader of this wants is which dialect the
+    /// stream is being written in, not the contents of a codec.
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("LlmSessionState")
+            .field("decode", &self.decode)
+            .field("encode", &self.encode.as_ref().map(|(name, _)| *name))
+            .finish()
+    }
 }
 
 /// Read one streamed frame against the reader's stream state, and leave the state where it was
@@ -376,6 +400,41 @@ fn with_decode_state<R>(
     match st.and_then(PlaneSessionState::get_mut::<LlmSessionState>) {
         Some(session) => read(&mut session.decode),
         None => read(&mut StreamDecodeState::default()),
+    }
+}
+
+/// Read one streamed frame in one dialect and write it in another, against BOTH halves of the
+/// stream's state — the reader's position in the upstream's grammar, and the writer that has been
+/// producing the client's bytes.
+///
+/// The two are borrowed TOGETHER because they are one stream's state and the call needs both at
+/// once. The writer is the half that must not be rebuilt: it is asked once per event of every frame,
+/// and every open block it tracks is a fact about the events it has already written, so the instance
+/// that writes the second frame has to be the instance that wrote the first. Building it here, into
+/// the state the kernel already holds for the reader, is what makes a frame cost no codec at all —
+/// the first frame of a stream builds one writer, and no frame after it builds anything.
+///
+/// A transport with no session hands no state, and the writer is then built on the STACK for the one
+/// call, which is what this method did per frame before the state had a place to keep one. That
+/// fallback is a fresh writer per frame — the same value, and the same bytes, as before — and it
+/// still allocates nothing, because a stack writer is not a box.
+fn with_stream_codec<R>(
+    st: Option<&mut PlaneSessionState>,
+    dialect: &'static str,
+    write: impl FnOnce(&mut StreamDecodeState, &dyn ProtocolWriter) -> R,
+) -> Option<R> {
+    match st.and_then(PlaneSessionState::get_mut::<LlmSessionState>) {
+        Some(session) => {
+            if session.encode.as_ref().map(|(name, _)| *name) != Some(dialect) {
+                session.encode = Some((dialect, writer_for(dialect)?));
+            }
+            // Destructured, not reached through two method calls: the decode state is borrowed
+            // mutably and the writer immutably, and they are two FIELDS of one value.
+            let LlmSessionState { decode, encode } = session;
+            let (_, writer) = encode.as_ref()?;
+            Some(write(decode, writer.as_ref()))
+        }
+        None => with_writer(dialect, |w| write(&mut StreamDecodeState::default(), w)),
     }
 }
 
@@ -719,28 +778,32 @@ impl Plane for LlmPlane {
             if data == b"[DONE]" {
                 return put(ctx, bytes);
             }
-            // The one resolution in this plane that is NOT a stateless question, so the one that
-            // stays a `Protocol`: the ingress WRITER below is asked once per event of this frame,
-            // and every open block it tracks is a fact about the events it has already written. One
-            // instance has to see all of them, so it is held across the loop rather than rebuilt.
-            let ingress_protocol = busbar_llm_codec::proto_codec::protocol_for(ingress.name)
-                .ok_or(Encode::Unrepresentable)?;
             let value: serde_json::Value =
                 sonic_rs::from_slice(data).map_err(|_| Encode::Unrepresentable)?;
-            let events = with_decode_state(st, |state| {
-                with_reader(source, |r| r.read_response_events(name, &value, state))
-            })
-            .ok_or(Encode::Unrepresentable)?;
-            let mut out = Vec::new();
-            for event in events {
-                for (kind, payload) in ingress_protocol.writer().write_response_events(&event) {
-                    out.extend_from_slice(b"event: ");
-                    out.extend_from_slice(kind.as_bytes());
-                    out.extend_from_slice(b"\ndata: ");
-                    out.extend_from_slice(&serialize(&payload)?);
-                    out.extend_from_slice(b"\n\n");
+            // The one resolution in this plane that is NOT a stateless question, so the one that is
+            // KEPT: the ingress writer is asked once per event of every frame, and every open block
+            // it tracks is a fact about the events it has already written. One instance has to see
+            // all of them — across the loop below AND across the frames either side of this one —
+            // so it lives in the stream's own state, built at the first frame that needs it. It was
+            // being resolved through a whole `Protocol` HERE, per frame: two boxes a chunk, one of
+            // them a reader this call never touches, on a path that runs once per chunk of every
+            // streamed answer the node serves.
+            let out = with_stream_codec(st, ingress.name, |state, writer| {
+                let events = with_reader(source, |r| r.read_response_events(name, &value, state))
+                    .ok_or(Encode::Unrepresentable)?;
+                let mut out = Vec::new();
+                for event in events {
+                    for (kind, payload) in writer.write_response_events(&event) {
+                        out.extend_from_slice(b"event: ");
+                        out.extend_from_slice(kind.as_bytes());
+                        out.extend_from_slice(b"\ndata: ");
+                        out.extend_from_slice(&serialize(&payload)?);
+                        out.extend_from_slice(b"\n\n");
+                    }
                 }
-            }
+                Ok(out)
+            })
+            .ok_or(Encode::Unrepresentable)??;
             return put(ctx, &out);
         }
 

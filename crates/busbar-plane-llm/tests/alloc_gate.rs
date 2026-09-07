@@ -107,6 +107,189 @@ const ANSWER: &str = r#"{"id":"chatcmpl-1","object":"chat.completion","created":
 /// every request this plane serves, so it was the more expensive of the two copies.
 const ANSWER_PASSTHROUGH_ALLOCS: u64 = 1;
 
+/// COMMITTED BASELINE — the exact allocation count of ONE streamed frame written back to a client
+/// that speaks the dialect the frame arrived in.
+///
+/// A stream is many frames, so anything a frame costs is paid once per chunk rather than once per
+/// request, and a codec CONSTRUCTED per frame is the worst shape that cost can take: the writer a
+/// streamed answer is written by carries the stream's own state — which blocks it has opened, which
+/// identity it minted — so it has to be the same writer on every frame anyway. It is built once, at
+/// the first frame of the stream, and kept in the state the kernel already hands in for the reader's
+/// half; a later frame builds no codec at all.
+///
+/// What the number is made of, for the one-text-delta chunk this test feeds. Every remaining
+/// allocation belongs to the frame's own CONTENT, and none of them to a codec:
+///   * the frame's own `data:` document, parsed into a `serde_json::Value` — seventeen of them, one
+///     per node and owned key of the chunk, and the largest single share of the count;
+///   * the IR events the upstream's reader fans that document out to, which are owned values;
+///   * the wire documents the client's writer builds from those events, and the owned strings it
+///     stamps on them (the replayed stream identity, each event's name, the delta's text);
+///   * one serialization per written frame;
+///   * the buffer the framed bytes are assembled in, and the growths it takes; and
+///   * the one copy into the unit's arena the method's signature promises.
+///
+/// What is NOT among them is the point of the gate: the codec. This call used to resolve a whole
+/// `Protocol` per frame to get the writer — one heap allocation per chunk of every streamed answer
+/// the node serves, for a value the stream has to keep anyway. The writer now lives in the stream's
+/// state, so the first frame builds one and every frame after it builds nothing. The count fell by
+/// exactly that one, and by one rather than two only because the reader the `Protocol` boxed
+/// alongside it is a unit struct and a box of a zero-sized value allocates nothing.
+///
+/// A raise IS the regression unless the commit says in words why the extra allocation is the
+/// cheaper of two evils.
+const STREAM_FRAME_SAME_DIALECT_ALLOCS: u64 = 42;
+
+/// COMMITTED BASELINE — the same measurement for a frame that CROSSES dialects.
+///
+/// The client speaks one dialect and the upstream answered in another, so the frame is read in one
+/// grammar and written in the other — which is the same work in the same order as the sibling above,
+/// over a smaller upstream document (eight allocations for its parse rather than seventeen) and a
+/// client dialect that frames a text delta in more events. The codec construction is gone from this
+/// arm for the same reason and by the same means, and the same reading of a raise applies.
+const STREAM_FRAME_CROSS_DIALECT_ALLOCS: u64 = 30;
+
+/// One openai upstream, for a stream whose client speaks the same dialect.
+const STREAM_SAME_UPSTREAMS: &[Upstream] = &[Upstream {
+    lane: LaneId::new("lane-openai"),
+    host: "openai.invalid",
+    dialect: "openai",
+    model: MODEL,
+}];
+
+/// One bedrock upstream, for a stream whose client speaks anthropic.
+const STREAM_CROSS_UPSTREAMS: &[Upstream] = &[Upstream {
+    lane: LaneId::new("lane-bedrock"),
+    host: "bedrock.invalid",
+    dialect: "bedrock",
+    model: "claude",
+}];
+
+/// One streamed frame, in the transport's own event framing.
+fn event(name: &str, data: &str) -> Vec<u8> {
+    if name.is_empty() {
+        format!("data: {data}\n\n").into_bytes()
+    } else {
+        format!("event: {name}\ndata: {data}\n\n").into_bytes()
+    }
+}
+
+/// A streamed answer's frames does not build a codec per frame.
+///
+/// Both directions of one frame are driven — the upstream's frame is read against the kernel's
+/// reader state, and the client's bytes are written against the kernel's writer state — and the
+/// WRITE is what is measured, because that is the half that used to resolve a whole `Protocol`.
+/// Several frames are fed before the window opens, so what is measured is a frame of a stream
+/// already running, which is what all but one frame of a stream is.
+fn stream_frame_allocations(
+    upstreams: &'static [Upstream],
+    client_dialect: &str,
+    lane: LaneId,
+    host: &'static str,
+    frames: &[Vec<u8>],
+    warm: usize,
+) -> u64 {
+    use busbar_contract::plane::{PlaneSessionState, Progress};
+    use busbar_plane_llm::codec::LlmSessionState;
+
+    let plane = LlmPlane::new(upstreams);
+    let arena = harness::LeakArena;
+    let config = harness::EmptyConfig;
+    let transport = harness::HttpStack::new(harness::path_for(client_dialect), &[]);
+    let labels = Labels::new();
+    let ctx = harness::ctx(&arena, &config, &transport, &labels);
+    let dest = harness::destination(host, lane);
+    // Two halves, as the kernel opens two: the connection the frames arrive on and the connection
+    // they are written to.
+    let mut upstream = PlaneSessionState::new(LlmSessionState::default());
+    let mut client = PlaneSessionState::new(LlmSessionState::default());
+
+    let mut count = 0;
+    for (n, bytes) in frames.iter().enumerate() {
+        let wire = vec![harness::frame(bytes)];
+        let mut answers = FrameCursor::new(&wire);
+        let progress = plane
+            .decode_response(&mut answers, &dest, Some(&mut upstream), &ctx)
+            .expect("the frame is this dialect's shape");
+        let (Progress::Frame { r, .. } | Progress::Terminal { r, .. }) = progress else {
+            panic!("a streamed frame carries a response: {progress:?}");
+        };
+        let measured = allocations_of(|| {
+            let _ = plane
+                .encode_response(&r, Some(&mut client), &ctx)
+                .expect("the client speaks a dialect this frame can be written in");
+        });
+        if n >= warm {
+            count = measured;
+        }
+    }
+    count
+}
+
+#[test]
+fn a_streamed_frame_builds_no_codec_when_the_client_speaks_the_answer_s_dialect() {
+    let chunk = |text: &str| {
+        event(
+            "",
+            &format!(
+                r#"{{"id":"chatcmpl-1","object":"chat.completion.chunk","created":1752000000,"model":"gpt-4o","choices":[{{"index":0,"delta":{{"content":"{text}"}},"finish_reason":null}}]}}"#
+            ),
+        )
+    };
+    let frames = vec![chunk("He"), chunk("ll"), chunk("o"), chunk("!")];
+    let count = stream_frame_allocations(
+        STREAM_SAME_UPSTREAMS,
+        "openai",
+        LaneId::new("lane-openai"),
+        "openai.invalid",
+        &frames,
+        3,
+    );
+    println!("same-dialect streamed frame allocations: {count}");
+    assert_eq!(
+        count, STREAM_FRAME_SAME_DIALECT_ALLOCS,
+        "one streamed frame allocated {count} times, not \
+         {STREAM_FRAME_SAME_DIALECT_ALLOCS}: a stream is many frames, and a codec built per frame \
+         is a malloc per chunk for a value the stream already holds"
+    );
+}
+
+#[test]
+fn a_streamed_frame_builds_no_codec_when_the_client_speaks_another_dialect() {
+    let delta = |text: &str| {
+        event(
+            "contentBlockDelta",
+            &format!(
+                r#"{{"type":"contentBlockDelta","contentBlockIndex":0,"delta":{{"text":"{text}"}}}}"#
+            ),
+        )
+    };
+    let frames = vec![
+        event(
+            "messageStart",
+            r#"{"type":"messageStart","role":"assistant"}"#,
+        ),
+        delta("He"),
+        delta("ll"),
+        delta("o"),
+        delta("!"),
+    ];
+    let count = stream_frame_allocations(
+        STREAM_CROSS_UPSTREAMS,
+        "anthropic",
+        LaneId::new("lane-bedrock"),
+        "bedrock.invalid",
+        &frames,
+        4,
+    );
+    println!("cross-dialect streamed frame allocations: {count}");
+    assert_eq!(
+        count, STREAM_FRAME_CROSS_DIALECT_ALLOCS,
+        "one streamed frame allocated {count} times, not \
+         {STREAM_FRAME_CROSS_DIALECT_ALLOCS}: the crossing reads one grammar and writes another, \
+         and neither of those is a reason to build a codec per frame"
+    );
+}
+
 #[test]
 fn same_dialect_relay_does_not_reparse_the_request() {
     let plane = LlmPlane::new(UPSTREAMS);
