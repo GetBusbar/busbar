@@ -199,6 +199,11 @@ if [ -n "$families" ]; then
   # record.sh only `mkdir -p`s its --out, so the directory is cleared HERE. A recording the differ
   # reads must contain this candidate's cells and nothing else.
   rm -rf "$out" "$out.report"
+  # …and the PARENT has to exist before the redirect below opens `$out.log` in it. record.sh makes
+  # its own `--out`, but the shell opens the log first, so a worktree that has never recorded dies
+  # on "No such file or directory" AFTER paying for the release build — and the message it dies with
+  # names the ports, so a first run reads as a port collision that is not happening.
+  mkdir -p "$(dirname "$out")"
   ORACLE_LISTEN_PORT="$ORACLE_LISTEN_PORT" ORACLE_ADMIN_PORT="$ORACLE_ADMIN_PORT" ORACLE_MOCK_PORT="$ORACLE_MOCK_PORT" \
     "$here/bin/oracle" record --plane all --bin "$here/target/release/busbar" --filter "$families" \
     --out "$out" >"$out.log" 2>&1 || {
