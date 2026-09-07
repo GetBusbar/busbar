@@ -535,7 +535,7 @@ barred from unsafe by design, not merely asked nicely. Transport, ABI, loader, s
 crates carry at least `#![deny(unsafe_code)]` (weaker: a reviewed site may locally `#[allow]` it), \
 because these kinds legitimately touch FFI or the wire. This checks the attribute is present at the \
 crate root — not that every individual unsafe site is itself reviewed, which is a finer-grained \
-check left to `scripts/blocking-ffi-lint`-style tooling outside this gate."""
+check left to `cargo xtask gate blocking-ffi`-style tooling outside this gate."""
 forbid_kinds = ["plane", "hook", "pure_auth", "egress_auth", "secret"]
 deny_kinds = ["transport", "abi", "loader", "store", "export"]
 # Ratchet: crates known to be missing the attribute today, so the gate does not go red the moment

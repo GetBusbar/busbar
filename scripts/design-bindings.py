@@ -522,7 +522,7 @@ SEED: dict[str, list[tuple[str, str, str]]] = {
         ("test", "hook_calls_are_capped_and_saturation_fails_on_the_caller_deadline", "the MAX_INFLIGHT_HOOK_CALLS cap"),
         ("test", "dlopen_slow_gate_hits_the_deadline", "call_bounded cuts a slow gate at its budget"),
         ("test", "dlopen_plugin_panic_is_fail_closed_err", "a panicking plugin is a fail-closed error"),
-        ("lint", "scripts/blocking-ffi-lint.sh", "every plugin transport call is made from a blocking context"),
+        ("lint", "xtask/src/gates/blocking_ffi.rs", "every plugin transport call is made from a blocking context"),
     ],
     "PB-82": [
         ("test", "read_response_subtracts_cached_prefix_from_prompt_tokens", "openai: the cached count is subtracted from the prompt total"),
