@@ -111,62 +111,203 @@ pub fn new_registration() -> busbar_contract::Registration {
 /// makes the pricing a promise rather than a race: a request that opened before an apply is billed on
 /// the rates it was admitted under, and an apply landing mid-body cannot reprice a request halfway
 /// through. The next admission takes the new card.
+/// **THE CURRENCY THIS NODE'S MONEY IS IN**, named once, here.
+///
+/// A 1.5.5 deployment's configured figures carry no currency at all
+/// (`crates/busbar-core/src/config/mod.rs:1224`: "ABSTRACT cost units (no currency, no FX)") and its
+/// `/usage` labels them `USD` through a synthetic serializer. So the node reads them as a card
+/// naming exactly one currency, `USD`, whose minor unit is the cent every 1.5.5 figure was already
+/// projected through — `nanos_per_minor() == 10_000_000`, bit-identical arithmetic, not one byte of
+/// a released surface moved.
+///
+/// It is a function rather than an inlined `CurrencyCode::USD` at each call site because there are
+/// three call sites and they must never disagree: the card is BUILT in this currency, the lookup is
+/// ASKED for this currency, and the posting's cache RECORDS this currency. A second spelling is how
+/// a node comes to price a card in one currency and read it in another and report the refusal as a
+/// zero. The day a deployment declares its own, this is the one body that changes.
+#[must_use]
+pub fn node_currency() -> busbar_unit_cost::CurrencyCode {
+    busbar_unit_cost::CurrencyCode::USD
+}
+
+/// A HISTORY PINNED BY ONE READER: the `Arc` it took at admission, and the snapshot it took with it.
+///
+/// The two travel together because neither is the pin on its own. The `Arc` alone would let a reader
+/// see entries appended after it was admitted — an apply landing mid-body would reprice a request
+/// halfway through, which is the exact hazard the pin exists to prevent. The seq alone would name a
+/// snapshot of a history the reader no longer holds. Held as a pair, `view()` answers the same
+/// entries for this reader's whole life however many applies land behind it.
+///
+/// `HistoryView` is a borrow, so it cannot be the thing that is stored; it is spelled out of this
+/// pair on demand, which costs nothing — a slice and a number.
+#[derive(Clone, Debug)]
+pub struct PinnedHistory {
+    history: Arc<busbar_unit_cost::History>,
+    at: busbar_unit_cost::HistorySeq,
+}
+
+impl PinnedHistory {
+    /// The snapshot this reader was admitted under.
+    ///
+    /// Everything with `seq <= at`, which is exactly the history as it stood at the door. An entry
+    /// appended since is not in it and cannot be: the slice stops short of it.
+    #[must_use]
+    pub fn view(&self) -> busbar_unit_cost::HistoryView<'_> {
+        self.history.snapshot(self.at)
+    }
+
+    /// The snapshot's own number — the figure a posting records so a reader can reproduce it.
+    #[must_use]
+    pub fn seq(&self) -> busbar_unit_cost::HistorySeq {
+        self.at
+    }
+}
+
+/// THE PROCESS'S ONE RATE-CARD HISTORY, and it lives in the root because a rate is a statement about
+/// a deployment rather than about a plane. A plane reports what a unit consumed; what those
+/// quantities are worth is read here, off the same configured figures the engine's own spend
+/// projection derives from.
+///
+/// APPEND-ONLY, not swap-in-place. The engine rebuilds its projection's rates on every config apply
+/// and reload; the root answers by APPENDING a dated entry that prices what happens after it. The
+/// entry before it is not touched, not closed and not deleted — which is the whole design: a booked
+/// line is never rewritten, so a posting that already happened goes on resolving to the card it was
+/// earned under however many times an operator edits a price. Replacing the card, as this holder did
+/// before, silently re-priced every past posting on the next read.
+///
+/// PINNED BY THE READER, not read twice. A unit takes its [`PinnedHistory`] at ADMISSION and prices
+/// its whole life against that one snapshot, including the accrual that lands after its body has
+/// drained. That is what makes the pricing a promise rather than a race: a request that opened
+/// before an apply is billed on the history it was admitted under, and an apply landing mid-body
+/// cannot reprice a request halfway through. The next admission takes the new head.
 #[derive(Default)]
-pub struct RootCard {
+pub struct RootHistory {
     /// `None` until the boot resolution raises the rate-apply seam. Absent, a report is not priced
     /// and nothing is posted — the honest answer for a build that has read no configuration yet,
     /// rather than a fallback card whose figures no operator wrote.
-    card: arc_swap::ArcSwapOption<busbar_unit_cost::RateCard>,
+    history: arc_swap::ArcSwapOption<busbar_unit_cost::History>,
+    /// **THE ROOT'S OWN COUNT OF CONFIG RESOLUTIONS**, and that count is what an entry records as
+    /// its policy epoch.
+    ///
+    /// The rate-apply seam carries the figures and nothing else — no epoch, by design
+    /// (`crates/busbar-substrate/src/rate_apply.rs:14`) — so there is no engine number to copy here
+    /// and inventing one that looked like the engine's would be worse than counting honestly. The
+    /// boot resolution is epoch 0 and each apply after it is the next, which is a true statement
+    /// about which generation of the deployment's configuration produced the entry. The day the seam
+    /// carries the engine's own epoch, this counter is what it replaces.
+    resolutions: std::sync::atomic::AtomicU64,
 }
 
-impl std::fmt::Debug for RootCard {
+impl std::fmt::Debug for RootHistory {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RootCard").finish_non_exhaustive()
+        f.debug_struct("RootHistory").finish_non_exhaustive()
     }
 }
 
-impl RootCard {
-    /// The card as it stands, pinned for the caller's whole life.
+impl RootHistory {
+    /// The history as it stands, pinned at its head for the caller's whole life.
     ///
-    /// The returned `Arc` is the reader's to keep: a swap after this call replaces what the NEXT
-    /// caller sees and leaves this one holding the card it was admitted under.
+    /// The returned pair is the reader's to keep: an append after this call is seen by the NEXT
+    /// caller and leaves this one reading the snapshot it was admitted under.
     #[must_use]
-    pub fn pin(&self) -> Option<Arc<busbar_unit_cost::RateCard>> {
-        self.card.load_full()
+    pub fn pin(&self) -> Option<PinnedHistory> {
+        let history = self.history.load_full()?;
+        let at = history.head()?;
+        Some(PinnedHistory { history, at })
     }
 
-    /// Put `card` in place of whatever is there, atomically.
+    /// **THE ONLY MUTATOR: APPEND.** Put `card` on the history effective from `now_ms`, and return
+    /// the entry's number.
     ///
-    /// Called on the boot resolution and again on every apply/reload, always with a card built from
-    /// the configuration the engine just resolved its own rates from.
-    pub fn apply(&self, card: Arc<busbar_unit_cost::RateCard>) {
-        self.card.store(Some(card));
+    /// The FIRST entry is effective from instant ZERO rather than from `now_ms`, and that is not a
+    /// convenience. A first entry starting at boot would leave every instant before boot in a hole,
+    /// and a hole is a refusal — so a posting whose arrival the node dated a millisecond early, or a
+    /// legacy row carrying nothing finer than a UTC day, would price at nothing. Effective from zero
+    /// with no end, one entry covers every instant, and a deployment that never edits a price is a
+    /// single-entry history: arithmetically the previous release, to the byte.
+    ///
+    /// EVERY LATER ENTRY is effective from `now_ms` and closes nothing. The previous entry stays
+    /// open-ended and stays exactly as it was written; the resolution rule takes the highest
+    /// covering seq, so this entry out-ranks it from `now_ms` forward and the entry before it goes
+    /// on answering for every instant before that, forever. Closing the old entry would be a write
+    /// to a record that is already booked.
+    ///
+    /// Read-copy-update rather than load-then-store: two applies landing together would otherwise
+    /// each clone the same history and the second's store would drop the first's entry on the floor,
+    /// which is a price change that silently did not happen.
+    pub fn apply(&self, card: busbar_unit_cost::RateCard, now_ms: u64) -> busbar_unit_cost::HistorySeq {
+        let policy_epoch = self
+            .resolutions
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let appended = self.history.rcu(|current| {
+            let mut next = match current {
+                Some(history) => busbar_unit_cost::History::clone(history),
+                None => busbar_unit_cost::History::new(),
+            };
+            let effective_from = if next.is_empty() { 0 } else { now_ms };
+            next.append(busbar_unit_cost::CardEntryDraft {
+                effective_from,
+                effective_until: None,
+                card: card.clone(),
+                appended_at: now_ms,
+                author: busbar_unit_cost::Author::Config { policy_epoch },
+            });
+            Some(Arc::new(next))
+        });
+        let _ = appended;
+        self.history
+            .load()
+            .as_ref()
+            .and_then(|h| h.head())
+            .unwrap_or(busbar_unit_cost::HistorySeq::OPENING)
+    }
+
+    /// How many entries stand on the history. A read for the tests and for the operator surface that
+    /// reports the head; it is never on a pricing path.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.history.load().as_ref().map_or(0, |h| h.len())
+    }
+
+    /// Whether no configuration has been resolved yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
-/// The process's card holder, reached by the root's units and by nothing below them.
+/// The process's history holder, reached by the root's units and by nothing below them.
 ///
 /// A `static` for the same reason the LLM node is one: the seam a unit is driven through is a bare
 /// `fn` and a bare `fn` cannot capture, so the holder has to be reachable by name. It exists before
-/// the boot that reads the configuration finishes, holding no card, which is exactly the state a
+/// the boot that reads the configuration finishes, holding no history, which is exactly the state a
 /// report arriving that early should be priced in — it isn't.
-pub static ROOT_CARD: LazyLock<RootCard> = LazyLock::new(RootCard::default);
+pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default);
 
 /// The root, answering the engine's rate-apply seam.
 ///
 /// The whole of the wiring: the engine resolved the deployment's rates — at boot or on a live apply —
-/// and the root rebuilds its card from the SAME two configured figures and swaps it in. One
-/// configuration, two readings, and the apply moves both or neither.
+/// and the root builds a card from the SAME two configured figures and APPENDS it to the history,
+/// dated at the instant the apply landed. One configuration, two readings, and the apply moves both
+/// or neither.
+///
+/// The instant is read HERE, once, from the same wall clock a unit's arrival is read from, so the
+/// entry's `effective_from` and a posting's `arrived_ms` are two readings of one scale and a
+/// comparison between them means what it says.
 #[derive(Debug, Clone, Copy)]
 pub struct CardRepricer;
 
 impl busbar_substrate::rate_apply::RateApply for CardRepricer {
     fn rates_applied(&self, rates: &busbar_substrate::rate_apply::RawRates<'_>) {
-        ROOT_CARD.apply(Arc::new(crate::root::units_llm::card_from_config(
-            rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
-            rates.fee_cents,
-            rates.present,
-        )));
+        ROOT_CARD.apply(
+            crate::root::units_llm::card_from_config(
+                rates.lanes.iter().map(|(lane, r)| (lane.as_str(), *r)),
+                rates.fee_cents,
+                rates.present,
+                node_currency(),
+            ),
+            busbar_substrate::store::now_ms(),
+        );
     }
 }
 
@@ -798,42 +939,194 @@ fn unclaimed_facts(outcome: &Outcome) -> busbar_contract::AuditFacts {
 mod tests {
     use super::*;
 
-    /// The fee an apply carries reaches the card, and the card a reader already pinned is unmoved.
+    /// The fee an apply carries reaches the head, and the snapshot a reader already pinned is
+    /// unmoved.
     ///
-    /// The two halves of the swap, asserted together because either alone is a half-truth. A holder
-    /// that took the new fee but repriced its existing readers would bill a request on rates it was
-    /// never admitted under; a holder that left its readers alone by never taking the new fee at all
-    /// would pass the second assertion and be the boot-bound card this replaced. The fee is read as
-    /// the card's own unit price for its flat line, which is where a configured fee ends up.
+    /// The two halves of the append, asserted together because either alone is a half-truth. A
+    /// holder that took the new fee but let its existing readers see it would bill a request on
+    /// rates it was never admitted under; a holder that left its readers alone by never taking the
+    /// new fee at all would pass the second assertion and be the boot-bound card this replaced. The
+    /// fee is read as the card's own unit price for its flat line, which is where a configured fee
+    /// ends up.
     #[test]
-    fn an_apply_moves_the_card_and_leaves_a_pinned_reader_on_the_one_it_took() {
-        let holder = RootCard::default();
+    fn an_apply_moves_the_head_and_leaves_a_pinned_reader_on_the_snapshot_it_took() {
+        let holder = RootHistory::default();
         assert!(
             holder.pin().is_none(),
             "a holder that has heard no apply prices nothing"
         );
 
-        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(3)));
-        let admitted = holder.pin().expect("the first apply put a card in place");
+        holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
+        let admitted = holder.pin().expect("the first apply put an entry in place");
         assert_eq!(
-            admitted.fee_unit_price_nanos(busbar_unit_cost::CurrencyCode::USD),
-            30_000_000
+            fee_at(&admitted, 1_000),
+            30_000_000,
+            "the first apply's fee did not reach the entry a reader resolves to"
         );
 
         // The apply a request in flight must not feel.
-        holder.apply(Arc::new(busbar_unit_cost::RateCard::absent(11)));
+        holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
         assert_eq!(
-            admitted.fee_unit_price_nanos(busbar_unit_cost::CurrencyCode::USD),
+            fee_at(&admitted, 5_000),
             30_000_000,
-            "a reader that pinned before the apply was repriced by it"
+            "a reader that pinned before the apply was repriced by it, at every instant of its life"
+        );
+        let next = holder.pin().expect("the second apply put an entry in place");
+        assert_eq!(
+            fee_at(&next, 5_000),
+            110_000_000,
+            "the apply did not reach the next admission's snapshot"
+        );
+    }
+
+    /// The flat fee the entry in force at `at` names, in the node's currency. The one reading the
+    /// tests below compare cards by, so that a comparison is a lookup rather than a field peek.
+    fn fee_at(pinned: &PinnedHistory, at: u64) -> u128 {
+        pinned
+            .view()
+            .card_at(at)
+            .expect("an entry covers the instant")
+            .1
+            .fee_unit_price_nanos(node_currency())
+    }
+
+    /// **APPEND, NEVER REWRITE.** A reload puts a SECOND entry on the history and leaves the first
+    /// exactly as it was written.
+    ///
+    /// This is the invariant the whole design rests on and it is the one the previous holder broke
+    /// by construction: it stored one card and a second apply overwrote it, so every posting the
+    /// node had ever taken silently re-priced at the new figure on the next read. Three assertions,
+    /// because two of them alone would pass on a holder that replaced: the count MOVES, the first
+    /// entry's card is UNCHANGED, and the first entry's number is unchanged too — a history that
+    /// renumbered would break every invoice that named a snapshot.
+    #[test]
+    fn a_reload_appends_and_never_rewrites_the_entry_before_it() {
+        let holder = RootHistory::default();
+        holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
+        holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
+        holder.apply(busbar_unit_cost::RateCard::absent(29), 3_000);
+
+        assert_eq!(
+            holder.len(),
+            3,
+            "three applies left fewer than three entries, so one of them overwrote another"
+        );
+
+        let head = holder.pin().expect("three applies put a head in place");
+        let view = head.view();
+        let entries = view.entries();
+        assert_eq!(
+            entries[0].card().fee_unit_price_nanos(node_currency()),
+            30_000_000,
+            "the entry the first apply wrote was rewritten by a later one"
         );
         assert_eq!(
-            holder
-                .pin()
-                .expect("the second apply put a card in place")
-                .fee_unit_price_nanos(busbar_unit_cost::CurrencyCode::USD),
+            entries[0].seq(),
+            busbar_unit_cost::HistorySeq(0),
+            "the first entry was renumbered, which unmakes every invoice that named a snapshot"
+        );
+        assert_eq!(
+            entries[1].card().fee_unit_price_nanos(node_currency()),
+            110_000_000
+        );
+        assert_eq!(
+            entries[2].card().fee_unit_price_nanos(node_currency()),
+            290_000_000
+        );
+    }
+
+    /// **AN ENTRY PRICES WHAT HAPPENS AFTER IT.** An instant before a reload resolves to the entry
+    /// that was in force then, and an instant after it resolves to the new one — on the same
+    /// snapshot, read at the same moment.
+    ///
+    /// The heart of the model stated as one lookup: the answer depends on WHEN the unit arrived and
+    /// not on when the question is asked. A holder that replaced its card answers the same figure
+    /// for both instants, which is exactly the recorded 1.5.5 behaviour this replaces.
+    #[test]
+    fn an_instant_before_a_reload_resolves_to_the_entry_that_was_in_force_then() {
+        let holder = RootHistory::default();
+        holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
+        holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
+
+        let head = holder.pin().expect("two applies put a head in place");
+        assert_eq!(
+            fee_at(&head, 1_500),
+            30_000_000,
+            "a unit that arrived before the reload was re-priced at the card that replaced it"
+        );
+        assert_eq!(
+            fee_at(&head, 2_500),
             110_000_000,
-            "the apply did not reach the next admission's card"
+            "a unit that arrived after the reload was priced at the card it superseded"
+        );
+    }
+
+    /// **THE FIRST ENTRY COVERS EVERY INSTANT BEFORE IT**, because a hole is a refusal and a request
+    /// the node dated a millisecond before its own boot is not a free request.
+    ///
+    /// A first entry effective from the boot instant would leave instant zero — and every legacy row
+    /// carrying nothing finer than a UTC day — resolving to nothing, which the lookup reports as
+    /// unpriceable and the settlement posts as no row at all.
+    #[test]
+    fn the_first_entry_covers_every_instant_before_the_boot_that_wrote_it() {
+        let holder = RootHistory::default();
+        holder.apply(busbar_unit_cost::RateCard::absent(3), 9_000_000);
+        let head = holder.pin().expect("the apply put an entry in place");
+        assert_eq!(
+            fee_at(&head, 0),
+            30_000_000,
+            "instant zero fell in a hole, so a pre-boot row prices at nothing"
+        );
+        assert_eq!(fee_at(&head, 8_999_999), 30_000_000);
+    }
+
+    /// Every entry a config apply writes says so, and says which generation of the configuration
+    /// wrote it. The boot resolution is epoch 0 and each apply after it is the next.
+    #[test]
+    fn every_config_apply_records_the_generation_that_wrote_it() {
+        let holder = RootHistory::default();
+        holder.apply(busbar_unit_cost::RateCard::absent(3), 1_000);
+        holder.apply(busbar_unit_cost::RateCard::absent(11), 2_000);
+        let head = holder.pin().expect("two applies put a head in place");
+        let view = head.view();
+        let epochs: Vec<busbar_unit_cost::Author> = view
+            .entries()
+            .iter()
+            .map(|e| e.author().clone())
+            .collect();
+        assert_eq!(
+            epochs,
+            vec![
+                busbar_unit_cost::Author::Config { policy_epoch: 0 },
+                busbar_unit_cost::Author::Config { policy_epoch: 1 },
+            ]
+        );
+    }
+
+    /// The card a config apply builds is in the node's currency, and asking it for that currency is
+    /// an answer rather than a refusal.
+    ///
+    /// The one assertion that catches a card built in one currency and read in another: the lookup
+    /// would report `CurrencyNotPriced`, which a caller that mapped errors to zero would post as a
+    /// free request.
+    #[test]
+    fn the_card_an_apply_builds_prices_the_currency_the_node_reads_it_in() {
+        let holder = RootHistory::default();
+        holder.apply(
+            crate::root::units_llm::card_from_config(
+                std::iter::empty::<(&str, busbar_substrate::billing::RawTierRates)>(),
+                7,
+                true,
+                node_currency(),
+            ),
+            1_000,
+        );
+        let head = holder.pin().expect("the apply put an entry in place");
+        let view = head.view();
+        let (_, card) = view.card_at(1_000).expect("an entry covers it");
+        assert!(
+            card.prices_currency(node_currency()),
+            "the node's own currency is not on the card the node's own config built"
         );
     }
 
