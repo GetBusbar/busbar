@@ -209,8 +209,14 @@ if [ -n "$families" ]; then
   # The same regex selects the cells on both sides (an ID filter, the domain record.sh --filter
   # uses), and --strict makes the differ's exit code carry the verdict for this subset: zero owed
   # cells, an unaccepted divergence, or an owed cell missing from the candidate is red.
-  python3 "$here/testing/shadow-oracle/diff-cells.py" --golden "$here/target/oracle/recordings/golden" \
-    --candidate "$out" --out "$out.report" --allow-harness-skew --id-filter "$families" --strict \
+  # THE SAME GOLDEN CI READS. It used to be `target/oracle/recordings/golden` — whatever this host
+  # last re-recorded — so a landing and the CI job could each be green against a different answer to
+  # "what did 1.5.5 do", and the local one was green against a file nobody had reviewed. Both callers
+  # now diff against the committed, signed-off recording, which is also why `--allow-harness-skew` is
+  # gone: with one golden on both sides the skew guard means the same thing in both places, and a
+  # harness edit that moves the rev is a golden to re-stamp or re-record, not a warning to pass over.
+  python3 "$here/testing/shadow-oracle/diff-cells.py" --golden "$here/testing/shadow-oracle/golden/1.5.5" \
+    --candidate "$out" --out "$out.report" --id-filter "$families" --strict \
     || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; exit 1; }
   echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed)"
 fi

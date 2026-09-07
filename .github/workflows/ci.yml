@@ -1664,22 +1664,45 @@ jobs:
         uses: dtolnay/rust-toolchain@1.98.0
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
-      - name: Oracle revision (keys the golden cache)
+      # THE RECORDER'S PORTS ARE NOT THE KERNEL'S TO HAND OUT. The oracle binds a fixed band
+      # (48781 mock, 48811/48812 data+admin, 48821/48822 the boot probe, 48851+ the selftest), and on
+      # Linux that band sits INSIDE the default ephemeral range, `net.ipv4.ip_local_port_range`
+      # 32768-60999. So any outbound connection this job makes — curl to the mock, busbar to an
+      # upstream, the cargo build's own network — can be assigned 48812 as its SOURCE port, and the
+      # next `busbar` then dies with `cannot bind listen address '127.0.0.1:48812': Address already
+      # in use`. That is exactly what turned 234 of 897 golden cells into FAIL: the recorder's own
+      # bindability probe asks "is anything ACCEPTING here" (a TCP connect), which an ephemeral
+      # OUTBOUND socket correctly answers "no" to right up until the bind fails.
+      #
+      # macOS never sees it — its ephemeral range starts at 49152, above the whole band — which is
+      # why every local recording is green and only the runner is red.
+      #
+      # The fix is to tell the kernel the band is spoken for. `ip_local_reserved_ports` removes those
+      # ports from EPHEMERAL allocation while leaving an explicit bind to them legal, which is the
+      # exact asymmetry the recorder needs. Range chosen to cover the whole 487xx/488xx band the
+      # oracle and the fleet fixtures agree on. It is applied, then READ BACK: a silently-failed
+      # sysctl would leave the flake in place under a step that printed nothing.
+      - name: Reserve the oracle port band from the kernel's ephemeral pool
+        run: |
+          set -euo pipefail
+          sudo sysctl -w net.ipv4.ip_local_reserved_ports=48700-48900
+          got="$(sysctl -n net.ipv4.ip_local_reserved_ports)"
+          echo "ip_local_reserved_ports=${got}"
+          case "$got" in *48700-48900*) ;; *) echo "::error::the oracle port band was not reserved (got '${got}'); a recorder bind would race the kernel's ephemeral allocator"; exit 1 ;; esac
+      - name: Oracle revision (keys the 1.5.5 artifact cache)
         id: rev
         run: |
           set -euo pipefail
           digest=$(awk -F'\t' '$1=="1.5.5" && $2=="busbar-x86_64-unknown-linux-gnu.tar.gz"{print $3}' testing/shadow-oracle/golden-digests.tsv)
-          # Same file list, same hash, as record.sh/diff-cells.py's harness_rev provenance field —
-          # computed by the one shared function so the cache key and the recorded provenance can
-          # never quietly disagree about what "the harness changed" means.
-          rev=$(bash testing/shadow-oracle/harness-rev.sh | awk '{print $2}' | cut -c1-16)
-          echo "key=oracle-golden-${digest:0:12}-${rev}" >> "$GITHUB_OUTPUT"
-      - name: Cache the golden recording and the 1.5.5 artifacts
+          # The key names the ARTIFACTS this cache holds — the pinned 1.5.5 release binary and the
+          # pinned plugins — and nothing else. It used to carry harness_rev too, because the cache
+          # also held a re-recorded golden; the golden is now read from the tree, so hashing the
+          # harness into this key would only throw away a correct download on every harness edit.
+          echo "key=oracle-artifacts-${digest:0:12}" >> "$GITHUB_OUTPUT"
+      - name: Cache the pinned 1.5.5 artifacts
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.cache/busbar-oracle
-            target/oracle/recordings/golden
+          path: ~/.cache/busbar-oracle
           key: ${{ steps.rev.outputs.key }}
       - name: The differ can see a diff (replay selftest)
         run: bash testing/shadow-oracle/replay-selftest.sh
@@ -1702,12 +1725,30 @@ jobs:
           cargo build -p busbar --release --locked
       - name: Both binaries accept the oracle config
         run: bash testing/shadow-oracle/selftest.sh target/release/busbar "$HOME/.cache/busbar-oracle/1.5.5/busbar"
-      - name: Record the golden (once per oracle revision; cached)
+      # THE GOLDEN IS COMMITTED, NOT RE-DERIVED. `testing/shadow-oracle/golden/1.5.5/` is the signed-off
+      # 1.5.5 recording, reviewed cell by cell, and it is the thing this job is supposed to diff
+      # against. Re-recording it here made the gate's own reference an OUTPUT of the runner: 234 of
+      # 897 cells failed to record on one run and the report read "the golden no longer owes this id"
+      # — the tree's answer to "what did 1.5.5 do" changed because a runner had a bad afternoon.
+      # A reference that is re-derived on the machine under test is not a reference.
+      #
+      # So the golden is COPIED IN, and the copy is checked: the ledger must carry the same number of
+      # PASS rows as meta.json says were recorded, and that number must be non-zero. A truncated or
+      # half-checked-out golden owes fewer cells, and owing fewer cells is how this gate goes quietly
+      # green — owed-baseline.txt in replay.sh is the second half of that guard and catches an id that
+      # stops being owed at all.
+      - name: The golden is the committed 1.5.5 recording (never re-recorded here)
         run: |
           set -euo pipefail
-          if [ -s target/oracle/recordings/golden/ledger.tsv ]; then echo "golden cached"; exit 0; fi
-          mkdir -p target/oracle/recordings/golden
-          bash testing/shadow-oracle/record.sh --bin "$HOME/.cache/busbar-oracle/1.5.5/busbar" --plane all --out target/oracle/recordings/golden
+          src=testing/shadow-oracle/golden/1.5.5
+          rm -rf target/oracle/recordings/golden
+          mkdir -p target/oracle/recordings
+          cp -R "$src" target/oracle/recordings/golden
+          pass=$(awk -F'\t' '$2=="PASS"' target/oracle/recordings/golden/ledger.tsv | wc -l | tr -d ' ')
+          want=$(python3 -c 'import json;print(json.load(open("target/oracle/recordings/golden/meta.json"))["recorded"])')
+          echo "committed golden: ${pass} PASS rows, meta.json records ${want}"
+          [ "$pass" -gt 0 ] || { echo "::error::the committed golden carries no PASS rows — the replay below would be vacuously green"; exit 1; }
+          [ "$pass" = "$want" ] || { echo "::error::the committed golden's ledger has ${pass} PASS rows but meta.json records ${want}; the checked-in recording is not whole"; exit 1; }
       - name: Record the candidate
         run: |
           set -euo pipefail
