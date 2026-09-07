@@ -326,6 +326,170 @@ impl Gate for ServiceImagesGate {
 
         report
     }
+
+    /// THE SAME PLANTS, DRIVEN THROUGH BOTH IMPLEMENTATIONS.
+    ///
+    /// The legacy script anchors on its own path, so the harness copies it into the planted tree
+    /// and runs it there. Everything it reads therefore has to BE in that tree: every workflow, the
+    /// pinned table, `release-check.sh`, and the two fleet-fixture files it sources for `record`
+    /// and its verdict. A path left out is a path it reads from the real repository, and the probe
+    /// then proves nothing.
+    ///
+    /// TWO PLACES THE TWO ARE EXPECTED TO DIFFER, both reported rather than smoothed over:
+    ///
+    /// * the three per-image rules ([`ROW_FLOATING`], [`ROW_ROW_PRESENT`], [`ROW_PIN_MATCHES`])
+    ///   carry ids the shell never printed — it recorded one row per LOCATION — so the verdicts
+    ///   agree while the rule NAMES cannot;
+    /// * the two [`ROW_RELEASE_CHECK`] probes are the WIDENED SCAN SET. The shell reads only
+    ///   `.github/workflows/`, so it is green on a `release-check.sh` running an unpinned
+    ///   container — which is precisely the drift that motivated the table. Those probes are kept
+    ///   set: the Rust being stricter there is the point of the widening, not a parity bug.
+    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        let workflows: Vec<String> = match cx.walk(&workflow_spec()) {
+            Ok(files) => files.iter().map(|f| f.rel_str()).collect(),
+            Err(_) => Vec::new(),
+        };
+        let planted_workflow = format!("{WORKFLOW_DIR}/zz-planted.yml");
+        // What the relocated script reads beyond the workflows: the table it resolves against, the
+        // qa gate's own script (this gate's widened scan set), and the fixture library + verdict
+        // reader it sources.
+        let support = |with_table: bool| {
+            let mut v = vec![
+                RELEASE_CHECK.to_string(),
+                "testing/fleet-fixtures/lib.sh".to_string(),
+                "testing/fleet-fixtures/verdict.sh".to_string(),
+            ];
+            if with_table {
+                v.push(IMAGES_TSV.to_string());
+            }
+            v
+        };
+        let all = |extra: &[String], with_table: bool| {
+            let mut v = workflows.clone();
+            v.extend(extra.iter().cloned());
+            v.extend(support(with_table));
+            v
+        };
+
+        let mut out = Vec::new();
+        let mut push = |label: &str,
+                        rule: Option<&str>,
+                        overlay: Result<Overlay, String>,
+                        materialize: Vec<String>| {
+            if let Ok(overlay) = overlay {
+                out.push(crate::gates::ParityProbe {
+                    label: label.to_string(),
+                    overlay,
+                    materialize,
+                    expect_rule: rule.map(str::to_string),
+                    legacy_names: None,
+                    divergence: None,
+                });
+            }
+        };
+
+        // The table's own rules. A deleted table is materialized by OMITTING it: the plant is that
+        // the file is not there.
+        push(
+            "the pinned table is gone",
+            Some(ROW_TABLE),
+            table_overlay(cx, &Edit::Delete),
+            all(&[], false),
+        );
+        push(
+            "a table row is not pinned by a sha256 digest",
+            Some(ROW_SHAPE),
+            table_overlay(
+                cx,
+                &Edit::Append("planted\tplanted/img:1\tlatest\t-\t1234\t-\t60\n".to_string()),
+            ),
+            all(&[], true),
+        );
+        push(
+            "a pinned image no workflow references",
+            Some(ROW_EVERY_PIN_USED),
+            table_overlay(
+                cx,
+                &Edit::Append(format!(
+                    "planted\tplanted/unused:1\t{PLANTED_DIGEST}\t-\t1234\t-\t60\n"
+                )),
+            ),
+            all(&[], true),
+        );
+
+        // The discovery floor: every workflow gone, one that names no image in their place. Only
+        // the surviving file can be materialized, because the others are absent in this plant.
+        if !workflows.is_empty() {
+            let mut ov = Overlay::new();
+            for rel in &workflows {
+                ov.remove(rel);
+            }
+            ov.set(
+                &planted_workflow,
+                "jobs:\n  check:\n    steps:\n      - run: true\n",
+            );
+            let mut materialize = vec![planted_workflow.clone()];
+            materialize.extend(support(true));
+            push(
+                "a scan that found no image at all",
+                Some(ROW_FLOOR),
+                Ok(ov),
+                materialize,
+            );
+        }
+
+        for (label, rule, line) in [
+            (
+                "a workflow image on a floating tag",
+                ROW_FLOATING,
+                "        image: postgres:16\n".to_string(),
+            ),
+            (
+                "a workflow image with no row in the table",
+                ROW_ROW_PRESENT,
+                format!("        image: redis:7@{PLANTED_DIGEST}\n"),
+            ),
+            (
+                "a workflow digest that disagrees with the table",
+                ROW_PIN_MATCHES,
+                format!("        image: postgres:16@{PLANTED_DIGEST}\n"),
+            ),
+        ] {
+            push(
+                label,
+                Some(rule),
+                Ok(workflow_overlay(&line)),
+                all(std::slice::from_ref(&planted_workflow), true),
+            );
+        }
+
+        // THE ESCAPE HATCH, as a probe: both implementations must stay GREEN over an `image:` that
+        // is a workflow expression. `expect_rule: None` is the harness's way of saying so, and it
+        // is the one probe here that proves the two agree about what they DO NOT report.
+        push(
+            "an image: that is a workflow expression is exempt",
+            None,
+            Ok(workflow_overlay(
+                "        image: ${{ inputs.service_image }}\n",
+            )),
+            all(std::slice::from_ref(&planted_workflow), true),
+        );
+
+        push(
+            "release-check.sh runs a container the table does not pin",
+            Some(ROW_RELEASE_CHECK),
+            release_check_overlay(cx, Some(("postgres:16 >/dev/null", "ghostdb:9 >/dev/null"))),
+            all(&[], true),
+        );
+        push(
+            "release-check.sh names no container at all",
+            Some(ROW_RELEASE_CHECK),
+            release_check_overlay(cx, None),
+            all(&[], true),
+        );
+
+        out
+    }
 }
 
 const OWED: &[&str] = &[
@@ -835,11 +999,18 @@ fn plant_table(
     edit: Edit,
     naming: &[&str],
 ) -> Case {
-    let mut ov = Overlay::new();
-    if let Err(e) = edit.apply(cx, IMAGES_TSV, &mut ov) {
-        return unplantable(name, covers, naming, e);
+    match table_overlay(cx, &edit) {
+        Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
+        Err(e) => unplantable(name, covers, naming, e),
     }
-    prove_red(cx, gate, name, covers, ov, naming)
+}
+
+/// The overlay one edit to the pinned table produces. Shared by [`Gate::selftest`] and
+/// [`Gate::parity_probes`] so a probe and its self-test case are the same planted tree.
+fn table_overlay(cx: &Ctx, edit: &Edit) -> Result<Overlay, String> {
+    let mut ov = Overlay::new();
+    edit.apply(cx, IMAGES_TSV, &mut ov)?;
+    Ok(ov)
 }
 
 /// A workflow file that does not exist in the tree, carrying one planted `image:` line. Planting a
@@ -875,19 +1046,22 @@ fn plant_release_check(
     subst: Option<(&str, &str)>,
     naming: &[&str],
 ) -> Case {
-    let text = match cx.read(RELEASE_CHECK) {
-        Ok(t) => t,
-        Err(e) => return unplantable(name, covers, naming, e),
-    };
+    match release_check_overlay(cx, subst) {
+        Ok(ov) => prove_red(cx, gate, name, covers, ov, naming),
+        Err(e) => unplantable(name, covers, naming, e),
+    }
+}
+
+/// The overlay one plant into the qa gate's script produces, shared by the self-test and the parity
+/// probes.
+fn release_check_overlay(cx: &Ctx, subst: Option<(&str, &str)>) -> Result<Overlay, String> {
+    let text = cx.read(RELEASE_CHECK)?;
     let planted = match subst {
         Some((needle, with)) => {
             if !text.contains(needle) {
-                return unplantable(
-                    name,
-                    covers,
-                    naming,
-                    format!("`{needle}` is not in {RELEASE_CHECK} to plant over"),
-                );
+                return Err(format!(
+                    "`{needle}` is not in {RELEASE_CHECK} to plant over"
+                ));
             }
             text.replacen(needle, with, 1)
         }
@@ -895,7 +1069,7 @@ fn plant_release_check(
     };
     let mut ov = Overlay::new();
     ov.set(RELEASE_CHECK, planted);
-    prove_red(cx, gate, name, covers, ov, naming)
+    Ok(ov)
 }
 
 #[cfg(test)]

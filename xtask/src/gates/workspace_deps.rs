@@ -46,8 +46,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_red, Case, Expect, Gate, Report};
+use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
+use crate::gates::{prove_green, prove_red, Case, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::toml_lite;
 
@@ -549,164 +549,234 @@ impl Gate for WorkspaceDepsGate {
             "every dependency in the real workspace goes through the table",
             &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
         ));
-
-        // Rule 2, three cases, because "dependencies" is three tables plus their per-target forms
-        // and a rule enforced on one of them is scoped to where the bug was first seen.
-        let mut restated = clean_members();
-        restated[3].1 = member_body(&["dep0", "dep1", "dep3", "dep4", "dep5"], "dep2 = \"1\"");
-        report.push(prove_red(
-            cx,
-            self,
-            "a member restates a version",
-            &[ROW_INHERITANCE],
-            plant(&restated, &clean_table()),
-            &["states its own version"],
-        ));
-
-        let mut dev = clean_members();
-        dev[5].1 = format!(
-            "{}\n\n[dev-dependencies]\ndep9 = \"3\"",
-            member_body(CLEAN_DEPS, "")
-        );
-        report.push(prove_red(
-            cx,
-            self,
-            "a dev-dependency restates a version",
-            &[ROW_INHERITANCE],
-            plant(&dev, &clean_table()),
-            &["states its own version", "[dev-dependencies]"],
-        ));
-
-        let mut per_target = clean_members();
-        per_target[6].1 = format!(
-            "{}\n\n[target.'cfg(unix)'.dependencies]\ndep9 = \"3\"",
-            member_body(CLEAN_DEPS, "")
-        );
-        report.push(prove_red(
-            cx,
-            self,
-            "a per-target dependency restates a version",
-            &[ROW_INHERITANCE],
-            plant(&per_target, &clean_table()),
-            &["states its own version", "target."],
-        ));
-
-        // Rule 3, alone.
-        let mut orphaned_inherit = clean_members();
-        orphaned_inherit[1].1 = format!(
-            "{}\nnot_in_table = {{ workspace = true }}",
-            member_body(CLEAN_DEPS, "")
-        );
-        report.push(prove_red(
-            cx,
-            self,
-            "a dependency inherits from an entry that is not there",
-            &[ROW_INHERIT_TARGET],
-            plant(&orphaned_inherit, &clean_table()),
-            &["no `not_in_table` entry"],
-        ));
-
-        // Rule 4, alone: a pin nothing obeys — it looks like governance and governs nothing.
-        report.push(prove_red(
-            cx,
-            self,
-            "an orphaned workspace entry",
-            &[ROW_ORPHANS],
-            plant(
-                &clean_members(),
-                &format!("{}\nunused_dep = \"9\"", clean_table()),
-            ),
-            &["no member inherits it"],
-        ));
-
-        // Rule 5, alone: a declared member with no manifest. Eight members still inspect, so
-        // neither floor moves.
-        let mut ghost = clean_members();
-        ghost.push(("ws-plant/never-existed".to_string(), String::new()));
-        let mut ghost_overlay = plant(&ghost, &clean_table());
-        ghost_overlay.remove("ws-plant/never-existed/Cargo.toml");
-        report.push(prove_red(
-            cx,
-            self,
-            "a declared member has no manifest",
-            &[ROW_SET_EQUALITY],
-            ghost_overlay,
-            &["has no Cargo.toml"],
-        ));
-
-        // Rule 6 gets its OWN discriminating fixture: two members carrying TWENTY inherited
-        // declarations apiece, so the inherited-declaration floor is comfortably clear and only the
-        // member floor can go red. A floor proven alongside its neighbour is a floor that could be
-        // deleted with this self-test still green.
-        let wide: Vec<String> = (0..20).map(|i| format!("dep{i}")).collect();
-        let wide_refs: Vec<&str> = wide.iter().map(String::as_str).collect();
-        let few_members: Vec<(String, String)> = (0..2)
-            .map(|j| (format!("ws-plant/w{j}"), member_body(&wide_refs, "")))
-            .collect();
-        report.push(prove_red(
-            cx,
-            self,
-            "too few members discovered",
-            &[ROW_MEMBER_FLOOR],
-            plant(&few_members, &table_of(&wide_refs)),
-            &[&format!("floor {MIN_MEMBERS}")],
-        ));
-
-        // Rule 7 gets its own the other way round: eight members — clear of the member floor — each
-        // carrying four inherited declarations, so only the inherited-declaration floor can fire.
-        let narrow = ["dep0", "dep1", "dep2", "dep3"];
-        let thin_members: Vec<(String, String)> = (0..8)
-            .map(|j| (format!("ws-plant/t{j}"), member_body(&narrow, "")))
-            .collect();
-        report.push(prove_red(
-            cx,
-            self,
-            "too few inherited declarations",
-            &[ROW_INHERITED_FLOOR],
-            plant(&thin_members, &table_of(&narrow)),
-            &[&format!("floor {MIN_INHERITED}")],
-        ));
-
-        // Rule 1, alone: the table the whole gate reads against is gone.
-        report.push(prove_red(
-            cx,
-            self,
-            "the workspace table is missing",
-            &[ROW_TABLE],
-            plant(&clean_members(), ""),
-            &["no source of truth to check"],
-        ));
-
-        // Rule 8, alone: a workspace whose declared members are all present and clean, over a
-        // `crates/` tree that has collapsed. Rules 1-7 read the ROOT MANIFEST's member list, so
-        // they are all green here and only the directory walk can name this.
-        report.push(match cx.walk(&WalkSpec::new(["crates"]).ext("toml")) {
-            Ok(real) => {
-                let mut ov = plant(&clean_members(), &clean_table());
-                for f in real.iter().skip(2) {
-                    ov.remove(&f.rel);
-                }
-                prove_red(
-                    cx,
-                    self,
-                    "the crates/ manifest walk collapsed",
-                    &[ROW_DISCOVERY],
-                    ov,
-                    &["walk over [crates]"],
-                )
-            }
-            Err(_) => Case {
-                name: "the crates/ manifest walk collapsed".to_string(),
-                covers: vec![ROW_DISCOVERY.to_string()],
-                expected: Expect::Red {
-                    naming: vec!["walk over [crates]".to_string()],
-                },
-                got: Expect::Skipped,
-            },
-        });
-
+        for plant in plants(cx) {
+            report.push(plant.case(cx, self));
+        }
         report
     }
+
+    /// THE SAME PLANTED WORKSPACES, DRIVEN THROUGH BOTH IMPLEMENTATIONS.
+    ///
+    /// One probe per planted violation, reusing [`plants`] rather than a second set of fixtures: a
+    /// parity probe built from an overlay the self-test never drove is comparing something neither
+    /// side has proven.
+    ///
+    /// The legacy script takes `--root`, so the harness points it at a scratch tree holding exactly
+    /// the paths named in `materialize` — the synthetic root manifest and one manifest per declared
+    /// member. That list is derived from the plant itself, not written out again, because a member
+    /// left off it is a member the Python reads out of the REAL repository, and the probe would
+    /// then grade a tree nobody planted.
+    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        plants(cx)
+            .into_iter()
+            .map(|p| crate::gates::ParityProbe {
+                label: p.label,
+                overlay: p.overlay,
+                materialize: p.materialize,
+                expect_rule: Some(p.rule.to_string()),
+                legacy_names: None,
+                divergence: None,
+            })
+            .collect()
+    }
+}
+
+/// One planted workspace: the overlay, the owed row it must be reported by, the substring the RED
+/// report has to contain, and every path the legacy script must be shown. Shared by
+/// [`Gate::selftest`] and [`Gate::parity_probes`] so the two cannot drift apart.
+struct Plant {
+    label: String,
+    rule: &'static str,
+    naming: Vec<String>,
+    overlay: Overlay,
+    materialize: Vec<String>,
+}
+
+impl Plant {
+    fn case(self, cx: &Ctx, gate: &dyn Gate) -> Case {
+        let naming: Vec<&str> = self.naming.iter().map(String::as_str).collect();
+        prove_red(cx, gate, self.label, &[self.rule], self.overlay, &naming)
+    }
+}
+
+/// Build one plant out of a member list and a workspace table, with `absent` naming the manifests
+/// the plant deliberately removes — those are dropped from `materialize`, because the harness
+/// writes the overlaid view of every path it is given and a file the overlay says is gone cannot be
+/// written.
+fn planted(
+    label: &str,
+    rule: &'static str,
+    naming: &[&str],
+    members: &[(String, String)],
+    table: &str,
+    absent: &[&str],
+) -> Plant {
+    let mut overlay = plant(members, table);
+    let mut materialize = vec!["Cargo.toml".to_string()];
+    for (path, _) in members {
+        materialize.push(format!("{path}/Cargo.toml"));
+    }
+    for gone in absent {
+        overlay.remove(gone);
+        materialize.retain(|p| p != gone);
+    }
+    Plant {
+        label: label.to_string(),
+        rule,
+        naming: naming.iter().map(|s| (*s).to_string()).collect(),
+        overlay,
+        materialize,
+    }
+}
+
+/// The nine planted violations, one per rule this gate enforces.
+fn plants(cx: &Ctx) -> Vec<Plant> {
+    let mut out = Vec::new();
+
+    // Rule 2, three plants, because "dependencies" is three tables plus their per-target forms and
+    // a rule enforced on one of them is scoped to where the bug was first seen.
+    let mut restated = clean_members();
+    restated[3].1 = member_body(&["dep0", "dep1", "dep3", "dep4", "dep5"], "dep2 = \"1\"");
+    out.push(planted(
+        "a member restates a version",
+        ROW_INHERITANCE,
+        &["states its own version"],
+        &restated,
+        &clean_table(),
+        &[],
+    ));
+
+    let mut dev = clean_members();
+    dev[5].1 = format!(
+        "{}\n\n[dev-dependencies]\ndep9 = \"3\"",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a dev-dependency restates a version",
+        ROW_INHERITANCE,
+        &["states its own version", "[dev-dependencies]"],
+        &dev,
+        &clean_table(),
+        &[],
+    ));
+
+    let mut per_target = clean_members();
+    per_target[6].1 = format!(
+        "{}\n\n[target.'cfg(unix)'.dependencies]\ndep9 = \"3\"",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a per-target dependency restates a version",
+        ROW_INHERITANCE,
+        &["states its own version", "target."],
+        &per_target,
+        &clean_table(),
+        &[],
+    ));
+
+    // Rule 3, alone.
+    let mut orphaned_inherit = clean_members();
+    orphaned_inherit[1].1 = format!(
+        "{}\nnot_in_table = {{ workspace = true }}",
+        member_body(CLEAN_DEPS, "")
+    );
+    out.push(planted(
+        "a dependency inherits from an entry that is not there",
+        ROW_INHERIT_TARGET,
+        &["no `not_in_table` entry"],
+        &orphaned_inherit,
+        &clean_table(),
+        &[],
+    ));
+
+    // Rule 4, alone: a pin nothing obeys — it looks like governance and governs nothing.
+    out.push(planted(
+        "an orphaned workspace entry",
+        ROW_ORPHANS,
+        &["no member inherits it"],
+        &clean_members(),
+        &format!("{}\nunused_dep = \"9\"", clean_table()),
+        &[],
+    ));
+
+    // Rule 5, alone: a declared member with no manifest. Eight members still inspect, so neither
+    // floor moves.
+    let mut ghost = clean_members();
+    ghost.push(("ws-plant/never-existed".to_string(), String::new()));
+    out.push(planted(
+        "a declared member has no manifest",
+        ROW_SET_EQUALITY,
+        &["has no Cargo.toml"],
+        &ghost,
+        &clean_table(),
+        &["ws-plant/never-existed/Cargo.toml"],
+    ));
+
+    // Rule 6 gets its OWN discriminating fixture: two members carrying TWENTY inherited
+    // declarations apiece, so the inherited-declaration floor is comfortably clear and only the
+    // member floor can go red. A floor proven alongside its neighbour is a floor that could be
+    // deleted with this self-test still green.
+    let wide: Vec<String> = (0..20).map(|i| format!("dep{i}")).collect();
+    let wide_refs: Vec<&str> = wide.iter().map(String::as_str).collect();
+    let few_members: Vec<(String, String)> = (0..2)
+        .map(|j| (format!("ws-plant/w{j}"), member_body(&wide_refs, "")))
+        .collect();
+    out.push(planted(
+        "too few members discovered",
+        ROW_MEMBER_FLOOR,
+        &[&format!("floor {MIN_MEMBERS}")],
+        &few_members,
+        &table_of(&wide_refs),
+        &[],
+    ));
+
+    // Rule 7 gets its own the other way round: eight members — clear of the member floor — each
+    // carrying four inherited declarations, so only the inherited-declaration floor can fire.
+    let narrow = ["dep0", "dep1", "dep2", "dep3"];
+    let thin_members: Vec<(String, String)> = (0..8)
+        .map(|j| (format!("ws-plant/t{j}"), member_body(&narrow, "")))
+        .collect();
+    out.push(planted(
+        "too few inherited declarations",
+        ROW_INHERITED_FLOOR,
+        &[&format!("floor {MIN_INHERITED}")],
+        &thin_members,
+        &table_of(&narrow),
+        &[],
+    ));
+
+    // Rule 1, alone: the table the whole gate reads against is gone.
+    out.push(planted(
+        "the workspace table is missing",
+        ROW_TABLE,
+        &["no source of truth to check"],
+        &clean_members(),
+        "",
+        &[],
+    ));
+
+    // Rule 8, alone: a workspace whose declared members are all present and clean, over a `crates/`
+    // tree that has collapsed. Rules 1-7 read the ROOT MANIFEST's member list, so they are all
+    // green here and only the directory walk can name this.
+    //
+    // THE LEGACY SCRIPT CANNOT SEE THIS ONE. It never looks at `crates/` — it walks the declared
+    // member list and nothing else — so the plant is invisible to it by construction. The probe
+    // stays: a rule the Rust gate enforces and the Python never did is a finding to report at the
+    // call-site switch, not a probe to drop so the run comes out quiet.
+    if let Ok(real) = cx.walk(&WalkSpec::new(["crates"]).ext("toml")) {
+        let removed: Vec<String> = real.iter().skip(2).map(SourceFile::rel_str).collect();
+        let refs: Vec<&str> = removed.iter().map(String::as_str).collect();
+        out.push(planted(
+            "the crates/ manifest walk collapsed",
+            ROW_DISCOVERY,
+            &["walk over [crates]"],
+            &clean_members(),
+            &clean_table(),
+            &refs,
+        ));
+    }
+
+    out
 }
 
 /// The FAIL rows every rule downstream of an unreadable root manifest or an absent workspace table

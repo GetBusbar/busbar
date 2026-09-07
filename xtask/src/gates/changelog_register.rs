@@ -401,6 +401,122 @@ impl Gate for ChangelogRegisterGate {
 
         report
     }
+
+    /// THE PARITY PROBES, and one thing about them has to be said plainly rather than smoothed
+    /// over: THE TWO SIDES NAME THE SAME RULES DIFFERENTLY. The legacy prints one line per REGISTER
+    /// ENTRY, keyed by that entry's id; this gate emits one row per RULE, keyed by a rule id, so
+    /// the entry ids move into the row's detail. `expect_rule` is therefore satisfied on this side
+    /// and not on the legacy's, and each probe below records the legacy substring that identifies
+    /// the same rule so the split can be documented rather than discovered later.
+    ///
+    /// The alternative — dropping `expect_rule` — is worse, not weaker: the harness reads a probe
+    /// with no rule as one that must be GREEN on both sides, so a violation probe would assert the
+    /// opposite of what it plants.
+    ///
+    /// Two probes are DOCUMENTED DELTAS where this gate is deliberately stricter, and they are here
+    /// precisely so the difference is measured: a register that parsed to zero entries, and a
+    /// register whose key was renamed. The legacy exits 0 on the first of those.
+    ///
+    /// The release arm has no probe: the legacy script has no counterpart flag, so there is nothing
+    /// to compare and inventing an invocation for it would prove only that this gate agrees with
+    /// itself.
+    fn parity_probes(&self, _cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        let materialize = vec![
+            DEFAULT_REGISTER.to_string(),
+            "CHANGELOG.md".to_string(),
+            // The wrapper invokes the Python by RELATIVE path from its own directory, so the
+            // Python has to be in the planted tree too; without it the wrapper exits 2 and the
+            // harness refuses the run rather than reporting a green nobody produced.
+            "scripts/changelog-register-check.py".to_string(),
+        ];
+        let probe =
+            |label: &str, reg: String, changelog: &str, rule: &str| crate::gates::ParityProbe {
+                label: label.to_string(),
+                overlay: plant(&reg, changelog),
+                materialize: materialize.clone(),
+                expect_rule: Some(rule.to_string()),
+                legacy_names: None,
+                divergence: None,
+            };
+        let named = r#"{"id":"X-1","kind":"improvement","changelog":"the grass is now greener"}"#;
+        vec![
+            // legacy names it: `FAIL    X-2  changelog line not found verbatim`
+            probe(
+                "a named line missing from the changelog",
+                register(&[
+                    r#"{"id":"X-2","kind":"breaking","changelog":"the sky is now green"}"#,
+                    r#"{"id":"X-6","kind":"improvement","changelog":"never written"}"#,
+                ]),
+                "## [1.6.0]\n\n- the grass is now greener\n",
+                ROW_PRESENT,
+            ),
+            // legacy names it: the same `not found verbatim in the 1.6.0 section` line, which is
+            // what makes the anchor visible on both sides.
+            probe(
+                "lines present only in an older release section",
+                register(&[named]),
+                "## [1.6.0], unreleased\n\n- an unrelated note\n\n## [1.5.0], 2026-08-01\n\n\
+                 - the grass is now greener\n",
+                ROW_PRESENT,
+            ),
+            // legacy names it: `carries no `changelog` key at all`
+            probe(
+                "an entry with no changelog key at all",
+                register(&[
+                    r#"{"id":"X-7","kind":"improvement","rationale":"silent"}"#,
+                    r#"{"id":"X-3","kind":"breaking"}"#,
+                ]),
+                GOOD_CHANGELOG,
+                ROW_DECLARED,
+            ),
+            // legacy names it: `no `changelog_reason` says why no line is owed`
+            probe(
+                "a waiver with no reason written beside it",
+                register(&[r#"{"id":"X-8","kind":"improvement","changelog":null}"#]),
+                GOOD_CHANGELOG,
+                ROW_DECLARED,
+            ),
+            // legacy names it: `kind=breaking may not waive its CHANGELOG line`
+            probe(
+                "a breaking entry trying to waive its line",
+                register(&[r#"{"id":"X-9","kind":"breaking","changelog":null,
+                        "changelog_reason":"we would rather not say"}"#]),
+                GOOD_CHANGELOG,
+                ROW_BREAKING,
+            ),
+            // legacy names it: `has no `accepted` key`
+            probe(
+                "a register whose owed-set key has been renamed",
+                r#"{"differences":[{"id":"X-6","kind":"breaking","changelog":"unchecked"}]}"#
+                    .to_string(),
+                GOOD_CHANGELOG,
+                ROW_REGISTER,
+            ),
+            // legacy names it: ``accepted` is dict, not a list`
+            probe(
+                "an accepted key that is not a list",
+                r#"{"accepted":{"X-7":{"kind":"breaking"}}}"#.to_string(),
+                GOOD_CHANGELOG,
+                ROW_REGISTER,
+            ),
+            // legacy names it: `has no `## [x.y.z]` section heading`
+            probe(
+                "a changelog with no release section to anchor to",
+                register(&[named]),
+                "- the grass is now greener\n",
+                ROW_SECTION,
+            ),
+            // THE DELTA. The legacy calls an empty register `0 register entries -- nothing owed`
+            // and exits 0; this gate calls it a gate with no input. The probe exists to measure
+            // that, not to pass it.
+            probe(
+                "a register that parsed to zero entries",
+                register(&[]),
+                GOOD_CHANGELOG,
+                ROW_REGISTER,
+            ),
+        ]
+    }
 }
 
 impl ChangelogRegisterGate {

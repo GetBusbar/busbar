@@ -32,7 +32,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::ctx::{Ctx, Overlay};
+use crate::ctx::{Ctx, Overlay, SourceFile, WalkSpec};
 use crate::gates::{prove_green, prove_red, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
@@ -332,89 +332,175 @@ impl Gate for InventoryRefGate {
             "every binding in the real tree cites an inventory file that exists",
             &self.owed().iter().map(String::as_str).collect::<Vec<_>>(),
         ));
+        for plant in plants() {
+            report.push(plant.case(cx, self));
+        }
+        report
+    }
 
+    /// THE SAME PLANTS, DRIVEN THROUGH BOTH IMPLEMENTATIONS.
+    ///
+    /// One probe per planted violation, reusing [`plants`] rather than a second set of fixtures:
+    /// a parity probe built from its own overlay is comparing something the self-test never proved.
+    ///
+    /// The legacy script has no `--root`; it anchors on `Path(__file__).parents[1]`, so the harness
+    /// copies it into the plant and runs it from there. Everything it can read has to be in that
+    /// plant — the binding manifest, every inventory file a binding can cite, and the two
+    /// `docs/design` files the alias table can resolve to — because a path left out is a path the
+    /// script reads out of the REAL repository, and the probe then grades the wrong tree.
+    ///
+    /// A plant that makes a file ABSENT deliberately omits that file from `materialize`: the
+    /// harness writes the overlaid view of each listed path, and asking it to write a file the
+    /// overlay says is gone is an error, not a deletion.
+    fn parity_probes(&self, cx: &Ctx) -> Vec<crate::gates::ParityProbe> {
+        let all = readable_inputs(cx);
+        plants()
+            .into_iter()
+            .map(|p| crate::gates::ParityProbe {
+                label: p.label.to_string(),
+                materialize: all
+                    .iter()
+                    .filter(|path| !p.absent.iter().any(|a| a == *path))
+                    .cloned()
+                    .collect(),
+                overlay: p.overlay,
+                expect_rule: Some(p.rule.to_string()),
+                legacy_names: None,
+                divergence: None,
+            })
+            .collect()
+    }
+}
+
+/// Every path the legacy script can read out of the tree it judges: the binding manifest, the two
+/// `docs/design` files the alias table names directly, and every inventory file under the inventory
+/// directory. Derived by walking, not listed by hand, so an inventory file added tomorrow is
+/// materialized without a second edit here.
+fn readable_inputs(cx: &Ctx) -> Vec<String> {
+    let mut out = vec![
+        BINDINGS_PATH.to_string(),
+        "docs/design/ARCHITECTURE.md".to_string(),
+    ];
+    for (_, path) in ALIASES {
+        out.push((*path).to_string());
+    }
+    if let Ok(files) = cx.walk(&WalkSpec::new(["docs/design/inventory"]).ext("md")) {
+        out.extend(files.iter().map(SourceFile::rel_str));
+    }
+    out.retain(|p| cx.exists(p));
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// One planted violation: the overlay, the owed row it must be reported by, and the substring the
+/// RED report has to contain. Shared by [`Gate::selftest`] and [`Gate::parity_probes`] so the two
+/// cannot drift apart.
+struct Plant {
+    label: &'static str,
+    rule: &'static str,
+    naming: Vec<String>,
+    overlay: Overlay,
+    /// Paths this plant makes absent. Named so the parity harness is never asked to materialize a
+    /// file the overlay has removed.
+    absent: Vec<String>,
+}
+
+impl Plant {
+    fn case(self, cx: &Ctx, gate: &dyn Gate) -> Case {
+        if !cx.exists(BINDINGS_PATH) {
+            // NOTHING TO PLANT is a visible, counted case — never a silent green.
+            return Case {
+                name: self.label.to_string(),
+                covers: vec![self.rule.to_string()],
+                expected: Expect::Red {
+                    naming: self.naming.clone(),
+                },
+                got: Expect::Skipped,
+            };
+        }
+        let naming: Vec<&str> = self.naming.iter().map(String::as_str).collect();
+        prove_red(cx, gate, self.label, &[self.rule], self.overlay, &naming)
+    }
+}
+
+fn set_bindings(content: String) -> Overlay {
+    let mut ov = Overlay::new();
+    ov.set(BINDINGS_PATH, content);
+    ov
+}
+
+/// The six planted violations, one per refusal this gate makes.
+fn plants() -> Vec<Plant> {
+    let clean = repeat_binding("routes-admin LST-001", BINDING_FLOOR + 1);
+
+    let mut renamed_file = set_bindings(bindings_json(&clean, None));
+    renamed_file.remove(alias_path("routes-admin"));
+
+    let mut gone = Overlay::new();
+    gone.remove(BINDINGS_PATH);
+
+    vec![
         // Rule 1, first refusal: the key the bindings live under was renamed. This is the arm the
         // Python answered PASS to.
-        report.push(plant_bindings(
-            cx,
-            self,
-            "the manifest's binding array was renamed away",
-            &[ROW_MANIFEST],
-            r#"{"design_bindings": [{"id": "PB-X1", "inventory": "routes-admin LST-001"}]}"#
-                .to_string(),
-            &["carries no `bindings` array"],
-        ));
-
+        Plant {
+            label: "the manifest's binding array was renamed away",
+            rule: ROW_MANIFEST,
+            naming: vec!["carries no `bindings` array".to_string()],
+            overlay: set_bindings(
+                r#"{"design_bindings": [{"id": "PB-X1", "inventory": "routes-admin LST-001"}]}"#
+                    .to_string(),
+            ),
+            absent: Vec::new(),
+        },
         // Rule 1, second refusal: the manifest is not there at all.
-        let mut gone = Overlay::new();
-        gone.remove(BINDINGS_PATH);
-        report.push(prove_red(
-            cx,
-            self,
-            "the manifest is unreadable",
-            &[ROW_MANIFEST],
-            gone,
-            &["is unreadable"],
-        ));
-
+        Plant {
+            label: "the manifest is unreadable",
+            rule: ROW_MANIFEST,
+            naming: vec!["is unreadable".to_string()],
+            overlay: gone,
+            absent: vec![BINDINGS_PATH.to_string()],
+        },
         // Rule 1, third refusal: the bytes are not JSON.
-        report.push(plant_bindings(
-            cx,
-            self,
-            "the manifest is not JSON",
-            &[ROW_MANIFEST],
-            "{ this is not json".to_string(),
-            &["did not parse as JSON"],
-        ));
-
+        Plant {
+            label: "the manifest is not JSON",
+            rule: ROW_MANIFEST,
+            naming: vec!["did not parse as JSON".to_string()],
+            overlay: set_bindings("{ this is not json".to_string()),
+            absent: Vec::new(),
+        },
         // Rule 2 gets its OWN discriminating fixture: a manifest that loads cleanly, whose every
         // binding resolves, and which is simply too small. Only the floor may go red here — a floor
         // proven alongside its neighbours is a floor that could be deleted unnoticed.
-        report.push(plant_bindings(
-            cx,
-            self,
-            "the binding set collapsed below its floor",
-            &[ROW_FLOOR],
-            bindings_json(&repeat_binding("routes-admin LST-001", 3), None),
-            &[&format!("floor {BINDING_FLOOR}")],
-        ));
-
+        Plant {
+            label: "the binding set collapsed below its floor",
+            rule: ROW_FLOOR,
+            naming: vec![format!("floor {BINDING_FLOOR}")],
+            overlay: set_bindings(bindings_json(
+                &repeat_binding("routes-admin LST-001", 3),
+                None,
+            )),
+            absent: Vec::new(),
+        },
         // Rule 3, alone: a manifest well clear of the floor, every file present, one segment whose
         // prefix word names no inventory file.
-        report.push(plant_bindings(
-            cx,
-            self,
-            "a binding cites an unrecognized inventory file prefix",
-            &[ROW_PREFIX],
-            bindings_json(
-                &repeat_binding("routes-admin LST-001", BINDING_FLOOR + 1),
-                Some("not-a-real-file ZZZ-001"),
-            ),
-            &["unrecognized inventory file prefix"],
-        ));
-
+        Plant {
+            label: "a binding cites an unrecognized inventory file prefix",
+            rule: ROW_PREFIX,
+            naming: vec!["unrecognized inventory file prefix".to_string()],
+            overlay: set_bindings(bindings_json(&clean, Some("not-a-real-file ZZZ-001"))),
+            absent: Vec::new(),
+        },
         // Rule 4, alone: every prefix resolves, the floor is clear, and the file one of them names
         // has been renamed out from under it.
-        let mut renamed = Overlay::new();
-        renamed.set(
-            BINDINGS_PATH,
-            bindings_json(
-                &repeat_binding("routes-admin LST-001", BINDING_FLOOR + 1),
-                None,
-            ),
-        );
-        renamed.remove(alias_path("routes-admin"));
-        report.push(prove_red(
-            cx,
-            self,
-            "an inventory file a binding cites was renamed away",
-            &[ROW_FILE],
-            renamed,
-            &["inventory file missing for 'routes-admin'"],
-        ));
-
-        report
-    }
+        Plant {
+            label: "an inventory file a binding cites was renamed away",
+            rule: ROW_FILE,
+            naming: vec!["inventory file missing for 'routes-admin'".to_string()],
+            overlay: renamed_file,
+            absent: vec![alias_path("routes-admin").to_string()],
+        },
+    ]
 }
 
 /// The path a known alias names. Panics only on this module's own bug (an alias literal that is not
@@ -447,31 +533,6 @@ fn bindings_json(good: &[String], extra: Option<&str>) -> String {
     let mut doc = serde_json::Map::new();
     doc.insert(BINDINGS_KEY.to_string(), serde_json::Value::Array(entries));
     serde_json::Value::Object(doc).to_string()
-}
-
-/// Plant a whole binding manifest and require RED naming `naming`.
-fn plant_bindings(
-    cx: &Ctx,
-    gate: &dyn Gate,
-    name: &str,
-    covers: &[&str],
-    content: String,
-    naming: &[&str],
-) -> Case {
-    if !cx.exists(BINDINGS_PATH) {
-        // NOTHING TO PLANT is a visible, counted case — never a silent green.
-        return Case {
-            name: name.to_string(),
-            covers: covers.iter().map(|s| (*s).to_string()).collect(),
-            expected: Expect::Red {
-                naming: naming.iter().map(|s| (*s).to_string()).collect(),
-            },
-            got: Expect::Skipped,
-        };
-    }
-    let mut ov = Overlay::new();
-    ov.set(BINDINGS_PATH, content);
-    prove_red(cx, gate, name, covers, ov, naming)
 }
 
 #[cfg(test)]
