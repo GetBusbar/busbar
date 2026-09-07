@@ -181,13 +181,35 @@ pub struct EmbeddingsResp {
     pub embeddings: Vec<EmbeddingItem>,
     pub input_echo: Option<Vec<String>>, // Cohere/Bedrock `texts`
     pub usage: Option<TokenUsage>,
+    /// Cohere `meta.billed_units.images` — the number of billed IMAGES. A SEPARATELY BILLED unit
+    /// that is not a token count at all, exactly like `RerankResp::search_units`, so no token field
+    /// can carry it and its loss is invisible in a token total that reconciles perfectly. The
+    /// pinned Cohere document's own `/v2/embed` image example answers with `billed_units: {images:
+    /// 1}` and NO `input_tokens`, so an image embed that drops this count reaches the ledger as
+    /// "the provider reported no usage". `None` == not reported (never `Some(0)`); no other
+    /// dialect populates it and no foreign writer emits it.
+    pub billed_images: Option<u64>,
     pub extra: SourceScopedExtra,
 }
 
 impl EmbeddingsResp {
     /// Billing projection: embeddings are token-metered (input tokens; Bedrock returns none → `None`).
+    ///
+    /// An IMAGE embed is not. Cohere's `/v2/embed` image answer reports `billed_units.images` and no
+    /// token bucket at all, so projecting only `usage` handed the ledger `None` — "the provider
+    /// reported nothing", i.e. a free call — for a response that named exactly what it billed. When
+    /// no token bucket was reported but a billed image count was, the billable unit is the per-image
+    /// one the closed enum already carries.
     pub fn billing(&self) -> Option<Billing> {
-        self.usage.clone().map(Billing::Tokens)
+        match (&self.usage, self.billed_images) {
+            (Some(u), _) => Some(Billing::Tokens(u.clone())),
+            (None, Some(n)) => Some(Billing::Images {
+                count: u32::try_from(n).unwrap_or(u32::MAX),
+                size: None,
+                quality: None,
+            }),
+            (None, None) => None,
+        }
     }
 }
 
