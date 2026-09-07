@@ -1590,53 +1590,6 @@ pub fn bind_book(book: Arc<Mutex<crate::root::durability::Durability>>) {
     NODE.bind_book(book);
 }
 
-/// The configured rates, in the cost unit's own card.
-///
-/// A RELAY, AND DELIBERATELY NOTHING MORE. Reading the deployment's configuration is this file's
-/// (it is the one place entitled to hold one); turning those figures into a card is the cost unit's,
-/// on [`busbar_unit_cost::RateCard::from_config`] — so the class fan-out, the absent/present branch
-/// and the fee's clamp all happen where the card lives, and there is no arithmetic here to disagree
-/// with it. The plane below never sees a rate at all.
-///
-/// A deployment with no `rate_card:` builds an ABSENT card rather than no card at all, and the
-/// difference matters: absent prices every class at nothing and still charges the flat fee, which is
-/// exactly what the previous release bills for that deployment.
-///
-/// The card carries no version of its own any more. Which card a posting was priced against is the
-/// number of the history entry that holds it, and that number belongs to the history: a card naming
-/// itself would be a second identity that can disagree with the first. This relay builds the card;
-/// appending it to the history is [`crate::root::kernel::RootHistory::apply`]'s.
-///
-/// THE CURRENCY IS THE CALLER'S, and it is passed in rather than assumed. The configured figures
-/// carry no currency of their own — a 1.5.5 deployment's rates are abstract cost units — so the
-/// currency a card is built in is a statement about the NODE, made once at
-/// [`crate::root::kernel::node_currency`], and handed here. Defaulting it inside this relay would
-/// put a second answer to "what currency is this node's money in" in a file that has no business
-/// deciding, and the two answers would be free to drift.
-pub(crate) fn card_from_config<'r>(
-    rates: impl IntoIterator<Item = (&'r str, busbar_substrate::billing::RawTierRates)>,
-    per_request_fee: i64,
-    present: bool,
-    currency: busbar_unit_cost::CurrencyCode,
-) -> busbar_unit_cost::RateCard {
-    // The substrate's neutral raw-rate view, lifted into the cost unit's own — four numbers copied
-    // across a crate boundary, in the same canonical order, with nothing computed on the way.
-    let lanes = present.then(|| {
-        rates.into_iter().map(|(lane, raw)| {
-            (
-                lane,
-                busbar_unit_cost::TierRates {
-                    input: raw.input,
-                    output: raw.output,
-                    cache_read: raw.cache_read,
-                    cache_write: raw.cache_write,
-                },
-            )
-        })
-    });
-    busbar_unit_cost::RateCard::from_config_in(currency, lanes, per_request_fee)
-}
-
 /// One body-model arrival, driven through the loop.
 ///
 /// The operation resolution is the DIALECT'S OWN — its `RequestHandler::resolve_operation` over its
@@ -2541,7 +2494,7 @@ mod tests {
     fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
         let mut history = busbar_unit_cost::History::new();
         for (n, (from, output)) in entries.iter().enumerate() {
-            let card = card_from_config(
+            let card = crate::root::kernel::card_from_config(
                 [(
                     "lane",
                     busbar_substrate::billing::RawTierRates {
@@ -2627,7 +2580,7 @@ mod tests {
         let token = kernel.usage_token();
         let holder = crate::root::kernel::RootHistory::default();
         holder.apply(
-            card_from_config(
+            crate::root::kernel::card_from_config(
                 [(
                     "lane",
                     busbar_substrate::billing::RawTierRates {
@@ -2649,7 +2602,7 @@ mod tests {
 
         // The apply that lands while the body is still draining.
         holder.apply(
-            card_from_config(
+            crate::root::kernel::card_from_config(
                 [(
                     "lane",
                     busbar_substrate::billing::RawTierRates {
