@@ -31,3 +31,7 @@ fn open(_cfg: &str) -> Result<Box<dyn ExportHandler>, String> {
 }
 
 busbar_plugin_sdk::export_export_plugin!(open);
+
+#[cfg(test)]
+#[path = "tests.rs"]
+mod tests;
