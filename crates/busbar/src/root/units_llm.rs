@@ -691,14 +691,27 @@ fn priced_amount(
     token: &busbar_caps::UsageToken,
     report: &LateReport,
 ) -> u64 {
-    let posting = busbar_unit_cost::price(
-        &card.pin(),
+    // A posting is QUANTITIES and an instant; what it costs is a lookup against the card in force
+    // at that instant. This arm still holds one card rather than a history, so it asks the lookup
+    // for that card directly — the arithmetic is the same single-sited multiply-and-sum either way,
+    // and wiring the history through to here is the next wave's.
+    let posting = busbar_unit_cost::Posting::from_usage(
         &report.lane,
         &usage_record(token, &report.usage),
         u64::from(report.fee_count),
         busbar_unit_cost::STANDARD_TIER_BP,
+        0,
+        0,
     );
-    u64::try_from(posting.priced_amount()).unwrap_or(u64::MAX)
+    let priced = busbar_unit_cost::price_at_card(
+        busbar_unit_cost::HistorySeq::OPENING,
+        card,
+        &posting,
+        busbar_unit_cost::CurrencyCode::USD,
+    );
+    priced
+        .map(|p| u64::try_from(p.priced_nanos).unwrap_or(u64::MAX))
+        .unwrap_or(0)
 }
 
 /// **THE LATE ACCRUAL'S ARM.** What this unit spent, posted once the body that reports it has
