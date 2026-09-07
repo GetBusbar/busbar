@@ -151,13 +151,22 @@ cmd_fast() {
 
   # Reserved live-mock slots get no runner of their own (see cmd_matrix); report them here so every
   # manifest entry is still accounted for on every run.
+  #
+  # THE FEED IS READ INTO A VARIABLE FIRST, AND ITS EXIT CODE IS CHECKED. This used to be
+  # `done <<<"$(./scripts/qa-segments.sh --list)"`, and `set -e` does NOT fire on a command
+  # substitution used as a herestring: a feed that failed (an unreadable manifest, a registry that
+  # would not answer) produced empty input, the loop body never ran, not one reserved slot was
+  # reported, and this job exited 0 having quietly dropped the accounting the header two paragraphs
+  # up promises. The same class of silence as a segment that runs nothing.
   log "reserved live-mock slots (defined-but-inert; PASS/SKIP)"
-  local id status tier
+  local id status tier feed
+  feed="$(./scripts/qa-segments.sh --list)" || die "qa-segments.sh --list failed - the reserved live-mock slots could NOT be enumerated, so this run cannot claim every manifest entry was accounted for"
+  [ -n "$feed" ] || die "qa-segments.sh --list returned an EMPTY feed - refusing to report a reserved set of nothing"
   while IFS=$'\t' read -r id status tier _; do
     [ -n "$id" ] || continue
     [ "$status" = "reserved" ] && [ "$tier" = "live-mock" ] || continue
     ./scripts/qa-segments.sh --segment "$id"
-  done <<<"$(./scripts/qa-segments.sh --list)"
+  done <<<"$feed"
 }
 
 # ── build: compile ONCE for the whole fan-out ────────────────────────────────────────────────────
