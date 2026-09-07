@@ -13,7 +13,7 @@
 //!   writes, and [`ledger::Reconcile`], which turns the owed set into a refusal.
 //! * [`gates::Gate`] — `run` + `selftest`, plus [`gates::prove_red`]/[`gates::prove_green`], the
 //!   only handle a selftest gets onto its gate.
-//! * [`scan`], [`planes`], [`yaml_lite`], [`gitp`], [`toml_lite`] — the shared readers, one copy
+//! * [`scan`], [`planes`], [`yaml_lite`], [`json_lite`], [`gitp`], [`toml_lite`] — the shared readers, one copy
 //!   each, replacing the idioms the shell re-implemented per script.
 //! * [`parity`] — run the legacy script and the Rust gate over the same tree and require identical
 //!   rows, before any Python or bash is deleted.
@@ -23,6 +23,7 @@ pub mod ctx;
 pub mod denylist;
 pub mod gates;
 pub mod gitp;
+pub mod json_lite;
 pub mod ledger;
 pub mod parity;
 pub mod planes;
