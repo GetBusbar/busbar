@@ -229,6 +229,65 @@ EOF
     && say PASS "an oracle cell the golden never recorded -> one FAIL, red" \
     || { say FAIL "unrecorded cell: rc=$rc fails=$(fails_in "$tmp/b2.tsv") ($skipped_cell)"; cat "$tmp/b2.log"; }
 
+  # (b3) A CONVERTED GATE IS CITABLE, AND ONLY BECAUSE SOMETHING INVOKES IT. The batch-1 conversion
+  #      turns `scripts/<x>-lint.sh` into `cargo xtask gate <x>`, whose logic is a Rust module. The
+  #      resolver has to admit that module, or every binding citing a converted gate reds for a
+  #      reason that is entirely about the rewrite -- and the next person deletes the citation. It
+  #      must admit it ONLY on an invocation, never on the path being mentioned, or the ledger can
+  #      vouch for its own citations. Driven over a PLANTED root so the case does not move as gates
+  #      convert: one gate invoked, one merely named in a comment, one module present but unrun.
+  local planted="$tmp/planted"
+  mkdir -p "$planted/.github/workflows" "$planted/xtask/src/gates"
+  : >"$planted/xtask/src/gates/demo_gate.rs"
+  : >"$planted/xtask/src/gates/never_run.rs"
+  cat >"$planted/.github/workflows/ci.yml" <<'PLANTED'
+jobs:
+  structure-lint:
+    steps:
+      - run: cargo xtask gate demo-gate
+      # a comment naming cargo xtask gate mentioned-only is prose, not an invocation
+      - name: cargo xtask gate labelled-only is a human label, not a run
+        run: echo done
+PLANTED
+  if "$PY" - "$planted" <<'PYEOF'
+import importlib.util, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("db", "scripts/design-bindings.py")
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+refs = m.ci_invoked_refs(Path(sys.argv[1]))
+want_in = m.xtask_gate_module("demo-gate")
+bad = []
+if want_in not in refs:
+    bad.append(f"an invoked gate's module {want_in} was not admitted")
+for name in ("mentioned-only", "labelled-only", "never-run"):
+    mod = m.xtask_gate_module(name)
+    if mod in refs:
+        bad.append(f"{mod} was admitted without an invocation")
+if m.xtask_gate_module("demo-gate") != "xtask/src/gates/demo_gate.rs":
+    bad.append("the module spelling is not derived from the gate name")
+print("; ".join(bad))
+sys.exit(1 if bad else 0)
+PYEOF
+  then
+    say PASS "an INVOKED cargo xtask gate admits its module; a commented, labelled or unrun one does not"
+  else
+    say FAIL "converted-gate resolution: see the reasons printed above"
+  fi
+
+  # (b4) AND THE DANGLE STILL DANGLES. A citation naming a gate the runner does not answer to
+  #      resolves to a module that is not there, and that is a FAIL exactly as a vanished script is.
+  #      Without this, (b3) could be satisfied by admitting every `xtask/src/gates/*.rs` spelling.
+  cat >"$tmp/xgate.json" <<EOF
+{"bindings": [
+ {"id":"PB-5","surface":"bogus xtask gate","binding":"x","inventory":"x","status":"mapped",
+  "checks":[{"kind":"lint","ref":"xtask/src/gates/no_such_gate.rs","status":"mapped"}]}
+]}
+EOF
+  run_check "$tmp/xgate.json" "$tmp/b4.tsv" 0 >"$tmp/b4.log" 2>&1; rc=$?
+  [ "$rc" != 0 ] && [ "$(fails_in "$tmp/b4.tsv")" = 1 ] \
+    && say PASS "a citation naming a gate the runner does not answer to -> one FAIL, red" \
+    || { say FAIL "bogus xtask gate: rc=$rc fails=$(fails_in "$tmp/b4.tsv")"; cat "$tmp/b4.log"; }
+
   # (c) an empty table -> zero rows -> the vacuous red
   echo '{"bindings": []}' >"$tmp/empty.json"
   run_check "$tmp/empty.json" "$tmp/c.tsv" 0 >"$tmp/c.log" 2>&1; rc=$?

@@ -1161,6 +1161,31 @@ _STEP_LABEL = re.compile(r"^[ \t]*-?[ \t]*name:.*$", re.M)
 _PATH_TOKEN = re.compile(r"(?:scripts|testing|qa|xtask)/(?:[A-Za-z0-9._+-]+/)*[A-Za-z0-9._+-]+")
 SEGMENT_RUNNER = "scripts/qa-gate-run.sh"
 RUNNABLE_SUFFIXES = (".sh", ".py", ".mjs", ".js", ".ts", ".rb")
+# ── A CONVERTED GATE IS STILL A GATE, AND STILL CITABLE ──────────────────────────────────────────
+# The batch-1 conversion moves each `scripts/*-lint.sh` into `cargo xtask gate <name>`, whose logic
+# lives in `xtask/src/gates/<name_with_underscores>.rs`. Neither spelling was resolvable here: the
+# command is not a path, and the module's `.rs` is not a RUNNABLE_SUFFIX -- so a binding citing a
+# converted gate read as "the ref vanished", which reds the binding for a reason that is entirely
+# about the rewrite. That is the failure this file exists to make impossible in the other direction,
+# and letting it happen here would push the next person toward deleting the citation instead.
+#
+# So: a `cargo xtask gate <name>` seen in a workflow (or in the segment manifest, on the same terms
+# as every other ref) admits that gate's MODULE as invoked, and `.rs` is citable. It is citable ONLY
+# -- `.rs` is deliberately NOT added to RUNNABLE_SUFFIXES, so the transitive closure never opens a
+# Rust file looking for further invocations. A gate module names the tree it scans; following it
+# would admit every path it mentions as something CI runs, which is exactly backwards.
+_XTASK_GATE_INVOCATION = re.compile(r"cargo[ \t]+xtask[ \t]+gate[ \t]+([a-z0-9][a-z0-9-]*)")
+XTASK_GATE_DIR = "xtask/src/gates"
+CITABLE_ONLY_SUFFIXES = (".rs",)
+
+
+def xtask_gate_module(name: str) -> str:
+    """The module path a `cargo xtask gate <name>` invocation runs.
+
+    One mechanical spelling, derived from the gate name rather than maintained beside it, so a gate
+    cannot be cited under a name the runner does not answer to.
+    """
+    return f"{XTASK_GATE_DIR}/{name.replace('-', '_')}.rs"
 # THIS FILE IS NEVER AN INVOKER. Its SEED table names every gate the ledger cites, so following it
 # would let the ledger vouch for its own citations: every ref would be "invoked" because the ledger
 # mentions it. A check whose evidence is its own claim has checked nothing.
@@ -1187,12 +1212,21 @@ def ci_invoked_refs(root: Path) -> set[str]:
     terminates on the finite set of paths in the tree; comments are stripped from each file first,
     for the same reason they are stripped from the workflows.
     """
+    # Every `cargo xtask gate <name>` seen in a text admits that gate's module, on exactly the same
+    # terms as a script path: the text must be one CI actually reaches, comments and step labels
+    # already stripped out of it.
+    gate_modules: set[str] = set()
+
+    def refs_in(text: str) -> set[str]:
+        gate_modules.update(xtask_gate_module(n) for n in _XTASK_GATE_INVOCATION.findall(text))
+        return set(_PATH_TOKEN.findall(text))
+
     wf_dir = root / ".github" / "workflows"
     workflows = "\n".join(_runnable_text(p) for p in sorted(wf_dir.glob("*.y*ml"))) if wf_dir.is_dir() else ""
-    invoked = set(_PATH_TOKEN.findall(workflows))
+    invoked = refs_in(workflows)
     segments = root / "qa" / "segments.toml"
     if SEGMENT_RUNNER in invoked and segments.is_file():
-        invoked |= set(_PATH_TOKEN.findall(_runnable_text(segments)))
+        invoked |= refs_in(_runnable_text(segments))
     frontier = set(invoked)
     while frontier:
         nxt: set[str] = set()
@@ -1200,14 +1234,21 @@ def ci_invoked_refs(root: Path) -> set[str]:
             if ref in NOT_AN_INVOKER:
                 continue
             p = root / ref
+            # `.rs` is NOT in RUNNABLE_SUFFIXES, so a gate module is never opened here. A gate names
+            # the tree it scans; following it would admit every path it mentions as something CI
+            # runs, which is exactly backwards.
             if p.is_file() and p.suffix in RUNNABLE_SUFFIXES:
-                nxt |= set(_PATH_TOKEN.findall(_runnable_text(p)))
+                nxt |= refs_in(_runnable_text(p))
         frontier = nxt - invoked
         invoked |= frontier
     # A path that is not executable is not invoked by anyone, however often it is named. A data file
     # READ by a script that CI runs is an input to a gate, not a gate: it compares nothing itself,
     # and citing one as a `gate` is the defect, not the scan missing an invocation.
-    return {r for r in invoked if r.endswith(RUNNABLE_SUFFIXES)}
+    #
+    # A gate MODULE is admitted only because an invocation of it was seen above, never because the
+    # path was mentioned -- which is why the two sets are built separately and unioned here rather
+    # than `.rs` being added to the suffix filter.
+    return {r for r in invoked if r.endswith(RUNNABLE_SUFFIXES)} | gate_modules
 
 
 def check_context(cells_doc: dict, crates: Path, root: Path, ledger: Path) -> dict:
