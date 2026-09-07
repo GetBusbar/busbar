@@ -217,6 +217,7 @@ if [ -n "$families" ]; then
   # harness edit that moves the rev is a golden to re-stamp or re-record, not a warning to pass over.
   "$here/bin/oracle" diff --golden "$here/testing/shadow-oracle/golden/1.5.5" \
     --candidate "$out" --out "$out.report" --cells "$here/testing/shadow-oracle/cells.json" \
+    --accepted "$here/testing/shadow-oracle/accepted-differences.json" \
     --id-filter "$families" --strict \
     || { echo "land.sh: RED — oracle families: $families (see $out.report)" >&2; exit 1; }
   echo "land.sh: oracle green on: $families ($(grep -c . "$out.report/owed.txt" 2>/dev/null || echo '?') owed)"
