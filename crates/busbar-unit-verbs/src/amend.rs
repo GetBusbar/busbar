@@ -223,12 +223,19 @@ pub trait RateHistory {
 
 /// The canonical bytes an amendment is signed over, and the bytes its replay slot is named by.
 ///
-/// **Every variable-width field is length-framed, and the two digests are fixed-width.** The
-/// fingerprint is text the caller chooses and the window is a pair of numbers whose decimal
-/// spellings run into each other; joining them on a separator would make
-/// `("op:1", 2)` and `("op", "1:2")` one string, and a signature over one payload would then verify
-/// against a different amendment — a different operator, or a different window, or both. Framing
-/// each field by its own length puts the boundary somewhere no field's content can move it.
+/// **Every field is length-framed, including the fixed-width ones.** The property that matters is
+/// that the encoding is injective — two different amendments never produce one byte string, because
+/// a signature over one would then verify against the other, and "the other" here means a different
+/// operator, a different window, or a different card over money that has already been invoiced.
+///
+/// Framing buys that property BY CONSTRUCTION rather than by an argument about which fields happen
+/// to sit next to which. Today the fingerprint is the only variable-width field with nothing after
+/// it, and the window is bracketed by a literal containing no digit, so an unframed concatenation
+/// would happen to be injective too — and that is exactly the kind of accident that stops being true
+/// the day a field is appended after the fingerprint, or the day a literal gains a character some
+/// other field can also contain. The frame makes the boundary a fact about the encoding instead of a
+/// fact about the current field list, which is why no test below can construct the collision it
+/// prevents: there isn't one to construct yet, and the frame is what keeps it that way.
 ///
 /// The encoding is deliberately not a serialization format: it is a byte string with one job, so it
 /// has no schema to evolve, no map whose iteration order could differ between two nodes, and no
@@ -355,18 +362,20 @@ pub fn check_signature<H: RateHistory>(
 
 /// The replay-slot name for an amendment's `Idempotency-Key`.
 ///
-/// The verb's own name, then the canonical payload, then the header value — **each length-framed**,
-/// by exactly the rule `rotate_key` learned: both halves are text the caller chooses, so joining
-/// them on a separator either may contain does not make a key, it makes a coincidence. Two
-/// amendments over different windows sharing one header value must not land on one slot, and one
-/// amendment retried must land on its own.
+/// **The canonical payload is IN the slot name, and that is the load-bearing half.** The two legacy
+/// replayable operations key on the header value alone, matching 1.5.5 exactly — a retry with the
+/// same key and a different body replays the first response there. That parity clause is 1.5.5's and
+/// does not extend to a verb 1.5.5 never had: here, a second amendment sent under a header value the
+/// caller happened to reuse would replay a receipt for a window it never named, reporting a
+/// `history_seq` and a delta that belong to somebody else's correction — and reporting them as
+/// though this call had done something, when it had not.
 ///
-/// The canonical payload is IN the slot name on purpose. The two legacy replayable operations key
-/// on the header alone, matching 1.5.5 exactly — a retry with the same key and a different body
-/// replays the first response there. That parity clause is 1.5.5's and does not extend to a verb
-/// 1.5.5 never had: here, a second amendment sent under a header value the caller happened to reuse
-/// would replay a receipt for a window it never named, reporting a `history_seq` and a delta that
-/// belong to somebody else's correction.
+/// The verb's own name, the payload and the header value are **each length-framed**, by exactly the
+/// rule `rotate_key` learned: both halves are text the caller chooses, so joining them on a
+/// separator either may contain does not make a key, it makes a coincidence. The payload is
+/// hex-encoded because a slot name is a string and the payload is bytes; hex is total and its
+/// alphabet contains no separator, so the frame around it is the same belt-and-braces
+/// [`canonical_payload`]'s own frames are, and for the same reason.
 #[must_use]
 pub fn replay_slot(canonical: &[u8], idempotency_key: &str) -> String {
     let mut slot = String::from("amend_rate_history:");
