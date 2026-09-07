@@ -428,6 +428,7 @@
       "changelog": "**A Responses URL citation survives the hop.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok(_stream)?$",
+      "expected_cells": 12,
       "classes": [
         "body",
         "headers"
@@ -440,6 +441,7 @@
       "changelog": "**A Bedrock `cachePoint` before a document no longer sends the document twice.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|[a-z]+\\|bedrock\\|request\\|ok(_stream)?$",
+      "expected_cells": 12,
       "classes": [
         "body",
         "headers"
@@ -452,6 +454,7 @@
       "changelog": "**A Responses function-call item the writer refused to open no longer announces itself.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|responses\\|request\\|ok_stream$",
+      "expected_cells": 6,
       "classes": [
         "body",
         "headers"
@@ -464,6 +467,7 @@
       "changelog": "**An Anthropic `redacted_thinking` block closes only if it opened.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|anthropic\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -476,6 +480,7 @@
       "changelog": "**A streamed chat `usage` trailer arrives even when the stream ended without a stop reason.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|openai\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|ok_stream$",
+      "expected_cells": 5,
       "classes": [
         "body",
         "headers"
@@ -488,6 +493,7 @@
       "changelog": "**A Gemini speech response that carries no audio is no longer served as an MP3.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|[a-z]+\\|gemini\\|speech\\|",
+      "expected_cells": 0,
       "classes": [
         "body",
         "headers"
@@ -500,6 +506,7 @@
       "changelog": "**One stream states one id.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
       "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error)$",
+      "expected_cells": 31,
       "classes": [
         "body",
         "headers"
