@@ -324,6 +324,36 @@ def sort_pool_lines(lines: list, applied: set) -> list:
 VERSION_KV = re.compile(r'version="(\d+\.\d+\.\d+)(?:-[0-9A-Za-z.]+)?"')
 LOOPBACK_PORT = re.compile(r"127\.0\.0\.1:\d{2,5}\b")
 
+# ── LINES THAT SAY WHAT THE HOST CAN DO, NOT WHAT BUSBAR DID ─────────────────────────────────────
+# A `[warn]` that reports a CAPABILITY OF THE MACHINE is not a behaviour of the binary. The golden is
+# recorded on darwin, where jemalloc cannot start its background purge thread, so every cell that
+# carries a boot log carries one extra stderr line that the same binary does not print on the linux
+# runner -- 52 cells differing by a fact about the recording host. The line is real and it is worth
+# seeing; it is simply not a thing 1.5.5 and 1.6.0 can disagree about, because neither wrote it in
+# response to anything a request did.
+#
+# THE PATTERNS ARE ANCHORED AND EXHAUSTIVE, NOT A KEYWORD SEARCH. Each entry must match the whole
+# line and must name the specific capability. A rule that dropped any line MENTIONING jemalloc, or
+# any line at severity `warn`, would also swallow a refusal -- and a refusal is the single thing in
+# stderr the oracle exists to compare. That is what `stderr.platform-capability` may never do, and
+# what replay-selftest.sh holds it to.
+PLATFORM_CAPABILITY_LINES = (
+    # darwin: jemalloc's background_thread runs off pthread_create at a point macOS forbids it.
+    re.compile(r"^\[warn\] could not enable jemalloc background purge thread\b.*$"),
+)
+
+
+def drop_platform_capability(text: str, applied: set) -> str:
+    """Remove whole lines that report a capability of the RECORDING HOST. stderr only -- see
+    PLATFORM_CAPABILITY_LINES. Never reached from a body: a body is busbar's answer, and a line in it
+    is busbar's whatever it says."""
+    lines = text.split("\n")
+    kept = [ln for ln in lines if not any(rx.match(ln) for rx in PLATFORM_CAPABILITY_LINES)]
+    if len(kept) != len(lines):
+        applied.add("stderr.platform-capability")
+        return "\n".join(kept)
+    return text
+
 
 def norm_text(text: str, applied: set, keep_regex=None) -> str:
     # the binary's own version in key=value form (boot line) and every loopback port the harness
@@ -420,7 +450,11 @@ def normalize(cap: dict, key_id: str | None, keep_lines: str | None = None, keep
         "effects": effects,
     }
     if isinstance(out["effects"].get("stderr"), str):
-        out["effects"]["stderr"] = norm_text(out["effects"]["stderr"], applied)
+        # The host-capability strip runs FIRST and ONLY here: stderr is the one place a line can be
+        # about the machine rather than about busbar. It is deliberately not part of norm_text, which
+        # also normalizes bodies.
+        stderr_text = drop_platform_capability(out["effects"]["stderr"], applied)
+        out["effects"]["stderr"] = norm_text(stderr_text, applied)
     out["applied"] = sorted(applied)
     return out
 
