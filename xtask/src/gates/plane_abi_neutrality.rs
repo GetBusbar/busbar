@@ -66,7 +66,12 @@ const MANDATED_EXTRA: &[&str] = &["realtime", "audio"];
 /// round trip — but a test name is still a name, and letting the number grow is how the vocabulary
 /// creeps back in one helper at a time. Lower it when a name goes; never raise it. A `const` with
 /// no environment override: the only way to move one is a reviewable source edit.
-const TEST_PATH_RATCHET: usize = 1;
+///
+/// It was 1 when this gate was written against the branch that converted it. The one name it
+/// covered is gone from `hot/tests/` on the integration tree, so the ratchet follows it down — that
+/// is the direction the paragraph above permits, and leaving it at 1 would have left the gate a
+/// spare slot for the next helper to creep into.
+const TEST_PATH_RATCHET: usize = 0;
 
 const CLEAN: &str = "the scan cleared its floors and named nothing";
 const DID_NOT_RUN: &str = "nothing was read, and nothing read is not a neutral ABI";
