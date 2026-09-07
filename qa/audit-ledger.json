@@ -4043,16 +4043,17 @@
    "paths": [
     "scripts"
    ],
-   "tree_hash": "28b07e617c36f3ef7ba87bc8539c5bc17187180e20b6f570d491539189845560",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 1,
+   "tree_hash": "0083555d424a52c8e13439a9a7a207e99e5b92c3e52f2a5a66490ef9c32e76a2",
+   "audited_at": "0e6759696e1af41dfcc81e7b3e22625818749b88",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 20,
-    "MEDIUM": 12
+    "HIGH": 8,
+    "MEDIUM": 10,
+    "NIT": 1
    },
-   "report": "done-oracle floor slack by one group (fixed), construction selftest ALL GREEN on zero plants (fixed), qa-segments GREEN on zero segments (fixed); verify-artifact image rows unexecuted, rules.py rename-to-pass and EXPECTED_IDS self-derived, release-check gate var never set, expected-ids jq failure, root guards missing, audit-ledger --check green at 0% clean, proof-manifest moved paths reported; fix agents dispatched",
-   "auditor": "opus-pass1",
+   "report": "lint and deletion gates fresh eyes: the purity lint knew one spelling per violation and an include macro laundered a dual-compile under a frozen-wire pragma (two real includes moved), teller-steps could not tell fifty cells from one, the config lint missed the redirect-after-heredoc form; provenance gate, delete-test, exec-config-lint and teller-steps carry named gaps",
+   "auditor": "opus-instr-p3-lints",
    "fixed_at": null,
    "rounds": [
     {
@@ -4079,6 +4080,32 @@
       "MEDIUM": 12
      },
      "report": "done-oracle floor slack by one group (fixed), construction selftest ALL GREEN on zero plants (fixed), qa-segments GREEN on zero segments (fixed); verify-artifact image rows unexecuted, rules.py rename-to-pass and EXPECTED_IDS self-derived, release-check gate var never set, expected-ids jq failure, root guards missing, audit-ledger --check green at 0% clean, proof-manifest moved paths reported; fix agents dispatched"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3-scripts-al",
+     "audited_at": "3b1a0ba466ee5b8152b267ec791f9772c87fbaee",
+     "tree_hash": "41338bb0aa5feec0457836cb3f73b3cf9130e162546df9a1fb77d46443f29671",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 6,
+      "LOW": 6
+     },
+     "report": "scripts a-l fresh eyes: the proof-manifest public guard exited green on zero manifests, the blocking-ffi lint threw away the scanner's exit status, three CI-called scripts had no self-test, four floors were carried by other floors; 25 plants 14 survivors to 1"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-instr-p3-lints",
+     "audited_at": "0e6759696e1af41dfcc81e7b3e22625818749b88",
+     "tree_hash": "0083555d424a52c8e13439a9a7a207e99e5b92c3e52f2a5a66490ef9c32e76a2",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 10,
+      "NIT": 1
+     },
+     "report": "lint and deletion gates fresh eyes: the purity lint knew one spelling per violation and an include macro laundered a dual-compile under a frozen-wire pragma (two real includes moved), teller-steps could not tell fifty cells from one, the config lint missed the redirect-after-heredoc form; provenance gate, delete-test, exec-config-lint and teller-steps carry named gaps"
     }
    ]
   },
@@ -4088,16 +4115,18 @@
    "paths": [
     "qa"
    ],
-   "tree_hash": "dd6545c29be00f6f52f80c28d2d9f04c95d27159b130776b9aa48ee3ae2d738c",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "tree_hash": "8415fbc5af3011ff25bd4730e610cc01149413b6019714c1a937c4e2581e543e",
+   "audited_at": "9a8a760f5603f8d352467cbbdf93aa85f9167c37",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 11,
-    "NIT": 1
+    "HIGH": 2,
+    "MEDIUM": 4,
+    "LOW": 2,
+    "NIT": 3
    },
-   "report": "voice legs ungated (fixed), spec pins unverified after first run (fixed), a dangling config-inventory id (fixed); construction-gate --summary exit 0, stale segment waiver, silent known_sites waivers, ws production waiver, PB-37/93 golden citations reported",
-   "auditor": "opus-pass1",
+   "report": "construction gate fresh eyes: eight rules wrote FAIL into a ledger nobody read, the only gating legacy-reach ratchet and two doubles rows were never owed (now RED at 95 vs 92), seven stale unsafe waivers each forgave a paid debt, two waiver families invisible to the stale-waiver rule, three more rules pass on a renamed subject; 45/45 rules planted",
+   "auditor": "opus-instr-p3-construction",
    "fixed_at": null,
    "rounds": [
     {
@@ -4111,6 +4140,20 @@
       "NIT": 1
      },
      "report": "voice legs ungated (fixed), spec pins unverified after first run (fixed), a dangling config-inventory id (fixed); construction-gate --summary exit 0, stale segment waiver, silent known_sites waivers, ws production waiver, PB-37/93 golden citations reported"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-instr-p3-construction",
+     "audited_at": "9a8a760f5603f8d352467cbbdf93aa85f9167c37",
+     "tree_hash": "8415fbc5af3011ff25bd4730e610cc01149413b6019714c1a937c4e2581e543e",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 4,
+      "LOW": 2,
+      "NIT": 3
+     },
+     "report": "construction gate fresh eyes: eight rules wrote FAIL into a ledger nobody read, the only gating legacy-reach ratchet and two doubles rows were never owed (now RED at 95 vs 92), seven stale unsafe waivers each forgave a paid debt, two waiver families invisible to the stale-waiver rule, three more rules pass on a renamed subject; 45/45 rules planted"
     }
    ]
   },
@@ -4120,17 +4163,17 @@
    "paths": [
     ".github/workflows"
    ],
-   "tree_hash": "1e1819448046ce94337fa723954f6063b84e123050d9f56cf3f4795f655da973",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 1,
+   "tree_hash": "7f13416dc8d07f4962c25d77fb9dbadf100c36a258e480d8083c8b4a68749cc9",
+   "audited_at": "d0adf7963916a4a69e85e2bd456300616c3ed10d",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 9,
-    "LOW": 8
+    "HIGH": 4,
+    "MEDIUM": 3,
+    "LOW": 3
    },
-   "report": "deletion-test matrix outside the umbrella (fixed), branch-name spliced into run (fixed), promote re-check masked by unique_by (fixed), missing permissions blocks (fixed), voice verdict not required (fixed); release-fleet gates N on N-1, cargo-deny required but path-filtered, headroom-hook built from a moving branch, no action pinned by sha reported",
-   "auditor": "opus-pass1",
+   "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling",
+   "auditor": "opus-instr-p3",
    "fixed_at": null,
    "rounds": [
     {
@@ -4158,6 +4201,19 @@
       "LOW": 8
      },
      "report": "deletion-test matrix outside the umbrella (fixed), branch-name spliced into run (fixed), promote re-check masked by unique_by (fixed), missing permissions blocks (fixed), voice verdict not required (fixed); release-fleet gates N on N-1, cargo-deny required but path-filtered, headroom-hook built from a moving branch, no action pinned by sha reported"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3",
+     "audited_at": "d0adf7963916a4a69e85e2bd456300616c3ed10d",
+     "tree_hash": "7f13416dc8d07f4962c25d77fb9dbadf100c36a258e480d8083c8b4a68749cc9",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 3,
+      "LOW": 3
+     },
+     "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling"
     }
    ]
   },
@@ -4248,12 +4304,14 @@
     "testing/a2a-governance"
    ],
    "tree_hash": "f9f3d8b1f1fcb871d7d7d7e1d07314272df48803568d7379041f8218617069f8",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 1,
-   "result": "zero",
-   "counts": {},
-   "report": "zero; all files read",
-   "auditor": "opus-pass1",
+   "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+   "round": 3,
+   "result": "findings",
+   "counts": {
+    "MEDIUM": 1
+   },
+   "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling",
+   "auditor": "opus-instr-p3",
    "fixed_at": null,
    "rounds": [
     {
@@ -4264,6 +4322,17 @@
      "tree_hash": "f9f3d8b1f1fcb871d7d7d7e1d07314272df48803568d7379041f8218617069f8",
      "counts": {},
      "report": "zero; all files read"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3",
+     "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+     "tree_hash": "f9f3d8b1f1fcb871d7d7d7e1d07314272df48803568d7379041f8218617069f8",
+     "counts": {
+      "MEDIUM": 1
+     },
+     "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling"
     }
    ]
   },
@@ -4273,17 +4342,16 @@
    "paths": [
     "testing/a2a-harness"
    ],
-   "tree_hash": "331a3a30c029e373108c7f18502cfb71c0eba1d433a7ea3f5dc2bc52a92e6bd4",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 2,
+   "tree_hash": "638874d6f4d164331a8b2a9b8d9c215c63ce51722eab00e3e079c408abaeebcd",
+   "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
-    "LOW": 2,
-    "NIT": 1
+    "HIGH": 3,
+    "MEDIUM": 2
    },
-   "report": "unrun deviation record printed red but exited 0 (fixed); _last_peer_requests always 0",
-   "auditor": "opus-pass1",
+   "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling",
+   "auditor": "opus-instr-p3",
    "fixed_at": null,
    "rounds": [
     {
@@ -4309,6 +4377,18 @@
       "NIT": 1
      },
      "report": "unrun deviation record printed red but exited 0 (fixed); _last_peer_requests always 0"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3",
+     "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+     "tree_hash": "638874d6f4d164331a8b2a9b8d9c215c63ce51722eab00e3e079c408abaeebcd",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 2
+     },
+     "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling"
     }
    ]
   },
@@ -4318,17 +4398,16 @@
    "paths": [
     "testing/a2a-supplement"
    ],
-   "tree_hash": "9b209bd8eaa7ce35e64fc7dab654b43900bb5012fe20527f5448a7d9e4723d4d",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 2,
+   "tree_hash": "ac5bd625f54e25bef987dc6453c545974a29bd72faff8998389a64991330a909",
+   "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1,
-    "LOW": 1,
-    "NIT": 1
+    "HIGH": 1,
+    "MEDIUM": 1
    },
-   "report": "zero demonstrated exited 0 and plan drifted from the registry (fixed)",
-   "auditor": "opus-pass1",
+   "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling",
+   "auditor": "opus-instr-p3",
    "fixed_at": null,
    "rounds": [
     {
@@ -4354,6 +4433,18 @@
       "NIT": 1
      },
      "report": "zero demonstrated exited 0 and plan drifted from the registry (fixed)"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3",
+     "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+     "tree_hash": "ac5bd625f54e25bef987dc6453c545974a29bd72faff8998389a64991330a909",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1
+     },
+     "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling"
     }
    ]
   },
@@ -4363,15 +4454,16 @@
    "paths": [
     "testing/a2a-tck"
    ],
-   "tree_hash": "ac50d746d5a76e6e56ffa1db1eeb26fe95568af15043fb4e5375d77dead7b13f",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 1,
+   "tree_hash": "b239dbde5c7b46b35e415b715cd29ffe792941a109f9254a51a310734b4000a0",
+   "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 1
+    "HIGH": 1,
+    "MEDIUM": 2
    },
-   "report": "subject gate had no execution floor (fixed)",
-   "auditor": "opus-pass1",
+   "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling",
+   "auditor": "opus-instr-p3",
    "fixed_at": null,
    "rounds": [
     {
@@ -4384,6 +4476,18 @@
       "HIGH": 1
      },
      "report": "subject gate had no execution floor (fixed)"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3",
+     "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+     "tree_hash": "b239dbde5c7b46b35e415b715cd29ffe792941a109f9254a51a310734b4000a0",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 2
+     },
+     "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling"
     }
    ]
   },
@@ -4393,15 +4497,16 @@
    "paths": [
     "testing/fleet-fixtures"
    ],
-   "tree_hash": "1d4ac2eabc2db2f1f640fdc4b7c940978d3598631ad7636f1e9d80d48cf35f00",
-   "audited_at": "588b072617b046e0262d0f4725606630babcb01b",
-   "round": 1,
+   "tree_hash": "a079d73d36d8a061968ca8e59bb7a1a82b76b5fba70bc5677de118c8190d679c",
+   "audited_at": "7f4e716e500ce3a8de17524a820506c1208a3bb0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 4
+    "MEDIUM": 1,
+    "LOW": 1
    },
-   "report": "stub-idp mints to any unauthenticated GET, vault fixture ignores the path, export sink counts any POST, valkey namespaces never flushed; fix agent to dispatch",
-   "auditor": "opus-pass1",
+   "report": "fleet fixtures fresh eyes: verdict survived twelve plants; the default ledger path is fixed and never truncated for ad-hoc runs; last-row-wins is documented",
+   "auditor": "opus-instr-p3-fleet",
    "fixed_at": null,
    "rounds": [
     {
@@ -4423,6 +4528,18 @@
       "HIGH": 4
      },
      "report": "stub-idp mints to any unauthenticated GET, vault fixture ignores the path, export sink counts any POST, valkey namespaces never flushed; fix agent to dispatch"
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-instr-p3-fleet",
+     "audited_at": "7f4e716e500ce3a8de17524a820506c1208a3bb0",
+     "tree_hash": "a079d73d36d8a061968ca8e59bb7a1a82b76b5fba70bc5677de118c8190d679c",
+     "counts": {
+      "MEDIUM": 1,
+      "LOW": 1
+     },
+     "report": "fleet fixtures fresh eyes: verdict survived twelve plants; the default ledger path is fixed and never truncated for ad-hoc runs; last-row-wins is documented"
     }
    ]
   },
@@ -4432,15 +4549,18 @@
    "paths": [
     "testing/llm-conformance"
    ],
-   "tree_hash": "489f53c7085544a3051e37534446d7f1e2b933099a6594903641d76610f47686",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 2,
+   "tree_hash": "f77c16dfc649dde254430038d9b1708a0bc074a2cd40d888cb182b4e3c6e1cbf",
+   "audited_at": "30ada1b8bdd7034eb962a530f055b58fe7fb38bf",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "MEDIUM": 1
+    "HIGH": 1,
+    "MEDIUM": 2,
+    "LOW": 2,
+    "NIT": 3
    },
-   "report": "named-gap register built (anthropic ping, G-1); one live spec deviation remains: bedrock ServiceQuotaExceededException not declared by Converse (owner ruling needed)",
-   "auditor": "opus-fix",
+   "report": "conformance rig fresh eyes: a drifted spec cache decided verdicts (a body missing a required member passed), gaps had no ceiling, outcome and status were never reconciled; 23 plants, 2 survivors fixed",
+   "auditor": "opus-instr-p3-conformance",
    "fixed_at": null,
    "rounds": [
     {
@@ -4464,6 +4584,20 @@
       "MEDIUM": 1
      },
      "report": "named-gap register built (anthropic ping, G-1); one live spec deviation remains: bedrock ServiceQuotaExceededException not declared by Converse (owner ruling needed)"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3-conformance",
+     "audited_at": "30ada1b8bdd7034eb962a530f055b58fe7fb38bf",
+     "tree_hash": "f77c16dfc649dde254430038d9b1708a0bc074a2cd40d888cb182b4e3c6e1cbf",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 2,
+      "LOW": 2,
+      "NIT": 3
+     },
+     "report": "conformance rig fresh eyes: a drifted spec cache decided verdicts (a body missing a required member passed), gaps had no ceiling, outcome and status were never reconciled; 23 plants, 2 survivors fixed"
     }
    ]
   },
@@ -4473,17 +4607,17 @@
    "paths": [
     "testing/mcp-conformance"
    ],
-   "tree_hash": "ecf0bb5c075634b7842846916b8090bf0810fac6c13992a1718aa057e2a7a4b8",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 2,
+   "tree_hash": "5c3d131f4b07d9e069b0192344db9ff4bde55c0d9c692562df53aa4f16677f5a",
+   "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "LOW": 3,
-    "NIT": 1
+    "HIGH": 4,
+    "MEDIUM": 3,
+    "LOW": 2
    },
-   "report": "unimported suite left scenarios out of every number (fixed); literal-true adversarial row, differential missing never gates, name-collision seam unguarded reported",
-   "auditor": "opus-pass2",
+   "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling",
+   "auditor": "opus-instr-p3",
    "fixed_at": null,
    "rounds": [
     {
@@ -4509,6 +4643,19 @@
       "NIT": 1
      },
      "report": "unimported suite left scenarios out of every number (fixed); literal-true adversarial row, differential missing never gates, name-collision seam unguarded reported"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3",
+     "audited_at": "9c4787cb6cd7ae724800ee2370f7b9a96aefab0f",
+     "tree_hash": "5c3d131f4b07d9e069b0192344db9ff4bde55c0d9c692562df53aa4f16677f5a",
+     "counts": {
+      "HIGH": 4,
+      "MEDIUM": 3,
+      "LOW": 2
+     },
+     "report": "instrument fresh eyes with plants: false-green paths closed (fail-open guards, stale reports graded, zero-of-zero passes); remaining rows that pass against nothing named for a ruling"
     }
    ]
   },
@@ -4518,17 +4665,17 @@
    "paths": [
     "testing/shadow-oracle"
    ],
-   "tree_hash": "67724ba70bfb0daee9a9826ac6cfe7e8608a7d233679954fdd04651244512ff8",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 2,
+   "tree_hash": "37a4efc29daca4e9dab7910d8bffb6449e2f2e5757f3f3387e0081a3434eec6c",
+   "audited_at": "4ea31e7d20e55da7ab65b5d647fa61a28b25fb8c",
+   "round": 3,
    "result": "findings",
    "counts": {
     "HIGH": 1,
-    "MEDIUM": 2,
-    "LOW": 4
+    "MEDIUM": 3,
+    "LOW": 5
    },
-   "report": "hazard driver recorded a harness failure as a pass (fixed), wall clocks in effects (fixed), golden pass outside the owed ratchet (fixed); teller failover evidence non-discriminating; plugin-list ports hardcoded",
-   "auditor": "opus-pass2",
+   "report": "judge and normalizer fresh eyes: the shipped register could not load (seven waivers without widths), the order-rule exemption had drifted, the harness rev missed the comparison driver and verdict, the re-normalizer was faithful by luck; 21 plants all red with the right class",
+   "auditor": "opus-instr-p3-judge",
    "fixed_at": null,
    "rounds": [
     {
@@ -4569,6 +4716,32 @@
       "LOW": 4
      },
      "report": "hazard driver recorded a harness failure as a pass (fixed), wall clocks in effects (fixed), golden pass outside the owed ratchet (fixed); teller failover evidence non-discriminating; plugin-list ports hardcoded"
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-instr-p3-corpus",
+     "audited_at": "3fcb7dc65afb21d1a77b6859a67b3238af60a9e2",
+     "tree_hash": "0aebdced1e74b48a6c94f4a6ee03a5b7d319150fde35ff59faa60a37b8ddc8c5",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 4,
+      "LOW": 7
+     },
+     "report": "cell corpus and register fresh eyes: one breaking entry forgave changed spend on every billing cell (narrowed 26 to 12 matches), the owed baseline was 16 ids short, one binding was invisible to the parity gate, two entries named outcomes that never existed, two cells had no golden row (recorded); no improvement entry names a money class"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3-judge",
+     "audited_at": "4ea31e7d20e55da7ab65b5d647fa61a28b25fb8c",
+     "tree_hash": "37a4efc29daca4e9dab7910d8bffb6449e2f2e5757f3f3387e0081a3434eec6c",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "LOW": 5
+     },
+     "report": "judge and normalizer fresh eyes: the shipped register could not load (seven waivers without widths), the order-rule exemption had drifted, the harness rev missed the comparison driver and verdict, the re-normalizer was faithful by luck; 21 plants all red with the right class"
     }
    ]
   },
@@ -4578,18 +4751,16 @@
    "paths": [
     "testing/voice-conformance"
    ],
-   "tree_hash": "ba336f403a545c7ad4bcfcb9a428ae6f7025ba4797d65d504906e521b3f55c1e",
-   "audited_at": "d6d871893dbd196e0d2b3a00d2e22ed2473d2adf",
-   "round": 2,
+   "tree_hash": "d7226a3a3cdee211a4dc2780429348a4d155c8fb7e314e2e9ee6fee2d5b16ed3",
+   "audited_at": "7f4e716e500ce3a8de17524a820506c1208a3bb0",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 3,
-    "LOW": 2,
-    "NIT": 2
+    "HIGH": 2,
+    "NIT": 1
    },
-   "report": "harness dying after PASS lines read green (fixed), asymmetry rows deferred by all pairs (fixed), literal-true rows (fixed), missing map fixtures silent (fixed); no sample-rate or timing assertion exists in the rig",
-   "auditor": "opus-pass2",
+   "report": "voice rig fresh eyes: 11 of 14 legs deleted still passed (floor 3), the spec leg had no required scenario set and judges busbar's own re-encode rather than the pinned spec (report)",
+   "auditor": "opus-instr-p3-voice",
    "fixed_at": null,
    "rounds": [
     {
@@ -4616,6 +4787,18 @@
       "NIT": 2
      },
      "report": "harness dying after PASS lines read green (fixed), asymmetry rows deferred by all pairs (fixed), literal-true rows (fixed), missing map fixtures silent (fixed); no sample-rate or timing assertion exists in the rig"
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-instr-p3-voice",
+     "audited_at": "7f4e716e500ce3a8de17524a820506c1208a3bb0",
+     "tree_hash": "d7226a3a3cdee211a4dc2780429348a4d155c8fb7e314e2e9ee6fee2d5b16ed3",
+     "counts": {
+      "HIGH": 2,
+      "NIT": 1
+     },
+     "report": "voice rig fresh eyes: 11 of 14 legs deleted still passed (floor 3), the spec leg had no required scenario set and judges busbar's own re-encode rather than the pinned spec (report)"
     }
    ]
   },
