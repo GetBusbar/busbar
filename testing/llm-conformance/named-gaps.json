@@ -1,0 +1,43 @@
+{
+  "_comment": [
+    "EVERY GAP THIS GATE IS ALLOWED TO HAVE, NAMED. A gap is a row validate.py could not decide:",
+    "it is recorded SKIP with a reason, printed as DID NOT VERIFY, and removed from the owed set so",
+    "the verdict can still judge the rows that exist. That removal is exactly how a gap hides — an",
+    "id that stops being checked stops being counted, and a run with one fewer thing verified reads",
+    "the same green as a run with one more. So the gaps are declared HERE, and run.sh refuses any",
+    "run whose gaps are not the ones this file names, in no greater number than it names.",
+    "",
+    "`expected` is the most SKIP rows a run may produce. `accepted` names them: one entry per gap,",
+    "`cells` a regex over the ledger id (`<cell-id>#request` / `#response`, same convention as",
+    "testing/shadow-oracle/accepted-gaps.json), plus an `owner` and a `rationale`. An entry missing",
+    "any of the three is refused — a gap with no owner is a gap nobody is fixing. A SKIP row whose",
+    "own reason is empty is refused too: named means named, on the row.",
+    "",
+    "FEWER gaps than declared is never red — a gap that closed is what this file exists to drive",
+    "towards — but it is printed with the instruction to lower `expected`, so the floor only ever",
+    "moves down. MORE, or one this file does not name, is red.",
+    "",
+    "Every entry today is a cell testing/shadow-oracle/record.sh could not record at all (its own",
+    "ledger says UNSUPPORTED), so there is no wire for this gate to judge. They are the recorder's",
+    "to close, not this rig's; when a fixture lands, the cell records, the rows go PASS or FAIL on",
+    "their merits, and the entry and the count come off."
+  ],
+  "expected": 16,
+  "accepted": [
+    {
+      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_error#(request|response)$",
+      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
+      "rationale": "The mock upstream cannot yet fail PART WAY THROUGH a stream — N good events, then an in-band error event — so the recorder reports UNSUPPORTED for this outcome in all six ingress dialects and there is no recorded wire to judge. 12 rows: 6 dialects x {request, response}."
+    },
+    {
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document#(request|response)$",
+      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
+      "rationale": "A request that puts a `cachePoint` before a native `document` block — a wire slot that yields no IR block, ahead of one that does — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing."
+    },
+    {
+      "cells": "^llm\\|responses\\|responses\\|request\\|ok_citation#(request|response)$",
+      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
+      "rationale": "An answer carrying a URL citation — the Responses annotation the published UrlCitationBody flattens onto the annotation object — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing."
+    }
+  ]
+}

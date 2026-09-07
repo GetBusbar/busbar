@@ -24,11 +24,13 @@ here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 
 RECORDING="${repo}/target/oracle/recordings/candidate" OUT="" CELLS="${repo}/testing/shadow-oracle/cells.json" VENDOR=1
+GAPS="${here}/named-gaps.json"
 while [ $# -gt 0 ]; do
   case "$1" in
     --recording) RECORDING="$2"; shift 2 ;;
     --out) OUT="$2"; shift 2 ;;
     --cells) CELLS="$2"; shift 2 ;;
+    --gaps) GAPS="$2"; shift 2 ;;
     --no-vendor) VENDOR=0; shift ;;
     *) echo "unknown arg: $1" >&2; exit 2 ;;
   esac
@@ -77,6 +79,91 @@ if [ -s "${OUT}/owed-gaps.txt" ]; then
   while IFS= read -r gid; do
     printf '  %-56s %s\n' "$gid" "$(awk -F'\t' -v i="$gid" '$1==i{print $4; exit}' "$LEDGER")"
   done <"${OUT}/owed-gaps.txt"
+fi
+
+# 3b. THE GAPS ARE THE ONES THAT WERE DECLARED, IN THE NUMBER THAT WAS DECLARED. Step 3 takes every
+# SKIP id OUT of the owed set — which is right (a skip is never a pass, so it must not be judged as
+# one) and is also precisely how a gap hides: an id that stops being checked stops being counted,
+# and a run that verified one thing fewer reads exactly as green as a run that verified one more.
+# The only thing that was ever asserted about them was that they got printed. So they are reconciled
+# against named-gaps.json here: each observed gap must be named by an entry (with an owner and a
+# rationale), each must carry its own reason on its own row, and the count must be the declared one.
+# The result is a LEDGER ROW like every other check, added to the owed set, so it is the single
+# verdict below that decides — and so this reconciliation failing to run is itself DID NOT RUN.
+#
+# The row is only added when the VALIDATOR wrote at least one row of its own. "Zero rows is red" is
+# the guard the verdict opens with, and it counts rows in the ledger — so a row appended here by the
+# gate's own bookkeeping would be the one row that makes a run which judged NOTHING stop looking
+# vacuous. A run with no validator rows is already RED for the better reason; this check has nothing
+# to reconcile there and must not be what answers for it.
+GAP_ID="gate|llm-conformance|named-gaps"
+if [ "$(awk 'NF{n++} END{print n+0}' "$LEDGER")" -gt 0 ]; then
+python3 - "$GAPS" "${OUT}/owed-gaps.txt" "$LEDGER" "$GAP_ID" <<'PY'
+import json, re, sys
+gaps_path, observed_path, ledger_path, rid = sys.argv[1:5]
+
+def record(status, title, detail=""):
+    clean = lambda s: str(s).replace("\t", " ").replace("\n", " ")
+    with open(ledger_path, "a") as f:
+        f.write(f"{rid}\t{status}\t{clean(title)}\t{clean(detail)}\n")
+    print(f"{status}  {rid}  {title}" + (f"\n      {detail}" if detail else ""))
+    if status != "PASS":
+        print(f"::error title=llm-spec named gaps::{clean(title)} — {clean(detail)}")
+
+title = "named gaps are the declared ones, in the declared number"
+try:
+    with open(gaps_path) as f:
+        doc = json.load(f)
+except (OSError, ValueError) as e:
+    record("FAIL", title, f"{gaps_path} could not be read: {e} — the gate cannot tell a known gap from a new one")
+    sys.exit(0)
+
+entries = doc.get("accepted") or []
+for e in entries:
+    if not all(e.get(k) for k in ("cells", "owner", "rationale")):
+        record("FAIL", title, f"entry {e.get('cells', '?')!r} needs cells, owner and rationale — a gap with no owner is a gap nobody is fixing")
+        sys.exit(0)
+
+with open(observed_path) as f:
+    observed = [ln.strip() for ln in f if ln.strip()]
+
+reasons = {}
+with open(ledger_path) as f:
+    for ln in f:
+        p = ln.rstrip("\n").split("\t")
+        if len(p) >= 4 and p[1] == "SKIP":
+            reasons[p[0]] = p[3].strip()
+
+problems = []
+for gid in observed:
+    if not any(re.search(e["cells"], gid) for e in entries):
+        problems.append(f"{gid} is a gap NO entry names (reason on the row: {reasons.get(gid, '(none)')!r})")
+    elif not reasons.get(gid):
+        problems.append(f"{gid} is a gap whose own row carries no reason")
+note = ""
+expected = doc.get("expected")
+if not isinstance(expected, int):
+    problems.append(f"'expected' must be the number of gaps allowed, got {expected!r}")
+elif len(observed) > expected:
+    # A count as well as the naming above, because a NEW gap can fall inside an EXISTING entry's
+    # regex — same name, one more thing unverified — and the naming alone would not see it.
+    problems.append(f"{len(observed)} gap(s) observed, {expected} declared — a gap that is not in the count is a gap that hid")
+elif len(observed) < expected:
+    # Coverage GROWING is never red (same rule as testing/shadow-oracle/accepted-gaps.json): a gap
+    # that closed is the outcome this file exists to drive towards. It is printed, not punished,
+    # and the declared number should come down with it.
+    note = f" — {expected - len(observed)} declared gap(s) did not occur; lower 'expected' in {gaps_path} to hold the new floor"
+
+if problems:
+    record("FAIL", title, "; ".join(problems))
+else:
+    record("PASS", title, f"{len(observed)} gap(s) of at most {expected}, each named by {gaps_path}{note}")
+PY
+# Appended with a SPACE, never a newline: verdict.sh splits the owed list on newlines the moment it
+# contains one, so a single trailing newline here would turn the whole space-separated list into one
+# unmatchable id and every real row into DID NOT RUN. No id in this gate contains a space.
+OWED="${OWED} ${GAP_ID}"
+echo "$GAP_ID" >>"${OUT}/owed.txt"
 fi
 [ -f "${OUT}/report.md" ] && { echo; sed -n '1,200p' "${OUT}/report.md"; }
 echo
