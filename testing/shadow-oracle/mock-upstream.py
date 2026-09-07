@@ -76,6 +76,16 @@ MARKER = "oracle-marker"
 IN_TOK, OUT_TOK = 11, 7
 _capture_seq = itertools.count()
 
+# THE VERB VOCABULARY, IN ONE PLACE. Every outage this mock can be asked for is named here, and a
+# control that resolves to none of them is refused rather than served healthy -- a mock that quietly
+# ignores the outage a cell ordered records the SUCCESS path under that cell's name, identically on
+# the golden and the candidate, so the cell proves the opposite of what it claims.
+VERBS = frozenset({"down", "slow", "429", "5xx", "401", "cut", "stream-error", "citation"})
+
+
+class UnresolvableControl(Exception):
+    """A well-formed control that names neither a model nor a verb this mock implements."""
+
 
 def j(obj) -> bytes:
     # Canonical, key-sorted, no whitespace variance -> byte-stable.
@@ -424,12 +434,41 @@ class H(BaseHTTPRequestHandler):
 
     @staticmethod
     def _verb_for_model(raw_ctl, model):
-        """raw_ctl is either a bare verb (applies to every model) or JSON {"<model>": "<verb>"}.
-        May raise ValueError on malformed JSON -- callers decide how to treat that."""
+        """raw_ctl is either a bare verb (applies to every model), JSON {"<model>": "<verb>"}, or the
+        FLAG form JSON {"<verb>": true} meaning "this verb, for every model".
+
+        May raise ValueError on malformed JSON, or UnresolvableControl on a well-formed object that
+        names neither a model this mock could be asked about nor a verb it implements -- callers
+        decide how to treat each.
+
+        The flag form is not a convenience: it is the shape the shipped corpus writes for the two
+        controls that are not per-model (`{"stream-error": true}`, `{"citation": true}`). Resolving
+        those by MODEL LOOKUP alone missed on every request, and the miss fell through to a healthy
+        200 -- so seven cells that order an outage would have recorded the success path, identically
+        on both binaries. A control that resolves to nothing is now an ERROR, never silence.
+        """
         if raw_ctl.startswith("{"):
             parsed = json.loads(raw_ctl)
-            return (parsed.get(model) or parsed.get("*") or "").lower()
-        return raw_ctl.lower()
+            if not isinstance(parsed, dict):
+                raise UnresolvableControl(f"control is JSON but not an object: {raw_ctl!r}")
+            v = parsed.get(model) or parsed.get("*")
+            if v is None:
+                # the flag form: exactly one key, and that key is a verb this mock implements
+                flags = [k for k, val in parsed.items() if str(k).lower() in VERBS and val is True]
+                if len(flags) == 1 and len(parsed) == 1:
+                    return flags[0].lower()
+                # A control naming only OTHER models is a legitimate "healthy for this one": every
+                # per-model control in the corpus is keyed by a `m-…` lane name. Anything else names
+                # nothing this mock understands, and answering it healthy is the silent pass above.
+                if all(str(k) == "*" or str(k).startswith("m-") for k in parsed):
+                    return ""
+                raise UnresolvableControl(
+                    f"control object names neither a model (m-…/*) nor a verb {sorted(VERBS)}: {raw_ctl!r}")
+            return str(v).lower()
+        v = raw_ctl.lower()
+        if v and v not in VERBS:
+            raise UnresolvableControl(f"unknown control verb {raw_ctl!r} (known: {sorted(VERBS)})")
+        return v
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length") or 0)
@@ -472,6 +511,17 @@ class H(BaseHTTPRequestHandler):
                 if raw_ctl:
                     try:
                         ctl = self._verb_for_model(raw_ctl, model)
+                    except UnresolvableControl as e:
+                        # A WELL-FORMED CONTROL THIS MOCK CANNOT ACT ON IS NOT "NO OUTAGE". Serving
+                        # the healthy 200 here is the silent pass: the cell that ordered the outage
+                        # records the success path, the golden freezes it, and the candidate — asked
+                        # for the same unresolvable control — reproduces it byte for byte. Answer with
+                        # a status no dialect and no verb of this mock ever produces, so the cell is
+                        # unmistakably broken rather than quietly wrong.
+                        sys.stderr.write(f"[control] UNRESOLVABLE control for model {model!r}: {e}\n")
+                        sys.stderr.flush()
+                        return self._send(599, j({"error": {"type": "oracle_harness_error",
+                                                            "message": f"oracle mock: {e}"}}))
                     except ValueError:
                         raw_ctl = None  # malformed JSON: treat exactly like an empty/unreadable read
                     else:
@@ -487,7 +537,7 @@ class H(BaseHTTPRequestHandler):
                         last_raw = self.server.last_raw  # type: ignore[attr-defined]
                     try:
                         ctl = self._verb_for_model(last_raw, model) if last_raw else ""
-                    except ValueError:
+                    except (ValueError, UnresolvableControl):
                         ctl = ""
                     sys.stderr.write(
                         f"[control] empty/unreadable/malformed read on {ctl_file} for model {model!r}; "
@@ -565,7 +615,81 @@ class H(BaseHTTPRequestHandler):
         pass
 
 
+def check_controls(cells_path) -> int:
+    """Every `mock_control` in a corpus must resolve to a verb this mock implements, for at least one
+    of the models it names. A control that resolves to nothing is served as a healthy 200, so the
+    cell that ordered an outage records the success path — on both binaries, agreeing."""
+    corpus = json.load(open(cells_path, encoding="utf-8"))
+    bad = []
+    for cell in corpus.get("cells", []):
+        mc = cell.get("mock_control")
+        if not mc:
+            continue
+        raw = mc if isinstance(mc, str) else json.dumps(mc, separators=(",", ":"), sort_keys=True)
+        # the models this control could ever be asked about: the ones it names, plus a stand-in for
+        # "some other lane" so a per-model control is not judged by a lane it deliberately omits
+        models = [k for k in (mc if isinstance(mc, dict) else {}) if str(k).startswith("m-")] or ["m-openai-chat"]
+        resolved = ""
+        err = ""
+        for m in models:
+            try:
+                v = H._verb_for_model(raw, m)
+            except (ValueError, UnresolvableControl) as e:
+                err = str(e)
+                continue
+            if v:
+                resolved = v
+                break
+        if not resolved:
+            bad.append(f"{cell['id']}: mock_control {raw} -> {err or 'no verb'}")
+    for line in bad:
+        print(line)
+    return 1 if bad else 0
+
+
+def selftest() -> int:
+    fails = 0
+
+    def say(ok, what):
+        nonlocal fails
+        print(f"{'PASS' if ok else 'FAIL'}  {what}")
+        if not ok:
+            fails += 1
+
+    v = H._verb_for_model
+    say(v("down", "m-openai-chat") == "down", "a bare verb applies to every model")
+    say(v('{"m-openai-chat":"cut"}', "m-openai-chat") == "cut", "a per-model control resolves for the model it names")
+    say(v('{"m-openai-chat":"cut"}', "m-anthropic") == "", "…and is healthy for a model it does not name")
+    say(v('{"*":"down"}', "m-anything") == "down", "the '*' fallback applies to every model")
+    # THE BUG. `{"stream-error": true}` / `{"citation": true}` is the shape the corpus ships for the
+    # two controls that are not per-model. Resolved by model lookup alone they miss on every request
+    # and fell through to a healthy 200 — the cell records the success path it exists to refute.
+    say(v('{"stream-error": true}', "m-openai-chat") == "stream-error",
+        "the flag form {\"<verb>\": true} resolves to that verb (it used to resolve to nothing)")
+    say(v('{"citation": true}', "m-responses") == "citation", "…for every verb written that way")
+    # A control that names neither a model nor a verb is an ERROR, never silence.
+    try:
+        v('{"typo-verb": true}', "m-openai-chat")
+        say(False, "a control naming no model and no verb was accepted as 'healthy'")
+    except UnresolvableControl:
+        say(True, "a control naming neither a model nor a verb is refused, not served healthy")
+    try:
+        v("dowm", "m-openai-chat")
+        say(False, "a misspelt bare verb was accepted as 'healthy'")
+    except UnresolvableControl:
+        say(True, "a misspelt bare verb is refused, not served healthy")
+    # …and every verb the docstring/dispatch names is in the vocabulary the refusal is judged against
+    say(all(x in VERBS for x in ("down", "slow", "429", "5xx", "401", "cut", "stream-error", "citation")),
+        "the verb vocabulary covers every verb do_POST dispatches on")
+    print(f"\nmock-upstream selftest: {'GREEN' if not fails else f'RED ({fails} failing)'}")
+    return 1 if fails else 0
+
+
 def main():
+    if sys.argv[1:2] == ["--selftest"]:
+        sys.exit(selftest())
+    if sys.argv[1:2] == ["--check-controls"]:
+        sys.exit(check_controls(sys.argv[2]))
     port = int(sys.argv[1])
     marker = sys.argv[2] if len(sys.argv) > 2 else MARKER
     control_file = sys.argv[3] if len(sys.argv) > 3 else ""

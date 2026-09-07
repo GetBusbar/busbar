@@ -446,6 +446,27 @@ else
   say FAIL "the shipped accepted-differences.json was REFUSED against the shipped cells.json: $(tail -3 "$W/out-w4.log")"
 fi
 
+# EVERY `mock_control` A CELL DECLARES MUST RESOLVE TO A VERB THE MOCK IMPLEMENTS. The control file
+# is the ONLY way a cell orders an outage, and the mock's fallback for a control it cannot resolve is
+# a healthy 200 — so a cell whose control the mock does not understand records the SUCCESS path, with
+# a PASS row, on both binaries, agreeing. That is not a hypothetical: `{"stream-error": true}` (six
+# cells) and `{"citation": true}` (one) are the shape the corpus actually ships, and the resolver only
+# ever looked up the cell's MODEL name or "*" in that object — both miss, so all seven resolved to no
+# verb at all. They are `needs_fixture` today, which is the only reason no golden froze the healthy
+# stream in place of the mid-stream failure it claims to record. The guard is STATIC and runs over the
+# SHIPPED cells.json, so it also catches the next control shape somebody invents.
+mock_ctl_bad="$(python3 "${here}/mock-upstream.py" --check-controls "${here}/cells.json" 2>&1)" && mock_ctl_rc=0 || mock_ctl_rc=$?
+[ "$mock_ctl_rc" = 0 ] \
+  && say PASS "every mock_control in cells.json resolves to a verb mock-upstream.py implements" \
+  || say FAIL "cell(s) declare a mock_control the mock resolves to NO verb, so the outage they order is served as a healthy 200: ${mock_ctl_bad}"
+
+# …and the resolver's own unit cases, which no corpus file can prove: the flag form, the per-model
+# form, the "*" fallback, and the refusal of a control that names neither a model nor a verb.
+mock_unit="$(python3 "${here}/mock-upstream.py" --selftest 2>&1)" && mock_unit_rc=0 || mock_unit_rc=$?
+[ "$mock_unit_rc" = 0 ] \
+  && say PASS "mock-upstream.py's control-verb resolver selftest is green" \
+  || say FAIL "mock-upstream.py --selftest is RED: $(printf '%s' "$mock_unit" | tr '\n' ' ' | tail -c 400)"
+
 # (w) EVERY script driver's give-up path must be distinguishable from a recorded outcome. record.sh
 # reads a script cell's `status` alone: -1 is a named gap (SKIP), and EVERY other status is recorded
 # PASS unless the capture carries `effects.harness_error` (record.sh:835). So a driver whose fail()
