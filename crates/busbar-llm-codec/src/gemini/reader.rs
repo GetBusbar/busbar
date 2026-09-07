@@ -18,22 +18,58 @@ impl ProtocolReader for GeminiReader {
         // thinking count as the reasoning sub-bucket (pure attribution; it is already folded into
         // `output_tokens`).
         let thoughts = v.get(FIELD_THOUGHTS_TOKEN_COUNT).and_then(|x| x.as_u64());
+        let prompt = v
+            .get("promptTokenCount")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        let candidates = v
+            .get("candidatesTokenCount")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0);
+        // TOOL-USE PROMPT TOKENS ARE INPUT TOKENS — mirror `gemini_usage` exactly, cross-check and
+        // all. The discovery document makes `toolUsePromptTokenCount` its own top-level
+        // `UsageMetadata` member ("Output only. Number of tokens present in tool-use prompt(s)")
+        // while `promptTokenCount` folds in exactly ONE other member (the cached content), so on a
+        // tool turn it is an ADDITIVE bucket Google bills at the input rate. Not reading it here
+        // ledgered every one of those tokens as zero on the truncated path alone: the SAME body
+        // billed two different amounts depending only on whether it fit the reassembly cap, and a
+        // tool turn's transcript is exactly the shape large enough to overflow it.
+        //
+        // The cross-check is the buffered path's: an upstream whose own `totalTokenCount` leaves no
+        // room for an additive tool-use bucket has already folded it into `promptTokenCount`, and
+        // adding it again would DOUBLE-BILL. The provider's total is the authority; the add only
+        // happens when that total confirms the split.
+        let tool_use_prompt = v
+            .get(FIELD_TOOL_USE_PROMPT_TOKEN_COUNT)
+            .and_then(|x| x.as_u64());
+        let wire_total = v.get(FIELD_TOTAL_TOKEN_COUNT).and_then(|x| x.as_u64());
+        let tool_use_billable = match (tool_use_prompt, wire_total) {
+            (Some(t), Some(total))
+                if total
+                    < prompt
+                        .saturating_add(candidates)
+                        .saturating_add(thoughts.unwrap_or(0))
+                        .saturating_add(t) =>
+            {
+                0
+            }
+            (Some(t), _) => t,
+            (None, _) => 0,
+        };
         Some(
             crate::ir::IrUsage {
-                input_tokens: v
-                    .get("promptTokenCount")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0)
-                    .saturating_sub(cached.unwrap_or(0)),
-                output_tokens: v
-                    .get("candidatesTokenCount")
-                    .and_then(|x| x.as_u64())
-                    .unwrap_or(0)
-                    .saturating_add(thoughts.unwrap_or(0)),
+                input_tokens: prompt
+                    .saturating_sub(cached.unwrap_or(0))
+                    .saturating_add(tool_use_billable),
+                output_tokens: candidates.saturating_add(thoughts.unwrap_or(0)),
                 cache_creation_input_tokens: None,
                 cache_read_input_tokens: cached,
                 detail: crate::ir::IrUsageDetail {
                     reasoning_tokens: thoughts,
+                    // Attribution for the slice of `input_tokens` that is tool-use prompt, as the
+                    // buffered path records it — kept even when the cross-check refused the add, so
+                    // the split stays answerable either way.
+                    tool_use_prompt_tokens: tool_use_prompt,
                     ..Default::default()
                 },
             }
