@@ -111,7 +111,7 @@ fn out_of_range_egress_kind_decodes_to_none() {
 /// Every named class round-trips through its raw carrier unchanged — the encode direction stays
 /// lossless while the decode direction stays total.
 #[test]
-fn raw_fault_class_round_trips_every_named_class() {
+fn raw_fault_class_survives_encode_decode_for_every_named_class() {
     for c in [
         FaultClass::Unspecified,
         FaultClass::RateLimit,
