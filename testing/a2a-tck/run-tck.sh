@@ -98,15 +98,35 @@ install_control () {
 run_tck () {
   local url="$1" name="$2" rc=0
   rm -rf "$TCK_DIR/reports"
+  # THIS RUN'S EVIDENCE, OR NONE. `$OUT` is a WORK directory (`$A2A_TCK_WORK`, defaulting to a
+  # stable path under $TMPDIR), not a fresh one: it survives between runs, between branches and
+  # between worktrees on purpose, so the pinned suite and its virtualenv are not rebuilt every
+  # time. That makes a report left behind by an EARLIER run the default state of this directory,
+  # and the two lines that used to follow turned that into a false green: the suite's own
+  # `reports/` was cleaned, but `$OUT/$name.json` was not, and the copy was guarded by an
+  # `if [ -f ]` that stayed SILENT when there was nothing to copy. A run that crashed, that never
+  # reached the suite, or that produced no report at all therefore left yesterday's report
+  # sitting under today's name -- and `control_leg` handed it straight to the comparator, which
+  # matched it against the baseline it was recorded from and printed BASELINE MATCHED for a run
+  # that executed nothing. That is the same "reading a report from a previous run" defect
+  # `scripts/mcp-conformance.sh` deletes its control report to refuse, and it is worse here
+  # because the stale file is guaranteed to match.
+  rm -f "$OUT/$name.json" "$OUT/$name.txt"
   ( cd "$TCK_DIR" && "$VENV/bin/python" run_tck.py --sut-host "$url" ) \
     > "$OUT/$name.txt" 2>&1 || rc=$?
   # The TCK exits non-zero whenever any requirement fails, which is the NORMAL state against
   # every implementation we have. The verdict here is the baseline comparison, not the exit
-  # code -- but a MISSING report is still fatal, and that is checked by the comparator.
+  # code -- but a MISSING report is still fatal, and it is named HERE rather than left to the
+  # comparator: with the stale file deleted the comparator would report "no such file", which is
+  # the symptom, three steps from the cause.
   echo "  (a2a-tck exit $rc; verdict comes from the baseline comparison)"
-  if [ -f "$TCK_DIR/reports/compatibility.json" ]; then
-    cp "$TCK_DIR/reports/compatibility.json" "$OUT/$name.json"
+  if [ ! -f "$TCK_DIR/reports/compatibility.json" ]; then
+    echo "the a2a-tck run against $url wrote NO compatibility report (suite exit $rc)." >&2
+    echo "It cannot have executed, so there is no verdict to read. Its own output:" >&2
+    tail -40 "$OUT/$name.txt" >&2 || true
+    exit 2
   fi
+  cp "$TCK_DIR/reports/compatibility.json" "$OUT/$name.json"
   sed -n '/A2A TCK Compatibility Report/,/FAILED REQUIREMENTS/p' "$OUT/$name.txt" || true
 }
 
