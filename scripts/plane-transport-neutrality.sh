@@ -23,10 +23,15 @@
 #   blocks) is excluded — the ban is on the neutral ABI the crates EXPORT, not their unit tests. A noun
 #   is flagged when it appears as a WORD (identifier-boundary, case-insensitive: `sdp`, `SDP`) OR as a
 #   CamelCase TOKEN (`SdpOffer`, `RtpStream`, `WebrtcTrack`) — the two shapes a leaked transport name
-#   actually takes in Rust source. The identifier boundary is `[^a-z0-9_]` — underscore is NOT a
-#   boundary, EXACTLY as plane-purity-lint's `word_ci`: an underscore-joined substring (`input_audio`)
-#   is the tracked in-core-twin debt that gate scopes OUT, not a fresh transport leak, so this gate
-#   scopes it out identically and stays GREEN on the current tree.
+#   actually takes in Rust source. THE IDENTIFIER BOUNDARY INCLUDES `_`. It did not, once: the class
+#   was `[^a-z0-9_]`, borrowed from plane-purity-lint's `word_ci` to scope out one tracked in-core-twin
+#   field (`input_audio`). But `_` is the joint in every snake_case Rust name, and snake_case is what
+#   fns, fields, locals and modules ARE — so that one carve-out silently exempted `sdp_answer_for`,
+#   `rtp_port`, `webrtc_kind`, `audio_track` and `dtmf_digits` too. Planted in `crates/api`, all five
+#   passed this gate GREEN. The CamelCase rule could not catch them either: it requires a capital, and
+#   snake_case has none. So `_` is a boundary, and the ONE token that justified the carve-out is
+#   exempted by NAME IN ITS FILE (`tracked_twin` below) — never by a line number, which rots into a
+#   hole at an unrelated line, and never by relaxing the boundary, which takes every other name with it.
 #
 # ── THE TWO MODES (self-test first, then the enforcing gate) ────────────────────────────────────────
 #     --selftest   Proves the scanner cannot be lied to: plants a `SdpOffer` CamelCase token and a bare
@@ -42,7 +47,9 @@ set -uo pipefail
 # Resolved BEFORE the cd, so the self-test can re-invoke this exact file as a child process (the root
 # guard below exits the process, which a `$(…)` subshell would swallow).
 SELF="$(cd "$(dirname "$0")" >/dev/null && pwd)/$(basename "$0")"
-cd "$(dirname "$0")/.."
+# `|| exit 1`: with no `set -e`, a failed cd would leave every relative root below resolving against
+# the CALLER's directory instead of the repo — a whole scan aimed somewhere nobody chose.
+cd "$(dirname "$0")/.." || exit 1
 
 red()  { printf '\033[31m%s\033[0m\n' "$*"; }
 grn()  { printf '\033[32m%s\033[0m\n' "$*"; }
@@ -119,10 +126,18 @@ scan() {
     }
     function trim(s) { sub(/^[[:space:]]+/, "", s); sub(/[[:space:]]+$/, "", s); return s }
     # A whole-word (identifier-boundary) case-insensitive hit of a lowercase needle. The pad makes a
-    # match at line start/end boundary-clean; the class [^a-z0-9_] is the identifier boundary — EXACTLY
-    # plane-purity-lint`s `word_ci`, so `_` is NOT a boundary and an underscore-joined substring
-    # (`input_audio`) does not flag (that is the tracked in-core-twin debt, out of scope here too).
-    function word_ci(lc, needle) { return (lc ~ ("[^a-z0-9_]" needle "[^a-z0-9_]")) }
+    # match at line start/end boundary-clean; the class [^a-z0-9] is the identifier boundary and `_` IS
+    # a boundary — see the file header. A noun as any SEGMENT of a snake_case name (`sdp_answer_for`,
+    # `rtp_port`, `audio_track`) is the commonest shape a leak actually takes, and excluding `_` made
+    # every one of them invisible to both this rule and the CamelCase rule below.
+    function word_ci(lc, needle) { return (lc ~ ("[^a-z0-9]" needle "[^a-z0-9]")) }
+    # THE ONE TRACKED IN-CORE-TWIN FIELD. `input_audio`/`output_audio` on the substrate BILLING record
+    # are usage-accounting modality fields, not a transport leak, and they are the sole reason `_` was
+    # ever excluded above. They are exempted HERE instead: by exact identifier, in exactly the file that
+    # declares them. Not by line number (a line pin rots into a hole at whatever lands on that line) and
+    # not by widening the rule (which is what cost this gate five real leaks). A `_audio` name anywhere
+    # else, or a NEW one in this file, still flags.
+    function tracked_twin(c) { return (FILENAME ~ /\/busbar-substrate-values\/src\/billing\.rs$/ && c ~ /(input|output)_audio/) }
     function emit(noun, text) { printf "%s\t%s:%d\t%s\n", noun, FILENAME, FNR, trim(text) }
 
     BEGIN { ncount = split(nouns_lc, N, " ") }
@@ -156,7 +171,7 @@ scan() {
       if (intest) next
 
       # WORD rule — any transport noun as an identifier-boundary token (case-insensitive).
-      for (i = 1; i <= ncount; i++) if (word_ci(lc, N[i])) { emit(N[i], code); }
+      for (i = 1; i <= ncount; i++) if (word_ci(lc, N[i]) && !tracked_twin(code)) { emit(N[i], code); }
       # CamelCase-TOKEN rule — a Capitalized noun followed by an uppercase letter, a non-identifier
       # char, or end-of-line: SdpOffer, RtpStream, WebrtcTrack, a bare `Sdp`.
       if (code ~ ("(" camel ")([A-Z]|[^A-Za-z0-9]|$)")) emit("CamelCase", code)
@@ -193,6 +208,47 @@ RED
   else
     ok=0; note "RED FAILED: CamelCase rule missed a transport-named type"; fi
   [ "$ok" -eq 1 ] || { fail=1; note "  (scanner output was:)"; printf '%s\n' "$out" | sed 's/^/    /'; }
+
+  # ── RED (snake_case): the shape the old `[^a-z0-9_]` boundary made INVISIBLE. Every fixture above is
+  # CamelCase or a bare lowercase word, which is exactly why the hole survived this gate's own RED
+  # proof for as long as it did. A transport noun as a SEGMENT of a snake_case name is the commonest
+  # shape a leak takes in Rust, and each of these five was planted in a neutral crate and passed. ──
+  cat >"$tmp/snake.rs" <<'SNAKE'
+pub fn sdp_answer_for(rtp_port: u16) -> String { let webrtc_kind = rtp_port; format!("{}", webrtc_kind) }
+pub struct Leak { pub audio_track: u32, pub dtmf_digits: u8 }
+SNAKE
+  out="$(scan "$tmp/snake.rs")"
+  ok=1
+  for need in sdp rtp webrtc audio dtmf; do
+    if printf '%s\n' "$out" | awk -F'\t' -v c="$need" '$1==c{n++} END{exit !(n>0)}'; then
+      note "RED snake_case: flagged $need"
+    else
+      ok=0; note "RED snake_case FAILED: $need in a snake_case identifier not flagged"; fi
+  done
+  [ "$ok" -eq 1 ] || { fail=1; note "  (scanner output was:)"; printf '%s\n' "$out" | sed 's/^/    /'; }
+
+  # ── The tracked in-core-twin exemption is keyed to the FILE AND THE IDENTIFIER, so it cannot become a
+  # blanket hole. The same `input_audio` outside its declaring file DOES flag, and a fresh transport
+  # name inside that file flags too. ──
+  mkdir -p "$tmp/busbar-substrate-values/src" "$tmp/elsewhere"
+  printf 'pub struct U { pub input_audio: Option<u64> }\n' >"$tmp/busbar-substrate-values/src/billing.rs"
+  printf 'pub struct U { pub input_audio: Option<u64> }\n' >"$tmp/elsewhere/billing.rs"
+  if [ -z "$(scan "$tmp/busbar-substrate-values/src/billing.rs")" ]; then
+    note "TWIN: the tracked billing field is exempt in the file that declares it"
+  else
+    fail=1; note "TWIN FAILED: the tracked in-core-twin billing field was flagged as a transport leak"
+  fi
+  if [ -n "$(scan "$tmp/elsewhere/billing.rs")" ]; then
+    note "TWIN: the SAME identifier outside that file still flags (the exemption is not a blanket)"
+  else
+    fail=1; note "TWIN FAILED: the twin exemption leaked outside its declaring file"
+  fi
+  printf 'pub struct V { pub sdp_answer: u8 }\n' >>"$tmp/busbar-substrate-values/src/billing.rs"
+  if [ -n "$(scan "$tmp/busbar-substrate-values/src/billing.rs" | awk -F'\t' '$1=="sdp"')" ]; then
+    note "TWIN: a NEW transport name in that same file still flags"
+  else
+    fail=1; note "TWIN FAILED: the twin exemption silenced a fresh transport name in its file"
+  fi
 
   # ── GREEN: a comment / block-comment / cfg(test) mod that MENTION the transport nouns, and neutral
   # ABI code that names none — nothing may be flagged. Executable proof of the comment/test exclusion. ──
