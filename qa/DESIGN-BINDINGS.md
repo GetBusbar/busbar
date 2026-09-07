@@ -17,10 +17,10 @@ The three words are not interchangeable:
 ## Summary
 
 - bindings: **104**  (PB-0 master rule + 103 table rows)
-- mapped (proven): **99**
-- unproven (cited, but nothing compared): **3**
+- mapped (proven): **100**
+- unproven (cited, but nothing compared): **2**
 - unmapped (named gap): **0**
-- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 57, oracle-family 5, test 428
+- checks by kind (mapped bindings only): gate 13, lint 5, oracle-cell 57, oracle-family 5, test 435
 
 ## Bindings
 
@@ -87,7 +87,7 @@ The three words are not interchangeable:
 | PB-58 | admitted units and money | unproven | FAIL | UNPROVEN, by the ledger's own note: OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested. | test: `running_past_the_reservation_posts_the_overdraft_rather_than_refusing`<br>test: `running_out_mid_unit_carries_rather_than_refusing`<br>test: `only_the_dimensions_that_accrue_mid_unit_can_overdraw`<br>test: `the_leases_go_back_on_every_end_whatever_it_was` |
 | PB-59 | multi-node admission (shared store, no `peers:`) | mapped | PASS |  | test: `test_two_node_flush_is_additive_no_lost_update`<br>test: `accrual_and_hydrate_cover_every_chain_bucket` |
 | PB-60 | oversize body | mapped | PASS |  | oracle-cell: `http.crosscut\|413\|api-prefix`<br>oracle-cell: `http.crosscut\|413\|openai`<br>oracle-cell: `http.crosscut\|413\|openai-unauth`<br>test: `oversized_request_413_is_reshaped_on_the_live_stack`<br>test: `test_oversized_body_413_bedrock_native_envelope_with_amzn_headers`<br>test: `test_axum_marker_413_is_reshaped_even_as_plain_text`<br>test: `test_relayed_upstream_413_not_reshaped`<br>test: `test_reshape_oversized_413_passthrough` |
-| PB-61 | chunked bodies | unproven | FAIL | UNPROVEN, by the ledger's own note: MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap. | test: `a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count`<br>test: `the_spill_budget_refuses_rather_than_growing`<br>test: `a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved`<br>test: `a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves` |
+| PB-61 | chunked bodies | mapped | PASS |  | test: `crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session`<br>test: `crates/busbar/tests/body_chunk_bounds.rs::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count`<br>test: `crates/busbar/tests/body_chunk_bounds.rs::the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_ones`<br>test: `crates/busbar-kernel/tests/table_and_pump.rs::a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count`<br>test: `crates/busbar-kernel/tests/table_and_pump.rs::the_spill_budget_refuses_rather_than_growing`<br>test: `crates/busbar-kernel/tests/table_and_pump.rs::a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved`<br>test: `crates/busbar-grammar/tests/json_scanner.rs::a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves` |
 | PB-62 | admin scope derivation | mapped | PASS |  | test: `crates/busbar-core/src/admin/v1/contract/tests/tests.rs::required_scope_matrix`<br>test: `required_scope_mutations_are_full`<br>test: `openapi_paths_annotate_required_scope` |
 | PB-63 | plugin reload / rollback mechanics | mapped | PASS |  | test: `admin_token_secret_ref_re_resolves_on_apply`<br>test: `plugin_reload_reports_an_unrebuildable_disk_config`<br>test: `kind_restart_default_matches_binding_lifecycle` |
 | PB-64 | token-minting egress auth | mapped | PASS |  | test: `next_refresh_never_sleeps_past_a_live_token_expiry`<br>test: `headers_for_emits_nothing_before_first_mint`<br>test: `is_ready_false_before_first_mint_true_after`<br>test: `cached_token_new_omits_header_for_bytes_invalid_in_a_header_value`<br>test: `headers_for_reflects_prebuilt_header_after_a_refresh`<br>test: `token_response_tolerates_expires_in_as_number_string_or_absent` |
@@ -139,7 +139,6 @@ or it is demoted to a named gap. It is never waived.
 
 - **PB-48** (stall sweep on `http`/`sse`): UNPROVEN, by the ledger's own note: max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.
 - **PB-58** (admitted units and money): UNPROVEN, by the ledger's own note: OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.
-- **PB-61** (chunked bodies): UNPROVEN, by the ledger's own note: MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.
 
 ## Findings: bindings in conflict with the tree
 
@@ -154,7 +153,7 @@ A green test that asserts the opposite of a binding is not a proof. These need a
 - **PB-48** (stall sweep on `http`/`sse`): max_unit_duration does not exist in crates/; the stall sweep is not built, so the binding is vacuously true.
 - **PB-58** (admitted units and money): OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.
 - **PB-60** (oversize body): oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.
-- **PB-61** (chunked bodies): MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.
+- **PB-61** (chunked bodies): Resolved 2026-09-06: MAX_NEEDMORE_FRAMES is crates/busbar-contract/src/bounded.rs:41 and the pump reads it at crates/busbar-kernel/src/pump.rs:128, where the run of consecutive "not yet" answers is kept ON THE SESSION SLOT -- so `Scheduler::ask_again(None)` is the `None => false` arm, and a transport with no session has no run to count. crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session reads SESSION off the SHIPPED HttpTransport and SseTransport (both false) and drives four times the ceiling of NeedMore frames through the pump with no session in hand, and ::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count spools the SAME byte cap twice -- once whole, once one byte per chunk, 256 times the frame ceiling in chunks -- and gets the same SpillBudget refusal on the same byte, never Stalled.
 - **PB-66** (request and response headers): CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.
 - **PB-75** (served OpenAPI document): The mapped goldens pin served == committed today; openapi_doc_is_31_and_v1_prefixed asserts info.version tracks the crate version, which is the opposite of a 1.5.5-verbatim pin. Treat as partial.
 - **PB-84** (response-stage taps): OWNER DECISION (1.6.0 rebuild, PR-0): the binding is AMENDED — an auth refusal on a hooked pool DOES fire the completion tap, with the synthetic outcome `rejected_by_auth` and the protocol-native status; hook_seam_tests.rs completion_tap_fires_synthetic_rejected_by_auth pins it and the oracle cell hooks\|hooked-pool\|unauth records 1.5.5 doing exactly that. Other pre-forward refusals (403/429/413/404) are unchanged.

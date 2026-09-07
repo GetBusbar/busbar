@@ -663,7 +663,16 @@ NOTES: dict[str, str] = {
     "PB-66": "CONTRADICTED in part by green tests: crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs client_anthropic_beta_reaches_matching_anthropic_upstream and client_openai_beta_reaches_matching_openai_upstream assert an allowlisted anthropic-beta / OpenAI-Beta client header DOES ride upstream, where the binding says NO client request header is forwarded. Owner decision needed.",
     "PB-60": "oversized_request_413_is_reshaped_on_the_live_stack documents that the body cap fires before auth buffers the body on the admin leg; the binding says the cap is enforced inside the handler after auth. Worth an owner read; the http.crosscut 413 cells diff the real order against 1.5.5.",
     "PB-58": "OverBudget, OverdraftCeiling and StaleSlice do not exist in crates/; vacuously true, untested.",
-    "PB-61": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
+    "PB-61": "Resolved 2026-09-06: MAX_NEEDMORE_FRAMES is crates/busbar-contract/src/bounded.rs:41 and "
+             "the pump reads it at crates/busbar-kernel/src/pump.rs:128, where the run of consecutive "
+             "\"not yet\" answers is kept ON THE SESSION SLOT -- so `Scheduler::ask_again(None)` is the "
+             "`None => false` arm, and a transport with no session has no run to count. "
+             "crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session "
+             "reads SESSION off the SHIPPED HttpTransport and SseTransport (both false) and drives four "
+             "times the ceiling of NeedMore frames through the pump with no session in hand, and "
+             "::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count spools the SAME "
+             "byte cap twice -- once whole, once one byte per chunk, 256 times the frame ceiling in "
+             "chunks -- and gets the same SpillBudget refusal on the same byte, never Stalled.",
     "PB-17": "Resolved 2026-09-06: the binding is a COUNT, and it is now counted. "
              "crates/busbar/tests/migration_corpus.rs::no_corpus_config_warns_more_at_boot_than_the_published_1_5_5_did "
              "migrates and validates each of the 69 shipped configs in tests/migration-corpus/from-tags "
@@ -690,9 +699,6 @@ UNPROVEN_BY_NOTE: dict[str, str] = {
              "crates/ and calls the binding vacuously true and untested. The four tests it cites are "
              "admission-unit tests of the overdraft rule, which is a different subsystem from the "
              "sealed-bucket refusal this binding is about. Nothing was compared.",
-    "PB-61": "the note on this row says MAX_NEEDMORE_FRAMES does not exist in crates/ and that no test "
-             "drives a multi-chunk body to the cap. The tests it cites bound a body by BYTES; the "
-             "binding is about the CHUNK-COUNT cap. Nothing was compared.",
 }
 
 # ── Suggestions for unmapped bindings: what check would prove it ─────────────────────────────────

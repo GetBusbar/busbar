@@ -15,8 +15,8 @@
  },
  "counts": {
   "bindings": 104,
-  "mapped": 99,
-  "unproven": 3,
+  "mapped": 100,
+  "unproven": 2,
   "unmapped": 0,
   "gap": 2,
   "checks_by_kind": {
@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 57,
    "oracle-family": 5,
-   "test": 428
+   "test": 435
   }
  },
  "owner_decisions": {
@@ -2894,40 +2894,61 @@
    "surface": "chunked bodies",
    "binding": "a request body is accepted up to `request_body_max_bytes` (default 32 MiB, ceiling 1 GiB) regardless of chunk count; `MAX_NEEDMORE_FRAMES` never applies to body spooling",
    "inventory": "config",
-   "note": "MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap.",
-   "status": "unproven",
+   "note": "Resolved 2026-09-06: MAX_NEEDMORE_FRAMES is crates/busbar-contract/src/bounded.rs:41 and the pump reads it at crates/busbar-kernel/src/pump.rs:128, where the run of consecutive \"not yet\" answers is kept ON THE SESSION SLOT -- so `Scheduler::ask_again(None)` is the `None => false` arm, and a transport with no session has no run to count. crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session reads SESSION off the SHIPPED HttpTransport and SseTransport (both false) and drives four times the ceiling of NeedMore frames through the pump with no session in hand, and ::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count spools the SAME byte cap twice -- once whole, once one byte per chunk, 256 times the frame ceiling in chunks -- and gets the same SpillBudget refusal on the same byte, never Stalled.",
+   "status": "mapped",
    "checks": [
     {
      "kind": "test",
-     "ref": "a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count",
+     "ref": "crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session",
+     "proves": "the SHIPPED HttpTransport and SseTransport both declare SESSION = false, so the pump is handed no session slot and `Scheduler::ask_again` takes its `None => false` arm: four times MAX_NEEDMORE_FRAMES consecutive NeedMore frames still Wait on both transports, and the frame ceiling is unreachable rather than merely un-hit",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/body_chunk_bounds.rs::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count",
+     "proves": "the same configured request_body_max_bytes refuses on the same byte whether the body arrives whole or one byte per chunk over 256 times MAX_NEEDMORE_FRAMES chunks; the refusal reason is SpillBudget and never Stalled",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar/tests/body_chunk_bounds.rs::the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_ones",
+     "proves": "the knob the binding names is the operator's limits.request_body_max_bytes, at the default 32 MiB and hard ceiling 1 GiB the binding states",
+     "source": "hand",
+     "status": "mapped"
+    },
+    {
+     "kind": "test",
+     "ref": "crates/busbar-kernel/tests/table_and_pump.rs::a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count",
      "proves": "a body arriving in four thousand chunks is spooled and opens its unit; the only bound applied is the byte budget, and the frame bound is never consulted",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "the_spill_budget_refuses_rather_than_growing",
+     "ref": "crates/busbar-kernel/tests/table_and_pump.rs::the_spill_budget_refuses_rather_than_growing",
      "proves": "the spool's one refusal is the node-global byte budget, counted in actual bytes",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved",
+     "ref": "crates/busbar-kernel/tests/table_and_pump.rs::a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved",
      "proves": "a declared pointer is never read off a truncated prefix; the unit opens when the bytes holding it have arrived",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves",
+     "ref": "crates/busbar-grammar/tests/json_scanner.rs::a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves",
      "proves": "a body over a mebibyte whose lane key is serialised last resolves byte-identically",
      "source": "hand",
      "status": "mapped"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "UNPROVEN, by the ledger's own note: MAX_NEEDMORE_FRAMES does not exist in crates/; no test drives a multi-chunk body to the cap."
+   "verdict": "PASS",
+   "verdict_detail": "test:crates/busbar/tests/body_chunk_bounds.rs::the_frame_ceiling_is_unreachable_on_the_two_transports_that_carry_no_session, test:crates/busbar/tests/body_chunk_bounds.rs::a_body_is_refused_at_request_body_max_bytes_whatever_its_chunk_count, test:crates/busbar/tests/body_chunk_bounds.rs::the_body_cap_is_the_operators_and_its_default_and_ceiling_are_the_documented_ones, test:crates/busbar-kernel/tests/table_and_pump.rs::a_body_is_bounded_by_its_bytes_and_never_by_its_chunk_count, test:crates/busbar-kernel/tests/table_and_pump.rs::the_spill_budget_refuses_rather_than_growing, test:crates/busbar-kernel/tests/table_and_pump.rs::a_body_opens_its_unit_only_once_the_deepest_pointer_has_resolved, test:crates/busbar-grammar/tests/json_scanner.rs::a_body_over_a_mebibyte_with_the_lane_key_last_still_resolves"
   },
   {
    "id": "PB-62",
