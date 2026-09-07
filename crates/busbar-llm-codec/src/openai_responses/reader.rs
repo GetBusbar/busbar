@@ -1093,6 +1093,23 @@ impl ProtocolReader for ResponsesReader {
                             retry_after: None,
                         }));
                         close_open_blocks(&mut out, state);
+                        // A FAILED RESPONSE IS STILL A BILLED ONE. The spec puts `usage` on the
+                        // `Response` object beside `status`, unconditionally — a `failed` terminal
+                        // carries the tokens the model already consumed before it failed, exactly
+                        // as a `completed` one does. Returning here without reading it billed a
+                        // burnt context window at zero. Emit it as a usage-only delta so it reaches
+                        // the same accumulator every other terminal's usage reaches; when the
+                        // upstream reported no usage object, nothing is emitted and the sequence is
+                        // the one this arm always produced.
+                        if let Some(usage) = read_stream_terminal_usage(response_obj) {
+                            out.push(IrStreamEvent::MessageDelta {
+                                // NOT a stop reason: the failure is carried by the Error above, and
+                                // a stop reason here would decode as an orderly finish.
+                                stop_reason: None,
+                                stop_sequence: None,
+                                usage,
+                            });
+                        }
                         out.push(IrStreamEvent::MessageStop);
                         return out;
                     }
@@ -1192,45 +1209,8 @@ impl ProtocolReader for ResponsesReader {
                             stop_reason
                         };
 
-                    let usage = response_obj
-                        .get("usage")
-                        .map(|u| {
-                            let cached = read_cached_tokens(u);
-                            crate::ir::IrUsage {
-                                // NORMALIZE to the additive-cache convention: the Responses API's
-                                // `input_tokens` is a TOTAL that already INCLUDES the cached prefix,
-                                // so subtract the cached tokens to leave only the uncached input.
-                                // `saturating_sub` guards an odd upstream where cached > input.
-                                input_tokens: u
-                                    .get("input_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0)
-                                    .saturating_sub(cached.unwrap_or(0)),
-                                output_tokens: u
-                                    .get("output_tokens")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0),
-                                cache_creation_input_tokens: None,
-                                // Carry the streamed prompt-cache hit count
-                                // (`usage.input_tokens_details.cached_tokens`) into the IR's
-                                // read-side cache field so a streaming Responses terminal preserves
-                                // the cache saving.
-                                cache_read_input_tokens: cached,
-                                // `output_tokens_details.reasoning_tokens` is on the STREAM's
-                                // terminal `response.completed` usage object exactly as it is on the
-                                // buffered response. Reading it only on the buffered path made the
-                                // same request report reasoning tokens at `stream: false` and a hard
-                                // `0` at `stream: true`.
-                                detail: crate::ir::IrUsageDetail {
-                                    reasoning_tokens: u
-                                        .get("output_tokens_details")
-                                        .and_then(|d| d.get("reasoning_tokens"))
-                                        .and_then(|v| v.as_u64()),
-                                    ..Default::default()
-                                },
-                            }
-                        })
-                        .unwrap_or(crate::ir::IrUsage {
+                    let usage =
+                        read_stream_terminal_usage(response_obj).unwrap_or(crate::ir::IrUsage {
                             input_tokens: 0,
                             output_tokens: 0,
                             cache_creation_input_tokens: None,

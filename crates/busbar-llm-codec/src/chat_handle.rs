@@ -507,7 +507,21 @@ impl OperationHandler for ChatOperation {
         };
         match p.reader().read_response(&v) {
             Ok(ir) => Some(ir.usage.to_token_usage()),
+            // A 2xx BODY THAT REPORTS ITS USAGE IS BILLED FOR IT, EVEN WHEN IT DOES NOT DECODE AS A
+            // RESPONSE. The Responses dialect is the live case: OpenAI serves a `status:"failed"`
+            // Response as an HTTP 200 whose body carries the `usage` object beside the `error` one
+            // — the tokens the model consumed before it failed — and `read_response` answers `Err`
+            // for it (correctly: the failure must reach the breaker and the client, not be decoded
+            // as a turn). With no second reading here, a request that burnt a full context window
+            // and then hit a content filter billed exactly zero. Fall back to the usage-locating
+            // read every dialect already implements for the truncated-body path, which finds the
+            // self-contained `usage` object in the bytes without needing the surrounding response
+            // to be well-formed. It reports `None` when the body names no usage, so a body that
+            // truly reported nothing still bills nothing and still logs the tap's warn below.
             Err(e) => {
+                if let Some(u) = p.reader().recover_truncated_usage(body) {
+                    return Some(u);
+                }
                 if busbar_substrate_values::handlers::usage_tap_decode_fail_should_warn(
                     ingress_protocol,
                     "decode",

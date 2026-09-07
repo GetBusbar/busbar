@@ -1151,6 +1151,68 @@ fn read_cached_tokens(usage_val: &serde_json::Value) -> Option<u64> {
         .and_then(|v| v.as_u64())
 }
 
+/// Read the Responses CACHE-WRITE count from a `usage` object:
+/// `usage.input_tokens_details.cache_write_tokens` — "the number of input tokens that were written
+/// to the cache". It is a SLICE OF the `input_tokens` total, exactly as `cached_tokens` is: the
+/// pinned OpenAI spec's own usage arithmetic reports `input_tokens` = `input_cached_tokens` +
+/// `input_cache_write_tokens` + `input_uncached_tokens`. Mapping it into the IR's ADDITIVE
+/// `cache_creation_input_tokens` (the field Anthropic's `cache_creation_input_tokens` and Bedrock's
+/// `cacheWriteInputTokens` populate) is what prices those tokens at the cache-WRITE tier instead of
+/// leaving them inside the plain input total. `None` when the nested field is absent.
+fn read_cache_write_tokens(usage_val: &serde_json::Value) -> Option<u64> {
+    usage_val
+        .get("input_tokens_details")
+        .and_then(|d| d.get("cache_write_tokens"))
+        .and_then(|v| v.as_u64())
+}
+
+/// Read the `usage` object off a STREAM TERMINAL's nested `Response` — the single reading every
+/// terminal arm shares.
+///
+/// The pinned OpenAI document declares `usage` on the `Response` object beside `status`, and makes
+/// it conditional on nothing: a `failed` Response reports the tokens the model consumed before it
+/// failed exactly as a `completed` one reports the tokens it consumed to succeed. Keeping this
+/// reading inline in the `completed`/`incomplete` arm meant the `failed` arm — which returns
+/// earlier — had no reading at all, so a request that burnt a full context window and then hit a
+/// content filter or a server fault billed zero.
+///
+/// `None` when the terminal carried no `usage` object at all, so a caller can tell "the upstream
+/// reported nothing" from "the upstream reported zeros" and invent neither.
+fn read_stream_terminal_usage(response_obj: &serde_json::Value) -> Option<crate::ir::IrUsage> {
+    let u = response_obj.get("usage")?;
+    let cached = read_cached_tokens(u);
+    let cache_write = read_cache_write_tokens(u);
+    Some(crate::ir::IrUsage {
+        // NORMALIZE to the additive-cache convention: the Responses API's `input_tokens` is a
+        // TOTAL that already INCLUDES both the cached prefix and the tokens written to the cache,
+        // so subtract BOTH slices to leave only the uncached input.
+        input_tokens: u
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .saturating_sub(cached.unwrap_or(0))
+            .saturating_sub(cache_write.unwrap_or(0)),
+        output_tokens: u.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        // The streamed terminal reports the cache-WRITE tier's count exactly as the buffered twin
+        // does.
+        cache_creation_input_tokens: cache_write,
+        // Carry the streamed prompt-cache hit count (`usage.input_tokens_details.cached_tokens`)
+        // into the IR's read-side cache field so a streaming Responses terminal preserves the cache
+        // saving.
+        cache_read_input_tokens: cached,
+        // `output_tokens_details.reasoning_tokens` is on the STREAM's terminal usage object exactly
+        // as it is on the buffered response. Reading it only on the buffered path made the same
+        // request report reasoning tokens at `stream: false` and a hard `0` at `stream: true`.
+        detail: crate::ir::IrUsageDetail {
+            reasoning_tokens: u
+                .get("output_tokens_details")
+                .and_then(|d| d.get("reasoning_tokens"))
+                .and_then(|v| v.as_u64()),
+            ..Default::default()
+        },
+    })
+}
+
 /// OpenAI Responses streaming writer.
 ///
 /// EVERY native `/v1/responses` SSE event carries a top-level monotonically-increasing integer
@@ -1960,3 +2022,7 @@ mod input_hardening_tests;
 #[cfg(test)]
 #[path = "tests/field_carry_tests.rs"]
 mod field_carry_tests;
+
+#[cfg(test)]
+#[path = "tests/failed_usage_tests.rs"]
+mod failed_usage_tests;
