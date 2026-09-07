@@ -29,6 +29,7 @@ pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod segregation;
 pub mod service_images;
+pub mod settings_leak;
 pub mod tracing;
 pub mod workspace_deps;
 
@@ -488,6 +489,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(no_self_filed_issues::NoSelfFiledIssuesGate),
         summary: "the repository does not open issues against itself, nor ask for the scope to",
+    },
+    Registration {
+        name: "settings-leak",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(settings_leak::SettingsLeakGate),
+        summary: "an admin READ never serves an operator settings bag's values, only its key names",
     },
 ];
 
