@@ -109,6 +109,39 @@ fn replay_expires_after_the_ttl_and_a_fresh_mint_is_then_allowed() {
     };
 }
 
+/// THE SWEEP MAY NOT HAND OUT A SECOND RESERVATION FOR A MUTATION THAT IS STILL RUNNING.
+///
+/// The TTL is a replay window: it says how long a COMPLETED call's response stays available to a
+/// retry. It was being applied to the in-flight sentinel as well, which is a different kind of
+/// entry answering a different question — not "is this response still worth keeping?" but "is
+/// somebody running this right now?". A mutation that outlived the window had its sentinel swept out
+/// from under it, and the next retry with the same key was told it was the first: two live
+/// reservations for one idempotency key, which is two mints, which is the exact outcome the
+/// in-flight refusal exists to prevent.
+///
+/// The window is not a plausible bound on the answer either. A store that has gone slow, a rebuild
+/// behind a config swap, a mint blocked on an unreachable HSM — any of those can hold an
+/// uncancellable path past ten minutes, and the longer it is stuck the more retries arrive.
+#[test]
+fn a_reservation_that_outlives_the_replay_window_is_still_in_flight() {
+    let cache: IdempotencyCache<String> = IdempotencyCache::new();
+    let k = key("alice", "idem-slow");
+
+    let _running = match cache.probe(k.clone(), 1_000) {
+        Probe::Reserved(r) => r,
+        _ => panic!("first sighting must reserve"),
+    };
+    // The mutation is still running — the reservation is held, never committed and never cleared.
+    // A retry arriving past the replay window must still be refused, not admitted as a first call.
+    match cache.probe(k, 1_000 + IDEMPOTENCY_TTL_SECS + 1) {
+        Probe::InFlight => {}
+        Probe::Reserved(_) => {
+            panic!("the sweep handed out a second reservation for a mutation that is still running")
+        }
+        _ => panic!("a retry against a live reservation must be InFlight"),
+    };
+}
+
 #[test]
 fn create_and_rotate_scoped_keys_never_replay_each_other() {
     // PB-21: a create's cache key is (actor, header); a rotate's is
