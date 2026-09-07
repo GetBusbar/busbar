@@ -539,8 +539,20 @@ PY
       # killed busbar left behind: sweep it before this boot, exactly as boot_busbar does.
       sweep_orphan_staging
       "${envcmd[@]}" "$BIN" "${args[@]}" >"$raw/stdout" 2>"$raw/stderr" </dev/null &
+      # ONE BOOT BOUND FOR THE WHOLE RECORDER. This wait was a hard-coded 100 × 0.1 s = 10 seconds
+      # while every other boot here honours ORACLE_BOOT_BOUND_SECS (default 60) — boot_busbar's own
+      # /healthz poll, its hooks-variant hook wait, and scripts/store-persist.sh all read that one
+      # knob, for the documented reason that a host slow enough to blow one bound blows them all.
+      # A boot cell is the one place where blowing the bound does not read as a failure to record:
+      # the `elif kill -0` arm below turns "still starting" into rc=124, a recorded exit status with
+      # a PASS row behind it. So on a loaded machine a warning-boot cell whose golden is `exit 0`
+      # records `exit 124` — the harness's stopwatch frozen into the cell as if it were the binary's
+      # answer — and, recorded the other way round, a golden made on a slow host says 124 and every
+      # healthy candidate diverges from it. Neither is a fact about busbar.
+      local boot_cell_bound="${ORACLE_BOOT_BOUND_SECS:-60}" bw_max
+      bw_max=$(( boot_cell_bound * 10 ))  # 10 polls/sec at the 0.1 s step below
       local bpid=$! i=0 healthy=0
-      while [ $i -lt 100 ]; do
+      while [ $i -lt "$bw_max" ]; do
         if ! kill -0 "$bpid" 2>/dev/null; then break; fi
         if curl -fsS -m 1 -o /dev/null "http://127.0.0.1:${BOOT_LISTEN_PORT}/healthz" 2>/dev/null; then
           # answered — but only OUR pid holding the listener makes that this cell's evidence
