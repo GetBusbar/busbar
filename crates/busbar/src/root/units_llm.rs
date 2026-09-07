@@ -91,7 +91,7 @@ use busbar_kernel::teller::{AccrualMeter, Evidence, FeeEvidence, UnitCtx, Units}
 use busbar_llm::unit::walk::{LateReport, Tap, Walk, WalkArrival};
 use busbar_llm::unit::{admit, approve, arrival, audit, authenticate, decode, verify};
 use busbar_substrate::ingress::arrival::{Arrival as ArrivalRequest, ArrivalPayload};
-use busbar_substrate::proxy::POOL_LABEL_UNRESOLVED;
+use busbar_substrate_values::proxy::POOL_LABEL_UNRESOLVED;
 
 /// The transport stack every request on this plane arrives over.
 ///
@@ -902,7 +902,7 @@ fn vetoed(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
         proto,
         StatusCode::FORBIDDEN,
-        busbar_substrate::proxy::KIND_PERMISSION,
+        busbar_substrate_values::proxy::KIND_PERMISSION,
         "Your API key does not have permission to access this resource.",
     )
 }
@@ -912,7 +912,7 @@ fn unavailable(proto: &str) -> Response {
     busbar_substrate::proxy::ingress_error(
         proto,
         StatusCode::SERVICE_UNAVAILABLE,
-        busbar_substrate::proxy::KIND_OVERLOADED,
+        busbar_substrate_values::proxy::KIND_OVERLOADED,
         "The service is temporarily overloaded. Please retry shortly.",
     )
 }
