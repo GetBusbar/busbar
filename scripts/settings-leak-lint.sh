@@ -92,6 +92,39 @@ SETTINGS_SCAN_AWK='
 '
 scan_rule() { awk "$SETTINGS_SCAN_AWK" "$@"; }
 
+# ── THE ROOT GUARD — a root that is not on disk is RED, never a smaller number ─────────────────────
+# `find A B C` prints its complaint about a missing A to stderr, goes on listing B and C, and its
+# exit status is lost to the `< <(…)` the candidate loop reads from. The SCAN FLOOR below cannot
+# cover for that, and the header's claim that it "catches a root that MOVED" was only ever true of
+# the one root that existed when it was written. There are five now: `$CORE` is 150 of 277 files —
+# the crate every leak named in this header was found in — and renaming it leaves 127, which clears
+# a floor of 100 and prints `settings-leak-lint passed`. A drained root is the same failure with no
+# stderr at all. Each root is therefore named and checked on its own, before the number means
+# anything. Exits the PROCESS, so it is called from the main body directly.
+require_roots() {
+  local r missing="" empty="" n
+  for r in "$@"; do
+    if [ ! -d "$r" ]; then
+      missing="${missing:+$missing }$r"
+      continue
+    fi
+    n="$(find "$r" -name '*.rs' -not -path '*/tests/*' | grep -c . || true)"
+    if [ "$n" -eq 0 ]; then
+      empty="${empty:+$empty }$r"
+    fi
+  done
+  if [ -z "$missing" ] && [ -z "$empty" ]; then
+    return 0
+  fi
+  hdr "result"
+  note "settings-leak-lint FAILED — SCAN ROOT UNUSABLE"
+  if [ -n "$missing" ]; then note "not on disk: $missing"; fi
+  if [ -n "$empty" ];   then note "on disk but holds no non-test .rs: $empty"; fi
+  note "A root that is missing or drained is scanned as ZERO files, and zero files carry no leak."
+  note "If the layout moved, point the root at its new home in a reviewed diff that says so."
+  exit 1
+}
+
 # ── SELF-TEST — prove the scanner still catches a real leak before trusting its verdict ────────────
 run_selftest() {
   hdr "settings-leak-lint SELF-TEST (the raw-bag scanner cannot be lied to)"
@@ -188,7 +221,20 @@ SCOPE
     fail=1; note "SCOPE FAILED: expected 1 hit, got ${n}: $hits"
   fi
 
-  note "self-test: ${pass}/3 fixture groups passed"
+  # INSTRUMENT: the two ways this lint scans (almost) nothing and still prints `passed`. Neither is
+  # hypothetical — renaming `$CORE`, 150 of the 277 files, left 127 and cleared the floor of 100.
+  mkdir -p "${tmp}/drained"
+  if ( require_roots "${tmp}/no-such-root" ) >/dev/null 2>&1; then
+    fail=1; note "ROOT-GUARD FAILED: a scan root that is not on disk was accepted"
+  elif ( require_roots "${tmp}/drained" ) >/dev/null 2>&1; then
+    fail=1; note "ROOT-GUARD FAILED: a scan root holding no non-test .rs was accepted"
+  elif ! ( require_roots "crates/busbar-core/src" ) >/dev/null 2>&1; then
+    fail=1; note "ROOT-GUARD FAILED: the guard refuses this tree's own engine root"
+  else
+    pass=$((pass+1)); note "ROOT-GUARD: a missing root and a drained root are each refused on their own, and the real engine root is accepted"
+  fi
+
+  note "self-test: ${pass}/4 fixture groups passed"
   if [ "$fail" -ne 0 ]; then
     note "settings-leak-lint SELF-TEST FAILED — the scanner would let a leak through"
     return 1
@@ -221,6 +267,7 @@ if ! plane_roots_resolve mcp a2a; then
   printf '%s' "$PLANE_ROOTS_ERR" | while IFS= read -r l; do note "$l"; done
   exit 1
 fi
+require_roots "$CORE" "$BIN" "$LLM" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a"
 while IFS= read -r f; do CANDIDATES+=("$f"); done < <(find "$CORE" "$BIN" "$LLM" "$PLANE_ROOT_mcp" "$PLANE_ROOT_a2a" -name '*.rs' -not -path '*/tests/*' | sort -u)
 
 # ── SCAN FLOOR — "for each file, assert no raw settings bag" is VACUOUSLY TRUE over zero files.
