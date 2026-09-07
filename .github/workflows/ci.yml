@@ -2001,13 +2001,9 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@62ae3a85dbdd2bedbb5819da8ce45635129289a1 # 1.98.0
       - name: Cache cargo
-<<<<<<< HEAD
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
-=======
-        uses: Swatinem/rust-cache@v2
       - name: Build the gate runner once
         run: cargo build -p xtask --locked
->>>>>>> f964cdce7 (every teller-steps call site moves to the runner, and a mistyped arm now refuses)
       - name: Teller-steps self-test (a lying matrix is refused)
         run: cargo xtask gate teller-steps --selftest
       - name: Teller-steps matrix (BLOCKING — every gating plane x step cell names a real scenario)

@@ -126,6 +126,31 @@ pub const CARGO_LOCAL: &[&str] = &[
     "cargo xtask gate duplex-ws-default-edge",
     "cargo xtask gate teller-steps --selftest",
     "cargo xtask gate teller-steps",
+    "cargo xtask gate changelog --selftest",
+    "cargo xtask gate changelog",
+    "cargo xtask gate changelog-register --selftest",
+    "cargo xtask gate changelog-register",
+    "cargo xtask gate ci-umbrella --selftest",
+    "cargo xtask gate ci-umbrella",
+    "cargo xtask gate field-inventory --selftest",
+    "cargo xtask gate field-inventory",
+    "cargo xtask gate inventory-ref --selftest",
+    "cargo xtask gate inventory-ref",
+    "cargo xtask gate no-deferral --selftest",
+    "cargo xtask gate no-deferral",
+    "cargo xtask gate plane-purity --selftest",
+    "cargo xtask gate plane-purity",
+    "cargo xtask gate qa-gate-dispatch --selftest",
+    "cargo xtask gate qa-gate-dispatch",
+    "cargo xtask gate release-order --selftest",
+    "cargo xtask gate release-order",
+    "cargo xtask gate service-images --selftest",
+    "cargo xtask gate service-images",
+    "cargo xtask gate structure-lint --selftest",
+    "cargo xtask gate structure-lint",
+    "cargo xtask gate workspace-deps --selftest",
+    "cargo xtask gate workspace-deps",
+    "cargo xtask gate release-order --format=tsv",
     "cargo xtask teller-steps --root-legs",
 ];
 
@@ -163,6 +188,20 @@ pub const REGISTRY_NOT_IN_CI: &[(&str, &str)] = &[
         "the audit register has never been a CI job. Its five instrument-soundness rules are \
          proven by `cargo test -p xtask`; its two audit-completeness rules are the release-time \
          DONE claim in scripts/verify-1.6.0-done.sh, where a red means 'not finished yet'.",
+    ),
+    (
+        "plane-purity-strict",
+        "the ratcheted twin of plane-purity. It is a release-time claim, run by \
+         scripts/verify-1.6.0-done.sh (`cargo xtask gate plane-purity-strict`) as part of the DONE \
+         oracle, not on every push: its ceilings move with the busbar-core retirement and a per-push \
+         red would only restate that the retirement is in flight.",
+    ),
+    (
+        "no-deferral-strict-done",
+        "the strict twin of no-deferral. It certifies that nothing is deferred at all, which is the \
+         DONE claim scripts/verify-1.6.0-done.sh makes at release time (`cargo xtask gate \
+         no-deferral-strict-done`); ci.yml runs the per-push `no-deferral` whose waivers name the \
+         tracker rows that retire them.",
     ),
 ];
 
@@ -521,7 +560,10 @@ fn selftest(
     // not on the segregation gate's data allowlist.
     for must in must_find {
         ok(
-            discovered.iter().any(|d| d.contains(must.as_str())),
+            discovered
+                .iter()
+                .chain(cargo_found.iter())
+                .any(|d| d.contains(must.as_str())),
             format!("{must} is discovered"),
             format!("{must} is in ci.yml but was NOT discovered -- the parser missed a real gate"),
         );

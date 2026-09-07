@@ -94,12 +94,9 @@ reason = "RED BY DESIGN on HEAD (three rows over their qa/construction.toml ceil
 # the root list grew, so they are pinned here so it cannot shrink back.
 [discovery]
 must_find = [
-  "scripts/structure-lint.sh",
+  "cargo xtask gate structure-lint",
   "scripts/public-hygiene-lint.py",
-  "scripts/workspace-deps-lint.py",
+  "cargo xtask gate workspace-deps",
   "scripts/check-proof-manifest-public.mjs",
-  "testing/shadow-oracle/replay-selftest.sh",
-  "testing/shadow-oracle/record.sh",
-  "testing/shadow-oracle/enumerate-cells.py",
   "testing/llm-conformance/run.sh",
 ]

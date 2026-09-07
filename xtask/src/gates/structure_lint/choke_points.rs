@@ -326,7 +326,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
             id: "J-standing-permission".into(),
             tag: "OPEN-AND-TRUSTED".into(),
             owner: format!("{core}/trust/validate.rs (Standing::opened / still_permitted)"),
-            class_test: format!("{core}/trust/tests/validate_tests.rs::the_long_lived_response_holds_no_principal_it_resolved_at_open"),
+            class_test: format!("{mcp}/tests/subscribe_tests.rs::the_long_lived_response_holds_no_principal_it_resolved_at_open"),
             remedy: "hold a trust::validate::Standing and re-resolve the principal per frame; if you must freeze it, disclose the freeze beside the bound it trades on".into(),
             rules: Vec::new(),
             why: "a principal resolved at open and carried into a long-lived response is an identity a revocation cannot reach, and the failure is silent because everything else about the response is re-derived correctly".into(),
