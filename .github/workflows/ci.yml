@@ -865,8 +865,8 @@ jobs:
           # missing fixture, so a renamed fixture deletes a whole family from the owed corpus
           # without a word. The self-test plants exactly that and requires the per-family floor to
           # refuse it, before the floor's verdict on this tree is trusted.
-          python3 testing/shadow-oracle/enumerate-cells.py --selftest
-          python3 testing/shadow-oracle/enumerate-cells.py --check
+          ./bin/oracle cells --selftest
+          ./bin/oracle cells --check
 
   # PUBLIC-HYGIENE gate. busbar is sold to enterprises, and this repo, the docs site and the
   # generated openapi.json are all public. A customer who finds an internal tracking id, a developer's
