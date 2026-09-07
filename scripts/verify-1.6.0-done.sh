@@ -40,7 +40,7 @@
 #                    binding is mapped to a check that still exists in the tree (test, oracle cell,
 #                    lint, gate). An unmapped binding is a named gap and is RED here -- "done" means
 #                    nothing we designed is unproven. Existence only; the checks run in their own tiers.
-#   changelog        scripts/changelog-register-check.sh --check: EVERY entry in
+#   changelog        cargo xtask gate changelog-register: EVERY entry in
 #                    testing/shadow-oracle/accepted-differences.json -- improvement as well as
 #                    breaking, per ARCHITECTURE.md's owner rule -- has its `changelog` field's exact
 #                    line present, verbatim, in CHANGELOG.md, or an explicit null with a written
@@ -519,11 +519,15 @@ begin_group "CHANGELOG — every accepted register entry is named"
 # status/effects.usage without kind=breaking and a `changelog` field; this gate closes the other
 # half -- that the named line was actually WRITTEN, verbatim, in CHANGELOG.md, not just declared --
 # and it owes that of improvements too, which the owner rule accepts "named in the CHANGELOG".
-if [ -f scripts/changelog-register-check.sh ]; then
-  step "changelog-register-check --selftest" bash scripts/changelog-register-check.sh --selftest
-  step "changelog-register-check --check"    bash scripts/changelog-register-check.sh --check
+# The gate is `cargo xtask gate changelog-register` since the conversion; the guard follows it
+# rather than the file it used to live in. Note what the guard is FOR: absent_step is RED, so a
+# gate that moved and took its call site with it would have blocked the DONE claim rather than
+# quietly dropping a check -- which is the behaviour to keep, not to route around.
+if cargo xtask gate --list >/dev/null 2>&1; then
+  step "changelog-register --selftest" cargo xtask gate changelog-register --selftest
+  step "changelog-register"            cargo xtask gate changelog-register
 else
-  absent_step "changelog register gate" "scripts/changelog-register-check.sh"
+  absent_step "changelog register gate" "cargo xtask gate changelog-register"
 fi
 end_group
 
