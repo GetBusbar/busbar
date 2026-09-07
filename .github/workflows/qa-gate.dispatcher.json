@@ -1,0 +1,229 @@
+{
+  "concurrency": {
+    "cancel-in-progress": true,
+    "group": "qa-gate-${{ github.event.workflow_run.head_branch || github.ref }}"
+  },
+  "env": {
+    "BUILD_ARTIFACT": "qa-gate-target-${{ github.run_id }}",
+    "RUSTFLAGS": "-D warnings",
+    "TARBALL": "/tmp/busbar-target.tzst"
+  },
+  "jobs": {
+    "build": {
+      "if": "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' &&\n contains(fromJSON('[\"qa\"]'), github.event.workflow_run.head_branch))",
+      "name": "build once (shared by every leg)",
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v7",
+          "with": {
+            "path": "busbarAI",
+            "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
+          }
+        },
+        {
+          "uses": "dtolnay/rust-toolchain@1.98.0"
+        },
+        {
+          "uses": "Swatinem/rust-cache@v2",
+          "with": {
+            "workspaces": "busbarAI"
+          }
+        },
+        {
+          "name": "Build once + prune + pack",
+          "run": "./scripts/qa-gate-run.sh build \"$TARBALL\"",
+          "working-directory": "busbarAI"
+        },
+        {
+          "uses": "actions/upload-artifact@v4",
+          "with": {
+            "compression-level": 0,
+            "name": "${{ env.BUILD_ARTIFACT }}",
+            "path": "${{ env.TARBALL }}",
+            "retention-days": 1
+          }
+        }
+      ],
+      "timeout-minutes": 60
+    },
+    "fast": {
+      "if": "github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' &&\n contains(fromJSON('[\"qa\"]'), github.event.workflow_run.head_branch))",
+      "name": "fast tier + matrix",
+      "needs": [
+        "build"
+      ],
+      "outputs": {
+        "matrix": "${{ steps.matrix.outputs.matrix }}"
+      },
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v7",
+          "with": {
+            "path": "busbarAI",
+            "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
+          }
+        },
+        {
+          "id": "matrix",
+          "name": "Build the fan-out matrix from qa/segments.toml",
+          "run": "./scripts/qa-gate-run.sh matrix",
+          "working-directory": "busbarAI"
+        },
+        {
+          "uses": "dtolnay/rust-toolchain@1.98.0"
+        },
+        {
+          "uses": "actions/download-artifact@v4",
+          "with": {
+            "name": "${{ env.BUILD_ARTIFACT }}",
+            "path": "/tmp"
+          }
+        },
+        {
+          "name": "Hydrate target/ from the build-once artifact (and assert it was accepted as fresh)",
+          "run": "./scripts/qa-gate-run.sh hydrate \"$TARBALL\"",
+          "working-directory": "busbarAI"
+        },
+        {
+          "name": "Fast-tier segments + reserved-slot report",
+          "run": "./scripts/qa-gate-run.sh fast",
+          "working-directory": "busbarAI"
+        }
+      ],
+      "timeout-minutes": 15
+    },
+    "loader": {
+      "name": "plugin-loader mechanism tests",
+      "needs": [
+        "build",
+        "fast"
+      ],
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v7",
+          "with": {
+            "path": "busbarAI",
+            "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
+          }
+        },
+        {
+          "uses": "dtolnay/rust-toolchain@1.98.0"
+        },
+        {
+          "uses": "actions/download-artifact@v4",
+          "with": {
+            "name": "${{ env.BUILD_ARTIFACT }}",
+            "path": "/tmp"
+          }
+        },
+        {
+          "name": "Hydrate target/ from the build-once artifact (and assert it was accepted as fresh)",
+          "run": "./scripts/qa-gate-run.sh hydrate \"$TARBALL\"",
+          "working-directory": "busbarAI"
+        },
+        {
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "name": "Sibling checkouts (registry-driven from plugins.yaml)",
+          "run": "./scripts/qa-gate-run.sh siblings",
+          "working-directory": "busbarAI"
+        },
+        {
+          "name": "Loader-mechanism tests against the real sibling-built store-sqlite-plugin",
+          "run": "./scripts/qa-gate-run.sh loader",
+          "working-directory": "busbarAI"
+        }
+      ],
+      "timeout-minutes": 45
+    },
+    "slow": {
+      "name": "${{ matrix.segment.id }}",
+      "needs": [
+        "build",
+        "fast"
+      ],
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "uses": "actions/checkout@v7",
+          "with": {
+            "path": "busbarAI",
+            "ref": "${{ github.event.workflow_run.head_sha || github.ref }}"
+          }
+        },
+        {
+          "uses": "dtolnay/rust-toolchain@1.98.0"
+        },
+        {
+          "uses": "actions/download-artifact@v4",
+          "with": {
+            "name": "${{ env.BUILD_ARTIFACT }}",
+            "path": "/tmp"
+          }
+        },
+        {
+          "name": "Hydrate target/ from the build-once artifact (and assert it was accepted as fresh)",
+          "run": "./scripts/qa-gate-run.sh hydrate \"$TARBALL\"",
+          "working-directory": "busbarAI"
+        },
+        {
+          "env": {
+            "GH_TOKEN": "${{ github.token }}"
+          },
+          "name": "Sibling checkouts (registry-driven from plugins.yaml)",
+          "run": "./scripts/qa-gate-run.sh siblings",
+          "working-directory": "busbarAI"
+        },
+        {
+          "name": "Confirm Docker is available (Postgres/Valkey/MySQL/Vault phases need it)",
+          "run": "docker ps",
+          "working-directory": "busbarAI"
+        },
+        {
+          "name": "Run segment ${{ matrix.segment.id }}",
+          "run": "./scripts/qa-gate-run.sh segment \"${{ matrix.segment.id }}\"",
+          "working-directory": "busbarAI"
+        }
+      ],
+      "strategy": {
+        "fail-fast": false,
+        "matrix": "${{ fromJSON(needs.fast.outputs.matrix) }}"
+      },
+      "timeout-minutes": 180
+    },
+    "umbrella": {
+      "if": "!cancelled() && (github.event_name == 'workflow_dispatch' ||\n (github.event.workflow_run.conclusion == 'success' &&\n  contains(fromJSON('[\"qa\"]'), github.event.workflow_run.head_branch)))",
+      "name": "qa-gate umbrella",
+      "needs": [
+        "build",
+        "fast",
+        "slow",
+        "loader"
+      ],
+      "runs-on": "ubuntu-latest",
+      "steps": [
+        {
+          "name": "Assert every tier reported green",
+          "run": "set -u\nfails=0\ncheck() {\n  printf '  %-10s %s\\n' \"$1\" \"$2\"\n  [ \"$2\" = \"success\" ] || fails=$((fails+1))\n}\necho \"qa-gate tier results:\"\ncheck build  \"${{ needs.build.result }}\"\ncheck fast   \"${{ needs.fast.result }}\"\ncheck slow   \"${{ needs.slow.result }}\"\ncheck loader \"${{ needs.loader.result }}\"\nif [ \"$fails\" -ne 0 ]; then\n  echo \"qa-gate umbrella: RED ($fails tier(s) not green). DO NOT PROMOTE qa\u2192main\" >&2\n  exit 1\nfi\necho \"qa-gate umbrella: GREEN\"\n"
+        }
+      ],
+      "timeout-minutes": 5
+    }
+  },
+  "name": "qa-gate",
+  "on": {
+    "workflow_dispatch": {},
+    "workflow_run": {
+      "types": [
+        "completed"
+      ],
+      "workflows": [
+        "CI"
+      ]
+    }
+  }
+}
