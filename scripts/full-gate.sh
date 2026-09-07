@@ -383,7 +383,13 @@ if [ "${1:-}" = "--selftest" ]; then
   # discovery silently dropped: a gate in a language the parser did not know about is not skipped
   # with a reason, it is absent from both lists and from the counts. Keeping a non-shell,
   # non-python gate named here is what stops the extension set narrowing back.
-  for must in scripts/structure-lint.sh scripts/public-hygiene-lint.py scripts/workspace-deps-lint.py \
+  #
+  # The `cargo xtask gate` entry is the same guard one conversion later. A gate that moved into the
+  # registry matched neither the script pattern nor the cargo capture, so switching a call site
+  # would have made it absent from both lists exactly like the `.mjs` was -- the parser narrowing
+  # back by a different route. Naming one registry invocation here is what keeps that closed.
+  for must in scripts/structure-lint.sh scripts/public-hygiene-lint.py \
+              "cargo xtask gate workspace-deps" \
               scripts/check-proof-manifest-public.mjs; do
     if printf '%s\n' "${DISCOVERED[@]}" | grep -q "$must"; then
       printf '  [ok]     %s is discovered\n' "$must"
