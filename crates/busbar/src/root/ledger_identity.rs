@@ -47,9 +47,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use busbar_unit_cost::{micros_of, Priced};
+use busbar_unit_cost::{micros_of, CurrencyCode, HistorySeq, HistoryView, Priced};
+use busbar_unit_ledger::checkpoint::Checkpoint;
 use busbar_unit_ledger::identity::{residual, Residual};
-use busbar_unit_ledger::totals::Totals;
+use busbar_unit_ledger::recompute::{
+    price_line, recheck, recompute, Divergence, Finding, HistoryArchive, Posting as BookedLine,
+    Verdict, Watermark,
+};
+use busbar_unit_ledger::totals::{Statement, Totals, Unpriced};
 
 /// Which of the previous release's rows a posting groups onto.
 ///
@@ -247,6 +252,354 @@ pub fn describe(discrepancies: &[Discrepancy]) -> String {
         .map(|d| d.to_string())
         .collect::<Vec<_>>()
         .join("; ")
+}
+
+// ── the identity over a history of any length ────────────────────────────────────────────────────
+//
+// Everything above compares two snapshots. Everything below is how the ledger side of one is BUILT
+// when the deployment's history has more than the migration's single entry on it — which is to say,
+// by re-deriving every booked line through the lookup at the line's own instant, and never by
+// reading the figure the line happens to be carrying.
+
+/// The whole money side of a snapshot, in nano-units.
+///
+/// Before the single projection, deliberately: this is the figure a statement is compared against,
+/// and comparing two figures that had each already been truncated would report the projection's own
+/// convention as a difference.
+pub fn total_nanos(snapshot: &LedgerSnapshot) -> u128 {
+    snapshot
+        .values()
+        .fold(0u128, |sum, row| sum.saturating_add(row.priced_nanos))
+}
+
+/// The whole count side of a snapshot.
+pub fn total_fee_count(snapshot: &LedgerSnapshot) -> u64 {
+    snapshot
+        .values()
+        .fold(0u64, |sum, row| sum.saturating_add(row.fee_count))
+}
+
+/// Build the identity's ledger side from booked lines, priced by lookup AT EACH LINE'S OWN INSTANT.
+///
+/// The instant is the whole of it. A history with one entry resolves every instant to that entry,
+/// so this is arithmetically the pinned card it replaces and the answer is the previous release's
+/// to the byte. A history with more than one does not: a line earned before an entry was appended
+/// resolves to the entry that was in force when it was earned, and a walk that priced the day at the
+/// head would report every line before the newest entry at a rate nobody was charged.
+///
+/// It reads no cache. [`BookedLine::cached`] is a figure the node computed at settlement, correct
+/// until an amendment makes it stale, and a reconciliation whose ledger side summed those figures
+/// would be a reconciliation whose answer depended on whether the recompute had reached that line
+/// yet. So the quantities go through the lookup again, every time, against the view the caller
+/// named — which is why hand-corrupting every cached figure in a book leaves this answer untouched.
+///
+/// `row_of` is the caller's, because the row width the identity compares at is the previous
+/// release's and not the ledger's: the ledger line knows its bucket, its window and its lane, and
+/// the provider that completes the row is the composition root's to supply.
+///
+/// Lines in another currency are skipped rather than summed. Two currencies never sum, so a
+/// reconciliation names exactly one.
+///
+/// Returns the snapshot and every line the lookup could not fully price. **A hole is never a zero.**
+/// Two shapes of hole, and both are reported rather than absorbed:
+///
+/// - No entry of the snapshot covers the line's instant. There is no figure at all, so the line
+///   lands on no row and is listed. Folding it in at nothing is how a gap in the history becomes
+///   free service that reconciles.
+/// - A present card names no rate for the line's lane. The read posture prices what it can — the
+///   flat fee is still charged, and it is still real money — so the figure DOES land on its row,
+///   and the line is listed beside it. A row that quietly came up a lane short would otherwise
+///   report as a residual against the previous release with nothing saying why.
+pub fn reprice<'a>(
+    view: &HistoryView<'_>,
+    currency: CurrencyCode,
+    lines: impl IntoIterator<Item = &'a BookedLine>,
+    row_of: impl Fn(&BookedLine) -> RowKey,
+) -> (LedgerSnapshot, Vec<Unpriced>) {
+    let mut snapshot = LedgerSnapshot::new();
+    let mut unpriceable = Vec::new();
+    for line in lines {
+        if line.currency != currency {
+            continue;
+        }
+        match price_line(line, view, line.tier_bp) {
+            Ok(priced) => {
+                if priced.lane_unpriced {
+                    unpriceable.push(Unpriced {
+                        node: line.node,
+                        node_seq: line.node_seq,
+                        why: Divergence::LaneUnpriced {
+                            card_seq: priced.card_seq,
+                            lane: line.lane.clone(),
+                        },
+                    });
+                }
+                accumulate(&mut snapshot, row_of(line), &priced);
+            }
+            Err(why) => unpriceable.push(Unpriced {
+                node: line.node,
+                node_seq: line.node_seq,
+                why: busbar_unit_ledger::recompute::divergence_of(why),
+            }),
+        }
+    }
+    (snapshot, unpriceable)
+}
+
+/// How far the identity's ledger side is from a statement cut at the same snapshot, in nano-units.
+///
+/// Zero is the good one, and the sign says which side is carrying the difference: positive when the
+/// statement holds more than the identity accounted for.
+///
+/// Two walks of the same law, and that is the point. The identity's side folds each line's lookup
+/// onto the previous release's row width; the statement's side folds the same lookups onto the
+/// book's balance keys. They partition the same lines differently, so a figure that landed on the
+/// wrong row on either side moves one of the two sums and not the other — which no single walk
+/// could tell apart from a correct one.
+///
+/// The comparison is in nano-units and before either projection, because the projection is a
+/// property of a ROW and the two sides do not have the same rows.
+pub fn statement_residual(snapshot: &LedgerSnapshot, statement: &Statement) -> i128 {
+    let identity = i128::try_from(total_nanos(snapshot)).unwrap_or(i128::MAX);
+    statement.total_nanos().saturating_sub(identity)
+}
+
+/// Every booked line whose cached price is not what the lookup says, with the verdict M3's rule
+/// gives it.
+///
+/// It corrects nothing — it is the read a reconciliation report is made of, and a report that
+/// repaired the thing it was reporting on would leave nothing to report. [`reconciliation_pass`] is
+/// the one that writes back.
+pub fn cache_findings(lines: &[BookedLine], archive: &dyn HistoryArchive) -> Vec<Finding> {
+    let mut findings = Vec::new();
+    for line in lines {
+        let outcome = recheck(line, archive);
+        for divergence in outcome.divergences {
+            findings.push(Finding {
+                node: line.node,
+                node_seq: line.node_seq,
+                divergence,
+                verdict: outcome.verdict,
+            });
+        }
+    }
+    findings
+}
+
+// ── the recompute pass, at boot and on demand ────────────────────────────────────────────────────
+
+/// Why a recompute pass ran.
+///
+/// On the journalled entry, because the two are not the same evidence. A boot pass says what a node
+/// found when it came back — including whether anything moved while it was down — and an on-demand
+/// pass says what an operator asked about at a moment they chose. An entry that did not say which
+/// would let a node that only ever recomputed at boot look exactly like one that recomputes every
+/// tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PassTrigger {
+    /// The node came up and repriced what it recovered, before it served anything.
+    Boot,
+    /// An operator, or a tick, asked for one.
+    OnDemand,
+}
+
+impl std::fmt::Display for PassTrigger {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            PassTrigger::Boot => "at boot",
+            PassTrigger::OnDemand => "on demand",
+        })
+    }
+}
+
+/// One journalled reconciliation entry: what a pass repriced, and what it found.
+///
+/// The two finding counts are separate fields and not one total, and that is the whole of M3's rule
+/// carried up to the root. A stale cache is what an amendment DOES: the head moved, the figure a
+/// line was carrying is behind, and correcting it is routine. A divergence under a head that has not
+/// moved cannot have a legitimate cause, so it is the hand edit the recompute exists to catch. One
+/// count covering both would let a hundred amendments hide one of those.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReconciliationEntry {
+    /// Why the pass ran.
+    pub trigger: PassTrigger,
+    /// The history snapshot every line in it was repriced against. `None` for a node that has read
+    /// no configuration yet.
+    pub history_seq: Option<HistorySeq>,
+    /// Where the watermark is now. Carried so it survives the restart — a watermark that reset at
+    /// boot would check nothing on a node that restarts often.
+    pub watermark: Watermark,
+    /// How many lines the pass looked at.
+    pub checked: usize,
+    /// How many caches it corrected in place.
+    pub corrected: usize,
+    /// Everything it disagreed with, stale and alarming alike, in the order it found them.
+    pub findings: Vec<Finding>,
+}
+
+impl ReconciliationEntry {
+    /// How many findings are an amendment catching up.
+    pub fn stale(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|f| f.verdict == Verdict::Stale)
+            .count()
+    }
+
+    /// How many are somebody's hand.
+    pub fn alarming(&self) -> usize {
+        self.findings
+            .iter()
+            .filter(|f| f.verdict == Verdict::Alarm)
+            .count()
+    }
+
+    /// Whether this entry needs an operator, as opposed to a journal line.
+    ///
+    /// A pass full of stale caches after an amendment is not an alarm; a single one under an unmoved
+    /// head is. Routing the second through the first's quiet path would be the way to launder one.
+    pub fn alarms(&self) -> bool {
+        self.alarming() > 0
+    }
+
+    /// Whether every line checked out.
+    pub fn is_clean(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+impl std::fmt::Display for ReconciliationEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "recompute {} at ", self.trigger)?;
+        match self.history_seq {
+            Some(seq) => write!(f, "history entry {seq}")?,
+            None => f.write_str("no history at all")?,
+        }
+        write!(
+            f,
+            ": {} line(s) checked, {} cache(s) corrected, {} stale, {} ALARMING; watermark {}",
+            self.checked,
+            self.corrected,
+            self.stale(),
+            self.alarming(),
+            self.watermark
+        )
+    }
+}
+
+/// Run a recompute pass over recovered lines and return the entry the journal carries.
+///
+/// The same act at boot and on demand, and that is deliberate: a boot pass that used a different
+/// rule from a tick's would be a second copy of the arbitration, and a second copy of a money rule
+/// is how a figure comes to be judged one way in one place and another way in another. The trigger
+/// is a fact recorded ABOUT the pass, never an input to it.
+///
+/// The lines are taken by mutable reference because the cache is the one field a pass writes back,
+/// and it writes back only the cache. Every quantity, instant and sequence number on a booked line
+/// is left exactly as it was: a booked line is never rewritten.
+pub fn reconciliation_pass(
+    trigger: PassTrigger,
+    watermark: Watermark,
+    lines: &mut [BookedLine],
+    archive: &dyn HistoryArchive,
+) -> ReconciliationEntry {
+    let pass = recompute(watermark, lines, archive);
+    ReconciliationEntry {
+        trigger,
+        history_seq: pass.history_seq,
+        watermark: pass.watermark,
+        checked: pass.checked,
+        corrected: pass.corrected,
+        findings: pass.findings,
+    }
+}
+
+/// The pass a node runs before it serves anything, over the lines it recovered.
+///
+/// From the watermark the last reconciliation entry carried, not from the beginning: the whole point
+/// of persisting a mark is that a node which restarts often still gets round to every line, and a
+/// boot pass that started over would recheck a day of lines on every restart and reach the head on
+/// none of them.
+pub fn boot_pass(
+    watermark: Watermark,
+    lines: &mut [BookedLine],
+    archive: &dyn HistoryArchive,
+) -> ReconciliationEntry {
+    reconciliation_pass(PassTrigger::Boot, watermark, lines, archive)
+}
+
+/// The pass an operator, or a tick, asks for.
+pub fn on_demand_pass(
+    watermark: Watermark,
+    lines: &mut [BookedLine],
+    archive: &dyn HistoryArchive,
+) -> ReconciliationEntry {
+    reconciliation_pass(PassTrigger::OnDemand, watermark, lines, archive)
+}
+
+// ── a checkpoint is true of one history and no other ─────────────────────────────────────────────
+
+/// Why a checkpoint did not verify at the snapshot it was asked about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CheckpointRefusal {
+    /// The digest does not match the body. The figures were edited after the seal.
+    BodyEdited,
+    /// The checkpoint was sealed as of a different history snapshot than the one asked about.
+    NotAsOf {
+        /// The snapshot it was sealed at.
+        sealed: HistorySeq,
+        /// The snapshot it was asked about.
+        asked: HistorySeq,
+    },
+    /// The checkpoint names no history at all — it was sealed before there was one.
+    PredatesHistory {
+        /// The snapshot it was asked about.
+        asked: HistorySeq,
+    },
+}
+
+impl std::fmt::Display for CheckpointRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CheckpointRefusal::BodyEdited => {
+                f.write_str("the sealed body does not digest to the hash it carries")
+            }
+            CheckpointRefusal::NotAsOf { sealed, asked } => write!(
+                f,
+                "the checkpoint's figures are true of history entry {sealed}, not {asked}"
+            ),
+            CheckpointRefusal::PredatesHistory { asked } => write!(
+                f,
+                "the checkpoint names no history snapshot, so it says nothing about entry {asked}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CheckpointRefusal {}
+
+/// Verify a checkpoint AT the history snapshot its figures are claimed to be true of — and at no
+/// other.
+///
+/// A checkpoint's totals are a materialised view of a lookup, so on their own they say what the
+/// figures were without saying what they were true OF. Verifying a set of figures against a history
+/// that did not produce them is not a check that passes or fails: it is a check about nothing. So
+/// the snapshot has to match before the digest is worth taking, and a caller that asks about the
+/// wrong one is refused rather than answered.
+///
+/// A checkpoint sealed before the history existed names none, and it is refused at every snapshot
+/// while still verifying by digest — which is the point of [`Checkpoint::body_hash_verifies`] being
+/// a separate question. Such a checkpoint stays valid forever under the encoding it was sealed with;
+/// what it cannot do is claim to be re-derivable at a snapshot it never named. A sealed body is
+/// never rewritten, including by an amendment, which is expressed forward as an adjusting entry
+/// precisely so that it does not have to be.
+pub fn verify_as_of(checkpoint: &Checkpoint, at: HistorySeq) -> Result<(), CheckpointRefusal> {
+    match checkpoint.history_seq {
+        None => Err(CheckpointRefusal::PredatesHistory { asked: at }),
+        Some(sealed) if sealed != at => Err(CheckpointRefusal::NotAsOf { sealed, asked: at }),
+        Some(_) if !checkpoint.body_hash_verifies() => Err(CheckpointRefusal::BodyEdited),
+        Some(_) => Ok(()),
+    }
 }
 
 #[cfg(test)]
