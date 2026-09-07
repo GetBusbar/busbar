@@ -22,7 +22,7 @@ pub mod denylist_gate;
 pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
 pub mod segregation;
-pub mod tracing_lint;
+pub mod tracing;
 
 use std::collections::BTreeSet;
 
@@ -309,7 +309,7 @@ pub static REGISTRY: &[Registration] = &[
         name: "tracing",
         batch: 1,
         tier: Tier::Fast,
-        build: || Box::new(tracing_lint::TracingGate),
+        build: || Box::new(tracing::TracingGate),
         summary: "every #[instrument] span is bound to an explicit Level, set in one place",
     },
     Registration {

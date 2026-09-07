@@ -273,9 +273,9 @@ jobs:
       # runs FIRST (never trust the lint's verdict before proving the scanner still catches a real
       # bypass), then it scans crates/**/*.rs.
       - name: Tracing lint self-test
-        run: scripts/tracing-lint.sh --selftest
+        run: cargo xtask gate tracing --selftest
       - name: Tracing lint
-        run: scripts/tracing-lint.sh
+        run: cargo xtask gate tracing
       # SETTINGS-LEAK lint: an admin-facing projection may serve an opaque `settings:` bag's KEY
       # NAMES (`settings_keys` / `service::redact_settings_bags`) but NEVER its values — that bag is
       # where an operator's credentials legitimately live and the reads are READ-ONLY scope. Added

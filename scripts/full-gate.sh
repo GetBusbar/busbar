@@ -133,6 +133,8 @@ declare -a CARGO_LOCAL=(
   "cargo xtask gate kernel-token-wire-purity"
   "cargo xtask gate no-self-filed-issues --selftest"
   "cargo xtask gate no-self-filed-issues"
+  "cargo xtask gate tracing --selftest"
+  "cargo xtask gate tracing"
 )
 
 declare -a CARGO_CI_ONLY=(
