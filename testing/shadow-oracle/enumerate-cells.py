@@ -694,6 +694,15 @@ def failover_cells() -> list[dict]:
 
 PLUGIN_DIGESTS = Path(__file__).resolve().parent / "plugin-digests.tsv"
 
+# store plugin -> the env var whose value is the connection URL for its backend. store-persist.sh
+# reads the SAME map to build the plugin's `settings: { url: ... }`, so the cell's skip condition and
+# the fixture it would use can never name different variables.
+STORE_FIXTURE_ENV = {
+    "store-postgres": "BUSBAR_TEST_POSTGRES_URL",
+    "store-mysql": "BUSBAR_TEST_MYSQL_URL",
+    "store-valkey": "VALKEY_URL",
+}
+
 
 def plugin_cells() -> list[dict]:
     """The PUBLISHED 1.5.5-era plugins (plugin-digests.tsv) under the binary under test:
@@ -710,12 +719,18 @@ def plugin_cells() -> list[dict]:
                       "why": "--list-plugins with the published tarball: kind/alias/signature/STATUS line",
                       "bindings": ["PB-11"]})
         if n.startswith("store-"):
-            needs = n in ("store-postgres", "store-mysql", "store-valkey")  # need a live backend service
+            # A store with a NETWORK backend cannot be recorded from the tree alone: it needs a live
+            # service. Naming the env var that carries its URL (rather than a bare `true`) is what
+            # lets the same cell be a named gap on a box that has no such service AND a real
+            # recording on one that does — see record.sh, which skips only when the named var is
+            # unset. The var is a STATIC property of the cell, so cells.json stays byte-identical
+            # whether or not the service happens to be up when it is regenerated.
+            needs = STORE_FIXTURE_ENV.get(n)  # None => recordable from the tree (sqlite)
             cells.append({"id": f"plugins.store-persist|{n}", "plane": "core", "family": "plugins", "driver": "script",
                           "script": {"name": "store-persist.sh", "args": [n]}, "outcome": "ok",
                           "why": "validate, boot, mint, spend, restart, read back (persistence is the job)",
                           "bindings": ["PB-11", "PB-37", "PB-93"],
-                          **({"needs_fixture": True} if needs else {})})
+                          **({"needs_fixture": needs} if needs else {})})
     return cells
 
 

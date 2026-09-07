@@ -880,8 +880,15 @@ while IFS=$'\x1f' read -r id outcome driver keep_lines keep_spec needs_fixture p
   # `keep_lines` (.body_lines): the cell's contract is the ABSENCE of matching lines; the normalizer
   # keeps only those. `keep_spec` (.keep): the contract is the PRESENCE of a specific
   # header/JSON-key/metrics-line value normalize.py would otherwise strip — passed through verbatim.
-  if [ "$needs_fixture" = true ]; then
-    record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
+  # `needs_fixture` has two shapes. `true` is the flat one: the fixture is missing from the tree and
+  # no environment can supply it, so the cell is always a named gap. A STRING is the env-gated one:
+  # it names the variable that carries the fixture (a backend connection URL), and the cell is a
+  # named gap only while that variable is unset. Both arms record the SAME row text, so a gap that
+  # later becomes recordable does not churn the ledger of the gaps beside it.
+  if [ -n "$needs_fixture" ] && [ "$needs_fixture" != false ] && [ "$needs_fixture" != null ]; then
+    if [ "$needs_fixture" = true ] || [ -z "${!needs_fixture:-}" ]; then
+      record "$id" SKIP "UNSUPPORTED: $(jq -r .why <<<"$cell" | cut -c1-140)" "named gap: the fixture this cell needs is not in the tree yet"; continue
+    fi
   fi
   case "$plane" in
     mcp|a2a) record "$id" SKIP "UNSUPPORTED: ${plane} is proven by its conformance rig, not recorded here" "named gap on the golden, never owed"; continue ;;
