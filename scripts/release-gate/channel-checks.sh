@@ -227,6 +227,74 @@ if [ "${1:-}" = "--selftest" ]; then
     ok "and with the release list readable the pointer checks run as before"
   fi
 
+  # ── contract:drift — RED ONLY ON REAL DRIFT ─────────────────────────────────────────────────
+  #
+  # This row grepped a build matrix out of release.yml. The build moved to release-stage.yml, so
+  # the grep matched nothing, the empty-set guard fired, and the row recorded "could not read any
+  # build targets" on every healthy release. The guard was right — a comparison against nothing is
+  # not a pass — but a row that is red on a good release gets waived, and a waived drift check is
+  # an absent one. These cases hold both ends: green on the real tree, red on each drift that can
+  # still happen.
+  #
+  # Extracted by name out of THIS file so the selftest drives the row's own code and never a copy.
+  eval "$(awk '/^contract_drift_row\(\)/,/^}/' "$0")"
+
+  st_reset
+  contract_drift_row ".github/workflows/release-stage.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "PASS" ]; then
+    ok "contract:drift is GREEN on the tree as it stands (it was permanently red)"
+  else
+    nope "contract:drift is red on a healthy tree: $(awk -F'\t' '$1=="contract:drift"{print $4; exit}' "$LEDGER")"
+  fi
+
+  st_reset
+  contract_drift_row ".github/workflows/release.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "FAIL" ]; then
+    ok "a workflow that does NOT derive its matrix from the contract is drift"
+  else
+    nope "a workflow that never reads the contract recorded $(st_row contract:drift)"
+  fi
+
+  # A second, hand-typed list is the exact shape the single source removed. If one comes back
+  # naming a platform the contract does not declare, that is a leg verifying an artifact nobody
+  # described — the original failure, in the file the build actually lives in now.
+  st_reset
+  {
+    printf 'jobs:\n  build:\n    strategy:\n      matrix:\n        include:\n'
+    printf '          - target: x86_64-unknown-linux-gnu\n'
+    printf '          - target: sparc64-unknown-linux-gnu\n'
+    printf '    steps:\n      - run: cat .github/release-targets.json\n'
+  } > "$st_tmp/handlisted.yml"
+  contract_drift_row "$st_tmp/handlisted.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "FAIL" ]; then
+    ok "a hand-listed target the contract does not declare is drift, by name"
+  else
+    nope "a workflow naming sparc64 recorded $(st_row contract:drift)"
+  fi
+
+  # And a workflow that names ONLY declared targets, while still reading the manifest, is not drift
+  # — otherwise the row would be red on release-stage.yml's own verify-image legs.
+  st_reset
+  {
+    printf 'jobs:\n  verify:\n    strategy:\n      matrix:\n        include:\n'
+    printf '          - target: image-linux-amd64\n'
+    printf '    steps:\n      - run: cat .github/release-targets.json\n'
+  } > "$st_tmp/named-ok.yml"
+  contract_drift_row "$st_tmp/named-ok.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "PASS" ]; then
+    ok "naming a DECLARED target by hand is not drift (the image legs must not red the row)"
+  else
+    nope "a workflow naming only declared targets recorded $(st_row contract:drift)"
+  fi
+
+  st_reset
+  contract_drift_row "$st_tmp/there-is-no-such-workflow.yml" >/dev/null 2>&1
+  if [ "$(st_row contract:drift)" = "FAIL" ]; then
+    ok "a staging workflow that is not there is red, not silently skipped"
+  else
+    nope "a missing staging workflow recorded $(st_row contract:drift)"
+  fi
+
   echo
   [ "$st_bad" = 0 ] && { echo "channel-checks selftest: the owed asset set and its two directions hold"; exit 0; }
   echo "channel-checks selftest: FAILED"; exit 1
@@ -712,50 +780,81 @@ fi
 
 # ── contract:drift — the contract still describes the thing it claims to describe ───────────────
 #
-# The whole gate is derived from .github/release-targets.json. If the build grows a sixth target and
-# the contract does not, the gate keeps passing while an entire platform ships unverified — green and
-# blind, which is worse than absent.
+# THE ROW WAS READING A FILE THAT NO LONGER HOLDS A BUILD MATRIX, AND SAYING SO FOREVER.
 #
-# THIS ROW WAS READING A FILE THAT NO LONGER HOLDS THE MATRIX. It grepped release.yml for
-# `- target: <triple>` lines. The build moved to release-stage.yml when the pipeline split
-# (build+verify+record on qa, promote-only on main), and it moved as a DERIVATION rather than a
-# literal: release-stage.yml's `targets` job reads this very contract and filters on `published`.
-# So the grep matched nothing, the `-z "$wf_targets"` branch fired, and the row recorded FAIL on
-# every single run — a standing red that says "update the parser", which is a message about this
-# script rather than about the release, and which trains a reader to ignore the one row whose job is
-# to notice that the gate has gone blind.
+# It grepped `^ *- target: ...` out of .github/workflows/release.yml and compared the result to the
+# contract's published targets. The build moved: release.yml now only PROMOTES what qa staged, and
+# every target is enumerated in release-stage.yml. So the grep matched nothing, the empty-set guard
+# fired, and the row recorded
 #
-# What can drift now is a different shape, so this asserts a different thing — and it is a STRONGER
-# property than the old list comparison, because a derivation cannot disagree with its own source:
+#     could not read any build targets out of .github/workflows/release.yml
 #
-#   1. release-stage.yml really does derive its build matrix FROM THIS CONTRACT, filtered on
-#      `published`. If that derivation is ever replaced by a literal list, the build's list and the
-#      gate's list become independent again and this row must go red the moment it happens.
-#   2. NO workflow carries a literal `- target: <triple>` build matrix. That is precisely the shape
-#      the old parser looked for, and finding one anywhere means a SECOND build path exists whose
-#      target list nothing compares to the contract — the original defect, relocated.
-wf=".github/workflows/release-stage.yml"
-contract_file="${CONTRACT##*/}"
-contract_targets="$(published_targets | sort -u)"
-# Deliberately over the whole workflows directory, not just $wf: the point is that no build path
-# ANYWHERE enumerates targets by hand, and a new file is exactly where one would reappear.
-literal_matrices="$(grep -rlE '^ *- target: [A-Za-z0-9_.-]+' .github/workflows 2>/dev/null | sort | tr '\n' ' ')"
+# on every run. That guard was right to refuse an empty set — a comparison against nothing is not a
+# pass — but a row that is red on a healthy release is a row somebody eventually waives, and the
+# moment it is waived the drift check is gone with it. A permanent red and an absent check are the
+# same check.
+#
+# WHAT DRIFT STILL MEANS, NOW THAT THERE IS ONE SOURCE. release-stage.yml's `targets` job builds
+# the matrix by READING .github/release-targets.json and filtering on `published`. The old failure
+# — a workflow growing a platform the contract does not know about — cannot happen through that
+# path, because there is no second list to disagree with; that is the fix the split already made.
+# Two things can still drift, and both are what this row now asserts:
+#
+#   1. THE DERIVATION ITSELF. If the staging workflow ever stops reading the manifest and starts
+#      carrying its own list, the single source is gone and the old failure is back. So the row
+#      requires that release-stage.yml reads the contract file by name.
+#   2. THE TARGETS IT NAMES BY HAND. release-stage.yml names `image-linux-amd64` and
+#      `image-linux-arm64` literally, in the verify-image matrix, because an image target is not a
+#      cargo triple and cannot come from the build matrix. Every literally-named target must be
+#      DECLARED in the contract, or a leg is verifying an artifact the contract does not describe.
+#
+# And where a hand-written `- target:` list does exist alongside the derivation, it is still
+# compared to the contract, so re-introducing one is caught rather than ignored.
+# Taken as a PARAMETER and written as a function so channel-checks --selftest can drive THIS code
+# against a staged workflow — a real one, a hand-listed one, one naming an undeclared target — with
+# no network and no release. A drift check nobody can exercise is a drift check nobody trusts, and
+# this one spent its whole life red without anyone being able to ask it a question.
+contract_drift_row() {  # contract_drift_row <staging-workflow-path>
+  local wf="$1" contract_targets declared_targets wf_named wf_body drift undeclared
 if [ ! -f "$wf" ]; then
   record "contract:drift" FAIL "${wf} not found" \
-    "the build matrix lives in that file and the gate cannot check itself for drift without it. Fix: run this from a full checkout, or — if the staging workflow was renamed — update this row to name the file that now derives the matrix."
-elif [ -z "$contract_targets" ]; then
-  record "contract:drift" FAIL "${CONTRACT} declares no published targets" \
-    "every per-target id in the gate is derived from that list, so an empty one makes the entire platform fan-out vacuous and the gate green over nothing. Fix: restore the targets and their published flags in ${CONTRACT}."
-elif ! grep -qF "$contract_file" "$wf"; then
-  record "contract:drift" FAIL "${wf} no longer reads ${CONTRACT}" \
-    "its build matrix used to be derived from the same file this gate derives its expected checks from, which is what made drift impossible rather than unlikely. It is not derived from it now, so the built set and the verified set are independent lists again. Fix: restore the derivation in ${wf}'s \`targets\` job, or point this row at whatever file now derives the matrix."
-elif ! grep -qF 't["published"]' "$wf"; then
-  record "contract:drift" FAIL "${wf} reads ${CONTRACT} but no longer filters on \`published\`" \
-    "without that predicate the matrix picks up the musl and image entries, which are inputs to the container rather than release downloads — the build is asked for \`cargo build --target image-linux-amd64\` and the asset list asserts names nothing uploads. \`published\` is the field that says which is which, and scripts/release-gate/lib.sh's published_targets() filters on the same one. Fix: restore the filter in ${wf}'s \`targets\` job."
-elif [ -n "$literal_matrices" ]; then
-  record "contract:drift" FAIL "a workflow enumerates release targets by hand: ${literal_matrices}" \
-    "a literal \`- target: <triple>\` matrix is a second, independent statement of which platforms a release ships, and nothing compares it to ${CONTRACT}. That is how a platform comes to be built and never verified (or verified and never built). Fix: derive that matrix from ${CONTRACT} the way ${wf}'s \`targets\` job does."
+    "the gate cannot check itself for drift. Fix: run this from a full checkout. If staging moved to another workflow, this row must move with it rather than be waived."
 else
-  record "contract:drift" PASS "${wf} derives its build matrix from ${CONTRACT} (published only), and no workflow hardcodes one" \
-    "gate publishes: $(printf '%s' "$contract_targets" | tr '\n' ' ')"
+  contract_targets="$(published_targets | sort -u)"
+  declared_targets="$(jq -r '.targets[].target' "$CONTRACT" 2>/dev/null | sort -u)"
+  # Every target the staging workflow names in its own text, comments stripped — a sentence about a
+  # target is not a leg that runs one, and prose must not satisfy this row any more than it
+  # satisfies coverage.
+  wf_body="$(grep -v '^[[:space:]]*#' "$wf")"
+  wf_named="$(printf '%s\n' "$wf_body" | grep -oE '^ *- target: [A-Za-z0-9_.-]+' | awk '{print $3}' | sort -u)"
+  drift=""
+  # A `case` and not `| grep -q`. Under `set -o pipefail` — which every file in this gate sets —
+  # `grep -q` exits the instant it matches, the upstream grep dies of SIGPIPE, and the PIPELINE's
+  # status is 141. So the test read "no match" on precisely the input that matches, and the row
+  # would have gone on being permanently red for a second reason after being fixed for the first.
+  case "$wf_body" in
+    *release-targets.json*) ;;
+    *)
+      drift="${drift}${wf} no longer reads ${CONTRACT}, so the build matrix is not derived from the contract any more and the two lists can disagree again. "
+      ;;
+  esac
+  if [ -z "$declared_targets" ]; then
+    drift="${drift}no targets could be read out of ${CONTRACT} at all, so this comparison would be against nothing. "
+  fi
+  # Named-but-undeclared, by set difference. A target the workflow names and the contract does not
+  # describe is a leg asserting properties nobody wrote down.
+  undeclared="$(comm -23 <(printf '%s\n' "$wf_named" | awk 'NF') <(printf '%s\n' "$declared_targets" | awk 'NF') | tr '\n' ' ')"
+  if [ -n "$(printf '%s' "$undeclared" | tr -d ' ')" ]; then
+    drift="${drift}${wf} names target(s) ${undeclared}that ${CONTRACT} does not declare. "
+  fi
+  if [ -n "$drift" ]; then
+    record "contract:drift" FAIL "${CONTRACT} and ${wf} no longer describe the same release" \
+      "${drift}A target in one and not the other either ships unverified or is verified and never built. Fix: reconcile the two — the contract is the source of truth, and release-stage.yml must derive its build matrix from it rather than carry a second list."
+  else
+    record "contract:drift" PASS "${wf} derives its matrix from ${CONTRACT}, and every target it names is declared there" \
+      "publishes: $(printf '%s' "$contract_targets" | tr '\n' ' '); named by hand in the workflow: $(printf '%s' "$wf_named" | tr '\n' ' ')"
+  fi
 fi
+}
+
+contract_drift_row ".github/workflows/release-stage.yml"
