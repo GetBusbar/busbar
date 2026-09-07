@@ -23,6 +23,7 @@ pub mod changelog_register;
 pub mod ci_umbrella;
 pub mod denylist_gate;
 pub mod inventory_ref;
+pub mod kernel_token_wire_purity;
 pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod segregation;
@@ -81,6 +82,26 @@ pub trait Gate {
     /// legacy script, which reads a tree on disk and has no overlay.
     fn parity_probes(&self, _cx: &Ctx) -> Vec<ParityProbe> {
         Vec::new()
+    }
+
+    /// THE OTHER PROOF STYLE: read the legacy script's OWN OUTPUT into the rows this gate would
+    /// emit for the same tree, for the conversions whose legacy writes no ledger TSV to compare
+    /// against.
+    ///
+    /// A gate proves parity one of two ways and the two are not interchangeable. A legacy that
+    /// writes a `$LEDGER` TSV, or one whose findings can be READ BACK out of its stdout, is
+    /// compared ROW AGAINST ROW — that is this method, and it is the stronger claim, because the
+    /// only thing a diff can then be about is the offender set. A legacy that prints prose no
+    /// translator can key on is compared VERDICT AGAINST VERDICT over planted trees — that is
+    /// [`Gate::parity_probes`], where the plants are what stop "both found nothing" from passing
+    /// for agreement. A gate may declare both; it may not declare neither and still claim parity.
+    ///
+    /// `None` — the default — means "this gate's legacy writes a ledger, or is proved by probes";
+    /// `cargo xtask gate <name> --parity` then reads `$LEDGER` instead. A translator MUST build its
+    /// rows with the same constructor [`Gate::run`] uses, so the only thing that can differ between
+    /// the two sides is the offender set, which is the only thing worth comparing.
+    fn legacy_rows(&self, _run: &crate::parity::LegacyRun) -> Option<Result<Vec<Row>, String>> {
+        None
     }
 }
 
@@ -444,6 +465,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(segregation::SegregationGate),
         summary: "xtask depends on no product crate and the oracle imports nothing from the tree",
+    },
+    Registration {
+        name: "kernel-token-wire-purity",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(kernel_token_wire_purity::KernelTokenWirePurityGate),
+        summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
     },
 ];
 
