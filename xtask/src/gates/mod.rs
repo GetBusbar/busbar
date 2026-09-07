@@ -28,6 +28,7 @@ pub mod qa_gate_dispatch;
 pub mod release_order;
 pub mod segregation;
 pub mod service_images;
+pub mod tracing_lint;
 pub mod workspace_deps;
 
 use std::collections::BTreeSet;
@@ -472,6 +473,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(kernel_token_wire_purity::KernelTokenWirePurityGate),
         summary: "the kernel never re-derives a usage token class from a raw provider wire pointer",
+    },
+    Registration {
+        name: "tracing",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(tracing_lint::TracingGate),
+        summary: "every #[instrument] span is bound to an explicit Level, set in one place",
     },
 ];
 
