@@ -43,6 +43,11 @@
 #   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
 #   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
 #
+# And the side of 2xx a cell was answered on, which no schema can see:
+#
+#   (p) a REFUSAL cell answered HTTP 200 with a schema-clean success body -> RED on outcome.status
+#   (q) the mirror — a happy-path cell answered with a schema-clean refusal -> RED on outcome.status
+#
 # And one case about the SPECS themselves rather than the recording:
 #
 #   (n) a DRIFTED spec cache — the pinned digest's directory holding a document that is no longer
@@ -281,6 +286,60 @@ else
   say FAIL "(m) wildcard gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m/ledger.tsv")"; tail -8 "$W/m.log"
 fi
 
+# ── THE SIDE OF 2xx THE OUTCOME ASKED FOR ───────────────────────────────────────────────────────
+# (p) a cell whose whole point is a REFUSAL — no credential at all — answered HTTP 200 with a
+# happy-path body. Every byte of that body satisfies the dialect's RESPONSE schema, so a check that
+# only asks "does this parse against the schema for the status that was sent" reports it green: the
+# frame is fine, and the one thing the cell exists to prove is not.
+cp -R "$FIX2" "$W/p-rec"
+python3 - "$W/p-rec" <<'EOF'
+import json, os, sys
+rec = sys.argv[1]
+ok, bad = "llm__gemini__gemini__request__ok_stream_array", "llm__gemini__gemini__request__unauthenticated"
+with open(os.path.join(rec, "raw", ok, "body")) as f:
+    body = json.dumps(json.load(f)[0], separators=(",", ":"))   # one valid GenerateContentResponse
+with open(os.path.join(rec, "raw", bad, "body"), "w") as f:
+    f.write(body)
+with open(os.path.join(rec, "raw", bad, "headers"), "w") as f:
+    f.write("HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ndate: Fri, 04 Sep 2026 20:35:30 GMT\r\n\r\n")
+p = os.path.join(rec, "cells", bad + ".json")
+with open(p) as f: cell = json.load(f)
+cell["status"], cell["body"] = 200, {"json": json.loads(body)}
+with open(p, "w") as f: json.dump(cell, f, separators=(",", ":"))
+EOF
+rc="$(run "$W/p-rec" "$W/p" "$FIX2/cells.json")"
+rows="$(fail_rows "$W/p")"
+if [ "$rc" != 0 ] && [ "$(count "$W/p" FAIL)" = 1 ] && grep -q $'^llm|gemini|gemini|request|unauthenticated#response\t' <<<"$rows" && grep -q 'outcome.status' <<<"$rows"; then
+  say PASS "(p) a refusal cell answered 2xx with a schema-clean success body -> RED on outcome.status"
+else
+  say FAIL "(p) refusal answered 2xx rc=$rc fails=$(count "$W/p" FAIL): $rows"
+fi
+
+# (q) the mirror: a HAPPY-PATH cell answered with a refusal. The body is a perfectly valid error
+# envelope for the dialect, so the schema has nothing to say; what deviates is that an
+# authenticated, in-scope, in-budget request was refused, and that must not read as green either.
+cp -R "$FIX2" "$W/q-rec"
+python3 - "$W/q-rec" <<'EOF'
+import json, os, sys
+rec = sys.argv[1]
+ok, donor = "llm__gemini__gemini__request__ok_stream_array", "llm__gemini__gemini__request__over_budget"
+for name in ("body", "headers"):
+    with open(os.path.join(rec, "raw", donor, name), "rb") as f: data = f.read()
+    with open(os.path.join(rec, "raw", ok, name), "wb") as f: f.write(data)
+with open(os.path.join(rec, "cells", donor + ".json")) as f: dcell = json.load(f)
+p = os.path.join(rec, "cells", ok + ".json")
+with open(p) as f: cell = json.load(f)
+cell["status"], cell["body"] = dcell["status"], dcell["body"]
+with open(p, "w") as f: json.dump(cell, f, separators=(",", ":"))
+EOF
+rc="$(run "$W/q-rec" "$W/q" "$FIX2/cells.json")"
+rows="$(fail_rows "$W/q")"
+if [ "$rc" != 0 ] && [ "$(count "$W/q" FAIL)" = 1 ] && grep -q $'^llm|gemini|gemini|request|ok_stream_array#response\t' <<<"$rows" && grep -q 'outcome.status' <<<"$rows"; then
+  say PASS "(q) a happy-path cell answered with a schema-clean refusal -> RED on outcome.status"
+else
+  say FAIL "(q) happy path refused rc=$rc fails=$(count "$W/q" FAIL): $rows"
+fi
+
 # ── THE SPEC CACHE ITSELF ───────────────────────────────────────────────────────────────────────
 # (n) a DRIFTED spec cache must refuse. The recording is the known-good fixture with ONE required
 # member removed from the cohere response (`id`) — the pinned spec rejects that body, so the honest
@@ -364,4 +423,4 @@ else
 fi
 
 echo
-if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (17/17)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (19/19)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
