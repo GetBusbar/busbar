@@ -572,23 +572,36 @@ end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "TELLER-STEPS — H2: one conformance cell per Teller step per plane, and one root-leg cell beside it"
-if [ -f scripts/teller-steps-check.py ] && [ -f qa/teller-steps.json ]; then
-  step "teller-steps-check self-test"  python3 scripts/teller-steps-check.py --selftest
-  step "teller-steps-check --check"    python3 scripts/teller-steps-check.py --check
+if [ -f qa/teller-steps.json ]; then
+  step "teller-steps self-test"  cargo xtask gate teller-steps --selftest
+  step "teller-steps matrix"     cargo xtask gate teller-steps
   # The ROOT column beside the rig column: every (plane x step) cell also names the root::units_*
-  # cell that drives that step through run_unit, or a named gap. --check verifies the column holds
+  # cell that drives that step through run_unit, or a named gap. The gate verifies the column holds
   # (a proven cell's fn exists in its own leg's file; a leg proving nothing is red); this RUNS every
   # named cell with all five legs on, so "proven" means watched rather than present on disk.
-  step "every root-leg step cell RUNS and passes" python3 scripts/teller-steps-check.py --root-legs
-  # And the same treatment for the RIG column the matrix's `cell` values name. --check above proves
+  step "every root-leg step cell RUNS and passes" cargo xtask teller-steps --root-legs
+  # And the same treatment for the RIG column the matrix's `cell` values name. The gate above proves
   # every id still resolves to the scenario, subject script, voice leg or suite that owns it; this
-  # RUNS the rigs behind them through testing/shadow-oracle/rigs-ledger.sh. It refuses (loudly)
-  # rather than skipping when there is no release binary to arm the MCP and A2A legs with.
-  step "the rig suites the matrix cites RUN and pass" python3 scripts/teller-steps-check.py --rig-legs
+  # RUNS the rigs behind them.
+  #
+  # THIS ARM IS DRIVEN FROM HERE, NOT FROM THE GATE RUNNER. `cargo xtask gate segregation` forbids
+  # xtask from running the oracle's own code — a runner that executes its subject is a runner whose
+  # verdict moves when the subject does — so the invocation lives with its caller. Its two refusals
+  # come with it: a missing rig ledger and a missing release binary are REFUSALS, not skips. Nothing
+  # ran, so nothing is proven.
+  if [ ! -f testing/shadow-oracle/rigs-ledger.sh ]; then
+    absent_step "the rig suites the matrix cites" "testing/shadow-oracle/rigs-ledger.sh"
+  elif [ ! -x target/release/busbar ]; then
+    absent_step "the rig suites the matrix cites" \
+      "target/release/busbar — the MCP and A2A legs are armed from it (MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN), so without it the rigs cannot run at all. Build it first: cargo build --release -p busbar"
+  else
+    step "the rig suites the matrix cites RUN and pass" \
+      bash testing/shadow-oracle/rigs-ledger.sh --bin target/release/busbar --check
+  fi
   printf '  \033[36m[info]\033[0m '
-  python3 scripts/teller-steps-check.py --check 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
+  cargo xtask teller-steps 2>/dev/null | grep -E "^ROOT-STEPS:" || echo "root-steps count unavailable"
 else
-  absent_step "teller-steps-check" "scripts/teller-steps-check.py / qa/teller-steps.json"
+  absent_step "teller-steps" "qa/teller-steps.json"
 fi
 end_group
 
