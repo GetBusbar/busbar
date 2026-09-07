@@ -18,6 +18,7 @@
 //!    [`Gate::run`] — the trait gives it no other handle — so re-implementing the predicate beside
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
+pub mod blocking_ffi;
 pub mod denylist_gate;
 pub mod kernel_token_wire_purity;
 pub mod no_self_filed_issues;
@@ -334,6 +335,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(response_header::ResponseHeaderGate),
         summary: "every busbar-injected response header is emitted from one config-gated site",
+    },
+    Registration {
+        name: "blocking-ffi",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(blocking_ffi::BlockingFfiGate),
+        summary: "a synchronous call into a dlopened plugin never runs on a Tokio worker",
     },
 ];
 
