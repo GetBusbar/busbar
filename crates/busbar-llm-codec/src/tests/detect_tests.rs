@@ -16,6 +16,16 @@ use busbar_core::proto::{detect_protocol, residual_dialect_for_path};
 use busbar_substrate_values::handlers::request_handler;
 use http::{HeaderMap, HeaderValue};
 
+/// Seed the process-global protocol registry with THIS plugin's declarations.
+///
+/// The module doc above claims the registry the test sees is core's `test-support` built-in table.
+/// It is not: under `test-support` core's `BUILTIN_DECLS` is `&[]`, so `detect_protocol` and
+/// `residual_dialect_for_path` fold an EMPTY registry until something registers. Every test here
+/// must seed first, or its verdict is decided by which test ran before it.
+fn seeded() {
+    crate::ensure_test_protocols_registered();
+}
+
 fn hm(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
     let mut h = HeaderMap::new();
     for (k, v) in pairs {
@@ -30,6 +40,7 @@ fn hm(pairs: &[(&'static str, &'static str)]) -> HeaderMap {
 /// must not fall through to OpenAI).
 #[test]
 fn resolver_table() {
+    seeded();
     // (path, headers, expected (protocol, operation)) — aliased to keep the type readable.
     type ResolverCase = (
         &'static str,
@@ -154,6 +165,7 @@ fn resolver_table() {
 
 #[test]
 fn mandatory_header_beats_path_ordering() {
+    seeded();
     // an Anthropic request to a path that also looks bearer-ish must resolve Anthropic, not fall through.
     let p = detect_protocol("/v1/messages", &hm(&[("anthropic-version", "2023-06-01")])).unwrap();
     assert_eq!(p, "anthropic");
@@ -165,6 +177,7 @@ fn mandatory_header_beats_path_ordering() {
 /// Only the known Gemini ACTION suffixes (`:generateContent`, …) are Gemini.
 #[test]
 fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
+    seeded();
     // OpenAI fine-tuned model id (multiple colons) on the model.retrieve path → OpenAI.
     assert_eq!(
         residual_dialect_for_path("/v1/models/ft:gpt-3.5-turbo:my-org::abc123"),
@@ -208,6 +221,15 @@ fn test_residual_dialect_colon_model_id_is_openai_not_gemini() {
 /// classifier's job is to say what it knows, and here it knows nothing.
 #[test]
 fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
+    seeded();
+    // POSITIVE CONTROL. Every assertion below is a negative, and an UNSEEDED registry answers `None`
+    // for every path — so this test passed for the wrong reason, and would have kept passing if
+    // production had regressed to the old `else { openai }` default. Prove the fold is live first.
+    assert_eq!(
+        residual_dialect_for_path("/v1/models/gpt-4o"),
+        Some("openai"),
+        "the residual fold must be live, or the `None` assertions below prove nothing"
+    );
     for path in [
         "/",
         "/stats",

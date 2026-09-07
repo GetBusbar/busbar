@@ -143,7 +143,18 @@ fn error_kind_to_bedrock_type_covers_ingress_emitted_kinds() {
 /// so it lives beside them in the plugin (RELOCATED from core).
 #[test]
 fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
-    for &proto in known_protocols() {
+    // Seed the registry, then pin the sweep's WIDTH. `known_protocols()` folds the process-global
+    // registry, which is EMPTY until something registers: run alone this "exhaustiveness guard"
+    // reported green over ZERO iterations, so a reader that invented a turn for an empty
+    // conversation — or a name in the list with no registered codec — was invisible.
+    crate::ensure_test_protocols_registered();
+    let protos = known_protocols();
+    assert_eq!(
+        protos.len(),
+        6,
+        "the exhaustiveness guard must sweep all six codec dialects, got {protos:?}"
+    );
+    for &proto in protos {
         let p = protocol_for(proto)
             .unwrap_or_else(|| panic!("'{proto}' is in KNOWN_PROTOCOLS but is not registered"));
         // A minimal, universally-legal body for the dialect's conversation container: whichever key
