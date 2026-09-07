@@ -388,6 +388,63 @@ impl PolicyView for ScopePolicy {
     }
 }
 
+/// What the boot knows that the migration step does not: which node, when, and the card.
+///
+/// A struct rather than three arguments so a caller cannot get the clock and the node identity in
+/// the wrong order without the compiler noticing.
+#[derive(Debug, Clone)]
+pub struct MigrationPlan {
+    /// The node identity the journal's records carry.
+    pub node: u64,
+    /// The wall clock, in whole seconds, as this boot read it ONCE.
+    pub now: u64,
+    /// The card the boot resolution put in place, if any.
+    pub card: Option<std::sync::Arc<busbar_unit_cost::RateCard>>,
+}
+
+/// The root's wall clock, in whole seconds since the Unix epoch. A clock that reads before the
+/// epoch gives zero rather than panicking, exactly as every other reading on this path spells it.
+pub fn wall_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
+/// Which of the previous release's rows the migration reads, and the card the opening is sealed at.
+///
+/// The rows are named rather than scanned, because the published store has nothing to scan WITH: a
+/// token ledger is addressed by (bucket, window) and a metering row by day, and neither key space
+/// is enumerable across that seam. The per-key buckets come off the key rows, which the adapter
+/// lists; what is decided HERE is the two time bases, and they are deliberately different numbers
+/// even when they are equal: metering is a UTC-day time series
+/// ([`busbar_substrate::governance::METERING_BUCKET_SECS`]) and a budget window is the key's own.
+///
+/// One day is read, not a history of them. A migration that walked every day a deployment has ever
+/// served would turn a boot into a full-store scan whose length grows with the deployment's age,
+/// and the day in progress is the only one whose figures this release can still be handed more of.
+///
+/// A DEPLOYMENT THAT CONFIGURED NO CARD gets an absent one — every class prices at nothing and the
+/// flat fee still posts — rather than no card at all. No card is a hole at every instant, and a hole
+/// is a refusal: a node that opened without one could not price a single row it had just read.
+pub fn migration_config(plan: &MigrationPlan) -> crate::root::migration::MigrationConfig {
+    let day = busbar_substrate::governance::metering_bucket(plan.now);
+    crate::root::migration::MigrationConfig {
+        node: plan.node,
+        window: day,
+        // A budget GROUP is a configuration fact and not discoverable from the store, so the root
+        // would name them here. It names none yet: the group buckets the previous release keeps are
+        // the same consumption the key rows already carry, and opening both would double every
+        // balance a grouped deployment has.
+        group_buckets: Vec::new(),
+        metering_days: vec![day],
+        rate_card: plan
+            .card
+            .as_deref()
+            .cloned()
+            .unwrap_or_else(|| busbar_unit_cost::RateCard::absent(0)),
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/policy.rs"]
 mod tests;
