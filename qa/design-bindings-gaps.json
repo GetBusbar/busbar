@@ -1,0 +1,48 @@
+{
+  "_comment": [
+    "DECLARED GAPS of the design bindings ledger: a binding whose proof depends on a shadow-oracle",
+    "cell that CANNOT BE RECORDED on the machine the golden was made on. The owner has looked at each",
+    "one and decided the cell is right, the binding is right, and the missing thing is a backend.",
+    "Same shape of decision as testing/llm-conformance/named-gaps.json, and the same rules:",
+    "  * A DECLARED GAP IS NEVER A PASS. The binding is reported GAP -- its own verdict, its own",
+    "    column, its own line in the gate's output -- and never folded into the pass count. `--check`",
+    "    and `--check --strict` both keep it out of the owed set, exactly as a named gap is kept out",
+    "    everywhere else in this tree, so a gap is reported rather than masked and rather than red.",
+    "  * A GAP FORGIVES ONLY WHAT IT NAMES. `cells` is the exact list of cell ids this entry excuses",
+    "    on this binding. Any OTHER check of that binding that settles nothing leaves the binding FAIL,",
+    "    unchanged. An entry cannot widen itself by being vague: a cell not named here is not forgiven.",
+    "  * AN UNUSED ENTRY IS A LIE. An entry whose named cells are not actually failing on that binding",
+    "    today -- the backend arrived, the cell was recorded, the citation was dropped -- is RED, and",
+    "    the fix is to DELETE the entry, never to leave it standing as a waiver nothing needs.",
+    "  * THE CEILING IS ASSERTED, NOT OBSERVED. `expected` is the number of gaps the owner has agreed",
+    "    to carry. Exceeding it is RED with no further argument: a register that silently grows is a",
+    "    way of turning a gate off one row at a time.",
+    "Checked by scripts/design-bindings.py (--verify-gaps, and the GAP verdict it hands the shell",
+    "gate); the arms above each have a case in scripts/design-bindings.sh --selftest."
+  ],
+  "expected": 2,
+  "gaps": [
+    {
+      "id": "DBG-1 store-mysql and store-valkey on the ABI-2 audit/denylist fallback",
+      "binding": "PB-37",
+      "owner": "Matthew Jackson (owner)",
+      "declared_at": "2026-09-06",
+      "cells": [
+        "plugins.store-persist|store-mysql",
+        "plugins.store-persist|store-valkey"
+      ],
+      "reason": "The binding is proven on the two backends this host can reach: plugins.store-persist|store-sqlite (no fixture needed) and plugins.store-persist|store-postgres (recorded against a live postgres once the fixture env var existed), plus the two adapter unit tests that pin the rule itself -- only TransportErrorKind::Unsupported opens a default, on the four audit/denylist verbs, and every other failure shape propagates. What is missing is a SERVER: the mysql cell is gated on BUSBAR_TEST_MYSQL_URL and the valkey cell on VALKEY_URL, and neither backend runs on the machine the pinned 1.5.5 golden was recorded on, so both cells stand SKIP on golden/1.5.5/ledger.tsv with the reason 'named gap: the fixture this cell needs is not in the tree yet'. Recording them would need the same published 1.5.5 binary run against a live mysql and a live valkey. Delete this entry the day either fixture lands: the cell is already defined, already bound to this row, and turns from a gap into a recording the moment its env var is set -- which is exactly what happened to store-postgres."
+    },
+    {
+      "id": "DBG-2 store-mysql and store-valkey on the 1.6.0-only store-op shim",
+      "binding": "PB-93",
+      "owner": "Matthew Jackson (owner)",
+      "declared_at": "2026-09-06",
+      "cells": [
+        "plugins.store-persist|store-mysql",
+        "plugins.store-persist|store-valkey"
+      ],
+      "reason": "Same two unrecordable backends, same reason, on the binding that says a 1.5.5-era store boots and serves byte-identically because every 1.6.0-only operation is answered by a node-local shim. The claim is proven on store-sqlite and store-postgres, which are recorded, and by the two adapter unit tests that pin the shim's two halves -- Unsupported alone opens the inert default, and a real answer passes through untouched. The mysql and valkey cells would widen the same proof to two more backends; they are gated on BUSBAR_TEST_MYSQL_URL and VALKEY_URL and stand SKIP on the pinned golden for want of a server, not for want of a check. Delete this entry when either fixture lands."
+    }
+  ]
+}

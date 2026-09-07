@@ -16,8 +16,9 @@
  "counts": {
   "bindings": 104,
   "mapped": 98,
-  "unproven": 6,
+  "unproven": 4,
   "unmapped": 0,
+  "gap": 2,
   "checks_by_kind": {
    "gate": 13,
    "lint": 5,
@@ -1872,7 +1873,7 @@
    "surface": "ABI-2 store adapter fallback",
    "binding": "`call_with_legacy_default` verbatim: only `TransportErrorKind::Unsupported` opens a default, on `append_audit` / `list_audit` / `list_audit_tail` / `list_denylist`; everything else propagates",
    "inventory": "plugins-stores",
-   "status": "unproven",
+   "status": "gap",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -1915,8 +1916,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict": "GAP",
+   "verdict_detail": "DECLARED GAP (qa/design-bindings-gaps.json): proven by oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:every_other_failure_shape_propagates_on_every_verb; not proven on plugins.store-persist|store-mysql, plugins.store-persist|store-valkey -- oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
   },
   {
    "id": "PB-38",
@@ -4226,7 +4227,7 @@
    "surface": "1.6.0-only store ops on an ABI-2 store",
    "binding": "the ABI-2 adapter answers every 1.6.0-only operation (`append_batch`, `record_put/get/scan`, `session_*`, `reserve/release`, `heads`, keyset seal) with a NODE-LOCAL in-memory shim (consistent with PB-13: the keyset is ephemeral and unused on such a deployment) — never an error, never a log line, never a boot refusal — so boot and serving on a 1.5.5 sqlite/postgres/mysql/valkey store are byte-identical; the journal on such a deployment is memory-buffered exactly as PB-13 states for `data_dir` unset; durability = the legacy rows' durability, the 1.5.5 rule",
    "inventory": "plugins-stores; governance",
-   "status": "unproven",
+   "status": "gap",
    "checks": [
     {
      "kind": "oracle-cell",
@@ -4269,8 +4270,8 @@
      "source": "hand"
     }
    ],
-   "verdict": "FAIL",
-   "verdict_detail": "partly proven; a referenced check settles nothing: oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
+   "verdict": "GAP",
+   "verdict_detail": "DECLARED GAP (qa/design-bindings-gaps.json): proven by oracle-cell:plugins.store-persist|store-postgres, oracle-cell:plugins.store-persist|store-sqlite, test:unsupported_alone_opens_the_inert_default_on_every_defaulting_verb, test:a_real_answer_passes_through_untouched; not proven on plugins.store-persist|store-mysql, plugins.store-persist|store-valkey -- oracle-cell:plugins.store-persist|store-mysql (in cells.json, but the golden never recorded it), oracle-cell:plugins.store-persist|store-valkey (in cells.json, but the golden never recorded it)"
   },
   {
    "id": "PB-94",
