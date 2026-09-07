@@ -39,6 +39,13 @@
 #   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
 #   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
 #
+# And one case about the SPECS themselves rather than the recording:
+#
+#   (n) a DRIFTED spec cache — the pinned digest's directory holding a document that is no longer
+#       what the digest names — must REFUSE, not judge. The verdict of this rig is only worth the
+#       document it was measured against, so a body the PINNED spec rejects may never come back
+#       green because the cached copy of that spec was widened underneath it.
+#
 # Needs the vendored specs (run.sh vendors them; cached by digest, so this is offline after once).
 set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -48,9 +55,11 @@ W="$(mktemp -d "${TMPDIR:-/tmp}/llm-conformance-selftest.XXXXXX")"
 trap 'rm -rf "$W"' EXIT
 fails=0
 say() { printf '%s  %s\n' "$1" "$2"; [ "$1" = PASS ] || fails=$((fails+1)); }
+RUN_ARGS=""   # extra run.sh args for one case (see (n)/(o)); reset by each caller that sets it
 run() {  # run <recording> <out> [cells.json] -> rc
   local cells="${3:-$1/cells.json}"
-  bash "${here}/run.sh" --recording "$1" --out "$2" --cells "$cells" >"$2.log" 2>&1; echo $?
+  # shellcheck disable=SC2086
+  bash "${here}/run.sh" --recording "$1" --out "$2" --cells "$cells" $RUN_ARGS >"$2.log" 2>&1; echo $?
 }
 count() { awk -F'\t' -v s="$2" '$2==s{n++} END{print n+0}' "$1/ledger.tsv"; }
 fail_rows() { awk -F'\t' '$2=="FAIL"{print $1"\t"$4}' "$1/ledger.tsv"; }
@@ -220,5 +229,87 @@ else
   say FAIL "(m) wildcard gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m/ledger.tsv")"; tail -8 "$W/m.log"
 fi
 
+# ── THE SPEC CACHE ITSELF ───────────────────────────────────────────────────────────────────────
+# (n) a DRIFTED spec cache must refuse. The recording is the known-good fixture with ONE required
+# member removed from the cohere response (`id`) — the pinned spec rejects that body, so the honest
+# answer is RED. The cache handed to the run is a copy whose cohere document has been widened to
+# accept it. If any copy of the spec inside a digest-named directory is trusted without being
+# re-measured against that digest, this run comes back GREEN and the widened document — not the
+# pinned one — is what "conformant" meant.
+cp -R "$FIX" "$W/n-rec"
+python3 - "$W/n-rec/raw/llm__cohere__cohere__request__ok/body" <<'EOF'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p)); del d["id"]
+open(p,"w").write(json.dumps(d,separators=(",",":")))
+EOF
+# `drift <cache> <what>` widens cohere's ChatResponseV2 (drop `required`, open `usage`) in the
+# named copies of the document inside the digest's own directory: `all` for every copy, `parsed`
+# for the pre-parsed spec.parsed.json alone.
+drift() {
+  python3 - "$1" "$2" <<'EOF'
+import glob, json, os, sys
+d, what = glob.glob(os.path.join(sys.argv[1], "cohere", "*"))[0], sys.argv[2]
+def widen(doc):
+    s = doc["components"]["schemas"]["ChatResponseV2"]
+    s["properties"]["usage"] = {}
+    s["required"] = []
+    return doc
+p = os.path.join(d, "spec.parsed.json")
+if not os.path.isfile(p):   # the pre-parse is gone as a concept; recreate it to prove it is not read
+    import yaml
+    src = os.path.join(d, "spec.yaml") if os.path.isfile(os.path.join(d, "spec.yaml")) else os.path.join(d, "spec.json")
+    with open(src, "rb") as f:
+        raw = f.read()
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        doc = yaml.load(raw, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+    with open(p, "w") as f:
+        json.dump(doc, f, separators=(",", ":"), default=str)
+with open(p) as f:
+    doc = json.load(f)
+with open(p, "w") as f:
+    json.dump(widen(doc), f, separators=(",", ":"))
+if what == "all":
+    q = os.path.join(d, "spec.json")
+    if os.path.isfile(q):
+        with open(q) as f: doc = json.load(f)
+        with open(q, "w") as f: json.dump(widen(doc), f, separators=(",", ":"))
+    q = os.path.join(d, "spec.yaml")
+    if os.path.isfile(q):
+        import yaml
+        with open(q, "rb") as f: doc = yaml.load(f, Loader=getattr(yaml, "CSafeLoader", yaml.SafeLoader))
+        with open(q, "w") as f: yaml.safe_dump(widen(doc), f)
+EOF
+}
+SRC_CACHE="${BUSBAR_LLM_SPEC_CACHE:-$HOME/.cache/busbar-llm-specs}"
+
+# (n) every copy drifted. `--no-vendor` so this is offline and so the answer comes from the cache
+# check rather than from a re-download quietly repairing the drift mid-test.
+cp -R "$SRC_CACHE" "$W/n-cache"; drift "$W/n-cache" all
+RUN_ARGS="--no-vendor"
+rc="$(BUSBAR_LLM_SPEC_CACHE="$W/n-cache" run "$W/n-rec" "$W/n")"
+RUN_ARGS=""
+if [ "$rc" != 0 ] && grep -qi 'drift' "$W/n.log" && [ "$(count "$W/n" PASS)" = 0 ]; then
+  say PASS "(n) drifted spec cache -> RED, named as drift; nothing was judged against the widened document"
+else
+  say FAIL "(n) drifted spec cache rc=$rc pass=$(count "$W/n" PASS) fail=$(count "$W/n" FAIL) — a body the PINNED spec rejects was judged against a widened copy"; tail -8 "$W/n.log"
+fi
+
+# (o) ONLY the pre-parsed copy drifted, so the document that the digest measures is untouched and
+# every cache check passes. The verdict must still be RED on the missing `id`: a pre-parse of a
+# spec is not a spec, and nothing may reach the checker that was not measured against the pin.
+cp -R "$W/n-rec" "$W/o-rec"
+cp -R "$SRC_CACHE" "$W/o-cache"; drift "$W/o-cache" parsed
+RUN_ARGS="--no-vendor"
+rc="$(BUSBAR_LLM_SPEC_CACHE="$W/o-cache" run "$W/o-rec" "$W/o")"
+RUN_ARGS=""
+rows="$(fail_rows "$W/o")"
+if [ "$rc" != 0 ] && [ "$(count "$W/o" FAIL)" = 1 ] && grep -q "required: missing property 'id'" <<<"$rows"; then
+  say PASS "(o) a drifted PRE-PARSE of a verified spec is not consulted -> still RED on the missing member"
+else
+  say FAIL "(o) drifted pre-parse rc=$rc fails=$(count "$W/o" FAIL): $rows"; tail -8 "$W/o.log"
+fi
+
 echo
-if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (13/13)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi
+if [ "$fails" -eq 0 ]; then echo "llm-conformance selftest: GREEN (15/15)"; else echo "llm-conformance selftest: RED (${fails} failed)"; exit 1; fi

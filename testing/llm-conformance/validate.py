@@ -141,30 +141,42 @@ def sha256_file(p):
 
 
 def load_spec_doc(spec, pin, cache_root):
-    """Locate the pinned document in the cache, re-verify its digest, parse it (cached as JSON)."""
+    """Locate the pinned document in the cache, RE-MEASURE IT AGAINST THE PIN, and parse it.
+
+    THE DOCUMENT IS RE-MEASURED ON EVERY RUN, AND ONLY THE MEASURED BYTES ARE EVER PARSED. There
+    used to be a `spec.parsed.json` beside the spec — the same document pre-parsed, written on the
+    first run so later runs would not need PyYAML — and it was returned BEFORE any digest was
+    computed. Nothing in the rig ever measured it: vendor.sh calls the directory "cached" by
+    comparing its `.digest` sidecar with itself, and this function handed the pre-parsed copy
+    straight to the checker. So a `spec.parsed.json` that no longer said what the pinned digest
+    names was the document every verdict was decided by, and a response missing a member the
+    published spec REQUIRES came back PASS with the whole run GREEN — the gate reporting
+    conformance to a spec nobody published. A pinned digest that is not re-computed pins nothing.
+
+    Re-measuring costs about half a second across all five documents (2 ms to sha256 the largest,
+    280 ms to parse it with PyYAML's C loader), which is why the pre-parsed copy is simply gone
+    rather than made verifiable: it never bought enough to be worth an unmeasured schema.
+    """
     d = os.path.join(cache_root, spec, pin["digest"])
     cands = [os.path.join(d, "spec.json"), os.path.join(d, "spec.yaml")]
     path = next((c for c in cands if os.path.isfile(c)), None)
     if not path:
         raise SystemExit(f"spec '{spec}' is not in the cache ({d}); run testing/llm-conformance/vendor.sh")
-    parsed = os.path.join(d, "spec.parsed.json")
-    if os.path.isfile(parsed):
-        with open(parsed) as f:
-            return json.load(f)
     if pin["fmt"] == "raw":
         got = sha256_file(path)
         if got != pin["digest"]:
-            raise SystemExit(f"spec '{spec}' digest mismatch in cache: {got} != pinned {pin['digest']}")
+            raise SystemExit(f"spec '{spec}' digest mismatch in cache: {got} != pinned {pin['digest']} "
+                             f"({path} is not the document that digest names; re-run vendor.sh, or "
+                             f"--repin it on purpose)")
     with open(path, "rb") as f:
         raw = f.read()
     try:
         doc = json.loads(raw)
     except ValueError:
         try:
-            import yaml  # PyYAML >= 6.0; only needed the first time a YAML spec is parsed
+            import yaml  # PyYAML >= 6.0, on every run: a YAML spec is parsed from its measured bytes
         except ImportError:
-            raise SystemExit(f"spec '{spec}' is YAML and PyYAML is not installed (pip install 'pyyaml>=6.0'); "
-                             "a parsed JSON cache would let later runs skip this")
+            raise SystemExit(f"spec '{spec}' is YAML and PyYAML is not installed (pip install 'pyyaml>=6.0')")
         loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
         doc = yaml.load(raw, Loader=loader)
     if pin["fmt"] == "json-canonical":
@@ -173,12 +185,7 @@ def load_spec_doc(spec, pin, cache_root):
             raise SystemExit(f"spec '{spec}' canonical digest mismatch: {got} != pinned {pin['digest']}")
     # YAML can carry dates/timestamps inside `example:` blocks; they are documentation, not schema,
     # so stringifying them loses nothing the checker reads.
-    text = json.dumps(doc, separators=(",", ":"), default=str)
-    tmp = parsed + f".{os.getpid()}.tmp"
-    with open(tmp, "w") as f:
-        f.write(text)
-    os.replace(tmp, parsed)  # atomic: a crash mid-write must not leave a half cache for the next run
-    return json.loads(text)
+    return json.loads(json.dumps(doc, separators=(",", ":"), default=str))
 
 
 # ── botocore service model -> schema document ───────────────────────────────────────────────────
