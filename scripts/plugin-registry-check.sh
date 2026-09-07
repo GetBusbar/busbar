@@ -33,7 +33,7 @@ cd "$(dirname "$0")/.."
 MODE="${1:-}"
 
 python3 - "$MODE" <<'PYEOF'
-import json, os, re, subprocess, sys
+import json, os, re, subprocess, sys, time
 
 mode = sys.argv[1]
 offline = mode == "--offline"
@@ -180,9 +180,52 @@ for p in plugins:
 
 # ── 4 + 5. Network checks via `gh` (GITHUB_TOKEN in CI).
 if not offline:
-    def gh(path):
-        r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
-        return json.loads(r.stdout) if r.returncode == 0 else None
+    # A LOOKUP THAT DID NOT COMPLETE IS NOT A PROVEN ABSENCE.
+    #
+    # This returned None for every non-zero exit and the caller turned that into "no published
+    # release at all". A TLS timeout, a secondary rate limit (this loop makes one call per plugin
+    # back to back, which is exactly what trips one), an expired token — every one of them was
+    # reported as a fact about the repository. Observed: the gate named five plugins as having no
+    # release at all while each of them demonstrably had one, published months ago. A gate that
+    # states a falsehood is worse than a gate that is silent, because the falsehood gets acted on.
+    #
+    # So the two answers are separated. A 404 IS an absence and is reported as one. Anything else is
+    # a failure to look, retried a few times against the transient case, and if it still will not
+    # answer it is reported as what it is — with the transport's own words. Both are RED: fail-closed
+    # is unchanged, and nothing here can turn an unanswered question green.
+    class Unreachable(Exception):
+        def __init__(self, path, detail):
+            super().__init__(detail)
+            self.path = path
+            self.detail = detail
+
+    def gh(path, *, attempts=3):
+        last = ""
+        for attempt in range(attempts):
+            r = subprocess.run(["gh", "api", path], capture_output=True, text=True)
+            if r.returncode == 0:
+                return json.loads(r.stdout)
+            err = (r.stderr or "").strip()
+            # `gh api` says this on a 404, which is the one non-zero exit that is an ANSWER.
+            if "HTTP 404" in err or "Not Found" in err:
+                return None
+            last = err
+            if attempt + 1 < attempts:
+                time.sleep(2 ** attempt)
+        raise Unreachable(path, last or f"`gh api {path}` exited non-zero with no message")
+
+    def gh_or_record(path):
+        """`gh()`, with an unreachable API recorded as its own failure instead of raised."""
+        try:
+            return gh(path)
+        except Unreachable as exc:
+            fail.append(
+                f"could not reach the GitHub API for `{exc.path}` after 3 attempts: {exc.detail}. "
+                f"This is NOT evidence that the release is missing — it is evidence the check did "
+                f"not run. Re-run when the API answers, or use --offline to skip the network arms "
+                f"deliberately."
+            )
+            return "unreachable"
 
     for p in plugins:
         # Pre-release entry (a new plugin whose FIRST release is cut together with the core version it
@@ -191,9 +234,11 @@ if not offline:
         # this published-release arm is deferred. Flip `released: true` (or drop the key) at the cut.
         if str(p.get("released", "true")).strip().lower() == "false":
             continue
-        rel = gh(f"repos/GetBusbar/{p['repo']}/releases/latest")
+        rel = gh_or_record(f"repos/GetBusbar/{p['repo']}/releases/latest")
+        if rel == "unreachable":
+            continue
         if rel is None:
-            fail.append(f"{p['repo']}: no published release at all")
+            fail.append(f"{p['repo']}: no published release at all (the API answered 404)")
             continue
         tag = str(rel.get("tag_name", ""))
         if not tag.lstrip("v").startswith(p["version_line"] + "."):
@@ -201,7 +246,11 @@ if not offline:
         if not rel.get("assets"):
             fail.append(f"{p['repo']}: release {tag} has ZERO assets — a phantom release, not a release")
 
-    repos = gh("orgs/GetBusbar/repos?per_page=100") or []
+    repos = gh_or_record("orgs/GetBusbar/repos?per_page=100")
+    # An org listing that never arrived is not an empty org. `or []` read the same as "no repos
+    # match plugin naming", which is the reverse sweep's PASS - the sweep would have been silently
+    # skipped on every network hiccup. Recorded as unreachable above; nothing is swept here.
+    repos = [] if repos in (None, "unreachable") else repos
     known = {p["repo"] for p in plugins} | excluded
     pat = re.compile(r"^(store-.*|.*-hook|auth-.*|hashicorp-.*|secret-.*)$")
     for r in repos:
