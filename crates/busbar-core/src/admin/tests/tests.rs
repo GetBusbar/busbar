@@ -657,7 +657,16 @@ async fn test_admin_v1_usage_meters_by_model_and_key() {
         Some("USD"),
         "usage response carries currency:USD"
     );
-    assert!(body["as_of"].as_u64().unwrap() >= now);
+    // `as_of` is the RATE-CARD HISTORY SNAPSHOT the figures were derived against, not the read
+    // instant: a statement is cut as of a snapshot, and the number printed on it is what makes it
+    // regenerable. A node with no history bound is running the single opening entry, so the
+    // snapshot it answers with is 0 — which is also the only value that reads back the same
+    // figures forever on this deployment.
+    assert_eq!(
+        body["as_of"].as_u64().unwrap(),
+        0,
+        "the snapshot the figures were cut at; a single-entry history is the opening entry"
+    );
     let (start, end) = (
         body["window"]["start"].as_u64().unwrap(),
         body["window"]["end"].as_u64().unwrap(),
