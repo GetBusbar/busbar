@@ -720,3 +720,7 @@ busbar_plugin_sdk::export_store_plugin!(open);
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests_mutation_hardening.rs"]
+mod tests_mutation_hardening;
