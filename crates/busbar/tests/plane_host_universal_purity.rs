@@ -23,16 +23,32 @@
 //! ## The mechanical question this gate answers
 //!
 //! "Is a host capability plane-specific?" becomes a MECHANICAL one: how many of the four plane crates
-//! (`busbar-{llm,mcp,a2a,voice}`) call a method of that name? The gate:
-//!   1. ENUMERATES every method on `EngineHost` and its slice supertraits by parsing the trait defs in
-//!      `plane_host/mod.rs` (brace-matched trait bodies; `fn <name>(` extraction, robust to
-//!      `#[allow(...)]`/doc lines since it scans only the trait body for the `fn` keyword);
-//!   2. COUNTS, per method, how many DISTINCT plane crates contain a call `.<name>(` to it (comments
+//! (`busbar-{llm,mcp,a2a,voice}`) call a capability of that name? The gate:
+//!   1. ENUMERATES every capability the universal host offers, from BOTH of its spellings — the
+//!      `EngineHost` slice supertraits declared in `plane_host/mod.rs` (brace-matched trait bodies;
+//!      `fn <name>(` extraction) AND the `Option<…Fn>` slots of `PlaneHostVtable` in
+//!      `busbar-plugin/src/hot/host.rs` (brace-matched struct body; `pub <name>: Option<` extraction);
+//!   2. COUNTS, per capability, how many DISTINCT plane crates contain a call `.<name>(` to it (comments
 //!      stripped, non-test `.rs` only — the same detection discipline as `plane_transport_neutrality.rs`);
-//!   3. FAILS if any universal-trait method is called by EXACTLY ONE plane crate (a single-plane
+//!   3. FAILS if any universal capability is called by EXACTLY ONE plane crate (a single-plane
 //!      capability riding the shared ABI) UNLESS it is on [`SINGLE_PLANE_ALLOWLIST`] with a written
-//!      reason. Methods called by 0 planes (neutral/internal seams the plane path never reaches) or by
-//!      ≥2 planes (genuinely shared) PASS with no entry.
+//!      reason. Capabilities called by 0 planes (neutral/internal seams the plane path never reaches) or
+//!      by ≥2 planes (genuinely shared) PASS with no entry.
+//!
+//! ## Why it reads the VTABLE as well as the trait
+//!
+//! The trait is being retired. `busbar-substrate::plane_host` is deleted at P4 cut C-F, and the same
+//! capabilities are rebuilt as the `#[repr(C)]` slot list of [`PlaneHostVtable`], which
+//! `busbar-plugin/src/hot/host.rs` already carries. A gate whose only input is the trait would, on the
+//! day the trait goes, enumerate an EMPTY universe and pass everything — the moment the coupling this
+//! file exists to catch becomes invisible again. So the universe is the UNION of the two spellings, and
+//! either one may be empty without the gate going quiet, because:
+//!
+//! **A ZERO-CAPABILITY SCAN IS A REFUSAL, NOT A PASS.** [`Scan::refusal`] is the whole rule: if the
+//! trait bodies yield nothing AND the vtable slots yield nothing, the gate has no input and says so
+//! loudly rather than reporting no violations. Non-vacuity is not a floor that happens to be set above
+//! zero here — it is the gate's first assertion, and `selftest_an_empty_scan_is_a_refusal_not_a_pass`
+//! drives the same predicate over empty source to prove it fires.
 //!
 //! After this lands, adding a NEW single-plane method to the universal `EngineHost` reddens CI until it
 //! is either (a) moved to a plane-narrowed slice that is NOT a supertrait of `EngineHost` (the F3 fix,
@@ -54,11 +70,24 @@
 //! `plane_isomorphism.rs` / `capability_equality.rs`): ONE detector drives both the REAL scan and a
 //! non-vacuity self-test, so a broken scan that finds nothing fails loudly rather than passing green.
 
+mod common;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-/// The host-seam trait definition file. Its slice supertraits + `EngineHost` are the universe scanned.
+/// The host-seam trait definition file. Its slice supertraits + `EngineHost` are one half of the
+/// universe scanned. It is the spelling that is being RETIRED (P4 cut C-F deletes it), which is why
+/// the vtable below is read beside it rather than after it.
 const HOST_TRAIT_FILE: &str = "crates/busbar-substrate/src/plane_host/mod.rs";
+
+/// The host-seam VTABLE file — the `#[repr(C)]` rebuild of the same capabilities, and the half of the
+/// universe that OUTLIVES the trait. Read from the moment the slots exist, not from the moment the
+/// trait dies, so the day of the deletion is not also the day this gate first tries a new parser.
+const HOST_VTABLE_FILE: &str = "crates/busbar-plugin/src/hot/host.rs";
+
+/// The `#[repr(C)]` inbound-capability table inside [`HOST_VTABLE_FILE`]. Its `Option<…Fn>` fields are
+/// the slot list: one slot per capability a plane may call back through.
+const VTABLE_STRUCT: &str = "PlaneHostVtable";
 
 /// The capability-slice supertraits of `EngineHost`, plus `EngineHost` itself (its provided
 /// `run_gauntlet`). A slice added/removed on the universal sum is ONE edit here — and the enumeration
@@ -244,84 +273,15 @@ fn is_ident(c: char) -> bool {
     c.is_ascii_alphanumeric() || c == '_'
 }
 
-/// The `{…}`-matched body of `pub trait <name>` in `src` (comments already stripped), or `None` if the
-/// trait is absent. Brace-matched from the trait header's first `{`, so supertrait bound lists and
-/// per-method bodies are all inside the returned slice.
+/// The `{…}`-matched body of `pub trait <name>`, and the method names inside it. Both are
+/// `common`'s — the same parsers `plane_meter_seam_reachability` reads the host seam with, so the two
+/// gates that pin properties of this ABI cannot disagree about what it declares.
 fn trait_body<'a>(src: &'a str, name: &str) -> Option<&'a str> {
-    let needle = format!("pub trait {name}");
-    let start = src.find(&needle)?;
-    // Guard the identifier boundary: the char after the name must not continue an identifier, so
-    // `pub trait Foo` does not match a longer `pub trait FooBar`.
-    let after = src[start + needle.len()..].chars().next();
-    if matches!(after, Some(ch) if is_ident(ch)) {
-        return None;
-    }
-    let bytes = src.as_bytes();
-    let mut i = start + needle.len();
-    while i < bytes.len() && bytes[i] != b'{' {
-        i += 1;
-    }
-    if i >= bytes.len() {
-        return None;
-    }
-    let open = i;
-    let mut depth = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(&src[open..=i]);
-                }
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    None
+    common::trait_body(src, name)
 }
 
-/// Every method NAME declared in a trait body: each `fn <ident>` token whose `fn` sits on an identifier
-/// boundary. Robust to `#[allow(...)]`/doc/attribute lines (those carry no `fn` keyword) and to generic
-/// params (we read only the name after `fn`). The traits here declare no nested `fn` inside a method
-/// body (the one provided method, `EngineHost::run_gauntlet`, calls the free `run_gauntlet` — a call,
-/// not an `fn` decl), so scanning the whole body for the `fn` keyword yields exactly the methods.
 fn method_names(body: &str) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    // Work on chars for boundary logic — total even if the file ever gains non-ASCII.
-    let chars: Vec<char> = body.chars().collect();
-    let n = chars.len();
-    let mut i = 0;
-    while i + 1 < n {
-        if chars[i] == 'f' && chars[i + 1] == 'n' {
-            let before_ok = i == 0 || !is_ident(chars[i - 1]);
-            let after = i + 2;
-            let after_ok = after < n && chars[after].is_whitespace();
-            if before_ok && after_ok {
-                // Skip whitespace, then read the identifier.
-                let mut j = after;
-                while j < n && chars[j].is_whitespace() {
-                    j += 1;
-                }
-                let start = j;
-                while j < n && is_ident(chars[j]) {
-                    j += 1;
-                }
-                if j > start {
-                    let ident: String = chars[start..j].iter().collect();
-                    // A method name starts with a letter or `_`, never a digit.
-                    if ident.chars().next().is_some_and(|c| !c.is_ascii_digit()) {
-                        names.insert(ident);
-                    }
-                    i = j;
-                    continue;
-                }
-            }
-        }
-        i += 1;
-    }
-    names
+    common::trait_method_names(body).into_iter().collect()
 }
 
 /// The full universal-`EngineHost` method universe: the union of every [`SLICE_TRAITS`] trait's methods.
@@ -333,6 +293,18 @@ fn universal_methods(host_src_stripped: &str) -> BTreeSet<String> {
         }
     }
     all
+}
+
+/// The vtable's capability universe: every `Option<…Fn>` slot of [`VTABLE_STRUCT`].
+///
+/// The parser is `common::vtable_slot_names`, shared with `plane_meter_seam_reachability` — ONE
+/// opinion about what a capability slot is, so the two gates that pin properties of this ABI cannot
+/// disagree about which slots it has. `src` is this file's own already-stripped source, so each gate
+/// keeps its own comment-stripping discipline and shares only the structure match.
+fn vtable_capabilities(vtable_src_stripped: &str) -> BTreeSet<String> {
+    common::vtable_slot_names(vtable_src_stripped, VTABLE_STRUCT)
+        .into_iter()
+        .collect()
 }
 
 /// Does `code` (comments stripped) contain a method CALL `.<method>(` — the method as a whole
@@ -432,10 +404,34 @@ fn plane_callers(
     hit
 }
 
-/// The universe + the per-method caller-plane sets, computed once from the live tree.
+/// The universe + the per-capability caller-plane sets, computed once from the live tree. `methods` is
+/// the UNION the gate judges; `trait_methods` and `vtable_slots` are kept apart so the refusal below can
+/// say which spelling went quiet.
 struct Scan {
+    trait_methods: BTreeSet<String>,
+    vtable_slots: BTreeSet<String>,
     methods: BTreeSet<String>,
     callers: BTreeMap<String, BTreeSet<&'static str>>,
+}
+
+/// THE REFUSAL. `Some(reason)` when the scan has NO INPUT — neither trait body nor vtable slot — and a
+/// gate with no input reports no violations for the same reason an empty ledger reconciles. Kept as a
+/// pure function of the two counts so the self-test can drive the identical predicate on numbers the
+/// live tree will never produce.
+fn empty_scan_refusal(trait_methods: usize, vtable_slots: usize) -> Option<String> {
+    (trait_methods == 0 && vtable_slots == 0).then(|| {
+        format!(
+            "THE UNIVERSAL-HOST SCAN FOUND NOTHING: {trait_methods} method(s) across the \
+             {} slice traits in {HOST_TRAIT_FILE} and {vtable_slots} capability slot(s) on \
+             `{VTABLE_STRUCT}` in {HOST_VTABLE_FILE}. This gate answers \"how many planes call this \
+             capability\" over an enumerated universe; with an EMPTY universe it answers \"no \
+             violations\" about nothing, which is how the coupling it exists to catch becomes \
+             invisible again. Both spellings gone at once means a file moved, a name changed, or the \
+             parse regressed — not that the coupling was resolved. A zero-capability scan is a \
+             REFUSAL.",
+            SLICE_TRAITS.len()
+        )
+    })
 }
 
 fn run_scan() -> Scan {
@@ -443,7 +439,25 @@ fn run_scan() -> Scan {
     let host_src = std::fs::read_to_string(root.join(HOST_TRAIT_FILE))
         .expect("the plane_host trait file must be readable");
     let host_stripped = strip_source(&host_src);
-    let methods = universal_methods(&host_stripped);
+    let trait_methods = universal_methods(&host_stripped);
+
+    // The vtable half. Read with the same `expect` discipline as the trait file: a file that cannot be
+    // read is a broken gate, not an empty universe.
+    let vtable_src = std::fs::read_to_string(root.join(HOST_VTABLE_FILE))
+        .expect("the plane-host vtable file must be readable");
+    let vtable_stripped = strip_source(&vtable_src);
+    let vtable_slots = vtable_capabilities(&vtable_stripped);
+
+    // THE FIRST ASSERTION, BEFORE ANY COUNTING. Not a floor tuned above today's number — the honest
+    // zero case, which is what the retirement of the trait would produce if the vtable half were not
+    // here to answer beside it.
+    assert!(
+        empty_scan_refusal(trait_methods.len(), vtable_slots.len()).is_none(),
+        "{}",
+        empty_scan_refusal(trait_methods.len(), vtable_slots.len()).unwrap_or_default()
+    );
+
+    let methods: BTreeSet<String> = trait_methods.union(&vtable_slots).cloned().collect();
     let sources = plane_sources(&root);
     let callers: BTreeMap<String, BTreeSet<&'static str>> = methods
         .iter()
@@ -463,7 +477,12 @@ fn run_scan() -> Scan {
         );
     }
 
-    Scan { methods, callers }
+    Scan {
+        trait_methods,
+        vtable_slots,
+        methods,
+        callers,
+    }
 }
 
 /// THE REAL WITNESS: every universal-`EngineHost` method called by EXACTLY ONE plane crate is on the
@@ -472,13 +491,37 @@ fn run_scan() -> Scan {
 fn no_unjustified_single_plane_method_on_universal_engine_host() {
     let scan = run_scan();
 
-    // Enumeration floor: the ~13 slices carry ~75 methods. A parse regression that found almost
-    // nothing would make the whole gate vacuous. (75 today; floored well below to tolerate churn.)
+    // ENUMERATION FLOORS, PER SPELLING AND ON THE UNION. Each half is floored ONLY WHILE IT EXISTS:
+    // the trait is scheduled for deletion (P4 cut C-F), and a floor that reads "the trait must yield
+    // 60 methods" would turn that deletion into a gate edit made in the same commit — which is
+    // exactly the commit in which nobody wants to be relaxing this file's floors. Present-but-thin is
+    // a parse regression and reds; absent is the retirement and is carried by the other half. Both
+    // absent at once is neither, and `run_scan` has already refused it.
+    if !scan.trait_methods.is_empty() {
+        assert!(
+            scan.trait_methods.len() >= 60,
+            "the {} slice traits in {HOST_TRAIT_FILE} are still declared but enumerated only {} \
+             method(s) — the trait-body parse regressed",
+            SLICE_TRAITS.len(),
+            scan.trait_methods.len()
+        );
+    }
+    if !scan.vtable_slots.is_empty() {
+        assert!(
+            scan.vtable_slots.len() >= 30,
+            "`{VTABLE_STRUCT}` in {HOST_VTABLE_FILE} is still declared but enumerated only {} \
+             capability slot(s) — the struct-body parse regressed",
+            scan.vtable_slots.len()
+        );
+    }
     assert!(
-        scan.methods.len() >= 60,
-        "enumerated only {} universal-EngineHost methods from {HOST_TRAIT_FILE} — the trait-body \
-         parse regressed; a broken enumeration would pass this gate vacuously",
-        scan.methods.len()
+        scan.methods.len() >= 30,
+        "enumerated only {} universal host capabilities — {} trait method(s) + {} vtable slot(s); a \
+         universe this small cannot be the real host seam, and a broken enumeration would pass this \
+         gate vacuously",
+        scan.methods.len(),
+        scan.trait_methods.len(),
+        scan.vtable_slots.len()
     );
 
     let allow_names: BTreeSet<&str> = SINGLE_PLANE_ALLOWLIST.iter().map(|(m, _, _)| *m).collect();
@@ -517,8 +560,9 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
         }
         match scan.callers.get(*method) {
             None => stale.push(format!(
-                "  {method}  — allowlisted but NOT a method on the universal EngineHost trait \
-                 (renamed/removed?); prune the entry"
+                "  {method}  — allowlisted but NOT a capability of the universal host in EITHER \
+                 spelling: no such method on the {HOST_TRAIT_FILE} slice traits and no such slot on \
+                 `{VTABLE_STRUCT}` (renamed/removed?); prune the entry"
             )),
             Some(callers) => {
                 if callers.len() == 1 {
@@ -548,9 +592,23 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 /// (`plane_defs`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
 /// so a green real witness above is meaningful. It also proves `.plane_slot(` ≠ `plane_slot_live`
 /// (whole-token matching) via a direct `calls_method` assertion.
+///
+/// The named methods below are the TRAIT half's, so the parts of this self-test that depend on them
+/// run only while the trait is declared — after P4 cut C-F deletes it, `plane_defs` and
+/// `clock_now_secs` are not names of anything and asserting on them would be asserting on a memory.
+/// The guard is NOT a way for this test to fall silent: `run_scan` refuses an empty universe outright,
+/// [`the_vtable_slot_list_is_enumerated_beside_the_trait_bodies`] carries the surviving half
+/// unconditionally, and the real witness's per-spelling floors still bite on whichever half exists.
 #[test]
 fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
     let scan = run_scan();
+    if scan.trait_methods.is_empty() {
+        println!(
+            "  {HOST_TRAIT_FILE} declares no slice trait; the trait-half samples below are retired \
+             with it, and the vtable half is proven in its own test"
+        );
+        return;
+    }
 
     // (1) Enumeration sees the specific F3 methods + a per-slice sampling — not a vacuous empty set.
     for expect in [
@@ -627,4 +685,136 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
         calls_method("a.b .synthesize_completion (x)", "synthesize_completion"),
         "calls_method missed a whitespace-before-paren call"
     );
+}
+
+/// THE VTABLE HALF IS REAL. The slot parser is proven on the live table (it finds the specific slots
+/// the retirement map assigns to each core file being rebuilt), proven to EXCLUDE the table's own
+/// non-capability scalars, and proven to be the reason the universe survives the trait: the union is
+/// strictly larger than the trait alone, so a capability that exists only as a slot is already judged
+/// today rather than from the day the trait is deleted.
+#[test]
+fn the_vtable_slot_list_is_enumerated_beside_the_trait_bodies() {
+    let scan = run_scan();
+
+    // (1) The slot list is found at all, and is the size the table actually is (40+ slots today).
+    assert!(
+        scan.vtable_slots.len() >= 30,
+        "enumerated only {} `{VTABLE_STRUCT}` slot(s) from {HOST_VTABLE_FILE} — the struct-body \
+         parse regressed. When the trait is deleted this half is the ONLY half, so a parse that \
+         quietly under-reads here is the gate going quiet on a schedule: {:?}",
+        scan.vtable_slots.len(),
+        scan.vtable_slots
+    );
+
+    // (2) It finds the named slots, one per capability family the vtable rebuild takes over — the
+    //     egress, journal, trust, breaker, govern, guard, identity and pipe halves.
+    for expect in [
+        "egress_open",
+        "egress_write",
+        "journal_append",
+        "journal_append_scoped",
+        "trust_evaluate",
+        "breaker_admit",
+        "breaker_admit_reason",
+        "govern_admit",
+        "meter_charge",
+        "guard_url",
+        "auth_resolve",
+        "approval_redeem",
+        "subkey_sign",
+        "pipe_read",
+        "cost_reserve",
+        "cost_settle",
+    ] {
+        assert!(
+            scan.vtable_slots.contains(expect),
+            "the slot scan missed `{expect}` on `{VTABLE_STRUCT}`; found {:?}",
+            scan.vtable_slots
+        );
+    }
+
+    // (3) The table's own scalars are NOT capabilities. `abi`/`size`/`version` are the frozen preamble
+    //     and the sized-struct guard; counting them would put three names into the caller-count that
+    //     no plane can call and that no allowlist entry could ever honestly justify.
+    for scalar in ["abi", "size", "version"] {
+        assert!(
+            !scan.vtable_slots.contains(scalar),
+            "the slot scan counted the table's own `{scalar}` scalar as a capability — the \
+             `Option<` discriminator is not doing its job"
+        );
+    }
+
+    // (4) The union is strictly larger than the trait alone: at least one capability is known ONLY as
+    //     a slot. That is the property that makes reading the vtable worth doing BEFORE the trait
+    //     dies rather than in the same commit that deletes it.
+    let slot_only: BTreeSet<&String> = scan.vtable_slots.difference(&scan.trait_methods).collect();
+    assert!(
+        !slot_only.is_empty(),
+        "every vtable slot is also a trait method, so the vtable half adds nothing and this gate \
+         would still enumerate an empty universe the day the trait goes"
+    );
+    println!(
+        "  trait methods: {}   vtable slots: {}   union: {}   slot-only: {}",
+        scan.trait_methods.len(),
+        scan.vtable_slots.len(),
+        scan.methods.len(),
+        slot_only.len()
+    );
+}
+
+/// THE REFUSAL FIRES. A scan that enumerated nothing must FAIL, not report "no violations". Driven on
+/// the same [`empty_scan_refusal`] predicate the real scan asserts on, and on synthetic source through
+/// the same two parsers, so the proof is of the shipped code path and not of a restatement of it.
+#[test]
+fn selftest_an_empty_scan_is_a_refusal_not_a_pass() {
+    // (1) The predicate itself: zero AND zero refuses; anything else does not.
+    assert!(
+        empty_scan_refusal(0, 0).is_some(),
+        "a scan with no trait methods and no vtable slots was treated as a PASS — that is the \
+         failure mode this gate is being repointed to avoid"
+    );
+    assert!(
+        empty_scan_refusal(0, 44).is_none(),
+        "the trait alone being gone must NOT refuse: the vtable is the destination, and the whole \
+         point of reading it is that the gate keeps its input across the retirement"
+    );
+    assert!(
+        empty_scan_refusal(75, 0).is_none(),
+        "the vtable alone being absent must NOT refuse while the trait still declares the universe"
+    );
+
+    // (2) The parsers really do return empty on source that declares neither — so the refusal above is
+    //     reachable from real input, not only from hand-written zeros.
+    let neither = strip_source(
+        "pub struct SomethingElse { pub a: Option<u8> }\npub trait NotAHost { fn x(&self); }\n",
+    );
+    assert!(
+        universal_methods(&neither).is_empty(),
+        "the trait parser found methods in source that declares none of the slice traits"
+    );
+    assert!(
+        vtable_capabilities(&neither).is_empty(),
+        "the slot parser found slots in source that declares no `{VTABLE_STRUCT}`"
+    );
+    assert!(
+        empty_scan_refusal(
+            universal_methods(&neither).len(),
+            vtable_capabilities(&neither).len()
+        )
+        .is_some(),
+        "source declaring neither spelling did not produce the refusal"
+    );
+
+    // (3) And a table that IS present is read: the same parser, one slot, comments and a non-Option
+    //     scalar around it.
+    let one_slot = strip_source(
+        "#[repr(C)]\npub struct PlaneHostVtable {\n    // a comment naming pub not_a_slot: Option<X>\n    pub size: u32,\n    /// doc\n    pub govern_admit: Option<GovernAdmitFn>,\n}\n",
+    );
+    let slots = vtable_capabilities(&one_slot);
+    assert_eq!(
+        slots.len(),
+        1,
+        "expected exactly the one `Option` slot, got {slots:?}"
+    );
+    assert!(slots.contains("govern_admit"), "got {slots:?}");
 }

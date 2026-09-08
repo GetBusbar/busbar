@@ -14,13 +14,39 @@
 //!
 //! The core Meter seam (the attributed metering entry points on the host / governance state — the
 //! ONE billing path every plane must use, never a plane-private ledger):
-//!   - `meter_charge`   (EngineHost: attributed charge over a dispatch scope)
-//!   - `meter_ledger`   (EngineHost: ledger a delivery's usage against the key's budget chain)
-//!   - `meter_series`   (EngineHost: record raw consumption into the per-key metering series)
+//!   - `meter_charge`   (attributed charge over a dispatch scope)
+//!   - `meter_ledger`   (ledger a delivery's usage against the key's budget chain)
+//!   - `meter_series`   (record raw consumption into the per-key metering series)
+//!   - `cost_reserve` / `cost_settle` (the reserve-then-settle lease a live carrier meters against)
 //!   - `record_metering`/`record_usage` (governance-state accrual the above drive)
 //!
 //! A plane that calls NONE of these in production has no way to put spend on the ledger — it bills
 //! nobody. This gate makes that a build failure, named by plane.
+//!
+//! ## Where those names come from, and why not from here
+//!
+//! The first three used to be spelled in this file as literals, taken off the `MeteringHost` slice of
+//! `busbar_substrate::plane_host::EngineHost`. That trait is being retired (P4 cut C-F), and the same
+//! metering capabilities are rebuilt as `Option<…Fn>` slots on `PlaneHostVtable` in
+//! `busbar-plugin/src/hot/host.rs`. A literal list would survive that deletion as a list of names for
+//! things that no longer exist: every plane would scan as reaching the seam zero times, or — worse, if
+//! the names were pruned to match — the token set would shrink towards empty and the gate would report
+//! that every plane meters fine while measuring nothing.
+//!
+//! So the metering token set is ENUMERATED from BOTH spellings of the host seam — the slice traits
+//! ([`trait_metering_methods`]) and the vtable slots ([`vtable_metering_slots`]) — unioned, and then
+//! unioned again with the governance-accrual spellings those capabilities drive. Reading both is not
+//! belt-and-braces: the family spans them unevenly. `meter_ledger` and `meter_series` are trait-only
+//! today; `cost_reserve` and `cost_settle` are on both; and the trait declares them across TWO slices
+//! (`BudgetHost` and `MeteringHost`), which is why the family is selected by PREFIX rather than by
+//! naming a slice or listing names. Three rules keep that honest:
+//!   * **A ZERO-CAPABILITY ENUMERATION IS A REFUSAL** ([`metering_enumeration_refusal`]). If NEITHER
+//!     spelling declares a metering capability, this gate has no idea what the billing path is called
+//!     and says so, rather than passing four planes on an all-but-empty token set.
+//!   * Either half may be empty on its own — that is the retirement, and the other half carries it.
+//!   * The union must contain the accrual spellings AND the enumerated capabilities, so no half
+//!     silently drops out; `selftest_the_metering_token_set_is_enumerated_and_an_empty_enumeration_refuses`
+//!     asserts each half's known members survive into it.
 //!
 //! ## Two paths, the same question
 //!
@@ -56,15 +82,43 @@ use std::path::{Path, PathBuf};
 /// the plane's crate directory name under `crates/`.
 const BILLING_PLANE_CRATES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
 
-/// The core Meter-seam call tokens. A production line containing any of these (outside a comment)
-/// counts as reaching the one billing path.
-const METER_SEAM_TOKENS: &[&str] = &[
-    "meter_charge(",
-    "meter_ledger(",
-    "meter_series(",
-    "record_metering(",
-    "record_usage(",
+/// The GOVERNANCE-ACCRUAL half of the Meter seam: the state writes the host capabilities drive. These
+/// are core/governance spellings rather than host-seam ones, so they are named here and not enumerated.
+const ACCRUAL_SEAM_TOKENS: &[&str] = &["record_metering(", "record_usage("];
+
+/// The vtable file and struct the metering CAPABILITY half is enumerated from — the `#[repr(C)]`
+/// rebuild that outlives `busbar_substrate::plane_host`.
+const HOST_VTABLE_FILE: &[&str] = &["busbar-plugin", "src", "hot", "host.rs"];
+const VTABLE_STRUCT: &str = "PlaneHostVtable";
+
+/// The RETIRING spelling of the same capabilities, read beside the vtable rather than instead of it.
+/// The metering family spans two slices (`MeteringHost` carries the reserve/settle lease, `BudgetHost`
+/// carries charge/ledger/series), which is exactly why the family is selected by PREFIX below rather
+/// than by naming a slice: a rule that named the slice would have missed half the seam.
+const HOST_TRAIT_FILE: &[&str] = &["busbar-substrate", "src", "plane_host", "mod.rs"];
+const HOST_SLICE_TRAITS: &[&str] = &[
+    "BreakerHost",
+    "LanePoolHost",
+    "MeteringHost",
+    "ClockHost",
+    "TelemetryHost",
+    "JournalHost",
+    "MountHost",
+    "RegistryHost",
+    "HookConfigHost",
+    "BudgetHost",
+    "IdentityHost",
+    "AdmissionHost",
+    "CompletionHost",
+    "EngineHost",
 ];
+
+/// A host capability is a METERING one when its name begins with one of these. `meter_` is the charge
+/// / ledger / series family; `cost_` is the reserve-then-settle lease a live carrier meters against.
+/// Prefixes rather than a name list, so a capability APPENDED to the metering family (the vtable is
+/// append-only by construction) is picked up without an edit here — the failure mode a fixed list has
+/// is that a new way to bill is invisible to the gate that exists to see billing.
+const METERING_SLOT_PREFIXES: &[&str] = &["meter_", "cost_"];
 
 fn crates_root() -> PathBuf {
     // CARGO_MANIFEST_DIR is crates/busbar; its parent is the crates/ tree.
@@ -74,23 +128,114 @@ fn crates_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// The METERING slots the live vtable declares — the capability half of the seam, read from the ABI
+/// rather than restated here. Empty when the struct is absent or declares no metering slot; the
+/// caller REFUSES on that, it never proceeds with a short token set.
+fn vtable_metering_slots(root: &Path) -> Vec<String> {
+    let mut path: PathBuf = root.to_path_buf();
+    for part in HOST_VTABLE_FILE {
+        path = path.join(part);
+    }
+    if !path.is_file() {
+        return Vec::new();
+    }
+    common::vtable_slot_names(&common::production_text(&path), VTABLE_STRUCT)
+        .into_iter()
+        .filter(|s| METERING_SLOT_PREFIXES.iter().any(|p| s.starts_with(p)))
+        .collect()
+}
+
+/// The METERING methods the retiring host trait declares, across every slice — the other half, read
+/// while it exists. Empty once `busbar_substrate::plane_host` is deleted, which is the whole point of
+/// there being two halves.
+fn trait_metering_methods(root: &Path) -> Vec<String> {
+    let mut path: PathBuf = root.to_path_buf();
+    for part in HOST_TRAIT_FILE {
+        path = path.join(part);
+    }
+    if !path.is_file() {
+        return Vec::new();
+    }
+    let src = common::production_text(&path);
+    let mut out: Vec<String> = Vec::new();
+    for slice in HOST_SLICE_TRAITS {
+        let Some(body) = common::trait_body(&src, slice) else {
+            continue;
+        };
+        for m in common::trait_method_names(body) {
+            if METERING_SLOT_PREFIXES.iter().any(|p| m.starts_with(p)) && !out.contains(&m) {
+                out.push(m);
+            }
+        }
+    }
+    out
+}
+
+/// Every metering capability the host offers, in BOTH spellings, deduplicated.
+fn metering_capabilities(root: &Path) -> Vec<String> {
+    let mut all = trait_metering_methods(root);
+    for slot in vtable_metering_slots(root) {
+        if !all.contains(&slot) {
+            all.push(slot);
+        }
+    }
+    all
+}
+
+/// THE REFUSAL. `Some(reason)` when the gate does not know what the billing path is CALLED: no
+/// metering capability enumerated from EITHER spelling. A token set that had shrunk to the accrual
+/// spellings alone would still scan, still find nothing in most planes, and still report those planes
+/// as billing nobody — an accusation the gate would have no standing to make. Kept as a pure function
+/// of the enumerated capabilities so the self-test drives the identical predicate.
+fn metering_enumeration_refusal(caps: &[String]) -> Option<String> {
+    caps.is_empty().then(|| {
+        format!(
+            "THE METERING-CAPABILITY ENUMERATION FOUND NOTHING: neither the {} slice traits in \
+             {} nor `{VTABLE_STRUCT}` declares a capability beginning with {} . This gate asks \
+             whether each billing plane reaches the ONE metering seam; with no enumerated capability \
+             it does not know what that seam is called, and a scan for an all-but-empty token set \
+             reports every plane as billing nobody. That is not the question. A zero-capability \
+             enumeration is a REFUSAL, not a verdict.",
+            HOST_SLICE_TRAITS.len(),
+            HOST_TRAIT_FILE.join("/"),
+            METERING_SLOT_PREFIXES.join(" / ")
+        )
+    })
+}
+
+/// The full Meter-seam call-token set: every enumerated metering capability as a call, plus the
+/// governance-accrual spellings they drive.
+fn meter_seam_tokens(root: &Path) -> Vec<String> {
+    let caps = metering_capabilities(root);
+    assert!(
+        metering_enumeration_refusal(&caps).is_none(),
+        "{}",
+        metering_enumeration_refusal(&caps).unwrap_or_default()
+    );
+    let mut tokens: Vec<String> = caps.iter().map(|s| format!("{s}(")).collect();
+    tokens.extend(ACCRUAL_SEAM_TOKENS.iter().map(|t| (*t).to_string()));
+    tokens
+}
+
 /// The count of production Meter-seam reaches in a plane crate's `src/` tree. PRODUCTION means the
 /// shipped binary's text: [`common::production_lines`] has already dropped the comments and every
 /// `#[cfg(test)] mod` body, so a plane whose only `meter_charge(` is in the mock its unit tests use
 /// counts as zero — which is what it is.
-fn meter_seam_reaches(crate_dir: &Path) -> usize {
+fn meter_seam_reaches(crate_dir: &Path, tokens: &[String]) -> usize {
     let mut files = Vec::new();
     common::production_rs_files(&crate_dir.join("src"), &mut files);
     files
         .iter()
         .flat_map(|p| common::production_lines(p))
-        .filter(|l| METER_SEAM_TOKENS.iter().any(|tok| l.code.contains(tok)))
+        .filter(|l| tokens.iter().any(|tok| l.code.contains(tok.as_str())))
         .count()
 }
 
 #[test]
 fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
     let root = crates_root();
+    let tokens = meter_seam_tokens(&root);
+    println!("  metering seam tokens: {}", tokens.join(" / "));
     let mut offenders: Vec<String> = Vec::new();
     for plane in BILLING_PLANE_CRATES {
         let dir = root.join(plane);
@@ -99,12 +244,12 @@ fn every_billing_plane_reaches_the_core_meter_seam_in_production() {
             "plane crate src not found: {} — this gate is scanning the wrong tree",
             dir.display()
         );
-        let reaches = meter_seam_reaches(&dir);
+        let reaches = meter_seam_reaches(&dir, &tokens);
         if reaches == 0 {
             offenders.push(format!(
                 "{plane}: 0 calls to the core Meter seam ({}) in production source — it cannot put \
                  spend on any principal's ledger; it bills nobody",
-                METER_SEAM_TOKENS.join(" / "),
+                tokens.join(" / "),
             ));
         }
     }
@@ -309,9 +454,97 @@ fn selftest_the_seam_scanners_discriminate() {
     assert!(!seam(&prod("// Usage::report(usage, lines)\n")));
     assert!(!seam(&prod("let x = 1; // fold_usage(y)\n")));
     assert!(!seam(&prod("let x = record_metering;\n")));
-    assert!(METER_SEAM_TOKENS
+    let tokens = meter_seam_tokens(&crates_root());
+    assert!(tokens
         .iter()
-        .any(|t| prod("host.meter_charge(&scope, n);\n").contains(t)));
+        .any(|t| prod("host.meter_charge(&scope, n);\n").contains(t.as_str())));
+}
+
+/// THE METERING TOKENS ARE ENUMERATED OFF THE LIVE ABI, AND AN EMPTY ENUMERATION REFUSES.
+///
+/// `meter_charge` / `meter_ledger` / `meter_series` used to be literals in this file, copied off the
+/// `MeteringHost` slice of a trait that is scheduled for deletion. A literal list outlives the thing it
+/// names: after the deletion it would scan for methods nothing declares, and the gate would either
+/// accuse four innocent planes or — pruned to match — measure an ever-smaller set while reporting the
+/// same green. So the capability half is read from `PlaneHostVtable`, and reading NOTHING is refused.
+#[test]
+fn selftest_the_metering_token_set_is_enumerated_and_an_empty_enumeration_refuses() {
+    let root = crates_root();
+
+    // (1) BOTH halves enumerate, and each finds capabilities the other does not — which is the
+    //     property that makes reading two spellings worth doing. The trait carries charge/ledger/
+    //     series (on `BudgetHost`, not `MeteringHost` — the reason the family is chosen by prefix);
+    //     the vtable carries the rebuilt charge and the reserve/settle lease.
+    let slots = vtable_metering_slots(&root);
+    let trait_methods = trait_metering_methods(&root);
+    assert!(
+        !slots.is_empty(),
+        "no metering slot enumerated from `{VTABLE_STRUCT}` — the SURVIVING half is blind, and it is \
+         the half that has to answer alone once the trait is deleted"
+    );
+    for expect in ["meter_charge", "cost_reserve", "cost_settle"] {
+        assert!(
+            slots.iter().any(|s| s == expect),
+            "the vtable metering enumeration missed `{expect}`; found {slots:?}"
+        );
+    }
+    for expect in ["meter_charge", "meter_ledger", "meter_series"] {
+        assert!(
+            trait_methods.iter().any(|s| s == expect),
+            "the trait metering enumeration missed `{expect}`; found {trait_methods:?}. Dropping \
+             one of these silently would report a plane that DOES bill as billing nobody"
+        );
+    }
+    let caps = metering_capabilities(&root);
+    for half in [&slots, &trait_methods] {
+        for name in half {
+            assert!(
+                caps.contains(name),
+                "`{name}` was enumerated by one half and lost from the union"
+            );
+        }
+    }
+
+    // (2) The refusal fires on an empty enumeration and NOT on a populated one — the same predicate
+    //     `meter_seam_tokens` asserts on, driven over the case the live tree will not produce.
+    assert!(
+        metering_enumeration_refusal(&[]).is_some(),
+        "an empty metering enumeration was treated as a verdict; it must be a refusal"
+    );
+    assert!(
+        metering_enumeration_refusal(&caps).is_none(),
+        "the live enumeration was refused: {:?}",
+        metering_enumeration_refusal(&caps)
+    );
+
+    // (3) Both halves are in the token set, and neither carries it alone: the accrual spellings are
+    //     present AND at least one enumerated capability is.
+    let tokens = meter_seam_tokens(&root);
+    for accrual in ACCRUAL_SEAM_TOKENS {
+        assert!(
+            tokens.iter().any(|t| t == accrual),
+            "the governance-accrual spelling `{accrual}` fell out of the token set"
+        );
+    }
+    assert!(
+        tokens.iter().any(|t| t == "meter_charge("),
+        "the enumerated capability half fell out of the token set: {tokens:?}"
+    );
+
+    // (4) The slot parser tells a capability from the table's own scalars, on synthetic source, so the
+    //     prefix filter is not the only thing standing between `size`/`version` and the token set.
+    let synthetic = "pub struct PlaneHostVtable { pub size: u32, pub version: u32, \
+                     pub meter_charge: Option<MeterChargeFn>, pub cost_settle: Option<CostSettleFn> }";
+    let parsed = common::vtable_slot_names(synthetic, VTABLE_STRUCT);
+    assert_eq!(
+        parsed,
+        vec!["meter_charge".to_string(), "cost_settle".to_string()],
+        "the slot parser did not separate the `Option` capability slots from the table's scalars"
+    );
+    assert!(
+        common::vtable_slot_names(synthetic, "NoSuchTable").is_empty(),
+        "an absent struct must yield the empty set, which the caller refuses on"
+    );
 }
 
 /// THE FAILURE THIS GATE WAS BLIND TO. The scan used to read the leg file whole, so a seam token in
