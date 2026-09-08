@@ -33,3 +33,8 @@ path = "src/lib.rs"
 busbar-caps = { path = "../busbar-caps" }
 busbar-unit-cost = { path = "../busbar-unit-cost" }
 sha2 = { workspace = true }
+
+[dev-dependencies]
+# The kind's shared `Unit` conformance battery. A test edge, not a kind edge: the kind-isolation
+# gate scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["unit"] }

@@ -49,3 +49,6 @@ futures = { workspace = true }
 # actually implementable over the breaker unit's real API, not a fixture invented to fit it.
 [dev-dependencies]
 busbar-unit-breaker = { path = "../busbar-unit-breaker" }
+# The kind's shared `Unit` conformance battery. A test edge, not a kind edge: the kind-isolation
+# gate scores `[dev-dependencies]` in its battery row and in nothing else.
+busbar-plugin-testkit = { path = "../plugin-testkit", features = ["unit"] }
