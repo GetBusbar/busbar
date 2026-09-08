@@ -330,7 +330,7 @@ pub fn audit(
 /// label unconditionally, so a 403 raised against a CONFIGURED pool was recorded as if the pool had
 /// never resolved, while the live pre-admission guard recorded it under the pool's own name. The
 /// bytes agreed and the record did not. A caller that genuinely has no destination yet — a refusal
-/// taken before the model was ever read — passes [`crate::engine::POOL_LABEL_UNRESOLVED`], which
+/// taken before the model was ever read — passes [`busbar_substrate::proxy::POOL_LABEL_UNRESOLVED`], which
 /// the bound maps to itself because no deployment may configure a pool by that name.
 pub fn audit_refused(unit_token: &UnitToken<Audit>, ctx: &AuditCtx<'_>, resp: Served) -> Audited {
     // A refusal is never a completion, whatever status it wears.

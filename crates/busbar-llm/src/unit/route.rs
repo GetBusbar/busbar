@@ -68,10 +68,17 @@ use busbar_substrate::plane_host::EngineHost;
 
 use crate::unit::meter::MeterFacts;
 
+// R4-0a. THE ALREADY-NEUTRAL HALF, NAMED AT ITS TRUE HOME. `fire_stage_taps`, `APPLICATION_JSON`
+// and `KIND_NOT_FOUND` are defined in the neutral substrate and were reaching this step only
+// because `engine/mod.rs` re-exports them into the flattened engine namespace. Naming the substrate
+// directly is a BY-IDENTITY repoint — the very same items, resolved one hop earlier — so the bytes
+// this step emits cannot change, and one more engine name leaves the step files.
+use busbar_substrate::proxy::proxy_vocab::fire_stage_taps;
+use busbar_substrate::proxy::{APPLICATION_JSON, KIND_NOT_FOUND};
+
 use crate::engine::{
-    capture_stage_shape, fire_stage_taps, forwardable_client_header_names, EngineTables,
-    GateRejected, LazyBody, NativeRuntime, TapCell, UsageSink, WeightedLane, APPLICATION_JSON,
-    KIND_NOT_FOUND,
+    capture_stage_shape, forwardable_client_header_names, EngineTables, GateRejected, LazyBody,
+    NativeRuntime, TapCell, UsageSink, WeightedLane,
 };
 use crate::native_ingress::affinity_header_for;
 

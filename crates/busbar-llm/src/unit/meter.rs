@@ -397,7 +397,7 @@ pub fn meter(
             // card prices the same counts. Hoisted out of the accrual arm so a unit the walk already
             // posted still prices what it delivered — sealing is not a reason to spend nothing.
             let tier = reported
-                .map(crate::engine::usage::tier_usage)
+                .map(busbar_llm_codec::wire_shim::tier_usage)
                 .unwrap_or_default();
             if !ctx.accrued {
                 crate::engine::usage::ledger_and_meter(ctx.host, sink, lane, reported, &tier);
