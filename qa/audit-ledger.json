@@ -5815,7 +5815,7 @@
     "MEDIUM": 14,
     "LOW": 10
    },
-   "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red",
+   "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3: harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red",
    "auditor": "opus-oracle-auditor-b",
    "fixed_at": null,
    "rounds": [
@@ -5909,7 +5909,7 @@
       "MEDIUM": 14,
       "LOW": 12
      },
-     "report": "audits/oracle-tool-a.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): enumerate-cells swallows a corrupt cells.json and can shrink the corpus green; an improvement waiver can forgive a body-10 refusal; rigs-ledger fails open on a corrupt/missing baseline"
+     "report": "audits/oracle-tool-a.md — PARTIAL, tool busbar-oracle v0.2.3: enumerate-cells swallows a corrupt cells.json and can shrink the corpus green; an improvement waiver can forgive a body-10 refusal; rigs-ledger fails open on a corrupt/missing baseline"
     },
     {
      "round": 7,
@@ -5922,7 +5922,7 @@
       "MEDIUM": 14,
       "LOW": 10
      },
-     "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3 (572e0a9): harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red"
+     "report": "audits/oracle-tool-b.md — PARTIAL, tool busbar-oracle v0.2.3: harness-skew guard is one editable field; effects.egress hardcoded [] on concurrent cells; a cell PASS is gated on a file existing, three drivers cannot go red"
     }
    ]
   },
