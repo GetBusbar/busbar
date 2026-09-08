@@ -542,8 +542,23 @@ impl AuthMiddleware {
         // CACHE-EXEMPT: the arm never consults or writes the `CredentialCache` (revocation today is
         // per-request `verify_token` + a short denylist sync; caching a vkey verdict would widen the
         // revocation window to the cache TTL).
+        //
+        // That exemption covers the arm's OWN verdict and nothing else. The buffered-`Pass` rule
+        // above is keyed on the CHAIN's `Identified` return, not on which member produced it: a
+        // boxed module ahead of the arm has already done its round-trip, and the arm identifying is
+        // as much an `Identified` return as a boxed module's. Never flushing here meant a
+        // `chain: [<cacheable module>, keys]` node re-ran every passing module on every request,
+        // cache or not.
         if self.keys_in_chain {
-            return keys_arm_verdict(gov, candidate, now, expected_aud);
+            let verdict = keys_arm_verdict(gov, candidate, now, expected_aud);
+            if matches!(verdict, ChainVerdict::Identified { .. }) {
+                if let (Some(c), Some(cred), Some(g)) = (cache, candidate, cache_gen) {
+                    for name in &pending_pass {
+                        c.put(name, cred, &AuthOutcome::Pass, now, g);
+                    }
+                }
+            }
+            return verdict;
         }
         ChainVerdict::Denied
     }
@@ -2084,6 +2099,19 @@ impl AuthMiddleware {
     pub(crate) fn from_chain_for_test(
         chain: Vec<(String, Box<dyn AuthModule>)>,
         has_plugin_module: bool,
+    ) -> Self {
+        Self::from_chain_and_keys_for_test(chain, has_plugin_module, /* keys_in_chain = */ false)
+    }
+
+    /// [`AuthMiddleware::from_chain_for_test`] that can also declare the built-in `keys` ENGINE ARM
+    /// present. The real constructor only sets `keys_in_chain` from a `chain: [..., keys]` config,
+    /// which cannot be combined with the purpose-built cacheable modules in the tests (those are
+    /// hand-boxed, not resolvable by name), so a chain that mixes a cacheable module with the arm —
+    /// the shape whose buffered `Pass` rows the arm has to flush — is only reachable from here.
+    pub(crate) fn from_chain_and_keys_for_test(
+        chain: Vec<(String, Box<dyn AuthModule>)>,
+        has_plugin_module: bool,
+        keys_in_chain: bool,
     ) -> Self {
         Self {
             keys_in_chain: false,

@@ -1202,3 +1202,104 @@ fn a_cache_hit_does_not_extend_the_row_so_a_revocation_still_lands() {
         "the expired row sent the credential back to the module exactly once"
     );
 }
+
+/// The buffered-`Pass` flush belongs to the CHAIN's identified return, not to whichever member
+/// produced it — including the built-in `keys` ENGINE ARM.
+///
+/// The arm is cache-exempt for its OWN verdict (a vkey is re-verified per request, so caching one
+/// would widen the revocation window to the cache TTL), and that exemption was applied one step too
+/// widely: the arm returned without flushing the `Pass` rows the boxed modules AHEAD of it had
+/// already earned. Their round-trips were then repeated on every single request for the life of the
+/// deployment — a `chain: [<directory module>, keys]` node paid a directory lookup per request it
+/// had already paid for, and its cache never held the row that would have stopped it.
+///
+/// This is observable in the cache's contents, which is why it is proven here rather than argued:
+/// `flush_all()` counts the rows, and the leading module's `Pass` is either in there or it is not.
+#[test]
+fn the_keys_arm_flushes_the_passes_the_modules_ahead_of_it_earned() {
+    use crate::governance::{GovState, MemoryStore, NewKeySpec};
+    crate::metrics::init();
+    let store = std::sync::Arc::new(MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    let gov = GovState::new_with_signer(store, Some("admintok".to_string()), Some(signer))
+        .expect("governance state");
+    let (_key, secret) = gov
+        .mint_signed(
+            NewKeySpec {
+                name: "buffered-pass".to_string(),
+                allowed_pools: None,
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .expect("mint a signed key");
+    let secret = secret.as_str();
+
+    // A cacheable directory module that does not recognise a busbar-signed key, followed by the arm
+    // that does.
+    let auth = AuthMiddleware::from_chain_and_keys_for_test(
+        vec![(
+            "cacheable-pass".to_string(),
+            Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
+        )],
+        /* has_plugin_module = */ false,
+        /* keys_in_chain = */ true,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+
+    let verdict = auth.run_chain_cached(Some(secret), Some(&cache), Some(&gov), None);
+
+    assert!(
+        matches!(
+            verdict,
+            ChainVerdict::Identified {
+                resolved: Some(_),
+                ..
+            }
+        ),
+        "the keys arm resolves the vkey behind a passing module"
+    );
+    assert!(
+        cache
+            .get(crate::config::KEYS_MODULE, secret, crate::store::now())
+            .is_none(),
+        "the arm stays cache-exempt for its OWN verdict"
+    );
+    assert_eq!(
+        cache.flush_all(),
+        1,
+        "the leading module's Pass must be committed when the keys arm identifies — otherwise \
+         every request re-runs it"
+    );
+}
+
+/// The other half of the same rule: a chain whose keys arm DENIES must still admit nothing. The
+/// flush is keyed on the arm identifying, so an unauthenticated caller leaves no trace, exactly as
+/// it does when a boxed module ends the chain.
+#[test]
+fn a_denying_keys_arm_admits_no_buffered_pass() {
+    let auth = AuthMiddleware::from_chain_and_keys_for_test(
+        vec![(
+            "cacheable-pass".to_string(),
+            Box::new(CacheablePass) as Box<dyn crate::auth::AuthModule>,
+        )],
+        /* has_plugin_module = */ false,
+        /* keys_in_chain = */ true,
+    );
+    let cache = crate::auth_cache::CredentialCache::new();
+
+    let verdict = auth.run_chain_cached(Some("not-a-signed-key"), Some(&cache), None, None);
+
+    assert_eq!(verdict, ChainVerdict::Denied);
+    assert_eq!(
+        cache.flush_all(),
+        0,
+        "a chain that ends denied must admit nothing to the cache, buffered Pass included"
+    );
+}
