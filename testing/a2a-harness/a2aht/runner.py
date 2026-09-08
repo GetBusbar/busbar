@@ -20,6 +20,77 @@ TIER_ORDER = {EVERY_COMMIT: 0, PULL_REQUEST: 1, PRE_RELEASE: 2}
 BAD_OUTCOMES = (FAIL, ERROR, NOT_CONFIGURED, "DEVIATION_FIXED",
                 "DEVIATION_CHANGED")
 
+# THE REQUIRED PROFILE: rows where INAPPLICABLE is a HOLE, not a legal absence.
+#
+# INAPPLICABLE exists for capabilities the spec makes optional -- an unsigned card (SPEC 8.4 makes
+# signing a MAY), a card with no skills, a binding this run did not select. Those absences are
+# honest and they are not red.
+#
+# THE DEFECT THIS CLOSES. INAPPLICABLE was not in BAD_OUTCOMES for ANY row, and a large part of the
+# battery reaches its Inapplicable branch through ONE condition: "the agent answered with a Message,
+# so there is no task". An agent that answers every request with a Message therefore turned the
+# whole task lifecycle -- get, cancel, terminal-state refusal, context stability, history -- into a
+# row of quiet INAPPLICABLEs and scored BATTERY GREEN, having proven nothing about the half of A2A
+# that carries work. A green tick over a lifecycle nobody exercised is the same false green as an
+# unarmed leg.
+#
+# So these rows are REQUIRED: the spec obliges every A2A server to serve a card and to run the task
+# lifecycle, and a run that could not reach them has not judged the agent, whatever the reason. It
+# is deliberately a SPINE and not "everything": each id below is a row whose INAPPLICABLE means the
+# harness never got to the mandatory surface, never a row that is INAPPLICABLE because an OPTIONAL
+# capability was legally not declared. The pinned controls report INAPPLICABLE on none of them.
+REQUIRED_PROFILE = frozenset([
+    "card.served",
+    "card.required_fields",
+    "core.send_message_returns_task_or_message",
+    "core.task_state_is_defined_enum",
+    "core.blocking_send_reaches_settled_state",
+    "core.get_task_roundtrip",
+    "core.unknown_task_is_task_not_found",
+    "core.context_id_present_and_stable",
+    "core.terminal_task_refuses_new_messages",
+    "core.cancel_semantics",
+])
+
+# THE ASSERTED-ROW FLOOR.
+#
+# A row is ASSERTED when at least one assert_must ran inside it. OBSERVED rows assert nothing by
+# construction, INAPPLICABLE rows never reached their assertions, and a PASS with zero assertions is
+# a scenario that looked at the target and judged nothing. A run made mostly of those is a report
+# about a target nobody tested, and it prints BATTERY GREEN. The floor is a FRACTION of the rows the
+# run selected rather than a fixed count, because the count legitimately moves with --tier, --role
+# and --only; the pinned controls sit between 58% and 74%.
+MIN_ASSERTED_FRACTION = 0.40
+MIN_ASSERTED_ROWS = 10
+
+
+def is_bad(result):
+    """Is this row red? A dict as written into the report."""
+    if result["outcome"] in BAD_OUTCOMES:
+        return True
+    return (result["outcome"] == INAPPLICABLE
+            and result["id"] in REQUIRED_PROFILE)
+
+
+def asserted_row_shortfall(results):
+    """None if the run asserted enough, else a human-readable refusal.
+
+    Kept separate from the per-row verdicts because it is a property of the RUN: no individual row
+    is wrong, and the run as a whole still proves nothing.
+    """
+    if not results:
+        return ("the run produced NO rows at all, so it judged nothing.")
+    asserted = [r for r in results if r.get("assertions")]
+    floor = max(MIN_ASSERTED_ROWS, int(len(results) * MIN_ASSERTED_FRACTION))
+    if len(asserted) >= floor:
+        return None
+    return (
+        "ASSERTED-ROW FLOOR: only %d of %d rows in this run actually ran a "
+        "spec assertion against the target (floor %d). The rest observed, were "
+        "inapplicable, or asserted nothing, so this number is a report about a "
+        "target that was barely tested. A run this thin must not print GREEN."
+        % (len(asserted), len(results), floor))
+
 
 # If the battery ever shrinks below this, something has stopped being
 # registered and the suite is quietly testing less than it claims. A count
@@ -181,8 +252,12 @@ def print_human(rep, stream=sys.stdout, verbose=False):
              INAPPLICABLE: 8}
     for res in sorted(rep["results"], key=lambda r: (order.get(r["outcome"], 9),
                                                      r["id"])):
-        w("  %-14s %-46s %s\n" % (res["outcome"], res["id"], res["role"]))
-        if res["outcome"] in BAD_OUTCOMES:
+        w("  %-14s %-46s %s%s\n" % (res["outcome"], res["id"], res["role"],
+                                    "  <-- REQUIRED BY THE PROFILE"
+                                    if (res["outcome"] == INAPPLICABLE
+                                        and res["id"] in REQUIRED_PROFILE)
+                                    else ""))
+        if is_bad(res):
             w("      defect  %s\n" % _wrap(res["defect"], 14))
             if res["detail"]:
                 w("      detail  %s\n" % _wrap(res["detail"].strip(), 14))
@@ -222,7 +297,27 @@ def print_human(rep, stream=sys.stdout, verbose=False):
     w("  " + "  ".join("%s=%d" % (k, counts[k]) for k in sorted(counts))
       + ("   [roles: %s]" % ",".join(audit["roles_run"]) if audit else "")
       + "\n")
-    bad = sum(counts.get(o, 0) for o in BAD_OUTCOMES)
+    bad = sum(1 for r in rep["results"] if is_bad(r))
+
+    # THE PROFILE HOLES, NAMED. A required row that could not be reached is not a smaller battery,
+    # it is an unjudged obligation, and the reader must see which one.
+    holes = [r for r in rep["results"]
+             if r["outcome"] == INAPPLICABLE and r["id"] in REQUIRED_PROFILE]
+    if holes:
+        w("\n  REQUIRED ROWS THAT NEVER RAN (%d). Every A2A server owes these; an\n"
+          "  INAPPLICABLE here is a hole in the verdict, not a legal absence:\n" % len(holes))
+        for r in sorted(holes, key=lambda x: x["id"]):
+            w("    %-46s %s\n" % (r["id"], _wrap(r["detail"] or "no reason recorded", 48)))
+
+    # The floor is a property of a CONFORMANCE verdict. The governance probe asserts nothing by
+    # construction — it observes policy and says so, and it gates on nothing — so applying a floor
+    # meant for conformance would print a red banner over a tool that is working exactly as designed.
+    is_conformance = not (rep.get("meta") or {}).get("not_a_conformance_result")
+    shortfall = asserted_row_shortfall(rep["results"]) if is_conformance else None
+    if shortfall:
+        bad += 1
+        w("\n  %s\n" % _wrap(shortfall, 2))
+
     w("  %s\n" % ("BATTERY GREEN" if bad == 0
                   else "BATTERY RED: %d test(s) need attention" % bad))
     w("\n")
