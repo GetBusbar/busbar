@@ -547,6 +547,91 @@ pub trait Resolver {
     fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String>;
 }
 
+/// THE REAL RESOLVER: the system resolver, reached through tokio.
+///
+/// Returns EVERY address the name answered with, de-duplicated but otherwise untouched and
+/// unsorted. Filtering or re-ordering here would quietly decide which address the guard gets to
+/// judge, and the guard's rule is that it judges all of them.
+///
+/// ## Why the one body lives beside the trait rather than in a plugin
+///
+/// This was `busbar_a2a::a2a::transport::TokioResolver`, and being there made it unreachable from
+/// anything that is not the A2A plugin: the composition root binds a `Resolver` into the A2A plane's
+/// kernel bindings, and a root that reached into a plugin crate for one would be the kind-isolation
+/// rule broken by the very seam the guard exists to hold. Moved here, beside the trait it
+/// implements, there is exactly ONE name resolution in the tree — the plugin re-exports this type
+/// under its old name, and the root wraps it for the trust unit's identically-shaped trait. Two
+/// resolvers is how a guard ends up judging one answer while a dial uses another.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SystemResolver;
+
+impl Resolver for SystemResolver {
+    fn resolve(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+        self.lookup(host)
+    }
+}
+
+impl SystemResolver {
+    /// The same resolution, reachable WITHOUT naming the trait.
+    ///
+    /// The body is here rather than in the trait method, and that is not a style choice: the
+    /// composition root has to present this resolution to `busbar_unit_trust::net::Resolver`, a
+    /// second, identically-shaped seam that this crate may not name and that may not name this
+    /// crate. Reaching the body through the trait would make the root name TWO symbols of a retiring
+    /// crate — the type and the trait — where one will do, and the ratchet that measures how much of
+    /// the retiring surface the root still names counts symbols, not lines.
+    ///
+    /// # Errors
+    ///
+    /// The name did not resolve, or a runtime could not be started to ask.
+    pub fn lookup(&self, host: &str) -> Result<Vec<IpAddr>, String> {
+        // Port zero: this seam answers about ADDRESSES. The port belongs to the URL and is applied
+        // by the transport, so asking the resolver about one would be asking a second question.
+        let target = format!("{host}:0");
+        on_a_dedicated_runtime("agent card name lookup", move |rt| {
+            rt.block_on(async move {
+                let answered = tokio::net::lookup_host(target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut out: Vec<IpAddr> = Vec::new();
+                for sa in answered {
+                    let ip = sa.ip();
+                    // A name answering the same address under both a v4 and a v6 query is ONE
+                    // fact, not two. De-duplication is not filtering: nothing that was answered is
+                    // dropped, so the guard still sees every distinct address.
+                    if !out.contains(&ip) {
+                        out.push(ip);
+                    }
+                }
+                Ok(out)
+            })
+        })
+    }
+}
+
+/// Run one future to completion on a DEDICATED thread with its own current-thread runtime.
+///
+/// Not `Handle::current().block_on(..)` and not `block_in_place`: both make assumptions about the
+/// caller (that there IS a runtime, that it is multi-threaded) that a synchronous seam cannot make.
+/// A thread of its own has no such precondition and cannot panic on the caller's behalf.
+fn on_a_dedicated_runtime<T, F>(what: &str, body: F) -> Result<T, String>
+where
+    F: FnOnce(&tokio::runtime::Runtime) -> Result<T, String> + Send,
+    T: Send,
+{
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("{what}: could not start a runtime: {e}"))?;
+            body(&rt)
+        })
+        .join()
+        .map_err(|_| format!("{what}: the worker thread panicked"))?
+    })
+}
+
 /// Split an `http(s)://host[:port][/path]` URL into `(https, host, port, path)`.
 ///
 /// Hand-written because what is wanted is a STRICT RECOGNISER. A permissive parser's job is to find
