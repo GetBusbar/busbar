@@ -75,9 +75,7 @@ impl ErrKind {
             ErrKind::Validation => AdminError::Validation(String::new()),
             ErrKind::VersionConflict => AdminError::VersionConflict(String::new()),
             ErrKind::Conflict => AdminError::Conflict(String::new()),
-            ErrKind::Forbidden => AdminError::Forbidden {
-                needed: Scope::Full,
-            },
+            ErrKind::Forbidden => super::forbidden(Scope::Full),
         }
     }
 
