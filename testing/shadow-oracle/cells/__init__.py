@@ -265,13 +265,19 @@ def llm_cells(inv: dict) -> list[dict]:
     # is precisely how a 14% under-count survived a full golden. The diagonal is the striking case
     # because a same-dialect hop reads back bytes it has just written, so it pins the wire shape
     # (the term BESIDE the prompt count, `totalTokenCount` reconciling) and the ledger row together.
-    # Same SKIP-able posture as the citation and cachePoint cells above: `needs_fixture` until the
-    # mock answers the `tool-use` verb and the integrator records the cell from the published 1.5.5
-    # binary, so it reads as a NAMED golden gap rather than a silent pass.
+    # Same SKIP-able posture as the citation and cachePoint cells above — but WITH NO mock_control,
+    # and that absence is the point. This cell used to declare `{"tool-use": true}`, a verb the
+    # pinned mock does not implement; the mock's fallback for a control it cannot resolve is a
+    # HEALTHY 200, so the cell would have recorded the tool-less happy path while claiming to pin the
+    # tool-use token term. Rather than invent a verb here, the control is dropped and the cell stays
+    # `needs_fixture`, exactly like the bedrock cachePoint cell above whose fixture is also the only
+    # thing it is waiting on. The gap is NAMED in accepted-gaps.json ("needs a tool-use verb in the
+    # pinned mock; product decision on the six-dialect tool-use response shape"): recording it needs
+    # both a mock that answers with `usageMetadata.toolUsePromptTokenCount` AND that product
+    # decision, neither of which the oracle may make for itself.
     if "gemini" in dialects:
         c = cell("gemini", "gemini", *GEMINI_TOOL_USE_TOKENS_OUTCOME)
         c["needs_fixture"] = True
-        c["mock_control"] = {"tool-use": True}
         cells.append(c)
     return cells
 
