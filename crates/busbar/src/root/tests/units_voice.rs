@@ -431,7 +431,10 @@ fn the_handshake_draws_no_request_slot_and_posts_nothing() {
     let kernel = Kernel::new();
     let node = node(serviceable());
     let unit = VoiceUnit::new(&node, UnitShape::SessionOpen, 7, 1_700_000_000);
-    let Ended::Settled { requests, fee, end } = run(&kernel, &unit) else {
+    let Ended::Settled {
+        requests, fee, end, ..
+    } = run(&kernel, &unit)
+    else {
         panic!("the exit path settles a handshake like anything else");
     };
     assert_eq!(requests, 0, "a handshake reaches no upstream candidate");

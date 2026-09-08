@@ -66,6 +66,33 @@ fn every_step_runs_once_in_order() {
     assert!(matches!(ended, Ended::Settled { .. }));
 }
 
+/// THE ENDING CARRIES WHAT ENCODE WROTE.
+///
+/// The loop has always RUN the Encode step — `every_step_runs_once_in_order` above pins that it is
+/// called, and it always was — and then thrown its answer away. A driver above the loop was left
+/// with a completed unit and no bytes, so it could render a refusal (reconstructible from the
+/// ending) but could not answer a unit that succeeded, because a completed unit's answer exists
+/// exactly once and only inside the step that wrote it.
+///
+/// This is the assertion that "the step ran" was never the same claim as "the answer survived".
+#[test]
+fn a_completed_ending_carries_the_frame_the_encode_step_wrote() {
+    let kernel = Kernel::new();
+    let units = TestUnits::passing();
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    let ended = run(&units, &kernel, &cell, &canary);
+    let Ended::Settled { end, frame, .. } = ended else {
+        panic!("the passing unit settles");
+    };
+    assert_eq!(end.outcome(), Outcome::Completed);
+    assert_eq!(
+        frame.as_ref(),
+        Some(&common::encoded_frame()),
+        "the ending hands back the very frame this fixture's Encode step wrote"
+    );
+}
+
 /// THE VERIFY STEP CAN SEAL WHAT IT VERIFIED.
 ///
 /// Sealing a destination takes the trust token, and the loop lends it beside the unit token at
@@ -243,6 +270,9 @@ fn every_unit_end_leaves_through_the_one_exit() {
             },
             outcome,
             true,
+            // This test drives `exit` directly, so no Encode step ran and there are no bytes to
+            // carry: the ending is being read for its posting, not for its answer.
+            None,
         );
         match ended {
             Ended::Settled { end, .. } => assert_eq!(end.outcome(), outcome),
@@ -277,6 +307,7 @@ fn a_unit_is_settled_exactly_once() {
         },
         Outcome::Completed,
         true,
+        None,
     );
     assert!(matches!(second, Ended::AlreadySettled));
     assert_eq!(canary.counts().settlements, 1);
@@ -340,8 +371,20 @@ fn a_child_spending_against_its_parent_balances_the_canary_too() {
     // nothing, because the reservation behind it is the parent's, and its posting is clean —
     // nothing about it is late, because the parent was still open when it ended.
     match ended {
-        Ended::Settled { end, requests, fee } => {
+        Ended::Settled {
+            end,
+            requests,
+            fee,
+            frame,
+        } => {
             assert_eq!(end.outcome(), Outcome::Completed);
+            // The child ran Encode like any other unit, so its ending carries the child's OWN
+            // bytes. The parent carries the child's spend; it does not carry the child's answer.
+            assert_eq!(
+                frame.as_ref(),
+                Some(&common::encoded_frame()),
+                "the child's ending carries what its own Encode step wrote"
+            );
             let posted = end.posted().expect("the child posts like any other unit");
             assert_eq!(posted.settled(), 250);
             assert_eq!(
@@ -462,6 +505,7 @@ fn the_leases_go_back_on_every_end_whatever_it_was() {
             },
             outcome,
             true,
+            None,
         );
         assert_eq!(gauge.count(&bucket), 0, "after {outcome:?}");
     }
