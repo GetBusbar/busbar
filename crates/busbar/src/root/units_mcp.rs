@@ -71,9 +71,16 @@ use busbar_unit_ledger::{BucketId, BucketScope, CapDimension, TotalsKey};
 use busbar_unit_scope::{Grants, PolicyView, Refused, Scope};
 use busbar_unit_trust::destination::{KindFacts, OriginKind};
 use busbar_unit_trust::guard::PoolView;
-use busbar_unit_trust::lane::{BreakerQuery, BreakerView};
-use busbar_unit_trust::net::{Denylist, GuardPolicy, Resolver};
+use busbar_unit_trust::lane::BreakerView;
 use busbar_unit_trust::{Trust, VerifyRequest};
+// THE NAME THE SHARED VIEW LEFT BEHIND. `Resolver` is read by `crate::root::registrations` now, but
+// this file's own `NetSeam` callers still spell it here, so it stays named rather than dropped.
+pub use busbar_unit_trust::net::Resolver;
+
+// The shared trust-unit views, over this plane's registrations. `NetSeam` is re-exported rather than
+// re-declared: the callers in this file and its tests already name it here, and one seam that two
+// planes hand to one guard is exactly the thing that must not exist twice.
+pub use crate::root::registrations::{KindRules, Kinds, NetSeam};
 use busbar_unit_usage::{
     meter as fold_usage, KernelCounts, LegDeclaration, LocatedValue, Metered, RetainedLocatorValues,
 };
@@ -400,29 +407,49 @@ pub fn authenticate_bound(
 /// protocol reaches a record rather than a server, and whether such a reach is permitted is a
 /// question about the plane's own declarations: is the schema one it declared, and is the operation
 /// one that schema declares? Both answers are on the plane crate, so the root asks it rather than
-/// keeping a second table.
-pub struct Catalogue<'r> {
-    plane: McpPlane,
-    schema: RecordSchemaId,
-    op: &'static str,
-    lanes: Vec<LaneId>,
-    net: NetSeam<'r>,
-}
-
-/// What the network guard is run over, as this root binds it.
+/// keeping a second table — carried onto the shared view as `KindRules::record_ok`, a function
+/// pointer at the plane's own tables.
 ///
-/// The three halves travel together because they are one decision: which resolver answers, how far
-/// the policy lets a hop reach, and what the operator added to or carved out of the metadata
-/// denylist. Passing them singly is how a caller ends up guarding with one deployment's policy and
-/// another deployment's denylist.
-#[derive(Clone, Copy)]
-pub struct NetSeam<'r> {
-    /// The one resolution the guard makes goes through here.
-    pub resolver: &'r dyn Resolver,
-    /// How far this plane's hops may reach.
-    pub policy: GuardPolicy,
-    /// The deployment's additions to and carve-outs from the metadata denylist.
-    pub denylist: &'r Denylist,
+/// ONE TYPE, SHARED WITH THE OTHER PLANE THAT REGISTERS PEERS. `Catalogue` used to be an mcp-shaped
+/// implementation of `KindFacts` and it was the only one in the root. The A2A plane needs the same
+/// trait over a registration of exactly the same shape — `busbar_plane_a2a::Agent` and
+/// `busbar_plane_mcp::Server` carry the same four fields — so rather than growing a second,
+/// a2a-shaped copy of the guard call, the allow-list conjunct and the lane-index mapping, the
+/// implementation moved to [`crate::root::registrations::Kinds`] and this is its MCP instantiation.
+/// No answer changed; what changed is that there is one of each rather than two.
+pub type Catalogue<'r> = Kinds<'r, Server>;
+
+/// The six facts that are THIS plane's rather than the shared view's.
+///
+/// Data, not a branch. See [`crate::root::registrations::KindRules`] for why a plane-shaped `match`
+/// in the shared file would be the wrong shape.
+const MCP_RULES: KindRules = KindRules {
+    // The three transports a hop of this protocol is made over. A spawned server's "address" is a
+    // program, which is why stdio is in the list.
+    transports: &[
+        claims::TRANSPORT_HTTP,
+        claims::TRANSPORT_SSE,
+        claims::TRANSPORT_STDIO,
+    ],
+    // This plane reaches no administrative verb. Its two introspection verbs are read through the
+    // admin plane's own surface, under that plane's claim and that plane's scope.
+    verb_scope_held: false,
+    // The one nested destination is the reference plane's chat class, named by a key rather than
+    // reached directly. Whether that plane is registered is the registry's answer, and the boot
+    // seal is where it is asked.
+    nested_plane_ok: true,
+    // This plane names no peer.
+    peer_lease_live: false,
+    // And no upgrade: the streamed surface is its own claim on its own transport, reached by a
+    // request rather than by an in-band handoff.
+    upgrade_ok: false,
+    record_ok: mcp_record_ok,
+};
+
+/// Whether one record leg is one this plane declared, asked of the plane's own tables.
+fn mcp_record_ok(schema: RecordSchemaId, op: &'static str) -> bool {
+    <McpPlane as PlaneMeta>::RECORD_SCHEMAS.contains(&schema)
+        && records::operations_for(schema).contains(&op)
 }
 
 impl<'r> Catalogue<'r> {
@@ -434,14 +461,7 @@ impl<'r> Catalogue<'r> {
         op: &'static str,
         net: NetSeam<'r>,
     ) -> Self {
-        let lanes = plane.servers().iter().map(|s| s.lane).collect();
-        Catalogue {
-            plane,
-            schema,
-            op,
-            lanes,
-            net,
-        }
+        Kinds::over(plane.servers(), schema, op, MCP_RULES, net)
     }
 
     /// The facts for a unit that reaches no record at all — a hop straight to a server.
@@ -449,209 +469,28 @@ impl<'r> Catalogue<'r> {
     pub fn upstream_only(plane: McpPlane, net: NetSeam<'r>) -> Self {
         Catalogue::new(plane, records::SCHEMA_CATALOGUE, records::OP_SCAN, net)
     }
-
-    /// Where one lane sits in the registered-server table, which is the position the breaker keys
-    /// its cells by.
-    fn lane_index(&self, lane: &LaneId) -> Option<usize> {
-        self.plane.servers().iter().position(|s| s.lane == *lane)
-    }
-
-    /// The registered server one destination names, where it names one.
-    fn server_for(&self, dest: &DestinationFacts) -> Option<&'static Server> {
-        let lane = dest.lane()?;
-        self.plane.servers().iter().find(|s| s.lane == lane)
-    }
-}
-
-impl KindFacts for Catalogue<'_> {
-    fn net_guard_passes(&self, dest: &DestinationFacts) -> bool {
-        match busbar_unit_trust::net::check_destination_facts(
-            dest,
-            &[],
-            self.net.resolver,
-            self.net.policy,
-            self.net.denylist,
-        ) {
-            // Only an upstream is dialled at an address; every other kind of this plane's
-            // destinations reaches where it is going without one, so "not an upstream" is this
-            // caller's pass rather than its refusal. A spawned stdio server has an address that is
-            // a program, and the guard answers `Ok(None)` for it for the same reason.
-            Ok(_) | Err(busbar_unit_trust::NetworkRefusal::NotAnUpstream) => true,
-            Err(_) => false,
-        }
-    }
-
-    fn allow_listed(&self, dest: &DestinationFacts) -> bool {
-        match dest {
-            // A hop is permitted when it reaches a server this deployment registered. The plane with
-            // nothing registered answers with an empty host and an empty lane precisely so this
-            // returns false rather than the plane inventing somewhere to go.
-            DestinationFacts::Upstream { address, .. } => {
-                address.authority().is_some_and(|a| !a.is_empty())
-                    && self.server_for(dest).is_some()
-            }
-            DestinationFacts::SessionUpstream { .. } => self.server_for(dest).is_some(),
-            // Everything else stays on this node.
-            _ => true,
-        }
-    }
-
-    fn transport_key_resolves(&self, dest: &DestinationFacts) -> bool {
-        match dest {
-            DestinationFacts::Upstream { transport, .. } => [
-                claims::TRANSPORT_HTTP,
-                claims::TRANSPORT_SSE,
-                claims::TRANSPORT_STDIO,
-            ]
-            .contains(transport),
-            _ => true,
-        }
-    }
-
-    fn lane_permitted_for_op_class(&self, lane: &str) -> bool {
-        self.lanes.iter().any(|l| l.as_str() == lane)
-    }
-
-    fn session_upstream_ok(&self) -> bool {
-        // A held stream of this protocol lives inside one connection and is paired at the moment it
-        // opens; there is no way to reach a session's upstream that did not come from that pairing.
-        true
-    }
-
-    fn session_principal_matches(&self) -> bool {
-        true
-    }
-
-    fn client_selector_ok(&self) -> bool {
-        // The only selector this plane names is the opener, which resolves for as long as the unit
-        // that opened the stream is the unit being delivered to.
-        true
-    }
-
-    fn await_deadline_ok(&self) -> bool {
-        // This plane's client legs deliver; none of them awaits a reply, so there is no deadline to
-        // be out of range.
-        true
-    }
-
-    fn verb_scope_held(&self) -> bool {
-        // This plane reaches no administrative verb. Its two introspection verbs are read through
-        // the admin plane's own surface, under that plane's claim and that plane's scope.
-        false
-    }
-
-    fn nested_plane_ok(&self) -> bool {
-        // The one nested destination is the reference plane's chat class, named by a key rather than
-        // reached directly. Whether that plane is registered is the registry's answer, and the boot
-        // seal is where it is asked.
-        true
-    }
-
-    fn plane_record_ok(&self) -> bool {
-        <McpPlane as PlaneMeta>::RECORD_SCHEMAS.contains(&self.schema)
-            && records::operations_for(self.schema).contains(&self.op)
-    }
-
-    fn peer_lease_live(&self) -> bool {
-        // This plane names no peer.
-        false
-    }
-
-    fn upgrade_ok(&self) -> bool {
-        // And no upgrade: the streamed surface is its own claim on its own transport, reached by a
-        // request rather than by an in-band handoff.
-        false
-    }
-
-    fn unit_price_within_max(&self, _dest: &DestinationFacts) -> bool {
-        // A card that states no maximum unit price has said nothing for a price to be over. Reading
-        // that silence as a ceiling of zero would exclude every registered server on every
-        // deployment whose card predates the field.
-        true
-    }
-
-    fn breaker_admits(&self, dest: &DestinationFacts, at: &BreakerQuery<'_>) -> bool {
-        // The mapping is this root's — a lane name is a position in the registered-server table and
-        // nothing outside here knows the order. The QUESTION is the query's, so the answer here is
-        // the same answer the pre-walk's filter gives about the same lane at the same moment.
-        match dest.lane().and_then(|lane| self.lane_index(&lane)) {
-            Some(index) => at.admits_lane(index),
-            // A destination priced on no registered lane has no position for the breaker to hold an
-            // opinion about; the allow-list conjunct beside this one has already refused it.
-            None => true,
-        }
-    }
 }
 
 /// What the guards read about this plane's pools.
 ///
-/// A pool here is one registered server, keyed the way the breaker keys it. The explicit empty scope
-/// list is the case worth naming: a key scoped to nothing denies every pool, which is a different
-/// answer from a key that names no restriction at all, and it is the rig's own verify cell.
-pub struct Pools {
-    plane: McpPlane,
-    scopes: Option<Vec<String>>,
-    has_key: bool,
-    priced: bool,
-}
+/// The MCP instantiation of the one shared [`crate::root::registrations::Pools`], for the reason
+/// [`Catalogue`] above gives: a pool here is one registered server, keyed the way the breaker keys
+/// it, under this plane's own region of the shared keyspace. The explicit empty scope list is the
+/// case worth naming — a key scoped to nothing denies every pool, which is a different answer from a
+/// key that names no restriction at all, and it is the rig's own verify cell.
+pub type Pools = crate::root::registrations::Pools<Server>;
 
 impl Pools {
     /// The view for one caller over one deployment's registrations.
     #[must_use]
     pub fn new(plane: McpPlane, scopes: Option<Vec<String>>, has_key: bool, priced: bool) -> Self {
-        Pools {
-            plane,
+        crate::root::registrations::Pools::over(
+            plane.servers(),
+            POOL_PREFIX_TOOL,
             scopes,
             has_key,
             priced,
-        }
-    }
-
-    /// The name of the server one pool key refers to, where it refers to one.
-    fn server_of(&self, pool: &str) -> Option<&'static Server> {
-        let name = pool.strip_prefix(POOL_PREFIX_TOOL).unwrap_or(pool);
-        self.plane.servers().iter().find(|s| s.id == name)
-    }
-}
-
-impl PoolView for Pools {
-    fn key_scopes(&self) -> Option<&[String]> {
-        self.scopes.as_deref()
-    }
-
-    fn pool_allowed(&self, pool: &str) -> bool {
-        match self.scopes.as_deref() {
-            // No restriction named: every registration is reachable.
-            None => true,
-            // An explicit list — including an explicitly empty one — is the whole of what is allowed.
-            Some(scopes) => {
-                let name = pool.strip_prefix(POOL_PREFIX_TOOL).unwrap_or(pool);
-                scopes.iter().any(|s| s == pool || s == name)
-            }
-        }
-    }
-
-    fn on_exhausted_fallback(&self, _pool: &str) -> Option<String> {
-        // A registration falls over to nothing. The protocol's own answer to an unreachable server
-        // is an error naming that server, and quietly serving a caller from a different server would
-        // be answering a question nobody asked.
-        None
-    }
-
-    fn is_configured(&self, name: &str) -> bool {
-        self.server_of(name).is_some()
-    }
-
-    fn pricing_enabled(&self) -> bool {
-        self.priced
-    }
-
-    fn is_unpriced(&self, name: &str) -> bool {
-        self.priced && self.server_of(name).is_none()
-    }
-
-    fn has_key(&self) -> bool {
-        self.has_key
+        )
     }
 }
 
