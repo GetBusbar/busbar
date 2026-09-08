@@ -780,15 +780,6 @@ STORE_FIXTURE_ENV = {
     "store-valkey": "VALKEY_URL",
 }
 
-# store plugin -> the env var whose value is the connection URL for its backend. store-persist.sh
-# reads the SAME map to build the plugin's `settings: { url: ... }`, so the cell's skip condition and
-# the fixture it would use can never name different variables.
-STORE_FIXTURE_ENV = {
-    "store-postgres": "BUSBAR_TEST_POSTGRES_URL",
-    "store-mysql": "BUSBAR_TEST_MYSQL_URL",
-    "store-valkey": "VALKEY_URL",
-}
-
 
 def plugin_cells() -> list[dict]:
     """The PUBLISHED 1.5.5-era plugins (plugin-digests.tsv) under the binary under test:
