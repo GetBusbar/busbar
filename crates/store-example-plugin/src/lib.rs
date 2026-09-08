@@ -1,13 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! A **hermetic trivial `kind: store` plugin** — a `cdylib` exporting the store C ABI, wrapping the
-//! in-tree `MemoryStore`. It is the in-tree ABI-crossing coverage for the `kind: store` seam (the
-//! store-seam analogue of `busbar-secret-example-plugin`). It does no real persistence beyond
-//! `MemoryStore`'s own in-process map; its
-//! job is to be a real, loadable, signable store plugin for the ABI to round-trip through, both in
-//! this crate's own boundary tests and as the fixture `plugin-ci.yml`'s install-and-serve CI step
-//! packs and installs against a real running busbar.
+//! A **hermetic trivial `kind: store` plugin** — a `cdylib` exporting the store C ABI over this
+//! crate's OWN in-process backend, `RamStore` (see `src/ram.rs`). It is the in-tree ABI-crossing
+//! coverage for the `kind: store` seam (the store-seam analogue of `busbar-secret-example-plugin`).
+//! It does no real persistence beyond `RamStore`'s own in-process maps; its job is to be a real,
+//! loadable, signable store plugin for the ABI to round-trip through, both in this crate's own
+//! boundary tests and as the fixture `plugin-ci.yml`'s install-and-serve CI step packs and installs
+//! against a real running busbar.
+//!
+//! ## STANDALONE ON PURPOSE
+//!
+//! This crate is the copy-me template for `kind: store`, so it names NO other store: not
+//! `busbar-store-memory`, not any sibling instance of its own kind. `docs/design/PLUGIN-TREE.md` §4
+//! admits no exception to that rule, and a template that only compiles because the manifest
+//! allow-list waived it for the first-party copy teaches every third-party store plugin a shape that
+//! fails `kind-isolation:deps` on the day it ships. Everything this plugin needs is in this crate.
 //!
 //! ## The one exception: `{"durable_path": "…"}`
 //!
@@ -15,11 +23,11 @@
 //! that keeps A2A task rows, task provenance events and MCP call records on DISK. It exists for one
 //! reason: DURABILITY ACROSS A RESTART cannot be proven against a store whose state dies with the
 //! process, and the durability of the A2A task table is a product claim that had never been
-//! exercised over the path a deployment actually takes (the plugin ABI). `MemoryStore` survives one
+//! exercised over the path a deployment actually takes (the plugin ABI). `RamStore` survives one
 //! plugin handle and no more, so a "write, restart, read it back" test needs a backend that puts
 //! bytes somewhere a second `busbar_open` can find them.
 //!
-//! NO config still means `MemoryStore`, so the CI install-and-serve fixture and every existing
+//! NO config still means `RamStore`, so the CI install-and-serve fixture and every existing
 //! over-the-ABI test are untouched. A config that is PRESENT but unreadable is a load error: the
 //! whole point of the durable mode is that the rows are on disk, and a plugin that quietly opens a
 //! RAM store because it could not parse the line naming the file has taken that away silently.
@@ -28,11 +36,12 @@ use busbar_api::{
     MeteringDelta, MeteringRow, PlaneDisposition, PlaneRecord, PlaneSelector, Store, StoreError,
     StoreResult, UsageLedger, VirtualKey,
 };
-use busbar_store_memory::MemoryStore;
+mod ram;
+use ram::RamStore;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-/// The plugin's optional config. Every field optional; an ABSENT body means "`MemoryStore`, no
+/// The plugin's optional config. Every field optional; an ABSENT body means "`RamStore`, no
 /// config", which is this fixture's original and default posture. A present body must parse.
 #[derive(serde::Deserialize)]
 struct Cfg {
@@ -41,20 +50,20 @@ struct Cfg {
 }
 
 /// Construct the module. An EMPTY config means "no config at all", which is this fixture's original
-/// posture: a wrapped `MemoryStore` that takes none. Anything else must PARSE — a config the
+/// posture: a wrapped `RamStore` that takes none. Anything else must PARSE — a config the
 /// operator wrote and this plugin could not read is a load error, not a silent demotion to RAM. That
 /// downgrade is the dangerous shape: a stray trailing comma in `{"durable_path": "/var/lib/…"}`
 /// turned a durable store into an ephemeral one, the plugin loaded clean, and the rows only stopped
 /// existing at the next restart.
 fn open(cfg: &str) -> Result<Box<dyn Store>, String> {
     if cfg.trim().is_empty() {
-        return Ok(Box::new(MemoryStore::new()));
+        return Ok(Box::new(RamStore::new()));
     }
     let parsed: Cfg = serde_json::from_str(cfg)
         .map_err(|e| format!("invalid store-example plugin config: {e}"))?;
     match parsed.durable_path {
         Some(path) => Ok(Box::new(FileStore::open(PathBuf::from(path))?)),
-        None => Ok(Box::new(MemoryStore::new())),
+        None => Ok(Box::new(RamStore::new())),
     }
 }
 
@@ -146,12 +155,12 @@ struct TaskEventBody {
 
 /// A JSON-file-backed store. The A2A task and MCP call-log methods are REAL — they read and write
 /// `path`, so a row written by one plugin handle is found by the next one. Every other `Store`
-/// method delegates to an inner `MemoryStore` (the required ones) or keeps the trait default: this
+/// method delegates to an inner `RamStore` (the required ones) or keeps the trait default: this
 /// fixture exists to prove task durability over the ABI, and pretending to durably store keys and
 /// credentials it never reads back would be exactly the kind of claim this crate is here to catch.
 struct FileStore {
     path: PathBuf,
-    inner: MemoryStore,
+    inner: RamStore,
     /// Serialises this handle's own read-modify-write cycles. It holds no DATA, deliberately — see
     /// [`FileStore::load`].
     gate: Mutex<()>,
@@ -167,7 +176,7 @@ impl FileStore {
         Self::load_from(&path).map_err(|e| e.0)?;
         Ok(Self {
             path,
-            inner: MemoryStore::new(),
+            inner: RamStore::new(),
             gate: Mutex::new(()),
         })
     }
@@ -569,7 +578,7 @@ impl FileStore {
 }
 
 impl Store for FileStore {
-    // ── delegated to the inner MemoryStore (the methods the trait requires) ──────────────────
+    // ── delegated to the inner RamStore (the methods the trait requires) ─────────────────────
     fn put_key(&self, key: &VirtualKey) -> StoreResult<()> {
         self.inner.put_key(key)
     }

@@ -892,7 +892,6 @@ dependencies = [
  "busbar-api",
  "busbar-plugin-sdk",
  "busbar-plugin-testkit",
- "busbar-store-memory",
  "libc",
  "serde",
  "serde_json",
