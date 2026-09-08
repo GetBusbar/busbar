@@ -868,6 +868,56 @@ fn a_stranded_straddling_fee_would_hold_the_budget_cap_shut() {
     );
 }
 
+/// A straddling request must read the LIVE cell's count for the CHECK, not treat the rolled cell as
+/// a fresh window — the pass-1 half of the same straddle the charge and refund cases above pin.
+///
+/// A concurrent admission has already rolled the cell into the newer minute and filled it to its
+/// requests cap. Our request pins an arrival epoch in the OLDER minute; if the check read that as a
+/// fresh window (`==` rather than `>=` against the live cell's `window_start`), it would see zero
+/// used and admit over the cap, and PASS 2 would then charge the same over-cap cell in place — the
+/// exact split `decide.rs:319-325` says the two passes exist to prevent.
+#[test]
+fn a_straddling_check_reads_the_live_cells_count_and_is_blocked_at_its_cap() {
+    let d = door();
+    let p = no_card(0);
+    let t = table(&[(
+        "g",
+        group_cfg(
+            None,
+            true,
+            vec![limit(LimitMetric::Requests, 1, Some(MINUTE))],
+        ),
+    )]);
+    let c = chain(&t, "vk_req_straddle", Some("g"));
+
+    let later = 1_700_000_100;
+    let earlier = 1_700_000_099;
+    assert_ne!(
+        crate::window::budget_window(MINUTE, earlier),
+        crate::window::budget_window(MINUTE, later),
+        "the two epochs have to be in different minutes for this to be a straddle at all"
+    );
+
+    // A concurrent admission rolls the cell into the newer minute and fills its cap of 1.
+    d.try_admit(&p, &c, "", later)
+        .expect("the roller admits and fills the cap");
+
+    // Our request's pinned arrival epoch is in the OLDER minute. If the check treated that as a
+    // fresh window it would admit; it must instead read the live, already-full cell and refuse.
+    assert_blocked(
+        d.try_admit(&p, &c, "", earlier).unwrap_err(),
+        "g",
+        Metric::Requests,
+        Some(MINUTE),
+        true,
+    );
+    assert_eq!(
+        d.cells().snapshot("group:g@minute").expect("cell").requests,
+        1,
+        "the refused straddler must not have been charged"
+    );
+}
+
 /// A budget block whose limit declared a downgrade NAMES the downgrade pool in the refusal, so the
 /// caller can re-admit there; the most restrictive of two merged budgets is the one whose
 /// behaviour governs; and a plain budget block still carries no downgrade.
