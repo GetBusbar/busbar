@@ -365,6 +365,65 @@ fn build_info_line_format_is_locked() {
     );
 }
 
+/// THE `pgo=` FIELD IS A FUNCTION OF THE FLAGS RUSTC WAS GIVEN, AND OF NOTHING ELSE.
+///
+/// `build.rs`'s header says the stamp exists so a build-config mismatch is impossible to
+/// MISDIAGNOSE. That makes a stamp field which can be asserted rather than derived a defect by
+/// construction, and `pgo=` was one: it read `BUSBAR_PGO=1 || -Cprofile-use present`, an OR whose
+/// left arm no shipping path sets (`scripts/pgo-build.sh` stopped exporting it precisely so the
+/// stamp would be an INDEPENDENT witness) and which nothing validated — so
+/// `BUSBAR_PGO=1 cargo build --release` produced a binary self-reporting `pgo=true` with no profile
+/// data anywhere near it. CI's own assertions were not fooled, but a hand-built, vendored or
+/// customer-built binary could lie about the one field the stamp exists for.
+///
+/// This walks the derivation itself (`src/build_stamp.rs`, the same file `build.rs` `include!`s)
+/// rather than the baked constant, because the constant is fixed at compile time and a test cannot
+/// rebuild itself under a different environment. Against the pre-fix derivation the environment arm
+/// is what decided the answer; here there is no environment arm to reach.
+#[test]
+fn the_pgo_stamp_is_derived_only_from_the_flags_that_reached_the_compiler() {
+    use crate::build_stamp::{flag_value, pgo_from_flags};
+
+    // A real PGO build's flag list, in both shapes cargo delivers `-C` options in.
+    assert!(pgo_from_flags(&["-Cprofile-use=/tmp/merged.profdata"]));
+    assert!(pgo_from_flags(&["-C", "profile-use=/tmp/merged.profdata"]));
+    assert!(pgo_from_flags(&[
+        "-Cprofile-use=/tmp/merged.profdata",
+        "-Ctarget-cpu=native"
+    ]));
+
+    // A plain release build, and an INSTRUMENTED (profile-generate) build — which is emphatically
+    // not a profile-USING one, and must not stamp itself as optimized.
+    assert!(!pgo_from_flags(&[]));
+    assert!(!pgo_from_flags(&["-Ctarget-cpu=native", "-Clto=fat"]));
+    assert!(
+        !pgo_from_flags(&["-Cprofile-generate=/tmp/prof"]),
+        "the training build writes a profile, it does not consume one"
+    );
+
+    // THE REGRESSION ITSELF: no environment value, however spelled, can put PGO into the answer.
+    // `pgo_from_flags` takes only the flag list, so the ONLY way to reintroduce the escape hatch is
+    // to change its signature — and this line stops compiling if anyone does.
+    let _: fn(&[&str]) -> bool = pgo_from_flags;
+    for asserted in ["1", "true", "yes", "BUSBAR_PGO=1"] {
+        assert!(
+            !pgo_from_flags(&[asserted]),
+            "an asserted value ({asserted}) is not a compiler flag and must not read as PGO"
+        );
+    }
+
+    // The sibling fields the same file derives, pinned alongside so a refactor of one cannot
+    // quietly change the others: present -> the value after `=`, absent -> None (the caller
+    // supplies the honest "default" / "(profile-table)" fallback).
+    let flags = ["-Cprofile-use=/tmp/m.profdata", "-Ctarget-feature=+lse"];
+    assert_eq!(
+        flag_value(&flags, "target-feature").as_deref(),
+        Some("+lse")
+    );
+    assert_eq!(flag_value(&flags, "target-cpu"), None);
+    assert_eq!(flag_value(&flags, "lto"), None);
+}
+
 /// EVERY DIAGNOSTIC CODE IS UNIQUE ACROSS THE WHOLE CATALOG — the neutral half in
 /// `busbar-substrate-values` AND every plane catalogue the composition root installs.
 ///

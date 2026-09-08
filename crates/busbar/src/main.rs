@@ -2318,6 +2318,13 @@ fn signing_key_command_output(hex: &str) -> (String, String) {
 // the real traits while the serving path is untouched.
 mod root;
 
+/// The stamp's derivation half, shared VERBATIM with `build.rs` (which `include!`s the same file).
+/// Mounted only under `cfg(test)` because the binary itself reads the stamp out of `env!` constants
+/// build.rs already baked — the functions are here so the decisions they encode can be asserted, not
+/// so main can call them. See `src/build_stamp.rs`.
+#[cfg(test)]
+mod build_stamp;
+
 #[cfg(test)]
 #[path = "tests/tests.rs"]
 mod tests;

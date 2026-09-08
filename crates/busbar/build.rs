@@ -22,12 +22,28 @@
 //     the binary's own profile — the reliable source), and
 //   * `lto = "fat"` on [profile.release] is enforced by scripts/profile-lock.sh (a source-level check
 //     over the workspace Cargo.toml), since no build-time API reveals it.
-// PGO is detected two independent ways (belt and suspenders): the `-Cprofile-use` flag appearing in
-// CARGO_ENCODED_RUSTFLAGS, OR the explicit `BUSBAR_PGO=1` that scripts/pgo-build.sh exports on its
-// optimized (-Cprofile-use) build. A plain `cargo build --release` sets neither, so it reports
-// `pgo=false` — which is the whole point.
+// PGO IS DETECTED ONE WAY, AND ONLY ONE: the `-Cprofile-use` flag appearing in
+// CARGO_ENCODED_RUSTFLAGS — the flags cargo ACTUALLY applied. It used to be an OR with an explicit
+// `BUSBAR_PGO=1` env var, described here as "belt and suspenders"; that description went stale.
+// scripts/pgo-build.sh (see its note above the optimized build) stopped exporting BUSBAR_PGO
+// precisely so the stamp would be the COMPILER's account of what it was given rather than a build
+// script's account of what it meant to send, and no shipping path has set it since. What was left
+// was an escape hatch nothing used and nothing validated: `BUSBAR_PGO=1 cargo build --release`
+// produced a binary self-reporting `pgo=true` with no profile data anywhere near it, which is
+// EXACTLY the misdiagnosis this whole file exists to make impossible. A plain
+// `cargo build --release` carries no -Cprofile-use, so it reports `pgo=false` — the whole point.
+//
+// The env var is still watched by `rerun-if-env-changed` and, when set truthily without the flag,
+// raises a build WARNING: silently ignoring a signal an operator deliberately set is its own way of
+// misleading them.
+//
+// The derivation itself lives in src/build_stamp.rs, `include!`d below and mounted by main.rs under
+// `#[cfg(test)]`, so the functions that decide what the stamp says are unit-testable rather than
+// reachable only through a release build.
 
 use std::env;
+
+include!("src/build_stamp.rs");
 
 fn main() {
     // Re-run when the PGO signal or the rustflags change, so the stamp never goes stale.
@@ -44,20 +60,20 @@ fn main() {
         .filter(|s| !s.is_empty())
         .collect();
 
-    // PGO: an explicit signal from pgo-build.sh, OR the presence of -Cprofile-use in the rustflags.
-    let pgo_env = env::var("BUSBAR_PGO")
-        .map(|v| v == "1" || v == "true")
-        .unwrap_or(false);
-    let pgo_flag = flags.iter().any(|f| f.contains("profile-use"));
-    let pgo = pgo_env || pgo_flag;
+    // PGO: the presence of -Cprofile-use in the rustflags cargo applied, and nothing else.
+    let pgo = pgo_from_flags(&flags);
+    if env::var("BUSBAR_PGO").map(|v| v == "1" || v == "true") == Ok(true) && !pgo {
+        println!(
+            "cargo:warning=BUSBAR_PGO is set but no -Cprofile-use reached the compiler, so this \
+             build is NOT profile-guided and its provenance stamp will say pgo=false. The stamp \
+             records what rustc was given, never what the environment asserts. Build through \
+             scripts/pgo-build.sh to get a real PGO binary."
+        );
+    }
 
     // target-cpu, if pinned via RUSTFLAGS (`-Ctarget-cpu=<x>` or `target-cpu=<x>`); else the rustc
     // default for the target.
-    let target_cpu = flags
-        .iter()
-        .find_map(|f| f.split("target-cpu=").nth(1))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "default".into());
+    let target_cpu = flag_value(&flags, "target-cpu").unwrap_or_else(|| "default".into());
 
     // target-feature, if pinned via RUSTFLAGS (`-Ctarget-feature=<list>`); else the rustc default
     // feature set for the target, reported as `default`. The default arm64 Linux release raises
@@ -66,20 +82,12 @@ fn main() {
     // tellable-apart from the binary alone (`busbar --build-info`), the same misdiagnosis-proofing
     // the pgo field exists for. NOTE: the value must never contain spaces (it is one token of the
     // space-separated stamp line); rustc feature lists are comma-separated, so they never do.
-    let target_features = flags
-        .iter()
-        .find_map(|f| f.split("target-feature=").nth(1))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "default".into());
+    let target_features = flag_value(&flags, "target-feature").unwrap_or_else(|| "default".into());
 
     // lto is not exposed to build scripts; surface what CAN be seen (a -Clto flag if any) and defer
     // the profile-table `lto = "fat"` guarantee to scripts/profile-lock.sh. Reported honestly as
     // "(profile-table; see Cargo.toml)" when governed by the profile rather than a flag.
-    let lto = flags
-        .iter()
-        .find_map(|f| f.split("lto=").nth(1))
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| "(profile-table)".into());
+    let lto = flag_value(&flags, "lto").unwrap_or_else(|| "(profile-table)".into());
 
     println!("cargo:rustc-env=BUSBAR_BUILD_PROFILE={profile}");
     println!("cargo:rustc-env=BUSBAR_BUILD_OPT_LEVEL={opt_level}");
