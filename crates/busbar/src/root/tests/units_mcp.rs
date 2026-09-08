@@ -1737,3 +1737,493 @@ fn the_served_set_and_the_surface_are_checked() {
     busbar_contract::transport::check_surface(&busbar_plane_mcp::surface::SURFACE)
         .expect("the served surface mounts");
 }
+
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//   THE ASSEMBLED UNIT, DRIVEN THROUGH THE LOOP
+// ═════════════════════════════════════════════════════════════════════════════════════════════════
+//
+// Every cell above drives ONE free function, which is what proves the function. None of them proves
+// the ASSEMBLY — that the twelve are reached in the loop's own order, by the loop's own seal, with
+// each step's answer carried to the next. That was the gap: the functions were shipped and nothing
+// in the tree put them behind `Units`, so this plane's decode reached no step of the kernel.
+//
+// The cells below drive `run_unit` against `McpUnits`, which is the one thing that can be wrong in a
+// way no per-function cell can see.
+
+/// The registration every cell below is written against.
+static ONE_SERVER: &[Server] = &[Server {
+    id: "fs",
+    lane: LaneId::new("fs-lane"),
+    host: "127.0.0.1:9",
+    transport: claims::TRANSPORT_HTTP,
+}];
+
+/// A breaker with every cell open, which is what a node with no recent failure has.
+struct EveryLaneOpen;
+
+impl BreakerView for EveryLaneOpen {
+    fn ready(&self, _pool: &str, _lane: usize, _now: u64) -> bool {
+        true
+    }
+    fn try_admit(
+        &self,
+        _pool: &str,
+        _lane: usize,
+        _now: u64,
+    ) -> Result<(), busbar_unit_trust::Unavailable> {
+        Ok(())
+    }
+}
+
+/// The surface the loop's Route step reaches, counting what it was asked.
+///
+/// **The count is the whole point.** A refusal at Verify, Approve or Admit must never reach it: a
+/// status check afterwards discards an answer, and it cannot discard an execution that already
+/// happened. So the assertion every refusal cell below makes is `asked() == 0`, which is a statement
+/// about the ORDER of the twelve rather than about any one of them.
+#[derive(Default)]
+struct CountingSurface {
+    asked: std::sync::atomic::AtomicUsize,
+    ops: std::sync::Mutex<Vec<OpClassId>>,
+}
+
+impl CountingSurface {
+    fn asked(&self) -> usize {
+        self.asked.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    fn ops(&self) -> Vec<OpClassId> {
+        self.ops.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+}
+
+/// The bytes this double answers with. Not a document any client reads — the cells assert that the
+/// loop carried the surface's answer out UNCHANGED, so what matters is that it is distinctive.
+const SURFACE_BODY: &[u8] = br#"{"jsonrpc":"2.0","id":1,"result":{"from":"the surface"}}"#;
+
+impl PlaneDispatch for CountingSurface {
+    fn execute(&self, op: OpClassId) -> PlaneAnswer {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.ops.lock().unwrap_or_else(|e| e.into_inner()).push(op);
+        PlaneAnswer {
+            status: 200,
+            headers: vec![("content-type".to_string(), "application/json".to_string())],
+            body: SURFACE_BODY.to_vec(),
+        }
+    }
+}
+
+/// Everything the node's half of one MCP unit is assembled from, held together so a cell can borrow
+/// from it for the length of the cell.
+struct Node {
+    plane: McpPlane,
+    kernel: busbar_kernel::teller::Kernel,
+    auth: Auth,
+    auth_bindings: crate::root::kernel::auth_bindings::AuthBindings,
+    kinds: Catalogue<'static>,
+    breaker: EveryLaneOpen,
+    door: Door<InMemoryCells>,
+    chain: BucketChain,
+    pricer: Pricer,
+    records: Records,
+    meter_policy: crate::root::policy::MeterPolicyHandle,
+    scope: crate::root::policy::ScopePolicy,
+    durability: std::sync::Mutex<crate::root::durability::Durability>,
+    origin: busbar_caps::Origin,
+    pool: String,
+}
+
+impl Node {
+    /// One deployment with one registration, an open chain and a policy that declares every class.
+    fn new() -> Self {
+        let kernel = busbar_kernel::teller::Kernel::new();
+        let store = StoreAdapter::native(Arc::new(SilentStore));
+        Node {
+            plane: McpPlane::new(ONE_SERVER),
+            origin: kernel.origin(busbar_caps::OriginKind::Client),
+            kernel,
+            // An OPEN chain, because these cells are about the loop and not about the credential:
+            // the authenticate step has four cells of its own above, and a chain that denied here
+            // would end every unit below at step three with nothing left to assert.
+            auth: Auth::new(busbar_unit_auth::AuthChain::new(Vec::new(), false)),
+            auth_bindings: crate::root::kernel::auth_bindings::AuthBindings::without_directory(),
+            // The reading a listing's plan makes: the catalogue, scanned.
+            kinds: Catalogue::new(
+                McpPlane::new(ONE_SERVER),
+                records::SCHEMA_CATALOGUE,
+                records::OP_SCAN,
+                seam(),
+            ),
+            breaker: EveryLaneOpen,
+            door: Door::new(InMemoryCells::new()),
+            // An uncapped attribution bucket, which is what a deployment with no `groups:` section
+            // gives every caller. NOT the absent chain — that is the fail-closed arm, and it has a
+            // cell of its own below.
+            chain: BucketChain::unchecked(Vec::new(), Vec::new()),
+            pricer: Pricer::flat(0),
+            records: Records::new(&store),
+            meter_policy: crate::root::policy::build(
+                &crate::root::policy::MeterPolicyConfig::default(),
+            ),
+            scope: required_scopes().into_iter().fold(
+                crate::root::policy::ScopePolicy::new(),
+                |policy, (op, scope)| policy.declaring(claim_key(), op, scope),
+            ),
+            durability: std::sync::Mutex::new(memory_durability()),
+            pool: pool_key("fs"),
+        }
+    }
+
+    /// The pool view this deployment's key gets, which is what the two verify cells differ on.
+    fn pools(&self, scopes: Option<Vec<String>>) -> Pools {
+        Pools::new(self.plane, scopes, true, true)
+    }
+
+    /// One unit of this deployment, assembled from what the plane made of `body`.
+    fn calling<'r>(
+        &'r self,
+        draft: McpDraft,
+        pools: &'r Pools,
+        chain: Option<&'r BucketChain>,
+        dispatch: Option<&'r dyn PlaneDispatch>,
+    ) -> McpUnits<'r> {
+        McpUnits::new(
+            McpBindings {
+                plane: &self.plane,
+                auth: &self.auth,
+                auth_bindings: &self.auth_bindings,
+                pools,
+                kinds: &self.kinds,
+                breaker: &self.breaker,
+                door: &self.door,
+                chain,
+                pricer: &self.pricer,
+                // Zero, and it is a rate card that prices this plane's classes at nothing rather
+                // than a missing one: the money cells above own what a priced card does.
+                prices: ClassPrices::default(),
+                records: &self.records,
+                meter_policy: &self.meter_policy,
+                scope_policy: &self.scope,
+                durability: &self.durability,
+                pool: &self.pool,
+                at: Clocks {
+                    wall: 1_700_000_000,
+                    mono: 1,
+                },
+                dispatch,
+                origin: self.origin,
+            },
+            draft,
+            Grants::of(Scope::Full),
+        )
+    }
+
+    /// Walk one assembled unit through the kernel's own loop, and hand back both halves.
+    fn walk(&self, units: &McpUnits<'_>) -> busbar_kernel::teller::Ended {
+        let cell = busbar_caps::HoldCell::new(busbar_caps::Hold::open(
+            &self.kernel.admit_token(),
+            PrincipalId::new(""),
+            0,
+        ));
+        let leases = busbar_kernel::slice::LeaseCell::new();
+        let accrual = busbar_kernel::teller::AccrualMeter::new();
+        let gauge = busbar_kernel::slice::ConcurrencyGauge::new();
+        let canary = busbar_caps::Canary::new();
+        let ctx = busbar_kernel::teller::UnitCtx {
+            key: busbar_caps::UnitKey::new(1),
+            origin: busbar_caps::OriginKind::Client,
+            session: None,
+            generation: busbar_kernel::registry::Generation::FIRST,
+            admin_listener: false,
+            kernel_verb_only: false,
+        };
+        busbar_kernel::teller::run_unit(
+            &self.kernel,
+            units,
+            &ctx,
+            busbar_kernel::teller::Run {
+                cell: &cell,
+                parent: None,
+                leases: &leases,
+                gauge: &gauge,
+                canary: &canary,
+                meter: &accrual,
+            },
+        )
+    }
+}
+
+/// What the plane made of one body, read once, exactly as a leg reads it.
+///
+/// The arena is the KERNEL'S and the decode is the PLANE'S: what the draft carries is what
+/// `read_ingress` answered and what `McpPlane::route_plan_for` returned, copied out where the borrow
+/// was live. A cell that hand-wrote a plan here would be asserting about a table nobody read.
+fn draft_for(plane: &McpPlane, body: &str) -> McpDraft {
+    use busbar_contract::bounded::Labels;
+    use busbar_contract::unit::{Clock, Ctx};
+    use busbar_contract::wire::FrameCursor;
+    use busbar_kernel::arena::{ArenaSpace, UnitArena};
+
+    let mut space = ArenaSpace::new();
+    let arena = UnitArena::new(&mut space);
+    let config = CellConfig;
+    let transport = CellTransport;
+    let labels = Labels::new();
+    let clock = Clock {
+        unix_secs: 1_700_000_000,
+        monotonic_nanos: 0,
+    };
+    let frames = one_frame(body);
+    let mut cursor = FrameCursor::new(&frames);
+    let ctx = Ctx::new(clock, &config, None, &transport, &labels, &arena);
+    let read = read_ingress(plane, &mut cursor, &ctx);
+    let record = ArrivalRecord {
+        source: "198.51.100.7:52344".to_string(),
+        port: 8443,
+        alpn: None,
+        sni: Some("mcp.example".to_string()),
+        peer_cert: None,
+        transport_chain: vec!["tcp", "tls", "http"],
+    };
+    McpDraft::read(
+        plane,
+        &read,
+        body.len() as u64,
+        &Arrived {
+            record: &record,
+            claim_transport: claims::TRANSPORT_HTTP,
+        },
+        None,
+        // The OPEN posture. The audience this plane demands, and the refusal a token minted for
+        // another one gets, are `the_bound_form_authenticates_through_the_nodes_own_seams`'s
+        // subject above; asking for one here would end every unit below at step three.
+        false,
+    )
+}
+
+/// **A listing walks all twelve steps and comes back with the surface's own bytes.**
+///
+/// The assembly is what is under test. Every step is one of this file's free functions and each has
+/// a cell of its own; what none of them can say is that the loop reaches them in its own order with
+/// the seal it alone holds, that the plan the plane returned is the plan the routing step walks, and
+/// that the answer the surface wrote is the answer that leaves — unchanged, and read off the units
+/// rather than re-derived from the frame.
+#[test]
+fn the_assembled_unit_walks_a_listing_through_the_loop() {
+    let node = Node::new();
+    let pools = node.pools(None);
+    let surface = CountingSurface::default();
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+    assert_eq!(
+        draft.op,
+        Some(ops::OP_TOOLS_LIST),
+        "the plane read the method"
+    );
+    assert_eq!(
+        draft.leg_kinds(),
+        vec![
+            LegKind::Record {
+                schema: records::SCHEMA_CATALOGUE,
+                op: records::OP_SCAN
+            },
+            LegKind::Record {
+                schema: records::SCHEMA_DEMOTION,
+                op: records::OP_SCAN
+            },
+        ],
+        "a listing is answered from this node's own records and reaches no server"
+    );
+
+    let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+    let ended = node.walk(&units);
+
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("the unit settled here: {ended:?}");
+    };
+    assert_eq!(
+        end.outcome(),
+        busbar_caps::Outcome::Completed,
+        "every one of the twelve answered"
+    );
+    assert_eq!(surface.asked(), 1, "the surface is asked exactly once");
+    assert_eq!(
+        surface.ops(),
+        vec![ops::OP_TOOLS_LIST],
+        "and for this class"
+    );
+
+    let answer = units.answer().expect("a unit that reached Route has one");
+    assert_eq!(answer.status, 200);
+    assert_eq!(answer.body, SURFACE_BODY, "carried out unchanged");
+    assert!(
+        units.audit_hash().is_some(),
+        "and the ending is sealed on the chain"
+    );
+}
+
+/// **A call walks the same twelve, and its plan is the one the plane declares for a call.**
+///
+/// The two classes differ in everything the money turns on — a call hops upstream and a listing does
+/// not — so driving both is what says the assembly reads the plan rather than a class name.
+#[test]
+fn the_assembled_unit_walks_a_call_through_the_loop() {
+    let node = Node::new();
+    let pools = node.pools(None);
+    let surface = CountingSurface::default();
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"grep"}}"#,
+    );
+    assert_eq!(draft.op, Some(ops::OP_TOOL_CALL));
+    assert!(
+        draft.shape().hops_upstream,
+        "a call reaches the registered server, and the fee's rule reads that off the plan"
+    );
+
+    let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+    let ended = node.walk(&units);
+
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("the unit settled here: {ended:?}");
+    };
+    assert_eq!(end.outcome(), busbar_caps::Outcome::Completed);
+    assert_eq!(surface.ops(), vec![ops::OP_TOOL_CALL]);
+    assert_eq!(
+        units.answer().map(|a| a.body),
+        Some(SURFACE_BODY.to_vec()),
+        "the bytes are the surface's"
+    );
+}
+
+/// **A method this server does not answer never reaches a step, and never reaches the surface.**
+///
+/// The plane's decode is what says so, and the refusal is at the step that read the bytes. What this
+/// adds to the decode cell above is the consequence: the loop stops there, the surface is not asked,
+/// and the ending carries the step and reason the plane's own `-32601` document is rendered from.
+#[test]
+fn a_method_this_server_does_not_answer_is_refused_at_the_step_that_read_it() {
+    let node = Node::new();
+    let pools = node.pools(None);
+    let surface = CountingSurface::default();
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/obliterate"}"#,
+    );
+    assert_eq!(draft.op, None, "the plane's method table does not name it");
+
+    let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+    let ended = node.walk(&units);
+
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("a refused unit still settles: {ended:?}");
+    };
+    assert_eq!(
+        end.outcome(),
+        busbar_caps::Outcome::Refused(
+            busbar_caps::StepName::Decode,
+            busbar_caps::ReasonCode::DecodeFailed
+        ),
+        "the step that read the bytes is the step that refuses them"
+    );
+    assert_eq!(
+        surface.asked(),
+        0,
+        "a method this plane cannot name is never handed to a surface"
+    );
+    assert!(units.answer().is_none());
+}
+
+/// **A refused Verify never asks the surface.** A key scoped to nothing reaches no pool.
+///
+/// This is the count the whole seam rests on. The gate is the loop and the answer is the surface, so
+/// a unit refused before Route must produce no execution at all — a status check afterwards discards
+/// an answer, and it cannot discard an execution that already happened.
+#[test]
+fn a_refused_verify_never_asks_the_surface() {
+    let node = Node::new();
+    // A key restricted to the empty set: a different answer from a key with no restriction named,
+    // and the one the rig's own verify cell turns on.
+    let pools = node.pools(Some(Vec::new()));
+    let surface = CountingSurface::default();
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+
+    let units = node.calling(draft, &pools, Some(&node.chain), Some(&surface));
+    let ended = node.walk(&units);
+
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("a refused unit still settles: {ended:?}");
+    };
+    assert!(
+        matches!(
+            end.outcome(),
+            busbar_caps::Outcome::Refused(busbar_caps::StepName::Verify, _)
+        ),
+        "the pool guard refuses at Verify: {:?}",
+        end.outcome()
+    );
+    assert_eq!(surface.asked(), 0);
+    assert!(units.answer().is_none());
+}
+
+/// **An Admit refusal never asks the surface either**, and the cause is the fail-closed chain.
+///
+/// A caller bound to a group this node's configuration does not have has caps that could not be
+/// read, which is over quota rather than merely rate-limited — and it is a REFUSAL and never an
+/// empty chain, because an empty chain is a yes from every cap at once.
+#[test]
+fn an_admit_refusal_never_asks_the_surface() {
+    let node = Node::new();
+    let pools = node.pools(None);
+    let surface = CountingSurface::default();
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+
+    let units = node.calling(draft, &pools, None, Some(&surface));
+    let ended = node.walk(&units);
+
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("a refused unit still settles: {ended:?}");
+    };
+    assert_eq!(
+        end.outcome(),
+        busbar_caps::Outcome::Refused(
+            busbar_caps::StepName::Admit,
+            busbar_caps::ReasonCode::OverBudget
+        )
+    );
+    assert_eq!(surface.asked(), 0);
+    assert!(units.answer().is_none());
+}
+
+/// **A build with no mount runs the same twelve and produces no bytes.**
+///
+/// `dispatch: None` is a POSTURE and not a missing source: the loop decides, the exit reports zero
+/// bytes, and nothing is served. It is the shape every unit of this plane had before a mount
+/// existed, and it has to stay reachable or the leg cannot be assembled on a build without the
+/// serving switch.
+#[test]
+fn a_unit_with_no_surface_behind_it_still_walks_and_answers_nothing() {
+    let node = Node::new();
+    let pools = node.pools(None);
+    let draft = draft_for(
+        &node.plane,
+        r#"{"jsonrpc":"2.0","id":1,"method":"tools/list"}"#,
+    );
+
+    let units = node.calling(draft, &pools, Some(&node.chain), None);
+    let ended = node.walk(&units);
+
+    let busbar_kernel::teller::Ended::Settled { end, .. } = &ended else {
+        panic!("the unit settled here: {ended:?}");
+    };
+    assert_eq!(end.outcome(), busbar_caps::Outcome::Completed);
+    assert!(units.answer().is_none(), "no surface, no answer");
+}
