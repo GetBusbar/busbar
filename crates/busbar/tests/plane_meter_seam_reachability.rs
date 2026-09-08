@@ -308,7 +308,11 @@ fn selftest_the_seam_scanners_discriminate() {
     assert!(seam(&prod("Usage::report(usage, lines)\n")));
     assert!(!seam(&prod("// Usage::report(usage, lines)\n")));
     assert!(!seam(&prod("let x = 1; // fold_usage(y)\n")));
-    assert!(!seam(&prod("let x = record_metering;\n")));
+    // The bare mention, without the call parens, of one of THIS scanner's own tokens
+    // (TELLER_USAGE_SEAM_TOKENS, not the unrelated METER_SEAM_TOKENS member `record_metering`
+    // used above): dropping the trailing `(` from a token is what would let this line start
+    // counting, and this is the only assertion in the file that would notice.
+    assert!(!seam(&prod("let f = Usage::report;\n")));
     assert!(METER_SEAM_TOKENS
         .iter()
         .any(|t| prod("host.meter_charge(&scope, n);\n").contains(t)));
@@ -357,28 +361,50 @@ mod tests {
 /// THE SECOND FAILURE. The waist hop used to be summed over the plane's whole `src/unit/` tree, so
 /// a `Usage::report(` in the plane's AUDIT step satisfied a gate asking about its METER step. The
 /// hop destination is now one named module, and this proves the two are told apart.
+///
+/// Driven on a synthetic crate tree rather than the real plane crates, for two reasons the old form
+/// got wrong. First, `step_only <= tree_wide` was true BY CONSTRUCTION whenever `tree_wide` sums
+/// over a walk that includes `meter.rs` itself — no mutation of `PLANE_METER_STEP_MODULE` could
+/// ever fail it. Second, only `busbar-llm` carries a `src/unit/` tree today, so the loop over
+/// `BILLING_PLANE_ROOT_LEGS` silently skipped three of its four iterations via
+/// `if !unit_dir.is_dir() { continue; }` and nothing noticed the assertion inside had stopped
+/// running for them. A synthetic tree with two modules of two DIFFERENT known counts sidesteps
+/// both: it always runs, and pointing the hop at the wrong module changes the number read back.
 #[test]
 fn selftest_the_hop_lands_on_the_meter_step_and_not_the_neighbouring_step() {
-    let root = crates_root();
-    for (plane, _) in BILLING_PLANE_ROOT_LEGS {
-        let dir = root.join(plane);
-        let unit_dir = dir.join("src").join("unit");
-        if !unit_dir.is_dir() {
-            continue;
-        }
-        let mut all = Vec::new();
-        common::production_rs_files(&unit_dir, &mut all);
-        let tree_wide: usize = all
-            .iter()
-            .flat_map(|p| common::production_lines(p))
-            .filter(line_reaches_usage_seam)
-            .count();
-        let step_only = usage_seam_reaches_in_plane_meter_step(&dir).unwrap_or(0);
-        assert!(
-            step_only <= tree_wide,
-            "{plane}: the Meter step's own module cannot reach the seam more often than the whole \
-             unit tree does — the scan is reading the wrong file"
-        );
-        println!("  {plane:<13} usage seam: {step_only} in the Meter step, {tree_wide} tree-wide");
-    }
+    let scratch = std::env::temp_dir().join(format!(
+        "busbar-meter-hop-selftest-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or_default()
+    ));
+    let unit_dir = scratch.join("src").join("unit");
+    std::fs::create_dir_all(&unit_dir).expect("a scratch dir under the OS temp root");
+
+    // The Meter step's own module: exactly two usage-seam reaches.
+    std::fs::write(
+        unit_dir.join("meter.rs"),
+        "fn meter() {\n    Usage::report(a, b);\n    Usage::report(c, d);\n}\n",
+    )
+    .expect("write the synthetic meter module");
+    // A NEIGHBOURING step's module, given a DIFFERENT count: five reaches. If the hop landed here
+    // instead of on `meter.rs` — the exact regression `PLANE_METER_STEP_MODULE` pointing at the
+    // wrong file is — the count read back would be 5, not 2.
+    std::fs::write(
+        unit_dir.join("audit.rs"),
+        "fn audit() {\n    Usage::report(a, b);\n    Usage::report(a, b);\n    Usage::report(a, b);\n    \
+         Usage::report(a, b);\n    Usage::report(a, b);\n}\n",
+    )
+    .expect("write the synthetic neighbouring module");
+
+    let step_only = usage_seam_reaches_in_plane_meter_step(&scratch);
+    let _ = std::fs::remove_dir_all(&scratch);
+    assert_eq!(
+        step_only,
+        Some(2),
+        "the scan must read the Meter step's own module, not a neighbouring one with a different \
+         count"
+    );
 }
