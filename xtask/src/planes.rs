@@ -82,6 +82,15 @@ pub enum PlaneRootError {
         plane: String,
         candidates: Vec<PathBuf>,
     },
+    /// A directory in the search could not be read, so the candidate count is a floor rather than a
+    /// count. Every read behind that count used to be discarded, and every one of those discards
+    /// UNDERCOUNTS — which is the one direction that turns a refusal into a pass, because two homes
+    /// minus one unreadable candidate answers `Ok(one home)`.
+    Unreadable {
+        plane: String,
+        path: PathBuf,
+        message: String,
+    },
 }
 
 impl fmt::Display for PlaneRootError {
@@ -112,6 +121,20 @@ impl fmt::Display for PlaneRootError {
                     .collect::<Vec<_>>()
                     .join(", ")
             ),
+            PlaneRootError::Unreadable {
+                plane,
+                path,
+                message,
+            } => write!(
+                f,
+                "PLANE-ROOT-UNREADABLE: resolving `{plane}` could not read {} ({message}). The \
+                 answer to this search is a COUNT of the directories that declare the plane, and a \
+                 candidate nobody could read only ever lowers it — two homes minus one unreadable \
+                 candidate reads as one home, and the ambiguity that should have been reported \
+                 resolves silently. Fix the permissions or the tree; a count taken over an \
+                 incomplete search is not a count.",
+                path.display()
+            ),
         }
     }
 }
@@ -139,15 +162,23 @@ impl PlaneRoots {
     }
 
     pub fn resolve(&self, plane: &str) -> Result<PathBuf, PlaneRootError> {
+        let unreadable = |path: &Path, message: String| PlaneRootError::Unreadable {
+            plane: plane.to_string(),
+            path: path.to_path_buf(),
+            message,
+        };
         let mut named = Vec::new();
-        find_dirs_named(&self.search_root, plane, &mut named);
+        find_dirs_named(&self.search_root, plane, &mut named)
+            .map_err(|(p, m)| unreadable(&p, m))?;
         named.sort();
         named.dedup();
 
-        let owned: Vec<PathBuf> = named
-            .into_iter()
-            .filter(|d| declares_here(d, &self.grammar))
-            .collect();
+        let mut owned: Vec<PathBuf> = Vec::new();
+        for d in named {
+            if declares_here(&d, &self.grammar).map_err(|(p, m)| unreadable(&p, m))? {
+                owned.push(d);
+            }
+        }
         self.judge(plane, owned)
     }
 
@@ -185,11 +216,17 @@ impl PlaneRoots {
     }
 }
 
-fn find_dirs_named(dir: &Path, name: &str, out: &mut Vec<PathBuf>) {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in rd.filter_map(|e| e.ok()) {
+/// The failure both searches below report: the path that could not be read, and why.
+type ReadFailure = (PathBuf, String);
+
+/// EVERY READ HERE IS A REFUSAL WHEN IT FAILS, because every one of them feeds a COUNT and every
+/// discarded read lowers that count. `Missing` and `Ambiguous` are both decided by counting, so an
+/// undercount reads as "fewer homes than there are" — which turns the two-home refusal into a
+/// silent single answer and the no-home refusal into nothing at all.
+fn find_dirs_named(dir: &Path, name: &str, out: &mut Vec<PathBuf>) -> Result<(), ReadFailure> {
+    let rd = std::fs::read_dir(dir).map_err(|e| (dir.to_path_buf(), e.to_string()))?;
+    for entry in rd {
+        let entry = entry.map_err(|e| (dir.to_path_buf(), e.to_string()))?;
         let path = entry.path();
         if !path.is_dir() {
             continue;
@@ -201,27 +238,28 @@ fn find_dirs_named(dir: &Path, name: &str, out: &mut Vec<PathBuf>) {
         if base == name {
             out.push(path.clone());
         }
-        find_dirs_named(&path, name, out);
+        find_dirs_named(&path, name, out)?;
     }
+    Ok(())
 }
 
 /// A candidate must DIRECTLY hold a `*.rs` declaring the grammar — not merely reference it three
 /// directories over.
-fn declares_here(dir: &Path, grammar: &str) -> bool {
-    let Ok(rd) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    for entry in rd.filter_map(|e| e.ok()) {
+///
+/// An unreadable candidate is NOT "a candidate that does not declare the plane". `false` here is a
+/// claim about the file's contents, and a file nobody read supports no claim about its contents.
+fn declares_here(dir: &Path, grammar: &str) -> Result<bool, ReadFailure> {
+    let rd = std::fs::read_dir(dir).map_err(|e| (dir.to_path_buf(), e.to_string()))?;
+    for entry in rd {
+        let entry = entry.map_err(|e| (dir.to_path_buf(), e.to_string()))?;
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
-        if std::fs::read_to_string(&path)
-            .map(|s| s.contains(grammar))
-            .unwrap_or(false)
-        {
-            return true;
+        let text = std::fs::read_to_string(&path).map_err(|e| (path.clone(), e.to_string()))?;
+        if text.contains(grammar) {
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }
