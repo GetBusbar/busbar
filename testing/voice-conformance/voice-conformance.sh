@@ -170,9 +170,16 @@ _process_leg() {
   fi
 
   # READY. Each slice must yield at least one RESULT line, or the leg is vacuous.
-  local s out results
+  local s out results legrc
   for s in "${LEG_SLICES[@]}"; do
-    out="$(leg_execute "$s" || true)"
+    # THE HARNESS'S OWN EXIT CODE IS KEPT, not discarded. `|| true` stood here and threw it away,
+    # which made a harness that printed some PASS lines and then DIED — a panic, an abort, a
+    # killed process — indistinguishable from one that ran every assertion and passed. That is the
+    # false green this whole file exists to refuse, sitting inside the file. The `|| legrc=$?`
+    # form is still needed: `set -e` would otherwise take the whole runner down on the first leg
+    # that reports a real finding.
+    legrc=0
+    out="$(leg_execute "$s")" || legrc=$?
     results="$(printf '%s\n' "$out" | grep -E '^RESULT ' || true)"
     if [ -z "$results" ]; then
       say "      · $s : NO RESULT — a READY leg that executed nothing is RED"
@@ -195,6 +202,21 @@ _process_leg() {
     done
     if [ "$LEG_KIND" != governance ] && printf '%s\n' "$results" | grep -qE '^RESULT [^ ]+ FAIL'; then
       [ "$rc" -eq 2 ] || rc=1
+    fi
+    # A NON-ZERO HARNESS EXIT WITH NO FAIL LINE IS AN ACCOUNTING PROBLEM, not a conformance
+    # finding, and the distinction is the whole point of testing it AFTER the FAIL check above.
+    # The harness exits non-zero when it reports a finding, and that case is already classified —
+    # the exit code adds nothing to it. What is left is the case nothing else can see: a harness
+    # that printed passes and then did not finish. Its PASS lines describe a partial run, so no
+    # verdict resting on them can be believed, which is exactly what `problems` means here.
+    # GOVERNANCE IS NOT EXEMPT: a governance leg's FINDINGS never count, but a governance harness
+    # that died is still a harness that died.
+    if [ "$legrc" -ne 0 ] && ! printf '%s\n' "$results" | grep -qE '^RESULT [^ ]+ FAIL'; then
+      say "      · $s : HARNESS EXIT $legrc with no FAIL line — the harness did not finish, so its results are a partial run"
+      if [ -n "${VOICE_RESULT_LOG:-}" ]; then
+        printf '%s\t%s\tHARNESSEXIT\tharness exited %s with no FAIL line\n' "$name" "$s" "$legrc" >>"$VOICE_RESULT_LOG"
+      fi
+      rc=2
     fi
   done
   say "  leg $name [$kindtag]: $([ "$rc" -eq 0 ] && echo READY/ok || echo READY/RED)"
@@ -308,6 +330,12 @@ selftest() {
   _ready_fail()    { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 FAIL boom"; }\n' "$2" >"$1"; }
   _ready_vacuous() { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "no result at all"; }\n' "$2" >"$1"; }
   _gov_fail()      { printf 'LEG_KIND=governance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 FAIL observed"; }\n' "$2" >"$1"; }
+  # A harness that PASSED everything it got to and then died. The exit code is the only evidence
+  # that the run was partial: the lines it printed are indistinguishable from a complete pass.
+  _ready_pass_then_dies() { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 PASS ok"; return 101; }\n' "$2" >"$1"; }
+  # The same death, on a harness that DID report a finding first. Already classified by the FAIL
+  # line, and it must stay classified that way — see the two cells below.
+  _ready_fail_then_dies() { printf 'LEG_KIND=conformance\nLEG_STATUS=ready\nLEG_SLICES=(%s)\nleg_execute(){ echo "RESULT $1 FAIL boom"; return 1; }\n' "$2" >"$1"; }
 
   probe() { ( VOICE_LEGS_DIR="$1" VOICE_MIN_LEGS="${3:-3}" ${VOICE_SELFTEST_DROP:+VOICE_SELFTEST_DROP="$VOICE_SELFTEST_DROP"} emit_verdict ) >/dev/null 2>&1; }
   check() {  # check <name> <legsdir> <want:accept|refuse> [minlegs]
@@ -347,6 +375,26 @@ selftest() {
   _pending "$d4/cross-parity.sh" "oo og go gg"
   _ready_pass "$d4/spec-per-dialect.sh" "openai"
   check "a READY leg whose slices all pass" "$d4" accept
+
+  # RED: a READY leg whose harness printed passes and then DIED. The exit code is the only thing
+  # that separates this from `d4` above — same stdout, byte for byte — and the runner threw it away
+  # until this cell existed. A verdict that believes the PASS lines of a run that did not finish is
+  # a green produced by a crash.
+  local d8="$tmp/harness-dies"; mkdir -p "$d8"
+  _pending "$d8/replay.sh" "default"
+  _pending "$d8/cross-parity.sh" "oo og go gg"
+  _ready_pass_then_dies "$d8/spec-per-dialect.sh" "openai"
+  check "a READY leg whose harness passed and then died" "$d8" refuse
+
+  # RED, AND STILL A CONFORMANCE FINDING RATHER THAN AN ACCOUNTING ONE. The harness exits non-zero
+  # when it REPORTS a finding, which is every real red run of this battery — so if a non-zero exit
+  # alone were the trigger, every genuine conformance failure would be reclassified as "the battery
+  # cannot be believed" and would stop naming busbar as the subject.
+  local d9="$tmp/harness-fails-and-exits"; mkdir -p "$d9"
+  _pending "$d9/replay.sh" "default"
+  _pending "$d9/cross-parity.sh" "oo og go gg"
+  _ready_fail_then_dies "$d9/spec-per-dialect.sh" "openai"
+  check "a READY leg that reported a FAIL and exited non-zero" "$d9" refuse
 
   # RED: below the floor. A battery gutted to one leg satisfies every equality, so the count is
   # checked first — with min set to 3 against a single-leg tree.
