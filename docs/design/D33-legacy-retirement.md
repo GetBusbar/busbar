@@ -22,6 +22,11 @@
 > live. Those two crates are **already done**; the work item is retired, not scheduled. (2)
 > `busbar_core::admin::restart` cannot move to the root yet: it is a shared process-global that
 > core's own admin handler still writes (`begin_drain`, `can_restart`, `supervisor_detected`).
+>
+> **§7 is the third and largest correction (2026-09-08).** The whole tree was measured module by
+> module against this plan, and the plan's premise — *residue with an existing replacement; delete
+> and repoint* — holds for **8%** of the legacy body. Where a §2 row and a measurement disagree,
+> **§7 wins and the row is amended**; every row §7 names is annotated in place.
 
 ## 1. The ceiling, and what it decides
 
@@ -85,11 +90,11 @@ spelling change with no behavioural surface at all.
 | 1 | `state::DetachedTasks::new` | RE-EX (`busbar_substrate::detached`) → REPLACE | `admin.ops\|` | cut 2 |
 | 1 | `state::App` | **DELETE with the crate.** The legacy application object. Its replacement is the root's own kernel wiring (`root/kernel.rs`); it disappears when the root stops booting the legacy pipeline, not before. | every family | last — after the engine twins |
 | 2 | `config::TlsCfg` | RE-EX (`busbar_substrate::tls`) → REPLACE; the 1.5.5 `deny_unknown_fields` struct itself is untouched | `documented-tls\|`, `boot\|` | cut 2 |
-| 2 | `config::secret::SecretResolver` | **MOVE** into the root (`crates/busbar/src/root/` secret binding) or `busbar-substrate::config`; it is boot-time credential resolution the root already owns the policy for | `config\|`, `boot\|` | after cut 3 |
+| 2 | `config::secret::SecretResolver` | **MOVE → `busbar-core-config`** (§7.2 amends this row: the config layer has no replacement anywhere, so neither does its resolver; `config/secret.rs` is one of only two files in the layer with zero outbound edges, so it is movable the day the crate exists) | `config\|`, `boot\|` | with the config crate |
 | 1 | `config::GroupCfg`, `config::groups::{LimitCfg, LimitMetric::Budget, LimitWindow::Total}` | RE-EX (`busbar_substrate::config::groups`) → REPLACE. **All four sites are in `root/units_llm.rs`** → blocked | `billing\|`, `config\|` | blocked on units_llm |
 | 2 | `plane::registry::install_planes`, 1 `plane::registry::PlaneDecl` | RE-EX / thin → **REPLACE** by `busbar_substrate::plane::registry::…`; the *decl set itself* is deleted when the last legacy plane crate goes | `boot\|`, `mcp\|`, `a2a\|` | after the plane crates |
 | 2 | `plane::config::config_sections` | RE-EX → REPLACE by `busbar_substrate::plane::config::install_plane_sections` (the root already names both) | `config\|` | cut 3 |
-| 2 | `plane_host::engine_host`, 1 `plane_host::live_host_factory` | **DELETE with the crate** — the `EngineHost` seam is the coexistence adapter between the legacy engine and the plane crates; it dies with the engine twins | `llm\|`, `mcp\|`, `a2a\|` | last |
+| 2 | `plane_host::engine_host`, 1 `plane_host::live_host_factory` | **DELETE with the crate** — the `EngineHost` seam is the coexistence adapter between the legacy engine and the plane crates; it dies with the engine twins. §7.8 amends the ORDER: the `EngineHost` trait cannot be deleted before the engine is, because six of the nine llm step files name it | `llm\|`, `mcp\|`, `a2a\|` | last, and after the R4 pre-cuts |
 | 2 | `governance::GovState`, 1 `GovState::new_with_signer`, 1 `MemoryStore::new`, 1 `spawn_budget_flusher` | **REPLACE** by the caps/kernel governance path (`busbar-caps::hold`, `busbar-kernel::teller`) — but the *ledger* leg is being landed right now by the late-accrual agent; do not touch | `billing\|`, `teller-meter-row\|` | blocked on the late-accrual landing |
 | 2 | `boot::hydrate_all`, 1 `boot::start_planes`, 1 `boot::generate_signing_key_hex`, 1 `boot` | **MOVE** into the root's own boot (`crates/busbar/src/root/durability.rs` already owns hydration policy) as the legacy pipeline retires | `boot\|`, `store-persist\|`, `durable-governance-precondition\|` | after cut 4 |
 | 1 | `proto::registry::install_protocols_with_path_ingress`, 1 `install_protocols`, 1 `proto::ProtocolDecl` | RE-EX (`busbar_substrate::proto::registry`) → REPLACE | `http\|`, `llm\|`, `route\|` | cut 2 |
@@ -118,7 +123,7 @@ root's:
 | symbol group | verdict | oracle families | ordering |
 |---|---|---|---|
 | `ingress::arrival::{ArrivalCtx, ArrivalCtx::new, BodyIngress, PathIngress, install_*}` (13 sites) | KEEP — the neutral arrival seam; it is the *destination* of the core ingress drain | `llm\|`, `route\|`, `http\|` | — |
-| `config::limits::LimitsResolved` (5) · `config::groups::{GroupCfg,LimitCfg,LimitMetric}` (6) | **KEEP as a leaf — 1.5.5 config parsing kept verbatim for byte-identity.** `deny_unknown_fields`, field order and serde attrs are frozen; 1.6.0 config = 1.5.5 config + plane sections. | `config\|`, `documented-docker-defaults\|` | never |
+| `config::limits::LimitsResolved` (5) · `config::groups::{GroupCfg,LimitCfg,LimitMetric}` (6) | **KEEP as a leaf — 1.5.5 config parsing kept verbatim for byte-identity.** `deny_unknown_fields`, field order and serde attrs are frozen; 1.6.0 config = 1.5.5 config + plane sections. §7.2 amends the DESTINATION: these leaves are the part of the grammar that already crossed, and they move on to `busbar-core-config` with the rest of the layer rather than resting in the substrate, which is itself legacy. | `config\|`, `documented-docker-defaults\|` | with the config crate |
 | `store::{now, now_ms, tool_key, BreakerState}` (9) | KEEP — neutral clock/store leaves | `teller\|` | — |
 | `governance::{signing::TokenSigner::from_secret_bytes, signing::DEFAULT_KID, NewKeySpec, metering_bucket}` | KEEP — the busbar-signed-token crypto, already neutral | `key-rotate\|`, `key-expiry\|`, `key-revoke\|`, `billing\|` | — |
 | `plane_host::EngineHost`, `proto::install_stream_translator_factory` | **DELETE with the engine twins** | `llm\|` | last |
@@ -318,3 +323,187 @@ Oracle, 378 cells over `^(billing|llm|admin\.ops|boot|config)\|`, `--strict
 The lesson for the next filtered oracle run: **a filter changes the answer for any cell that counts
 prior cells.** Diff a filtered candidate against a filtered *base*, never against the full golden,
 or seven cells will accuse an innocent commit.
+
+## 7. Corrections from measurement — 2026-09-08
+
+Every row below is a measurement of the tree, not a re-reading of the plan. Where a §2 or §3 row
+disagrees with one of these, the row is wrong and this section is the amendment.
+
+### 7.1 The premise holds for 8% of the body
+
+The legacy production surface outside the loop — core, substrate, llm, mcp, a2a, voice — is
+**95,492 lines** (89,277 excluding in-crate test surface), classified:
+
+| class | lines | share |
+|---|---|---|
+| **EXISTS** — a named crate or module already holds it; the cut is a spelling or a repoint | 7,172 | 8.0 % |
+| **PARTIAL** — something exists, most of the body does not | 42,594 | 47.7 % |
+| **NONE** — no home anywhere in the workspace, under any kind | 21,426 | 24.0 % |
+| **DIES-WITH** — coupled to an engine landing (the plane-host/ingress/state/appbuild wave, the llm twins) | 18,085 | 20.3 % |
+
+`busbar-core` itself is **43,722** production surface lines against **58,722** lines of in-crate test
+surface, and is a production dependency of exactly ONE crate — the composition root. Retiring it is
+therefore not an inter-crate untangling problem; it is thirty-three production call sites in the root
+and 43,722 lines with nowhere to go. **Twelve design gates** — owner or contract decisions, not agent
+capacity — block roughly 76 k of the 89 k, and five of the twelve each block more than 5 k lines.
+The measured cost of the whole plan is **≈155 agent-days over ≈88 cuts**, landing on one serial
+runner at 15–40 minutes a landing: **≈110 landings ≈ 50 runner-hours**, which the runner sustains at
+20–30 landings a day. This work is design-gated and landing-serialised, not agent-count-gated.
+
+*Instrument note, worth carrying:* the surface counter only skips `src/tests/` and `src/tests.rs`, so
+it counts NESTED test trees as surface. Every figure in this section is the counter's per-file output
+with any path containing `/tests/`, or named `*_tests.rs` / `tests.rs`, subtracted — which is why
+`busbar-core` reads 43,722 here and 102,444 from the bare script. No `busbar-unit-*` crate nests its
+tests, so the union ceiling of §1 is unaffected; the ceilings of crates that do nest are over-read.
+
+### 7.2 The config layer has no replacement — `busbar-core-config` is its home
+
+`config/` is **5,034** surface lines (`mod.rs` 1,513, `migrate.rs` 1,827, `overlay.rs` 712,
+`prepass.rs` 276, `named_map.rs` 224, `migrate_export.rs` 177, `secret.rs` 130, `patch.rs` 92,
+`groups.rs` 83) and `config_validate/` a further **1,503**. There is no `busbar-*-config` crate in the
+workspace; `busbar_api` holds only the secret-reference types. Only the LEAF sections crossed to
+`busbar-substrate::config` (1,801 lines) — and the substrate is itself legacy, so the layer's final
+home did not exist. Worse for a leaf-only cut: the layer reaches UP into ten core modules at **65
+sites** (compiler-verified), and the byte-identity prepass itself names two of them.
+
+**Owner ruling, 2026-09-08: a new crate, `busbar-core-config`** — kind `core`, name `config`, per the
+naming rule; the substrate config leaves plus the core config layer, moved verbatim (structs and
+prepass in one commit, the migrator with its corpus), the secret resolver with them. The assembled
+crate measures **20,050** surface lines, so it owes its own ceiling row and a line in
+`ARCHITECTURE.md` §1.1. The "delete, don't relocate" rule of §1 was written for residue that HAS a
+replacement; this is not residue, it is the product's config grammar.
+
+The unblock sequence is dependency-ordered, not parallel: the pool config, the export projection and
+the issuer config leave the layer first; then the design gate — **plane declarations must become
+contract-level data before a config crate can exist, because a config crate must not name a plane**;
+then the mechanical remainder; then the plugin signature/loader block leaves `config/` for the loader.
+Movable the day the crate exists, with zero outbound edges: `config/secret.rs` (130) and
+`config/groups.rs` (83).
+
+### 7.3 The hooks engine has no home — `busbar-core-hooks`
+
+`hooks/` is **1,662** surface lines (`mod.rs` 879, `gate.rs` 236, `scrape.rs` 255, `wire.rs` 250,
+`plugin.rs` 42). The substrate's `hooks` module is 254 lines and says of itself that it is *only the
+plain-data layer* — the per-pool resolved-policy carriers and the outbound hook-request wire
+projection. Policy resolution, the gates, the rewrites, the singleflight and the scrape are core's
+and land nowhere. The destination this plan named — a hooks module in the root — **does not exist as
+a file**, and creating it costs +8 `legacy-reach` against a headroom of 2 and breaches the root's own
+reach rule.
+
+**Owner ruling, 2026-09-08: a new crate, `busbar-core-hooks`.** The kind model already says why: the
+kernel seats hook PLUGINS after Admit; the policy ENGINE that resolves what those seats mean is core.
+
+### 7.4 The scoped chained-record journal → `busbar-unit-audit::journal`
+
+`audit/` is 627 lines (`journal.rs` 352, `mod.rs` 275). The chain itself is already in
+`busbar-unit-audit` (1,178), and the two primitives `mod.rs` needed were authorised into that crate's
+legacy chain, so **`audit/mod.rs` is deletable in one commit** with its boot-verify golden ported as
+its gate. `journal.rs` — the scoped chained-record journal — had no home: `busbar-unit-wal` is a byte
+WAL with a journal record type but no generic scoped journal.
+
+**Owner ruling, 2026-09-08: `busbar-unit-audit::journal`.** The same gate covers the plane-host
+journal (851) and the per-tool-call chained log (483) — 1,686 lines behind one decision.
+
+### 7.5 `trust/` is not a free delete
+
+The execution table rates `trust/` a free DELETE against `busbar-unit-trust`. Measured, core's own
+`trust/` is **16 surface lines** — the body already lives in `busbar-unit-trust` (1,399) and
+`busbar-substrate::trust` (799, with 126 production call sites). What is NOT free is what rides with
+it:
+
+- **1,002 lines of tests with no home.** The re-verify half names the a2a pin walk; the validate half
+  names the governance state object. Default: port them to `busbar-unit-trust` together with the pin
+  walk, rather than write them off — a deleted test is a deleted proof.
+- The validator's governance-resolve implementation moves beside the governance state it resolves
+  against, for the orphan rule.
+
+So the row is a repoint plus a test port, ordered behind the governance work — not a free delete.
+
+### 7.6 The terminal `lib.rs` commit needs two things gone, not one
+
+The last row of the execution table makes `#![forbid(unsafe_code)]` the milestone that proves the
+crate is finished, and names the engine-host half's `unsafe` blocks as the only thing in the way.
+**There is a second:** the test-only allocation-gate instrument carries its own `unsafe` allow, and
+`forbid` refuses an `allow` anywhere in the crate, test-only or not. Both must go, in the same commit,
+or the milestone cannot be reached.
+
+### 7.7 The `limits` row is mis-scoped
+
+The retirement map schedules `limits` (161 surface lines) to the admission unit as a tier-0,
+no-blocker cut. That is true of the name only: the three functions in the module are a request-body
+size cap and two health-probe defaults, and the admission unit holds none of the three. The admission
+ENGINE the row means is in the governance state module, not in `limits`. **The destination is the
+root or `busbar-transport-http`.** Correct the row before scheduling the cut.
+
+### 7.8 The plane-host wave before the llm wave cannot run — the executable order
+
+The tier ordering runs the plane-host cuts before the llm engine cuts. **That order cannot be
+executed: the cut that deletes the engine-host trait deletes a trait six of the nine llm step files
+name in production.** The executable order is:
+
+**R4-0a … R4-0e (additive, deletes nothing) → the vtable rebuild → R4-1 … R4-7 → the engine-host
+implementation, the trait, and the appbuild/state residue.**
+
+R4-0 is the real work: relocate the fourteen engine symbols the step files name; wire the egress
+unit; move the ledger write; replace the completion synthesiser. The deletions that follow are
+7,019 production lines and close three standing red gate rows — the 1,117-line request-path function,
+the terminal doors in the audit step, and the second pick site.
+
+### 7.9 `build_app_from_config` has five callers inside core's own admin
+
+Every plan document, this one included, batches the application-assembly module with the application
+state and the router behind "everything above" — i.e. it dies when the root stops booting the legacy
+pipeline. Measured, `build_app_from_config` has **five production callers inside core's own admin
+handlers** (four in the JSON handler, one in the named-map handler) beside the root's one. The
+consequence is an ordering edge nothing recorded: **the admin config-transaction cut and the admin
+config-mutation cut are hard predecessors** of the appbuild cut, and a grep for the function name is
+the gate that proves it.
+
+### 7.10 The llm unit chain is a SHELL around the engine, not a twin of it
+
+This plan and the retirement map both write that the llm unit directory is the DESTINATION for the
+engine, the native ingress and the arrival tables. **That is false as code.** The unit's Route step
+calls the engine's forward function directly — the 1,117-line function that is the single reason the
+request-path function-size rule is red — and six of the nine step files name the substrate's
+engine-host trait. The step files reach fourteen distinct engine symbols in production, the whole
+forward loop among them. **Deleting the engine deletes the shipped request path, not a duplicate of
+it**; and no test anywhere compares holds, refunds, accrual or price across the two legs.
+
+Related, and stale in four places in the tree: **the llm root leg is DEFAULT ON.** The loop is the
+shipped path for llm; the comments and the teller-steps data that still say "default off" are wrong,
+and a reader planning this work off them plans the wrong cut. Measured shipped path per leg:
+llm = loop, admin = split, mcp / a2a / voice = legacy.
+
+### 7.11 `busbar-unit-egress` has never served a request
+
+The rebuilt forward loop already exists and is dead: **1,810 production lines**, constructed in the
+root's kernel wiring, with no production reader driving a request through it. This is why the
+one-pick-site rule reads 4 against a ceiling of 2 — both loops are in the binary, the live pair in the
+engine and the dead pair in the unit. Wiring it is not a re-target; it is the **first activation of
+1,810 lines that have never been exercised in production, on the money path**, and it is blocked on a
+golden for the mid-stream upstream-error path that does not exist (those cells are skips).
+
+### 7.12 llm money is dual-booked
+
+The unit chain owns the charge, the refund and the report; the engine still owns **every token
+accrual that moves the live budget ledger and the metering series**. One request posts into two
+books — the legacy governance ledger through the engine's usage module, and the root's ledger unit
+through the late-accrual arm — and **nothing reconciles them**. The late-accrual arm, which is the
+only thing putting llm money in the root's book, carries an open HIGH finding for **zero coverage**;
+the unit's own accrual line is guarded by a flag that is true on every walked arm, so it never
+executes; the unit's metering row is built and dropped; and the kernel settles zero on llm while a2a
+and voice accrue — three planes, two settlement models. The thirteen billing cells read the LEGACY
+book, so deleting the legacy accrual without moving the views first turns thirteen owed cells red.
+
+### 7.13 Two homes that did not exist now have one
+
+- **The OAuth authorization server** (1,341 lines: the metadata document, the routes, the consent UI,
+  the signer, the policy) had no crate and no kind. Owner ruling, 2026-09-08: it is a **CONTROL**
+  surface — `busbar-control-oauth2` — not a plane, not an auth plugin and not a core module. A
+  verifier answers a question about a credential and stays the `auth` kind; an authorization server
+  serves routes, and the request ends there.
+- **Admin is the same kind.** `busbar-plane-admin` becomes `busbar-control-admin` at the rename. The
+  split is metering and nothing else: a plane is the metered path and follows the strict workflow
+  every plane follows; a control surface is not on it and follows the lesser one
+  (verify → admit → audit → answer). `PLUGIN-TREE.md` §1 carries the kind row, its CAN/CANNOT list
+  and the dependency row; `ARCHITECTURE.md` §1.4 carries the closed-shape/open-vocabulary row.
