@@ -44,8 +44,8 @@
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::construction::tree::{crate_name_of_dir, dirs_for_globs};
-use crate::gates::construction::{external, ConstructionGate};
-use crate::gates::{execute, prove_red, Case, Expect, Gate, Report};
+use crate::gates::construction::{external, ConstructionGate, UNSAFE_HALVES};
+use crate::gates::{execute, prove_red, prove_rows_green, Case, Expect, Gate, Report};
 
 /// The three delegated answers as the real tree gives them, captured once. Every plant starts from
 /// a clone of this, so a case that is not about a delegated input never pays for one.
@@ -504,17 +504,21 @@ fn kind_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
         &["zz_planted_io.rs"],
     ));
 
-    let cfg = ConstructionGate::cfg(cx);
-    for (kinds_key, prefix) in [
-        ("forbid_kinds", "forbid-unsafe:"),
-        ("deny_kinds", "forbid-unsafe-deny:"),
-    ] {
-        let kinds = cfg
-            .as_ref()
-            .ok()
-            .and_then(|c| c.rule("forbid-unsafe").ok().map(|t| t.list_of(kinds_key)))
-            .unwrap_or_default();
-        let here = kind_crates(cx, &kinds);
+    let Ok(cfg) = ConstructionGate::cfg(cx) else {
+        r.note_infra_failure("the ceilings file would not parse, so no forbid-unsafe case is real");
+        return r;
+    };
+    for (kinds_key, missing_key, rid) in UNSAFE_HALVES {
+        let prefix = format!("{rid}:");
+        // THE PLANT IS THE WHOLE KIND; THE PROOF IS THE HELD HALF. Every crate of the kind loses
+        // the attribute, tracked or not — anything narrower would be a plant shaped to the answer.
+        // What the RED case may claim is narrower than what it plants: a crate on the rule's
+        // ratchet measures `1` against a ceiling of `1`, so it stays green under this exact plant
+        // BY DESIGN, and asking `prove_red` for it would fail the case for the rule working. So
+        // the ratcheted crates are proven the other way round, in the green case below: the same
+        // plant, the tracked rows, and the claim that tolerating them is what the ratchet is for.
+        let (held, tracked) = ConstructionGate::unsafe_split(cx, &cfg, kinds_key, missing_key);
+        let here: Vec<String> = held.iter().chain(tracked.iter()).cloned().collect();
         let mut ov = on(base);
         for c in &here {
             for rel in ["src/lib.rs", "src/main.rs"] {
@@ -533,9 +537,16 @@ fn kind_cases(gate: &dyn Gate, cx: &Ctx, base: &Overlay) -> Report {
             cx,
             gate,
             format!("every crate of this kind loses its `{prefix}` attribute"),
-            &refs(&ids(prefix, &here)),
-            ov,
+            &refs(&ids(&prefix, &held)),
+            ov.clone(),
             &["MISSING"],
+        ));
+        r.push(prove_rows_green(
+            cx,
+            gate,
+            format!("a `{prefix}` crate the ceilings file already tracks is not a fresh violation"),
+            &refs(&ids(&prefix, &tracked)),
+            ov,
         ));
     }
     r

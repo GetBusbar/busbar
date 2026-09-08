@@ -15,8 +15,13 @@
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::design_bindings::json::{self, J};
 use crate::gates::design_bindings::{build, DesignBindingsGate, ROW_REGEN};
-use crate::gates::{prove_red, Case, Expect, Gate, Report};
+use crate::gates::{prove_red, prove_rows_green, Case, Expect, Gate, Report};
 use crate::jobj;
+
+/// The binding id every fixture that needs a PASSING row beside a failing one reuses. It is a REAL
+/// owed id on purpose: a control under an id the gate does not owe would be reconciled away as a
+/// stray row and would prove nothing about a binding the ledger actually carries.
+const CONTROL: &str = "PB-1";
 
 /// A ledger holding exactly the bindings given, in the shape `build` emits.
 fn ledger(bindings: Vec<J>) -> String {
@@ -82,6 +87,13 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
     let mut r = Report::new();
     let owed: Vec<String> = gate.owed();
     let all: Vec<&str> = owed.iter().map(String::as_str).collect();
+    if !all.contains(&CONTROL) {
+        r.note_infra_failure(format!(
+            "`{CONTROL}` is no longer a binding this gate owes, so the case that plants it as a \
+             passing control is planting a row the reconciliation drops"
+        ));
+        return r;
+    }
 
     // The tree as it stands: the committed ledger is what Appendix B derives, and the gate says so.
     let verdict = crate::gates::execute(gate, cx);
@@ -123,12 +135,20 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
     };
 
     // (a) one bogus test ref among good ones: exactly that binding is FAIL, the good one PASSes.
+    //
+    // THE CONTROL IS THE POINT OF THIS CASE, and it is why the case's `covers` is not the whole
+    // owed set the way every other case's is. `CONTROL` is planted with refs that RESOLVE, so its
+    // row passes — that is the half of the claim which says the gate reds on the bogus ref rather
+    // than on any rewritten ledger. `prove_red` requires EVERY covered id to be red, so naming the
+    // control among them would fail the case for the gate behaving; the control is proven the
+    // other way round, by [`prove_rows_green`] over the same plant, and its RED proof is carried
+    // by case (b), which rewrites it away like every other owed binding.
     let mut ov = Overlay::new();
     ov.set(
         build::OUT_JSON_REL,
         ledger(vec![
             binding(
-                "PB-1",
+                CONTROL,
                 "good",
                 "mapped",
                 vec![check("test", &real_fn), check("oracle-cell", &recorded)],
@@ -144,13 +164,21 @@ pub fn run(gate: &dyn Gate, cx: &Ctx) -> Report {
             ),
         ]),
     );
+    let bogus_covers: Vec<&str> = all.iter().copied().filter(|id| *id != CONTROL).collect();
     r.push(prove_red(
         cx,
         gate,
         "a test ref naming a fn no file declares",
-        &all,
-        ov,
+        &bogus_covers,
+        ov.clone(),
         &["this_test_fn_does_not_exist_anywhere_selftest"],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "the binding beside it, whose refs all resolve, still passes",
+        &[CONTROL],
+        ov,
     ));
 
     // (b) a vanished cell id, and (b2) a cell the golden never recorded. Both are FAIL, and the
