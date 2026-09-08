@@ -76,11 +76,12 @@ fn base64_image_projects_intact_on_every_writer() {
     // Each dialect names the media type in its OWN wire word — Bedrock's Converse shape carries a
     // bare `format` token where the others carry the MIME string — so the expected token is stated
     // per writer rather than assumed uniform.
+    let openai = OpenAiWriter;
     let gemini = GeminiWriter;
     let bedrock = BedrockWriter;
     let cohere = CohereWriter;
     for (name, media_token, wire) in [
-        ("openai", "image/png", OpenAiWriter.write_request(&req)),
+        ("openai", "image/png", openai.write_request(&req)),
         (
             "anthropic",
             "image/png",
